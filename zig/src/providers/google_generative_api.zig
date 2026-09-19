@@ -1,0 +1,1639 @@
+const std = @import("std");
+const compat = @import("compat");
+const ai_types = @import("ai_types");
+const event_stream = @import("event_stream");
+const api_registry = @import("api_registry");
+const sse_parser = @import("sse_parser");
+const json_writer = @import("json_writer");
+const sanitize = @import("sanitize");
+const retry_util = @import("retry");
+const pre_transform = @import("pre_transform");
+const StringBuilder = @import("string_builder").StringBuilder;
+
+fn shouldSkipAssistant(msg: ai_types.Message) bool {
+    switch (msg) {
+        .assistant => |a| {
+            return a.stop_reason == .aborted or a.stop_reason == .@"error";
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn collectToolCallIds(allocator: std.mem.Allocator, messages: []const ai_types.Message) !std.StringHashMap(void) {
+    var tool_call_ids = std.StringHashMap(void).init(allocator);
+    errdefer {
+        var iter = tool_call_ids.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        tool_call_ids.deinit();
+    }
+
+    for (messages) |msg| {
+        switch (msg) {
+            .assistant => |a| {
+                for (a.content) |c| {
+                    if (c == .tool_call) {
+                        const id_dup = try allocator.dupe(u8, c.tool_call.id);
+                        try tool_call_ids.put(id_dup, {});
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    return tool_call_ids;
+}
+
+fn isOrphanedToolResult(msg: ai_types.Message, tool_call_ids: *const std.StringHashMap(void)) bool {
+    if (tool_call_ids.count() == 0) {
+        return false;
+    }
+    switch (msg) {
+        .tool_result => |tr| {
+            if (tr.tool_call_id.len > 0) {
+                return !tool_call_ids.contains(tr.tool_call_id);
+            }
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn freeToolCallIds(allocator: std.mem.Allocator, map: *std.StringHashMap(void)) void {
+    var iter = map.keyIterator();
+    while (iter.next()) |key| {
+        allocator.free(key.*);
+    }
+    map.deinit();
+}
+
+fn env(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    return compat.getEnvVarOwned(allocator, name) catch null;
+}
+
+fn buildStreamGenerateContentUrl(allocator: std.mem.Allocator, base_url: []const u8, model_id: []const u8) ![]const u8 {
+    var sb = StringBuilder{};
+    sb.count(base_url);
+    sb.count("/v1beta/models/");
+    sb.count(model_id);
+    sb.count(":streamGenerateContent?alt=sse");
+    try sb.allocate(allocator);
+    errdefer sb.deinit(allocator);
+
+    _ = sb.append(base_url);
+    _ = sb.append("/v1beta/models/");
+    _ = sb.append(model_id);
+    _ = sb.append(":streamGenerateContent?alt=sse");
+
+    std.debug.assert(sb.len == sb.cap);
+    const out = sb.ptr.?[0..sb.cap];
+    sb.ptr = null;
+    sb.cap = 0;
+    sb.len = 0;
+    return out;
+}
+
+fn isGemini3ProModel(model_id: []const u8) bool {
+    return std.mem.find(u8, model_id, "3-pro") != null;
+}
+
+fn isGemini3FlashModel(model_id: []const u8) bool {
+    return std.mem.find(u8, model_id, "3-flash") != null;
+}
+
+fn isGemini25ProModel(model_id: []const u8) bool {
+    return std.mem.find(u8, model_id, "2.5-pro") != null;
+}
+
+fn isGemini25FlashModel(model_id: []const u8) bool {
+    return std.mem.find(u8, model_id, "2.5-flash") != null;
+}
+
+fn isValidThoughtSignature(sig: ?[]const u8) bool {
+    if (sig == null) return false;
+    if (sig.?.len == 0) return false;
+    for (sig.?) |c| {
+        if (!std.ascii.isAlphanumeric(c) and c != '+' and c != '/' and c != '=') {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn getGemini3ThinkingLevel(level: ai_types.ThinkingLevel, model: ai_types.Model) []const u8 {
+    if (isGemini3ProModel(model.id)) {
+        return switch (level) {
+            .off => "NONE",
+            .minimal, .low => "LOW",
+            .medium, .high, .xhigh => "HIGH",
+        };
+    }
+    return switch (level) {
+        .off => "NONE",
+        .minimal => "MINIMAL",
+        .low => "LOW",
+        .medium => "MEDIUM",
+        .high, .xhigh => "HIGH",
+    };
+}
+
+fn getGoogleBudget(level: ai_types.ThinkingLevel, budgets: ?ai_types.ThinkingBudgets, model_id: []const u8) i32 {
+    if (level == .off) return 0;
+
+    if (budgets) |b| {
+        return switch (level) {
+            .off => 0,
+            .minimal => if (b.minimal) |v| @intCast(v) else -1,
+            .low => if (b.low) |v| @intCast(v) else -1,
+            .medium => if (b.medium) |v| @intCast(v) else -1,
+            .high => if (b.high) |v| @intCast(v) else -1,
+            .xhigh => if (b.xhigh) |v| @intCast(v) else -1,
+        };
+    }
+
+    if (isGemini25ProModel(model_id)) {
+        return switch (level) {
+            .off => 0,
+            .minimal => 128,
+            .low => 2048,
+            .medium => 8192,
+            .high, .xhigh => 32768,
+        };
+    }
+
+    if (isGemini25FlashModel(model_id)) {
+        return switch (level) {
+            .off => 0,
+            .minimal => 128,
+            .low => 2048,
+            .medium => 8192,
+            .high, .xhigh => 24576,
+        };
+    }
+
+    return -1;
+}
+
+fn buildBody(context: ai_types.Context, options: ai_types.StreamOptions, model: ai_types.Model, allocator: std.mem.Allocator) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+
+    var transformed = try pre_transform.preTransform(allocator, context.messages, .{
+        .target_api = model.api,
+        .target_provider = model.provider,
+        .target_model_id = model.id,
+        .max_tool_id_len = 64,
+        .insert_synthetic_results = true,
+        .tools = context.tools,
+    });
+    defer transformed.deinit();
+
+    var tx_context = context;
+    tx_context.messages = transformed.messages;
+
+    var w = json_writer.JsonWriter.init(&buf, allocator);
+    try w.beginObject();
+
+    var tool_call_ids = collectToolCallIds(allocator, tx_context.messages) catch std.StringHashMap(void).init(allocator);
+    defer freeToolCallIds(allocator, &tool_call_ids);
+
+    try w.writeKey("contents");
+    try w.beginArray();
+    for (tx_context.messages) |m| {
+        if (shouldSkipAssistant(m)) continue;
+
+        if (isOrphanedToolResult(m, &tool_call_ids)) continue;
+
+        const role: []const u8 = switch (m) {
+            .assistant => "model",
+            else => "user",
+        };
+
+        try w.beginObject();
+        try w.writeStringField("role", role);
+        try w.writeKey("parts");
+        try w.beginArray();
+
+        switch (m) {
+            .user => |u| switch (u.content) {
+                .text => |t| {
+                    try w.beginObject();
+                    const sanitized = try sanitize.sanitizeSurrogatesInPlace(allocator, t);
+                    defer {
+                        if (sanitized.ptr != t.ptr) {
+                            allocator.free(@constCast(sanitized));
+                        }
+                    }
+                    try w.writeStringField("text", sanitized);
+                    try w.endObject();
+                },
+                .parts => |parts| {
+                    for (parts) |p| switch (p) {
+                        .text => |t| {
+                            try w.beginObject();
+                            const sanitized = try sanitize.sanitizeSurrogatesInPlace(allocator, t.text);
+                            defer {
+                                if (sanitized.ptr != t.text.ptr) {
+                                    allocator.free(@constCast(sanitized));
+                                }
+                            }
+                            try w.writeStringField("text", sanitized);
+                            try w.endObject();
+                        },
+                        .image => |img| {
+                            try w.beginObject();
+                            try w.writeKey("inlineData");
+                            try w.beginObject();
+                            try w.writeStringField("mimeType", img.mime_type);
+                            try w.writeStringField("data", img.data);
+                            try w.endObject();
+                        },
+                    };
+                },
+            },
+            .assistant => |a| {
+                for (a.content) |c| switch (c) {
+                    .text => |t| {
+                        if (t.text.len > 0) {
+                            try w.beginObject();
+                            try w.writeStringField("text", t.text);
+                            if (t.text_signature) |sig| {
+                                if (sig.len > 0) {
+                                    try w.writeStringField("thoughtSignature", sig);
+                                }
+                            }
+                            try w.endObject();
+                        }
+                    },
+                    .thinking => |t| {
+                        if (t.thinking.len > 0) {
+                            try w.beginObject();
+                            try w.writeStringField("text", t.thinking);
+                            try w.writeBoolField("thought", true);
+                            if (t.thinking_signature) |sig| {
+                                if (sig.len > 0) {
+                                    try w.writeStringField("thoughtSignature", sig);
+                                }
+                            }
+                            try w.endObject();
+                        }
+                    },
+                    .tool_call => |tc| {
+                        try w.beginObject();
+                        try w.writeKey("functionCall");
+                        try w.beginObject();
+                        try w.writeStringField("name", tc.name);
+                        try w.writeKey("args");
+                        try w.writeRawJson(tc.arguments_json);
+                        try w.endObject();
+                        if (tc.thought_signature) |sig| {
+                            if (sig.len > 0) {
+                                try w.writeStringField("thoughtSignature", sig);
+                            }
+                        }
+                        try w.endObject();
+                    },
+                    .image => {},
+                };
+            },
+            .tool_result => |tr| {
+                try w.beginObject();
+                try w.writeKey("functionResponse");
+                try w.beginObject();
+                try w.writeStringField("name", tr.tool_name);
+                try w.writeKey("response");
+                try w.beginObject();
+                var last_text: ?[]const u8 = null;
+                for (tr.content) |c| switch (c) {
+                    .text => |t| {
+                        last_text = t.text;
+                    },
+                    .image => {},
+                };
+                if (last_text) |text| {
+                    try w.writeStringField("result", text);
+                }
+                if (tr.getDetailsJson()) |dj| {
+                    try w.writeKey("details");
+                    try w.writeRawJson(dj);
+                }
+                if (tr.is_error) {
+                    try w.writeBoolField("error", true);
+                }
+                try w.endObject();
+            },
+        }
+
+        try w.endArray();
+        try w.endObject();
+    }
+    try w.endArray();
+
+    if (context.getSystemPrompt()) |sp| {
+        try w.writeKey("systemInstruction");
+        try w.beginObject();
+        try w.writeKey("parts");
+        try w.beginArray();
+        try w.beginObject();
+        try w.writeStringField("text", sp);
+        try w.endObject();
+        try w.endArray();
+        try w.endObject();
+    }
+
+    try w.writeKey("generationConfig");
+    try w.beginObject();
+    try w.writeIntField("maxOutputTokens", options.max_tokens orelse model.max_tokens);
+    if (options.temperature) |t| {
+        try w.writeKey("temperature");
+        try w.writeFloat(t);
+    }
+    try w.endObject();
+
+    if (context.tools) |tools| {
+        if (tools.len > 0) {
+            try w.writeKey("tools");
+            try w.beginArray();
+            try w.beginObject();
+            try w.writeKey("functionDeclarations");
+            try w.beginArray();
+            for (tools) |tool| {
+                try w.beginObject();
+                try w.writeStringField("name", tool.name);
+                try w.writeStringField("description", tool.description);
+                try w.writeKey("parameters");
+                try w.writeRawJson(tool.parameters_schema_json);
+                try w.endObject();
+            }
+            try w.endArray();
+            try w.endObject();
+            try w.endArray();
+
+            if (options.tool_choice) |tc| {
+                try w.writeKey("tool_config");
+                try w.beginObject();
+                try w.writeKey("function_calling_config");
+                try w.beginObject();
+                switch (tc) {
+                    .auto => try w.writeStringField("mode", "AUTO"),
+                    .none => try w.writeStringField("mode", "NONE"),
+                    .required => try w.writeStringField("mode", "ANY"),
+                    .function => |name| {
+                        try w.writeStringField("mode", "ANY");
+                        try w.writeKey("allowed_function_names");
+                        try w.beginArray();
+                        try w.writeString(name);
+                        try w.endArray();
+                    },
+                }
+                try w.endObject();
+            }
+        }
+    }
+
+    if (options.thinking_enabled and model.reasoning) {
+        try w.writeKey("thinkingConfig");
+        try w.beginObject();
+        try w.writeBoolField("includeThoughts", true);
+
+        if (options.getThinkingEffort()) |effort| {
+            try w.writeStringField("thinkingLevel", effort);
+        } else if (options.thinking_budget_tokens) |budget| {
+            try w.writeIntField("thinkingBudget", budget);
+        }
+        try w.endObject();
+    }
+
+    try w.endObject();
+    return buf.toOwnedSlice(allocator);
+}
+
+const ParsedPart = union(enum) {
+    text: struct {
+        text: []const u8,
+        is_thinking: bool,
+        thought_signature: ?[]const u8,
+    },
+    tool_call: struct {
+        id: ?[]const u8,
+        name: []const u8,
+        args_json: []const u8,
+        thought_signature: ?[]const u8 = null,
+    },
+};
+
+const GoogleParseResult = struct {
+    parts: []const ParsedPart,
+    usage: ai_types.Usage,
+    finish_reason: ?[]const u8,
+};
+
+fn stringifyJsonValue(value: std.json.Value, buf: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    switch (value) {
+        .null => try buf.appendSlice(allocator, "null"),
+        .bool => |b| try buf.appendSlice(allocator, if (b) "true" else "false"),
+        .integer => |i| {
+            var num_buf: [32]u8 = undefined;
+            const str = std.fmt.bufPrint(&num_buf, "{}", .{i}) catch return;
+            try buf.appendSlice(allocator, str);
+        },
+        .float => |f| {
+            var num_buf: [64]u8 = undefined;
+            const str = std.fmt.bufPrint(&num_buf, "{d}", .{f}) catch return;
+            try buf.appendSlice(allocator, str);
+        },
+        .number_string => |s| try buf.appendSlice(allocator, s),
+        .string => |s| {
+            try buf.append(allocator, '"');
+            for (s) |c| {
+                switch (c) {
+                    '"' => try buf.appendSlice(allocator, "\\\""),
+                    '\\' => try buf.appendSlice(allocator, "\\\\"),
+                    '\n' => try buf.appendSlice(allocator, "\\n"),
+                    '\r' => try buf.appendSlice(allocator, "\\r"),
+                    '\t' => try buf.appendSlice(allocator, "\\t"),
+                    else => try buf.append(allocator, c),
+                }
+            }
+            try buf.append(allocator, '"');
+        },
+        .array => |arr| {
+            try buf.append(allocator, '[');
+            for (arr.items, 0..) |item, i| {
+                if (i > 0) try buf.append(allocator, ',');
+                try stringifyJsonValue(item, buf, allocator);
+            }
+            try buf.append(allocator, ']');
+        },
+        .object => |obj| {
+            try buf.append(allocator, '{');
+            var iter = obj.iterator();
+            var first = true;
+            while (iter.next()) |entry| {
+                if (!first) try buf.append(allocator, ',');
+                first = false;
+                try stringifyJsonValue(.{ .string = entry.key_ptr.* }, buf, allocator);
+                try buf.append(allocator, ':');
+                try stringifyJsonValue(entry.value_ptr.*, buf, allocator);
+            }
+            try buf.append(allocator, '}');
+        },
+    }
+}
+
+fn parseGoogleEventExtended(data: []const u8, allocator: std.mem.Allocator) ?GoogleParseResult {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const obj = parsed.value.object;
+
+    var parts_list = std.ArrayList(ParsedPart).empty;
+    defer parts_list.deinit(allocator);
+
+    var usage = ai_types.Usage{};
+    var finish_reason: ?[]const u8 = null;
+
+    if (obj.get("candidates")) |cands| {
+        if (cands == .array and cands.array.items.len > 0) {
+            const c = cands.array.items[0];
+            if (c == .object) {
+                if (c.object.get("finishReason")) |fr| {
+                    if (fr == .string) {
+                        finish_reason = allocator.dupe(u8, fr.string) catch null;
+                    }
+                }
+
+                if (c.object.get("content")) |content| {
+                    if (content == .object) {
+                        if (content.object.get("parts")) |parts| {
+                            if (parts == .array) {
+                                for (parts.array.items) |p| {
+                                    if (p == .object) {
+                                        if (p.object.get("text")) |t| {
+                                            if (t == .string and t.string.len > 0) {
+                                                const is_thinking = blk: {
+                                                    if (p.object.get("thought")) |thought| {
+                                                        if (thought == .bool and thought.bool) break :blk true;
+                                                    }
+                                                    break :blk false;
+                                                };
+
+                                                const sig = if (p.object.get("thoughtSignature")) |s| blk: {
+                                                    if (s == .string) break :blk allocator.dupe(u8, s.string) catch null;
+                                                    break :blk null;
+                                                } else null;
+
+                                                const text_copy = allocator.dupe(u8, t.string) catch continue;
+                                                parts_list.append(allocator, .{ .text = .{
+                                                    .text = text_copy,
+                                                    .is_thinking = is_thinking,
+                                                    .thought_signature = sig,
+                                                } }) catch {
+                                                    allocator.free(text_copy);
+                                                    if (sig) |s| allocator.free(s);
+                                                    continue;
+                                                };
+                                            }
+                                        } else if (p.object.get("functionCall")) |fc| {
+                                            if (fc == .object) {
+                                                const name = if (fc.object.get("name")) |n|
+                                                    if (n == .string) n.string else ""
+                                                else
+                                                    "";
+
+                                                const id = if (fc.object.get("id")) |i|
+                                                    if (i == .string) allocator.dupe(u8, i.string) catch null else null
+                                                else
+                                                    null;
+
+                                                const sig = if (p.object.get("thoughtSignature")) |s| blk: {
+                                                    if (s == .string) break :blk allocator.dupe(u8, s.string) catch null;
+                                                    break :blk null;
+                                                } else null;
+
+                                                const args_json = if (fc.object.get("args")) |args| blk: {
+                                                    var buf = std.ArrayList(u8).empty;
+                                                    stringifyJsonValue(args, &buf, allocator) catch break :blk "";
+                                                    break :blk buf.toOwnedSlice(allocator) catch "";
+                                                } else "";
+
+                                                const name_copy = allocator.dupe(u8, name) catch {
+                                                    if (sig) |ss| allocator.free(ss);
+                                                    continue;
+                                                };
+                                                parts_list.append(allocator, .{ .tool_call = .{
+                                                    .id = id,
+                                                    .name = name_copy,
+                                                    .args_json = args_json,
+                                                    .thought_signature = sig,
+                                                } }) catch {
+                                                    allocator.free(name_copy);
+                                                    if (id) |i| allocator.free(i);
+                                                    allocator.free(args_json);
+                                                    if (sig) |ss| allocator.free(ss);
+                                                    continue;
+                                                };
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (obj.get("usageMetadata")) |u| {
+        if (u == .object) {
+            if (u.object.get("promptTokenCount")) |v| {
+                if (v == .integer) usage.input = @intCast(v.integer);
+            }
+            if (u.object.get("candidatesTokenCount")) |v| {
+                if (v == .integer) usage.output = @intCast(v.integer);
+            }
+            if (u.object.get("thoughtsTokenCount")) |v| {
+                if (v == .integer) usage.output += @as(u64, @intCast(v.integer));
+            }
+            if (u.object.get("totalTokenCount")) |v| {
+                if (v == .integer) usage.total_tokens = @intCast(v.integer);
+            }
+        }
+    }
+
+    const parts_slice = parts_list.toOwnedSlice(allocator) catch return null;
+    return .{
+        .parts = parts_slice,
+        .usage = usage,
+        .finish_reason = finish_reason,
+    };
+}
+
+fn deinitGoogleParseResult(result: *const GoogleParseResult, allocator: std.mem.Allocator) void {
+    for (result.parts) |part| {
+        switch (part) {
+            .text => |t| {
+                allocator.free(t.text);
+                if (t.thought_signature) |sig| allocator.free(sig);
+            },
+            .tool_call => |tc| {
+                if (tc.id) |id| allocator.free(id);
+                allocator.free(tc.name);
+                allocator.free(tc.args_json);
+                if (tc.thought_signature) |sig| allocator.free(sig);
+            },
+        }
+    }
+    allocator.free(result.parts);
+    if (result.finish_reason) |fr| allocator.free(fr);
+}
+
+const CurrentBlock = enum {
+    none,
+    text,
+    thinking,
+};
+
+fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
+    return ai_types.AssistantMessage{
+        .content = &.{},
+        .api = model.api,
+        .provider = model.provider,
+        .model = model.id,
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = compat.time.nowMillis(),
+    };
+}
+
+fn mapFinishReason(reason: ?[]const u8) ai_types.StopReason {
+    if (reason) |r| {
+        if (std.mem.eql(u8, r, "STOP")) return .stop;
+        if (std.mem.eql(u8, r, "MAX_TOKENS")) return .length;
+        return .@"error";
+    }
+    return .stop;
+}
+
+const ThreadCtx = struct {
+    allocator: std.mem.Allocator,
+    stream: *event_stream.AssistantMessageEventStream,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    api_key: []u8,
+    body: []u8,
+    base_url: []u8,
+    thinking_enabled: bool,
+    cancel_token: ?ai_types.CancelToken = null,
+    on_payload_fn: ?*const fn (on_ctx: ?*anyopaque, payload_json: []const u8) void = null,
+    on_payload_ctx: ?*anyopaque = null,
+    retry_config: ?ai_types.RetryConfig = null,
+    ping_interval_ms: ?u64 = null,
+
+    fn deinit(self: *ThreadCtx) void {
+        self.allocator.free(self.base_url);
+        self.allocator.free(self.api_key);
+        self.allocator.free(self.body);
+        var mut_context = self.context;
+        mut_context.deinit(self.allocator);
+        var mut_model = self.model;
+        mut_model.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+};
+
+fn runThread(ctx: *ThreadCtx) void {
+    const allocator = ctx.allocator;
+    const stream = ctx.stream;
+    const model = ctx.model;
+    const api_key = ctx.api_key;
+    const body = ctx.body;
+    const base_url = ctx.base_url;
+    const thinking_enabled = ctx.thinking_enabled;
+    const cancel_token = ctx.cancel_token;
+    const on_payload_fn = ctx.on_payload_fn;
+    const on_payload_ctx = ctx.on_payload_ctx;
+    const retry_opts = ctx.retry_config;
+
+    if (on_payload_fn) |cb| {
+        cb(on_payload_ctx, body);
+    }
+
+    if (cancel_token) |ct| {
+        if (ct.isCancelled()) {
+            ctx.deinit();
+            stream.completeWithError("request cancelled");
+            stream.markThreadDone();
+            return;
+        }
+    }
+
+    var client = compat.http.HttpClient.init(allocator);
+    defer client.deinit();
+
+    const url = buildStreamGenerateContentUrl(allocator, base_url, model.id) catch {
+        ctx.deinit();
+        stream.completeWithError("oom url");
+        stream.markThreadDone();
+        return;
+    };
+    defer allocator.free(url);
+
+    const uri = std.Uri.parse(url) catch {
+        ctx.deinit();
+        stream.completeWithError("invalid URL");
+        stream.markThreadDone();
+        return;
+    };
+
+    const headers = [_]std.http.Header{
+        .{ .name = "content-type", .value = "application/json" },
+        .{ .name = "x-goog-api-key", .value = api_key },
+    };
+
+    const MAX_RETRIES: u8 = 3;
+    const BASE_DELAY_MS: u32 = 1000;
+    const max_delay_ms: u32 = if (retry_opts) |rc| rc.max_retry_delay_ms orelse 60000 else 60000;
+
+    var response: compat.http.Response = undefined;
+    var head_buf: [4096]u8 = undefined;
+    var retry_attempt: u8 = 0;
+    var req: compat.http.Request = undefined;
+    var req_initialized = false;
+    defer if (req_initialized) req.deinit();
+
+    while (true) {
+        if (cancel_token) |ct| {
+            if (ct.isCancelled()) {
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+        }
+
+        if (req_initialized) {
+            req.deinit();
+            req_initialized = false;
+        }
+
+        req = client.openRequest(.POST, uri, .{ .extra_headers = &headers }) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+            ctx.deinit();
+            stream.completeWithError("request failed");
+            stream.markThreadDone();
+            return;
+        };
+        req_initialized = true;
+
+        compat.http.sendRequest(&req, body) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+            ctx.deinit();
+            stream.completeWithError("send failed");
+            stream.markThreadDone();
+            return;
+        };
+
+        response = compat.http.receiveResponse(&req, &head_buf) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+            ctx.deinit();
+            stream.completeWithError("receive failed");
+            stream.markThreadDone();
+            return;
+        };
+
+        if (response.head.status == .ok) {
+            break;
+        }
+
+        const status_code: u16 = @intFromEnum(response.head.status);
+        const should_retry = retry_util.isRetryable(status_code) and retry_attempt < MAX_RETRIES;
+
+        if (should_retry) {
+            const error_text: []const u8 = &.{};
+
+            const is_retryable_error = retry_util.isRetryableError(error_text);
+
+            var delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+
+            if (std.mem.find(u8, response.head.bytes, "\r\n") != null) {
+                var retry_after_iter = response.head.iterateHeaders();
+                while (retry_after_iter.next()) |header| {
+                    if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
+                        if (retry_util.extractRetryDelayFromHeader(header.value)) |server_delay| {
+                            if (server_delay <= max_delay_ms) {
+                                delay = server_delay;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (retry_util.extractRetryDelayFromBody(error_text)) |body_delay| {
+                if (body_delay <= max_delay_ms) {
+                    delay = body_delay;
+                }
+            }
+
+            if (!is_retryable_error and !retry_util.isRetryable(status_code)) {
+                break;
+            }
+
+            if (!retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+
+            retry_attempt += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    if (response.head.status != .ok) {
+        ctx.deinit();
+        stream.completeWithError("google request failed");
+        stream.markThreadDone();
+        return;
+    }
+
+    var parser = sse_parser.SSEParser.init(allocator);
+    defer parser.deinit();
+
+    var transfer_buf: [4096]u8 = undefined;
+    var read_buf: [8192]u8 = undefined;
+    const reader = compat.http.responseReader(&response, &transfer_buf);
+
+    var content_blocks = std.ArrayList(ai_types.AssistantContent).empty;
+    defer content_blocks.deinit(allocator);
+    var current_text = std.ArrayList(u8).empty;
+    defer current_text.deinit(allocator);
+    var current_thinking = std.ArrayList(u8).empty;
+    defer current_thinking.deinit(allocator);
+    var current_thinking_signature = std.ArrayList(u8).empty;
+    defer current_thinking_signature.deinit(allocator);
+    var current_text_signature = std.ArrayList(u8).empty;
+    defer current_text_signature.deinit(allocator);
+
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .stop;
+    var current_block: CurrentBlock = .none;
+    var tool_call_counter: usize = 0;
+
+    var last_ping_time: i64 = 0;
+    const ping_interval = ctx.ping_interval_ms orelse 0;
+
+    const partial_start = createPartialMessage(model);
+    _ = stream.pushBlocking(.{ .start = .{ .partial = partial_start } });
+
+    while (true) {
+        if (ping_interval > 0) {
+            const now = compat.time.nowMillis();
+            if (now - last_ping_time >= ping_interval) {
+                stream.push(.{ .keepalive = {} }) catch {};
+                last_ping_time = now;
+            }
+        }
+
+        if (cancel_token) |ct| {
+            if (ct.isCancelled()) {
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                stream.markThreadDone();
+                return;
+            }
+        }
+
+        const n = compat.http.readResponse(reader, &read_buf) catch {
+            ctx.deinit();
+            stream.completeWithError("read failed");
+            stream.markThreadDone();
+            return;
+        };
+        if (n == 0) break;
+
+        const events = parser.feed(read_buf[0..n]) catch |err| {
+            ctx.deinit();
+            stream.completeWithError(sse_parser.errorMessage(err));
+            stream.markThreadDone();
+            return;
+        };
+
+        for (events) |ev| {
+            const result = parseGoogleEventExtended(ev.data, allocator);
+            if (result) |*res| {
+                defer deinitGoogleParseResult(res, allocator);
+
+                if (res.usage.input > 0) usage.input = res.usage.input;
+                if (res.usage.output > 0) usage.output = res.usage.output;
+                if (res.usage.total_tokens > 0) usage.total_tokens = res.usage.total_tokens;
+
+                if (res.finish_reason) |fr| {
+                    stop_reason = mapFinishReason(fr);
+                }
+
+                for (res.parts) |part| {
+                    switch (part) {
+                        .text => |text_part| {
+                            const is_thinking = text_part.is_thinking;
+                            const needs_new_block = current_block == .none or
+                                (is_thinking and current_block != .thinking) or
+                                (!is_thinking and current_block != .text);
+
+                            if (needs_new_block and current_block != .none) {
+                                const partial = createPartialMessage(model);
+                                switch (current_block) {
+                                    .text => {
+                                        const text_copy = allocator.dupe(u8, current_text.items) catch continue;
+                                        const sig_copy = if (current_text_signature.items.len > 0)
+                                            allocator.dupe(u8, current_text_signature.items) catch null
+                                        else
+                                            null;
+                                        content_blocks.append(allocator, .{ .text = .{
+                                            .text = text_copy,
+                                            .text_signature = sig_copy,
+                                        } }) catch {};
+                                        _ = stream.pushBlocking(.{ .text_end = .{
+                                            .content_index = content_blocks.items.len - 1,
+                                            .content = current_text.items,
+                                            .partial = partial,
+                                        } });
+                                        current_text.clearRetainingCapacity();
+                                        current_text_signature.clearRetainingCapacity();
+                                    },
+                                    .thinking => {
+                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch continue;
+                                        const sig_copy = if (current_thinking_signature.items.len > 0)
+                                            allocator.dupe(u8, current_thinking_signature.items) catch null
+                                        else
+                                            null;
+                                        content_blocks.append(allocator, .{ .thinking = .{
+                                            .thinking = thinking_copy,
+                                            .thinking_signature = sig_copy,
+                                        } }) catch {};
+                                        _ = stream.pushBlocking(.{ .thinking_end = .{
+                                            .content_index = content_blocks.items.len - 1,
+                                            .content = current_thinking.items,
+                                            .partial = partial,
+                                        } });
+                                        current_thinking.clearRetainingCapacity();
+                                        current_thinking_signature.clearRetainingCapacity();
+                                    },
+                                    .none => {},
+                                }
+                            }
+
+                            if (needs_new_block) {
+                                const content_idx = content_blocks.items.len;
+                                const partial = createPartialMessage(model);
+
+                                if (is_thinking) {
+                                    current_block = .thinking;
+                                    _ = stream.pushBlocking(.{ .thinking_start = .{
+                                        .content_index = content_idx,
+                                        .partial = partial,
+                                    } });
+                                } else {
+                                    current_block = .text;
+                                    _ = stream.pushBlocking(.{ .text_start = .{
+                                        .content_index = content_idx,
+                                        .partial = partial,
+                                    } });
+                                }
+                            }
+
+                            const partial = createPartialMessage(model);
+                            if (is_thinking) {
+                                const prev_len = current_thinking.items.len;
+                                current_thinking.appendSlice(allocator, text_part.text) catch {};
+                                if (text_part.thought_signature) |sig| {
+                                    current_thinking_signature.appendSlice(allocator, sig) catch {};
+                                }
+                                const delta = current_thinking.items[prev_len..];
+                                _ = stream.pushBlocking(.{ .thinking_delta = .{
+                                    .content_index = content_blocks.items.len,
+                                    .delta = delta,
+                                    .partial = partial,
+                                } });
+                            } else {
+                                const prev_len = current_text.items.len;
+                                current_text.appendSlice(allocator, text_part.text) catch {};
+                                if (text_part.thought_signature) |sig| {
+                                    current_text_signature.appendSlice(allocator, sig) catch {};
+                                }
+                                const delta = current_text.items[prev_len..];
+                                _ = stream.pushBlocking(.{ .text_delta = .{
+                                    .content_index = content_blocks.items.len,
+                                    .delta = delta,
+                                    .partial = partial,
+                                } });
+                            }
+                        },
+                        .tool_call => |tc| {
+                            if (current_block != .none) {
+                                const partial = createPartialMessage(model);
+                                switch (current_block) {
+                                    .text => {
+                                        const text_copy = allocator.dupe(u8, current_text.items) catch "";
+                                        const sig_copy = if (current_text_signature.items.len > 0)
+                                            allocator.dupe(u8, current_text_signature.items) catch null
+                                        else
+                                            null;
+                                        content_blocks.append(allocator, .{ .text = .{
+                                            .text = text_copy,
+                                            .text_signature = sig_copy,
+                                        } }) catch {};
+                                        _ = stream.pushBlocking(.{ .text_end = .{
+                                            .content_index = content_blocks.items.len - 1,
+                                            .content = current_text.items,
+                                            .partial = partial,
+                                        } });
+                                        current_text.clearRetainingCapacity();
+                                        current_text_signature.clearRetainingCapacity();
+                                    },
+                                    .thinking => {
+                                        const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
+                                        const sig_copy = if (current_thinking_signature.items.len > 0)
+                                            allocator.dupe(u8, current_thinking_signature.items) catch null
+                                        else
+                                            null;
+                                        content_blocks.append(allocator, .{ .thinking = .{
+                                            .thinking = thinking_copy,
+                                            .thinking_signature = sig_copy,
+                                        } }) catch {};
+                                        _ = stream.pushBlocking(.{ .thinking_end = .{
+                                            .content_index = content_blocks.items.len - 1,
+                                            .content = current_thinking.items,
+                                            .partial = partial,
+                                        } });
+                                        current_thinking.clearRetainingCapacity();
+                                        current_thinking_signature.clearRetainingCapacity();
+                                    },
+                                    .none => {},
+                                }
+                                current_block = .none;
+                            }
+
+                            const is_gemini3 = isGemini3ProModel(model.id) or isGemini3FlashModel(model.id);
+                            if (is_gemini3 and thinking_enabled) {
+                                if (!isValidThoughtSignature(tc.thought_signature)) {
+                                    std.log.debug("Gemini 3 tool call without valid thought signature: {s}", .{tc.name});
+                                }
+                            }
+
+                            const tool_id = if (tc.id) |id|
+                                allocator.dupe(u8, id) catch continue
+                            else blk: {
+                                tool_call_counter += 1;
+                                const timestamp = compat.time.nowMillis();
+                                break :blk std.fmt.allocPrint(
+                                    allocator,
+                                    "{s}_{}_{}",
+                                    .{ tc.name, timestamp, tool_call_counter },
+                                ) catch continue;
+                            };
+
+                            const tool_name = allocator.dupe(u8, tc.name) catch {
+                                allocator.free(tool_id);
+                                continue;
+                            };
+                            const tool_args = allocator.dupe(u8, tc.args_json) catch {
+                                allocator.free(tool_id);
+                                allocator.free(tool_name);
+                                continue;
+                            };
+
+                            const content_idx = content_blocks.items.len;
+
+                            if (!stream.pushBlocking(.{ .toolcall_start = .{
+                                .content_index = content_idx,
+                                .id = tool_id,
+                                .name = tool_name,
+                                .partial = createPartialMessage(model),
+                            } })) {
+                                allocator.free(tool_id);
+                                allocator.free(tool_name);
+                                allocator.free(tool_args);
+                                continue;
+                            }
+
+                            _ = stream.pushBlocking(.{ .toolcall_delta = .{
+                                .content_index = content_idx,
+                                .delta = tool_args,
+                                .partial = createPartialMessage(model),
+                            } });
+
+                            const tool_call_struct = ai_types.ToolCall{
+                                .id = tool_id,
+                                .name = tool_name,
+                                .arguments_json = tool_args,
+                            };
+
+                            content_blocks.append(allocator, .{ .tool_call = tool_call_struct }) catch {
+                                allocator.free(tool_id);
+                                allocator.free(tool_name);
+                                allocator.free(tool_args);
+                                continue;
+                            };
+
+                            _ = stream.pushBlocking(.{ .toolcall_end = .{
+                                .content_index = content_idx,
+                                .tool_call = tool_call_struct,
+                                .partial = createPartialMessage(model),
+                            } });
+                        },
+                    }
+                }
+            }
+        }
+    }
+
+    if (current_block != .none) {
+        switch (current_block) {
+            .text => {
+                const partial = createPartialMessage(model);
+                const text_copy = allocator.dupe(u8, current_text.items) catch "";
+                const sig_copy = if (current_text_signature.items.len > 0)
+                    allocator.dupe(u8, current_text_signature.items) catch null
+                else
+                    null;
+                content_blocks.append(allocator, .{ .text = .{
+                    .text = text_copy,
+                    .text_signature = sig_copy,
+                } }) catch {};
+                _ = stream.pushBlocking(.{ .text_end = .{
+                    .content_index = content_blocks.items.len - 1,
+                    .content = current_text.items,
+                    .partial = partial,
+                } });
+            },
+            .thinking => {
+                const partial = createPartialMessage(model);
+                const thinking_copy = allocator.dupe(u8, current_thinking.items) catch "";
+                const sig_copy = if (current_thinking_signature.items.len > 0)
+                    allocator.dupe(u8, current_thinking_signature.items) catch null
+                else
+                    null;
+                content_blocks.append(allocator, .{ .thinking = .{
+                    .thinking = thinking_copy,
+                    .thinking_signature = sig_copy,
+                } }) catch {};
+                _ = stream.pushBlocking(.{ .thinking_end = .{
+                    .content_index = content_blocks.items.len - 1,
+                    .content = current_thinking.items,
+                    .partial = partial,
+                } });
+            },
+            .none => {},
+        }
+    }
+
+    if (usage.total_tokens == 0) usage.total_tokens = usage.input + usage.output;
+    usage.calculateCost(model.cost);
+
+    if (content_blocks.items.len == 0) {
+        content_blocks.append(allocator, .{ .text = .{ .text = "" } }) catch {};
+    }
+
+    const content_slice = content_blocks.toOwnedSlice(allocator) catch {
+        ctx.deinit();
+        stream.completeWithError("oom content");
+        stream.markThreadDone();
+        return;
+    };
+
+    const api_dup = allocator.dupe(u8, model.api) catch {
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        stream.markThreadDone();
+        return;
+    };
+    const provider_dup = allocator.dupe(u8, model.provider) catch {
+        allocator.free(api_dup);
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        stream.markThreadDone();
+        return;
+    };
+    const model_dup = allocator.dupe(u8, model.id) catch {
+        allocator.free(provider_dup);
+        allocator.free(api_dup);
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        stream.markThreadDone();
+        return;
+    };
+
+    const out = ai_types.AssistantMessage{
+        .content = content_slice,
+        .api = api_dup,
+        .provider = provider_dup,
+        .model = model_dup,
+        .usage = usage,
+        .stop_reason = stop_reason,
+        .timestamp = compat.time.nowMillis(),
+        .is_owned = true,
+    };
+
+    ctx.deinit();
+
+    stream.complete(out);
+    stream.markThreadDone();
+}
+
+pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.StreamOptions, allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
+    const o = options orelse ai_types.StreamOptions{};
+
+    const api_key: []u8 = blk: {
+        if (o.getApiKey()) |k| break :blk try allocator.dupe(u8, k);
+        if (!std.mem.eql(u8, model.provider, "google")) return error.MissingApiKey;
+        const e = env(allocator, "GOOGLE_API_KEY");
+        if (e) |k| break :blk @constCast(k);
+        return error.MissingApiKey;
+    };
+    errdefer allocator.free(api_key);
+
+    const base_url: []u8 = blk: {
+        if (model.base_url.len > 0) break :blk try allocator.dupe(u8, model.base_url);
+        const e = env(allocator, "GOOGLE_BASE_URL");
+        if (e) |v| break :blk @constCast(v);
+        break :blk try allocator.dupe(u8, "https://generativelanguage.googleapis.com");
+    };
+    errdefer allocator.free(base_url);
+
+    const owned_model = try ai_types.cloneModel(allocator, model);
+    errdefer {
+        var mut_m = owned_model;
+        mut_m.deinit(allocator);
+    }
+
+    const owned_context = try ai_types.cloneContext(allocator, context);
+    errdefer {
+        var mut_ctx = owned_context;
+        mut_ctx.deinit(allocator);
+    }
+
+    const body = try buildBody(owned_context, o, owned_model, allocator);
+    errdefer allocator.free(body);
+
+    const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    errdefer allocator.destroy(s);
+    s.* = event_stream.AssistantMessageEventStream.init(allocator);
+    s.wait_for_thread_on_deinit = true;
+    if (o.requires_owned_stream_events) {
+        s.owns_events = true;
+        s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    }
+
+    const ctx = try allocator.create(ThreadCtx);
+    errdefer allocator.destroy(ctx);
+    ctx.* = .{
+        .allocator = allocator,
+        .stream = s,
+        .model = owned_model,
+        .context = owned_context,
+        .api_key = api_key,
+        .body = body,
+        .base_url = base_url,
+        .thinking_enabled = o.thinking_enabled,
+        .cancel_token = o.cancel_token,
+        .on_payload_fn = o.on_payload_fn,
+        .on_payload_ctx = o.on_payload_ctx,
+        .retry_config = o.retry,
+        .ping_interval_ms = o.ping_interval_ms,
+    };
+
+    const th = try std.Thread.spawn(.{}, runThread, .{ctx});
+    th.detach();
+    return s;
+}
+
+pub fn streamSimpleGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context, options: ?ai_types.SimpleStreamOptions, allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
+    const o = options orelse ai_types.SimpleStreamOptions{};
+
+    var thinking_enabled: bool = false;
+    var thinking_budget_tokens: ?u32 = null;
+    var thinking_effort: ?[]const u8 = null;
+
+    if (o.reasoning) |level| {
+        if (model.reasoning) {
+            thinking_enabled = true;
+
+            if (isGemini3ProModel(model.id) or isGemini3FlashModel(model.id)) {
+                thinking_effort = getGemini3ThinkingLevel(level, model);
+            } else {
+                const budget = getGoogleBudget(level, o.thinking_budgets, model.id);
+                if (budget > 0) {
+                    thinking_budget_tokens = @intCast(budget);
+                }
+            }
+        }
+    }
+
+    return streamGoogleGenerativeAI(model, context, .{
+        .temperature = o.temperature,
+        .max_tokens = o.max_tokens,
+        .api_key = if (o.api_key) |k| ai_types.OwnedSlice(u8).initBorrowed(k) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .cache_retention = o.cache_retention,
+        .session_id = if (o.session_id) |sid| ai_types.OwnedSlice(u8).initBorrowed(sid) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .headers = o.headers,
+        .retry = o.retry,
+        .cancel_token = o.cancel_token,
+        .on_payload_fn = o.on_payload_fn,
+        .on_payload_ctx = o.on_payload_ctx,
+        .thinking_enabled = thinking_enabled,
+        .thinking_budget_tokens = thinking_budget_tokens,
+        .thinking_effort = if (thinking_effort) |eff| ai_types.OwnedSlice(u8).initBorrowed(eff) else ai_types.OwnedSlice(u8).initBorrowed(""),
+    }, allocator);
+}
+
+pub fn registerGoogleGenerativeApiProvider(registry: *api_registry.ApiRegistry) !void {
+    try registry.registerApiProvider(.{
+        .api = "google-generative-ai",
+        .stream = streamGoogleGenerativeAI,
+        .stream_simple = streamSimpleGoogleGenerativeAI,
+    }, null);
+}
+
+pub fn registerGoogleGeminiCliApiProvider(registry: *api_registry.ApiRegistry) !void {
+    try registry.registerApiProvider(.{
+        .api = "google-gemini-cli",
+        .stream = streamGoogleGenerativeAI,
+        .stream_simple = streamSimpleGoogleGenerativeAI,
+    }, null);
+}
+
+test "parseGoogleEventExtended - text part" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"content":{"parts":[{"text":"Hello world"}]}}]}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.parts.len);
+    try std.testing.expectEqualStrings("Hello world", result.parts[0].text.text);
+    try std.testing.expectEqual(false, result.parts[0].text.is_thinking);
+}
+
+test "parseGoogleEventExtended - thinking part" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"content":{"parts":[{"text":"Thinking...","thought":true,"thoughtSignature":"sig123"}]}}]}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.parts.len);
+    try std.testing.expectEqualStrings("Thinking...", result.parts[0].text.text);
+    try std.testing.expectEqual(true, result.parts[0].text.is_thinking);
+    if (result.parts[0].text.thought_signature) |sig| {
+        try std.testing.expectEqualStrings("sig123", sig);
+    } else {
+        try std.testing.expect(false);
+    }
+}
+
+test "parseGoogleEventExtended - functionCall part" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"content":{"parts":[{"functionCall":{"name":"bash","args":{"cmd":"ls -la"}}}]}}]}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.parts.len);
+    try std.testing.expectEqual(std.meta.activeTag(result.parts[0]), ParsedPart.tool_call);
+
+    const tc = result.parts[0].tool_call;
+    try std.testing.expect(tc.id == null);
+    try std.testing.expectEqualStrings("bash", tc.name);
+    try std.testing.expectEqualStrings("{\"cmd\":\"ls -la\"}", tc.args_json);
+}
+
+test "parseGoogleEventExtended - functionCall with id" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_123","name":"get_weather","args":{"city":"Tokyo"}}}]}}]}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.parts.len);
+    try std.testing.expectEqual(std.meta.activeTag(result.parts[0]), ParsedPart.tool_call);
+
+    const tc = result.parts[0].tool_call;
+    if (tc.id) |id| {
+        try std.testing.expectEqualStrings("call_123", id);
+    } else {
+        try std.testing.expect(false);
+    }
+    try std.testing.expectEqualStrings("get_weather", tc.name);
+    try std.testing.expectEqualStrings("{\"city\":\"Tokyo\"}", tc.args_json);
+}
+
+test "parseGoogleEventExtended - mixed parts" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"content":{"parts":[{"text":"Let me help you."},{"functionCall":{"name":"search","args":{"query":"test"}}},{"text":"Done."}]}}]}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), result.parts.len);
+
+    try std.testing.expectEqual(std.meta.activeTag(result.parts[0]), ParsedPart.text);
+    try std.testing.expectEqualStrings("Let me help you.", result.parts[0].text.text);
+
+    try std.testing.expectEqual(std.meta.activeTag(result.parts[1]), ParsedPart.tool_call);
+    try std.testing.expectEqualStrings("search", result.parts[1].tool_call.name);
+
+    try std.testing.expectEqual(std.meta.activeTag(result.parts[2]), ParsedPart.text);
+    try std.testing.expectEqualStrings("Done.", result.parts[2].text.text);
+}
+
+test "parseGoogleEventExtended - functionCall with empty args" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"content":{"parts":[{"functionCall":{"name":"no_args_func","args":{}}}]}}]}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.parts.len);
+    try std.testing.expectEqual(std.meta.activeTag(result.parts[0]), ParsedPart.tool_call);
+
+    const tc = result.parts[0].tool_call;
+    try std.testing.expectEqualStrings("no_args_func", tc.name);
+    try std.testing.expectEqualStrings("{}", tc.args_json);
+}
+
+test "isValidThoughtSignature - valid base64" {
+    try std.testing.expect(isValidThoughtSignature("SGVsbG8gV29ybGQ="));
+    try std.testing.expect(isValidThoughtSignature("YWJjMTIz"));
+    try std.testing.expect(isValidThoughtSignature("AAA+BBB/CCC=="));
+    try std.testing.expect(isValidThoughtSignature("validBase64String123"));
+
+    try std.testing.expect(!isValidThoughtSignature(null));
+    try std.testing.expect(!isValidThoughtSignature(""));
+    try std.testing.expect(!isValidThoughtSignature("invalid!chars"));
+    try std.testing.expect(!isValidThoughtSignature("has spaces"));
+    try std.testing.expect(!isValidThoughtSignature("has\nnewline"));
+}
+
+test "parseGoogleEventExtended - functionCall with thoughtSignature" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"content":{"parts":[{"functionCall":{"name":"test_func","args":{"x":1}},"thoughtSignature":"c2lnbmF0dXJlMTIz"}]}}]}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.parts.len);
+    try std.testing.expectEqual(std.meta.activeTag(result.parts[0]), ParsedPart.tool_call);
+
+    const tc = result.parts[0].tool_call;
+    try std.testing.expectEqualStrings("test_func", tc.name);
+    try std.testing.expectEqualStrings("{\"x\":1}", tc.args_json);
+
+    if (tc.thought_signature) |sig| {
+        try std.testing.expectEqualStrings("c2lnbmF0dXJlMTIz", sig);
+    } else {
+        try std.testing.expect(false);
+    }
+}
+
+test "parseGoogleEventExtended - extracts usage and finish reason" {
+    const allocator = std.testing.allocator;
+    const data =
+        \\{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":20,"thoughtsTokenCount":5,"totalTokenCount":35}}
+    ;
+
+    const result = parseGoogleEventExtended(data, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer deinitGoogleParseResult(&result, allocator);
+
+    try std.testing.expectEqual(@as(u64, 10), result.usage.input);
+    try std.testing.expectEqual(@as(u64, 25), result.usage.output);
+    try std.testing.expectEqual(@as(u64, 35), result.usage.total_tokens);
+    if (result.finish_reason) |reason| {
+        try std.testing.expectEqualStrings("MAX_TOKENS", reason);
+    } else {
+        try std.testing.expect(false);
+    }
+}
+
+test "streamSimpleGoogleGenerativeAI exits early when pre-cancelled" {
+    const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "gemini-2.5-flash",
+        .name = "Gemini 2.5 Flash",
+        .api = "google-generative-ai",
+        .provider = "google",
+        .base_url = "https://generativelanguage.googleapis.com",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_000_000,
+        .max_tokens = 8192,
+    };
+    const context = ai_types.Context{
+        .messages = &[_]ai_types.Message{},
+    };
+
+    var cancelled = std.atomic.Value(bool).init(true);
+    const cancel_token = ai_types.CancelToken{ .cancelled = &cancelled };
+
+    const stream = try streamSimpleGoogleGenerativeAI(model, context, .{
+        .api_key = "test-key",
+        .cancel_token = cancel_token,
+    }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |ev| {
+        var mutable_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
+    }
+
+    try std.testing.expect(stream.getError() != null);
+    try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
+}
+
+test "streamGoogleGenerativeAI withholds vendor env key from non-google providers" {
+    const allocator = std.testing.allocator;
+    const model = ai_types.Model{
+        .id = "gemini-2.5-flash",
+        .name = "Gemini 2.5 Flash",
+        .api = "google-generative-ai",
+        .provider = "custom",
+        .base_url = "https://gateway.example",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1_000_000,
+        .max_tokens = 8192,
+    };
+    const context = ai_types.Context{
+        .messages = &[_]ai_types.Message{},
+    };
+
+    try std.testing.expectError(
+        error.MissingApiKey,
+        streamGoogleGenerativeAI(model, context, null, allocator),
+    );
+}

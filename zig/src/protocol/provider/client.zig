@@ -1,0 +1,1951 @@
+const std = @import("std");
+const compat = @import("compat");
+const protocol_types = @import("protocol_types");
+const envelope = @import("protocol_envelope");
+const partial_reconstructor = @import("partial_reconstructor.zig");
+const ai_types = @import("ai_types");
+const event_stream = @import("event_stream");
+const transport = @import("transport");
+const transport_retry = @import("transport_retry");
+const oom = @import("oom");
+const owned_slice_mod = @import("owned_slice");
+
+const OwnedSlice = owned_slice_mod.OwnedSlice;
+
+pub const ProtocolClient = struct {
+    pub const PendingRequest = struct {
+        message_id: protocol_types.Ulid,
+        stream_id: protocol_types.Ulid = [_]u8{0} ** 16,
+        sent_at: i64,
+        timeout_ms: u64,
+    };
+
+    pub const Options = struct {
+        pub const EventDelivery = enum {
+            global,
+            per_stream,
+            both,
+        };
+
+        include_partial: bool = false,
+        request_timeout_ms: u64 = 30_000,
+
+        event_delivery: EventDelivery = .both,
+
+        retry_options: ?transport_retry.TransportRetryOptions = null,
+    };
+
+    pub const StreamRequestRef = struct {
+        stream_id: protocol_types.Ulid,
+        message_id: protocol_types.Ulid,
+    };
+
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+
+    sender: ?transport.AsyncSender = null,
+
+    reconstructor: partial_reconstructor.PartialReconstructor,
+
+    pending_requests: std.AutoHashMap(protocol_types.Ulid, PendingRequest),
+
+    stream_sequences: std.AutoHashMap(protocol_types.Ulid, u64),
+
+    reconstructors: std.AutoHashMap(protocol_types.Ulid, partial_reconstructor.PartialReconstructor),
+
+    stream_results: std.AutoHashMap(protocol_types.Ulid, ai_types.AssistantMessage),
+
+    stream_errors: std.AutoHashMap(protocol_types.Ulid, OwnedSlice(u8)),
+
+    stream_complete_flags: std.AutoHashMap(protocol_types.Ulid, bool),
+
+    stream_event_streams: std.AutoHashMap(protocol_types.Ulid, *event_stream.AssistantMessageEventStream),
+
+    current_stream_id: ?protocol_types.Ulid = null,
+
+    event_stream: *event_stream.AssistantMessageEventStream,
+
+    last_result: ?ai_types.AssistantMessage = null,
+
+    last_error: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+
+    stream_complete: bool = false,
+
+    sequence: u64 = 0,
+
+    options: Options,
+
+    pub fn init(allocator: std.mem.Allocator, options: Options) Self {
+        const es = oom.unreachableOnOom(allocator.create(event_stream.AssistantMessageEventStream));
+        es.* = event_stream.AssistantMessageEventStream.init(allocator);
+        es.owns_events = true;
+        return .{
+            .allocator = allocator,
+            .reconstructor = partial_reconstructor.PartialReconstructor.init(allocator),
+            .pending_requests = std.AutoHashMap(protocol_types.Ulid, PendingRequest).init(allocator),
+            .stream_sequences = std.AutoHashMap(protocol_types.Ulid, u64).init(allocator),
+            .reconstructors = std.AutoHashMap(protocol_types.Ulid, partial_reconstructor.PartialReconstructor).init(allocator),
+            .stream_results = std.AutoHashMap(protocol_types.Ulid, ai_types.AssistantMessage).init(allocator),
+            .stream_errors = std.AutoHashMap(protocol_types.Ulid, OwnedSlice(u8)).init(allocator),
+            .stream_complete_flags = std.AutoHashMap(protocol_types.Ulid, bool).init(allocator),
+            .stream_event_streams = std.AutoHashMap(protocol_types.Ulid, *event_stream.AssistantMessageEventStream).init(allocator),
+            .event_stream = es,
+            .options = options,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.pending_requests.deinit();
+        self.stream_sequences.deinit();
+        self.stream_complete_flags.deinit();
+
+        var recon_it = self.reconstructors.iterator();
+        while (recon_it.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        self.reconstructors.deinit();
+
+        var ses_it = self.stream_event_streams.iterator();
+        while (ses_it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.stream_event_streams.deinit();
+
+        var result_it = self.stream_results.iterator();
+        while (result_it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.stream_results.deinit();
+
+        var err_it = self.stream_errors.iterator();
+        while (err_it.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.stream_errors.deinit();
+
+        self.reconstructor.deinit();
+
+        self.event_stream.deinit();
+        self.allocator.destroy(self.event_stream);
+
+        if (self.last_result) |*result| {
+            result.deinit(self.allocator);
+        }
+
+        self.last_error.deinit(self.allocator);
+
+        self.* = undefined;
+    }
+
+    pub fn setSender(self: *Self, sender: transport.AsyncSender) void {
+        self.sender = sender;
+    }
+
+    fn hasLastError(self: *const Self) bool {
+        return self.last_error.slice().len > 0;
+    }
+
+    fn setLastError(self: *Self, msg: []const u8) !void {
+        self.last_error.deinit(self.allocator);
+        self.last_error = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, msg));
+    }
+
+    fn nextSequenceForStream(self: *Self, stream_id: protocol_types.Ulid) !u64 {
+        const next = if (self.stream_sequences.get(stream_id)) |cur| cur + 1 else 1;
+        try self.stream_sequences.put(stream_id, next);
+        self.sequence = next;
+        return next;
+    }
+
+    fn ensureReconstructor(self: *Self, stream_id: protocol_types.Ulid) !*partial_reconstructor.PartialReconstructor {
+        if (self.reconstructors.getPtr(stream_id)) |r| return r;
+        try self.reconstructors.put(stream_id, partial_reconstructor.PartialReconstructor.init(self.allocator));
+        return self.reconstructors.getPtr(stream_id).?;
+    }
+
+    fn ensureStreamEventStream(self: *Self, stream_id: protocol_types.Ulid) !*event_stream.AssistantMessageEventStream {
+        if (self.stream_event_streams.get(stream_id)) |es| return es;
+        const es = oom.unreachableOnOom(self.allocator.create(event_stream.AssistantMessageEventStream));
+        es.* = event_stream.AssistantMessageEventStream.init(self.allocator);
+        es.owns_events = true;
+        try self.stream_event_streams.put(stream_id, es);
+        return es;
+    }
+
+    fn setStreamError(self: *Self, stream_id: protocol_types.Ulid, msg: []const u8) !void {
+        const already_complete = self.stream_complete_flags.get(stream_id) orelse false;
+
+        if (self.stream_errors.getPtr(stream_id)) |existing| {
+            existing.deinit(self.allocator);
+            existing.* = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, msg));
+        } else {
+            try self.stream_errors.put(stream_id, OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, msg)));
+        }
+        try self.stream_complete_flags.put(stream_id, true);
+
+        if (!already_complete and self.options.event_delivery != .global) {
+            const ses = try self.ensureStreamEventStream(stream_id);
+            ses.completeWithError(msg);
+        }
+    }
+
+    fn setStreamResult(self: *Self, stream_id: protocol_types.Ulid, result: ai_types.AssistantMessage) !void {
+        const already_complete = self.stream_complete_flags.get(stream_id) orelse false;
+
+        if (self.stream_results.getPtr(stream_id)) |existing| {
+            existing.deinit(self.allocator);
+            existing.* = result;
+        } else {
+            try self.stream_results.put(stream_id, result);
+        }
+        try self.stream_complete_flags.put(stream_id, true);
+
+        if (!already_complete and self.options.event_delivery != .global) {
+            const ses = try self.ensureStreamEventStream(stream_id);
+            ses.complete(try ai_types.cloneAssistantMessage(self.allocator, self.stream_results.get(stream_id).?));
+        }
+    }
+
+    fn hasToolCallContent(msg: ai_types.AssistantMessage) bool {
+        for (msg.content) |block| {
+            if (block == .tool_call) return true;
+        }
+        return false;
+    }
+
+    fn hasReconstructedToolCall(recon: *const partial_reconstructor.PartialReconstructor) bool {
+        var iter = recon.content_blocks.iterator();
+        while (iter.next()) |entry| {
+            if (entry.value_ptr.* == .tool_call) return true;
+        }
+        return false;
+    }
+
+    fn cloneOrReconstructResult(self: *Self, stream_id: protocol_types.Ulid, result: ai_types.AssistantMessage) !ai_types.AssistantMessage {
+        if (!hasToolCallContent(result)) {
+            if (self.reconstructors.getPtr(stream_id)) |recon| {
+                if (hasReconstructedToolCall(recon)) {
+                    const rebuilt = recon.buildMessage(.tool_use, result.timestamp) catch null;
+                    if (rebuilt) |msg| {
+                        if (hasToolCallContent(msg)) {
+                            var with_usage = msg;
+                            with_usage.usage = result.usage;
+                            return with_usage;
+                        }
+                        var cleanup = msg;
+                        cleanup.deinit(self.allocator);
+                    }
+                }
+            }
+        }
+
+        return try ai_types.cloneAssistantMessage(self.allocator, result);
+    }
+
+    pub fn startStream(
+        self: *Self,
+        model: ai_types.Model,
+        context: ai_types.Context,
+        options: ?ai_types.StreamOptions,
+    ) !StreamRequestRef {
+        if (self.sender == null) {
+            return error.NoSender;
+        }
+
+        const message_id = protocol_types.generateUlid();
+        const stream_id = message_id;
+        const seq = try self.nextSequenceForStream(stream_id);
+
+        const payload = protocol_types.Payload{
+            .stream_request = .{
+                .model = model,
+                .context = context,
+                .options = options,
+                .include_partial = self.options.include_partial,
+            },
+        };
+
+        var env = protocol_types.Envelope{
+            .stream_id = stream_id,
+            .message_id = message_id,
+            .sequence = seq,
+            .timestamp = compat.time.nowMillis(),
+            .payload = payload,
+        };
+        defer env.deinit(self.allocator);
+
+        const json = try envelope.serializeEnvelope(env, self.allocator);
+        defer self.allocator.free(json);
+
+        try self.sender.?.write(json);
+        try self.sender.?.flush();
+
+        try self.pending_requests.put(message_id, .{
+            .message_id = message_id,
+            .stream_id = stream_id,
+            .sent_at = compat.time.nowMillis(),
+            .timeout_ms = self.options.request_timeout_ms,
+        });
+        try self.stream_complete_flags.put(stream_id, false);
+        _ = try self.ensureReconstructor(stream_id);
+        if (self.options.event_delivery != .global) {
+            _ = try self.ensureStreamEventStream(stream_id);
+        }
+
+        return .{ .stream_id = stream_id, .message_id = message_id };
+    }
+
+    pub fn sendStreamRequest(
+        self: *Self,
+        model: ai_types.Model,
+        context: ai_types.Context,
+        options: ?ai_types.StreamOptions,
+    ) !protocol_types.Ulid {
+        const req = try self.startStream(model, context, options);
+        return req.message_id;
+    }
+
+    pub fn sendAbortRequest(self: *Self, reason: ?[]const u8) !void {
+        const stream_id = self.current_stream_id orelse return error.NoActiveStream;
+        try self.sendAbortRequestFor(stream_id, reason);
+    }
+
+    pub fn sendAbortRequestFor(self: *Self, stream_id: protocol_types.Ulid, reason: ?[]const u8) !void {
+        if (self.sender == null) {
+            return error.NoSender;
+        }
+        const seq = try self.nextSequenceForStream(stream_id);
+
+        const reason_owned = if (reason) |r|
+            OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, r))
+        else
+            OwnedSlice(u8).initBorrowed("");
+
+        const payload = protocol_types.Payload{
+            .abort_request = .{
+                .target_stream_id = stream_id,
+                .reason = reason_owned,
+            },
+        };
+
+        var env = protocol_types.Envelope{
+            .stream_id = stream_id,
+            .message_id = protocol_types.generateUlid(),
+            .sequence = seq,
+            .timestamp = compat.time.nowMillis(),
+            .payload = payload,
+        };
+        defer env.deinit(self.allocator);
+
+        const json = try envelope.serializeEnvelope(env, self.allocator);
+        defer self.allocator.free(json);
+
+        try self.sender.?.write(json);
+        try self.sender.?.flush();
+    }
+
+    pub fn processEnvelope(self: *Self, env: protocol_types.Envelope) !void {
+        switch (env.payload) {
+            .ack => |ack| {
+                if (self.pending_requests.fetchRemove(ack.acknowledged_id)) |pending| {
+                    var sid = pending.value.stream_id;
+                    if (std.mem.allEqual(u8, &sid, 0)) sid = env.stream_id;
+                    self.current_stream_id = sid;
+                }
+            },
+            .nack => |nack| {
+                if (self.pending_requests.fetchRemove(nack.rejected_id)) |pending| {
+                    var sid = pending.value.stream_id;
+                    if (std.mem.allEqual(u8, &sid, 0)) sid = env.stream_id;
+                    self.current_stream_id = sid;
+                    try self.setStreamError(sid, nack.reason.slice());
+                } else {
+                    const sid = env.stream_id;
+                    self.current_stream_id = sid;
+                    try self.setStreamError(sid, nack.reason.slice());
+                }
+
+                try self.setLastError(nack.reason.slice());
+            },
+            .event => |evt| {
+                if (self.options.event_delivery != .per_stream) {
+                    try self.pushOwnedEvent(self.event_stream, evt);
+                }
+
+                if (self.options.event_delivery != .global) {
+                    const stream_es = try self.ensureStreamEventStream(env.stream_id);
+                    try self.pushOwnedEvent(stream_es, evt);
+                }
+
+                try self.reconstructor.processEvent(evt);
+
+                const recon = try self.ensureReconstructor(env.stream_id);
+                try recon.processEvent(evt);
+
+                if (evt == .done) {
+                    const stream_result = recon.buildMessage(
+                        evt.done.reason,
+                        evt.done.message.timestamp,
+                    ) catch try ai_types.cloneAssistantMessage(self.allocator, evt.done.message);
+                    try self.setStreamResult(env.stream_id, stream_result);
+
+                    self.stream_complete = true;
+                    if (self.last_result) |*prev| {
+                        prev.deinit(self.allocator);
+                    }
+                    self.last_result = try self.reconstructor.buildMessage(
+                        evt.done.reason,
+                        evt.done.message.timestamp,
+                    );
+                }
+            },
+            .result => |result| {
+                const result_copy = try self.cloneOrReconstructResult(env.stream_id, result);
+                try self.setStreamResult(env.stream_id, result_copy);
+
+                if (self.last_result) |*prev| {
+                    prev.deinit(self.allocator);
+                }
+                self.last_result = try ai_types.cloneAssistantMessage(self.allocator, self.stream_results.get(env.stream_id).?);
+                self.stream_complete = true;
+            },
+            .stream_error => |err| {
+                const msg = err.message.slice();
+
+                try self.setStreamError(env.stream_id, msg);
+                try self.setLastError(msg);
+                self.stream_complete = true;
+            },
+            .pong => {
+            },
+            else => {
+            },
+        }
+    }
+
+    fn pushOwnedEvent(self: *Self, destination: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) !void {
+        const owned = try ai_types.cloneAssistantMessageEvent(self.allocator, event);
+        var transferred = false;
+        errdefer if (!transferred) {
+            var cleanup = owned;
+            ai_types.deinitAssistantMessageEvent(self.allocator, &cleanup);
+        };
+        try destination.push(owned);
+        transferred = true;
+    }
+
+    pub fn eventDeliveryCapacity(self: *Self) usize {
+        if (self.options.event_delivery == .per_stream) {
+            var capacity: usize = 0;
+            var streams = self.stream_event_streams.valueIterator();
+            while (streams.next()) |stream| {
+                capacity = @max(capacity, stream.*.freeSlots());
+            }
+            return if (self.stream_event_streams.count() == 0)
+                @TypeOf(self.event_stream.*).usable_capacity
+            else
+                capacity;
+        }
+
+        var capacity = self.event_stream.freeSlots();
+
+        if (self.options.event_delivery != .global) {
+            var streams = self.stream_event_streams.valueIterator();
+            while (streams.next()) |stream| {
+                capacity = @min(capacity, stream.*.freeSlots());
+            }
+        }
+        return capacity;
+    }
+
+    pub fn eventDeliveryCapacityFor(self: *Self, stream_id: protocol_types.Ulid) usize {
+        var capacity = if (self.options.event_delivery == .per_stream)
+            @TypeOf(self.event_stream.*).usable_capacity
+        else
+            self.event_stream.freeSlots();
+
+        if (self.options.event_delivery != .global) {
+            if (self.stream_event_streams.get(stream_id)) |stream| {
+                capacity = @min(capacity, stream.freeSlots());
+            }
+        }
+        return capacity;
+    }
+
+    pub fn getEventStream(self: *Self) *event_stream.AssistantMessageEventStream {
+        return self.event_stream;
+    }
+
+    pub fn getEventStreamFor(self: *Self, stream_id: protocol_types.Ulid) ?*event_stream.AssistantMessageEventStream {
+        return self.stream_event_streams.get(stream_id);
+    }
+
+    pub fn waitResult(self: *Self, timeout_ms: u64) !?ai_types.AssistantMessage {
+        const stream_id = self.current_stream_id orelse return self.last_result;
+        return self.waitResultFor(stream_id, timeout_ms);
+    }
+
+    pub fn waitResultFor(self: *Self, stream_id: protocol_types.Ulid, timeout_ms: u64) !?ai_types.AssistantMessage {
+        const start_time = compat.time.nowMillis();
+        const deadline = start_time + @as(i64, @intCast(timeout_ms));
+
+        while (!(self.stream_complete_flags.get(stream_id) orelse false)) {
+            if (compat.time.nowMillis() >= deadline) {
+                return error.TimeoutExceeded;
+            }
+            compat.time.sleepNs(1 * std.time.ns_per_ms);
+        }
+
+        if (self.stream_errors.get(stream_id)) |_| {
+            return error.StreamError;
+        }
+
+        if (self.stream_results.get(stream_id)) |result| {
+            return result;
+        }
+        return null;
+    }
+
+    pub fn isComplete(self: *Self) bool {
+        if (self.current_stream_id) |sid| {
+            return self.isCompleteFor(sid);
+        }
+        return self.stream_complete;
+    }
+
+    pub fn isCompleteFor(self: *Self, stream_id: protocol_types.Ulid) bool {
+        return self.stream_complete_flags.get(stream_id) orelse false;
+    }
+
+    pub fn closeStream(self: *Self, stream_id: protocol_types.Ulid) !void {
+        if (self.stream_complete_flags.get(stream_id) orelse false) return;
+
+        try self.setStreamError(stream_id, "Stream closed by client");
+
+        if (self.current_stream_id) |sid| {
+            if (std.mem.eql(u8, &sid, &stream_id)) {
+                self.stream_complete = true;
+            }
+        }
+    }
+
+    pub fn removeStreamState(self: *Self, stream_id: protocol_types.Ulid) void {
+        while (true) {
+            var pending_to_remove: ?protocol_types.Ulid = null;
+            var pending_it = self.pending_requests.iterator();
+            while (pending_it.next()) |entry| {
+                if (std.mem.eql(u8, &entry.value_ptr.stream_id, &stream_id)) {
+                    pending_to_remove = entry.key_ptr.*;
+                    break;
+                }
+            }
+            if (pending_to_remove) |mid| {
+                _ = self.pending_requests.remove(mid);
+            } else break;
+        }
+
+        _ = self.stream_sequences.remove(stream_id);
+        _ = self.stream_complete_flags.remove(stream_id);
+
+        if (self.reconstructors.fetchRemove(stream_id)) |entry| {
+            var recon = entry.value;
+            recon.deinit();
+        }
+
+        if (self.stream_results.fetchRemove(stream_id)) |entry| {
+            var result = entry.value;
+            result.deinit(self.allocator);
+        }
+
+        if (self.stream_errors.fetchRemove(stream_id)) |entry| {
+            var err = entry.value;
+            err.deinit(self.allocator);
+        }
+
+        if (self.stream_event_streams.fetchRemove(stream_id)) |entry| {
+            entry.value.deinit();
+            self.allocator.destroy(entry.value);
+        }
+
+        if (self.current_stream_id) |sid| {
+            if (std.mem.eql(u8, &sid, &stream_id)) {
+                self.current_stream_id = null;
+                self.stream_complete = false;
+
+                if (self.last_result) |*result| {
+                    result.deinit(self.allocator);
+                    self.last_result = null;
+                }
+
+                self.last_error.deinit(self.allocator);
+                self.last_error = OwnedSlice(u8).initBorrowed("");
+            }
+        }
+    }
+
+    pub fn reset(self: *Self) void {
+        self.reconstructor.reset();
+        self.pending_requests.clearRetainingCapacity();
+        self.stream_sequences.clearRetainingCapacity();
+        self.stream_complete_flags.clearRetainingCapacity();
+
+        var recon_it = self.reconstructors.iterator();
+        while (recon_it.next()) |entry| entry.value_ptr.deinit();
+        self.reconstructors.clearRetainingCapacity();
+
+        var result_it = self.stream_results.iterator();
+        while (result_it.next()) |entry| entry.value_ptr.deinit(self.allocator);
+        self.stream_results.clearRetainingCapacity();
+
+        var err_it = self.stream_errors.iterator();
+        while (err_it.next()) |entry| entry.value_ptr.deinit(self.allocator);
+        self.stream_errors.clearRetainingCapacity();
+
+        var ses_it = self.stream_event_streams.iterator();
+        while (ses_it.next()) |entry| {
+            entry.value_ptr.*.deinit();
+            self.allocator.destroy(entry.value_ptr.*);
+        }
+        self.stream_event_streams.clearRetainingCapacity();
+
+        self.current_stream_id = null;
+        self.stream_complete = false;
+        self.sequence = 0;
+
+        if (self.last_result) |*result| {
+            result.deinit(self.allocator);
+            self.last_result = null;
+        }
+
+        self.last_error.deinit(self.allocator);
+        self.last_error = OwnedSlice(u8).initBorrowed("");
+    }
+
+    pub fn getCurrentStreamId(self: *Self) ?protocol_types.Ulid {
+        return self.current_stream_id;
+    }
+
+    pub fn getLastError(self: *Self) ?[]const u8 {
+        if (!self.hasLastError()) return null;
+        return self.last_error.slice();
+    }
+
+    pub fn getLastErrorFor(self: *Self, stream_id: protocol_types.Ulid) ?[]const u8 {
+        if (self.stream_errors.get(stream_id)) |err| {
+            const msg = err.slice();
+            if (msg.len > 0) return msg;
+        }
+        return null;
+    }
+
+    fn failAllIncompleteStreams(self: *Self, msg: []const u8) void {
+        var flag_it = self.stream_complete_flags.iterator();
+        while (flag_it.next()) |entry| {
+            if (!entry.value_ptr.*) {
+                self.setStreamError(entry.key_ptr.*, msg) catch {};
+            }
+        }
+        self.pending_requests.clearRetainingCapacity();
+    }
+
+    pub fn receiveLoopWithRetry(
+        self: *Self,
+        receiver: *const transport.Receiver,
+        allocator: std.mem.Allocator,
+    ) !void {
+        const opts = self.options.retry_options orelse
+            transport_retry.TransportRetryOptions{ .max_retries = 0 };
+
+        while (true) {
+            const line = transport_retry.retryableRead(receiver, allocator, &opts) catch |err| {
+                const err_name = @errorName(err);
+                const allocated_msg = std.fmt.allocPrint(allocator, "Transport read error: {s}", .{err_name}) catch
+                    @as(?[]const u8, null);
+                const msg: []const u8 = allocated_msg orelse "Transport read error";
+                defer if (allocated_msg != null) allocator.free(msg);
+                try self.setLastError(msg);
+
+                self.failAllIncompleteStreams(msg);
+
+                return err;
+            };
+
+            if (line) |data| {
+                defer allocator.free(data);
+
+                var env = envelope.deserializeEnvelope(data, allocator) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    continue;
+                };
+                defer env.deinit(allocator);
+
+                try self.processEnvelope(env);
+            } else {
+                self.failAllIncompleteStreams("Transport closed unexpectedly");
+                break;
+            }
+        }
+    }
+};
+
+pub const ClientError = error{
+    NoSender,
+    NoActiveStream,
+    TimeoutExceeded,
+    StreamError,
+};
+
+test "ProtocolClient init and deinit" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    try std.testing.expect(client.sender == null);
+    try std.testing.expect(client.current_stream_id == null);
+    try std.testing.expect(!client.stream_complete);
+}
+
+test "sendStreamRequest creates valid envelope" {
+    const allocator = std.testing.allocator;
+
+    var written_data: ?[]const u8 = null;
+
+    const MockSender = struct {
+        captured: *?[]const u8,
+
+        fn writeFn(ctx: *anyopaque, data: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.captured.* = try std.testing.allocator.dupe(u8, data);
+        }
+
+        fn flushFn(_: *anyopaque) !void {}
+    };
+
+    var mock = MockSender{ .captured = &written_data };
+    const sender = transport.AsyncSender{
+        .context = @ptrCast(&mock),
+        .write_fn = MockSender.writeFn,
+        .flush_fn = MockSender.flushFn,
+    };
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    client.setSender(sender);
+
+    const model = ai_types.Model{
+        .id = "gpt-4",
+        .name = "GPT-4",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 4096,
+    };
+
+    const context = ai_types.Context{
+        .messages = &.{},
+    };
+
+    const message_id = try client.sendStreamRequest(model, context, null);
+
+    try std.testing.expect(!std.mem.allEqual(u8, &message_id, 0));
+
+    try std.testing.expect(written_data != null);
+    defer if (written_data) |d| std.testing.allocator.free(d);
+
+    var env = try envelope.deserializeEnvelope(written_data.?, allocator);
+    defer env.deinit(allocator);
+
+    try std.testing.expect(env.payload == .stream_request);
+    try std.testing.expectEqualStrings("gpt-4", env.payload.stream_request.model.id);
+    try std.testing.expectEqualSlices(u8, &message_id, &env.message_id);
+}
+
+test "startStream uses per-stream sequence numbers" {
+    const allocator = std.testing.allocator;
+
+    var writes = std.ArrayList([]u8).empty;
+    defer {
+        for (writes.items) |line| allocator.free(line);
+        writes.deinit(allocator);
+    }
+
+    const MockSender = struct {
+        writes: *std.ArrayList([]u8),
+
+        fn writeFn(ctx: *anyopaque, data: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            try self.writes.append(std.testing.allocator, try std.testing.allocator.dupe(u8, data));
+        }
+
+        fn flushFn(_: *anyopaque) !void {}
+    };
+
+    var mock = MockSender{ .writes = &writes };
+    const sender = transport.AsyncSender{
+        .context = @ptrCast(&mock),
+        .write_fn = MockSender.writeFn,
+        .flush_fn = MockSender.flushFn,
+    };
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+    client.setSender(sender);
+
+    const model = ai_types.Model{
+        .id = "gpt-4",
+        .name = "GPT-4",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 4096,
+    };
+
+    const context = ai_types.Context{ .messages = &.{} };
+
+    const r1 = try client.startStream(model, context, null);
+    const r2 = try client.startStream(model, context, null);
+    try std.testing.expect(!std.mem.eql(u8, &r1.stream_id, &r2.stream_id));
+
+    try std.testing.expectEqual(@as(usize, 2), writes.items.len);
+
+    var env1 = try envelope.deserializeEnvelope(writes.items[0], allocator);
+    defer env1.deinit(allocator);
+    var env2 = try envelope.deserializeEnvelope(writes.items[1], allocator);
+    defer env2.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 1), env1.sequence);
+    try std.testing.expectEqual(@as(u64, 1), env2.sequence);
+}
+
+test "processEnvelope routes events to per-stream event stream" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const sid1 = protocol_types.generateUlid();
+    const sid2 = protocol_types.generateUlid();
+
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+
+    var env1 = protocol_types.Envelope{
+        .stream_id = sid1,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .start = .{ .partial = partial } } },
+    };
+    defer env1.deinit(allocator);
+
+    var env2 = protocol_types.Envelope{
+        .stream_id = sid2,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .start = .{ .partial = partial } } },
+    };
+    defer env2.deinit(allocator);
+
+    try client.processEnvelope(env1);
+    try client.processEnvelope(env2);
+
+    const s1 = client.getEventStreamFor(sid1).?;
+    const s2 = client.getEventStreamFor(sid2).?;
+
+    const e1 = s1.poll();
+    const e2 = s2.poll();
+    try std.testing.expect(e1 != null and e1.? == .start);
+    try std.testing.expect(e2 != null and e2.? == .start);
+
+    if (e1) |ev| {
+        var mutable_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
+    }
+    if (e2) |ev| {
+        var mutable_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
+    }
+}
+
+test "processEnvelope can select global-only event delivery" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{ .event_delivery = .global });
+    defer client.deinit();
+
+    const stream_id = protocol_types.generateUlid();
+    const env = protocol_types.Envelope{
+        .stream_id = stream_id,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .keepalive = {} } },
+    };
+
+    try client.processEnvelope(env);
+    try std.testing.expect(client.getEventStreamFor(stream_id) == null);
+
+    var event = client.getEventStream().poll().?;
+    defer ai_types.deinitAssistantMessageEvent(allocator, &event);
+    try std.testing.expect(event == .keepalive);
+
+    const result_env = protocol_types.Envelope{
+        .stream_id = stream_id,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .result = .{
+            .content = &.{},
+            .api = "test-api",
+            .provider = "test-provider",
+            .model = "test-model",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = 0,
+        } },
+    };
+    try client.processEnvelope(result_env);
+    try std.testing.expect(client.getEventStreamFor(stream_id) == null);
+    try std.testing.expect(client.isCompleteFor(stream_id));
+}
+
+test "processEnvelope handles ack" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const message_id = protocol_types.generateUlid();
+    try client.pending_requests.put(message_id, .{
+        .message_id = message_id,
+        .sent_at = compat.time.nowMillis(),
+        .timeout_ms = 30_000,
+    });
+
+    const stream_id = protocol_types.generateUlid();
+    const env = protocol_types.Envelope{
+        .stream_id = stream_id,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .ack = .{
+            .acknowledged_id = message_id,
+        } },
+    };
+
+    try client.processEnvelope(env);
+
+    try std.testing.expect(!client.pending_requests.contains(message_id));
+
+    try std.testing.expect(client.current_stream_id != null);
+    try std.testing.expectEqualSlices(u8, &stream_id, &client.current_stream_id.?);
+}
+
+test "processEnvelope handles nack" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const message_id = protocol_types.generateUlid();
+    try client.pending_requests.put(message_id, .{
+        .message_id = message_id,
+        .sent_at = compat.time.nowMillis(),
+        .timeout_ms = 30_000,
+    });
+
+    const nack_reason = try allocator.dupe(u8, "Model not found");
+    const stream_id = protocol_types.generateUlid();
+
+    var env = protocol_types.Envelope{
+        .stream_id = stream_id,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .nack = .{
+            .rejected_id = message_id,
+            .reason = OwnedSlice(u8).initOwned(nack_reason),
+            .error_code = .model_not_found,
+        } },
+    };
+
+    try client.processEnvelope(env);
+
+    try std.testing.expect(!client.pending_requests.contains(message_id));
+
+    try std.testing.expect(client.getLastError() != null);
+    try std.testing.expectEqualStrings("Model not found", client.getLastError().?);
+    try std.testing.expect(client.isComplete());
+    try std.testing.expect(client.getLastErrorFor(stream_id) != null);
+    try std.testing.expectEqualStrings("Model not found", client.getLastErrorFor(stream_id).?);
+
+    env.deinit(allocator);
+}
+
+test "processEnvelope attributes unmatched nack to envelope stream" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const current_stream_id = protocol_types.generateUlid();
+    const nack_stream_id = protocol_types.generateUlid();
+    client.current_stream_id = current_stream_id;
+
+    const nack_reason = try allocator.dupe(u8, "Abort rejected");
+    var env = protocol_types.Envelope{
+        .stream_id = nack_stream_id,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .nack = .{
+            .rejected_id = protocol_types.generateUlid(),
+            .reason = OwnedSlice(u8).initOwned(nack_reason),
+            .error_code = .internal_error,
+        } },
+    };
+    defer env.deinit(allocator);
+
+    try client.processEnvelope(env);
+
+    try std.testing.expect(client.getLastErrorFor(nack_stream_id) != null);
+    try std.testing.expectEqualStrings("Abort rejected", client.getLastErrorFor(nack_stream_id).?);
+    try std.testing.expect(client.getLastErrorFor(current_stream_id) == null);
+}
+
+test "processEnvelope handles events" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+
+    var env = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .start = .{ .partial = partial } } },
+    };
+
+    try client.processEnvelope(env);
+
+    const evt = client.event_stream.poll();
+    try std.testing.expect(evt != null);
+    try std.testing.expect(evt.? == .start);
+
+    if (evt) |ev| {
+        var mutable_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
+    }
+
+    env.deinit(allocator);
+}
+
+test "processEnvelope accumulates to reconstructor" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+
+    var env1 = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .start = .{ .partial = partial } } },
+    };
+    try client.processEnvelope(env1);
+    env1.deinit(allocator);
+
+    var env2 = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .text_start = .{ .content_index = 0, .partial = partial } } },
+    };
+    try client.processEnvelope(env2);
+    env2.deinit(allocator);
+
+    const delta_str = try allocator.dupe(u8, "Hello");
+
+    var env3 = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 3,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .text_delta = .{
+            .content_index = 0,
+            .delta = delta_str,
+            .partial = partial,
+        } } },
+    };
+    try client.processEnvelope(env3);
+    env3.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), client.reconstructor.content_blocks.count());
+}
+
+test "waitResult returns final message" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const content = [_]ai_types.AssistantContent{.{ .text = .{ .text = "Final response" } }};
+    client.last_result = try ai_types.cloneAssistantMessage(allocator, .{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 12345,
+    });
+    client.stream_complete = true;
+
+    const result = try client.waitResult(1000);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("test-model", result.?.model);
+}
+
+test "isComplete tracks stream state" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    try std.testing.expect(!client.isComplete());
+
+    client.stream_complete = true;
+    try std.testing.expect(client.isComplete());
+
+    client.reset();
+    try std.testing.expect(!client.isComplete());
+}
+
+test "sendAbortRequest sends valid envelope" {
+    const allocator = std.testing.allocator;
+
+    var written_data: ?[]const u8 = null;
+
+    const MockSender = struct {
+        captured: *?[]const u8,
+
+        fn writeFn(ctx: *anyopaque, data: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.captured.* = try std.testing.allocator.dupe(u8, data);
+        }
+
+        fn flushFn(_: *anyopaque) !void {}
+    };
+
+    var mock = MockSender{ .captured = &written_data };
+    const sender = transport.AsyncSender{
+        .context = @ptrCast(&mock),
+        .write_fn = MockSender.writeFn,
+        .flush_fn = MockSender.flushFn,
+    };
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    client.setSender(sender);
+
+    client.current_stream_id = protocol_types.generateUlid();
+
+    try client.sendAbortRequest("User cancelled");
+
+    try std.testing.expect(written_data != null);
+    defer if (written_data) |d| std.testing.allocator.free(d);
+
+    var env = try envelope.deserializeEnvelope(written_data.?, allocator);
+    defer env.deinit(allocator);
+
+    try std.testing.expect(env.payload == .abort_request);
+    try std.testing.expect(env.payload.abort_request.getReason() != null);
+    try std.testing.expectEqualStrings("User cancelled", env.payload.abort_request.getReason().?);
+}
+
+test "processEnvelope handles done event and builds result" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+
+    var env1 = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .start = .{ .partial = partial } } },
+    };
+    try client.processEnvelope(env1);
+    env1.deinit(allocator);
+
+    var env2 = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .text_start = .{ .content_index = 0, .partial = partial } } },
+    };
+    try client.processEnvelope(env2);
+    env2.deinit(allocator);
+
+    const delta_str = try allocator.dupe(u8, "Hello world");
+
+    var env3 = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 3,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .text_delta = .{
+            .content_index = 0,
+            .delta = delta_str,
+            .partial = partial,
+        } } },
+    };
+    try client.processEnvelope(env3);
+    env3.deinit(allocator);
+
+    const done_msg = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{ .input = 10, .output = 5 },
+        .stop_reason = .stop,
+        .timestamp = 1000,
+    };
+
+    var env4 = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 4,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .done = .{
+            .reason = .stop,
+            .message = done_msg,
+        } } },
+    };
+    try client.processEnvelope(env4);
+    env4.deinit(allocator);
+
+    try std.testing.expect(client.isComplete());
+
+    try std.testing.expect(client.last_result != null);
+    try std.testing.expectEqualStrings("test-model", client.last_result.?.model);
+    try std.testing.expectEqual(@as(usize, 1), client.last_result.?.content.len);
+}
+
+test "processEnvelope handles result payload" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const text_str = try allocator.dupe(u8, "Result text");
+    const api_str = try allocator.dupe(u8, "test-api");
+    const provider_str = try allocator.dupe(u8, "test-provider");
+    const model_str = try allocator.dupe(u8, "test-model");
+    const content_slice = try allocator.alloc(ai_types.AssistantContent, 1);
+    content_slice[0] = .{ .text = .{ .text = text_str } };
+
+    const result_msg = ai_types.AssistantMessage{
+        .content = content_slice,
+        .api = api_str,
+        .provider = provider_str,
+        .model = model_str,
+        .usage = .{ .input = 100, .output = 50 },
+        .stop_reason = .stop,
+        .timestamp = 12345,
+        .is_owned = true,
+    };
+
+    var env = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .result = result_msg },
+    };
+
+    try client.processEnvelope(env);
+
+    try std.testing.expect(client.isComplete());
+
+    try std.testing.expect(client.last_result != null);
+    try std.testing.expectEqualStrings("test-model", client.last_result.?.model);
+    try std.testing.expectEqualStrings("Result text", client.last_result.?.content[0].text.text);
+
+    env.deinit(allocator);
+}
+
+test "processEnvelope handles stream_error payload" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const error_msg = try allocator.dupe(u8, "Connection timeout");
+
+    var env = protocol_types.Envelope{
+        .stream_id = protocol_types.generateUlid(),
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .stream_error = .{
+            .code = .provider_error,
+            .message = OwnedSlice(u8).initOwned(error_msg),
+        } },
+    };
+
+    try client.processEnvelope(env);
+
+    try std.testing.expect(client.isComplete());
+
+    try std.testing.expect(client.getLastError() != null);
+    try std.testing.expectEqualStrings("Connection timeout", client.getLastError().?);
+
+    env.deinit(allocator);
+}
+
+test "reset clears all state" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    client.current_stream_id = protocol_types.generateUlid();
+    client.stream_complete = true;
+    client.sequence = 10;
+
+    const content = [_]ai_types.AssistantContent{.{ .text = .{ .text = "test" } }};
+    client.last_result = try ai_types.cloneAssistantMessage(allocator, .{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    });
+    client.last_error = OwnedSlice(u8).initOwned(try allocator.dupe(u8, "test error"));
+
+    client.reset();
+
+    try std.testing.expect(client.current_stream_id == null);
+    try std.testing.expect(!client.stream_complete);
+    try std.testing.expectEqual(@as(u64, 0), client.sequence);
+    try std.testing.expect(client.last_result == null);
+    try std.testing.expect(client.getLastError() == null);
+}
+
+test "getCurrentStreamId returns correct value" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    try std.testing.expect(client.getCurrentStreamId() == null);
+
+    const stream_id = protocol_types.generateUlid();
+    client.current_stream_id = stream_id;
+
+    const result = client.getCurrentStreamId();
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualSlices(u8, &stream_id, &result.?);
+}
+
+test "getLastError returns correct value" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    try std.testing.expect(client.getLastError() == null);
+
+    client.last_error = OwnedSlice(u8).initOwned(try allocator.dupe(u8, "Test error"));
+
+    const result = client.getLastError();
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("Test error", result.?);
+}
+
+test "getEventStream returns internal stream" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const stream = client.getEventStream();
+    try std.testing.expect(stream == client.event_stream);
+}
+
+test "closeStream marks stream complete with client-side error" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const sid = protocol_types.generateUlid();
+    try client.stream_complete_flags.put(sid, false);
+    _ = try client.ensureStreamEventStream(sid);
+
+    try client.closeStream(sid);
+
+    try std.testing.expect(client.isCompleteFor(sid));
+    try std.testing.expect(client.getLastErrorFor(sid) != null);
+    try std.testing.expectEqualStrings("Stream closed by client", client.getLastErrorFor(sid).?);
+    try std.testing.expect(client.getEventStreamFor(sid).?.getError() != null);
+}
+
+test "removeStreamState clears per-stream maps and legacy current stream state" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const sid = protocol_types.generateUlid();
+    const mid = protocol_types.generateUlid();
+
+    try client.pending_requests.put(mid, .{
+        .message_id = mid,
+        .stream_id = sid,
+        .sent_at = compat.time.nowMillis(),
+        .timeout_ms = 30_000,
+    });
+    try client.stream_sequences.put(sid, 7);
+    try client.stream_complete_flags.put(sid, true);
+    try client.reconstructors.put(sid, partial_reconstructor.PartialReconstructor.init(allocator));
+    try client.stream_errors.put(sid, OwnedSlice(u8).initOwned(try allocator.dupe(u8, "stream failed")));
+    _ = try client.ensureStreamEventStream(sid);
+
+    const content = [_]ai_types.AssistantContent{.{ .text = .{ .text = "result" } }};
+    try client.stream_results.put(sid, try ai_types.cloneAssistantMessage(allocator, .{
+        .content = &content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 123,
+    }));
+
+    client.current_stream_id = sid;
+    client.stream_complete = true;
+    client.last_result = try ai_types.cloneAssistantMessage(allocator, .{
+        .content = &content,
+        .api = "legacy-api",
+        .provider = "legacy-provider",
+        .model = "legacy-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 456,
+    });
+    client.last_error = OwnedSlice(u8).initOwned(try allocator.dupe(u8, "legacy error"));
+
+    client.removeStreamState(sid);
+
+    try std.testing.expect(!client.pending_requests.contains(mid));
+    try std.testing.expect(!client.stream_sequences.contains(sid));
+    try std.testing.expect(!client.stream_complete_flags.contains(sid));
+    try std.testing.expect(!client.reconstructors.contains(sid));
+    try std.testing.expect(!client.stream_results.contains(sid));
+    try std.testing.expect(!client.stream_errors.contains(sid));
+    try std.testing.expect(client.getEventStreamFor(sid) == null);
+    try std.testing.expect(client.current_stream_id == null);
+    try std.testing.expect(!client.stream_complete);
+    try std.testing.expect(client.last_result == null);
+    try std.testing.expect(client.getLastError() == null);
+}
+
+test "processEnvelope keeps interleaved terminal state isolated per stream" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const sid_result = protocol_types.generateUlid();
+    const sid_error = protocol_types.generateUlid();
+    const sid_done = protocol_types.generateUlid();
+
+    const result_text = try allocator.dupe(u8, "result stream text");
+    const result_api = try allocator.dupe(u8, "test-api");
+    const result_provider = try allocator.dupe(u8, "test-provider");
+    const result_model = try allocator.dupe(u8, "result-model");
+    const result_content = try allocator.alloc(ai_types.AssistantContent, 1);
+    result_content[0] = .{ .text = .{ .text = result_text } };
+
+    var env_result = protocol_types.Envelope{
+        .stream_id = sid_result,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .result = .{
+            .content = result_content,
+            .api = result_api,
+            .provider = result_provider,
+            .model = result_model,
+            .usage = .{ .input = 1, .output = 2 },
+            .stop_reason = .stop,
+            .timestamp = 10,
+            .is_owned = true,
+        } },
+    };
+    defer env_result.deinit(allocator);
+
+    const err_msg = try allocator.dupe(u8, "stream two failed");
+    var env_error = protocol_types.Envelope{
+        .stream_id = sid_error,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .stream_error = .{
+            .code = .provider_error,
+            .message = OwnedSlice(u8).initOwned(err_msg),
+        } },
+    };
+    defer env_error.deinit(allocator);
+
+    const done_partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "done-api",
+        .provider = "done-provider",
+        .model = "done-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 19,
+    };
+    var env_done_start = protocol_types.Envelope{
+        .stream_id = sid_done,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .start = .{ .partial = done_partial } } },
+    };
+    defer env_done_start.deinit(allocator);
+
+    const done_msg = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "done-api",
+        .provider = "done-provider",
+        .model = "done-model",
+        .usage = .{ .input = 3, .output = 4 },
+        .stop_reason = .stop,
+        .timestamp = 20,
+    };
+    var env_done = protocol_types.Envelope{
+        .stream_id = sid_done,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .done = .{
+            .reason = .stop,
+            .message = done_msg,
+        } } },
+    };
+    defer env_done.deinit(allocator);
+
+    try client.processEnvelope(env_result);
+    try client.processEnvelope(env_error);
+    try client.processEnvelope(env_done_start);
+    try client.processEnvelope(env_done);
+
+    try std.testing.expect(client.isCompleteFor(sid_result));
+    try std.testing.expect(client.isCompleteFor(sid_error));
+    try std.testing.expect(client.isCompleteFor(sid_done));
+
+    const got_result = try client.waitResultFor(sid_result, 1000);
+    try std.testing.expect(got_result != null);
+    try std.testing.expectEqualStrings("result-model", got_result.?.model);
+
+    try std.testing.expectError(error.StreamError, client.waitResultFor(sid_error, 1000));
+    try std.testing.expectEqualStrings("stream two failed", client.getLastErrorFor(sid_error).?);
+
+    const got_done = try client.waitResultFor(sid_done, 1000);
+    try std.testing.expect(got_done != null);
+    try std.testing.expectEqualStrings("done-model", got_done.?.model);
+}
+
+test "processEnvelope reconstructs streamed tool calls when terminal result omits them" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const sid = protocol_types.generateUlid();
+    const start_id = try allocator.dupe(u8, "call_shell");
+    const start_name = try allocator.dupe(u8, "shell_execute");
+    const delta_json = try allocator.dupe(u8, "{\"command\":\"ls -al\"}");
+    const end_id = try allocator.dupe(u8, "call_shell");
+    const end_name = try allocator.dupe(u8, "shell_execute");
+    const end_args = try allocator.dupe(u8, "{\"command\":\"ls -al\"}");
+    const result_content = try allocator.alloc(ai_types.AssistantContent, 0);
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "openai-responses",
+        .provider = "openai",
+        .model = "gpt-test",
+        .usage = .{},
+        .stop_reason = .tool_use,
+        .timestamp = 10,
+    };
+
+    var env_start = protocol_types.Envelope{
+        .stream_id = sid,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .start = .{ .partial = partial } } },
+    };
+    defer env_start.deinit(allocator);
+
+    var env_tool_start = protocol_types.Envelope{
+        .stream_id = sid,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .toolcall_start = .{
+            .content_index = 0,
+            .id = start_id,
+            .name = start_name,
+            .partial = partial,
+        } } },
+    };
+    defer env_tool_start.deinit(allocator);
+
+    var env_tool_delta = protocol_types.Envelope{
+        .stream_id = sid,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 3,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .toolcall_delta = .{
+            .content_index = 0,
+            .delta = delta_json,
+            .partial = partial,
+        } } },
+    };
+    defer env_tool_delta.deinit(allocator);
+
+    var env_tool_end = protocol_types.Envelope{
+        .stream_id = sid,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 4,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .event = .{ .toolcall_end = .{
+            .content_index = 0,
+            .tool_call = .{
+                .id = end_id,
+                .name = end_name,
+                .arguments_json = end_args,
+            },
+            .partial = partial,
+        } } },
+    };
+    defer env_tool_end.deinit(allocator);
+
+    const result_api = try allocator.dupe(u8, "openai-responses");
+    const result_provider = try allocator.dupe(u8, "openai");
+    const result_model = try allocator.dupe(u8, "gpt-test");
+    var env_result = protocol_types.Envelope{
+        .stream_id = sid,
+        .message_id = protocol_types.generateUlid(),
+        .sequence = 5,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .result = .{
+            .content = result_content,
+            .api = result_api,
+            .provider = result_provider,
+            .model = result_model,
+            .usage = .{ .input = 11, .output = 7, .cost = .{ .input = 0.011, .output = 0.014, .total = 0.025 } },
+            .stop_reason = .stop,
+            .timestamp = 20,
+            .is_owned = true,
+        } },
+    };
+    defer env_result.deinit(allocator);
+
+    try client.processEnvelope(env_start);
+    try client.processEnvelope(env_tool_start);
+    try client.processEnvelope(env_tool_delta);
+    try client.processEnvelope(env_tool_end);
+    try client.processEnvelope(env_result);
+
+    const got = (try client.waitResultFor(sid, 1000)).?;
+    try std.testing.expectEqual(ai_types.StopReason.tool_use, got.stop_reason);
+    try std.testing.expectEqual(@as(usize, 1), got.content.len);
+    try std.testing.expect(got.content[0] == .tool_call);
+    try std.testing.expectEqualStrings("call_shell", got.content[0].tool_call.id);
+    try std.testing.expectEqualStrings("shell_execute", got.content[0].tool_call.name);
+    try std.testing.expectEqualStrings("{\"command\":\"ls -al\"}", got.content[0].tool_call.arguments_json);
+    try std.testing.expectEqual(@as(u64, 11), got.usage.input);
+    try std.testing.expectEqual(@as(u64, 7), got.usage.output);
+    try std.testing.expectEqual(@as(f64, 0.025), got.usage.cost.total);
+}
+
+test "sendStreamRequest without sender returns error" {
+    const allocator = std.testing.allocator;
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    const model = ai_types.Model{
+        .id = "gpt-4",
+        .name = "GPT-4",
+        .api = "openai-completions",
+        .provider = "openai",
+        .base_url = "https://api.openai.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128000,
+        .max_tokens = 4096,
+    };
+
+    const context = ai_types.Context{
+        .messages = &.{},
+    };
+
+    const result = client.sendStreamRequest(model, context, null);
+    try std.testing.expectError(error.NoSender, result);
+}
+
+test "sendAbortRequest without active stream returns error" {
+    const allocator = std.testing.allocator;
+
+    var written_data: ?[]const u8 = null;
+
+    const MockSender = struct {
+        captured: *?[]const u8,
+
+        fn writeFn(_: *anyopaque, _: []const u8) !void {}
+        fn flushFn(_: *anyopaque) !void {}
+    };
+
+    var mock = MockSender{ .captured = &written_data };
+    const sender = transport.AsyncSender{
+        .context = @ptrCast(&mock),
+        .write_fn = MockSender.writeFn,
+        .flush_fn = MockSender.flushFn,
+    };
+
+    var client = ProtocolClient.init(allocator, .{});
+    defer client.deinit();
+
+    client.setSender(sender);
+
+    const result = client.sendAbortRequest(null);
+    try std.testing.expectError(error.NoActiveStream, result);
+}
+
+test "receiveLoopWithRetry processes envelopes with retry on transient errors" {
+    const allocator = std.testing.allocator;
+
+    const message_id = protocol_types.generateUlid();
+    const stream_id = protocol_types.generateUlid();
+    var env = protocol_types.Envelope{
+        .stream_id = stream_id,
+        .message_id = message_id,
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .ack = .{
+            .acknowledged_id = message_id,
+        } },
+    };
+    defer env.deinit(allocator);
+
+    const env_json = try envelope.serializeEnvelope(env, allocator);
+    defer allocator.free(env_json);
+
+    const MockReceiver = struct {
+        items: []const []const u8,
+        index: usize = 0,
+        remaining_failures: u32,
+
+        fn readFn(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror!?[]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.remaining_failures > 0) {
+                self.remaining_failures -= 1;
+                return error.ConnectionResetByPeer;
+            }
+            if (self.index >= self.items.len) return null;
+            const result = try alloc.dupe(u8, self.items[self.index]);
+            self.index += 1;
+            return result;
+        }
+    };
+
+    const items = [_][]const u8{env_json};
+    var mock = MockReceiver{
+        .items = &items,
+        .remaining_failures = 2,
+    };
+
+    var receiver = transport.Receiver{
+        .context = @ptrCast(&mock),
+        .read_fn = MockReceiver.readFn,
+    };
+
+    var client = ProtocolClient.init(allocator, .{
+        .retry_options = .{
+            .max_retries = 3,
+            .base_delay_ms = 1,
+            .max_delay_ms = 5,
+        },
+    });
+    defer client.deinit();
+
+    try client.pending_requests.put(message_id, .{
+        .message_id = message_id,
+        .stream_id = stream_id,
+        .sent_at = compat.time.nowMillis(),
+        .timeout_ms = 30_000,
+    });
+
+    try client.receiveLoopWithRetry(&receiver, allocator);
+
+    try std.testing.expect(!client.pending_requests.contains(message_id));
+    try std.testing.expect(client.current_stream_id != null);
+}
+
+test "receiveLoopWithRetry skips bad frames and processes valid ones" {
+    const allocator = std.testing.allocator;
+
+    const message_id = protocol_types.generateUlid();
+    const stream_id = protocol_types.generateUlid();
+    var env = protocol_types.Envelope{
+        .stream_id = stream_id,
+        .message_id = message_id,
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .ack = .{
+            .acknowledged_id = message_id,
+        } },
+    };
+    defer env.deinit(allocator);
+
+    const env_json = try envelope.serializeEnvelope(env, allocator);
+    defer allocator.free(env_json);
+
+    const MockReceiver = struct {
+        items: []const []const u8,
+        index: usize = 0,
+
+        fn readFn(ctx: *anyopaque, alloc: std.mem.Allocator) anyerror!?[]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.index >= self.items.len) return null;
+            const result = try alloc.dupe(u8, self.items[self.index]);
+            self.index += 1;
+            return result;
+        }
+    };
+
+    const items = [_][]const u8{
+        "not valid json",
+        env_json,
+    };
+    var mock = MockReceiver{ .items = &items };
+
+    var receiver = transport.Receiver{
+        .context = @ptrCast(&mock),
+        .read_fn = MockReceiver.readFn,
+    };
+
+    var client = ProtocolClient.init(allocator, .{
+        .retry_options = .{ .max_retries = 0, .base_delay_ms = 1 },
+    });
+    defer client.deinit();
+
+    try client.pending_requests.put(message_id, .{
+        .message_id = message_id,
+        .stream_id = stream_id,
+        .sent_at = compat.time.nowMillis(),
+        .timeout_ms = 30_000,
+    });
+
+    try client.receiveLoopWithRetry(&receiver, allocator);
+
+    try std.testing.expect(!client.pending_requests.contains(message_id));
+}
+
+test "receiveLoopWithRetry without retry_options fails on first error" {
+    const allocator = std.testing.allocator;
+
+    const MockReceiver = struct {
+        attempt_count: u32 = 0,
+
+        fn readFn(ctx: *anyopaque, _: std.mem.Allocator) anyerror!?[]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.attempt_count += 1;
+            return error.ConnectionRefused;
+        }
+    };
+
+    var mock = MockReceiver{};
+    var receiver = transport.Receiver{
+        .context = @ptrCast(&mock),
+        .read_fn = MockReceiver.readFn,
+    };
+
+    var client = ProtocolClient.init(allocator, .{
+        .retry_options = null,
+    });
+    defer client.deinit();
+
+    const result = client.receiveLoopWithRetry(&receiver, allocator);
+    try std.testing.expectError(error.ConnectionRefused, result);
+
+    try std.testing.expectEqual(@as(u32, 1), mock.attempt_count);
+}

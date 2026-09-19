@@ -1,0 +1,64 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Node.js (package.json present)
+node_modules/
+dist/
+typescript/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Zig build artifacts
+zig-cache/
+zig-out/
+.zig-cache/
+zig/zig-pkg/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Rust build artifacts (rust/ SDK)
+rust/target/
+
+# Temporary files
+tmp/
+
+# Environment / secrets
+.env
+.env.*
+.makai/
+
+# TUI PTY harness output (scripts/tui-pty-driver.py)
+tui-pty-out/
+
+# Python bytecode and test/type caches
+scripts/__pycache__/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python SDK (python/)
+.venv/
+venv/
+*.egg-info/
+python/build/
+python/dist/
+
+# Rust build cache
+rust/target/

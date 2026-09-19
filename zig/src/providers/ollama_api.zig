@@ -1,0 +1,1487 @@
+const std = @import("std");
+const compat = @import("compat");
+const ai_types = @import("ai_types");
+const event_stream = @import("event_stream");
+const api_registry = @import("api_registry");
+const json_writer = @import("json_writer");
+const sanitize = @import("sanitize");
+const retry_util = @import("retry");
+const pre_transform = @import("pre_transform");
+const StringBuilder = @import("string_builder").StringBuilder;
+
+fn shouldSkipAssistant(msg: ai_types.Message) bool {
+    switch (msg) {
+        .assistant => |a| {
+            return a.stop_reason == .aborted or a.stop_reason == .@"error";
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn collectToolCallIds(allocator: std.mem.Allocator, messages: []const ai_types.Message) !std.StringHashMap(void) {
+    var tool_call_ids = std.StringHashMap(void).init(allocator);
+    errdefer {
+        var iter = tool_call_ids.keyIterator();
+        while (iter.next()) |key| {
+            allocator.free(key.*);
+        }
+        tool_call_ids.deinit();
+    }
+
+    for (messages) |msg| {
+        switch (msg) {
+            .assistant => |a| {
+                for (a.content) |c| {
+                    if (c == .tool_call) {
+                        const id_dup = try allocator.dupe(u8, c.tool_call.id);
+                        try tool_call_ids.put(id_dup, {});
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    return tool_call_ids;
+}
+
+fn isOrphanedToolResult(msg: ai_types.Message, tool_call_ids: *const std.StringHashMap(void)) bool {
+    if (tool_call_ids.count() == 0) {
+        return false;
+    }
+    switch (msg) {
+        .tool_result => |tr| {
+            if (tr.tool_call_id.len > 0) {
+                return !tool_call_ids.contains(tr.tool_call_id);
+            }
+        },
+        else => {},
+    }
+    return false;
+}
+
+fn freeToolCallIds(allocator: std.mem.Allocator, map: *std.StringHashMap(void)) void {
+    var iter = map.keyIterator();
+    while (iter.next()) |key| {
+        allocator.free(key.*);
+    }
+    map.deinit();
+}
+
+fn env(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    return compat.getEnvVarOwned(allocator, name) catch null;
+}
+
+fn buildUrlWithSuffix(allocator: std.mem.Allocator, base_url: []const u8, suffix: []const u8) ![]const u8 {
+    var sb = StringBuilder{};
+    sb.count(base_url);
+    sb.count(suffix);
+    try sb.allocate(allocator);
+    errdefer sb.deinit(allocator);
+
+    _ = sb.append(base_url);
+    _ = sb.append(suffix);
+
+    std.debug.assert(sb.len == sb.cap);
+    const out = sb.ptr.?[0..sb.cap];
+    sb.ptr = null;
+    sb.cap = 0;
+    sb.len = 0;
+    return out;
+}
+
+fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
+    var sb = StringBuilder{};
+    sb.count("Bearer ");
+    sb.count(token);
+    try sb.allocate(allocator);
+    errdefer sb.deinit(allocator);
+
+    _ = sb.append("Bearer ");
+    _ = sb.append(token);
+
+    std.debug.assert(sb.len == sb.cap);
+    const out = sb.ptr.?[0..sb.cap];
+    sb.ptr = null;
+    sb.cap = 0;
+    sb.len = 0;
+    return out;
+}
+
+fn buildGeneratedToolCallId(allocator: std.mem.Allocator, tool_name: []const u8, timestamp: i64, counter: usize) ![]const u8 {
+    var sb = StringBuilder{};
+    sb.count(tool_name);
+    sb.count("_");
+    sb.countFmt("{}", .{timestamp});
+    sb.count("_");
+    sb.countFmt("{}", .{counter});
+    try sb.allocate(allocator);
+    errdefer sb.deinit(allocator);
+
+    _ = sb.append(tool_name);
+    _ = sb.append("_");
+    _ = sb.appendFmt("{}", .{timestamp});
+    _ = sb.append("_");
+    _ = sb.appendFmt("{}", .{counter});
+
+    std.debug.assert(sb.len == sb.cap);
+    const out = sb.ptr.?[0..sb.cap];
+    sb.ptr = null;
+    sb.cap = 0;
+    sb.len = 0;
+    return out;
+}
+
+fn appendMessageText(msg: ai_types.Message, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    switch (msg) {
+        .user => |u| switch (u.content) {
+            .text => |t| try out.appendSlice(allocator, t),
+            .parts => |parts| for (parts) |p| switch (p) {
+                .text => |t| {
+                    if (out.items.len > 0) try out.append(allocator, '\n');
+                    try out.appendSlice(allocator, t.text);
+                },
+                .image => {},
+            },
+        },
+        .assistant => |a| for (a.content) |c| switch (c) {
+            .text => |t| {
+                if (out.items.len > 0) try out.append(allocator, '\n');
+                try out.appendSlice(allocator, t.text);
+            },
+            .thinking => |t| {
+                if (out.items.len > 0) try out.append(allocator, '\n');
+                try out.appendSlice(allocator, t.thinking);
+            },
+            .tool_call => {},
+            .image => {},
+        },
+        .tool_result => |tr| for (tr.content) |c| switch (c) {
+            .text => |t| {
+                if (out.items.len > 0) try out.append(allocator, '\n');
+                try out.appendSlice(allocator, t.text);
+            },
+            .image => {},
+        },
+    }
+}
+
+fn buildBody(model: ai_types.Model, context: ai_types.Context, options: ai_types.StreamOptions, allocator: std.mem.Allocator) ![]u8 {
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(allocator);
+
+    var transformed = try pre_transform.preTransform(allocator, context.messages, .{
+        .target_api = model.api,
+        .target_provider = model.provider,
+        .target_model_id = model.id,
+        .insert_synthetic_results = true,
+        .tools = context.tools,
+    });
+    defer transformed.deinit();
+
+    var tx_context = context;
+    tx_context.messages = transformed.messages;
+
+    var w = json_writer.JsonWriter.init(&buf, allocator);
+    try w.beginObject();
+
+    try w.writeStringField("model", model.id);
+    try w.writeBoolField("stream", true);
+
+    var tool_call_ids = collectToolCallIds(allocator, tx_context.messages) catch std.StringHashMap(void).init(allocator);
+    defer freeToolCallIds(allocator, &tool_call_ids);
+
+    try w.writeKey("messages");
+    try w.beginArray();
+
+    if (tx_context.getSystemPrompt()) |sp| {
+        try w.beginObject();
+        try w.writeStringField("role", "system");
+        const sanitized = try sanitize.sanitizeSurrogatesInPlace(allocator, sp);
+        defer {
+            if (sanitized.ptr != sp.ptr) {
+                allocator.free(@constCast(sanitized));
+            }
+        }
+        try w.writeStringField("content", sanitized);
+        try w.endObject();
+    }
+
+    for (tx_context.messages) |m| {
+        if (shouldSkipAssistant(m)) continue;
+
+        if (isOrphanedToolResult(m, &tool_call_ids)) continue;
+
+        var text = std.ArrayList(u8).empty;
+        defer text.deinit(allocator);
+        try appendMessageText(m, &text, allocator);
+
+        const role: []const u8 = switch (m) {
+            .assistant => "assistant",
+            .tool_result => "tool",
+            else => "user",
+        };
+
+        try w.beginObject();
+        try w.writeStringField("role", role);
+        const sanitized = try sanitize.sanitizeSurrogatesInPlace(allocator, text.items);
+        defer {
+            if (sanitized.ptr != text.items.ptr) {
+                allocator.free(@constCast(sanitized));
+            }
+        }
+        try w.writeStringField("content", sanitized);
+
+        if (m == .user) {
+            const user = m.user;
+            if (user.content == .parts) {
+                var has_images = false;
+                for (user.content.parts) |p| {
+                    if (p == .image) {
+                        has_images = true;
+                        break;
+                    }
+                }
+                if (has_images) {
+                    try w.writeKey("images");
+                    try w.beginArray();
+                    for (user.content.parts) |p| switch (p) {
+                        .image => |img| try w.writeString(img.data),
+                        else => {},
+                    };
+                    try w.endArray();
+                }
+            }
+        }
+
+        if (m == .tool_result) {
+            const tr = m.tool_result;
+            var has_images = false;
+            for (tr.content) |c| {
+                if (c == .image) {
+                    has_images = true;
+                    break;
+                }
+            }
+            if (has_images) {
+                try w.writeKey("images");
+                try w.beginArray();
+                for (tr.content) |c| switch (c) {
+                    .image => |img| try w.writeString(img.data),
+                    else => {},
+                };
+                try w.endArray();
+            }
+        }
+
+        if (m == .assistant) {
+            var has_tool_calls = false;
+            for (m.assistant.content) |c| {
+                if (c == .tool_call) {
+                    has_tool_calls = true;
+                    break;
+                }
+            }
+            if (has_tool_calls) {
+                try w.writeKey("tool_calls");
+                try w.beginArray();
+                for (m.assistant.content) |c| {
+                    if (c == .tool_call) {
+                        const tc = c.tool_call;
+                        try w.beginObject();
+                        try w.writeStringField("id", tc.id);
+                        try w.writeStringField("type", "function");
+                        try w.writeKey("function");
+                        try w.beginObject();
+                        try w.writeStringField("name", tc.name);
+                        try w.writeStringField("arguments", tc.arguments_json);
+                        try w.endObject();
+                    }
+                }
+                try w.endArray();
+            }
+        }
+
+        try w.endObject();
+    }
+
+    try w.endArray();
+
+    if (context.tools) |tools| {
+        try w.writeKey("tools");
+        try w.beginArray();
+        for (tools) |tool| {
+            try w.beginObject();
+            try w.writeStringField("type", "function");
+            try w.writeKey("function");
+            try w.beginObject();
+            try w.writeStringField("name", tool.name);
+            try w.writeStringField("description", tool.description);
+            try w.writeKey("parameters");
+            try w.writeRawJson(tool.parameters_schema_json);
+            try w.endObject();
+        }
+        try w.endArray();
+    }
+
+    try w.writeKey("options");
+    try w.beginObject();
+    if (options.temperature) |t| {
+        try w.writeKey("temperature");
+        try w.writeFloat(t);
+    }
+    try w.writeIntField("num_predict", options.max_tokens orelse model.max_tokens);
+    try w.endObject();
+
+    try w.endObject();
+    return buf.toOwnedSlice(allocator);
+}
+
+const ParsedToolCall = struct {
+    name: []const u8,
+    arguments_json: []const u8,
+};
+
+const OllamaParseResult = struct {
+    text: ?[]const u8 = null,
+    tool_calls: []const ParsedToolCall = &.{},
+    usage: ai_types.Usage = .{},
+    done_reason: ?[]const u8 = null,
+
+    fn deinit(self: *const OllamaParseResult, allocator: std.mem.Allocator) void {
+        if (self.text) |t| allocator.free(t);
+        for (self.tool_calls) |tc| {
+            allocator.free(tc.name);
+            allocator.free(tc.arguments_json);
+        }
+        allocator.free(self.tool_calls);
+        if (self.done_reason) |dr| allocator.free(dr);
+    }
+};
+
+fn stringifyJsonValue(value: std.json.Value, buf: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
+    switch (value) {
+        .null => try buf.appendSlice(allocator, "null"),
+        .bool => |b| try buf.appendSlice(allocator, if (b) "true" else "false"),
+        .integer => |i| {
+            var num_buf: [32]u8 = undefined;
+            const str = std.fmt.bufPrint(&num_buf, "{}", .{i}) catch return;
+            try buf.appendSlice(allocator, str);
+        },
+        .float => |f| {
+            var num_buf: [64]u8 = undefined;
+            const str = std.fmt.bufPrint(&num_buf, "{d}", .{f}) catch return;
+            try buf.appendSlice(allocator, str);
+        },
+        .number_string => |s| try buf.appendSlice(allocator, s),
+        .string => |s| {
+            try buf.append(allocator, '"');
+            for (s) |c| {
+                switch (c) {
+                    '"' => try buf.appendSlice(allocator, "\\\""),
+                    '\\' => try buf.appendSlice(allocator, "\\\\"),
+                    '\n' => try buf.appendSlice(allocator, "\\n"),
+                    '\r' => try buf.appendSlice(allocator, "\\r"),
+                    '\t' => try buf.appendSlice(allocator, "\\t"),
+                    else => try buf.append(allocator, c),
+                }
+            }
+            try buf.append(allocator, '"');
+        },
+        .array => |arr| {
+            try buf.append(allocator, '[');
+            for (arr.items, 0..) |item, i| {
+                if (i > 0) try buf.append(allocator, ',');
+                try stringifyJsonValue(item, buf, allocator);
+            }
+            try buf.append(allocator, ']');
+        },
+        .object => |obj| {
+            try buf.append(allocator, '{');
+            var iter = obj.iterator();
+            var first = true;
+            while (iter.next()) |entry| {
+                if (!first) try buf.append(allocator, ',');
+                first = false;
+                try stringifyJsonValue(.{ .string = entry.key_ptr.* }, buf, allocator);
+                try buf.append(allocator, ':');
+                try stringifyJsonValue(entry.value_ptr.*, buf, allocator);
+            }
+            try buf.append(allocator, '}');
+        },
+    }
+}
+
+fn parseLineExtended(line: []const u8, allocator: std.mem.Allocator) ?OllamaParseResult {
+    if (line.len == 0) return null;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const obj = parsed.value.object;
+
+    var result = OllamaParseResult{};
+
+    if (obj.get("message")) |m| {
+        if (m == .object) {
+            if (m.object.get("content")) |c| {
+                if (c == .string and c.string.len > 0) {
+                    result.text = allocator.dupe(u8, c.string) catch return null;
+                }
+            }
+
+            if (m.object.get("tool_calls")) |tcs| {
+                if (tcs == .array) {
+                    var tool_calls_list = std.ArrayList(ParsedToolCall).empty;
+                    defer tool_calls_list.deinit(allocator);
+
+                    for (tcs.array.items) |tc| {
+                        if (tc == .object) {
+                            if (tc.object.get("function")) |func| {
+                                if (func == .object) {
+                                    const name = if (func.object.get("name")) |n|
+                                        if (n == .string) n.string else ""
+                                    else
+                                        "";
+
+                                    const args_json = if (func.object.get("arguments")) |args| blk: {
+                                        var buf = std.ArrayList(u8).empty;
+                                        stringifyJsonValue(args, &buf, allocator) catch break :blk "";
+                                        break :blk buf.toOwnedSlice(allocator) catch "";
+                                    } else "{}";
+
+                                    const name_copy = allocator.dupe(u8, name) catch {
+                                        allocator.free(args_json);
+                                        continue;
+                                    };
+
+                                    tool_calls_list.append(allocator, .{
+                                        .name = name_copy,
+                                        .arguments_json = args_json,
+                                    }) catch {
+                                        allocator.free(name_copy);
+                                        allocator.free(args_json);
+                                        continue;
+                                    };
+                                }
+                            }
+                        }
+                    }
+
+                    result.tool_calls = tool_calls_list.toOwnedSlice(allocator) catch return null;
+                }
+            }
+        }
+    }
+
+    if (obj.get("prompt_eval_count")) |v| {
+        if (v == .integer) result.usage.input = @intCast(v.integer);
+    }
+    if (obj.get("eval_count")) |v| {
+        if (v == .integer) result.usage.output = @intCast(v.integer);
+    }
+
+    if (obj.get("done_reason")) |dr| {
+        if (dr == .string) {
+            result.done_reason = allocator.dupe(u8, dr.string) catch null;
+        }
+    }
+
+    return result;
+}
+
+const ThreadCtx = struct {
+    allocator: std.mem.Allocator,
+    stream: *event_stream.AssistantMessageEventStream,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    base_url: []u8,
+    api_key: ?[]u8,
+    body: []u8,
+    cancel_token: ?ai_types.CancelToken = null,
+    on_payload_fn: ?*const fn (on_ctx: ?*anyopaque, payload_json: []const u8) void = null,
+    on_payload_ctx: ?*anyopaque = null,
+    retry_config: ?ai_types.RetryConfig = null,
+    ping_interval_ms: ?u64 = null,
+
+    fn deinit(self: *ThreadCtx) void {
+        self.allocator.free(self.base_url);
+        if (self.api_key) |k| self.allocator.free(k);
+        self.allocator.free(self.body);
+        var mut_context = self.context;
+        mut_context.deinit(self.allocator);
+        var mut_model = self.model;
+        mut_model.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+};
+
+fn createPartialMessage(model: ai_types.Model) ai_types.AssistantMessage {
+    return ai_types.AssistantMessage{
+        .content = &.{},
+        .api = model.api,
+        .provider = model.provider,
+        .model = model.id,
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = compat.time.nowMillis(),
+    };
+}
+
+fn runThread(ctx: *ThreadCtx) void {
+    const allocator = ctx.allocator;
+    const stream = ctx.stream;
+    defer stream.markThreadDone();
+
+    const model = ctx.model;
+    const base_url = ctx.base_url;
+    const api_key = ctx.api_key;
+    const body = ctx.body;
+    const cancel_token = ctx.cancel_token;
+    const on_payload_fn = ctx.on_payload_fn;
+    const on_payload_ctx = ctx.on_payload_ctx;
+    const retry_opts = ctx.retry_config;
+
+    if (on_payload_fn) |cb| {
+        cb(on_payload_ctx, body);
+    }
+
+    if (cancel_token) |ct| {
+        if (ct.isCancelled()) {
+            ctx.deinit();
+            stream.completeWithError("request cancelled");
+            return;
+        }
+    }
+
+    var client = compat.http.HttpClient.init(allocator);
+    defer client.deinit();
+
+    const url = buildUrlWithSuffix(allocator, base_url, "/api/chat") catch {
+        ctx.deinit();
+        stream.completeWithError("oom url");
+        return;
+    };
+    defer allocator.free(url);
+
+    const uri = std.Uri.parse(url) catch {
+        ctx.deinit();
+        stream.completeWithError("invalid URL");
+        return;
+    };
+
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    defer headers.deinit(allocator);
+    headers.append(allocator, .{ .name = "content-type", .value = "application/json" }) catch {
+        ctx.deinit();
+        stream.completeWithError("oom headers");
+        return;
+    };
+
+    var auth_value: ?[]u8 = null;
+    defer if (auth_value) |v| allocator.free(v);
+
+    if (api_key) |k| {
+        auth_value = buildBearerAuthValue(allocator, k) catch {
+            ctx.deinit();
+            stream.completeWithError("oom auth header");
+            return;
+        };
+        headers.append(allocator, .{ .name = "authorization", .value = auth_value.? }) catch {
+            ctx.deinit();
+            stream.completeWithError("oom headers");
+            return;
+        };
+    }
+
+    const MAX_RETRIES: u8 = 3;
+    const BASE_DELAY_MS: u32 = 1000;
+    const max_delay_ms: u32 = if (retry_opts) |rc| rc.max_retry_delay_ms orelse 60000 else 60000;
+
+    var response: compat.http.Response = undefined;
+    var head_buf: [4096]u8 = undefined;
+    var retry_attempt: u8 = 0;
+    var req: compat.http.Request = undefined;
+    var req_initialized = false;
+    defer if (req_initialized) req.deinit();
+
+    while (true) {
+        if (cancel_token) |ct| {
+            if (ct.isCancelled()) {
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                return;
+            }
+        }
+
+        if (req_initialized) {
+            req.deinit();
+            req_initialized = false;
+        }
+
+        req = client.openRequest(.POST, uri, .{ .extra_headers = headers.items }) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                return;
+            }
+            ctx.deinit();
+            stream.completeWithError("request failed");
+            return;
+        };
+        req_initialized = true;
+
+        compat.http.sendRequest(&req, body) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                return;
+            }
+            ctx.deinit();
+            stream.completeWithError("send failed");
+            return;
+        };
+
+        response = compat.http.receiveResponse(&req, &head_buf) catch {
+            if (retry_attempt < MAX_RETRIES) {
+                const delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+                if (retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                    retry_attempt += 1;
+                    continue;
+                }
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                return;
+            }
+            ctx.deinit();
+            stream.completeWithError("receive failed");
+            return;
+        };
+
+        if (response.head.status == .ok) {
+            break;
+        }
+
+        const status_code: u16 = @intFromEnum(response.head.status);
+        const should_retry = retry_util.isRetryable(status_code) and retry_attempt < MAX_RETRIES;
+
+        if (should_retry) {
+            const error_text: []const u8 = &.{};
+
+            const is_retryable_error = retry_util.isRetryableError(error_text);
+
+            var delay = retry_util.calculateDelay(retry_attempt, BASE_DELAY_MS, max_delay_ms);
+
+            if (std.mem.find(u8, response.head.bytes, "\r\n") != null) {
+                var retry_after_iter = response.head.iterateHeaders();
+                while (retry_after_iter.next()) |header| {
+                    if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
+                        if (retry_util.extractRetryDelayFromHeader(header.value)) |server_delay| {
+                            if (server_delay <= max_delay_ms) {
+                                delay = server_delay;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (retry_util.extractRetryDelayFromBody(error_text)) |body_delay| {
+                if (body_delay <= max_delay_ms) {
+                    delay = body_delay;
+                }
+            }
+
+            if (!is_retryable_error and !retry_util.isRetryable(status_code)) {
+                break;
+            }
+
+            if (!retry_util.sleepMs(delay, if (cancel_token) |ct| ct.cancelled else null)) {
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                return;
+            }
+
+            retry_attempt += 1;
+            continue;
+        }
+
+        break;
+    }
+
+    if (response.head.status != .ok) {
+        ctx.deinit();
+        stream.completeWithError("ollama request failed");
+        return;
+    }
+
+    var transfer_buf: [4096]u8 = undefined;
+    var read_buf: [8192]u8 = undefined;
+    const reader = compat.http.responseReader(&response, &transfer_buf);
+
+    var line = std.ArrayList(u8).empty;
+    defer line.deinit(allocator);
+
+    var content_blocks = std.ArrayList(ai_types.AssistantContent).empty;
+    defer content_blocks.deinit(allocator);
+    var current_text = std.ArrayList(u8).empty;
+    defer current_text.deinit(allocator);
+
+    var usage = ai_types.Usage{};
+    var stop_reason: ai_types.StopReason = .stop;
+    var tool_call_counter: usize = 0;
+    var has_tool_calls = false;
+
+    var last_ping_time: i64 = 0;
+    const ping_interval = ctx.ping_interval_ms orelse 0;
+
+    const partial_start = createPartialMessage(model);
+    _ = stream.pushBlocking(.{ .start = .{ .partial = partial_start } });
+
+    while (true) {
+        if (ping_interval > 0) {
+            const now = compat.time.nowMillis();
+            if (now - last_ping_time >= ping_interval) {
+                stream.push(.{ .keepalive = {} }) catch {};
+                last_ping_time = now;
+            }
+        }
+
+        if (cancel_token) |ct| {
+            if (ct.isCancelled()) {
+                ctx.deinit();
+                stream.completeWithError("request cancelled");
+                return;
+            }
+        }
+
+        const n = compat.http.readResponse(reader, &read_buf) catch {
+            ctx.deinit();
+            stream.completeWithError("read failed");
+            return;
+        };
+        if (n == 0) break;
+
+        for (read_buf[0..n]) |ch| {
+            if (ch == '\n') {
+                if (parseLineExtended(line.items, allocator)) |*result| {
+                    defer result.deinit(allocator);
+
+                    if (result.usage.input > 0) usage.input = result.usage.input;
+                    if (result.usage.output > 0) usage.output = result.usage.output;
+
+                    if (result.done_reason) |dr| {
+                        if (std.mem.eql(u8, dr, "length")) {
+                            stop_reason = .length;
+                        } else if (std.mem.eql(u8, dr, "stop")) {
+                            stop_reason = .stop;
+                        }
+                    }
+
+                    if (result.text) |text_content| {
+                        const prev_len = current_text.items.len;
+                        current_text.appendSlice(allocator, text_content) catch {};
+
+                        if (prev_len == 0 and current_text.items.len > 0) {
+                            const partial = createPartialMessage(model);
+                            _ = stream.pushBlocking(.{ .text_start = .{
+                                .content_index = content_blocks.items.len,
+                                .partial = partial,
+                            } });
+                        }
+
+                        if (current_text.items.len > prev_len) {
+                            const delta = current_text.items[prev_len..];
+                            const partial = createPartialMessage(model);
+                            _ = stream.pushBlocking(.{ .text_delta = .{
+                                .content_index = content_blocks.items.len,
+                                .delta = delta,
+                                .partial = partial,
+                            } });
+                        }
+                    }
+
+                    for (result.tool_calls) |tc| {
+                        has_tool_calls = true;
+
+                        if (current_text.items.len > 0) {
+                            const text_copy = allocator.dupe(u8, current_text.items) catch continue;
+                            content_blocks.append(allocator, .{ .text = .{
+                                .text = text_copy,
+                            } }) catch {
+                                allocator.free(text_copy);
+                                continue;
+                            };
+                            const partial = createPartialMessage(model);
+                            _ = stream.pushBlocking(.{ .text_end = .{
+                                .content_index = content_blocks.items.len - 1,
+                                .content = current_text.items,
+                                .partial = partial,
+                            } });
+                            current_text.clearRetainingCapacity();
+                        }
+
+                        tool_call_counter += 1;
+                        const timestamp = compat.time.nowMillis();
+                        const tool_id = buildGeneratedToolCallId(allocator, tc.name, timestamp, tool_call_counter) catch continue;
+
+                        const tool_name = allocator.dupe(u8, tc.name) catch {
+                            allocator.free(tool_id);
+                            continue;
+                        };
+                        const tool_args = allocator.dupe(u8, tc.arguments_json) catch {
+                            allocator.free(tool_id);
+                            allocator.free(tool_name);
+                            continue;
+                        };
+
+                        const content_idx = content_blocks.items.len;
+
+                        if (!stream.pushBlocking(.{ .toolcall_start = .{
+                            .content_index = content_idx,
+                            .id = tool_id,
+                            .name = tool_name,
+                            .partial = createPartialMessage(model),
+                        } })) {
+                            allocator.free(tool_id);
+                            allocator.free(tool_name);
+                            allocator.free(tool_args);
+                            continue;
+                        }
+
+                        _ = stream.pushBlocking(.{ .toolcall_delta = .{
+                            .content_index = content_idx,
+                            .delta = tool_args,
+                            .partial = createPartialMessage(model),
+                        } });
+
+                        const tool_call_struct = ai_types.ToolCall{
+                            .id = tool_id,
+                            .name = tool_name,
+                            .arguments_json = tool_args,
+                        };
+
+                        content_blocks.append(allocator, .{ .tool_call = tool_call_struct }) catch {
+                            allocator.free(tool_id);
+                            allocator.free(tool_name);
+                            allocator.free(tool_args);
+                            continue;
+                        };
+
+                        _ = stream.pushBlocking(.{ .toolcall_end = .{
+                            .content_index = content_idx,
+                            .tool_call = tool_call_struct,
+                            .partial = createPartialMessage(model),
+                        } });
+                    }
+                }
+                line.clearRetainingCapacity();
+            } else {
+                line.append(allocator, ch) catch {
+                    ctx.deinit();
+                    stream.completeWithError("oom line");
+                    return;
+                };
+            }
+        }
+    }
+
+    if (line.items.len > 0) {
+        if (parseLineExtended(line.items, allocator)) |*result| {
+            defer result.deinit(allocator);
+
+            if (result.usage.input > 0) usage.input = result.usage.input;
+            if (result.usage.output > 0) usage.output = result.usage.output;
+
+            if (result.done_reason) |dr| {
+                if (std.mem.eql(u8, dr, "length")) {
+                    stop_reason = .length;
+                } else if (std.mem.eql(u8, dr, "stop")) {
+                    stop_reason = .stop;
+                }
+            }
+
+            if (result.text) |text_content| {
+                const prev_len = current_text.items.len;
+                current_text.appendSlice(allocator, text_content) catch {};
+
+                if (prev_len == 0 and current_text.items.len > 0) {
+                    const partial = createPartialMessage(model);
+                    _ = stream.pushBlocking(.{ .text_start = .{
+                        .content_index = content_blocks.items.len,
+                        .partial = partial,
+                    } });
+                }
+
+                if (current_text.items.len > prev_len) {
+                    const delta = current_text.items[prev_len..];
+                    const partial = createPartialMessage(model);
+                    _ = stream.pushBlocking(.{ .text_delta = .{
+                        .content_index = content_blocks.items.len,
+                        .delta = delta,
+                        .partial = partial,
+                    } });
+                }
+            }
+
+            for (result.tool_calls) |tc| {
+                has_tool_calls = true;
+
+                if (current_text.items.len > 0) {
+                    const text_copy = allocator.dupe(u8, current_text.items) catch continue;
+                    content_blocks.append(allocator, .{ .text = .{
+                        .text = text_copy,
+                    } }) catch {
+                        allocator.free(text_copy);
+                        continue;
+                    };
+                    const partial = createPartialMessage(model);
+                    _ = stream.pushBlocking(.{ .text_end = .{
+                        .content_index = content_blocks.items.len - 1,
+                        .content = current_text.items,
+                        .partial = partial,
+                    } });
+                    current_text.clearRetainingCapacity();
+                }
+
+                tool_call_counter += 1;
+                const timestamp = compat.time.nowMillis();
+                const tool_id = buildGeneratedToolCallId(allocator, tc.name, timestamp, tool_call_counter) catch continue;
+
+                const tool_name = allocator.dupe(u8, tc.name) catch {
+                    allocator.free(tool_id);
+                    continue;
+                };
+                const tool_args = allocator.dupe(u8, tc.arguments_json) catch {
+                    allocator.free(tool_id);
+                    allocator.free(tool_name);
+                    continue;
+                };
+
+                const content_idx = content_blocks.items.len;
+
+                if (!stream.pushBlocking(.{ .toolcall_start = .{
+                    .content_index = content_idx,
+                    .id = tool_id,
+                    .name = tool_name,
+                    .partial = createPartialMessage(model),
+                } })) {
+                    allocator.free(tool_id);
+                    allocator.free(tool_name);
+                    allocator.free(tool_args);
+                    continue;
+                }
+
+                _ = stream.pushBlocking(.{ .toolcall_delta = .{
+                    .content_index = content_idx,
+                    .delta = tool_args,
+                    .partial = createPartialMessage(model),
+                } });
+
+                const tool_call_struct = ai_types.ToolCall{
+                    .id = tool_id,
+                    .name = tool_name,
+                    .arguments_json = tool_args,
+                };
+
+                content_blocks.append(allocator, .{ .tool_call = tool_call_struct }) catch {
+                    allocator.free(tool_id);
+                    allocator.free(tool_name);
+                    allocator.free(tool_args);
+                    continue;
+                };
+
+                _ = stream.pushBlocking(.{ .toolcall_end = .{
+                    .content_index = content_idx,
+                    .tool_call = tool_call_struct,
+                    .partial = createPartialMessage(model),
+                } });
+            }
+        }
+    }
+
+    if (current_text.items.len > 0) {
+        const text_copy = allocator.dupe(u8, current_text.items) catch "";
+        content_blocks.append(allocator, .{ .text = .{
+            .text = text_copy,
+        } }) catch {};
+        const partial = createPartialMessage(model);
+        _ = stream.pushBlocking(.{ .text_end = .{
+            .content_index = content_blocks.items.len - 1,
+            .content = current_text.items,
+            .partial = partial,
+        } });
+    }
+
+    if (has_tool_calls) {
+        stop_reason = .tool_use;
+    }
+
+    if (usage.total_tokens == 0) usage.total_tokens = usage.input + usage.output;
+    usage.calculateCost(model.cost);
+
+    if (content_blocks.items.len == 0) {
+        content_blocks.append(allocator, .{ .text = .{ .text = "" } }) catch {};
+    }
+
+    const content_slice = content_blocks.toOwnedSlice(allocator) catch {
+        ctx.deinit();
+        stream.completeWithError("oom content");
+        return;
+    };
+
+    const api_dup = allocator.dupe(u8, model.api) catch {
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        return;
+    };
+    const provider_dup = allocator.dupe(u8, model.provider) catch {
+        allocator.free(api_dup);
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        return;
+    };
+    const model_dup = allocator.dupe(u8, model.id) catch {
+        allocator.free(provider_dup);
+        allocator.free(api_dup);
+        ai_types.deinitAssistantContent(allocator, content_slice);
+        ctx.deinit();
+        stream.completeWithError("oom");
+        return;
+    };
+
+    const out = ai_types.AssistantMessage{
+        .content = content_slice,
+        .api = api_dup,
+        .provider = provider_dup,
+        .model = model_dup,
+        .usage = usage,
+        .stop_reason = stop_reason,
+        .timestamp = compat.time.nowMillis(),
+        .is_owned = true,
+    };
+
+    ctx.deinit();
+
+    stream.complete(out);
+}
+
+pub fn streamOllama(
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ?ai_types.StreamOptions,
+    allocator: std.mem.Allocator,
+) !*event_stream.AssistantMessageEventStream {
+    const o = options orelse ai_types.StreamOptions{};
+
+    const api_key: ?[]u8 = blk: {
+        if (o.getApiKey()) |k| break :blk try allocator.dupe(u8, k);
+        if (!std.mem.eql(u8, model.provider, "ollama")) break :blk null;
+        if (env(allocator, "OLLAMA_API_KEY")) |k| break :blk @constCast(k);
+        break :blk null;
+    };
+    errdefer if (api_key) |k| allocator.free(k);
+
+    const base_url = blk: {
+        if (model.base_url.len > 0) break :blk try allocator.dupe(u8, model.base_url);
+        if (env(allocator, "OLLAMA_BASE_URL")) |v| break :blk @constCast(v);
+        if (api_key != null) break :blk try allocator.dupe(u8, "https://ollama.com");
+        break :blk try allocator.dupe(u8, "http://127.0.0.1:11434");
+    };
+    errdefer allocator.free(base_url);
+
+    const owned_model = try ai_types.cloneModel(allocator, model);
+    errdefer {
+        var mut_m = owned_model;
+        mut_m.deinit(allocator);
+    }
+
+    const owned_context = try ai_types.cloneContext(allocator, context);
+    errdefer {
+        var mut_ctx = owned_context;
+        mut_ctx.deinit(allocator);
+    }
+
+    const body = try buildBody(owned_model, owned_context, o, allocator);
+    errdefer allocator.free(body);
+
+    const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    errdefer allocator.destroy(s);
+    s.* = event_stream.AssistantMessageEventStream.init(allocator);
+    s.wait_for_thread_on_deinit = true;
+    if (o.requires_owned_stream_events) {
+        s.owns_events = true;
+        s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    }
+
+    const ctx = try allocator.create(ThreadCtx);
+    errdefer allocator.destroy(ctx);
+    ctx.* = .{
+        .allocator = allocator,
+        .stream = s,
+        .model = owned_model,
+        .context = owned_context,
+        .base_url = base_url,
+        .api_key = api_key,
+        .body = body,
+        .cancel_token = o.cancel_token,
+        .on_payload_fn = o.on_payload_fn,
+        .on_payload_ctx = o.on_payload_ctx,
+        .retry_config = o.retry,
+        .ping_interval_ms = o.ping_interval_ms,
+    };
+
+    const th = try std.Thread.spawn(.{}, runThread, .{ctx});
+    th.detach();
+    return s;
+}
+
+pub fn streamSimpleOllama(
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: ?ai_types.SimpleStreamOptions,
+    allocator: std.mem.Allocator,
+) !*event_stream.AssistantMessageEventStream {
+    const o = options orelse ai_types.SimpleStreamOptions{};
+    return streamOllama(model, context, .{
+        .temperature = o.temperature,
+        .max_tokens = o.max_tokens,
+        .api_key = if (o.api_key) |k| ai_types.OwnedSlice(u8).initBorrowed(k) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .cache_retention = o.cache_retention,
+        .session_id = if (o.session_id) |sid| ai_types.OwnedSlice(u8).initBorrowed(sid) else ai_types.OwnedSlice(u8).initBorrowed(""),
+        .headers = o.headers,
+        .retry = o.retry,
+        .cancel_token = o.cancel_token,
+        .on_payload_fn = o.on_payload_fn,
+        .on_payload_ctx = o.on_payload_ctx,
+    }, allocator);
+}
+
+pub fn registerOllamaApiProvider(registry: *api_registry.ApiRegistry) !void {
+    try registry.registerApiProvider(.{
+        .api = "ollama",
+        .stream = streamOllama,
+        .stream_simple = streamSimpleOllama,
+    }, null);
+}
+
+test "buildBody includes model stream options and messages" {
+    const model = ai_types.Model{
+        .id = "llama3.2:1b",
+        .name = "Llama 3.2 1B",
+        .api = "ollama",
+        .provider = "ollama",
+        .base_url = "",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 131_072,
+        .max_tokens = 64,
+    };
+
+    const msg = ai_types.Message{ .user = .{
+        .content = .{ .text = "hello" },
+        .timestamp = 1,
+    } };
+
+    const ctx = ai_types.Context{ .system_prompt = ai_types.OwnedSlice(u8).initBorrowed("be concise"), .messages = &[_]ai_types.Message{msg} };
+
+    const body = try buildBody(model, ctx, .{ .temperature = 0.2, .max_tokens = 12 }, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"model\":\"llama3.2:1b\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"stream\":true") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"num_predict\":12") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"temperature\":0.2") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"role\":\"system\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"content\":\"hello\"") != null);
+}
+
+test "buildBody includes images array for user message with image parts" {
+    const model = ai_types.Model{
+        .id = "llama3.2-vision",
+        .name = "Llama 3.2 Vision",
+        .api = "ollama",
+        .provider = "ollama",
+        .base_url = "",
+        .reasoning = false,
+        .input = &[_][]const u8{ "text", "image" },
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 131_072,
+        .max_tokens = 64,
+    };
+
+    const parts = [_]ai_types.UserContentPart{
+        .{ .text = .{ .text = "What is in this image?" } },
+        .{ .image = .{ .data = "iVBORw0KGgoAAAANSUhEUgAAAAE", .mime_type = "image/png" } },
+    };
+
+    const msg = ai_types.Message{ .user = .{
+        .content = .{ .parts = &parts },
+        .timestamp = 1,
+    } };
+
+    const ctx = ai_types.Context{ .messages = &[_]ai_types.Message{msg} };
+
+    const body = try buildBody(model, ctx, .{}, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"images\":[\"iVBORw0KGgoAAAANSUhEUgAAAAE\"]") != null);
+    try std.testing.expect(std.mem.find(u8, body, "What is in this image?") != null);
+}
+
+test "buildBody includes images array for tool_result with image" {
+    const model = ai_types.Model{
+        .id = "llama3.2-vision",
+        .name = "Llama 3.2 Vision",
+        .api = "ollama",
+        .provider = "ollama",
+        .base_url = "",
+        .reasoning = false,
+        .input = &[_][]const u8{ "text", "image" },
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 131_072,
+        .max_tokens = 64,
+    };
+
+    const tool_result_parts = [_]ai_types.UserContentPart{
+        .{ .text = .{ .text = "Here is the screenshot" } },
+        .{ .image = .{ .data = "screenshotaBCD123", .mime_type = "image/png" } },
+    };
+
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "Take a screenshot" }, .timestamp = 0 } },
+        .{ .tool_result = .{
+            .tool_call_id = "tool_123",
+            .tool_name = "screenshot",
+            .content = &tool_result_parts,
+            .is_error = false,
+            .timestamp = 1,
+        } },
+    };
+
+    const ctx = ai_types.Context{ .messages = &messages };
+
+    const body = try buildBody(model, ctx, .{}, std.testing.allocator);
+    defer std.testing.allocator.free(body);
+
+    try std.testing.expect(std.mem.find(u8, body, "\"role\":\"tool\"") != null);
+    try std.testing.expect(std.mem.find(u8, body, "\"images\":[\"screenshotaBCD123\"]") != null);
+    try std.testing.expect(std.mem.find(u8, body, "Here is the screenshot") != null);
+}
+
+test "parseLineExtended - text content" {
+    const allocator = std.testing.allocator;
+    const line = "{\"message\":{\"role\":\"assistant\",\"content\":\"Hello world\"},\"done\":false}";
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.text != null);
+    try std.testing.expectEqualStrings("Hello world", result.text.?);
+    try std.testing.expectEqual(@as(usize, 0), result.tool_calls.len);
+}
+
+test "parseLineExtended - usage and done reason" {
+    const allocator = std.testing.allocator;
+    const line = "{\"message\":{\"role\":\"assistant\",\"content\":\"test\"},\"done\":true,\"prompt_eval_count\":10,\"eval_count\":5,\"done_reason\":\"length\"}";
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.text != null);
+    try std.testing.expectEqualStrings("test", result.text.?);
+    try std.testing.expectEqual(@as(u64, 10), result.usage.input);
+    try std.testing.expectEqual(@as(u64, 5), result.usage.output);
+    try std.testing.expect(result.done_reason != null);
+    try std.testing.expectEqualStrings("length", result.done_reason.?);
+}
+
+test "parseLineExtended - tool call with arguments" {
+    const allocator = std.testing.allocator;
+    const line =
+        \\{"model":"llama3.2","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"bash","arguments":{"cmd":"ls -la"}}}]},"done":true}
+    ;
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.text == null);
+    try std.testing.expectEqual(@as(usize, 1), result.tool_calls.len);
+
+    const tc = result.tool_calls[0];
+    try std.testing.expectEqualStrings("bash", tc.name);
+    try std.testing.expectEqualStrings("{\"cmd\":\"ls -la\"}", tc.arguments_json);
+}
+
+test "parseLineExtended - multiple tool calls" {
+    const allocator = std.testing.allocator;
+    const line =
+        \\{"model":"llama3.2","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"bash","arguments":{"cmd":"ls"}}},{"function":{"name":"read_file","arguments":{"path":"test.txt"}}}]},"done":true}
+    ;
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.tool_calls.len);
+
+    try std.testing.expectEqualStrings("bash", result.tool_calls[0].name);
+    try std.testing.expectEqualStrings("{\"cmd\":\"ls\"}", result.tool_calls[0].arguments_json);
+
+    try std.testing.expectEqualStrings("read_file", result.tool_calls[1].name);
+    try std.testing.expectEqualStrings("{\"path\":\"test.txt\"}", result.tool_calls[1].arguments_json);
+}
+
+test "parseLineExtended - tool call with empty arguments" {
+    const allocator = std.testing.allocator;
+    const line =
+        \\{"model":"llama3.2","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"no_args","arguments":{}}}]},"done":true}
+    ;
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.tool_calls.len);
+
+    const tc = result.tool_calls[0];
+    try std.testing.expectEqualStrings("no_args", tc.name);
+    try std.testing.expectEqualStrings("{}", tc.arguments_json);
+}
+
+test "parseLineExtended - mixed text and tool calls" {
+    const allocator = std.testing.allocator;
+    const line =
+        \\{"model":"llama3.2","message":{"role":"assistant","content":"Let me help you.","tool_calls":[{"function":{"name":"search","arguments":{"query":"test"}}}]},"done":true}
+    ;
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expect(result.text != null);
+    try std.testing.expectEqualStrings("Let me help you.", result.text.?);
+    try std.testing.expectEqual(@as(usize, 1), result.tool_calls.len);
+    try std.testing.expectEqualStrings("search", result.tool_calls[0].name);
+}
+
+test "parseLineExtended - tool call with nested arguments" {
+    const allocator = std.testing.allocator;
+    const line =
+        \\{"model":"llama3.2","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"execute","arguments":{"options":{"verbose":true,"timeout":30},"command":"echo hello"}}}]},"done":true}
+    ;
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.tool_calls.len);
+
+    const tc = result.tool_calls[0];
+    try std.testing.expectEqualStrings("execute", tc.name);
+    try std.testing.expect(std.mem.find(u8, tc.arguments_json, "\"options\"") != null);
+    try std.testing.expect(std.mem.find(u8, tc.arguments_json, "\"verbose\":true") != null);
+    try std.testing.expect(std.mem.find(u8, tc.arguments_json, "\"command\":\"echo hello\"") != null);
+}
+
+test "parseLineExtended - tool call with array arguments" {
+    const allocator = std.testing.allocator;
+    const line =
+        \\{"model":"llama3.2","message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"multi_cmd","arguments":{"commands":["ls","pwd","whoami"]}}}]},"done":true}
+    ;
+
+    var result = parseLineExtended(line, allocator) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.tool_calls.len);
+
+    const tc = result.tool_calls[0];
+    try std.testing.expectEqualStrings("multi_cmd", tc.name);
+    try std.testing.expect(std.mem.find(u8, tc.arguments_json, "[\"ls\",\"pwd\",\"whoami\"]") != null);
+}
+
+fn regressionModel(api_name: []const u8, provider_name: []const u8, base_url: []const u8) ai_types.Model {
+    return .{
+        .id = "regression-model",
+        .name = "regression-model",
+        .api = api_name,
+        .provider = provider_name,
+        .base_url = base_url,
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 16,
+    };
+}
+
+fn regressionContext() ai_types.Context {
+    const messages = struct {
+        const items = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } }};
+    }.items[0..];
+    return .{ .messages = messages };
+}
+
+fn expectCancelledStream(stream: *event_stream.AssistantMessageEventStream, allocator: std.mem.Allocator) !void {
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (!stream.isDone()) {
+        if (compat.time.nowMillis() >= deadline) return error.TestUnexpectedResult;
+        compat.time.sleepNs(std.time.ns_per_ms);
+    }
+
+    try std.testing.expect(stream.waitForThread(5_000));
+    try std.testing.expect(stream.getError() != null);
+    try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
+}
+
+test "provider_cancellation_ollama_cancel_before_request" {
+    var cancelled = std.atomic.Value(bool).init(true);
+    const cancel_token = ai_types.CancelToken{ .cancelled = &cancelled };
+    const stream = try streamSimpleOllama(
+        regressionModel("ollama", "ollama", "http://127.0.0.1:1"),
+        regressionContext(),
+        .{ .cancel_token = cancel_token },
+        std.testing.allocator,
+    );
+    try expectCancelledStream(stream, std.testing.allocator);
+}
