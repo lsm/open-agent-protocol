@@ -163,7 +163,7 @@ ULIDs; the native envelope `message_id` is never exposed as an OAP identity.
 ### Conformance evidence
 
 Three traces produced by the real binary were validated with the OAP repository's
-own validator (`go run ./cmd/oap validate`), all `PASS`:
+own validator (`go run ./go/cmd/oap validate`), all `PASS`:
 
 1. a completed run (initialize, capabilities, session open, session state,
    submit, `run.started`, two `content.delta`, `run.completed`) against a local
@@ -178,7 +178,7 @@ in `zig/src/protocol/oap/bridge.zig` (`zig build test-unit-protocol`), so a
 regression that would break external validation fails a unit test first.
 
 The endpoint also passes the OAP repository's own conformance harness end to
-end — `go run ./cmd/oap conformance --command "makai --oap --model <ref>"`,
+end — `go run ./go/cmd/oap conformance --command "makai --oap --model <ref>"`,
 which spawns the binary, drives a scripted session over
 `drafts/endpoint-stdio.md`, and hands the assembled trace to the validator the
 adapters are held to. Cursor replay is recorded as a skip: makai implements no
