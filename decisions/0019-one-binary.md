@@ -501,8 +501,19 @@ What survives the correction is the severity argument below, which is the part
 doing the work. What it needs is a frame both endpoints can parse, and the
 cheapest is **`model-provider-core` admitting `error.response`**: one type added
 to the provider envelope, carrying the `protocolError` payload the profiles
-already share. The answer is then emitted in the profile the router routes to,
-and the residual case is narrower than the question sounds — a connection that
+already share.
+
+That addition has a cost outside the schema, and whoever takes the decision
+should pay it deliberately. The binding rule cited above says the profiles have
+**disjoint envelope sets**, and today they do: 43 types and 19, overlapping in
+nothing. Admitting `error.response` makes the overlap exactly one, and that
+sentence stops being literally true. The rule's *conclusion* survives — one
+shared error frame does not let a consumer implementing either profile route
+the other's types, which is what the rule is actually protecting — but its
+premise would need amending in the same change, not after it.
+
+With the addition made, the answer is emitted in the profile the router routes
+to, and the residual case is narrower than the question sounds — a connection that
 has already carried one attributable frame has told the router which dialect it
 speaks, so ambiguity survives only where a connection's *first* frame is
 unattributable.
