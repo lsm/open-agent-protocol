@@ -1,0 +1,1 @@
+{"decisions":[{"tool_name":"file:write","operation":"write","path":"/workspace/a.txt","decision":"deny"}]}
