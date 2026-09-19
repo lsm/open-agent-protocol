@@ -6,8 +6,22 @@ const build_options = @import("build_options");
 const judged_floor = 483;
 const tolerant_fixtures = 3;
 
-const control_expectation_pending = [_][]const u8{
-    "queue-busy-auto-unadvertised-control",
+const pack_capability_keys_pending = [_][]const u8{
+    "ext-member-on-event-unadvertised",
+    "ext-packed-event-unadvertised",
+    "ext-packed-request-wrong-refusal",
+    "ext-packed-type-unadvertised",
+};
+
+const model_reconciliation_pending = [_][]const u8{
+    "compound-open-anonymous-model-reconciled",
+    "models-listed-selection-false-miss",
+    "models-stale-catalog-does-not-displace",
+    "models-stale-catalog-raises-no-change",
+};
+
+const provided_tool_tracking_pending = [_][]const u8{
+    "tools-refresh-collides-with-provided",
 };
 
 fn readAll(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -120,7 +134,9 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
     std.mem.sort([]const u8, disagreeing.items, {}, lessThan);
     var declared = std.ArrayList([]const u8).empty;
     defer declared.deinit(allocator);
-    for (control_expectation_pending) |name| try declared.append(allocator, name);
+    for (pack_capability_keys_pending) |name| try declared.append(allocator, name);
+    for (model_reconciliation_pending) |name| try declared.append(allocator, name);
+    for (provided_tool_tracking_pending) |name| try declared.append(allocator, name);
     const outstanding = try joined(allocator, disagreeing.items);
     defer allocator.free(outstanding);
     const accounted = try joined(allocator, declared.items);

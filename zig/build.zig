@@ -84,6 +84,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    semantic_mod.addImport("jsonschema", jsonschema_mod);
     const semantic_test = b.addTest(.{ .root_module = semantic_mod });
     const semantic_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic_gate.zig"),
