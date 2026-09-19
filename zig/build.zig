@@ -79,6 +79,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     fixture_gate_mod.addImport("tolerate", tolerate_mod);
+    const semantic_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/semantic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const semantic_test = b.addTest(.{ .root_module = semantic_mod });
+    const semantic_gate_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/semantic_gate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    semantic_gate_mod.addImport("semantic", semantic_mod);
+    semantic_gate_mod.addOptions("build_options", gate_options);
+    const semantic_gate_test = b.addTest(.{ .root_module = semantic_gate_mod });
     const tolerate_test = b.addTest(.{ .root_module = tolerate_mod });
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
 
@@ -89,6 +103,8 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(tolerate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
 
     const ai_types_mod = b.createModule(.{
         .root_source_file = b.path("src/ai_types.zig"),
@@ -1912,6 +1928,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
     test_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
+    test_step.dependOn(&b.addRunArtifact(semantic_test).step);
+    test_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(counting_allocator_test).step);
     test_step.dependOn(&b.addRunArtifact(bench_compare_test).step);
     test_step.dependOn(&b.addRunArtifact(owned_slice_test).step);
