@@ -150,17 +150,17 @@ zig build --build-file zig/build.zig test-e2e-protocol                     # moc
 zig build --build-file zig/build.zig test-e2e-distributed-fullstack        # mock-based, no keys
 zig build --build-file zig/build.zig test-e2e-anthropic                    # ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN, ANTHROPIC_MODEL
 zig build --build-file zig/build.zig test-e2e-openai                       # OPENAI_API_KEY, OPENAI_MODEL, OPENAI_RESPONSES_MODEL
-zig build --build-file zig/build.zig test-e2e-google                       # GOOGLE_API_KEY, GOOGLE_MODEL
-zig build --build-file zig/build.zig test-e2e-ollama                       # OLLAMA_API_KEY, OLLAMA_MODEL
+zig build --build-file zig/build.zig test-e2e-google                       # GOOGLE_API_KEY, GOOGLE_MODEL (disabled in CI, request fails)
+zig build --build-file zig/build.zig test-e2e-ollama                       # OLLAMA_API_KEY, OLLAMA_MODEL (disabled in CI, request fails)
 zig build --build-file zig/build.zig test-e2e-azure                        # AZURE_OPENAI_API_KEY, AZURE_OPENAI_BASE_URL, AZURE_OPENAI_MODEL (disabled in CI)
 zig build --build-file zig/build.zig test-e2e-github-copilot               # GH_COPILOT_REFRESH, GH_COPILOT_ACCESS (disabled in CI, quota)
-zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-ollama
-zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-github
-zig build --build-file zig/build.zig test-e2e-distributed-fullstack-github
+zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-ollama  # (disabled in CI, request fails)
+zig build --build-file zig/build.zig test-e2e-provider-protocol-fullstack-github  # (disabled in CI, quota)
+zig build --build-file zig/build.zig test-e2e-distributed-fullstack-github        # (disabled in CI, quota)
 zig build --build-file zig/build.zig test-e2e                              # aggregate; runs distributed-fullstack via test-e2e-protocol, but omits the -github variant
 ```
 
-See `.github/workflows/ci.yml` for the exact env wiring and which lanes are currently gated off.
+See `.github/workflows/ci-zig.yml` for the exact env wiring and which lanes are currently gated off. Seven of its nineteen jobs carry `if: false`.
 
 ### Guardrails (CI runs both before unit tests)
 
