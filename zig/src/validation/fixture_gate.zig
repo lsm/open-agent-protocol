@@ -39,6 +39,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     var skipped_packs: usize = 0;
     var skipped_tolerant: usize = 0;
     var unsupported: usize = 0;
+    var undecodable: usize = 0;
     var disagreements = std.ArrayList(u8).empty;
     defer disagreements.deinit(allocator);
 
@@ -64,13 +65,18 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         const expect_schema_failure = std.mem.eql(u8, phase, "schema");
         const profile = if (entry.get("profile")) |p| p.string else "agent-control-core";
         const relative = entry.get("path").?.string;
-        const sub = if (std.mem.eql(u8, profile, "model-provider-core")) "fixtures/provider" else "fixtures";
-        const full = try std.fs.path.join(allocator, &.{ root, sub, relative });
+        const full = try std.fs.path.join(allocator, &.{ root, "fixtures", relative });
         defer allocator.free(full);
 
-        const bytes = readAll(allocator, full) catch continue;
+        const bytes = readAll(allocator, full) catch |err| {
+            std.debug.print("unreadable fixture {s} at {s}: {s}\n", .{ entry.get("id").?.string, full, @errorName(err) });
+            return error.FixtureUnreadable;
+        };
         defer allocator.free(bytes);
-        var trace = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch continue;
+        var trace = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+            undecodable += 1;
+            continue;
+        };
         defer trace.deinit();
 
         const envelopes = switch (trace.value) {
@@ -104,7 +110,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
     }
 
-    std.debug.print("\njudged={d} skipped_packs={d} skipped_tolerant={d} unsupported={d}\n", .{ judged, skipped_packs, skipped_tolerant, unsupported });
+    std.debug.print("\njudged={d} skipped_packs={d} skipped_tolerant={d} unsupported={d} undecodable={d}\n", .{ judged, skipped_packs, skipped_tolerant, unsupported, undecodable });
     if (disagreements.items.len > 0) {
         std.debug.print("disagreements:\n{s}", .{disagreements.items});
         return error.SchemaPhaseDisagrees;

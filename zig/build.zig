@@ -68,6 +68,7 @@ pub fn build(b: *std.Build) void {
     fixture_gate_mod.addOptions("build_options", gate_options);
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
 
+
     const schema_bytes_test = b.addTest(.{ .root_module = schema_bytes_mod });
     const test_unit_validation_step = b.step("test-unit-validation", "Run validation unit tests");
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);

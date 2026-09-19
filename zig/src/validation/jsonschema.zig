@@ -189,7 +189,15 @@ pub const Validator = struct {
             for (branches.array.items) |branch| {
                 if (try self.passes(branch, document, instance, pointer)) matches += 1;
             }
-            if (matches != 1) try self.record(pointer, "oneOf");
+            if (matches > 1) {
+                try self.record(pointer, "oneOf");
+            } else if (matches == 0) {
+                if (try self.discriminatedBranch(branches.array.items, document, instance)) |chosen| {
+                    try self.check(chosen, document, instance, pointer);
+                } else {
+                    try self.record(pointer, "oneOf");
+                }
+            }
         }
         if (object.get("not")) |branch| {
             if (try self.passes(branch, document, instance, pointer)) try self.record(pointer, "not");
@@ -318,6 +326,41 @@ pub const Validator = struct {
             },
             else => return error.InvalidSchema,
         }
+    }
+
+    fn discriminatedBranch(self: *Validator, branches: []const std.json.Value, document: []const u8, instance: std.json.Value) Error!?std.json.Value {
+        if (instance != .object) return null;
+        const declared = instance.object.get("type") orelse return null;
+        if (declared != .string) return null;
+        for (branches) |branch| {
+            const resolved = try self.flatten(branch, document);
+            const properties = resolved.object.get("properties") orelse continue;
+            if (properties != .object) continue;
+            const type_schema = properties.object.get("type") orelse continue;
+            if (type_schema != .object) continue;
+            const constant = type_schema.object.get("const") orelse continue;
+            if (constant != .string) continue;
+            if (std.mem.eql(u8, constant.string, declared.string)) return branch;
+        }
+        return null;
+    }
+
+    fn flatten(self: *Validator, schema: std.json.Value, document: []const u8) Error!std.json.Value {
+        if (schema != .object) return schema;
+        if (schema.object.get("$ref")) |ref| {
+            if (ref != .string) return schema;
+            const target = try self.resolve(ref.string, document);
+            return self.flatten(target.schema, target.document);
+        }
+        if (schema.object.get("allOf")) |parts| {
+            if (parts == .array) {
+                for (parts.array.items) |part| {
+                    const inner = try self.flatten(part, document);
+                    if (inner == .object and inner.object.get("properties") != null) return inner;
+                }
+            }
+        }
+        return schema;
     }
 
     const Resolved = struct {
