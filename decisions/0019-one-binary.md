@@ -13,9 +13,16 @@ Gated by: [Decision 0018](0018-makai-becomes-first-party.md)
 
 [Decision 0018](0018-makai-becomes-first-party.md) makes Makai the OAP SDK. It
 now implements both profiles natively, and the work that record named is
-finished: strict payload decoding, the tier-1 credential channel end to end,
-tools and reasoning forwarded so a caller can ask for every part kind, the carry
-round trip, and specimen emission.
+finished: strict payload decoding, the tier-1 credential channel end to end and
+tools and reasoning forwarded so a caller can ask for every part kind
+(`lsm/makai#341`), and the carry round trip and specimen emission
+(`lsm/makai#347`). Both are on that repository's `main` as of this date.
+
+The adjudication record in [the provider draft](../drafts/model-provider-core.md)
+described three of those as open until this change, which is this project's most
+frequent defect shape — prose left behind by machinery — appearing in the
+document whose job is to be the record of where the gaps are. It is corrected
+alongside this record rather than after it.
 
 That leaves two trees in two languages on opposite sides of one boundary. This
 repository is the specification, the validator, a corpus, and eight adapters
@@ -201,12 +208,13 @@ the schema a description of it.
    wrong in a load-bearing place: its agent-control decoder reads the error code
    through a required enum, so a code outside its own eleven is a *decode
    failure* rather than an unknown value — at two call sites, one of which is
-   `error.response`, the frame this record just chose as the profile-independent
-   answer. Built on unchanged, the Zig validator rejects this repository's own
+   `error.response`, the frame the open question below builds its proposed
+   answer on. Built on unchanged, the Zig validator rejects this repository's own
    agent-control fixtures before any semantic check runs. The field is an owned
    string; an enum survives only as a mapping for what an implementation itself
    emits.
-2. Schema validation by codegen. Gate: all 546 fixtures match phase and codes.
+2. Schema validation, embedded and interpreted. Gate: all 546 fixtures match
+   phase and codes.
 3. The semantic state machine. Same gate, now including every diagnostic code.
 4. Adapters, one at a time. Gate: the corpus reproduces `expected-oap.json`,
    under a leak-checking allocator.
@@ -243,12 +251,13 @@ is ported and reproduces its corpus, or that unit's graduation is explicitly
 recorded as lapsed. There is no third option where the evidence quietly stops
 existing.
 
-**`adapter/makai` is the one exception, and it is already decided.** Decision
-0018 freezes it precisely so the pinned corpus survives as the historical record
-of what `+control-tools` graduated on. It is never ported, so the clause above
-would otherwise lapse a unit that record deliberately preserved. Its corpus is
-retained with the frozen adapter; retiring the Go tree does not mean deleting
-it.
+**`adapter/makai` is the one exception, and this record takes it.** Decision
+0018 describes the freeze — keeping the pinned corpus as the historical record
+of what `+control-tools` graduated on — and then leaves the disposition to the
+project owner rather than taking it. So the exception cannot be cited to that
+record, and is decided here: `adapter/makai` is frozen, never ported, and its
+unit does not lapse under the clause above. Its corpus is retained with the
+frozen adapter; retiring the Go tree does not mean deleting it.
 
 ### A change that rewrites the corpus happens before the port or after it
 
@@ -362,9 +371,9 @@ Through the port, the implementation and the expectations are not written by the
 same side. Makai writes Zig; this repository holds the fixtures, the oracle and
 the review.
 
-This is not process for its own sake. Three days before this record, the corpus
-in this repository shipped two positive fixtures encoding a sequence gap as
-valid, because they were run before their expectations were written and the
+This is not process for its own sake. Hours before this record, in `#84` on the
+same day, the corpus in this repository shipped two positive fixtures encoding a
+sequence gap as valid, because they were run before their expectations were written and the
 validator that ran them encoded the same misreading. One artifact checking
 itself agrees with itself. The separation is what caught it, and a rewrite is
 the moment it matters most.
@@ -395,11 +404,13 @@ allowlist ratchet retired. The merged tree inherits enforcement and needs the
 checker extended to `.go`, which is the cheap direction. `tools/nocomment`
 retires with the Go tree.
 
-**The measured shape.** About 48,000 lines of Go source, of which roughly 38,000
-port: 24,545 in adapters, 9,151 in validation, 3,959 in the adapter interfaces
-and reference adapter. The hub in `serve/` (5,564) is a separate question this
-record does not answer. `client/`, `conformance/`, `provider/` and `tools/` are
-development artifacts that do not ship.
+**The measured shape**, counting non-test Go throughout. About 48,000 lines of
+source, of which roughly 35,000 port: 24,545 in the eight adapters, 9,151 in
+validation, 1,731 in the adapter interfaces and reference adapter. The hub in
+`serve/` (5,564) is a separate question this record does not answer. `client/`,
+`conformance/`, `provider/` and `tools/` are development artifacts that do not
+ship. `adapter/adaptertest` (598) is a test kit the Zig side rebuilds rather
+than ports, so it is not in the 35,000.
 
 ## Consequences
 
@@ -452,23 +463,52 @@ Serving both therefore needs a router that reads the envelope's `profile` before
 decode and hands the frame to the endpoint that owns it. The hard case is a
 frame whose `profile` is absent or unknown.
 
-**The answer this record proposes: `error.response` carrying
+**The answer this record proposes: an `error.response` carrying
 `invalid_request`, correlated where an id can be recovered, connection kept
-open.** For its own decision to confirm.
+open — and it costs one schema addition, named below.** For its own decision to
+confirm.
 
-`error.response` is in the base envelope schema rather than in either profile,
-so answering with it needs no vocabulary the frame failed to declare. Two
-earlier answers were wrong and are recorded here because the reasons are worth
-more than the conclusion.
+Three answers here have been wrong, including this record's own first attempt,
+and all three are kept because the reasons are worth more than the conclusion.
 
-The first was that the profiles carry *disjoint* error sets, so no code could
-answer for both. That was inherited from an implementation's own notes and
+The one this record got wrong was that `error.response` sits in a base envelope
+rather than in either profile, so answering with it needed no vocabulary the
+frame had failed to declare. **There is no base envelope.** `error.response` is
+defined in `envelope.schema.json`, which is titled the agent-control-core
+envelope and pins `profile` to `open-agent-protocol.agent-control-core` with a
+`const`. `provider-envelope.schema.json` enumerates nineteen types and
+`error.response` is not among them; provider errors travel on
+`inference.failed` and on the `error` member of a response payload. Both
+schemas *require* `profile`, so every answer frame declares one, and answering
+an unattributable frame with today's `error.response` emits a frame in a profile
+the caller may never have been speaking — which is the hazard the sentence
+claimed to avoid, restated as a fix for itself.
+
+What survives the correction is the severity argument below, which is the part
+doing the work. What it needs is a frame both endpoints can parse, and the
+cheapest is **`model-provider-core` admitting `error.response`**: one type added
+to the provider envelope, carrying the `protocolError` payload the profiles
+already share. The answer is then emitted in the profile the router routes to,
+and the residual case is narrower than the question sounds — a connection that
+has already carried one attributable frame has told the router which dialect it
+speaks, so ambiguity survives only where a connection's *first* frame is
+unattributable.
+
+For that residue this record invents nothing. The router has no information, and
+either profile is a guess the caller can half the time not decode — but a guess
+that arrives is not worse than the silence it replaces, and a default is cheaper
+than a third, profile-neutral envelope whose only member would be an error.
+Which default, and whether the addition is made at all, is what this leaves
+open.
+
+The first of the two older wrong answers was that the profiles carry *disjoint*
+error sets, so no code could answer for both. That was inherited from an implementation's own notes and
 repeated without checking. What the specifications actually say is stranger:
 **`agent-control-core` enumerates no error codes at all.** `ProtocolError.code`
 is an open string in `common.schema.json`, and 47 distinct codes appear across
 this repository's own agent-control fixtures, including harness-specific ones
-like `claude_api_429`. Only the provider profile closed its set, in `#82`, three
-days before this record. So there is no intersection to appeal to and no missing
+like `claude_api_429`. Only the provider profile closed its set, in `#82`,
+earlier on the day of this record. So there is no intersection to appeal to and no missing
 vocabulary either — there is one closed set and one open string.
 
 The second was to close the connection. That is the wrong severity and it breaks
@@ -526,6 +566,6 @@ rather than primary — stays the only machine-readable hint.
 The port has to model one of the three, so this needs deciding before stage 1
 finishes rather than after.
 
-**How much larger the Zig tree is.** Thirty-eight thousand lines of Go is not
-thirty-eight thousand lines of Zig. Explicit allocators and `errdefer` inflate
+**How much larger the Zig tree is.** Thirty-five thousand lines of Go is not
+thirty-five thousand lines of Zig. Explicit allocators and `errdefer` inflate
 it. This changes the estimate and not the decision.
