@@ -47,7 +47,7 @@ flowchart TB
   end
 
   subgraph adapters["oap-adapters — Go, optional"]
-    endpoint["oap endpoint"]
+    endpoint["oap-adapters endpoint"]
     harnesses["eight harness adapters"]
   end
 
@@ -131,7 +131,12 @@ without guessing.
 ### Two names have to move
 
 `oap` is today the Go binary, so it is renamed — `oap-adapters` is the working
-name. And `oap serve` today means the hub in `serve/`: twelve ops, an adapter
+name. **Only one executable is called `oap`, and a user never types the other
+one.** It is spawned by `oap` when `--backend` names a harness, so its name is a
+fact about what sits on `PATH` rather than part of the command surface. That is
+the pattern `git`, `kubectl` and `gh` already use for auxiliary executables, and
+it is why the rename costs a user nothing: the only people who type
+`oap-adapters` directly are the ones debugging it. And `oap serve` today means the hub in `serve/`: twelve ops, an adapter
 dimension, cursor replay, multiplexed subscriptions. That is a different layer
 from `oap serve agent`, which exposes one loop. If both survive they need
 different verbs, or one of them quietly becomes wrong in the documentation.
