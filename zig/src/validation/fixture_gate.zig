@@ -2,6 +2,8 @@ const std = @import("std");
 const jsonschema = @import("jsonschema");
 const build_options = @import("build_options");
 
+const judged_floor = 503;
+
 const Entry = struct {
     id: []const u8,
     path: []const u8,
@@ -115,4 +117,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         std.debug.print("disagreements:\n{s}", .{disagreements.items});
         return error.SchemaPhaseDisagrees;
     }
+    if (unsupported != 0) return error.InterpreterRefusedAFixtureItOnceJudged;
+    if (undecodable != 0) return error.FixtureStoppedDecoding;
+    try std.testing.expect(judged >= judged_floor);
 }
