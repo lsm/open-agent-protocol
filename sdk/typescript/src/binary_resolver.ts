@@ -6,6 +6,7 @@ import { getNoopLogger, type MakaiLogger } from "./logger";
 
 type BinaryResolverBaseOptions = {
   cacheDir?: string;
+  cwd?: string;
   logger?: MakaiLogger;
 };
 
@@ -166,9 +167,10 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
     logger.debug("binary: bundled package not found", { package: bundledPackage });
   }
 
+  const cwd = options.cwd ?? process.cwd();
   const localCandidates = [
-    path.resolve(process.cwd(), "zig-out", "bin", binaryName),
-    path.resolve(process.cwd(), "zig", "zig-out", "bin", binaryName),
+    path.resolve(cwd, "zig-out", "bin", binaryName),
+    path.resolve(cwd, "zig", "zig-out", "bin", binaryName),
   ];
   for (const candidate of localCandidates) {
     logger.debug("binary: checking local candidate", { path: candidate });

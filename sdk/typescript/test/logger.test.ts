@@ -180,6 +180,8 @@ test("binary resolver logs resolution steps", async () => {
 
 test("binary resolver logs auto resolution candidate checks", async () => {
   const logger = createCapturingLogger();
+  const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  const binaryName = process.platform === "win32" ? "makai.exe" : "makai";
   const prevPath = process.env.MAKAI_BINARY_PATH;
   const prevUrl = process.env.MAKAI_BINARY_URL;
   const prevChecksum = process.env.MAKAI_BINARY_SHA256;
@@ -187,12 +189,23 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   delete process.env.MAKAI_BINARY_URL;
   delete process.env.MAKAI_BINARY_SHA256;
   try {
-    await resolveMakaiBinary({ logger });
+    const resolved = await resolveMakaiBinary({ logger, cwd: emptyCwd });
     const candidateLogs = logger.entries.filter((e) => e.message === "binary: checking local candidate");
-    assert.ok(candidateLogs.length >= 1, "expected at least one 'binary: checking local candidate' log");
+    assert.deepEqual(
+      candidateLogs.map((e) => e.context?.path),
+      [
+        path.join(emptyCwd, "zig-out", "bin", binaryName),
+        path.join(emptyCwd, "zig", "zig-out", "bin", binaryName),
+      ],
+    );
+
+    const resolvedLog = logger.entries.find((e) => e.message === "binary: resolved from local candidate");
+    assert.equal(resolvedLog, undefined, "empty cwd must not resolve a local candidate");
 
     const fallbackLog = logger.entries.find((e) => e.message === "binary: falling back to PATH lookup");
     assert.ok(fallbackLog, "expected 'binary: falling back to PATH lookup' log");
+    assert.equal(fallbackLog.context?.binary, binaryName);
+    assert.equal(resolved, "makai");
   } finally {
     if (prevPath === undefined) delete process.env.MAKAI_BINARY_PATH;
     else process.env.MAKAI_BINARY_PATH = prevPath;
@@ -200,6 +213,7 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     else process.env.MAKAI_BINARY_URL = prevUrl;
     if (prevChecksum === undefined) delete process.env.MAKAI_BINARY_SHA256;
     else process.env.MAKAI_BINARY_SHA256 = prevChecksum;
+    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
   }
 });
 
