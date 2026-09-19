@@ -28,7 +28,7 @@ arguing from effort. That argument was weak, and this record replaces it.
 
 ## Decisions
 
-### One binary ships, and it is `oap`
+### One binary ships, and it is `oapx`
 
 ```mermaid
 flowchart TB
@@ -36,7 +36,7 @@ flowchart TB
   apps["other apps<br/>SDKs: ts, python, go"]
   callers["inference callers<br/>one vocabulary, no agent"]
 
-  subgraph oap["oap — the one binary that ships"]
+  subgraph oapx["oapx — the one binary that ships"]
     loop["own agent loop<br/>TUI and CLI"]
     agent["agent profile<br/>agent-control-core"]
     provider["provider profile<br/>model-provider-core"]
@@ -56,25 +56,33 @@ flowchart TB
 ```
 
 The two profiles are independent doors and neither is downstream of the other.
-`oap serve provider` serves a caller that wants one vocabulary over many
+`oapx serve provider` serves a caller that wants one vocabulary over many
 inference vendors and no agent loop at all.
 
+**The name is `oapx`, and the Go binary keeps `oap` until it retires.** A
+rename at the end costs nothing; a collision during the port costs the gate this
+record depends on. Differential execution needs both implementations installed
+and runnable side by side, and two executables cannot both be `oap` on one
+`PATH`. So the new one is `oapx` from its first commit, `oap` stays what it is
+today, and whether `oapx` inherits the shorter name once the Go tree retires is
+a question for the day that happens.
+
 **The validator ships inside it**, which is a capability rather than a
-convenience. `oap validate` needs no second install, an endpoint can check its
+convenience. `oapx validate` needs no second install, an endpoint can check its
 own emitted trace at runtime, and the split between a tool that validates and a
 binary that serves disappears.
 
 ```
-oap                                  the TUI
-oap run "fix the failing test"       one shot, same loop, no server
-oap serve agent                      agent-control-core
-oap serve provider                   model-provider-core
-oap serve agent provider             both profiles, one process
-oap serve agent --backend claude     a harness behind the same door
-oap validate <trace.json>            the validator, either profile
-oap check                            schemas, fixtures, reference adapter
-oap conformance --command "..."      drive an endpoint, assemble, validate
-oap specimens                        one of every envelope it emits
+oapx                                 the TUI
+oapx run "fix the failing test"      one shot, same loop, no server
+oapx serve agent                     agent-control-core
+oapx serve provider                  model-provider-core
+oapx serve agent provider            both profiles, one process
+oapx serve agent --backend claude    a harness behind the same door
+oapx validate <trace.json>           the validator, either profile
+oapx check                           schemas, fixtures, reference adapter
+oapx conformance --command "..."     drive an endpoint, assemble, validate
+oapx specimens                       one of every envelope it emits
 
   serve flags:  --stdio | --addr host:port   --backend <name>   --config <path>
 ```
@@ -83,9 +91,9 @@ A role is a noun, so it is an argument rather than a flag. `--backend` carries a
 value, and **its absence means the binary's own loop** — the property that makes
 the name work without explanation.
 
-Rejected: `oap serve --agent` as a boolean, an option pretending to be a noun.
-`oap agent` at top level, which collides with `oap run` in the reader's head.
-`oap serve endpoint` for the provider role, because `endpoint` already names the
+Rejected: `oapx serve --agent` as a boolean, an option pretending to be a noun.
+`oapx agent` at top level, which collides with `oapx run` in the reader's head.
+`oapx serve endpoint` for the provider role, because `endpoint` already names the
 *agent*-role binary in this repository, the destination member on a descriptor,
 and the implementation serving a profile — three senses before a fourth.
 
@@ -348,11 +356,11 @@ against.
 ## Open questions
 
 **Whether `serve/` survives.** The hub is twelve ops, an adapter dimension,
-cursor replay and multiplexed subscriptions — a different layer from `oap serve
+cursor replay and multiplexed subscriptions — a different layer from `oapx serve
 agent`, which exposes one loop. Whether it ports, moves, or is dropped is not
 decided here.
 
-**What `oap serve agent provider` routes on, and what answers a frame with no
+**What `oapx serve agent provider` routes on, and what answers a frame with no
 profile.** This was filed as untested and is worse than that: it contradicts
 what is built. Each of the implementation's two endpoints refuses the other's
 profile **at decode**, and the refusal names which profile that endpoint serves.
