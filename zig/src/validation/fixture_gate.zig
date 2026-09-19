@@ -4,6 +4,7 @@ const packs_mod = @import("packs");
 const build_options = @import("build_options");
 
 const judged_floor = 514;
+const tolerant_fixtures = 3;
 
 const unhandled_pack_composition = [_][]const u8{
     "ext-pack-cross-ref-declared",
@@ -152,6 +153,8 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     }
     if (unsupported != 0) return error.InterpreterRefusedAFixtureItOnceJudged;
     if (undecodable != 0) return error.FixtureStoppedDecoding;
+    if (skipped_packs != 0) return error.PackFailedToLoad;
     try std.testing.expect(judged >= judged_floor);
     try std.testing.expectEqual(unhandled_pack_composition.len, unhandled);
+    try std.testing.expectEqual(tolerant_fixtures, skipped_tolerant);
 }
