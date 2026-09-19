@@ -168,6 +168,7 @@ const Run = struct {
     order: usize = 0,
     admitted_model: []const u8 = "",
     controls: Controls = .{},
+    deferred_controls: bool = false,
     status: []const u8 = "",
 };
 
@@ -233,6 +234,7 @@ const Controls = struct {
 
 const Pending = struct {
     expectation: ?Expectation = null,
+    model_query: bool = false,
     satisfies: bool = false,
     model_unjudged: bool = false,
     revision: []const u8 = "",
@@ -773,6 +775,7 @@ pub const Machine = struct {
 
     fn modelsRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.gatedRequest(index, envelope, payload, feature_models_list, "/payload");
+        if (self.submits.get(field(envelope, "id"))) |query| query.model_query = true;
     }
 
     fn modelsResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -1162,7 +1165,7 @@ pub const Machine = struct {
             };
             const known = self.catalog_known and duplicateToolName(self.catalog.items) == null;
             pending.controls.choice = policy;
-            pending.controls.catalog = self.catalog.items;
+            pending.controls.catalog = try self.arena.allocator().dupe([]const u8, self.catalog.items);
             pending.controls.catalog_known = known;
             if (try self.toolChoiceDefect(policy, known)) |pointer| {
                 pending.satisfies = false;
@@ -1176,6 +1179,12 @@ pub const Machine = struct {
             if (outputSchemaDefect(raw)) {
                 pending.satisfies = false;
                 return unsatisfiableAs(key, "/payload/output_schema", "field", "output_schema");
+            }
+            if (pending.controls.fixed_result) |fixed| {
+                if (!try self.conformsToSchema(raw, fixed)) {
+                    pending.satisfies = false;
+                    return unsatisfiableAs(key, "/payload/output_schema", "field", "output_schema");
+                }
             }
             return null;
         }
@@ -1336,12 +1345,18 @@ pub const Machine = struct {
     }
 
     fn settleControlRefusal(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !bool {
-        const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return false;
+        const request = field(envelope, "in_reply_to");
+        const pending = self.submits.get(request) orelse return false;
         const raised = member(payload, "error") orelse std.json.Value{ .null = {} };
+        if (self.requests.get(request)) |asked| {
+            if (std.mem.eql(u8, asked.declared, "session.open.request") and
+                openLevelRefusal(memberString(raised, "code"))) return true;
+        }
         if (pending.expectation) |expectation| {
             if (!conformingRefusal(raised, expectation)) try self.add(expectation.diagnostic, index);
             return true;
         }
+        if (pending.model_query) return true;
         if (pending.model_unjudged) {
             const holder = try self.sessionFor(pending.session);
             try holder.unjudged.append(self.allocator, .{
@@ -1518,6 +1533,7 @@ pub const Machine = struct {
             .order = holder.order.items.len,
             .admitted_model = memberString(payload, "model_id"),
             .controls = controls,
+            .deferred_controls = queued and controls.present and controls.model_present,
             .status = "queued",
         };
         try self.runs.put(self.allocator, run_id, run);
@@ -1756,7 +1772,13 @@ pub const Machine = struct {
                         try self.add(code_unapplied_control, index);
                     }
                 }
-                if (self.sessions.get(state.session)) |holder| holder.active = state.id;
+                if (self.sessions.get(state.session)) |holder| {
+                    holder.active = state.id;
+                    if (state.deferred_controls) {
+                        state.deferred_controls = false;
+                        self.applyModelControl(holder, state.controls);
+                    }
+                }
                 try self.refreshQueueWindows(state.session);
             }
             return;
@@ -1830,6 +1852,10 @@ const error_model_not_found = "model_not_found";
 const reason_unadvertised = "unadvertised";
 
 const reason_unsatisfiable = "unsatisfiable";
+
+fn openLevelRefusal(code: []const u8) bool {
+    return listedIn(&.{ "session_exists", "unknown_adapter", "session_closed", "stale_capabilities" }, code);
+}
 
 fn sameCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
     const left = a orelse return b == null;
