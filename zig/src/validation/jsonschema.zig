@@ -9,6 +9,11 @@ pub const Unsupported = error{
 
 pub const Error = Unsupported || std.mem.Allocator.Error || error{InvalidSchema};
 
+pub const Alternative = struct {
+    declared_type: []const u8,
+    ref: []const u8,
+};
+
 pub const Failure = struct {
     pointer: []const u8,
     keyword: []const u8,
@@ -149,9 +154,11 @@ pub const Validator = struct {
         self: *Validator,
         document: []const u8,
         instance: std.json.Value,
-        extra_branches: []const []const u8,
+        extra_branches: []const Alternative,
     ) Error!?Failure {
-        const schema = self.registry.root(document) orelse return Unsupported.UnresolvableRef;
+        const schema = self.overrides.get(document) orelse
+            self.registry.root(document) orelse
+            return Unsupported.UnresolvableRef;
         if (extra_branches.len == 0) return self.validateSchema(schema, document, instance);
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -485,25 +492,64 @@ pub fn withMember(
 fn composeAlternatives(
     allocator: std.mem.Allocator,
     envelope: std.json.Value,
-    refs: []const []const u8,
+    alternatives: []const Alternative,
 ) !std.json.Value {
     if (envelope != .object) return envelope;
-    const existing = envelope.object.get("oneOf") orelse return envelope;
+    const key = if (envelope.object.get("oneOf") != null) "oneOf" else "anyOf";
+    const existing = envelope.object.get(key) orelse return envelope;
     if (existing != .array) return envelope;
 
     var members = std.json.Array.init(allocator);
-    for (existing.array.items) |member| try members.append(member);
-    for (refs) |ref| {
+    for (existing.array.items) |member| {
+        try members.append(try excludeFromFallback(allocator, member, alternatives));
+    }
+    for (alternatives) |alternative| {
         var node: std.json.ObjectMap = .empty;
-        try node.put(allocator, "$ref", .{ .string = ref });
+        try node.put(allocator, "$ref", .{ .string = alternative.ref });
         try members.append(.{ .object = node });
     }
 
     var composed: std.json.ObjectMap = .empty;
     var it = envelope.object.iterator();
     while (it.next()) |entry| try composed.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
-    try composed.put(allocator, "oneOf", .{ .array = members });
+    try composed.put(allocator, key, .{ .array = members });
     return .{ .object = composed };
+}
+
+fn excludeFromFallback(
+    allocator: std.mem.Allocator,
+    member: std.json.Value,
+    alternatives: []const Alternative,
+) !std.json.Value {
+    if (member != .object) return member;
+    const properties = member.object.get("properties") orelse return member;
+    if (properties != .object) return member;
+    const discriminator = properties.object.get("type") orelse return member;
+    if (discriminator != .object) return member;
+    const negation = discriminator.object.get("not") orelse return member;
+    if (negation != .object) return member;
+    const known = negation.object.get("enum") orelse return member;
+    if (known != .array) return member;
+
+    var widened = std.json.Array.init(allocator);
+    for (known.array.items) |value| try widened.append(value);
+    for (alternatives) |alternative| try widened.append(.{ .string = alternative.declared_type });
+
+    var rebuilt_negation: std.json.ObjectMap = .empty;
+    try rebuilt_negation.put(allocator, "enum", .{ .array = widened });
+
+    var rebuilt_discriminator: std.json.ObjectMap = .empty;
+    try rebuilt_discriminator.put(allocator, "type", .{ .string = "string" });
+    try rebuilt_discriminator.put(allocator, "not", .{ .object = rebuilt_negation });
+
+    var rebuilt_properties: std.json.ObjectMap = .empty;
+    try rebuilt_properties.put(allocator, "type", .{ .object = rebuilt_discriminator });
+
+    var rebuilt: std.json.ObjectMap = .empty;
+    if (member.object.get("type")) |declared| try rebuilt.put(allocator, "type", declared);
+    if (member.object.get("required")) |required| try rebuilt.put(allocator, "required", required);
+    try rebuilt.put(allocator, "properties", .{ .object = rebuilt_properties });
+    return .{ .object = rebuilt };
 }
 
 pub const schema_base = "https://open-agent-protocol.local/v0.1/";
@@ -607,7 +653,7 @@ test "a failure survives the branch validations that follow it" {
     var validator = Validator.init(allocator, &registry);
     defer validator.deinit();
 
-    const branches = [_][]const u8{"common.schema.json#/$defs/nonEmptyString"};
+    const branches = [_]Alternative{.{ .declared_type = "run.started", .ref = "common.schema.json#/$defs/nonEmptyString" }};
     const failure = (try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches)).?;
 
     try std.testing.expect(failure.pointer.len == 0 or failure.pointer[0] == '/');
@@ -626,7 +672,7 @@ test "a pack branch does not excuse an envelope from the root the profile requir
         \\"payload":{"type":"object"}}}}}
     ;
     try registry.addDocument("pack/storage.schema.json", pack_schema);
-    const branches = [_][]const u8{"pack/storage.schema.json#/$defs/objectsRead"};
+    const branches = [_]Alternative{.{ .declared_type = "com.example.storage.objects.read", .ref = "pack/storage.schema.json#/$defs/objectsRead" }};
 
     const complete =
         \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",

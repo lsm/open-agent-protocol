@@ -1,9 +1,10 @@
 const std = @import("std");
 const jsonschema = @import("jsonschema");
 const packs_mod = @import("packs");
+const tolerate = @import("tolerate");
 const build_options = @import("build_options");
 
-const judged_floor = 517;
+const judged_floor = 520;
 const tolerant_fixtures = 3;
 
 const unhandled_pack_composition = [_][]const u8{
@@ -51,7 +52,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
 
     var judged: usize = 0;
     var skipped_packs: usize = 0;
-    var skipped_tolerant: usize = 0;
+    var tolerant_judged: usize = 0;
     var unsupported: usize = 0;
     var undecodable: usize = 0;
     var unhandled: usize = 0;
@@ -76,12 +77,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
             unhandled += 1;
             continue;
         }
-        if (entry.get("mode")) |mode| {
-            if (std.mem.eql(u8, mode.string, "tolerant")) {
-                skipped_tolerant += 1;
-                continue;
-            }
-        }
+        const tolerant = if (entry.get("mode")) |mode| std.mem.eql(u8, mode.string, "tolerant") else false;
         if (std.mem.eql(u8, kind, "load-invalid")) continue;
         if (std.mem.eql(u8, phase, "decode")) continue;
 
@@ -114,25 +110,33 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         };
         defer loaded.deinit();
 
-        var refs = std.ArrayList([]const u8).empty;
-        defer refs.deinit(allocator);
-        for (loaded.branches) |branch| try refs.append(allocator, branch.ref);
-
         var override_arena = std.heap.ArenaAllocator.init(allocator);
         defer override_arena.deinit();
 
         var validator = jsonschema.Validator.init(allocator, &registry);
         defer validator.deinit();
 
+        if (tolerant) {
+            for (registry.documents.keys()) |name| {
+                if (tolerate.isMetaSchema(name)) continue;
+                const tolerated = try tolerate.document(override_arena.allocator(), registry.root(name).?);
+                try validator.overrides.put(allocator, name, tolerated);
+            }
+        }
+
         for (loaded.members) |member| {
             const target = packs_mod.payloadTarget(&registry, documentFor(profile), member.payload_type) orelse continue;
             const current = validator.overrides.get(target.document) orelse registry.root(target.document).?;
+            const member_schema = if (tolerant)
+                try tolerate.document(override_arena.allocator(), member.schema)
+            else
+                member.schema;
             const widened = try jsonschema.withMember(
                 override_arena.allocator(),
                 current,
                 target.definition,
                 member.name,
-                member.schema,
+                member_schema,
             );
             try validator.overrides.put(allocator, target.document, widened);
         }
@@ -140,7 +144,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         var saw_failure = false;
         var gave_up = false;
         for (envelopes) |envelope| {
-            const result = validator.validateWithBranches(documentFor(profile), envelope, refs.items) catch {
+            const result = validator.validateWithBranches(documentFor(profile), envelope, loaded.branches) catch {
                 gave_up = true;
                 break;
             };
@@ -151,6 +155,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
             continue;
         }
         judged += 1;
+        if (tolerant) tolerant_judged += 1;
         if (expect_schema_failure and !saw_failure) {
             try disagreements.print(allocator, "  {s}: manifest says schema-invalid, Zig accepted\n", .{entry.get("id").?.string});
         }
@@ -159,7 +164,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
     }
 
-    std.debug.print("\njudged={d} skipped_packs={d} skipped_tolerant={d} unsupported={d} undecodable={d} unhandled={d}\n", .{ judged, skipped_packs, skipped_tolerant, unsupported, undecodable, unhandled });
+    std.debug.print("\njudged={d} tolerant={d} skipped_packs={d} unsupported={d} undecodable={d} unhandled={d}\n", .{ judged, tolerant_judged, skipped_packs, unsupported, undecodable, unhandled });
     if (disagreements.items.len > 0) {
         std.debug.print("disagreements:\n{s}", .{disagreements.items});
         return error.SchemaPhaseDisagrees;
@@ -169,5 +174,97 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
     if (skipped_packs != 0) return error.PackFailedToLoad;
     try std.testing.expect(judged >= judged_floor);
     try std.testing.expectEqual(unhandled_pack_composition.len, unhandled);
-    try std.testing.expectEqual(tolerant_fixtures, skipped_tolerant);
+    try std.testing.expectEqual(tolerant_fixtures, tolerant_judged);
+}
+
+fn acceptsUnder(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, tolerant: bool, envelope: std.json.Value) !bool {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var validator = jsonschema.Validator.init(allocator, registry);
+    defer validator.deinit();
+    if (tolerant) {
+        for (registry.documents.keys()) |name| {
+            if (tolerate.isMetaSchema(name)) continue;
+            try validator.overrides.put(allocator, name, try tolerate.document(arena.allocator(), registry.root(name).?));
+        }
+    }
+    return (try validator.validate("envelope.schema.json", envelope)) == null;
+}
+
+test "tolerance is what admits an unclaimed type, and it still demands the envelope skeleton" {
+    const allocator = std.testing.allocator;
+    const root = build_options.repository_root;
+
+    var registry = try jsonschema.Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    const path = try std.fs.path.join(allocator, &.{ root, "fixtures", "valid", "ext-unpacked-type-tolerated.json" });
+    defer allocator.free(path);
+    const bytes = try readAll(allocator, path);
+    defer allocator.free(bytes);
+
+    var trace = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer trace.deinit();
+    const envelope = switch (trace.value) {
+        .array => |a| a.items[0],
+        .object => |o| o.get("events").?.array.items[0],
+        else => unreachable,
+    };
+
+    try std.testing.expectEqualStrings("com.example.storage.objects.read", envelope.object.get("type").?.string);
+    try std.testing.expect(!try acceptsUnder(allocator, &registry, false, envelope));
+    try std.testing.expect(try acceptsUnder(allocator, &registry, true, envelope));
+
+    var truncated: std.json.ObjectMap = .empty;
+    defer truncated.deinit(allocator);
+    var field = envelope.object.iterator();
+    while (field.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "id")) continue;
+        try truncated.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+    }
+    try std.testing.expect(!try acceptsUnder(allocator, &registry, true, .{ .object = truncated }));
+}
+
+test "a pack claims its type back from the tolerant fallback" {
+    const allocator = std.testing.allocator;
+    var registry = try jsonschema.Registry.initFromBundled(allocator);
+    defer registry.deinit();
+
+    try registry.addDocument("pack/storage.schema.json",
+        \\{"$id":"pack/storage.schema.json","$defs":{"objectsRead":{"type":"object",
+        \\"required":["session_id"],"properties":{"type":{"const":"com.example.storage.objects.read"},
+        \\"session_id":{"type":"string"},"payload":{"type":"object"}}}}}
+    );
+    const branches = [_]jsonschema.Alternative{.{
+        .declared_type = "com.example.storage.objects.read",
+        .ref = "pack/storage.schema.json#/$defs/objectsRead",
+    }};
+
+    const lines = [_]struct { line: []const u8, accepted: bool }{
+        .{ .line = 
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.storage.objects.read","id":"e1","session_id":"s","payload":{}}
+        , .accepted = true },
+        .{ .line = 
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core",
+        \\"type":"com.example.storage.objects.read","id":"e1","payload":{}}
+        , .accepted = false },
+    };
+
+    for (lines) |case| {
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case.line, .{});
+        defer parsed.deinit();
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var validator = jsonschema.Validator.init(allocator, &registry);
+        defer validator.deinit();
+        for (registry.documents.keys()) |name| {
+            if (tolerate.isMetaSchema(name)) continue;
+            try validator.overrides.put(allocator, name, try tolerate.document(arena.allocator(), registry.root(name).?));
+        }
+
+        const failure = try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches);
+        try std.testing.expectEqual(case.accepted, failure == null);
+    }
 }
