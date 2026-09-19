@@ -453,6 +453,7 @@ pub const Machine = struct {
         window.reached_strict = self.exceeds(counts, 0);
         window.reached_loose = self.exceeds(counts, open.items.len);
         try self.windows.put(self.allocator, window.request, window);
+        try self.refreshQueueWindows(session);
     }
 
     fn closeSubmitWindow(self: *Machine, request: []const u8) !void {
