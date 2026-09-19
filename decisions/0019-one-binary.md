@@ -213,6 +213,13 @@ is ported and reproduces its corpus, or that unit's graduation is explicitly
 recorded as lapsed. There is no third option where the evidence quietly stops
 existing.
 
+**`adapter/makai` is the one exception, and it is already decided.** Decision
+0018 freezes it precisely so the pinned corpus survives as the historical record
+of what `+control-tools` graduated on. It is never ported, so the clause above
+would otherwise lapse a unit that record deliberately preserved. Its corpus is
+retained with the frozen adapter; retiring the Go tree does not mean deleting
+it.
+
 ### A change that rewrites the corpus happens before the port or after it
 
 Every stage in this record is gated on reproducing bytes that already exist.
@@ -245,10 +252,16 @@ merge rule already anticipates for code arriving from another unit.
 
 ### A rewritten wrapper does not weaken the evidence
 
-What makes the eight adapters third-party evidence under
+What makes an adapter third-party evidence under
 [Decision 0015](0015-evidence-from-implementations-we-do-not-control.md) is that
 the *harness* is outside this project and does not bend to it. The language of
 our wrapper is not part of that test.
+
+**Seven of the eight, not eight.** `adapter/makai` wraps the implementation
+Decision 0018 makes first-party, so it stopped being third-party evidence before
+this record and is frozen rather than ported. The seven that remain wrap
+genuinely external projects and are unaffected by the language their wrapper is
+written in.
 
 So a graduated unit keeps its standing across the port, on one condition already
 built: the ported adapter reproduces its corpus. The corpus is what carries the
@@ -271,10 +284,17 @@ the moment it matters most.
 ## Evidence
 
 **The corpus has caught defects in both trees within a day of existing.** Run
-against a real implementation it surfaced a coherence rule in that
-implementation's decoder that admitted a grant response granting and refusing at
-once. Reviewed against the draft it surfaced two fixtures of this repository's
-own that blessed a sequence gap. Neither tree found its own defect.
+against a real implementation, the fixture
+`provider-grant-granting-and-refusing-at-once`
+(`fixtures/provider/schema-invalid/`) was the one disagreement of that run: the
+implementation decoded it cleanly, because its coherence rule checked `accepted`
+against `credential_ref` in both directions and against `error` in neither, so a
+response could grant and refuse at once and a refusal could carry no reason.
+Reviewed against the draft, two fixtures of this repository's own —
+`provider-sequence-gap` and the positive traces they were derived from — blessed
+a sequence gap the draft forbids. Neither tree found its own defect. Both are
+reported rather than cited to an upstream change, because the implementation
+side of the first is not in this repository.
 
 **The adapters are the best-shaped part of the port**, not the worst: eight
 independent units of 2,670 to 3,540 lines each, each with a hermetic corpus and
