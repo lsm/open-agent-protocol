@@ -433,7 +433,7 @@
         <div class="body">
           <p class="who">endpoint → control layer</p>
           <p class="etype">capabilities.response</p>
-          <p class="gloss">The descriptor, stamped with a revision. Everything that follows must cite <code>v1</code> or be told it is stale. <code>native</code> is a real claim: emulated and degraded are the honest alternatives.</p>
+          <p class="gloss">The descriptor, stamped with a revision. From here on, an envelope that exercises an optional feature must cite <code>v1</code> or be told it is stale. The permission envelope below carries it; the admission and the terminal do not, and need not. <code>native</code> is a real claim: emulated and degraded are the honest alternatives.</p>
 <pre class="env">{ <span class="k">"type"</span>: <span class="hi">"capabilities.response"</span>,
   <span class="k">"in_reply_to"</span>: "capq",
   <span class="k">"capability_revision"</span>: "v1",
@@ -459,7 +459,7 @@
         <div class="body">
           <p class="who">endpoint → control layer</p>
           <p class="etype">session.message.submit.response</p>
-          <p class="gloss">Admission. The subtlest envelope in the protocol: three fields have to agree on one story. <code>auto</code> resolved to <em>started</em>, so <code>admission</code>, <code>effective_delivery</code> and <code>status</code> must all say started. Any mix is rejected. The run gets its identity here, before it emits anything.</p>
+          <p class="gloss">Admission. The subtlest envelope in the protocol: three fields have to tell one story in three vocabularies. <code>auto</code> resolved to <em>started</em>, which is <code>admission: started</code>, <code>effective_delivery: start</code>, <code>status: running</code> &mdash; and the only other whole story is <code>queued</code> / <code>queue</code> / <code>queued</code>. Any other mix is rejected. The run gets its identity here, before it emits anything.</p>
 <pre class="env">{ <span class="k">"type"</span>: <span class="hi">"session.message.submit.response"</span>,
   <span class="k">"in_reply_to"</span>: "req1",
   <span class="k">"payload"</span>: {
