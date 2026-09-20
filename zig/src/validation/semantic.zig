@@ -1402,7 +1402,7 @@ pub const Machine = struct {
                 });
                 continue;
             }
-            if (std.mem.eql(u8, control.key, feature_tool_selection)) try self.duplicateToolNames(index);
+            if (std.mem.eql(u8, control.key, feature_tool_selection)) try self.duplicateToolNames(index, pending);
             if (std.mem.eql(u8, control.key, feature_structured_output)) {
                 pending.controls.schema = member(payload, "output_schema");
                 const support = self.supports.get(control.key);
@@ -1428,10 +1428,11 @@ pub const Machine = struct {
         if (duplicateToolName(names.items) != null) try self.add(code_duplicate_tool_name, index);
     }
 
-    fn duplicateToolNames(self: *Machine, index: usize) !void {
+    fn duplicateToolNames(self: *Machine, index: usize, pending: *Pending) !void {
         if (self.catalog_ambiguous) return;
         if (!self.catalog_known) return;
-        if (duplicateToolName(self.catalog.items) != null) {
+        const catalog = try self.sessionCatalog(pending.session, pending.provided);
+        if (duplicateToolName(catalog) != null) {
             try self.add(code_duplicate_tool_name, index);
         }
     }
