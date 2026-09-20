@@ -237,6 +237,7 @@ const Controls = struct {
 
 const Pending = struct {
     expectation: ?Expectation = null,
+    fired: bool = false,
     provided: []const []const u8 = &.{},
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
@@ -406,7 +407,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.message.submit.request")) {
             if (self.capabilities_stale) try self.add(code_stale_capability_revision, index);
-            try self.openSubmitWindow(index, envelope, payload, "");
+            try self.openSubmitWindow(index, envelope, payload, "", true);
             return;
         }
         if (std.mem.eql(u8, declared, "models.request")) {
@@ -419,7 +420,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.open.request")) {
             if (member(payload, "message")) |message| {
-                try self.openSubmitWindow(index, envelope, message, memberString(payload, "session_id"));
+                try self.openSubmitWindow(index, envelope, message, memberString(payload, "session_id"), false);
             }
             try self.sessionOpenRequest(index, envelope, payload);
             return;
@@ -640,6 +641,7 @@ pub const Machine = struct {
         }
         if (member(payload, "message")) |message| {
             try self.submitControls(index, envelope, message, pending);
+            try self.deliveryExpectation(index, envelope, message, pending);
         }
         if (!attaching and !providing) return;
         _ = try self.controlDescriptor(index, envelope, feature_tool_sources_attach) orelse return;
@@ -799,6 +801,8 @@ pub const Machine = struct {
     fn gatedResponse(self: *Machine, index: usize, envelope: std.json.Value) !void {
         const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return;
         const expectation = pending.expectation orelse return;
+        if (pending.fired) return;
+        pending.fired = true;
         try self.add(expectation.diagnostic, index);
     }
 
@@ -1308,7 +1312,10 @@ pub const Machine = struct {
     fn settleSubmitAdmission(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !Controls {
         const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return .{};
         if (pending.expectation) |expectation| {
-            try self.add(expectation.diagnostic, index);
+            if (!pending.fired) {
+                pending.fired = true;
+                try self.add(expectation.diagnostic, index);
+            }
             return .{};
         }
         if (pending.model_unjudged) {
@@ -1427,7 +1434,7 @@ pub const Machine = struct {
         return false;
     }
 
-    fn openSubmitWindow(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, scope: []const u8) !void {
+    fn openSubmitWindow(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, scope: []const u8, own: bool) !void {
         const session = if (scope.len != 0) scope else memberString(payload, "session_id");
         const counts = self.queueCounts(session);
         var open = std.ArrayList(*Window).empty;
@@ -1452,6 +1459,7 @@ pub const Machine = struct {
         window.reached_loose = exceeds(window, counts, open.items.len);
         try self.windows.put(self.allocator, window.request, window);
         try self.refreshQueueWindows(session);
+        if (!own) return;
 
         const pending = try self.arena.allocator().create(Pending);
         pending.* = .{ .session = session };
@@ -1977,7 +1985,18 @@ fn numeric(value: std.json.Value) ?f64 {
     };
 }
 
+fn exactInteger(value: std.json.Value) ?i128 {
+    return switch (value) {
+        .integer => |n| n,
+        .number_string => |text| std.fmt.parseInt(i128, text, 10) catch null,
+        else => null,
+    };
+}
+
 fn valueEql(a: std.json.Value, b: std.json.Value) bool {
+    if (exactInteger(a)) |left| {
+        if (exactInteger(b)) |right| return left == right;
+    }
     if (numeric(a)) |left| {
         const right = numeric(b) orelse return false;
         return left == right;

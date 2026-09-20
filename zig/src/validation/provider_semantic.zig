@@ -273,7 +273,18 @@ fn numeric(value: std.json.Value) ?f64 {
     };
 }
 
+fn exactInteger(value: std.json.Value) ?i128 {
+    return switch (value) {
+        .integer => |n| n,
+        .number_string => |text| std.fmt.parseInt(i128, text, 10) catch null,
+        else => null,
+    };
+}
+
 fn valueEql(a: std.json.Value, b: std.json.Value) bool {
+    if (exactInteger(a)) |left| {
+        if (exactInteger(b)) |right| return left == right;
+    }
     if (numeric(a)) |left| {
         const right = numeric(b) orelse return false;
         return left == right;
