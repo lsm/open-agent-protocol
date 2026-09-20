@@ -1,6 +1,6 @@
 module github.com/lsm/open-agent-protocol
 
-go 1.27
+go 1.26
 
 require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
