@@ -25,7 +25,6 @@ const Run = struct {
     submission_uuid: []const u8 = "",
     model: []const u8 = "",
     started: bool = false,
-    terminal: bool = false,
     sequence: i64 = 0,
     buffered: std.ArrayList(rpc.Message) = .empty,
 };
@@ -241,7 +240,7 @@ pub const Reducer = struct {
     fn openGate(self: *Reducer, message: rpc.Message) !void {
         if (self.run == null) return;
         const run = &self.run.?;
-        if (!run.started or run.terminal) return;
+        if (!run.started) return;
         const request = message.object.object.get("request") orelse return;
         if (request != .object) return;
         const ask = request.object;
@@ -303,7 +302,6 @@ pub const Reducer = struct {
     pub fn resolve(self: *Reducer, interaction_id: []const u8, decision: Decision) !void {
         if (self.run == null) return;
         const run = &self.run.?;
-        if (run.terminal) return;
         const gate = self.findGate(interaction_id) orelse return;
         if (gate.resolved) return;
         gate.resolved = true;
@@ -332,7 +330,6 @@ pub const Reducer = struct {
     fn startRun(self: *Reducer) !void {
         if (self.run == null) return;
         const run = &self.run.?;
-        if (run.started or run.terminal) return;
         run.started = true;
         run.id = try self.nextID("run");
         var payload = self.object();
@@ -346,7 +343,6 @@ pub const Reducer = struct {
         const replay = run.buffered;
         run.buffered = .empty;
         for (replay.items) |buffered| {
-            if (self.run == null or self.run.?.terminal) break;
             try self.applyRunObservation(buffered);
         }
     }
@@ -354,7 +350,6 @@ pub const Reducer = struct {
     fn emitDelta(self: *Reducer, kind: []const u8, text: []const u8) !void {
         if (self.run == null) return;
         const run = &self.run.?;
-        if (!run.started or run.terminal) return;
         var part = self.object();
         if (std.mem.eql(u8, kind, "thinking")) {
             try self.put(&part, "type", str("reasoning"));
@@ -404,7 +399,7 @@ pub const Reducer = struct {
     fn settle(self: *Reducer, frame: std.json.ObjectMap) !void {
         if (self.run == null) return;
         const run = &self.run.?;
-        if (!run.started or run.terminal) return;
+        if (!run.started) return;
         if (!self.frameEchoMatches(frame)) return;
         try self.publishTerminal(frame);
     }
@@ -437,7 +432,23 @@ pub const Reducer = struct {
             try self.closeTerminal(frame, &payload);
             _ = try self.emit(run, "run.completed", .{ .object = payload });
         }
-        run.terminal = true;
+        self.run = null;
+    }
+
+    pub fn transportFailed(self: *Reducer, detail: []const u8) !void {
+        if (self.run == null) return;
+        const run = &self.run.?;
+        if (!run.started) {
+            self.run = null;
+            return;
+        }
+        var failure = self.object();
+        try self.put(&failure, "code", str("claude_process_exit"));
+        try self.put(&failure, "message", str(detail));
+        var payload = try self.terminalPayload(run);
+        try self.put(&payload, "error", .{ .object = failure });
+        try self.put(&payload, "settled_by", str("inferred"));
+        _ = try self.emit(run, "run.failed", .{ .object = payload });
         self.run = null;
     }
 
@@ -482,7 +493,7 @@ pub const Reducer = struct {
         }
         if (message.kind != .observation) return;
         if (self.run) |run| {
-            if (!run.started and !run.terminal) {
+            if (!run.started) {
                 if (self.echoMatches(message)) {
                     try self.startRun();
                     try self.applyRunObservation(message);
@@ -491,10 +502,8 @@ pub const Reducer = struct {
                 }
                 return;
             }
-            if (run.started and !run.terminal) {
-                try self.applyRunObservation(message);
-                return;
-            }
+            try self.applyRunObservation(message);
+            return;
         }
         try self.observeIdle(message);
     }
@@ -739,7 +748,7 @@ fn stopReason(frame: std.json.ObjectMap) []const u8 {
 const testing = std.testing;
 
 fn observeText(reducer: *Reducer, arena: std.mem.Allocator, text: []const u8) !void {
-    const message = try rpc.parseMessage(arena, text);
+    const message = try rpc.parseMessage(arena, text, null);
     try reducer.observe(message);
 }
 
@@ -1068,6 +1077,22 @@ test "a call still open when the run settles is cancelled before the terminal" {
     try testing.expectEqual(@as(usize, 5), kinds.len);
     try testing.expectEqualStrings("action.call.cancelled", kinds[3]);
     try testing.expectEqualStrings("run.completed", kinds[4]);
+}
+
+test "a transport that dies before the run starts settles nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try reducer.transportFailed("the test closed the transport");
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+
+    try reducer.submit("turn-2");
+    try startedRun(&reducer, arena.allocator(), "turn-3");
+    try reducer.transportFailed("the test closed the transport");
+    try testing.expectEqualStrings("run.failed", reducer.envelopes.items[1].object.get("type").?.string);
 }
 
 test "an init outside a pending run is adopted when it arrives" {

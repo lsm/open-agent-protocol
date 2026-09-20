@@ -712,6 +712,30 @@ that as a predicate (`servedByHarness`) rather than deriving an `mcp:<server>`
 id: it serves no tool catalog, and a helper named for a source it never
 returns is the shape that rots invisibly in a tree with no comments.
 
+One of the thirteen expectations is not portable, and that is a fact about
+the corpus rather than about either reducer. `process-exit` fails its run with
+`message: "io: read/write on closed pipe"`, which is the Go runtime's own text
+for a closed pipe, reached through `fmt.Sprint(s.client.Err())`. No
+implementation on another runtime can emit that string, so the Zig side does
+not claim the case; it asserts instead that every envelope matches and that
+the last one differs at exactly `payload.error.message` and nowhere else, with
+both texts named in the test. If the expectation is ever regenerated against a
+transport-neutral message the assertion fails and the case can be claimed.
+`malformed-stdout` is the contrast that shows the line is real: its failure
+message is the adapter's **own** rpc error, so the Zig codec reproduces it
+verbatim and the case is claimed like any other.
+
+The Zig reducer keeps no per-run terminal flag. It clears its run slot at every
+settlement -- native terminal, transport death, decode failure -- so
+`self.run == null` is the only reachable "this run is over" state, and a
+mutation removing any `run.terminal` disjunct killed no test because none of
+them could fire. The flag and its seven readers are gone rather than left as
+branches a reader would assume were load-bearing. The oracle needs its own,
+because a gate or a tool there holds a pointer to a run the session has already
+dropped. `Tool.terminal` and `Gate.resolved` stay on the Zig side for the same
+reason the oracle needs them: the sweep at settlement has to tell an open call
+from a settled one.
+
 Two divergences in the Zig port are deliberate and bounded. A gate's prompt is
 built by re-encoding the parsed `input` value, where Go interpolates the raw
 `json.RawMessage` bytes; the two agree for compact native frames, which is
@@ -719,9 +743,8 @@ every frame the corpus holds, and differ on interior whitespace. And the Zig
 reducer clears its run slot at settlement while the oracle keeps a run
 addressable through `gate.run` and `tool.run`, so the `run.terminal` disjunct
 that guards `openGate` and `resolve` on the Go side cannot fire on the Zig
-side yet -- a mutation removing it kills no test. `interrupt-cancel` is the
-case that makes it reachable, since a run may settle `cancelled` before it
-started, and the guard earns a mutation there rather than here.
+side yet -- a mutation removing it kills no test. Both disjuncts were removed with the
+flag, as recorded above.
 
 Cases: initialize-lifecycle, admission-corroboration, settlement-statuses,
 interrupt-cancel, queued-continuation, background-children,

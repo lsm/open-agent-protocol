@@ -8,6 +8,17 @@ pub const Error = error{
     InvalidControl,
 };
 
+pub const invalid_message_prefix = "claude rpc: invalid stream-json message";
+
+pub const Diagnostic = struct {
+    message: []const u8 = "",
+
+    fn invalid(self: *Diagnostic, comptime detail: []const u8) Error {
+        self.message = invalid_message_prefix ++ ": " ++ detail;
+        return Error.InvalidMessage;
+    }
+};
+
 pub const Kind = enum {
     observation,
     control_request,
@@ -58,10 +69,16 @@ pub const FrameReader = struct {
     }
 };
 
-pub fn parseMessage(arena: std.mem.Allocator, data: []const u8) !Message {
-    if (data.len == 0 or data[0] != '{' or data[data.len - 1] != '}') return Error.InvalidMessage;
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch return Error.InvalidMessage;
-    if (parsed != .object) return Error.InvalidMessage;
+pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Diagnostic) !Message {
+    var discard = Diagnostic{};
+    const report = diagnostic orelse &discard;
+    if (data.len == 0 or data[0] != '{' or data[data.len - 1] != '}') {
+        return report.invalid("frame must be exactly one JSON object");
+    }
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch {
+        return report.invalid("frame is not decodable JSON");
+    };
+    if (parsed != .object) return report.invalid("frame must be exactly one JSON object");
     const object = parsed.object;
 
     const type_value = object.get("type") orelse return Error.InvalidMessage;
@@ -125,7 +142,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8) !Message {
 const testing = std.testing;
 
 fn parseForTest(text: []const u8, arena: *std.heap.ArenaAllocator) !Message {
-    return parseMessage(arena.allocator(), text);
+    return parseMessage(arena.allocator(), text, null);
 }
 
 test "a frame must be one newline-terminated UTF-8 object" {
@@ -205,6 +222,23 @@ test "a control response separates success from error" {
 
     const null_payload = try parseForTest("{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"r3\",\"response\":null}}", &arena);
     try testing.expectEqual(@as(?std.json.Value, null), null_payload.response.?.response);
+}
+
+test "a decode failure names the reason the transport reports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var truncated = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"result\",\"subtype\":\"succe", &truncated));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": frame must be exactly one JSON object", truncated.message);
+
+    var undecodable = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":}", &undecodable));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": frame is not decodable JSON", undecodable.message);
+
+    var accepted = Diagnostic{};
+    _ = try parseMessage(arena.allocator(), "{\"type\":\"result\"}", &accepted);
+    try testing.expectEqualStrings("", accepted.message);
 }
 
 test "a frame that is not exactly one object is refused" {
