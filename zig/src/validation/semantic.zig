@@ -426,7 +426,7 @@ pub const Machine = struct {
             });
         }
         var duplicate = false;
-        if (std.mem.endsWith(u8, declared, ".response")) {
+        if (self.isResponseType(declared)) {
             duplicate = try self.correlate(index, envelope, declared);
         }
         const revision = field(envelope, "capability_revision");
@@ -445,6 +445,23 @@ pub const Machine = struct {
     fn isRequestType(self: *const Machine, declared: []const u8) bool {
         if (self.packs.declaredType(declared)) |held| return std.mem.eql(u8, held.role, "request");
         return std.mem.endsWith(u8, declared, ".request");
+    }
+
+    fn isResponseType(self: *const Machine, declared: []const u8) bool {
+        if (self.packs.declaredType(declared)) |held| return std.mem.eql(u8, held.role, "response");
+        return std.mem.endsWith(u8, declared, ".response");
+    }
+
+    fn answers(self: *const Machine, asked: []const u8, declared: []const u8) bool {
+        if (self.packs.declaredType(asked)) |held| {
+            if (held.response.len == 0) return false;
+            return std.mem.eql(u8, declared, held.response);
+        }
+        const suffix = ".request";
+        if (!std.mem.endsWith(u8, asked, suffix)) return false;
+        const stem = asked[0 .. asked.len - suffix.len];
+        if (!std.mem.startsWith(u8, declared, stem)) return false;
+        return std.mem.eql(u8, declared[stem.len..], ".response");
     }
 
     fn advertisedKey(self: *const Machine, key: []const u8) bool {
@@ -631,11 +648,7 @@ pub const Machine = struct {
     fn correlate(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !bool {
         const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse return false;
         const failure = std.mem.eql(u8, declared, "error.response");
-        if (!failure) {
-            const stem = request.declared[0 .. request.declared.len - ".request".len];
-            if (!std.mem.startsWith(u8, declared, stem) or
-                !std.mem.eql(u8, declared[stem.len..], ".response")) return false;
-        }
+        if (!failure and !self.answers(request.declared, declared)) return false;
         if (request.responded) return true;
         request.responded = true;
         if (!failure and
@@ -3518,4 +3531,35 @@ test "an attachment reusing an id the session already resolves silences the boun
         \\"tool_sources":[{"id":"already","kind":"process"},{"id":"fresh","kind":"process"}]}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
     , &.{});
+}
+
+fn countingWith(allocator: std.mem.Allocator, trace: []const u8, types: []const PackedType) !usize {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trace, .{});
+    defer parsed.deinit();
+    var machine = Machine.init(allocator);
+    defer machine.deinit();
+    machine.packs = .{ .types = types };
+    for (parsed.value.array.items, 0..) |envelope, index| try machine.apply(index, envelope);
+    try machine.close();
+    var stale: usize = 0;
+    for (machine.diagnostics.items) |diagnostic| {
+        if (std.mem.eql(u8, diagnostic.code, code_stale_capability_revision)) stale += 1;
+    }
+    return stale;
+}
+
+test "a packed exchange is correlated by the reply its pack declares" {
+    const storage = [_]PackedType{
+        .{ .name = "x", .role = "request", .response = "x.done" },
+        .{ .name = "x.done", .role = "response" },
+    };
+    const trace =
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"x","id":"q1","capability_revision":"v1","payload":{}},
+        \\{"type":"x.done","id":"r1","in_reply_to":"q1","capability_revision":"v2","payload":{}}]
+    ;
+    const allocator = std.testing.allocator;
+    const unwired = try countingWith(allocator, trace, &.{});
+    const wired = try countingWith(allocator, trace, &storage);
+    try std.testing.expectEqual(unwired + 1, wired);
 }
