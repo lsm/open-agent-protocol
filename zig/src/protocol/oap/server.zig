@@ -2201,7 +2201,7 @@ test "run control refusal follows the declared control order" {
             .delivery = .auto,
             .model_id = "",
             .instructions = "be terse",
-            .tool_choice_json = "{\"mode\":\"auto\"}",
+            .tool_choice_json = "{\"disallowed\":[]}",
             .output_schema_json = "{}",
         } },
     });

@@ -240,12 +240,11 @@ Execution, per advertised control, is that an implementation:
 - accepts `instructions` it advertises. Whether admitted instructions took
   effect is not a wire observable, so the key means "this endpoint accepts
   instructions" rather than a checked promise;
-- honours an admitted `tool_choice` over the session's catalog: `allowed` or
-  `disallowed` filters it, then `mode` applies to the filtered set. A tool the
-  policy excludes is never called, `required` and `named` are met before a
-  completed response, and `run.tool_selection`'s `modes` discloses the modes
-  the endpoint can actually enforce — a refusal is conforming only for a mode
-  outside that list;
+- honours an admitted `tool_choice` over the session's catalog: it is a filter,
+  carrying `allowed` or `disallowed` and exactly one of them, and a tool the
+  filter excludes is never called. An `allowed` list naming a tool the catalog
+  does not carry is unsatisfiable wherever the catalog is known, and an empty
+  `allowed` admits nothing;
 - binds an admitted `output_schema` to the run's final response:
   `run.completed.result` is present and conforms, or the run fails with
   `structured_output_failed`. A fixed-output endpoint declares its result as
@@ -354,9 +353,9 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   `undisclosed_attach_modes` on the `capabilities.response` itself, because
   `session_open` is the only application this unit defines and a key no open
   can elect promises nothing. Names outside the vocabulary are tolerated beside
-  it, since the vocabulary is additive. This is `undisclosed_selection_scope`'
-  rule for this key, and it is what makes the plural a set rather than a
-  costume: disclosing `remote` is an addition, never a substitution. An
+  it, since the vocabulary is additive, and that tolerance is what makes the
+  plural a set rather than a costume: disclosing `remote` is an addition, never
+  a substitution. An
   open attaching a `remote` source to an endpoint whose set omits it is
   refused `unsatisfiable` with `details.source`; an open attaching anything to
   an endpoint whose set omits `session_open` is refused on the capability
