@@ -676,6 +676,21 @@ state live is indistinguishable from one that captured it. Both properties
 therefore want a named test beside the corpus rather than the corpus alone;
 `zig/src/adapter/claude/session.zig` carries one each.
 
+The second property is guarded differently in each implementation, which
+matters to anyone changing either. The Go reducer buffers an observation whose
+echo does not match the run's submission uuid (`reserveObservation`), and
+`system/init` carries no `user_message_uuid`, so the turn's own init is still
+in the buffer when `run.started` is built and is replayed only afterwards; the
+captured and live values are necessarily equal at that point, and a Go mutation
+from one to the other is unobservable rather than untested. The Zig reducer is
+fed frames synchronously and applies init when it sees it, so there the capture
+is what holds the rule. Same emitted trace, different guard: removing the
+buffering in Go, or the capture in Zig, breaks only that side, and the shared
+corpus reports neither. One consequence is not yet exercised anywhere — between
+the init frame and `message_start`, a session-state read sees the old model in
+Go and the new one in Zig, because buffering defers the projection and
+synchronous application does not.
+
 Cases: initialize-lifecycle, admission-corroboration, settlement-statuses,
 interrupt-cancel, queued-continuation, background-children,
 streaming-provenance, tool-lifecycle, permission-gates, process-exit,
