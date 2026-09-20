@@ -121,12 +121,19 @@ fn runCase(allocator: std.mem.Allocator, root: []const u8, case: Case) !Outcome 
     };
 }
 
-test "the Zig reducer reproduces the initialize-lifecycle expectation" {
+const passing_cases = [_]Case{
+    .{ .id = "initialize-lifecycle", .path = "initialize-lifecycle" },
+    .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
+};
+
+test "the Zig reducer reproduces every expectation it claims" {
     const allocator = std.testing.allocator;
     const root = try corpusRoot(allocator);
     defer allocator.free(root);
 
-    const outcome = try runCase(allocator, root, .{ .id = "initialize-lifecycle", .path = "initialize-lifecycle" });
-    try std.testing.expectEqual(@as(?usize, null), outcome.first_mismatch);
-    try std.testing.expectEqual(outcome.expected, outcome.emitted);
+    for (passing_cases) |case| {
+        const outcome = try runCase(allocator, root, case);
+        try std.testing.expectEqual(@as(?usize, null), outcome.first_mismatch);
+        try std.testing.expectEqual(outcome.expected, outcome.emitted);
+    }
 }
