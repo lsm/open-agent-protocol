@@ -23,6 +23,7 @@ pub const code_model_not_in_catalog = "model_not_in_catalog";
 pub const code_duplicate_model_id = "duplicate_model_id";
 pub const code_ambiguous_default_model = "ambiguous_default_model";
 pub const code_unannounced_catalog_change = "unannounced_catalog_change";
+pub const code_undisclosed_attach_modes = "undisclosed_attach_modes";
 
 pub const implemented = [_][]const u8{
     code_duplicate_envelope_id,
@@ -47,6 +48,7 @@ pub const implemented = [_][]const u8{
     code_duplicate_model_id,
     code_ambiguous_default_model,
     code_unannounced_catalog_change,
+    code_undisclosed_attach_modes,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -681,10 +683,19 @@ pub const Machine = struct {
         self.catalog_known = true;
         self.limits = readLimits(member(payload, "limits"));
         try self.checkQueueLimits(index);
+        try self.checkAttachModes(index);
         try self.checkAdvertisement(index, outgoing);
         self.catalog_ambiguous = duplicateToolName(self.catalog.items) != null;
         if (self.catalog_ambiguous) try self.add(code_duplicate_tool_name, index);
         try self.checkRefreshAgainstProvided(index);
+    }
+
+    fn checkAttachModes(self: *Machine, index: usize) !void {
+        const key = feature_tool_sources_attach;
+        const level = self.features.get(key) orelse return;
+        if (!affirmative(level)) return;
+        if (self.disclosedMode(key, mode_session_open)) return;
+        try self.add(code_undisclosed_attach_modes, index);
     }
 
     fn collectFeatures(self: *Machine, payload: std.json.Value) !void {
@@ -2238,6 +2249,7 @@ const feature_model_selection = "run.model_selection";
 const feature_models_list = "models.list";
 const feature_tools_list = "action.tools.list";
 const feature_tool_sources_attach = "action.tool_sources.attach";
+const mode_session_open = "session_open";
 const feature_tools_provide = "action.tools.provide";
 const feature_open_subscribe = "session.open.subscribe";
 const feature_instructions = "run.instructions";
@@ -3590,6 +3602,36 @@ test "a reference into a keyword that holds data is judged as the schema it name
         \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
         \\"payload":{"result":{"n":1}}}]
     , &.{"unsatisfiable_control"});
+}
+
+test "an advertised attach capability discloses the mode an open elects" {
+    const tail =
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1","payload":{}}]
+    ;
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"]}}}},
+    ++ tail, &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native"}}}},
+    ++ tail, &.{"undisclosed_attach_modes"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["remote"]}}}},
+    ++ tail, &.{"undisclosed_attach_modes"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"unavailable"}}}},
+    ++ tail, &.{});
 }
 
 test "an escaped reference resolves the same way on both sides of the boundary" {

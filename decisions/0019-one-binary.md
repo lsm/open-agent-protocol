@@ -186,6 +186,19 @@ would take to carry it. The list is expected to shrink.
   accepts, and auditing the handful of places that switch on `.integer`. No
   fixture writes a number past 2^53 in either form.
 
+- **`attachment_field_in_catalog`.** A published tool source carrying
+  `command`, `args` or `environment` is a leak of attachment-only material into
+  a catalog, and Go raises it from one site reached by both
+  `capabilities.response` and `action.tools.list.response`. The port cannot
+  carry it, and the reason is not missing machinery: the strict schema forbids
+  those members with `additionalProperties: false`, so in strict mode the trace
+  stops at the schema phase with `schema_invalid` and the semantic check is
+  never reached. Both fixtures that carry the code are therefore `mode:
+  tolerant`, and the gate skips tolerant fixtures because the port implements
+  strict mode only. Implementing the check anyway would add a rule the gate
+  cannot see, which is the case the section below rules out. It ports when
+  tolerant mode does.
+
 - **A 2020-12 keyword the interpreter does not implement.** Go compiles
   `output_schema` with santhosh-tekuri and ignores keywords outside the
   vocabularies it asserts, so `{"maxLength": 3}`, `{"prefixItems": [...]}` and
