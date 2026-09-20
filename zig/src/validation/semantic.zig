@@ -1782,7 +1782,10 @@ pub const Machine = struct {
             const holder = try self.sessionFor(session_id);
             if (self.submits.get(field(envelope, "in_reply_to"))) |opened| {
                 if (opened.attachment == null) {
-                    for (opened.provided) |name| try holder.provided.append(self.allocator, name);
+                    for (opened.provided) |name| {
+                        if (listedIn(holder.provided.items, name)) continue;
+                        try holder.provided.append(self.allocator, name);
+                    }
                 }
             }
             const reported = memberString(payload, "current_model_id");
@@ -3387,4 +3390,20 @@ test "an attachment reusing an id the session already resolves silences the boun
         \\"tool_sources":[{"id":"already","kind":"process"},{"id":"fresh","kind":"process"}]}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
     , &.{});
+}
+
+test "a session records a provided name once, however many opens supply it" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.provide":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"echo"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"session.open.request","id":"o3","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"echo"}]}},
+        \\{"type":"session.open.response","id":"o4","in_reply_to":"o3","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}},
+        \\{"type":"capabilities.response","id":"k3","capability_revision":"v2","payload":{"features":
+        \\{"action.tools.provide":{"level":"native"}},"tools":[{"name":"echo"}]}}]
+    , &.{"duplicate_tool_name"});
 }
