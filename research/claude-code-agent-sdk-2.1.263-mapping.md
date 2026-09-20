@@ -686,10 +686,17 @@ from one to the other is unobservable rather than untested. The Zig reducer is
 fed frames synchronously and applies init when it sees it, so there the capture
 is what holds the rule. Same emitted trace, different guard: removing the
 buffering in Go, or the capture in Zig, breaks only that side, and the shared
-corpus reports neither. One consequence is not yet exercised anywhere — between
-the init frame and `message_start`, a session-state read sees the old model in
-Go and the new one in Zig, because buffering defers the projection and
-synchronous application does not.
+corpus reports neither. The consequence is protocol-visible rather than internal:
+`current_model_id` is a wire field, so when an adapter adopts an init is
+observable behaviour and the oracle governs it. The rule both sides now hold is
+that **a pending run's init is not adopted until the run starts**; an init
+arriving with no pending run, or with a started one, is adopted when it
+arrives. The Zig reducer buffers every observation whose echo does not match
+the pending run's submission uuid and replays after `run.started`, which is the
+Go mechanism rather than an init special case. No corpus case can express this:
+the corpus feeds native frames and compares emitted envelopes, while a state
+read is an inbound OAP request, so this is a unit test on both sides or it is
+nothing.
 
 Cases: initialize-lifecycle, admission-corroboration, settlement-statuses,
 interrupt-cancel, queued-continuation, background-children,

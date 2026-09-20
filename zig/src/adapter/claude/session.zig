@@ -20,6 +20,7 @@ const Run = struct {
     started: bool = false,
     terminal: bool = false,
     sequence: i64 = 0,
+    buffered: std.ArrayList(rpc.Message) = .empty,
 };
 
 pub const Reducer = struct {
@@ -111,6 +112,13 @@ pub const Reducer = struct {
         try self.put(&payload, "model_id", str(run.model));
         try self.put(&payload, "started_at_ms", int(self.now()));
         try self.emit(run, "run.started", .{ .object = payload });
+
+        const replay = run.buffered;
+        run.buffered = .empty;
+        for (replay.items) |buffered| {
+            if (self.run == null or self.run.?.terminal) break;
+            try self.applyRunObservation(buffered);
+        }
     }
 
     fn emitDelta(self: *Reducer, kind: []const u8, text: []const u8) !void {
@@ -173,13 +181,52 @@ pub const Reducer = struct {
 
     pub fn observe(self: *Reducer, message: rpc.Message) !void {
         if (message.kind != .observation) return;
+        if (self.run) |run| {
+            if (!run.started and !run.terminal) {
+                if (self.echoMatches(message)) {
+                    try self.startRun();
+                    try self.applyRunObservation(message);
+                } else {
+                    try self.run.?.buffered.append(self.allocator(), message);
+                }
+                return;
+            }
+            if (run.started and !run.terminal) {
+                try self.applyRunObservation(message);
+                return;
+            }
+        }
+        self.observeIdle(message);
+    }
+
+    fn observeIdle(self: *Reducer, message: rpc.Message) void {
+        if (!std.mem.eql(u8, message.type, "system")) return;
+        if (!std.mem.eql(u8, message.subtype, "init")) return;
+        if (message.object.object.get("model")) |model| {
+            if (model == .string) self.current_model = model.string;
+        }
+    }
+
+    fn echoMatches(self: *Reducer, message: rpc.Message) bool {
+        const run = self.run orelse return false;
         const frame = message.object.object;
-        if (std.mem.eql(u8, message.type, "system")) {
-            if (std.mem.eql(u8, message.subtype, "init")) {
-                if (frame.get("model")) |model| {
-                    if (model == .string) self.current_model = model.string;
+        if (frame.get("user_message_uuid")) |single| {
+            if (single == .string and std.mem.eql(u8, single.string, run.submission_uuid)) return true;
+        }
+        if (frame.get("user_message_uuids")) |many| {
+            if (many == .array) {
+                for (many.array.items) |item| {
+                    if (item == .string and std.mem.eql(u8, item.string, run.submission_uuid)) return true;
                 }
             }
+        }
+        return false;
+    }
+
+    fn applyRunObservation(self: *Reducer, message: rpc.Message) !void {
+        const frame = message.object.object;
+        if (std.mem.eql(u8, message.type, "system")) {
+            self.observeIdle(message);
             return;
         }
         if (std.mem.eql(u8, message.type, "stream_event")) {
@@ -190,13 +237,7 @@ pub const Reducer = struct {
             if (event != .object) return;
             const event_type = event.object.get("type") orelse return;
             if (event_type != .string) return;
-            if (std.mem.eql(u8, event_type.string, "message_start")) {
-                if (!self.belongsToRun(frame)) return;
-                try self.startRun();
-                return;
-            }
             if (std.mem.eql(u8, event_type.string, "content_block_delta")) {
-                if (!self.belongsToRun(frame)) return;
                 const delta = event.object.get("delta") orelse return;
                 if (delta != .object) return;
                 const delta_type = delta.object.get("type") orelse return;
@@ -217,21 +258,6 @@ pub const Reducer = struct {
         }
     }
 
-    fn belongsToRun(self: *Reducer, frame: std.json.ObjectMap) bool {
-        const run = self.run orelse return false;
-        const single = frame.get("user_message_uuid");
-        const many = frame.get("user_message_uuids");
-        const has_single = single != null and single.? == .string;
-        const has_many = many != null and many.? == .array and many.?.array.items.len > 0;
-        if (!has_single and !has_many) return true;
-        if (has_single and std.mem.eql(u8, single.?.string, run.submission_uuid)) return true;
-        if (has_many) {
-            for (many.?.array.items) |item| {
-                if (item == .string and std.mem.eql(u8, item.string, run.submission_uuid)) return true;
-            }
-        }
-        return false;
-    }
 };
 
 fn integerMember(map: std.json.ObjectMap, key: []const u8) ?i64 {
@@ -318,4 +344,35 @@ test "a run reports the model captured at submit, not the one init later publish
     try testing.expectEqual(@as(usize, 2), models.len);
     try testing.expectEqualStrings("claude-test", models[0]);
     try testing.expectEqualStrings("model-a", models[1]);
+}
+
+test "a pending run's init is not adopted until the run starts" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1"}
+    );
+    try testing.expectEqualStrings("claude-test", reducer.current_model);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try testing.expectEqualStrings("model-a", reducer.current_model);
+}
+
+test "an init outside a pending run is adopted when it arrives" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try observeText(&reducer, arena.allocator(),
+        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1"}
+    );
+    try testing.expectEqualStrings("model-a", reducer.current_model);
 }
