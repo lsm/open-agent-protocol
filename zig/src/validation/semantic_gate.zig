@@ -6,13 +6,8 @@ const build_options = @import("build_options");
 const judged_floor = 483;
 const tolerant_fixtures = 3;
 
-const queue_admission_pending = [_][]const u8{
-    "queue-auto-without-resolution",
-    "queue-busy-auto-wrong-refusal",
-    "queue-busy-filled-in-window-wrong-refusal",
-    "queue-explicit-admitted-start",
-    "queue-overlap-unadvertised",
-    "queue-state-recovered-run-holds-the-session",
+const control_expectation_pending = [_][]const u8{
+    "queue-busy-auto-unadvertised-control",
 };
 
 fn readAll(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -125,7 +120,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
     std.mem.sort([]const u8, disagreeing.items, {}, lessThan);
     var declared = std.ArrayList([]const u8).empty;
     defer declared.deinit(allocator);
-    for (queue_admission_pending) |name| try declared.append(allocator, name);
+    for (control_expectation_pending) |name| try declared.append(allocator, name);
     const outstanding = try joined(allocator, disagreeing.items);
     defer allocator.free(outstanding);
     const accounted = try joined(allocator, declared.items);
