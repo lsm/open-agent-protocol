@@ -402,6 +402,13 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "capabilities.updated")) {
+            const previous = memberString(payload, "previous_revision");
+            if (self.current_capability.len != 0 and !std.mem.eql(u8, previous, self.current_capability)) {
+                try self.add(code_stale_capability_revision, index);
+            }
+            if (std.mem.eql(u8, field(envelope, "capability_revision"), previous)) {
+                try self.add(code_stale_capability_revision, index);
+            }
             self.current_capability = field(envelope, "capability_revision");
             self.capabilities_stale = true;
             self.limits = null;
@@ -720,11 +727,17 @@ pub const Machine = struct {
         }
         const transports = member(limits, "transports") orelse return;
         if (transports != .array) return;
+        var bounded = false;
+        for (transports.array.items) |entry| {
+            if (entry == .string and isToolSourceKind(entry.string)) bounded = true;
+        }
+        if (!bounded) return;
         for (sources.array.items) |attachment| {
             const kind = memberString(attachment, "kind");
             var disclosed = false;
             for (transports.array.items) |entry| {
-                if (entry == .string and std.mem.eql(u8, entry.string, kind)) disclosed = true;
+                if (entry != .string or !isToolSourceKind(entry.string)) continue;
+                if (std.mem.eql(u8, entry.string, kind)) disclosed = true;
             }
             if (disclosed) continue;
             self.propose(&pending.limit_refusal, .{
@@ -1427,7 +1440,7 @@ pub const Machine = struct {
                 if (outranks(candidate, speaker)) speaker = candidate;
             }
             try self.add(speaker.diagnostic, index);
-            return true;
+            if (pending.control != null) return true;
         }
         if (pending.model_query) return true;
         if (pending.model_listed and
@@ -1708,8 +1721,10 @@ pub const Machine = struct {
                 if (delivery.len != 0) try synthesized.put(allocator, "requested_delivery", .{ .string = delivery });
             }
         }
-        const opened = self.submits.get(field(envelope, "in_reply_to"));
-        const selected = if (opened) |held| held.controls.model else "";
+        var selected: []const u8 = "";
+        if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
+            if (asked.message) |message| selected = memberString(message, "model_id");
+        }
         const attributed = if (selected.len != 0) selected else memberString(payload, "current_model_id");
         if (attributed.len != 0) try synthesized.put(allocator, "model_id", .{ .string = attributed });
         try self.admit(index, envelope, .{ .object = synthesized });
@@ -2260,6 +2275,13 @@ fn stateCondition(window: *const Window) Condition {
     return .none;
 }
 
+fn isToolSourceKind(kind: []const u8) bool {
+    for ([_][]const u8{ "native", "local", "process", "remote", "hosted" }) |name| {
+        if (std.mem.eql(u8, name, kind)) return true;
+    }
+    return false;
+}
+
 fn lessThanName(_: void, a: []const u8, b: []const u8) bool {
     return std.mem.order(u8, a, b) == .lt;
 }
@@ -2736,4 +2758,65 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
         \\"payload":{"session_id":"s","delivery":"auto","model_id":"m"}},
         \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
     , &.{ "queue_limit_exceeded", "missing_run_terminal" });
+}
+
+test "an open surface's refusal does not answer for the queue" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"message":{},"tools":[{"name":"echo"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{ "unavailable_capability", "illegal_run_transition", "missing_run_terminal" });
+}
+
+test "a compound open attributes the model the message asked for, judged or not" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"message":{"model_id":"mx"}}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"current_model_id":"m0","active_runs":[{"run_id":"r1","status":"running"}]}},
+        \\{"type":"run.started","id":"e1","run_id":"r1","session_id":"s","sequence":1,"capability_revision":"v1",
+        \\"payload":{"model_id":"mx"}},
+        \\{"type":"run.completed","id":"e2","run_id":"r1","session_id":"s","sequence":2,"capability_revision":"v1","payload":{}}]
+    , &.{"unavailable_capability"});
+}
+
+test "a transports list naming no kind at all is no bound" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"transports":[]}}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"process"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"transports":["carrier-pigeon"]}}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"process"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{});
+}
+
+test "an update continues the revision it replaces, and introduces a different one" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v9"}}]
+    , &.{"stale_capability_revision"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v1","payload":{"previous_revision":"v1"}}]
+    , &.{"stale_capability_revision"});
 }
