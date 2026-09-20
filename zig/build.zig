@@ -115,6 +115,16 @@ pub fn build(b: *std.Build) void {
     const tolerate_test = b.addTest(.{ .root_module = tolerate_mod });
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
 
+    const adapter_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    adapter_corpus_mod.addOptions("build_options", gate_options);
+    const adapter_corpus_test = b.addTest(.{ .root_module = adapter_corpus_mod });
+    const test_unit_adapter_step = b.step("test-unit-adapter", "Run the shared adapter corpus harness tests");
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
+
     const claude_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/claude/rpc.zig"),
         .target = target,
@@ -135,7 +145,7 @@ pub fn build(b: *std.Build) void {
     });
     claude_corpus_mod.addImport("rpc", claude_rpc_mod);
     claude_corpus_mod.addImport("session", claude_session_mod);
-    claude_corpus_mod.addOptions("build_options", gate_options);
+    claude_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
     const claude_corpus_test = b.addTest(.{ .root_module = claude_corpus_mod });
     const test_unit_claude_step = b.step("test-unit-claude", "Run Claude adapter unit tests");
     test_unit_claude_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
