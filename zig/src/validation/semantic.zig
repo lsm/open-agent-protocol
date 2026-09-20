@@ -236,7 +236,9 @@ const Controls = struct {
 };
 
 const Pending = struct {
-    expectation: ?Expectation = null,
+    control: ?Expectation = null,
+    attachment: ?Expectation = null,
+    subscribe: ?Expectation = null,
     fired: bool = false,
     provided: []const []const u8 = &.{},
     model_listed: bool = false,
@@ -430,7 +432,7 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "action.tools.list.response")) {
-            try self.gatedResponse(index, envelope);
+            try self.gatedResponse(index, envelope, .control);
             try self.duplicateNames(index, member(payload, "tools"));
             return;
         }
@@ -561,7 +563,7 @@ pub const Machine = struct {
         defer self.submits.put(self.allocator, field(envelope, "id"), pending) catch {};
         const level = try self.controlDescriptor(index, envelope, key) orelse return;
         if (!affirmative(level)) {
-            pending.expectation = .{
+            pending.control = .{
                 .rung = rung_capability,
                 .key = key,
                 .pointer = pointer,
@@ -574,7 +576,7 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, key)) {
-            pending.expectation = .{
+            pending.control = .{
                 .rung = rung_degradation,
                 .key = key,
                 .pointer = pointer,
@@ -598,7 +600,7 @@ pub const Machine = struct {
         const key = feature_open_subscribe;
         const level = try self.controlDescriptor(index, envelope, key) orelse return;
         if (!affirmative(level)) {
-            self.propose(pending, .{
+            self.propose(&pending.subscribe, .{
                 .rung = rung_capability,
                 .key = key,
                 .pointer = "/payload/subscribe",
@@ -611,7 +613,7 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, key)) {
-            self.propose(pending, .{
+            self.propose(&pending.subscribe, .{
                 .rung = rung_degradation,
                 .key = key,
                 .pointer = "/payload/subscribe",
@@ -653,7 +655,7 @@ pub const Machine = struct {
         const key = feature_tool_sources_attach;
         const level = self.features.get(key) orelse "";
         if (!affirmative(level) or !self.disclosesMode(key, "session_open")) {
-            self.propose(pending, .{
+            self.propose(&pending.attachment, .{
                 .rung = rung_capability,
                 .key = key,
                 .pointer = "/payload/tool_sources",
@@ -666,7 +668,7 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, key)) {
-            self.propose(pending, .{
+            self.propose(&pending.attachment, .{
                 .rung = rung_degradation,
                 .key = key,
                 .pointer = "/payload/tool_sources",
@@ -683,7 +685,7 @@ pub const Machine = struct {
                 !self.disclosesMode(key, "remote"))
             {
                 defective = true;
-                self.propose(pending, .{
+                self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
                     .pointer = "/payload/tool_sources/kind",
@@ -697,12 +699,10 @@ pub const Machine = struct {
         }
         if (defective) return;
         try self.attachLimitViolation(key, sources, pending);
-        if (pending.expectation) |held| {
-            if (std.mem.eql(u8, held.pointer, "/payload/tool_sources/limit") or
-                (held.rung == rung_unsatisfiable and std.mem.eql(u8, held.pointer, "/payload/tool_sources/kind") and !defective))
-            {
+        if (pending.attachment) |held| {
+            if (std.mem.eql(u8, held.pointer, "/payload/tool_sources/limit")) {
                 pending.limit_refusal = held;
-                pending.expectation = null;
+                pending.attachment = null;
             }
         }
     }
@@ -713,7 +713,7 @@ pub const Machine = struct {
         if (member(limits, "max_sources")) |declared| {
             if (declared == .integer and sources.array.items.len > declared.integer) {
                 const at: usize = @intCast(declared.integer);
-                self.propose(pending, .{
+                self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
                     .pointer = "/payload/tool_sources/limit",
@@ -735,7 +735,7 @@ pub const Machine = struct {
                 if (entry == .string and std.mem.eql(u8, entry.string, kind)) disclosed = true;
             }
             if (disclosed) continue;
-            self.propose(pending, .{
+            self.propose(&pending.attachment, .{
                 .rung = rung_unsatisfiable,
                 .key = key,
                 .pointer = "/payload/tool_sources/kind",
@@ -753,7 +753,7 @@ pub const Machine = struct {
         const key = feature_tools_provide;
         const level = self.features.get(key) orelse "";
         if (!affirmative(level)) {
-            self.propose(pending, .{
+            self.propose(&pending.attachment, .{
                 .rung = rung_capability,
                 .key = key,
                 .pointer = "/payload/tools",
@@ -766,7 +766,7 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, key)) {
-            self.propose(pending, .{
+            self.propose(&pending.attachment, .{
                 .rung = rung_degradation,
                 .key = key,
                 .pointer = "/payload/tools",
@@ -783,7 +783,7 @@ pub const Machine = struct {
         for (tools.array.items) |tool| {
             const name = memberString(tool, "name");
             if (listedIn(seen.items, name) or (self.catalog_known and listedIn(self.catalog.items, name))) {
-                self.propose(pending, .{
+                self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
                     .pointer = "/payload/tools/name",
@@ -798,12 +798,23 @@ pub const Machine = struct {
         }
     }
 
-    fn gatedResponse(self: *Machine, index: usize, envelope: std.json.Value) !void {
+    const Surface = enum { control, open };
+
+    fn gatedResponse(self: *Machine, index: usize, envelope: std.json.Value, surface: Surface) !void {
         const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return;
-        const expectation = pending.expectation orelse return;
-        if (pending.fired) return;
-        pending.fired = true;
-        try self.add(expectation.diagnostic, index);
+        switch (surface) {
+            .control => {
+                if (pending.control) |expectation| {
+                    if (pending.fired) return;
+                    pending.fired = true;
+                    try self.add(expectation.diagnostic, index);
+                }
+            },
+            .open => {
+                if (pending.attachment) |expectation| try self.add(expectation.diagnostic, index);
+                if (pending.subscribe) |expectation| try self.add(expectation.diagnostic, index);
+            },
+        }
     }
 
     fn modelsRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
@@ -814,7 +825,7 @@ pub const Machine = struct {
     fn modelsResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.featureKeys(index, envelope, &.{feature_models_list});
         if (self.submits.get(field(envelope, "in_reply_to"))) |query| {
-            if (query.expectation) |expectation| {
+            if (query.control) |expectation| {
                 if (expectation.rung == rung_degradation) try self.add(code_degraded_without_optin, index);
             }
         }
@@ -1086,7 +1097,7 @@ pub const Machine = struct {
             if (member(payload, control.member) == null) continue;
             const level = try self.controlDescriptor(index, envelope, control.key) orelse continue;
             if (!affirmative(level)) {
-                self.propose(pending, .{
+                self.propose(&pending.control, .{
                     .rung = rung_capability,
                     .key = control.key,
                     .pointer = controlPointer(control.key),
@@ -1099,7 +1110,7 @@ pub const Machine = struct {
                 continue;
             }
             if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, control.key)) {
-                self.propose(pending, .{
+                self.propose(&pending.control, .{
                     .rung = rung_degradation,
                     .key = control.key,
                     .pointer = controlPointer(control.key),
@@ -1120,7 +1131,7 @@ pub const Machine = struct {
                 }
             }
             if (try self.unsatisfiable(control.key, payload, pending)) |defect| {
-                self.propose(pending, defect);
+                self.propose(&pending.control, defect);
                 continue;
             }
             if (pending.satisfies) try pending.satisfiable.put(self.arena.allocator(), control.key, {});
@@ -1264,13 +1275,24 @@ pub const Machine = struct {
         return null;
     }
 
-    fn propose(self: *Machine, pending: *Pending, candidate: Expectation) void {
+    fn propose(self: *Machine, slot: *?Expectation, candidate: Expectation) void {
         _ = self;
-        const held = pending.expectation orelse {
-            pending.expectation = candidate;
+        const held = slot.* orelse {
+            slot.* = candidate;
             return;
         };
-        if (outranks(candidate, held)) pending.expectation = candidate;
+        if (outranks(candidate, held)) slot.* = candidate;
+    }
+
+    fn retained(pending: *const Pending, out: *[4]Expectation) []const Expectation {
+        var at: usize = 0;
+        for ([_]?Expectation{ pending.control, pending.attachment, pending.subscribe, pending.limit_refusal }) |slot| {
+            if (slot) |held| {
+                out[at] = held;
+                at += 1;
+            }
+        }
+        return out[0..at];
     }
 
     fn deliveryExpectation(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
@@ -1284,7 +1306,7 @@ pub const Machine = struct {
         const key = try std.fmt.allocPrint(self.arena.allocator(), "session.message.delivery.{s}", .{delivery});
         const level = try self.controlDescriptor(index, envelope, key) orelse return;
         if (std.mem.eql(u8, delivery, "queue") and !affirmative(level)) {
-            self.propose(pending, .{
+            self.propose(&pending.control, .{
                 .rung = rung_capability,
                 .key = key,
                 .pointer = "/payload/delivery",
@@ -1297,7 +1319,7 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, level, "degraded") and !allowsDegraded(payload, key)) {
-            self.propose(pending, .{
+            self.propose(&pending.control, .{
                 .rung = rung_degradation,
                 .key = key,
                 .pointer = "/payload/delivery",
@@ -1311,7 +1333,7 @@ pub const Machine = struct {
 
     fn settleSubmitAdmission(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !Controls {
         const pending = self.submits.get(field(envelope, "in_reply_to")) orelse return .{};
-        if (pending.expectation) |expectation| {
+        if (pending.control) |expectation| {
             if (!pending.fired) {
                 pending.fired = true;
                 try self.add(expectation.diagnostic, index);
@@ -1404,8 +1426,15 @@ pub const Machine = struct {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
         }
-        if (pending.expectation orelse pending.limit_refusal) |expectation| {
-            if (!conformingRefusal(raised, expectation)) try self.add(expectation.diagnostic, index);
+        var slots: [4]Expectation = undefined;
+        const held = retained(pending, &slots);
+        if (held.len != 0) {
+            var speaker = held[0];
+            for (held) |candidate| {
+                if (conformingRefusal(raised, candidate)) return true;
+                if (outranks(candidate, speaker)) speaker = candidate;
+            }
+            try self.add(speaker.diagnostic, index);
             return true;
         }
         if (pending.model_query) return true;
@@ -1613,18 +1642,15 @@ pub const Machine = struct {
 
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
-        try self.gatedResponse(index, envelope);
+        try self.gatedResponse(index, envelope, .open);
         {
             const holder = try self.sessionFor(session_id);
             if (self.submits.get(field(envelope, "in_reply_to"))) |opened| {
-                if (opened.expectation == null) {
+                if (opened.attachment == null and opened.subscribe == null) {
                     for (opened.provided) |name| try holder.provided.append(self.allocator, name);
                 }
             }
             const reported = memberString(payload, "current_model_id");
-            if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
-                try self.add(code_unapplied_control, index);
-            }
             if (reported.len != 0) {
                 holder.current_model = reported;
                 holder.current_known = true;
