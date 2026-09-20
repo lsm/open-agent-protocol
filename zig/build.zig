@@ -179,6 +179,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const oap_endpoint_client_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/oap/endpoint_client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    oap_endpoint_client_mod.addImport("compat", compat_mod);
+    const oap_endpoint_client_test = b.addTest(.{ .root_module = oap_endpoint_client_mod });
+
+
     const provider_base_url_mod = b.createModule(.{
         .root_source_file = b.path("src/provider_base_url.zig"),
         .target = target,
@@ -2047,6 +2056,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
@@ -2108,6 +2118,7 @@ pub fn build(b: *std.Build) void {
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
