@@ -406,7 +406,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.message.submit.request")) {
             if (self.capabilities_stale) try self.add(code_stale_capability_revision, index);
-            try self.openSubmitWindow(index, envelope, payload);
+            try self.openSubmitWindow(index, envelope, payload, "");
             return;
         }
         if (std.mem.eql(u8, declared, "models.request")) {
@@ -418,6 +418,9 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "session.open.request")) {
+            if (member(payload, "message")) |message| {
+                try self.openSubmitWindow(index, envelope, message, memberString(payload, "session_id"));
+            }
             try self.sessionOpenRequest(index, envelope, payload);
             return;
         }
@@ -1424,8 +1427,8 @@ pub const Machine = struct {
         return false;
     }
 
-    fn openSubmitWindow(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
-        const session = memberString(payload, "session_id");
+    fn openSubmitWindow(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, scope: []const u8) !void {
+        const session = if (scope.len != 0) scope else memberString(payload, "session_id");
         const counts = self.queueCounts(session);
         var open = std.ArrayList(*Window).empty;
         defer open.deinit(self.allocator);
@@ -1672,6 +1675,12 @@ pub const Machine = struct {
         try synthesized.put(allocator, "status", .{ .string = status });
         try synthesized.put(allocator, "admission", .{ .string = admissionFor(status) });
         try synthesized.put(allocator, "effective_delivery", .{ .string = effectiveFor(status) });
+        if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
+            if (asked.message) |message| {
+                const delivery = memberString(message, "delivery");
+                if (delivery.len != 0) try synthesized.put(allocator, "requested_delivery", .{ .string = delivery });
+            }
+        }
         const opened = self.submits.get(field(envelope, "in_reply_to"));
         const selected = if (opened) |held| held.controls.model else "";
         const attributed = if (selected.len != 0) selected else memberString(payload, "current_model_id");
@@ -1789,7 +1798,6 @@ pub const Machine = struct {
         }
         const state = run.?;
         state.last_index = index;
-        try self.checkQueueOrder(index, envelope, state, declared);
 
         const sequence = unsigned(envelope, "sequence");
         if (self.recoveries.get(state.session)) |recovery| {
@@ -1821,6 +1829,7 @@ pub const Machine = struct {
             }
             return;
         }
+        try self.checkQueueOrder(index, envelope, state, declared);
 
         if (std.mem.eql(u8, declared, "run.started")) {
             if (state.started) {
@@ -1843,7 +1852,6 @@ pub const Machine = struct {
                         self.applyModelControl(holder, state.controls);
                     }
                 }
-                try self.refreshQueueWindows(state.session);
             }
             return;
         }
