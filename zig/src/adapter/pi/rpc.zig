@@ -125,18 +125,108 @@ fn validateMembers(object: std.json.ObjectMap, shape: EventShape) !void {
     }
 }
 
+const commands = [_][]const u8{
+    "prompt",                        "steer",               "follow_up",
+    "abort",                         "clear_queue",         "new_session",
+    "get_state",                     "set_model",           "cycle_model",
+    "get_available_models",          "set_thinking_level",  "cycle_thinking_level",
+    "get_available_thinking_levels", "set_steering_mode",   "set_follow_up_mode",
+    "compact",                       "set_auto_compaction", "set_auto_retry",
+    "abort_retry",                   "bash",                "abort_bash",
+    "get_session_stats",             "export_html",         "switch_session",
+    "fork",                          "clone",               "get_fork_messages",
+    "get_entries",                   "get_tree",            "get_last_assistant_text",
+    "set_session_name",              "get_messages",        "get_commands",
+};
+
+const response_members = [_][]const u8{ "id", "type", "command", "success", "data", "error" };
+
+const MethodShape = struct {
+    name: []const u8,
+    required_text: []const []const u8 = &.{},
+    required_any: []const []const u8 = &.{},
+    optional: []const []const u8 = &.{},
+    constrained: []const u8 = "",
+    permitted: []const []const u8 = &.{},
+};
+
+const method_shapes = [_]MethodShape{
+    .{ .name = "select", .required_text = &.{"title"}, .required_any = &.{"options"}, .optional = &.{"timeout"} },
+    .{ .name = "confirm", .required_text = &.{ "title", "message" }, .optional = &.{"timeout"} },
+    .{ .name = "input", .required_text = &.{"title"}, .optional = &.{ "placeholder", "timeout" } },
+    .{ .name = "editor", .required_text = &.{"title"}, .optional = &.{"prefill"} },
+    .{ .name = "notify", .required_text = &.{"message"}, .optional = &.{"notifyType"}, .constrained = "notifyType", .permitted = &.{ "info", "warning", "error" } },
+    .{ .name = "setStatus", .required_text = &.{"statusKey"}, .optional = &.{"statusText"} },
+    .{ .name = "setWidget", .required_text = &.{"widgetKey"}, .optional = &.{ "widgetLines", "widgetPlacement" }, .constrained = "widgetPlacement", .permitted = &.{ "aboveEditor", "belowEditor" } },
+    .{ .name = "setTitle", .required_text = &.{"title"} },
+    .{ .name = "set_editor_text", .optional = &.{"text"} },
+};
+
+fn methodShape(name: []const u8) ?MethodShape {
+    for (method_shapes) |shape| {
+        if (std.mem.eql(u8, shape.name, name)) return shape;
+    }
+    return null;
+}
+
+fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) bool {
+    const value = object.get(name) orelse return false;
+    return value == .string and value.string.len != 0;
+}
+
 fn validateResponse(object: std.json.ObjectMap) !void {
     const command = object.get("command") orelse return Error.InvalidFrame;
-    if (command != .string or command.string.len == 0) return Error.InvalidFrame;
-    const success = object.get("success") orelse return Error.InvalidFrame;
-    if (success != .bool) return Error.InvalidFrame;
+    if (command != .string or !namedIn(&commands, command.string)) return Error.InvalidFrame;
+
+    var succeeded = false;
+    if (object.get("success")) |value| {
+        if (value != .bool) return Error.InvalidFrame;
+        succeeded = value.bool;
+    }
+    const failure = object.get("error");
+    if (failure) |value| {
+        if (value != .string) return Error.InvalidFrame;
+    }
+    const reported = failure != null and failure.?.string.len != 0;
+    if (succeeded and reported) return Error.InvalidFrame;
+    if (!succeeded and !reported) return Error.InvalidFrame;
+
+    if (object.get("id")) |value| {
+        if (value != .string) return Error.InvalidFrame;
+    }
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        if (!namedIn(&response_members, entry.key_ptr.*)) return Error.InvalidFrame;
+    }
 }
 
 fn validateExtensionRequest(object: std.json.ObjectMap) !void {
-    const id = object.get("id") orelse return Error.InvalidFrame;
-    if (id != .string or id.string.len == 0) return Error.InvalidFrame;
+    if (!nonEmptyString(object, "id")) return Error.InvalidFrame;
     const method = object.get("method") orelse return Error.InvalidFrame;
-    if (method != .string or method.string.len == 0) return Error.InvalidFrame;
+    if (method != .string) return Error.InvalidFrame;
+    const shape = methodShape(method.string) orelse return Error.InvalidFrame;
+
+    for (shape.required_text) |name| {
+        if (!nonEmptyString(object, name)) return Error.InvalidFrame;
+    }
+    for (shape.required_any) |name| {
+        if (object.get(name) == null) return Error.InvalidFrame;
+    }
+    if (shape.constrained.len != 0) {
+        if (object.get(shape.constrained)) |value| {
+            if (value != .string) return Error.InvalidFrame;
+            if (value.string.len != 0 and !namedIn(shape.permitted, value.string)) return Error.InvalidFrame;
+        }
+    }
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        if (std.mem.eql(u8, name, "type") or std.mem.eql(u8, name, "id") or std.mem.eql(u8, name, "method")) continue;
+        if (namedIn(shape.required_text, name)) continue;
+        if (namedIn(shape.required_any, name)) continue;
+        if (namedIn(shape.optional, name)) continue;
+        return Error.InvalidFrame;
+    }
 }
 
 test "a frame is one LF-terminated line and the terminator is required" {
@@ -196,14 +286,54 @@ test "a duplicate key is refused by the parser rather than silently resolved" {
     try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"agent_start\",\"type\":\"turn_start\"}"));
 }
 
-test "responses and extension requests are their own frame families" {
-    const response = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":true}");
-    try std.testing.expectEqual(Kind.response, response.kind);
-    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\"}"));
+test "a response names a command the pinned union declares" {
+    const ok = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":true}");
+    try std.testing.expectEqual(Kind.response, ok.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"invented\",\"success\":true}"));
+}
 
-    const request = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"confirm\"}");
-    try std.testing.expectEqual(Kind.extension_ui_request, request.kind);
-    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"method\":\"confirm\"}"));
+test "success and error are mutually determined on a response" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":true,\"error\":\"boom\"}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":false}"));
+    const failed = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":false,\"error\":\"boom\"}");
+    try std.testing.expectEqual(Kind.response, failed.kind);
+}
+
+test "an absent success member is false rather than missing" {
+    const failed = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"error\":\"boom\"}");
+    try std.testing.expectEqual(Kind.response, failed.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\"}"));
+}
+
+test "a response carrying a member the struct does not declare is refused" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":true,\"surprise\":1}"));
+}
+
+test "an extension request names a method the pinned union declares" {
+    const ok = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"confirm\",\"title\":\"t\",\"message\":\"m\"}");
+    try std.testing.expectEqual(Kind.extension_ui_request, ok.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"invented\"}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"method\":\"confirm\",\"title\":\"t\",\"message\":\"m\"}"));
+}
+
+test "each extension method requires the members its own shape names" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"confirm\",\"title\":\"t\"}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"select\",\"title\":\"t\"}"));
+    const selected = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"select\",\"title\":\"t\",\"options\":[]}");
+    try std.testing.expectEqual(Kind.extension_ui_request, selected.kind);
+    const editorText = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"set_editor_text\"}");
+    try std.testing.expectEqual(Kind.extension_ui_request, editorText.kind);
+}
+
+test "a member valid for another method is not valid for this one" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"setTitle\",\"title\":\"t\",\"message\":\"m\"}"));
+}
+
+test "a constrained member is checked against its own value set" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"notify\",\"message\":\"m\",\"notifyType\":\"shout\"}"));
+    const warned = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"notify\",\"message\":\"m\",\"notifyType\":\"warning\"}");
+    try std.testing.expectEqual(Kind.extension_ui_request, warned.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"setWidget\",\"widgetKey\":\"k\",\"widgetPlacement\":\"sideways\"}"));
 }
 
 test "extension_error is a frame this harness emits although its declared union omits it" {
