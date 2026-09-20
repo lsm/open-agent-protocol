@@ -152,6 +152,26 @@ every allocating function, and the corpus run under a leak-checking allocator**,
 not byte equality alone. Cheap now, very expensive to retrofit across eight
 adapters.
 
+### A rule the port cannot reach is recorded, not approximated
+
+Some Go rules rest on machinery the Zig standard library does not carry. The
+gate cannot see them: it compares emitted codes, so a rule that raises nothing
+because it was never written looks exactly like a rule that correctly stayed
+silent. Approximating one is worse than omitting it, because an approximation
+diverges on inputs nobody enumerated and no fixture pins.
+
+So a rule the port deliberately does not carry is recorded here, with what it
+would take to carry it. The list is expected to shrink.
+
+- **`action.tools.provide` `limits.name_pattern`.** Go compiles the disclosed
+  pattern with `regexp` and refuses a provided tool whose name does not match
+  (`go/validation/controltools.go`, `provideLimitViolation`). Zig has no regular
+  expression engine in its standard library, and a hand-written subset would
+  diverge from RE2 on inputs no fixture enumerates. No fixture in the corpus
+  discloses `name_pattern`, so the gate is silent either way. Carrying it means
+  vendoring an engine, which is its own decision. The sibling bounds
+  `max_tools` and `schema_dialect` are ported.
+
 ### Every stage is gated on data that already exists
 
 The port does not need the Go tests. It needs the Go *fixtures*, which are

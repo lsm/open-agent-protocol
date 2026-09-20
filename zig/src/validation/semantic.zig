@@ -683,7 +683,7 @@ pub const Machine = struct {
             return;
         }
         var defective = false;
-        for (sources.array.items) |attachment| {
+        for (sources.array.items, 0..) |attachment, at| {
             if (std.mem.eql(u8, memberString(attachment, "kind"), "remote") and
                 !self.disclosesMode(key, "remote"))
             {
@@ -691,7 +691,7 @@ pub const Machine = struct {
                 self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
-                    .pointer = "/payload/tool_sources/kind",
+                    .pointer = try self.pointerAt("/payload/tool_sources", at, "/kind"),
                     .code = error_unsupported_feature,
                     .reason = reason_unsatisfiable,
                     .detail_name = "source",
@@ -715,14 +715,13 @@ pub const Machine = struct {
                 self.propose(&pending.limit_refusal, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
-                    .pointer = "/payload/tool_sources/limit",
+                    .pointer = try self.pointerAt("/payload/tool_sources", at, ""),
                     .code = error_unsupported_feature,
                     .reason = reason_unsatisfiable,
                     .detail_name = "source",
                     .detail_value = memberString(sources.array.items[at], "id"),
                     .diagnostic = code_unavailable_capability,
                 });
-                return;
             }
         }
         const transports = member(limits, "transports") orelse return;
@@ -732,7 +731,7 @@ pub const Machine = struct {
             if (entry == .string and isToolSourceKind(entry.string)) bounded = true;
         }
         if (!bounded) return;
-        for (sources.array.items) |attachment| {
+        for (sources.array.items, 0..) |attachment, at| {
             const kind = memberString(attachment, "kind");
             var disclosed = false;
             for (transports.array.items) |entry| {
@@ -743,15 +742,18 @@ pub const Machine = struct {
             self.propose(&pending.limit_refusal, .{
                 .rung = rung_unsatisfiable,
                 .key = key,
-                .pointer = "/payload/tool_sources/kind",
+                .pointer = try self.pointerAt("/payload/tool_sources", at, "/kind"),
                 .code = error_unsupported_feature,
                 .reason = reason_unsatisfiable,
                 .detail_name = "source",
                 .detail_value = memberString(attachment, "id"),
                 .diagnostic = code_unavailable_capability,
             });
-            return;
         }
+    }
+
+    fn pointerAt(self: *Machine, base: []const u8, at: usize, suffix: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(self.arena.allocator(), "{s}/{d}{s}", .{ base, at, suffix });
     }
 
     fn provideExpectations(self: *Machine, payload: std.json.Value, tools: std.json.Value, sources: ?std.json.Value, pending: *Pending) !void {
@@ -786,13 +788,13 @@ pub const Machine = struct {
         try self.provideLimitViolation(key, tools, pending);
         var seen = std.ArrayList([]const u8).empty;
         defer seen.deinit(self.allocator);
-        for (tools.array.items) |tool| {
+        for (tools.array.items, 0..) |tool, at| {
             const name = memberString(tool, "name");
             if (listedIn(seen.items, name) or (self.catalog_known and listedIn(self.catalog.items, name))) {
                 self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
-                    .pointer = "/payload/tools/name",
+                    .pointer = try self.pointerAt("/payload/tools", at, "/name"),
                     .code = error_unsupported_feature,
                     .reason = reason_unsatisfiable,
                     .detail_name = "tool",
@@ -815,33 +817,31 @@ pub const Machine = struct {
                 self.propose(&pending.limit_refusal, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
-                    .pointer = "/payload/tools/limit",
+                    .pointer = try self.pointerAt("/payload/tools", at, ""),
                     .code = error_unsupported_feature,
                     .reason = reason_unsatisfiable,
                     .detail_name = "tool",
                     .detail_value = memberString(tools.array.items[at], "name"),
                     .diagnostic = code_unavailable_capability,
                 });
-                return;
             }
         }
         const dialect = memberString(limits, "schema_dialect");
         if (dialect.len == 0) return;
-        for (tools.array.items) |tool| {
+        for (tools.array.items, 0..) |tool, at| {
             const declared = member(tool, "input_schema") orelse continue;
             const stated = memberString(declared, "$schema");
             if (stated.len == 0 or std.mem.eql(u8, stated, dialect)) continue;
             self.propose(&pending.limit_refusal, .{
                 .rung = rung_unsatisfiable,
                 .key = key,
-                .pointer = "/payload/tools/input_schema",
+                .pointer = try self.pointerAt("/payload/tools", at, "/input_schema"),
                 .code = error_unsupported_feature,
                 .reason = reason_unsatisfiable,
                 .detail_name = "tool",
                 .detail_value = memberString(tool, "name"),
                 .diagnostic = code_unavailable_capability,
             });
-            return;
         }
     }
 
@@ -2319,7 +2319,26 @@ fn outranks(candidate: Expectation, held: Expectation) bool {
     if (!std.mem.eql(u8, candidate.key, held.key)) {
         return std.mem.order(u8, candidate.key, held.key) == .lt;
     }
-    return std.mem.order(u8, candidate.pointer, held.pointer) == .lt;
+    return pointerLess(candidate.pointer, held.pointer);
+}
+
+fn pointerIndex(segment: []const u8) ?usize {
+    return std.fmt.parseUnsigned(usize, segment, 10) catch null;
+}
+
+fn pointerLess(a: []const u8, b: []const u8) bool {
+    var left = std.mem.tokenizeScalar(u8, a, '/');
+    var right = std.mem.tokenizeScalar(u8, b, '/');
+    while (true) {
+        const here = left.next();
+        const there = right.next();
+        if (here == null or there == null) return here == null and there != null;
+        if (std.mem.eql(u8, here.?, there.?)) continue;
+        if (pointerIndex(here.?)) |one| {
+            if (pointerIndex(there.?)) |other| return one < other;
+        }
+        return std.mem.order(u8, here.?, there.?) == .lt;
+    }
 }
 
 fn conformingRefusal(raised: std.json.Value, expectation: Expectation) bool {
@@ -3062,4 +3081,61 @@ test "a magnitude past what an i128 holds is not an exact integer" {
         \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
         \\"payload":{"result":{"n":170141183460469231731687303715884105728.0}}}]
     , &.{});
+}
+
+test "the bound that speaks is the one earliest in the payload, counting indices as numbers" {
+    try std.testing.expect(pointerLess("/payload/tools/2", "/payload/tools/10"));
+    try std.testing.expect(!pointerLess("/payload/tools/10", "/payload/tools/2"));
+    try std.testing.expect(pointerLess("/payload/tool_sources/0/kind", "/payload/tool_sources/2"));
+    try std.testing.expect(pointerLess("/payload/tool_sources/2", "/payload/tool_sources/2/kind"));
+
+    const bounded =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],
+        \\"limits":{"max_sources":2,"transports":["process"]}}}}}
+    ;
+    const opened =
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"hosted"},{"id":"b","kind":"process"},{"id":"c","kind":"process"}]}}
+    ;
+    try expectCodes(
+        \\[
+    ++ bounded ++ "," ++ opened ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"a"}}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ bounded ++ "," ++ opened ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"c"}}}}]
+    , &.{"unavailable_capability"});
+
+    const wide =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],
+        \\"limits":{"max_sources":10,"transports":["process"]}}}}}
+    ;
+    const many =
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"s0","kind":"process"},{"id":"s1","kind":"process"},{"id":"s2","kind":"hosted"},{"id":"s3","kind":"process"},{"id":"s4","kind":"process"},{"id":"s5","kind":"process"},{"id":"s6","kind":"process"},{"id":"s7","kind":"process"},{"id":"s8","kind":"process"},{"id":"s9","kind":"process"},{"id":"s10","kind":"process"}]}}
+    ;
+    try expectCodes(
+        \\[
+    ++ wide ++ "," ++ many ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"s2"}}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ wide ++ "," ++ many ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"s10"}}}}]
+    , &.{"unavailable_capability"});
 }
