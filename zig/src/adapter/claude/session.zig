@@ -371,42 +371,108 @@ pub const Reducer = struct {
         _ = try self.emit(run, "content.delta", .{ .object = payload });
     }
 
+    fn usageOf(self: *Reducer, frame: std.json.ObjectMap) !std.json.Value {
+        var totals = self.object();
+        var input: i64 = 0;
+        var output: i64 = 0;
+        if (frame.get("usage")) |usage| {
+            if (usage == .object) {
+                input = integerMember(usage.object, "input_tokens") orelse 0;
+                output = integerMember(usage.object, "output_tokens") orelse 0;
+            }
+        }
+        if (input != 0) try self.put(&totals, "input_tokens", int(input));
+        if (output != 0) try self.put(&totals, "output_tokens", int(output));
+        if (input + output != 0) try self.put(&totals, "total_tokens", int(input + output));
+        return .{ .object = totals };
+    }
+
+    fn terminalPayload(self: *Reducer, run: *Run) !std.json.ObjectMap {
+        var payload = self.object();
+        try self.put(&payload, "session_id", str(self.options.session_id));
+        try self.put(&payload, "run_id", str(run.id));
+        return payload;
+    }
+
+    fn closeTerminal(self: *Reducer, frame: std.json.ObjectMap, payload: *std.json.ObjectMap) !void {
+        try self.put(payload, "usage", try self.usageOf(frame));
+        if (integerMember(frame, "duration_ms")) |duration| {
+            try self.put(payload, "duration_ms", int(duration));
+        }
+    }
+
     fn settle(self: *Reducer, frame: std.json.ObjectMap) !void {
         if (self.run == null) return;
         const run = &self.run.?;
         if (!run.started or run.terminal) return;
+        if (!self.frameEchoMatches(frame)) return;
+        try self.publishTerminal(frame);
+    }
+
+    fn publishTerminal(self: *Reducer, frame: std.json.ObjectMap) !void {
+        const run = &self.run.?;
+        try self.sweepRun();
+
+        var payload = try self.terminalPayload(run);
+        if (cancelled(frame)) {
+            const reason = try std.fmt.allocPrint(self.allocator(), "interrupt confirmed by terminal_reason {s}", .{stringMember(frame, "terminal_reason") orelse ""});
+            try self.put(&payload, "reason", str(reason));
+            try self.closeTerminal(frame, &payload);
+            _ = try self.emit(run, "run.cancelled", .{ .object = payload });
+        } else if (failed(frame)) {
+            var failure = self.object();
+            try self.put(&failure, "code", str(try self.failureCode(frame)));
+            try self.put(&failure, "message", str(errorResultText(frame)));
+            try self.put(&payload, "error", .{ .object = failure });
+            try self.closeTerminal(frame, &payload);
+            _ = try self.emit(run, "run.failed", .{ .object = payload });
+        } else {
+            var response = self.object();
+            try self.put(&response, "id", str(run.message_id));
+            try self.put(&response, "role", str("assistant"));
+            try self.put(&response, "content", str(stringMember(frame, "result") orelse ""));
+            try self.put(&payload, "final_response", .{ .object = response });
+            const reason: []const u8 = if (maxTurns(frame)) "max_turns" else stopReason(frame);
+            try self.put(&payload, "stop_reason", str(reason));
+            try self.closeTerminal(frame, &payload);
+            _ = try self.emit(run, "run.completed", .{ .object = payload });
+        }
         run.terminal = true;
-
-        var response = self.object();
-        try self.put(&response, "id", str(run.message_id));
-        try self.put(&response, "role", str("assistant"));
-        if (frame.get("result")) |result| {
-            if (result == .string) try self.put(&response, "content", str(result.string));
-        }
-
-        var payload = self.object();
-        try self.put(&payload, "session_id", str(self.options.session_id));
-        try self.put(&payload, "run_id", str(run.id));
-        try self.put(&payload, "final_response", .{ .object = response });
-        try self.put(&payload, "stop_reason", str(stopReason(frame)));
-        if (frame.get("usage")) |usage| {
-            if (usage == .object) {
-                const input = integerMember(usage.object, "input_tokens");
-                const output = integerMember(usage.object, "output_tokens");
-                if (input != null or output != null) {
-                    var totals = self.object();
-                    if (input) |value| try self.put(&totals, "input_tokens", int(value));
-                    if (output) |value| try self.put(&totals, "output_tokens", int(value));
-                    try self.put(&totals, "total_tokens", int((input orelse 0) + (output orelse 0)));
-                    try self.put(&payload, "usage", .{ .object = totals });
-                }
-            }
-        }
-        if (integerMember(frame, "duration_ms")) |duration| {
-            try self.put(&payload, "duration_ms", int(duration));
-        }
-        _ = try self.emit(run, "run.completed", .{ .object = payload });
         self.run = null;
+    }
+
+    fn failureCode(self: *Reducer, frame: std.json.ObjectMap) ![]const u8 {
+        if (integerMember(frame, "api_error_status")) |status| {
+            return std.fmt.allocPrint(self.allocator(), "claude_api_{d}", .{status});
+        }
+        const subtype = stringMember(frame, "subtype") orelse "";
+        const terminal_reason = stringMember(frame, "terminal_reason") orelse "";
+        if (terminal_reason.len > 0 and std.mem.eql(u8, subtype, "success")) {
+            return std.fmt.allocPrint(self.allocator(), "claude_{s}", .{terminal_reason});
+        }
+        return std.fmt.allocPrint(self.allocator(), "claude_{s}", .{subtype});
+    }
+
+    fn sweepRun(self: *Reducer) !void {
+        const run = &self.run.?;
+        for (self.tools.items) |*tool| {
+            if (tool.terminal) continue;
+            tool.terminal = true;
+            const payload = try self.toolPayload(run, tool.*);
+            _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
+        }
+        for (self.gates.items) |*gate| {
+            if (gate.resolved) continue;
+            gate.resolved = true;
+            var payload = self.object();
+            try self.put(&payload, "interaction_id", str(gate.id));
+            try self.put(&payload, "requested_by", str(endpoint_id));
+            try self.put(&payload, "responded_by", str(self.options.responder));
+            try self.put(&payload, "session_id", str(self.options.session_id));
+            try self.put(&payload, "run_id", str(run.id));
+            try self.put(&payload, "status", str("cancelled"));
+            _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event);
+        }
     }
 
     pub fn observe(self: *Reducer, message: rpc.Message) !void {
@@ -472,8 +538,11 @@ pub const Reducer = struct {
     }
 
     fn echoMatches(self: *Reducer, message: rpc.Message) bool {
+        return self.frameEchoMatches(message.object.object);
+    }
+
+    fn frameEchoMatches(self: *Reducer, frame: std.json.ObjectMap) bool {
         const run = self.run orelse return false;
-        const frame = message.object.object;
         if (frame.get("user_message_uuid")) |single| {
             if (single == .string and std.mem.eql(u8, single.string, run.submission_uuid)) return true;
         }
@@ -555,11 +624,11 @@ pub const Reducer = struct {
                 if (kind != .string or !std.mem.eql(u8, kind.string, "tool_result")) continue;
                 const id = block.object.get("tool_use_id") orelse continue;
                 if (id != .string or id.string.len == 0) continue;
-                var failed = false;
+                var errored = false;
                 if (block.object.get("is_error")) |flag| {
-                    if (flag == .bool) failed = flag.bool;
+                    if (flag == .bool) errored = flag.bool;
                 }
-                try self.endTool(id.string, block.object.get("content"), failed);
+                try self.endTool(id.string, block.object.get("content"), errored);
             }
             return;
         }
@@ -620,14 +689,50 @@ fn toolResultText(content: ?std.json.Value) []const u8 {
     return "tool call failed";
 }
 
-fn stopReason(frame: std.json.ObjectMap) []const u8 {
-    if (frame.get("terminal_reason")) |reason| {
-        if (reason == .string) {
-            if (std.mem.eql(u8, reason.string, "completed")) return "completed";
-            if (std.mem.startsWith(u8, reason.string, "aborted")) return "cancelled";
-            return reason.string;
+fn cancelled(frame: std.json.ObjectMap) bool {
+    const reason = stringMember(frame, "terminal_reason") orelse return false;
+    return std.mem.eql(u8, reason, "aborted_streaming") or std.mem.eql(u8, reason, "aborted_tools");
+}
+
+fn maxTurns(frame: std.json.ObjectMap) bool {
+    if (stringMember(frame, "subtype")) |subtype| {
+        if (std.mem.eql(u8, subtype, "error_max_turns")) return true;
+    }
+    if (stringMember(frame, "terminal_reason")) |reason| {
+        if (std.mem.eql(u8, reason, "max_turns")) return true;
+    }
+    return false;
+}
+
+fn failed(frame: std.json.ObjectMap) bool {
+    if (maxTurns(frame)) return false;
+    if (frame.get("is_error")) |flag| {
+        if (flag == .bool and flag.bool) return true;
+    }
+    const subtype = stringMember(frame, "subtype") orelse return true;
+    return !std.mem.eql(u8, subtype, "success");
+}
+
+fn errorResultText(frame: std.json.ObjectMap) []const u8 {
+    if (frame.get("errors")) |listed| {
+        if (listed == .array and listed.array.items.len == 1) {
+            const only = listed.array.items[0];
+            if (only == .string) return only.string;
         }
     }
+    if (stringMember(frame, "result")) |result| {
+        const trimmed = std.mem.trim(u8, result, " \t\r\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+    if (stringMember(frame, "subtype")) |subtype| {
+        if (!std.mem.eql(u8, subtype, "success")) return subtype;
+    }
+    return "unknown error";
+}
+
+fn stopReason(frame: std.json.ObjectMap) []const u8 {
+    if (stringMember(frame, "terminal_reason")) |reason| return reason;
+    if (stringMember(frame, "stop_reason")) |reason| return reason;
     return "completed";
 }
 
@@ -888,6 +993,81 @@ test "a gate is resolved once, whatever the second answer says" {
     try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
     try reducer.resolve(pending, .deny);
     try testing.expectEqual(settled, reducer.envelopes.items.len);
+}
+
+fn failureCodeOf(reducer: *Reducer) ?[]const u8 {
+    const payload = firstPayload(reducer, "run.failed") orelse return null;
+    return payload.get("error").?.object.get("code").?.string;
+}
+
+test "a failure names the terminal reason when the subtype says success" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reasoned = Reducer.init(&arena, .{});
+    reasoned.open();
+    try startedRun(&reasoned, scratch, "turn-1");
+    try observeText(&reasoned, scratch,
+        \\{"type":"result","subtype":"success","is_error":true,"terminal_reason":"aborted_budget","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqualStrings("claude_aborted_budget", failureCodeOf(&reasoned).?);
+
+    var subtyped = Reducer.init(&arena, .{});
+    subtyped.open();
+    try startedRun(&subtyped, scratch, "turn-1");
+    try observeText(&subtyped, scratch,
+        \\{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_budget","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqualStrings("claude_error_during_execution", failureCodeOf(&subtyped).?);
+
+    var api = Reducer.init(&arena, .{});
+    api.open();
+    try startedRun(&api, scratch, "turn-1");
+    try observeText(&api, scratch,
+        \\{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqualStrings("claude_api_429", failureCodeOf(&api).?);
+}
+
+test "a terminal naming another submission settles nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"result","subtype":"success","result":"theirs","user_message_uuid":"turn-9","uuid":"r1"}
+    );
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "run.completed"));
+
+    try observeText(&reducer, scratch,
+        \\{"type":"result","subtype":"success","result":"mine","user_message_uuid":"turn-1","uuid":"r2"}
+    );
+    try testing.expectEqualStrings("mine", firstPayload(&reducer, "run.completed").?.get("final_response").?.object.get("content").?.string);
+}
+
+test "a call still open when the run settles is cancelled before the terminal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"result","subtype":"success","result":"done","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+
+    const kinds = try emittedTypes(&reducer, scratch);
+    try testing.expectEqual(@as(usize, 5), kinds.len);
+    try testing.expectEqualStrings("action.call.cancelled", kinds[3]);
+    try testing.expectEqualStrings("run.completed", kinds[4]);
 }
 
 test "an init outside a pending run is adopted when it arrives" {

@@ -138,6 +138,10 @@ const passing_cases = [_]Case{
     .{ .id = "initialize-lifecycle", .path = "initialize-lifecycle" },
     .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
     .{ .id = "permission-gates", .path = "permission-gates" },
+    .{ .id = "interrupt-cancel", .path = "interrupt-cancel" },
+    .{ .id = "settlement-statuses", .path = "settlement-statuses" },
+    .{ .id = "streaming-provenance", .path = "streaming-provenance" },
+    .{ .id = "admission-corroboration", .path = "admission-corroboration" },
 };
 
 test "the Zig reducer reproduces every expectation it claims" {
