@@ -184,6 +184,7 @@ const Recovery = struct {
 };
 
 const Request = struct {
+    message: ?std.json.Value = null,
     declared: []const u8,
     carries_message: bool = false,
     responded: bool = false,
@@ -251,6 +252,7 @@ pub const Machine = struct {
         if (std.mem.endsWith(u8, declared, ".request")) {
             try self.requests.put(self.allocator, id, .{
                 .declared = declared,
+                .message = member(payload, "message"),
                 .carries_message = member(payload, "message") != null,
             });
         }
