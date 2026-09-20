@@ -139,7 +139,61 @@ const commands = [_][]const u8{
     "set_session_name",              "get_messages",        "get_commands",
 };
 
-const response_members = [_][]const u8{ "id", "type", "command", "success", "data", "error" };
+const MemberType = enum { text, flag, number, text_list, any };
+
+const Member = struct { name: []const u8, kind: MemberType };
+
+const response_members = [_]Member{
+    .{ .name = "id", .kind = .text },
+    .{ .name = "type", .kind = .text },
+    .{ .name = "command", .kind = .text },
+    .{ .name = "success", .kind = .flag },
+    .{ .name = "data", .kind = .any },
+    .{ .name = "error", .kind = .text },
+};
+
+const extension_members = [_]Member{
+    .{ .name = "type", .kind = .text },
+    .{ .name = "id", .kind = .text },
+    .{ .name = "method", .kind = .text },
+    .{ .name = "title", .kind = .text },
+    .{ .name = "options", .kind = .text_list },
+    .{ .name = "timeout", .kind = .number },
+    .{ .name = "message", .kind = .text },
+    .{ .name = "placeholder", .kind = .text },
+    .{ .name = "prefill", .kind = .text },
+    .{ .name = "notifyType", .kind = .text },
+    .{ .name = "statusKey", .kind = .text },
+    .{ .name = "statusText", .kind = .text },
+    .{ .name = "widgetKey", .kind = .text },
+    .{ .name = "widgetLines", .kind = .text_list },
+    .{ .name = "widgetPlacement", .kind = .text },
+    .{ .name = "text", .kind = .text },
+};
+
+fn declaredMember(table: []const Member, name: []const u8) ?Member {
+    for (table) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return entry;
+    }
+    return null;
+}
+
+fn memberTypeHolds(value: std.json.Value, kind: MemberType) bool {
+    if (value == .null) return true;
+    return switch (kind) {
+        .any => true,
+        .text => value == .string,
+        .flag => value == .bool,
+        .number => value == .integer,
+        .text_list => blk: {
+            if (value != .array) break :blk false;
+            for (value.array.items) |entry| {
+                if (entry != .string) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
 
 const MethodShape = struct {
     name: []const u8,
@@ -174,30 +228,31 @@ fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) bool {
     return value == .string and value.string.len != 0;
 }
 
+fn presentAndNotNull(object: std.json.ObjectMap, name: []const u8) bool {
+    const value = object.get(name) orelse return false;
+    return value != .null;
+}
+
 fn validateResponse(object: std.json.ObjectMap) !void {
     const command = object.get("command") orelse return Error.InvalidFrame;
     if (command != .string or !namedIn(&commands, command.string)) return Error.InvalidFrame;
 
-    var succeeded = false;
-    if (object.get("success")) |value| {
-        if (value != .bool) return Error.InvalidFrame;
-        succeeded = value.bool;
-    }
-    const failure = object.get("error");
-    if (failure) |value| {
-        if (value != .string) return Error.InvalidFrame;
-    }
-    const reported = failure != null and failure.?.string.len != 0;
-    if (succeeded and reported) return Error.InvalidFrame;
-    if (!succeeded and !reported) return Error.InvalidFrame;
-
-    if (object.get("id")) |value| {
-        if (value != .string) return Error.InvalidFrame;
-    }
     var it = object.iterator();
     while (it.next()) |entry| {
-        if (!namedIn(&response_members, entry.key_ptr.*)) return Error.InvalidFrame;
+        const member = declaredMember(&response_members, entry.key_ptr.*) orelse return Error.InvalidFrame;
+        if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
     }
+
+    var succeeded = false;
+    if (object.get("success")) |value| {
+        if (value == .bool) succeeded = value.bool;
+    }
+    var reported = false;
+    if (object.get("error")) |value| {
+        reported = value == .string and value.string.len != 0;
+    }
+    if (succeeded and reported) return Error.InvalidFrame;
+    if (!succeeded and !reported) return Error.InvalidFrame;
 }
 
 fn validateExtensionRequest(object: std.json.ObjectMap) !void {
@@ -210,7 +265,7 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
         if (!nonEmptyString(object, name)) return Error.InvalidFrame;
     }
     for (shape.required_any) |name| {
-        if (object.get(name) == null) return Error.InvalidFrame;
+        if (!presentAndNotNull(object, name)) return Error.InvalidFrame;
     }
     if (shape.constrained.len != 0) {
         if (object.get(shape.constrained)) |value| {
@@ -221,6 +276,8 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
     var it = object.iterator();
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;
+        const member = declaredMember(&extension_members, name) orelse return Error.InvalidFrame;
+        if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
         if (std.mem.eql(u8, name, "type") or std.mem.eql(u8, name, "id") or std.mem.eql(u8, name, "method")) continue;
         if (namedIn(shape.required_text, name)) continue;
         if (namedIn(shape.required_any, name)) continue;
@@ -339,4 +396,31 @@ test "a constrained member is checked against its own value set" {
 test "extension_error is a frame this harness emits although its declared union omits it" {
     const frame = try classify(std.testing.allocator, "{\"type\":\"extension_error\",\"extensionPath\":\"/x\",\"event\":\"e\",\"error\":\"boom\"}");
     try std.testing.expectEqual(Kind.event, frame.kind);
+}
+
+test "a JSON null reads as the decode no-op the pinned struct performs" {
+    const absentSuccess = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":null,\"error\":\"boom\"}");
+    try std.testing.expectEqual(Kind.response, absentSuccess.kind);
+    const absentId = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"id\":null,\"success\":true}");
+    try std.testing.expectEqual(Kind.response, absentId.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":false,\"error\":null}"));
+}
+
+test "a null slice is absent, which is not the same as an empty one" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"select\",\"title\":\"t\",\"options\":null}"));
+    const empty = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"select\",\"title\":\"t\",\"options\":[]}");
+    try std.testing.expectEqual(Kind.extension_ui_request, empty.kind);
+}
+
+test "a member whose value is the wrong type is refused" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"confirm\",\"title\":\"t\",\"message\":\"m\",\"timeout\":\"soon\"}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"setWidget\",\"widgetKey\":\"k\",\"widgetLines\":[1]}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":\"yes\"}"));
+    const timed = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"confirm\",\"title\":\"t\",\"message\":\"m\",\"timeout\":30}");
+    try std.testing.expectEqual(Kind.extension_ui_request, timed.kind);
+}
+
+test "a duplicate key is refused at every nesting level, not only the top" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"turn_end\",\"message\":{\"a\":1,\"a\":2},\"toolResults\":[]}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"turn_end\",\"message\":{},\"toolResults\":[{\"b\":1,\"b\":2}]}"));
 }
