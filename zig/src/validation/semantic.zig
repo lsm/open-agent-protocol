@@ -240,6 +240,7 @@ const Pending = struct {
     attachment: ?Expectation = null,
     subscribe: ?Expectation = null,
     fired: bool = false,
+    unported_defect: bool = false,
     provided: []const []const u8 = &.{},
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
@@ -297,6 +298,7 @@ const Recovery = struct {
 
 const Request = struct {
     message: ?std.json.Value = null,
+    payload: std.json.Value = .{ .null = {} },
     declared: []const u8,
     revision: []const u8 = "",
     carries_message: bool = false,
@@ -351,6 +353,8 @@ pub const Machine = struct {
     modes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     supports: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     catalog: std.ArrayList([]const u8) = .empty,
+    declared_sources: std.StringArrayHashMapUnmanaged(void) = .empty,
+    control_participant: []const u8 = "",
     catalog_known: bool = false,
     catalog_ambiguous: bool = false,
     catalogs: std.StringArrayHashMapUnmanaged(*ModelCatalog) = .empty,
@@ -374,6 +378,7 @@ pub const Machine = struct {
         self.modes.deinit(self.allocator);
         self.supports.deinit(self.allocator);
         self.catalog.deinit(self.allocator);
+        self.declared_sources.deinit(self.allocator);
         self.catalogs.deinit(self.allocator);
         self.windows.deinit(self.allocator);
         self.submits.deinit(self.allocator);
@@ -414,6 +419,7 @@ pub const Machine = struct {
         if (self.isRequestType(declared)) {
             try self.requests.put(self.allocator, id, .{
                 .declared = declared,
+                .payload = payload,
                 .revision = field(envelope, "capability_revision"),
                 .message = member(payload, "message"),
                 .carries_message = member(payload, "message") != null,
@@ -528,6 +534,13 @@ pub const Machine = struct {
     }
 
     fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
+            if (member(payload, "participant")) |who| {
+                const named = memberString(who, "id");
+                if (named.len != 0) self.control_participant = named;
+            }
+            return;
+        }
         if (std.mem.eql(u8, declared, "capabilities.response")) {
             try self.capabilitiesResponse(index, envelope, payload);
             return;
@@ -652,6 +665,7 @@ pub const Machine = struct {
         self.catalog.clearRetainingCapacity();
         try self.collectFeatures(payload);
         try self.collectCatalog(payload);
+        try self.collectSources(payload);
         self.catalog_known = true;
         self.limits = readLimits(member(payload, "limits"));
         try self.checkQueueLimits(index);
@@ -782,7 +796,7 @@ pub const Machine = struct {
         _ = try self.controlDescriptor(index, envelope, feature_tool_sources_attach) orelse return;
         if (attaching) try self.attachExpectations(payload, sources.?, pending);
         if (providing) try self.provideExpectations(payload, tools.?, sources, pending);
-        if (pending.attachment != null) pending.limit_refusal = null;
+        if (pending.attachment != null or pending.unported_defect) pending.limit_refusal = null;
     }
 
     fn attachExpectations(self: *Machine, payload: std.json.Value, sources: std.json.Value, pending: *Pending) !void {
@@ -814,7 +828,14 @@ pub const Machine = struct {
             return;
         }
         var defective = false;
-        for (sources.array.items) |attachment| {
+        var seen = std.ArrayList([]const u8).empty;
+        defer seen.deinit(self.allocator);
+        for (sources.array.items, 0..) |attachment, at| {
+            const id = memberString(attachment, "id");
+            if (listedIn(seen.items, id) or self.declared_sources.get(id) != null) {
+                pending.unported_defect = true;
+            }
+            try seen.append(self.allocator, id);
             if (std.mem.eql(u8, memberString(attachment, "kind"), "remote") and
                 !self.disclosesMode(key, "remote"))
             {
@@ -822,7 +843,7 @@ pub const Machine = struct {
                 self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
-                    .pointer = "/payload/tool_sources/kind",
+                    .pointer = try self.pointerAt("/payload/tool_sources", at, "/kind"),
                     .code = error_unsupported_feature,
                     .reason = reason_unsatisfiable,
                     .detail_name = "source",
@@ -846,14 +867,13 @@ pub const Machine = struct {
                 self.propose(&pending.limit_refusal, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
-                    .pointer = "/payload/tool_sources/limit",
+                    .pointer = try self.pointerAt("/payload/tool_sources", at, ""),
                     .code = error_unsupported_feature,
                     .reason = reason_unsatisfiable,
                     .detail_name = "source",
                     .detail_value = memberString(sources.array.items[at], "id"),
                     .diagnostic = code_unavailable_capability,
                 });
-                return;
             }
         }
         const transports = member(limits, "transports") orelse return;
@@ -863,7 +883,7 @@ pub const Machine = struct {
             if (entry == .string and isToolSourceKind(entry.string)) bounded = true;
         }
         if (!bounded) return;
-        for (sources.array.items) |attachment| {
+        for (sources.array.items, 0..) |attachment, at| {
             const kind = memberString(attachment, "kind");
             var disclosed = false;
             for (transports.array.items) |entry| {
@@ -874,15 +894,18 @@ pub const Machine = struct {
             self.propose(&pending.limit_refusal, .{
                 .rung = rung_unsatisfiable,
                 .key = key,
-                .pointer = "/payload/tool_sources/kind",
+                .pointer = try self.pointerAt("/payload/tool_sources", at, "/kind"),
                 .code = error_unsupported_feature,
                 .reason = reason_unsatisfiable,
                 .detail_name = "source",
                 .detail_value = memberString(attachment, "id"),
                 .diagnostic = code_unavailable_capability,
             });
-            return;
         }
+    }
+
+    fn pointerAt(self: *Machine, base: []const u8, at: usize, suffix: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(self.arena.allocator(), "{s}/{d}{s}", .{ base, at, suffix });
     }
 
     fn provideExpectations(self: *Machine, payload: std.json.Value, tools: std.json.Value, sources: ?std.json.Value, pending: *Pending) !void {
@@ -913,16 +936,33 @@ pub const Machine = struct {
             });
             return;
         }
-        _ = sources;
+        var attached = std.ArrayList([]const u8).empty;
+        defer attached.deinit(self.allocator);
+        if (sources) |listed| {
+            if (listed == .array) {
+                for (listed.array.items) |attachment| {
+                    try attached.append(self.allocator, memberString(attachment, "id"));
+                }
+            }
+        }
+        for (tools.array.items) |tool| {
+            const owner = memberString(tool, "execution_owner");
+            if (self.control_participant.len != 0 and owner.len != 0 and
+                !std.mem.eql(u8, owner, self.control_participant)) pending.unported_defect = true;
+            const source = memberString(tool, "source");
+            if (source.len != 0 and self.declared_sources.get(source) == null and
+                !listedIn(attached.items, source)) pending.unported_defect = true;
+        }
+        try self.provideLimitViolation(key, tools, pending);
         var seen = std.ArrayList([]const u8).empty;
         defer seen.deinit(self.allocator);
-        for (tools.array.items) |tool| {
+        for (tools.array.items, 0..) |tool, at| {
             const name = memberString(tool, "name");
             if (listedIn(seen.items, name) or (self.catalog_known and listedIn(self.catalog.items, name))) {
                 self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
-                    .pointer = "/payload/tools/name",
+                    .pointer = try self.pointerAt("/payload/tools", at, "/name"),
                     .code = error_unsupported_feature,
                     .reason = reason_unsatisfiable,
                     .detail_name = "tool",
@@ -931,6 +971,45 @@ pub const Machine = struct {
                 });
             }
             try seen.append(self.allocator, name);
+        }
+    }
+
+    fn provideLimitViolation(self: *Machine, key: []const u8, tools: std.json.Value, pending: *Pending) !void {
+        const support = self.supports.get(key) orelse return;
+        const limits = member(support, "limits") orelse return;
+        if (member(limits, "max_tools")) |declared| {
+            if (declared == .integer and declared.integer >= 1 and
+                tools.array.items.len > @as(usize, @intCast(declared.integer)))
+            {
+                const at: usize = @intCast(declared.integer);
+                self.propose(&pending.limit_refusal, .{
+                    .rung = rung_unsatisfiable,
+                    .key = key,
+                    .pointer = try self.pointerAt("/payload/tools", at, ""),
+                    .code = error_unsupported_feature,
+                    .reason = reason_unsatisfiable,
+                    .detail_name = "tool",
+                    .detail_value = memberString(tools.array.items[at], "name"),
+                    .diagnostic = code_unavailable_capability,
+                });
+            }
+        }
+        const dialect = memberString(limits, "schema_dialect");
+        if (dialect.len == 0) return;
+        for (tools.array.items, 0..) |tool, at| {
+            const declared = member(tool, "input_schema") orelse continue;
+            const stated = memberString(declared, "$schema");
+            if (stated.len == 0 or std.mem.eql(u8, stated, dialect)) continue;
+            self.propose(&pending.limit_refusal, .{
+                .rung = rung_unsatisfiable,
+                .key = key,
+                .pointer = try self.pointerAt("/payload/tools", at, "/input_schema"),
+                .code = error_unsupported_feature,
+                .reason = reason_unsatisfiable,
+                .detail_name = "tool",
+                .detail_value = memberString(tool, "name"),
+                .diagnostic = code_unavailable_capability,
+            });
         }
     }
 
@@ -1057,6 +1136,26 @@ pub const Machine = struct {
         const after = self.limits orelse Limits{};
         if (!sameBound(before.max_active, after.max_active)) try self.add(code_stale_capability_revision, index);
         if (!sameBound(before.max_queued, after.max_queued)) try self.add(code_stale_capability_revision, index);
+    }
+
+    fn absorbSources(self: *Machine, declared: ?std.json.Value) !void {
+        const sources = declared orelse return;
+        if (sources != .array) return;
+        for (sources.array.items) |source| {
+            const id = memberString(source, "id");
+            if (id.len != 0) try self.declared_sources.put(self.allocator, id, {});
+        }
+    }
+
+    fn collectSources(self: *Machine, payload: std.json.Value) !void {
+        self.declared_sources.clearRetainingCapacity();
+        try self.absorbSources(member(payload, "sources"));
+        if (member(payload, "layers")) |layers| {
+            if (layers == .object) {
+                var layer = layers.object.iterator();
+                while (layer.next()) |entry| try self.absorbSources(member(entry.value_ptr.*, "sources"));
+            }
+        }
     }
 
     fn collectCatalog(self: *Machine, payload: std.json.Value) !void {
@@ -1358,9 +1457,10 @@ pub const Machine = struct {
             pending.controls.choice = policy;
             pending.controls.catalog = try self.arena.allocator().dupe([]const u8, self.catalog.items);
             pending.controls.catalog_known = known;
-            if (try self.toolChoiceDefect(policy, known)) |pointer| {
+            if (try self.toolChoiceDefect(policy, known)) |defect| {
                 pending.satisfies = false;
-                return unsatisfiableAs(key, pointer, "tool", policy.name);
+                const detail: []const u8 = if (defect.tool.len == 0) "" else "tool";
+                return unsatisfiableAs(key, defect.pointer, detail, defect.tool);
             }
             pending.satisfies = self.disclosedMode(key, policy.mode);
             return null;
@@ -1383,14 +1483,16 @@ pub const Machine = struct {
         return null;
     }
 
-    fn toolChoiceDefect(self: *Machine, policy: ToolChoice, known: bool) !?[]const u8 {
+    const ChoiceDefect = struct { pointer: []const u8, tool: []const u8 = "" };
+
+    fn toolChoiceDefect(self: *Machine, policy: ToolChoice, known: bool) !?ChoiceDefect {
         const catalog = self.catalog.items;
         if (known) {
             for (policy.allowed) |name| {
-                if (!listedIn(catalog, name)) return "/payload/tool_choice/allowed";
+                if (!listedIn(catalog, name)) return .{ .pointer = "/payload/tool_choice/allowed", .tool = name };
             }
             for (policy.disallowed) |name| {
-                if (!listedIn(catalog, name)) return "/payload/tool_choice/disallowed";
+                if (!listedIn(catalog, name)) return .{ .pointer = "/payload/tool_choice/disallowed", .tool = name };
             }
         }
         var filtered = std.ArrayList([]const u8).empty;
@@ -1401,12 +1503,13 @@ pub const Machine = struct {
             try filtered.append(self.allocator, name);
         }
         if (std.mem.eql(u8, policy.mode, "required") and known and filtered.items.len == 0) {
-            return "/payload/tool_choice/mode";
+            return .{ .pointer = "/payload/tool_choice/mode" };
         }
         if (std.mem.eql(u8, policy.mode, "named")) {
-            if (listedIn(policy.disallowed, policy.name)) return "/payload/tool_choice/name";
-            if (policy.has_allowed and !listedIn(policy.allowed, policy.name)) return "/payload/tool_choice/name";
-            if (known and !listedIn(filtered.items, policy.name)) return "/payload/tool_choice/name";
+            const named = ChoiceDefect{ .pointer = "/payload/tool_choice/name", .tool = policy.name };
+            if (listedIn(policy.disallowed, policy.name)) return named;
+            if (policy.has_allowed and !listedIn(policy.allowed, policy.name)) return named;
+            if (known and !listedIn(filtered.items, policy.name)) return named;
         }
         return null;
     }
@@ -1523,7 +1626,11 @@ pub const Machine = struct {
         defer registry.deinit();
         var validator = jsonschema.Validator.init(self.allocator, &registry);
         defer validator.deinit();
-        const failure = validator.validateSchema(schema, "output-schema", result) catch return true;
+        try validator.overrides.put(self.allocator, output_schema_document, schema);
+        const failure = validator.validateSchema(schema, output_schema_document, result) catch |raised| switch (raised) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
         return failure == null;
     }
 
@@ -1689,6 +1796,17 @@ pub const Machine = struct {
         }
         if (!queued) return;
 
+        const request = field(envelope, "in_reply_to");
+        if (!self.queueAlreadyGated(request)) {
+            if (self.advertisedLevel(feature_delivery_queue)) |level| {
+                if (!affirmative(level)) {
+                    try self.add(code_unavailable_capability, index);
+                } else if (std.mem.eql(u8, level, "degraded") and !self.optedIntoQueue(request)) {
+                    try self.add(code_degraded_without_optin, index);
+                }
+            }
+        }
+
         const limits = self.limits orelse return;
         const counts = self.queueCounts(memberString(payload, "session_id"));
         if (limits.max_active) |bound| {
@@ -1702,6 +1820,17 @@ pub const Machine = struct {
                 try self.add(code_queue_limit_exceeded, index);
             }
         }
+    }
+
+    fn queueAlreadyGated(self: *const Machine, request: []const u8) bool {
+        const pending = self.submits.get(request) orelse return false;
+        const expectation = pending.control orelse return false;
+        return std.mem.eql(u8, expectation.key, feature_delivery_queue);
+    }
+
+    fn optedIntoQueue(self: *const Machine, request: []const u8) bool {
+        const asked = self.requests.get(request) orelse return false;
+        return allowsDegraded(asked.payload, feature_delivery_queue);
     }
 
     fn checkQueueOrder(self: *Machine, index: usize, envelope: std.json.Value, run: *Run, declared: []const u8) !void {
@@ -2083,6 +2212,7 @@ pub const Machine = struct {
 };
 
 pub const feature_delivery_queue = "session.message.delivery.queue";
+const output_schema_document = "output-schema";
 const feature_model_selection = "run.model_selection";
 const feature_models_list = "models.list";
 const feature_tools_list = "action.tools.list";
@@ -2154,9 +2284,17 @@ fn numeric(value: std.json.Value) ?f64 {
 fn exactInteger(value: std.json.Value) ?i128 {
     return switch (value) {
         .integer => |n| n,
+        .float => |n| integralFloat(n),
         .number_string => |text| std.fmt.parseInt(i128, text, 10) catch null,
         else => null,
     };
+}
+
+fn integralFloat(value: f64) ?i128 {
+    if (!std.math.isFinite(value)) return null;
+    if (@trunc(value) != value) return null;
+    if (value >= 0x1p127 or value < -0x1p127) return null;
+    return @intFromFloat(value);
 }
 
 fn valueEql(a: std.json.Value, b: std.json.Value) bool {
@@ -2274,15 +2412,17 @@ fn outputSchemaDefect(raw: std.json.Value) bool {
             else => return true,
         }
     }
-    return schemaNodeDefect(.{ .object = raw.object });
+    if (jsonschema.unsupportedKeyword(raw) != null) return true;
+    return schemaNodeDefect(raw, .{ .object = raw.object });
 }
 
-fn schemaNodeDefect(node: std.json.Value) bool {
+fn schemaNodeDefect(root: std.json.Value, node: std.json.Value) bool {
     switch (node) {
         .object => |object| {
             if (object.get("$ref")) |reference| {
                 if (reference != .string) return true;
                 if (!std.mem.startsWith(u8, reference.string, "#")) return true;
+                if (!jsonschema.resolvesLocally(root, reference.string)) return true;
             }
             if (object.get("required")) |required| {
                 if (required != .array) return true;
@@ -2298,13 +2438,13 @@ fn schemaNodeDefect(node: std.json.Value) bool {
                 if (std.mem.eql(u8, entry.key_ptr.*, "required")) continue;
                 if (std.mem.eql(u8, entry.key_ptr.*, "enum")) continue;
                 if (std.mem.eql(u8, entry.key_ptr.*, "const")) continue;
-                if (schemaNodeDefect(entry.value_ptr.*)) return true;
+                if (schemaNodeDefect(root, entry.value_ptr.*)) return true;
             }
             return false;
         },
         .array => |items| {
             for (items.items) |entry| {
-                if (schemaNodeDefect(entry)) return true;
+                if (schemaNodeDefect(root, entry)) return true;
             }
             return false;
         },
@@ -2351,7 +2491,26 @@ fn outranks(candidate: Expectation, held: Expectation) bool {
     if (!std.mem.eql(u8, candidate.key, held.key)) {
         return std.mem.order(u8, candidate.key, held.key) == .lt;
     }
-    return std.mem.order(u8, candidate.pointer, held.pointer) == .lt;
+    return pointerLess(candidate.pointer, held.pointer);
+}
+
+fn pointerIndex(segment: []const u8) ?usize {
+    return std.fmt.parseUnsigned(usize, segment, 10) catch null;
+}
+
+fn pointerLess(a: []const u8, b: []const u8) bool {
+    var left = std.mem.tokenizeScalar(u8, a, '/');
+    var right = std.mem.tokenizeScalar(u8, b, '/');
+    while (true) {
+        const here = left.next();
+        const there = right.next();
+        if (here == null or there == null) return here == null and there != null;
+        if (std.mem.eql(u8, here.?, there.?)) continue;
+        if (pointerIndex(here.?)) |one| {
+            if (pointerIndex(there.?)) |other| return one < other;
+        }
+        return std.mem.order(u8, here.?, there.?) == .lt;
+    }
 }
 
 fn conformingRefusal(raised: std.json.Value, expectation: Expectation) bool {
@@ -2950,4 +3109,413 @@ test "an update continues the revision it replaces, and introduces a different o
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
         \\{"type":"capabilities.updated","id":"k2","capability_revision":"v1","payload":{"previous_revision":"v1"}}]
     , &.{"stale_capability_revision"});
+}
+
+test "an output schema referring to a definition it does not carry is a schema nothing can satisfy" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/missing"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1","payload":{}}]
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/ok"}},
+        \\"$defs":{"ok":{"type":"integer"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
+    , &.{});
+}
+
+test "a refusal naming the tool the filter could not resolve discharges the expectation" {
+    const advertised =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.tool_selection":{"level":"native"}},"tools":[{"name":"echo"}]}}
+    ;
+    const submitted =
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","tool_choice":{"mode":"auto","allowed":["ghost"]}}}
+    ;
+    try expectCodes(
+        \\[
+    ++ advertised ++
+        \\,
+    ++ submitted ++
+        \\,
+        \\{"type":"error.response","id":"x1","in_reply_to":"q1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"run.tool_selection","reason":"unsatisfiable","tool":"ghost"}}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ advertised ++
+        \\,
+    ++ submitted ++
+        \\,
+        \\{"type":"error.response","id":"x1","in_reply_to":"q1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"run.tool_selection","reason":"unsatisfiable","tool":""}}}}]
+    , &.{"unsatisfiable_control"});
+}
+
+test "a fixed result is compared exactly, past the width a double carries" {
+    const descriptor =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native","constraints":{"fixed_result":{"n":9007199254740993}}}}}}
+    ;
+    const submitted =
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object"}}}
+    ;
+    const admitted_run =
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}}
+    ;
+    try expectCodes(
+        \\[
+    ++ descriptor ++ "," ++ submitted ++ "," ++ admitted_run ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":9007199254740992.0}}}]
+    , &.{"unapplied_control"});
+
+    try expectCodes(
+        \\[
+    ++ descriptor ++ "," ++ submitted ++ "," ++ admitted_run ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":9007199254740993}}}]
+    , &.{});
+}
+
+test "an escaped pointer token resolves to the member whose name carries the slash" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/a~1b~0c"}},
+        \\"$defs":{"a/b~c":{"type":"integer"}}}}},
+        \\{"type":"error.response","id":"x1","in_reply_to":"q1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{});
+}
+
+test "an open past the tool count the endpoint disclosed is refused for that bound" {
+    const bounded =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.provide":{"level":"native","limits":{"max_tools":1}}}}}
+    ;
+    const opened =
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"one"},{"name":"two"}]}}
+    ;
+    try expectCodes(
+        \\[
+    ++ bounded ++ "," ++ opened ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tools.provide","reason":"unsatisfiable","tool":"two"}}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ bounded ++ "," ++ opened ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{"unavailable_capability"});
+}
+
+test "a magnitude past what an i128 holds is not an exact integer" {
+    try std.testing.expect(integralFloat(0x1p127) == null);
+    try std.testing.expect(integralFloat(-0x1p127).? == std.math.minInt(i128));
+    try std.testing.expect(integralFloat(0x1p126).? == 1 << 126);
+    try std.testing.expect(integralFloat(1.5) == null);
+    try std.testing.expect(integralFloat(std.math.inf(f64)) == null);
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native","constraints":{"fixed_result":
+        \\{"n":170141183460469231731687303715884105728.0}}}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object"}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":170141183460469231731687303715884105728.0}}}]
+    , &.{});
+}
+
+test "the bound that speaks is the one earliest in the payload, counting indices as numbers" {
+    try std.testing.expect(pointerLess("/payload/tools/2", "/payload/tools/10"));
+    try std.testing.expect(!pointerLess("/payload/tools/10", "/payload/tools/2"));
+    try std.testing.expect(pointerLess("/payload/tool_sources/0/kind", "/payload/tool_sources/2"));
+    try std.testing.expect(pointerLess("/payload/tool_sources/2", "/payload/tool_sources/2/kind"));
+
+    const bounded =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],
+        \\"limits":{"max_sources":2,"transports":["process"]}}}}}
+    ;
+    const opened =
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"hosted"},{"id":"b","kind":"process"},{"id":"c","kind":"process"}]}}
+    ;
+    try expectCodes(
+        \\[
+    ++ bounded ++ "," ++ opened ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"a"}}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ bounded ++ "," ++ opened ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"c"}}}}]
+    , &.{"unavailable_capability"});
+
+    const wide =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],
+        \\"limits":{"max_sources":10,"transports":["process"]}}}}}
+    ;
+    const many =
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"s0","kind":"process"},{"id":"s1","kind":"process"},{"id":"s2","kind":"hosted"},{"id":"s3","kind":"process"},{"id":"s4","kind":"process"},{"id":"s5","kind":"process"},{"id":"s6","kind":"process"},{"id":"s7","kind":"process"},{"id":"s8","kind":"process"},{"id":"s9","kind":"process"},{"id":"s10","kind":"process"}]}}
+    ;
+    try expectCodes(
+        \\[
+    ++ wide ++ "," ++ many ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"s2"}}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ wide ++ "," ++ many ++
+        \\,
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"s10"}}}}]
+    , &.{"unavailable_capability"});
+}
+
+test "a completion is judged against the schema its own definitions describe" {
+    const declared =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}}
+    ;
+    const submitted =
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","required":["n"],
+        \\"properties":{"n":{"$ref":"#/$defs/count"}},"$defs":{"count":{"type":"integer"}}}}}
+    ;
+    const started =
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}}
+    ;
+    try expectCodes(
+        \\[
+    ++ declared ++ "," ++ submitted ++ "," ++ started ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ declared ++ "," ++ submitted ++ "," ++ started ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":"one"}}}]
+    , &.{"unapplied_control"});
+}
+
+test "a reservation the endpoint never advertised a queue for is the capability missing" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}}]
+    , &.{ "unavailable_capability", "missing_run_started", "missing_run_terminal" });
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"session.message.delivery.queue":{"level":"degraded"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}}]
+    , &.{ "undisclosed_queue_limit", "degraded_without_optin", "missing_run_started", "missing_run_terminal" });
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"session.message.delivery.queue":{"level":"degraded"}},
+        \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","allow_degraded_features":["session.message.delivery.queue"]}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}}]
+    , &.{ "missing_run_started", "missing_run_terminal" });
+}
+
+test "a schema this interpreter cannot fully evaluate is refused, not waved through" {
+    {
+        var plain = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+            \\{"type":"object","properties":{"n":{"type":"string"}}}
+        , .{});
+        defer plain.deinit();
+        try std.testing.expect(jsonschema.unsupportedKeyword(plain.value) == null);
+    }
+    {
+        var bounded = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+            \\{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}
+        , .{});
+        defer bounded.deinit();
+        try std.testing.expectEqualStrings("maxLength", jsonschema.unsupportedKeyword(bounded.value).?);
+    }
+
+    const declared =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}}
+    ;
+    const tail =
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":"xxxxxxxx"}}}]
+    ;
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}}},
+    ++ tail
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string"}}}}},
+    ++ tail
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","pattern":"^x+$"}}}}},
+    ++ tail
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"items":[{"type":"string"}]}}}}},
+    ++ tail
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"enum":"notalist"}}}}},
+    ++ tail
+    , &.{"unapplied_control"});
+}
+
+test "an escaped reference resolves the same way on both sides of the boundary" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/a~1b"}},
+        \\"$defs":{"a/b":{"type":"integer"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/a~1b"}},
+        \\"$defs":{"a/b":{"type":"integer"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":"one"}}}]
+    , &.{"unapplied_control"});
+}
+
+test "a defect the port does not name still silences the bound beside it" {
+    const bounded =
+        \\{"type":"protocol.initialize.request","id":"i1","payload":{"participant":{"id":"control"}}},
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.provide":{"level":"native","limits":{"max_tools":1}}}}}
+    ;
+    const refused =
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    ;
+    try expectCodes(
+        \\[
+    ++ bounded ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"one","execution_owner":"someone-else"},{"name":"two"}]}},
+    ++ refused
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ bounded ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"one","source":"nowhere"},{"name":"two"}]}},
+    ++ refused
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ bounded ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"one","execution_owner":"control"},{"name":"two"}]}},
+    ++ refused
+    , &.{"unavailable_capability"});
+}
+
+test "an attachment reusing an id the session already resolves silences the bound" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":1}}},
+        \\"sources":[{"id":"already","kind":"process"}]}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"already","kind":"process"},{"id":"fresh","kind":"process"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{});
 }

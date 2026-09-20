@@ -36,6 +36,85 @@ fn keywordSupported(name: []const u8) bool {
     return false;
 }
 
+pub fn pointerTokenEql(token: []const u8, key: []const u8) bool {
+    var at: usize = 0;
+    var into: usize = 0;
+    while (at < token.len) {
+        var decoded = token[at];
+        if (decoded == '~' and at + 1 < token.len and (token[at + 1] == '0' or token[at + 1] == '1')) {
+            decoded = if (token[at + 1] == '0') '~' else '/';
+            at += 2;
+        } else {
+            at += 1;
+        }
+        if (into >= key.len or key[into] != decoded) return false;
+        into += 1;
+    }
+    return into == key.len;
+}
+
+pub fn pointerMember(object: std.json.ObjectMap, token: []const u8) ?std.json.Value {
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        if (pointerTokenEql(token, entry.key_ptr.*)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
+pub fn resolvesLocally(root: std.json.Value, reference: []const u8) bool {
+    if (std.mem.eql(u8, reference, "#")) return true;
+    if (!std.mem.startsWith(u8, reference, "#/")) return false;
+    var node = root;
+    var parts = std.mem.splitScalar(u8, reference["#/".len..], '/');
+    while (parts.next()) |token| {
+        switch (node) {
+            .object => |object| node = pointerMember(object, token) orelse return false,
+            .array => |items| {
+                const at = std.fmt.parseUnsigned(usize, token, 10) catch return false;
+                if (at >= items.items.len) return false;
+                node = items.items[at];
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
+
+pub fn unsupportedKeyword(schema: std.json.Value) ?[]const u8 {
+    if (schema != .object) return null;
+    var it = schema.object.iterator();
+    while (it.next()) |entry| {
+        if (!keywordSupported(entry.key_ptr.*)) return entry.key_ptr.*;
+    }
+    if (schema.object.get("pattern")) |expression| {
+        if (expression != .string) return "pattern";
+        if (!std.mem.eql(u8, expression.string, dotted_lowercase_label)) return "pattern";
+    }
+    if (schema.object.get("items")) |elements| {
+        if (elements == .array) return "items";
+    }
+    for ([_][]const u8{ "items", "not", "if", "then", "else", "contains", "additionalProperties" }) |name| {
+        const child = schema.object.get(name) orelse continue;
+        if (unsupportedKeyword(child)) |found| return found;
+    }
+    for ([_][]const u8{ "allOf", "anyOf", "oneOf" }) |name| {
+        const children = schema.object.get(name) orelse continue;
+        if (children != .array) continue;
+        for (children.array.items) |child| {
+            if (unsupportedKeyword(child)) |found| return found;
+        }
+    }
+    for ([_][]const u8{ "properties", "$defs" }) |name| {
+        const children = schema.object.get(name) orelse continue;
+        if (children != .object) continue;
+        var kids = children.object.iterator();
+        while (kids.next()) |kid| {
+            if (unsupportedKeyword(kid.value_ptr.*)) |found| return found;
+        }
+    }
+    return null;
+}
+
 pub const Registry = struct {
     allocator: std.mem.Allocator,
     documents: std.StringArrayHashMapUnmanaged(std.json.Parsed(std.json.Value)) = .empty,
@@ -446,7 +525,7 @@ pub const Validator = struct {
         while (parts.next()) |part| {
             if (part.len == 0) continue;
             if (node != .object) return Unsupported.UnresolvableRef;
-            node = node.object.get(part) orelse return Unsupported.UnresolvableRef;
+            node = pointerMember(node.object, part) orelse return Unsupported.UnresolvableRef;
         }
         return .{ .schema = node, .document = target_document };
     }

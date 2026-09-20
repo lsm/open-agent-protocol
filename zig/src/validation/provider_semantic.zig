@@ -276,9 +276,17 @@ fn numeric(value: std.json.Value) ?f64 {
 fn exactInteger(value: std.json.Value) ?i128 {
     return switch (value) {
         .integer => |n| n,
+        .float => |n| integralFloat(n),
         .number_string => |text| std.fmt.parseInt(i128, text, 10) catch null,
         else => null,
     };
+}
+
+fn integralFloat(value: f64) ?i128 {
+    if (!std.math.isFinite(value)) return null;
+    if (@trunc(value) != value) return null;
+    if (value >= 0x1p127 or value < -0x1p127) return null;
+    return @intFromFloat(value);
 }
 
 fn valueEql(a: std.json.Value, b: std.json.Value) bool {
