@@ -240,6 +240,7 @@ const Pending = struct {
     attachment: ?Expectation = null,
     subscribe: ?Expectation = null,
     fired: bool = false,
+    unported_defect: bool = false,
     provided: []const []const u8 = &.{},
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
@@ -317,6 +318,8 @@ pub const Machine = struct {
     modes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     supports: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     catalog: std.ArrayList([]const u8) = .empty,
+    declared_sources: std.StringArrayHashMapUnmanaged(void) = .empty,
+    control_participant: []const u8 = "",
     catalog_known: bool = false,
     catalog_ambiguous: bool = false,
     catalogs: std.StringArrayHashMapUnmanaged(*ModelCatalog) = .empty,
@@ -340,6 +343,7 @@ pub const Machine = struct {
         self.modes.deinit(self.allocator);
         self.supports.deinit(self.allocator);
         self.catalog.deinit(self.allocator);
+        self.declared_sources.deinit(self.allocator);
         self.catalogs.deinit(self.allocator);
         self.windows.deinit(self.allocator);
         self.submits.deinit(self.allocator);
@@ -399,6 +403,13 @@ pub const Machine = struct {
         }
         if (duplicate) return;
 
+        if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
+            if (member(payload, "participant")) |who| {
+                const named = memberString(who, "id");
+                if (named.len != 0) self.control_participant = named;
+            }
+            return;
+        }
         if (std.mem.eql(u8, declared, "capabilities.response")) {
             try self.capabilitiesResponse(index, envelope, payload);
             return;
@@ -523,6 +534,7 @@ pub const Machine = struct {
         self.catalog.clearRetainingCapacity();
         try self.collectFeatures(payload);
         try self.collectCatalog(payload);
+        try self.collectSources(payload);
         self.catalog_known = true;
         self.limits = readLimits(member(payload, "limits"));
         try self.checkQueueLimits(index);
@@ -653,7 +665,7 @@ pub const Machine = struct {
         _ = try self.controlDescriptor(index, envelope, feature_tool_sources_attach) orelse return;
         if (attaching) try self.attachExpectations(payload, sources.?, pending);
         if (providing) try self.provideExpectations(payload, tools.?, sources, pending);
-        if (pending.attachment != null) pending.limit_refusal = null;
+        if (pending.attachment != null or pending.unported_defect) pending.limit_refusal = null;
     }
 
     fn attachExpectations(self: *Machine, payload: std.json.Value, sources: std.json.Value, pending: *Pending) !void {
@@ -685,7 +697,14 @@ pub const Machine = struct {
             return;
         }
         var defective = false;
+        var seen = std.ArrayList([]const u8).empty;
+        defer seen.deinit(self.allocator);
         for (sources.array.items, 0..) |attachment, at| {
+            const id = memberString(attachment, "id");
+            if (listedIn(seen.items, id) or self.declared_sources.get(id) != null) {
+                pending.unported_defect = true;
+            }
+            try seen.append(self.allocator, id);
             if (std.mem.eql(u8, memberString(attachment, "kind"), "remote") and
                 !self.disclosesMode(key, "remote"))
             {
@@ -786,7 +805,23 @@ pub const Machine = struct {
             });
             return;
         }
-        _ = sources;
+        var attached = std.ArrayList([]const u8).empty;
+        defer attached.deinit(self.allocator);
+        if (sources) |listed| {
+            if (listed == .array) {
+                for (listed.array.items) |attachment| {
+                    try attached.append(self.allocator, memberString(attachment, "id"));
+                }
+            }
+        }
+        for (tools.array.items) |tool| {
+            const owner = memberString(tool, "execution_owner");
+            if (self.control_participant.len != 0 and owner.len != 0 and
+                !std.mem.eql(u8, owner, self.control_participant)) pending.unported_defect = true;
+            const source = memberString(tool, "source");
+            if (source.len != 0 and self.declared_sources.get(source) == null and
+                !listedIn(attached.items, source)) pending.unported_defect = true;
+        }
         try self.provideLimitViolation(key, tools, pending);
         var seen = std.ArrayList([]const u8).empty;
         defer seen.deinit(self.allocator);
@@ -970,6 +1005,26 @@ pub const Machine = struct {
         const after = self.limits orelse Limits{};
         if (!sameBound(before.max_active, after.max_active)) try self.add(code_stale_capability_revision, index);
         if (!sameBound(before.max_queued, after.max_queued)) try self.add(code_stale_capability_revision, index);
+    }
+
+    fn absorbSources(self: *Machine, declared: ?std.json.Value) !void {
+        const sources = declared orelse return;
+        if (sources != .array) return;
+        for (sources.array.items) |source| {
+            const id = memberString(source, "id");
+            if (id.len != 0) try self.declared_sources.put(self.allocator, id, {});
+        }
+    }
+
+    fn collectSources(self: *Machine, payload: std.json.Value) !void {
+        self.declared_sources.clearRetainingCapacity();
+        try self.absorbSources(member(payload, "sources"));
+        if (member(payload, "layers")) |layers| {
+            if (layers == .object) {
+                var layer = layers.object.iterator();
+                while (layer.next()) |entry| try self.absorbSources(member(entry.value_ptr.*, "sources"));
+            }
+        }
     }
 
     fn collectCatalog(self: *Machine, payload: std.json.Value) !void {
@@ -3282,4 +3337,52 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","pattern":"^x+$"}}}}},
     ++ tail
     , &.{"unapplied_control"});
+}
+
+test "a defect the port does not name still silences the bound beside it" {
+    const bounded =
+        \\{"type":"protocol.initialize.request","id":"i1","payload":{"participant":{"id":"control"}}},
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.provide":{"level":"native","limits":{"max_tools":1}}}}}
+    ;
+    const refused =
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    ;
+    try expectCodes(
+        \\[
+    ++ bounded ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"one","execution_owner":"someone-else"},{"name":"two"}]}},
+    ++ refused
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ bounded ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"one","source":"nowhere"},{"name":"two"}]}},
+    ++ refused
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ bounded ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"one","execution_owner":"control"},{"name":"two"}]}},
+    ++ refused
+    , &.{"unavailable_capability"});
+}
+
+test "an attachment reusing an id the session already resolves silences the bound" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":1}}},
+        \\"sources":[{"id":"already","kind":"process"}]}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"already","kind":"process"},{"id":"fresh","kind":"process"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{});
 }
