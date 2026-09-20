@@ -712,6 +712,26 @@ that as a predicate (`servedByHarness`) rather than deriving an `mcp:<server>`
 id: it serves no tool catalog, and a helper named for a source it never
 returns is the shape that rots invisibly in a tree with no comments.
 
+A **third** property the corpus cannot discriminate came out of porting the
+terminal deferral, and it is the sharpest of the three because a reducer can
+get it wrong in both directions and pass every case. A result frame does not
+always settle its run: a positive `queued_turn_count`, or an unsettled child
+whose `task_type` is `local_agent` or `local_workflow`, holds the frame, and
+the run settles later -- when the child reports terminal through
+`task_notification` or a terminal `task_updated` patch, or when a
+`session_state` of `idle` publishes whatever is held regardless of children.
+`queued-continuation` pins the first half, because a second result frame
+arrives and its content, not the held one's, is what `run.completed` carries.
+`background-children` pins nothing: its two runs each defer and then publish,
+and a reducer that ignored children entirely emits the identical trace with
+identical ids, sequences and timestamps, because the clock only advances when
+an envelope is emitted and no envelope is emitted in between. The Zig port
+settled at the result frame for one commit and `background-children` passed.
+Four rules therefore carry named tests on the Zig side, each verified by
+mutation: a local child holds the terminal, a child of any other kind holds
+nothing, a non-terminal patch does not settle a child, and `idle` -- and only
+`idle` -- publishes past a child that is still running.
+
 One of the thirteen expectations is not portable, and that is a fact about
 the corpus rather than about either reducer. `process-exit` fails its run with
 `message: "io: read/write on closed pipe"`, which is the Go runtime's own text

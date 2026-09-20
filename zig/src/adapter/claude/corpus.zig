@@ -183,6 +183,7 @@ const claimed_cases = [_]Case{
     .{ .id = "background-children", .path = "background-children" },
     .{ .id = "malformed-stdout", .path = "malformed-stdout" },
     .{ .id = "hygiene-recovery", .path = "hygiene-recovery" },
+    .{ .id = "queued-continuation", .path = "queued-continuation" },
 };
 
 test "the Zig reducer reproduces every expectation it claims" {

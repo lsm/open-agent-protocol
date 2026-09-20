@@ -27,6 +27,13 @@ const Run = struct {
     started: bool = false,
     sequence: i64 = 0,
     buffered: std.ArrayList(rpc.Message) = .empty,
+    deferred: ?std.json.ObjectMap = null,
+};
+
+const Child = struct {
+    task_id: []const u8,
+    task_type: []const u8,
+    settled: bool = false,
 };
 
 const Tool = struct {
@@ -54,6 +61,7 @@ pub const Reducer = struct {
     tools: std.ArrayList(Tool) = .empty,
     attribution: std.StringHashMapUnmanaged([]const u8) = .empty,
     gates: std.ArrayList(Gate) = .empty,
+    children: std.ArrayList(Child) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
@@ -401,11 +409,54 @@ pub const Reducer = struct {
         const run = &self.run.?;
         if (!run.started) return;
         if (!self.frameEchoMatches(frame)) return;
+        const queued = integerMember(frame, "queued_turn_count") orelse 0;
+        if (queued > 0 or self.unsettledDeferringChildren() > 0) {
+            run.deferred = frame;
+            return;
+        }
         try self.publishTerminal(frame);
+    }
+
+    fn unsettledDeferringChildren(self: *Reducer) usize {
+        var count: usize = 0;
+        for (self.children.items) |child| {
+            if (child.settled) continue;
+            if (defersTerminal(child.task_type)) count += 1;
+        }
+        return count;
+    }
+
+    fn trackChild(self: *Reducer, frame: std.json.ObjectMap) !void {
+        const task_id = stringMember(frame, "task_id") orelse return;
+        try self.children.append(self.allocator(), .{
+            .task_id = task_id,
+            .task_type = stringMember(frame, "task_type") orelse "",
+        });
+    }
+
+    fn settleChild(self: *Reducer, frame: std.json.ObjectMap) !void {
+        const task_id = stringMember(frame, "task_id") orelse return;
+        var found = false;
+        for (self.children.items) |*child| {
+            if (!std.mem.eql(u8, child.task_id, task_id) or child.settled) continue;
+            child.settled = true;
+            found = true;
+        }
+        if (!found) return;
+        if (self.unsettledDeferringChildren() > 0) return;
+        try self.publishDeferred();
+    }
+
+    fn publishDeferred(self: *Reducer) !void {
+        if (self.run == null) return;
+        const deferred = self.run.?.deferred orelse return;
+        self.run.?.deferred = null;
+        try self.publishTerminal(deferred);
     }
 
     fn publishTerminal(self: *Reducer, frame: std.json.ObjectMap) !void {
         const run = &self.run.?;
+        run.deferred = null;
         try self.sweepRun();
 
         var payload = try self.terminalPayload(run);
@@ -472,6 +523,7 @@ pub const Reducer = struct {
             const payload = try self.toolPayload(run, tool.*);
             _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
         }
+        self.children.clearRetainingCapacity();
         for (self.gates.items) |*gate| {
             if (gate.resolved) continue;
             gate.resolved = true;
@@ -568,6 +620,24 @@ pub const Reducer = struct {
     fn applyRunObservation(self: *Reducer, message: rpc.Message) !void {
         const frame = message.object.object;
         if (std.mem.eql(u8, message.type, "system")) {
+            if (std.mem.eql(u8, message.subtype, "task_started")) {
+                try self.trackChild(frame);
+                return;
+            }
+            if (std.mem.eql(u8, message.subtype, "task_notification")) {
+                try self.settleChild(frame);
+                return;
+            }
+            if (std.mem.eql(u8, message.subtype, "task_updated")) {
+                if (terminalTaskPatch(frame)) try self.settleChild(frame);
+                return;
+            }
+            if (std.mem.eql(u8, message.subtype, "session_state")) {
+                if (stringMember(frame, "state")) |state| {
+                    if (std.mem.eql(u8, state, "idle")) try self.publishDeferred();
+                }
+                return;
+            }
             try self.observeIdle(message);
             return;
         }
@@ -696,6 +766,20 @@ fn toolResultText(content: ?std.json.Value) []const u8 {
         if (value == .string and value.string.len > 0) return value.string;
     }
     return "tool call failed";
+}
+
+fn defersTerminal(task_type: []const u8) bool {
+    return std.mem.eql(u8, task_type, "local_agent") or std.mem.eql(u8, task_type, "local_workflow");
+}
+
+fn terminalTaskPatch(frame: std.json.ObjectMap) bool {
+    const patch = frame.get("patch") orelse return false;
+    if (patch != .object) return false;
+    const status = stringMember(patch.object, "status") orelse return false;
+    for ([_][]const u8{ "completed", "failed", "stopped", "killed" }) |terminal| {
+        if (std.mem.eql(u8, status, terminal)) return true;
+    }
+    return false;
 }
 
 fn cancelled(frame: std.json.ObjectMap) bool {
@@ -1093,6 +1177,83 @@ test "a transport that dies before the run starts settles nothing" {
     try startedRun(&reducer, arena.allocator(), "turn-3");
     try reducer.transportFailed("the test closed the transport");
     try testing.expectEqualStrings("run.failed", reducer.envelopes.items[1].object.get("type").?.string);
+}
+
+fn childRun(reducer: *Reducer, arena: std.mem.Allocator, task_type: []const u8) !void {
+    reducer.open();
+    try startedRun(reducer, arena, "turn-1");
+    const started = try std.fmt.allocPrint(arena,
+        \\{{"type":"system","subtype":"task_started","task_id":"task-1","task_type":"{s}","uuid":"t1"}}
+    , .{task_type});
+    try observeText(reducer, arena, started);
+    try observeText(reducer, arena,
+        \\{"type":"result","subtype":"success","result":"spawned","user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
+    );
+}
+
+test "a local child holds the terminal until it settles" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+
+    try childRun(&reducer, scratch, "local_agent");
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","uuid":"t2"}
+    );
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.completed", reducer.envelopes.items[1].object.get("type").?.string);
+}
+
+test "a child of another kind holds nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+
+    try childRun(&reducer, arena.allocator(), "remote_agent");
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.completed", reducer.envelopes.items[1].object.get("type").?.string);
+}
+
+test "a patch that is not terminal leaves the child running" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+
+    try childRun(&reducer, scratch, "local_workflow");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"running"},"uuid":"t2"}
+    );
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"killed"},"uuid":"t3"}
+    );
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+}
+
+test "an idle session publishes a terminal its children are still holding" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+
+    try childRun(&reducer, scratch, "local_agent");
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"session_state","state":"busy","uuid":"s1"}
+    );
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"session_state","state":"idle","uuid":"s2"}
+    );
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.completed", reducer.envelopes.items[1].object.get("type").?.string);
 }
 
 test "an init outside a pending run is adopted when it arrives" {
