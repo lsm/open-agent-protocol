@@ -753,6 +753,66 @@ func TestSecondTurnSequentialDistinctRuns(t *testing.T) {
 	}
 }
 
+func initFrameNaming(model string) string {
+	return `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Task","Bash"],"mcp_servers":[],"model":"` + model + `","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
+}
+
+func awaitBuffered(t *testing.T, session base.Session) {
+	t.Helper()
+	impl := session.(*Session)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		impl.reduceMu.Lock()
+		impl.mu.Lock()
+		pending := impl.pending
+		buffered := 0
+		if pending != nil {
+			buffered = len(pending.buffered)
+		}
+		impl.mu.Unlock()
+		impl.reduceMu.Unlock()
+		if buffered > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the pending run never buffered the observation")
+}
+
+func TestStateDoesNotAdoptAPendingRunsInit(t *testing.T) {
+	_, session, peer := openWire(t)
+
+	outcome := submit(session)
+	uuid := turnUUIDOf(t, peer.writtenUser())
+	peer.send(initFrameNaming("model-published"))
+	awaitBuffered(t, session)
+
+	before, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.CurrentModelID != "claude-test" {
+		t.Fatalf("state reported %q while the run was still pending, want the configured model: a buffered init is not adopted until the run starts", before.CurrentModelID)
+	}
+
+	peer.send(streamEcho(uuid))
+	admitted := awaitSubmit(t, outcome)
+	peer.send(resultFrame(uuid, "success", false, "completed", "one", 0))
+	adaptertest.Drain(t, admitted.stream, 5*time.Second)
+
+	after, err := session.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CurrentModelID != "model-published" {
+		t.Fatalf("state reported %q after the run started; the replayed init should have been adopted", after.CurrentModelID)
+	}
+
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQueuedTurnCountDefersTerminal(t *testing.T) {
 	_, session, peer := openWire(t)
 	uuid, outcome := admit(t, session, peer)
