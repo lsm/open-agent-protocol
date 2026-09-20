@@ -39,9 +39,9 @@ submission cannot tell whether it is asking for `auto` or for whatever it said
 last time.
 
 The moment is cheap. Across the adapters in this repository only the reference
-adapter advertises `run.tool_selection` above `unavailable`; Codex and Makai
-declare it unavailable against their pins, and the other six omit it. The axis
-is being added before any divergence exists to reconcile.
+adapter advertises `run.tool_selection` above `unavailable`; Codex declares it
+unavailable against its pin, and the six remaining harness adapters omit the
+key. The axis is being added before any divergence exists to reconcile.
 
 ## Decisions
 
@@ -96,9 +96,9 @@ The alternative is worse in a specific way. Without the member, an endpoint
 that retains a tool policy has no way to say so, and a caller discovers the
 retention by observing that a later submission behaved in a way it did not ask
 for — the failure mode [Decision 0005](0005-run-controls.md) already found and
-fixed once, when Codex and Makai wrote a per-run `model_id` into
-`current_model_id` and a selection made once silently became the session
-default. Recording that axis before any endpoint diverges is what keeps the
+fixed once, when Codex and the since-removed Makai adapter wrote a per-run
+`model_id` into `current_model_id` and a selection made once silently became
+the session default. Recording that axis before any endpoint diverges is what keeps the
 same fault from being discovered a second time by observation.
 
 The honest limit belongs here rather than in a footnote. An endpoint declaring
