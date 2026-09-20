@@ -13,16 +13,6 @@ const pack_capability_keys_pending = [_][]const u8{
     "ext-packed-type-unadvertised",
 };
 
-const model_reconciliation_pending = [_][]const u8{
-    "models-listed-selection-false-miss",
-    "models-stale-catalog-does-not-displace",
-    "models-stale-catalog-raises-no-change",
-};
-
-const provided_tool_tracking_pending = [_][]const u8{
-    "tools-refresh-collides-with-provided",
-};
-
 fn readAll(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(64 * 1024 * 1024));
 }
@@ -134,8 +124,6 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
     var declared = std.ArrayList([]const u8).empty;
     defer declared.deinit(allocator);
     for (pack_capability_keys_pending) |name| try declared.append(allocator, name);
-    for (model_reconciliation_pending) |name| try declared.append(allocator, name);
-    for (provided_tool_tracking_pending) |name| try declared.append(allocator, name);
     const outstanding = try joined(allocator, disagreeing.items);
     defer allocator.free(outstanding);
     const accounted = try joined(allocator, declared.items);

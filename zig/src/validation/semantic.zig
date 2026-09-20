@@ -182,6 +182,7 @@ const Unjudged = struct {
 
 const Session = struct {
     active: []const u8 = "",
+    provided: std.ArrayList([]const u8) = .empty,
     unjudged: std.ArrayList(Unjudged) = .empty,
     order: std.ArrayList([]const u8) = .empty,
     current_model: []const u8 = "",
@@ -236,6 +237,9 @@ const Controls = struct {
 
 const Pending = struct {
     expectation: ?Expectation = null,
+    provided: []const []const u8 = &.{},
+    model_listed: bool = false,
+    limit_refusal: ?Expectation = null,
     model_query: bool = false,
     satisfies: bool = false,
     model_unjudged: bool = false,
@@ -337,6 +341,7 @@ pub const Machine = struct {
         self.submits.deinit(self.allocator);
         for (self.sessions.values()) |holder| {
             holder.order.deinit(self.allocator);
+            holder.provided.deinit(self.allocator);
             holder.unjudged.deinit(self.allocator);
         }
         self.sessions.deinit(self.allocator);
@@ -511,6 +516,7 @@ pub const Machine = struct {
         try self.checkAdvertisement(index, outgoing);
         self.catalog_ambiguous = duplicateToolName(self.catalog.items) != null;
         if (self.catalog_ambiguous) try self.add(code_duplicate_tool_name, index);
+        try self.checkRefreshAgainstProvided(index);
     }
 
     fn collectFeatures(self: *Machine, payload: std.json.Value) !void {
@@ -624,6 +630,11 @@ pub const Machine = struct {
         defer self.submits.put(self.allocator, field(envelope, "id"), pending) catch {};
 
         try self.subscribeGate(index, envelope, payload, pending);
+        if (providing) {
+            const names = try self.arena.allocator().alloc([]const u8, tools.?.array.items.len);
+            for (tools.?.array.items, 0..) |tool, at| names[at] = memberString(tool, "name");
+            pending.provided = names;
+        }
         if (member(payload, "message")) |message| {
             try self.submitControls(index, envelope, message, pending);
         }
@@ -681,6 +692,14 @@ pub const Machine = struct {
         }
         if (defective) return;
         try self.attachLimitViolation(key, sources, pending);
+        if (pending.expectation) |held| {
+            if (std.mem.eql(u8, held.pointer, "/payload/tool_sources/limit") or
+                (held.rung == rung_unsatisfiable and std.mem.eql(u8, held.pointer, "/payload/tool_sources/kind") and !defective))
+            {
+                pending.limit_refusal = held;
+                pending.expectation = null;
+            }
+        }
     }
 
     fn attachLimitViolation(self: *Machine, key: []const u8, sources: std.json.Value, pending: *Pending) !void {
@@ -863,6 +882,14 @@ pub const Machine = struct {
         holder.unjudged.shrinkRetainingCapacity(kept);
     }
 
+    fn checkRefreshAgainstProvided(self: *Machine, index: usize) !void {
+        for (self.sessions.values()) |holder| {
+            for (holder.provided.items) |name| {
+                if (listedIn(self.catalog.items, name)) try self.add(code_duplicate_tool_name, index);
+            }
+        }
+    }
+
     fn checkAdvertisement(self: *Machine, index: usize, outgoing: Snapshot) !void {
         if (outgoing.revision.len == 0 or outgoing.stale or
             !std.mem.eql(u8, outgoing.revision, self.current_capability)) return;
@@ -1010,6 +1037,7 @@ pub const Machine = struct {
             return;
         }
         if (!std.mem.eql(u8, field(envelope, "capability_revision"), self.current_capability)) {
+            try self.add(code_stale_capability_revision, index);
             return;
         }
         for (keys) |key| {
@@ -1147,6 +1175,9 @@ pub const Machine = struct {
                 pending.revision = self.current_capability;
             }
             if (catalog) |listed| {
+                if (listed.binds(self.current_capability) and listed.ids.get(pending.controls.model) != null) {
+                    pending.model_listed = true;
+                }
                 if (listed.binds(self.current_capability) and listed.ids.get(pending.controls.model) == null) {
                     pending.satisfies = false;
                     return Expectation{
@@ -1238,6 +1269,11 @@ pub const Machine = struct {
     fn deliveryExpectation(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, pending: *Pending) !void {
         const delivery = memberString(payload, "delivery");
         if (delivery.len == 0 or std.mem.eql(u8, delivery, "auto")) return;
+        if (!std.mem.eql(u8, delivery, "queue")) {
+            const named = try std.fmt.allocPrint(self.arena.allocator(), "delivery.{s}", .{delivery});
+            try self.feature(index, envelope, named);
+            return;
+        }
         const key = try std.fmt.allocPrint(self.arena.allocator(), "session.message.delivery.{s}", .{delivery});
         const level = try self.controlDescriptor(index, envelope, key) orelse return;
         if (std.mem.eql(u8, delivery, "queue") and !affirmative(level)) {
@@ -1358,11 +1394,16 @@ pub const Machine = struct {
             if (std.mem.eql(u8, asked.declared, "session.open.request") and
                 openLevelRefusal(memberString(raised, "code"))) return true;
         }
-        if (pending.expectation) |expectation| {
+        if (pending.expectation orelse pending.limit_refusal) |expectation| {
             if (!conformingRefusal(raised, expectation)) try self.add(expectation.diagnostic, index);
             return true;
         }
         if (pending.model_query) return true;
+        if (pending.model_listed and
+            std.mem.eql(u8, memberString(raised, "code"), error_model_not_found))
+        {
+            try self.add(code_model_not_in_catalog, index);
+        }
         if (pending.model_unjudged) {
             const holder = try self.sessionFor(pending.session);
             try holder.unjudged.append(self.allocator, .{
@@ -1564,6 +1605,11 @@ pub const Machine = struct {
         try self.gatedResponse(index, envelope);
         {
             const holder = try self.sessionFor(session_id);
+            if (self.submits.get(field(envelope, "in_reply_to"))) |opened| {
+                if (opened.expectation == null) {
+                    for (opened.provided) |name| try holder.provided.append(self.allocator, name);
+                }
+            }
             const reported = memberString(payload, "current_model_id");
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
@@ -1700,10 +1746,8 @@ pub const Machine = struct {
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
             }
-            if (reported.len != 0) {
-                holder.current_model = reported;
-                holder.current_known = true;
-            }
+            holder.current_model = reported;
+            holder.current_known = true;
         }
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
@@ -1880,7 +1924,19 @@ fn openLevelRefusal(code: []const u8) bool {
 fn sameCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
     const left = a orelse return b == null;
     const right = b orelse return false;
-    return valueEql(left, right);
+    if (left != .array or right != .array) return valueEql(left, right);
+    if (left.array.items.len != right.array.items.len) return false;
+    for (left.array.items) |model| {
+        const id = memberString(model, "id");
+        var matched = false;
+        for (right.array.items) |other| {
+            if (!std.mem.eql(u8, memberString(other, "id"), id)) continue;
+            if (!valueEql(model, other)) return false;
+            matched = true;
+        }
+        if (!matched) return false;
+    }
+    return true;
 }
 
 fn sameBound(a: ?i64, b: ?i64) bool {
@@ -1904,13 +1960,25 @@ fn permits(choice: ToolChoice, name: []const u8, catalog: []const []const u8, kn
     return true;
 }
 
+fn numeric(value: std.json.Value) ?f64 {
+    return switch (value) {
+        .integer => |n| @floatFromInt(n),
+        .float => |n| n,
+        .number_string => |text| std.fmt.parseFloat(f64, text) catch null,
+        else => null,
+    };
+}
+
 fn valueEql(a: std.json.Value, b: std.json.Value) bool {
+    if (numeric(a)) |left| {
+        const right = numeric(b) orelse return false;
+        return left == right;
+    }
+    if (numeric(b) != null) return false;
     return switch (a) {
         .null => b == .null,
         .bool => |x| b == .bool and b.bool == x,
-        .integer => |x| b == .integer and b.integer == x,
-        .float => |x| b == .float and b.float == x,
-        .number_string => |x| b == .number_string and std.mem.eql(u8, b.number_string, x),
+        .integer, .float, .number_string => unreachable,
         .string => |x| b == .string and std.mem.eql(u8, b.string, x),
         .array => |x| blk: {
             if (b != .array or b.array.items.len != x.items.len) break :blk false;
