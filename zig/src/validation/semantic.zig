@@ -210,6 +210,7 @@ const Window = struct {
 const rung_capability: u8 = 1;
 const rung_degradation: u8 = 2;
 const rung_unsatisfiable: u8 = 3;
+const unnamed_defect = "";
 
 const Expectation = struct {
     rung: u8,
@@ -240,7 +241,6 @@ const Pending = struct {
     attachment: ?Expectation = null,
     subscribe: ?Expectation = null,
     fired: bool = false,
-    unported_defect: bool = false,
     provided: []const []const u8 = &.{},
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
@@ -809,7 +809,7 @@ pub const Machine = struct {
         _ = try self.controlDescriptor(index, envelope, feature_tool_sources_attach) orelse return;
         if (attaching) try self.attachExpectations(payload, sources.?, pending);
         if (providing) try self.provideExpectations(payload, tools.?, sources, pending);
-        if (pending.attachment != null or pending.unported_defect) pending.limit_refusal = null;
+        if (pending.attachment != null) pending.limit_refusal = null;
     }
 
     fn attachExpectations(self: *Machine, payload: std.json.Value, sources: std.json.Value, pending: *Pending) !void {
@@ -846,7 +846,17 @@ pub const Machine = struct {
         for (sources.array.items, 0..) |attachment, at| {
             const id = memberString(attachment, "id");
             if (listedIn(seen.items, id) or self.declared_sources.get(id) != null) {
-                pending.unported_defect = true;
+                defective = true;
+                self.propose(&pending.attachment, .{
+                    .rung = rung_unsatisfiable,
+                    .key = key,
+                    .pointer = try self.pointerAt("/payload/tool_sources", at, "/id"),
+                    .code = error_unsupported_feature,
+                    .reason = reason_unsatisfiable,
+                    .detail_name = "source",
+                    .detail_value = id,
+                    .diagnostic = unnamed_defect,
+                });
             }
             try seen.append(self.allocator, id);
             if (std.mem.eql(u8, memberString(attachment, "kind"), "remote") and
@@ -958,13 +968,37 @@ pub const Machine = struct {
                 }
             }
         }
-        for (tools.array.items) |tool| {
+        for (tools.array.items, 0..) |tool, at| {
             const owner = memberString(tool, "execution_owner");
             if (self.control_participant.len != 0 and owner.len != 0 and
-                !std.mem.eql(u8, owner, self.control_participant)) pending.unported_defect = true;
+                !std.mem.eql(u8, owner, self.control_participant))
+            {
+                self.propose(&pending.attachment, .{
+                    .rung = rung_unsatisfiable,
+                    .key = key,
+                    .pointer = try self.pointerAt("/payload/tools", at, "/execution_owner"),
+                    .code = error_unsupported_feature,
+                    .reason = reason_unsatisfiable,
+                    .detail_name = "tool",
+                    .detail_value = memberString(tool, "name"),
+                    .diagnostic = unnamed_defect,
+                });
+            }
             const source = memberString(tool, "source");
             if (source.len != 0 and self.declared_sources.get(source) == null and
-                !listedIn(attached.items, source)) pending.unported_defect = true;
+                !listedIn(attached.items, source))
+            {
+                self.propose(&pending.attachment, .{
+                    .rung = rung_unsatisfiable,
+                    .key = key,
+                    .pointer = try self.pointerAt("/payload/tools", at, "/source"),
+                    .code = error_unsupported_feature,
+                    .reason = reason_unsatisfiable,
+                    .detail_name = "source",
+                    .detail_value = source,
+                    .diagnostic = unnamed_defect,
+                });
+            }
         }
         try self.provideLimitViolation(key, tools, pending);
         var seen = std.ArrayList([]const u8).empty;
@@ -1035,12 +1069,12 @@ pub const Machine = struct {
                 if (pending.control) |expectation| {
                     if (pending.fired) return;
                     pending.fired = true;
-                    try self.add(expectation.diagnostic, index);
+                    try self.raise(expectation, index);
                 }
             },
             .open => {
-                if (pending.attachment) |expectation| try self.add(expectation.diagnostic, index);
-                if (pending.subscribe) |expectation| try self.add(expectation.diagnostic, index);
+                if (pending.attachment) |expectation| try self.raise(expectation, index);
+                if (pending.subscribe) |expectation| try self.raise(expectation, index);
             },
         }
     }
@@ -1527,6 +1561,11 @@ pub const Machine = struct {
         return null;
     }
 
+    fn raise(self: *Machine, expectation: Expectation, index: usize) !void {
+        if (expectation.diagnostic.len == 0) return;
+        try self.add(expectation.diagnostic, index);
+    }
+
     fn propose(self: *Machine, slot: *?Expectation, candidate: Expectation) void {
         _ = self;
         const held = slot.* orelse {
@@ -1588,7 +1627,7 @@ pub const Machine = struct {
         if (pending.control) |expectation| {
             if (!pending.fired) {
                 pending.fired = true;
-                try self.add(expectation.diagnostic, index);
+                try self.raise(expectation, index);
             }
             return .{};
         }
@@ -1690,7 +1729,7 @@ pub const Machine = struct {
                 if (conformingRefusal(raised, candidate)) return true;
                 if (outranks(candidate, speaker)) speaker = candidate;
             }
-            try self.add(speaker.diagnostic, index);
+            try self.raise(speaker, index);
             if (pending.control != null) return true;
         }
         if (pending.model_query) return true;
@@ -3580,5 +3619,33 @@ test "a session records a provided name once, however many opens supply it" {
         \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}},
         \\{"type":"capabilities.response","id":"k3","capability_revision":"v2","payload":{"features":
         \\{"action.tools.provide":{"level":"native"}},"tools":[{"name":"echo"}]}}]
+    , &.{"duplicate_tool_name"});
+}
+
+test "the earliest defect speaks even when this port has no name for it" {
+    const declared =
+        \\{"type":"protocol.initialize.request","id":"i1","payload":{"participant":{"id":"control"}}},
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.provide":{"level":"native"}}}}
+    ;
+    const answered =
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}}]
+    ;
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"a","execution_owner":"mallory"},{"name":"a"}]}},
+    ++ answered
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"a"},{"name":"a"},{"name":"b","execution_owner":"mallory"}]}},
+    ++ answered
     , &.{"duplicate_tool_name"});
 }
