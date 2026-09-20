@@ -779,6 +779,33 @@ func awaitBuffered(t *testing.T, session base.Session) {
 	t.Fatal("the pending run never buffered the observation")
 }
 
+func awaitModel(t *testing.T, session base.Session, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		state, err := session.State(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = state.CurrentModelID
+		if last == want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("state reported %q, want %q", last, want)
+}
+
+func TestStateAdoptsAnInitWithNoRunPending(t *testing.T) {
+	_, session, peer := openWire(t)
+	peer.send(initFrameNaming("model-idle"))
+	awaitModel(t, session, "model-idle")
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStateDoesNotAdoptAPendingRunsInit(t *testing.T) {
 	_, session, peer := openWire(t)
 
