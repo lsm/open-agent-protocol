@@ -661,6 +661,21 @@ to a `@request` placeholder). The initialize exchange at open is issued
 exactly like the production process factory, so its wire shape is behavioral
 evidence, not metadata.
 
+Two properties the expected traces pin that no type in either implementation
+holds, recorded here because a reader refactoring one allocation site has no
+other way to learn them. **Submission, message, run and event ids come from one
+counter**, so `message-2`, `run-3`, `event-4` in a single turn is a statement
+about allocation order across four kinds rather than four independent
+sequences; reordering two allocations changes every later id in the trace. And
+**a run reports the model captured when its submission was accepted**, not the
+one session state holds when it starts, even though `system/init` publishes a
+model earlier in the same turn. The corpus demonstrates the second only at the
+first run of a session: every `init` frame in every case publishes
+`claude-sonnet-4-5`, so from the second run onward a reducer that reads session
+state live is indistinguishable from one that captured it. Both properties
+therefore want a named test beside the corpus rather than the corpus alone;
+`zig/src/adapter/claude/session.zig` carries one each.
+
 Cases: initialize-lifecycle, admission-corroboration, settlement-statuses,
 interrupt-cancel, queued-continuation, background-children,
 streaming-provenance, tool-lifecycle, permission-gates, process-exit,

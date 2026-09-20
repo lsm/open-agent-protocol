@@ -253,3 +253,69 @@ fn stopReason(frame: std.json.ObjectMap) []const u8 {
     }
     return "completed";
 }
+
+const testing = std.testing;
+
+fn observeText(reducer: *Reducer, arena: std.mem.Allocator, text: []const u8) !void {
+    const message = try rpc.parseMessage(arena, text);
+    try reducer.observe(message);
+}
+
+fn startedModels(reducer: *Reducer, arena: std.mem.Allocator) ![]const []const u8 {
+    var models = std.ArrayList([]const u8).empty;
+    for (reducer.envelopes.items) |envelope| {
+        const kind = envelope.object.get("type").?;
+        if (!std.mem.eql(u8, kind.string, "run.started")) continue;
+        try models.append(arena, envelope.object.get("payload").?.object.get("model_id").?.string);
+    }
+    return models.items;
+}
+
+test "ids are allocated from one counter across four kinds" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try observeText(&reducer, arena.allocator(),
+        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+
+    try testing.expectEqualStrings("submission-1", reducer.run.?.submission_id);
+    try testing.expectEqualStrings("message-2", reducer.run.?.message_id);
+    try testing.expectEqualStrings("run-3", reducer.run.?.id);
+    try testing.expectEqualStrings("event-4", reducer.envelopes.items[0].object.get("id").?.string);
+}
+
+test "a run reports the model captured at submit, not the one init later published" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"result","subtype":"success","terminal_reason":"completed","result":"one","uuid":"r1"}
+    );
+
+    try reducer.submit("turn-2");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","model":"model-b","uuid":"i2"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e2","user_message_uuid":"turn-2"}
+    );
+
+    const models = try startedModels(&reducer, scratch);
+    try testing.expectEqual(@as(usize, 2), models.len);
+    try testing.expectEqualStrings("claude-test", models[0]);
+    try testing.expectEqualStrings("model-a", models[1]);
+}
