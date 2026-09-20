@@ -1220,7 +1220,7 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
         \\"beta":{"features":{"session.message.delivery.queue":{"level":"native"}}}},
         \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
-        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","payload":
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
         \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
         \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"payload":{}},
         \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1",
@@ -1235,7 +1235,7 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
         \\"session.message.delivery.queue":{"level":"native"}}}},
         \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
-        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","payload":
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
         \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
         \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"payload":{}},
         \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1",
