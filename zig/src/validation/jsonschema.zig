@@ -19,21 +19,133 @@ pub const Failure = struct {
     keyword: []const u8,
 };
 
-const supported_keywords = [_][]const u8{
-    "$ref",       "$defs",   "$id",          "$schema",   "$comment",
-    "title",      "description",
-    "type",       "properties", "required",  "additionalProperties",
-    "items",      "const",   "enum",         "allOf",     "anyOf",
-    "oneOf",      "not",     "if",           "then",      "else",
-    "contains",   "minimum", "minItems",     "maxItems",  "minLength",
-    "uniqueItems", "pattern",
+const Shape = enum {
+    any,
+    string,
+    boolean,
+    number,
+    count,
+    simple_type,
+    string_set,
+    values,
+    schema,
+    schema_list,
+    schema_map,
 };
 
+const Keyword = struct { name: []const u8, shape: Shape };
+
+const keywords = [_]Keyword{
+    .{ .name = "$comment", .shape = .string },
+    .{ .name = "$defs", .shape = .schema_map },
+    .{ .name = "$id", .shape = .string },
+    .{ .name = "$ref", .shape = .string },
+    .{ .name = "$schema", .shape = .string },
+    .{ .name = "additionalProperties", .shape = .schema },
+    .{ .name = "allOf", .shape = .schema_list },
+    .{ .name = "anyOf", .shape = .schema_list },
+    .{ .name = "const", .shape = .any },
+    .{ .name = "contains", .shape = .schema },
+    .{ .name = "description", .shape = .string },
+    .{ .name = "else", .shape = .schema },
+    .{ .name = "enum", .shape = .values },
+    .{ .name = "if", .shape = .schema },
+    .{ .name = "items", .shape = .schema },
+    .{ .name = "maxItems", .shape = .count },
+    .{ .name = "minItems", .shape = .count },
+    .{ .name = "minLength", .shape = .count },
+    .{ .name = "minimum", .shape = .number },
+    .{ .name = "not", .shape = .schema },
+    .{ .name = "oneOf", .shape = .schema_list },
+    .{ .name = "pattern", .shape = .string },
+    .{ .name = "properties", .shape = .schema_map },
+    .{ .name = "required", .shape = .string_set },
+    .{ .name = "then", .shape = .schema },
+    .{ .name = "title", .shape = .string },
+    .{ .name = "type", .shape = .simple_type },
+    .{ .name = "uniqueItems", .shape = .boolean },
+};
+
+const simple_types = [_][]const u8{ "array", "boolean", "integer", "null", "number", "object", "string" };
+
+fn keywordShape(name: []const u8) ?Shape {
+    for (keywords) |known| {
+        if (std.mem.eql(u8, known.name, name)) return known.shape;
+    }
+    return null;
+}
+
 fn keywordSupported(name: []const u8) bool {
-    for (supported_keywords) |known| {
-        if (std.mem.eql(u8, known, name)) return true;
+    return keywordShape(name) != null;
+}
+
+fn namedIn(known: []const []const u8, name: []const u8) bool {
+    for (known) |entry| {
+        if (std.mem.eql(u8, entry, name)) return true;
     }
     return false;
+}
+
+fn isSchema(value: std.json.Value) bool {
+    return value == .object or value == .bool;
+}
+
+fn simpleTypeHolds(value: std.json.Value) bool {
+    switch (value) {
+        .string => |name| return namedIn(&simple_types, name),
+        .array => |names| {
+            if (names.items.len == 0) return false;
+            for (names.items, 0..) |entry, at| {
+                if (entry != .string) return false;
+                if (!namedIn(&simple_types, entry.string)) return false;
+                for (names.items[0..at]) |earlier| {
+                    if (std.mem.eql(u8, earlier.string, entry.string)) return false;
+                }
+            }
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn stringSetHolds(value: std.json.Value) bool {
+    if (value != .array) return false;
+    for (value.array.items, 0..) |entry, at| {
+        if (entry != .string) return false;
+        for (value.array.items[0..at]) |earlier| {
+            if (std.mem.eql(u8, earlier.string, entry.string)) return false;
+        }
+    }
+    return true;
+}
+
+fn shapeHolds(shape: Shape, value: std.json.Value) bool {
+    return switch (shape) {
+        .any => true,
+        .string => value == .string,
+        .boolean => value == .bool,
+        .number => numberValue(value) != null,
+        .count => countValue(value) != null,
+        .simple_type => simpleTypeHolds(value),
+        .string_set => stringSetHolds(value),
+        .values => value == .array,
+        .schema => isSchema(value),
+        .schema_list => blk: {
+            if (value != .array or value.array.items.len == 0) break :blk false;
+            for (value.array.items) |entry| {
+                if (!isSchema(entry)) break :blk false;
+            }
+            break :blk true;
+        },
+        .schema_map => blk: {
+            if (value != .object) break :blk false;
+            var it = value.object.iterator();
+            while (it.next()) |entry| {
+                if (!isSchema(entry.value_ptr.*)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
 }
 
 pub fn pointerTokenEql(token: []const u8, key: []const u8) bool {
@@ -61,55 +173,80 @@ pub fn pointerMember(object: std.json.ObjectMap, token: []const u8) ?std.json.Va
     return null;
 }
 
-pub fn resolvesLocally(root: std.json.Value, reference: []const u8) bool {
-    if (std.mem.eql(u8, reference, "#")) return true;
-    if (!std.mem.startsWith(u8, reference, "#/")) return false;
+fn localNode(root: std.json.Value, fragment: []const u8) ?std.json.Value {
+    if (fragment.len == 0) return root;
+    if (fragment[0] != '/') return null;
     var node = root;
-    var parts = std.mem.splitScalar(u8, reference["#/".len..], '/');
+    var parts = std.mem.splitScalar(u8, fragment[1..], '/');
     while (parts.next()) |token| {
         switch (node) {
-            .object => |object| node = pointerMember(object, token) orelse return false,
+            .object => |object| node = pointerMember(object, token) orelse return null,
             .array => |items| {
-                const at = std.fmt.parseUnsigned(usize, token, 10) catch return false;
-                if (at >= items.items.len) return false;
+                const at = std.fmt.parseUnsigned(usize, token, 10) catch return null;
+                if (at >= items.items.len) return null;
                 node = items.items[at];
             },
-            else => return false,
+            else => return null,
         }
     }
-    return true;
+    return node;
 }
 
-pub fn unsupportedKeyword(schema: std.json.Value) ?[]const u8 {
-    if (schema != .object) return null;
-    var it = schema.object.iterator();
+pub const reference_depth_limit = 256;
+
+pub fn schemaDefect(allocator: std.mem.Allocator, root: std.json.Value, schema: std.json.Value) !?[]const u8 {
+    var followed: std.StringArrayHashMapUnmanaged(void) = .empty;
+    defer followed.deinit(allocator);
+    return nodeDefect(allocator, &followed, root, schema, 0);
+}
+
+fn nodeDefect(
+    allocator: std.mem.Allocator,
+    followed: *std.StringArrayHashMapUnmanaged(void),
+    root: std.json.Value,
+    node: std.json.Value,
+    depth: usize,
+) std.mem.Allocator.Error!?[]const u8 {
+    if (node == .bool) return null;
+    if (node != .object) return "$ref";
+    if (depth == reference_depth_limit) return "$ref";
+    const object = node.object;
+
+    var it = object.iterator();
     while (it.next()) |entry| {
-        if (!keywordSupported(entry.key_ptr.*)) return entry.key_ptr.*;
+        const shape = keywordShape(entry.key_ptr.*) orelse return entry.key_ptr.*;
+        if (!shapeHolds(shape, entry.value_ptr.*)) return entry.key_ptr.*;
     }
-    if (schema.object.get("pattern")) |expression| {
-        if (expression != .string) return "pattern";
+    if (object.get("pattern")) |expression| {
         if (!std.mem.eql(u8, expression.string, dotted_lowercase_label)) return "pattern";
     }
-    if (schema.object.get("items")) |elements| {
+    if (object.get("items")) |elements| {
         if (elements == .array) return "items";
     }
-    for ([_][]const u8{ "items", "not", "if", "then", "else", "contains", "additionalProperties" }) |name| {
-        const child = schema.object.get(name) orelse continue;
-        if (unsupportedKeyword(child)) |found| return found;
-    }
-    for ([_][]const u8{ "allOf", "anyOf", "oneOf" }) |name| {
-        const children = schema.object.get(name) orelse continue;
-        if (children != .array) continue;
-        for (children.array.items) |child| {
-            if (unsupportedKeyword(child)) |found| return found;
+    if (object.get("$ref")) |reference| {
+        if (!std.mem.startsWith(u8, reference.string, "#")) return "$ref";
+        if (!followed.contains(reference.string)) {
+            try followed.put(allocator, reference.string, {});
+            const target = localNode(root, reference.string["#".len..]) orelse return "$ref";
+            if (try nodeDefect(allocator, followed, root, target, depth + 1)) |found| return found;
         }
     }
-    for ([_][]const u8{ "properties", "$defs" }) |name| {
-        const children = schema.object.get(name) orelse continue;
-        if (children != .object) continue;
-        var kids = children.object.iterator();
-        while (kids.next()) |kid| {
-            if (unsupportedKeyword(kid.value_ptr.*)) |found| return found;
+    for (keywords) |known| {
+        const value = object.get(known.name) orelse continue;
+        switch (known.shape) {
+            .schema => {
+                if (try nodeDefect(allocator, followed, root, value, depth + 1)) |found| return found;
+            },
+            .schema_list => for (value.array.items) |child| {
+                if (try nodeDefect(allocator, followed, root, child, depth + 1)) |found| return found;
+            },
+            .schema_map => {
+                var kid = value.object.iterator();
+                while (kid.next()) |entry| {
+                    if (try nodeDefect(allocator, followed, root, entry.value_ptr.*, depth + 1)) |found| return found;
+                }
+            },
+            else => {},
         }
     }
     return null;
@@ -215,6 +352,7 @@ pub const Validator = struct {
     failures: std.ArrayList(Failure) = .empty,
     retained_pointer: ?[]u8 = null,
     overrides: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
+    depth: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, registry: *const Registry) Validator {
         return .{ .registry = registry, .allocator = allocator };
@@ -259,6 +397,7 @@ pub const Validator = struct {
         defer pointer.deinit();
         for (self.failures.items) |failure| self.allocator.free(failure.pointer);
         self.failures.clearRetainingCapacity();
+        self.depth = 0;
         try self.check(schema, document, instance, &pointer);
         if (self.failures.items.len == 0) return null;
         var best = self.failures.items[0];
@@ -286,6 +425,9 @@ pub const Validator = struct {
     }
 
     fn check(self: *Validator, schema: std.json.Value, document: []const u8, instance: std.json.Value, pointer: *Pointer) Error!void {
+        if (self.depth == reference_depth_limit) return self.record(pointer, "$ref");
+        self.depth += 1;
+        defer self.depth -= 1;
         switch (schema) {
             .bool => |always| {
                 if (!always) try self.record(pointer, "false");
@@ -481,6 +623,7 @@ pub const Validator = struct {
         if (declared != .string) return null;
         for (branches) |branch| {
             const resolved = try self.flatten(branch, document);
+            if (resolved != .object) continue;
             const properties = resolved.object.get("properties") orelse continue;
             if (properties != .object) continue;
             const type_schema = properties.object.get("type") orelse continue;
@@ -494,6 +637,9 @@ pub const Validator = struct {
 
     fn flatten(self: *Validator, schema: std.json.Value, document: []const u8) Error!std.json.Value {
         if (schema != .object) return schema;
+        if (self.depth == reference_depth_limit) return schema;
+        self.depth += 1;
+        defer self.depth -= 1;
         if (schema.object.get("$ref")) |ref| {
             if (ref != .string) return schema;
             const target = try self.resolve(ref.string, document);
@@ -520,15 +666,10 @@ pub const Validator = struct {
         const file = if (hash) |at| ref[0..at] else ref;
         const fragment = if (hash) |at| ref[at + 1 ..] else "";
         const target_document = if (file.len == 0) document else stripSchemaBase(file);
-        var node = self.overrides.get(target_document) orelse
+        const root_value = self.overrides.get(target_document) orelse
             self.registry.root(target_document) orelse
             return Unsupported.UnresolvableRef;
-        var parts = std.mem.splitScalar(u8, fragment, '/');
-        while (parts.next()) |part| {
-            if (part.len == 0) continue;
-            if (node != .object) return Unsupported.UnresolvableRef;
-            node = pointerMember(node.object, part) orelse return Unsupported.UnresolvableRef;
-        }
+        const node = localNode(root_value, fragment) orelse return Unsupported.UnresolvableRef;
         return .{ .schema = node, .document = target_document };
     }
 };
@@ -658,20 +799,40 @@ fn typeMatches(name: []const u8, instance: std.json.Value) bool {
     return false;
 }
 
-fn countOf(value: std.json.Value) Error!usize {
-    return switch (value) {
-        .integer => |n| if (n < 0) error.InvalidSchema else @intCast(n),
-        else => error.InvalidSchema,
-    };
+fn wholeCount(value: f64) ?usize {
+    if (!std.math.isFinite(value)) return null;
+    if (value < 0 or @trunc(value) != value) return null;
+    if (!(value < @as(f64, @floatFromInt(std.math.maxInt(usize))))) return null;
+    return @intFromFloat(value);
 }
 
-fn numberOf(value: std.json.Value) Error!f64 {
+fn countValue(value: std.json.Value) ?usize {
+    switch (value) {
+        .integer => |n| return if (n < 0) null else @intCast(n),
+        .float => |f| return wholeCount(f),
+        .number_string => |s| {
+            if (std.fmt.parseUnsigned(usize, s, 10)) |n| return n else |_| {}
+            return wholeCount(std.fmt.parseFloat(f64, s) catch return null);
+        },
+        else => return null,
+    }
+}
+
+fn numberValue(value: std.json.Value) ?f64 {
     return switch (value) {
         .integer => |n| @floatFromInt(n),
         .float => |f| f,
-        .number_string => |s| std.fmt.parseFloat(f64, s) catch error.InvalidSchema,
-        else => error.InvalidSchema,
+        .number_string => |s| std.fmt.parseFloat(f64, s) catch null,
+        else => null,
     };
+}
+
+fn countOf(value: std.json.Value) Error!usize {
+    return countValue(value) orelse error.InvalidSchema;
+}
+
+fn numberOf(value: std.json.Value) Error!f64 {
+    return numberValue(value) orelse error.InvalidSchema;
 }
 
 const dotted_lowercase_label = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$";

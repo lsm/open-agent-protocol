@@ -1513,7 +1513,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, key, feature_structured_output)) {
             const raw = member(payload, "output_schema") orelse return null;
-            if (outputSchemaDefect(raw)) {
+            if (try outputSchemaDefect(self.allocator, raw)) {
                 pending.satisfies = false;
                 return unsatisfiableAs(key, "/payload/output_schema", "field", "output_schema");
             }
@@ -1669,11 +1669,7 @@ pub const Machine = struct {
         var validator = jsonschema.Validator.init(self.allocator, &registry);
         defer validator.deinit();
         try validator.overrides.put(self.allocator, output_schema_document, schema);
-        const failure = validator.validateSchema(schema, output_schema_document, result) catch |raised| switch (raised) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return false,
-        };
-        return failure == null;
+        return try validator.validateSchema(schema, output_schema_document, result) == null;
     }
 
     fn checkCompletedControls(self: *Machine, index: usize, payload: std.json.Value, run: *Run) !void {
@@ -2437,7 +2433,7 @@ fn toolChoicePolicy(allocator: std.mem.Allocator, raw: std.json.Value) !ToolChoi
     return policy;
 }
 
-fn outputSchemaDefect(raw: std.json.Value) bool {
+fn outputSchemaDefect(allocator: std.mem.Allocator, raw: std.json.Value) !bool {
     if (raw != .object) return true;
     if (raw.object.get("type")) |declared| {
         switch (declared) {
@@ -2451,44 +2447,7 @@ fn outputSchemaDefect(raw: std.json.Value) bool {
             else => return true,
         }
     }
-    if (jsonschema.unsupportedKeyword(raw) != null) return true;
-    return schemaNodeDefect(raw, .{ .object = raw.object });
-}
-
-fn schemaNodeDefect(root: std.json.Value, node: std.json.Value) bool {
-    switch (node) {
-        .object => |object| {
-            if (object.get("$ref")) |reference| {
-                if (reference != .string) return true;
-                if (!std.mem.startsWith(u8, reference.string, "#")) return true;
-                if (!jsonschema.resolvesLocally(root, reference.string)) return true;
-            }
-            if (object.get("required")) |required| {
-                if (required != .array) return true;
-                for (required.array.items) |entry| {
-                    if (entry != .string) return true;
-                }
-            }
-            if (object.get("properties")) |properties| {
-                if (properties != .object) return true;
-            }
-            var it = object.iterator();
-            while (it.next()) |entry| {
-                if (std.mem.eql(u8, entry.key_ptr.*, "required")) continue;
-                if (std.mem.eql(u8, entry.key_ptr.*, "enum")) continue;
-                if (std.mem.eql(u8, entry.key_ptr.*, "const")) continue;
-                if (schemaNodeDefect(root, entry.value_ptr.*)) return true;
-            }
-            return false;
-        },
-        .array => |items| {
-            for (items.items) |entry| {
-                if (schemaNodeDefect(root, entry)) return true;
-            }
-            return false;
-        },
-        else => return false,
-    }
+    return (try jsonschema.schemaDefect(allocator, raw, raw)) != null;
 }
 
 fn runEventFeature(declared: []const u8) ?[]const u8 {
@@ -3416,14 +3375,15 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
             \\{"type":"object","properties":{"n":{"type":"string"}}}
         , .{});
         defer plain.deinit();
-        try std.testing.expect(jsonschema.unsupportedKeyword(plain.value) == null);
+        try std.testing.expect(try jsonschema.schemaDefect(std.testing.allocator, plain.value, plain.value) == null);
     }
     {
         var bounded = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
             \\{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}
         , .{});
         defer bounded.deinit();
-        try std.testing.expectEqualStrings("maxLength", jsonschema.unsupportedKeyword(bounded.value).?);
+        const found = try jsonschema.schemaDefect(std.testing.allocator, bounded.value, bounded.value);
+        try std.testing.expectEqualStrings("maxLength", found.?);
     }
 
     const declared =
@@ -3443,8 +3403,7 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\,
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}}},
-    ++ tail
-    , &.{"unsatisfiable_control"});
+    ++ tail, &.{"unsatisfiable_control"});
 
     try expectCodes(
         \\[
@@ -3452,8 +3411,7 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\,
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string"}}}}},
-    ++ tail
-    , &.{});
+    ++ tail, &.{});
 
     try expectCodes(
         \\[
@@ -3461,8 +3419,7 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\,
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","pattern":"^x+$"}}}}},
-    ++ tail
-    , &.{"unsatisfiable_control"});
+    ++ tail, &.{"unsatisfiable_control"});
 
     try expectCodes(
         \\[
@@ -3470,8 +3427,7 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\,
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"items":[{"type":"string"}]}}}}},
-    ++ tail
-    , &.{"unsatisfiable_control"});
+    ++ tail, &.{"unsatisfiable_control"});
 
     try expectCodes(
         \\[
@@ -3479,8 +3435,173 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\,
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"enum":"notalist"}}}}},
-    ++ tail
+    ++ tail, &.{"unsatisfiable_control"});
+}
+
+const MetaschemaCase = struct {
+    schema: []const u8,
+    result: []const u8 = "\"xxxxxxxx\"",
+    codes: []const []const u8,
+};
+
+test "a keyword value the metaschema rejects is refused at submission, as the oracle refuses it" {
+    const head =
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":
+    ;
+    const middle =
+        \\}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":
+    ;
+    const tail =
+        \\}}}]
+    ;
+    const refused: []const []const u8 = &.{"unsatisfiable_control"};
+    const unapplied: []const []const u8 = &.{"unapplied_control"};
+    const clean: []const []const u8 = &.{};
+    const cases = [_]MetaschemaCase{
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"minimum":"x"}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"type":"nonsense"}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"maxLength":-1}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"required":"nope"}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":"notanobject"}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"pattern":"("}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"$ref":"https://example.com/x"}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"$ref":"#/$defs/missing"}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"array"}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"minimum":1}}}
+        , .codes = clean },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"type":["string","string"]}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"required":["a","a"]}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"allOf":[]}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"uniqueItems":"yes"}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"title":5}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"items":5}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"$defs":{"z":5}}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"minItems":1.5}}}
+        , .codes = refused },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":{"$ref":"#/title"}},"title":"hello"}
+        , .codes = refused },
+        .{
+            .schema =
+            \\{"type":"object","properties":{"n":{"minItems":1.0}}}
+            ,
+            .result = "[1,2]",
+            .codes = clean,
+        },
+        .{
+            .schema =
+            \\{"type":"object","anyOf":[{"type":"object"}],"properties":{"n":{"$ref":"#/anyOf/0"}}}
+            ,
+            .result = "1",
+            .codes = unapplied,
+        },
+        .{ .schema =
+        \\{"type":"object","properties":{"n":true}}
+        , .codes = clean },
+        .{
+            .schema =
+            \\{"type":"object","properties":{"n":{"oneOf":[{"$ref":"#/$defs/a"}]}},
+            \\"$defs":{"a":{"$ref":"#/$defs/b"},"b":{"$ref":"#/$defs/a"}}}
+            ,
+            .result =
+            \\{"type":"x"}
+            ,
+            .codes = unapplied,
+        },
+        .{
+            .schema =
+            \\{"type":"object","properties":{"n":{"oneOf":[false]}}}
+            ,
+            .result =
+            \\{"type":"x"}
+            ,
+            .codes = unapplied,
+        },
+    };
+    for (cases) |entry| {
+        const trace = try std.mem.concat(
+            std.testing.allocator,
+            u8,
+            &.{ head, entry.schema, middle, entry.result, tail },
+        );
+        defer std.testing.allocator.free(trace);
+        expectCodes(trace, entry.codes) catch |raised| {
+            std.debug.print("case: {s}\n", .{entry.schema});
+            return raised;
+        };
+    }
+}
+
+test "a reference that closes a cycle is walked once, not forever" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/a"}},
+        \\"$defs":{"a":{"$ref":"#/$defs/b"},"b":{"$ref":"#/$defs/a"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
     , &.{"unapplied_control"});
+}
+
+test "a reference into a keyword that holds data is judged as the schema it names" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/const/x"}},
+        \\"const":{"x":{"enum":5}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
+    , &.{"unsatisfiable_control"});
 }
 
 test "an escaped reference resolves the same way on both sides of the boundary" {
@@ -3526,8 +3647,7 @@ test "a defect the port does not name still silences the bound beside it" {
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"one","execution_owner":"someone-else"},{"name":"two"}]}},
-    ++ refused
-    , &.{});
+    ++ refused, &.{});
 
     try expectCodes(
         \\[
@@ -3535,8 +3655,7 @@ test "a defect the port does not name still silences the bound beside it" {
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"one","source":"nowhere"},{"name":"two"}]}},
-    ++ refused
-    , &.{});
+    ++ refused, &.{});
 
     try expectCodes(
         \\[
@@ -3544,8 +3663,7 @@ test "a defect the port does not name still silences the bound beside it" {
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"one","execution_owner":"control"},{"name":"two"}]}},
-    ++ refused
-    , &.{"unavailable_capability"});
+    ++ refused, &.{"unavailable_capability"});
 }
 
 test "an attachment reusing an id the session already resolves silences the bound" {
@@ -3621,8 +3739,7 @@ test "the earliest defect speaks even when this port has no name for it" {
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"a","execution_owner":"mallory"},{"name":"a"}]}},
-    ++ answered
-    , &.{});
+    ++ answered, &.{});
 
     try expectCodes(
         \\[
@@ -3630,8 +3747,7 @@ test "the earliest defect speaks even when this port has no name for it" {
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"a"},{"name":"a"},{"name":"b","execution_owner":"mallory"}]}},
-    ++ answered
-    , &.{"duplicate_tool_name"});
+    ++ answered, &.{"duplicate_tool_name"});
 }
 
 test "a catalog is compared by the ids it resolves, not the rows it printed" {

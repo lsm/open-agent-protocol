@@ -186,16 +186,51 @@ would take to carry it. The list is expected to shrink.
   accepts, and auditing the handful of places that switch on `.integer`. No
   fixture writes a number past 2^53 in either form.
 
-- **Type-checking a schema keyword's value.** The evaluable-schema gate in
-  front of `output_schema` rejects a keyword the interpreter does not
-  implement, a `pattern` whose expression it cannot decide, and the array form
-  of `items`. It does not check that every keyword's *value* has the shape
-  2020-12 requires, so `{"enum": "notalist"}` is admitted and then fails at
-  validation, where Go's compiler refuses it at submission. The port reports
-  `unapplied_control` where the oracle reports `unsatisfiable_control`. This is
-  the same missing piece as the entry above and closes with it: the metaschema
-  is what type-checks keyword values, and the gate can then be replaced by
-  validating the candidate against it.
+- **A 2020-12 keyword the interpreter does not implement.** Go compiles
+  `output_schema` with santhosh-tekuri and ignores keywords outside the
+  vocabularies it asserts, so `{"maxLength": 3}`, `{"prefixItems": [...]}` and
+  `{"unknownKeyword": 1}` all compile and constrain nothing the port would
+  disagree about. The port implements a subset and refuses anything outside it,
+  so it raises `unsatisfiable_control` on schemas the oracle admits. The same
+  holds for `pattern`: Go accepts any RE2 expression, and the port decides one
+  expression and refuses the rest, for the reason the `name_pattern` entry
+  above gives. This is the narrow, conservative direction — the port never
+  admits a schema the oracle refuses — and it closes by widening the
+  interpreter, keyword by keyword, not by weakening the gate. No fixture in the
+  corpus reaches it.
+
+Keyword *values* are no longer in this list. The gate carries a keyword-to-shape
+table transcribed from the draft 2020-12 vocabulary metaschemas as
+santhosh-tekuri vendors them — `metaschemas/draft/2020-12/meta/{core,
+applicator,validation,meta-data}` at v6.0.2, sha256
+`ea945e11…`, `3b4baccc…`, `000831f2…`, `e070588f…` — restricted to the keywords
+the interpreter implements. `minimum` must be a number, `minItems` a
+non-negative integer, `required` an array of distinct strings, `type` a known
+type name or a non-empty array of distinct ones, `allOf`/`anyOf`/`oneOf` a
+non-empty array of schemas, and so on. Running the metaschema itself is still
+out of reach — it needs `$dynamicRef`, `$dynamicAnchor`, `propertyNames`,
+`exclusiveMinimum`, `$vocabulary`, `format`, and a regex engine — so the table
+is the transcription, and the ten cases in `semantic.zig` are what pins it to
+the oracle's answers rather than to a reading of the metaschema.
+
+The table also makes the gate exhaustive over exactly the conditions under
+which the interpreter raises an error: both sides now ask the same predicate
+for a count and a number, and resolve a local reference through the same
+pointer walk. So `conformsToSchema` no longer catches `UnsupportedKeyword`,
+`UnsupportedPattern`, `UnresolvableRef` or `InvalidSchema` and reports "does
+not conform". Reaching one of those is a drift between the gate and the
+interpreter — a port defect — and turning a port defect into a diagnostic
+against the trace is the one outcome that looks like agreement. It propagates
+instead.
+
+Two bounds stand in for machinery the oracle has and the port does not.
+Following `$ref` while judging a schema stops at a reference already followed,
+and every walk that follows a reference stops at a depth of 256 — the judging
+walk, the validator, and the flattening the `oneOf` discriminator does, which
+is the easiest one to forget because it is reached only when no branch matched.
+The oracle detects the cycle exactly and reports it as the instance failing,
+which is what each bounded walk produces on every cycle the corpus and the case
+table contain.
 
 ### Two ways a rule can be missing, and only one of them is safe
 
