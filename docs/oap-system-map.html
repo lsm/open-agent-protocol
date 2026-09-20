@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font-family: system-ui, sans-serif; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>OAP System Map</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #f6f7f9;
+    --surface: #ffffff;
+    --sunk: #eef0f4;
+    --ink: #11151c;
+    --muted: #5a6474;
+    --faint: #8c95a3;
+    --rule: #dce0e8;
+    --agent: #3b4bc8;
+    --agent-soft: #e8eaFB;
+    --provider: #0b7480;
+    --provider-soft: #e0f1f2;
+    --warn: #9a5b06;
+    --warn-soft: #fbf0dd;
+    --done: #2f6d3f;
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0d1015;
+      --surface: #151a21;
+      --sunk: #1b212a;
+      --ink: #e7eaf0;
+      --muted: #9aa4b2;
+      --faint: #6f7987;
+      --rule: #262d38;
+      --agent: #8e99f7;
+      --agent-soft: #1d2140;
+      --provider: #49c6d1;
+      --provider-soft: #10323a;
+      --warn: #e0a95e;
+      --warn-soft: #33260f;
+      --done: #6cc183;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0d1015;
+    --surface: #151a21;
+    --sunk: #1b212a;
+    --ink: #e7eaf0;
+    --muted: #9aa4b2;
+    --faint: #6f7987;
+    --rule: #262d38;
+    --agent: #8e99f7;
+    --agent-soft: #1d2140;
+    --provider: #49c6d1;
+    --provider-soft: #10323a;
+    --warn: #e0a95e;
+    --warn-soft: #33260f;
+    --done: #6cc183;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 40px 72px;
+  }
+  h1, h2, h3 { text-wrap: balance; margin: 0; font-weight: 600; letter-spacing: -0.015em; }
+  h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.1; font-weight: 700; }
+  h2 { font-size: clamp(20px, 3vw, 25px); }
+  h3 { font-size: 16px; }
+  p { margin: 0; }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+  }
+  .lede { font-size: 18px; color: var(--muted); max-width: 62ch; margin-top: 14px; }
+
+  header.hero { display: flex; flex-direction: column; gap: 6px; }
+  .binaries {
+    display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px;
+  }
+  .bin {
+    display: flex; align-items: baseline; gap: 9px;
+    border: 1px solid var(--rule); background: var(--surface);
+    border-radius: 7px; padding: 8px 13px;
+  }
+  .bin b { font-family: var(--mono); font-weight: 600; font-size: 14px; }
+  .bin span { font-size: 13px; color: var(--muted); }
+
+  section { margin-top: 56px; display: flex; flex-direction: column; gap: 18px; }
+  .sec-head { display: flex; flex-direction: column; gap: 7px; }
+  .sec-head p { color: var(--muted); max-width: 66ch; }
+
+  .scroller { overflow-x: auto; border: 1px solid var(--rule); border-radius: 12px; background: var(--surface); }
+  .scroller svg { display: block; min-width: 880px; width: 100%; height: auto; }
+
+  .doors { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+  .door {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 12px;
+    padding: 22px; display: flex; flex-direction: column; gap: 14px;
+    border-top: 3px solid var(--tone);
+  }
+  .door.agent { --tone: var(--agent); --wash: var(--agent-soft); }
+  .door.provider { --tone: var(--provider); --wash: var(--provider-soft); }
+  .door .profile { font-family: var(--mono); font-size: 13px; color: var(--tone); font-weight: 600; word-break: break-all; }
+  .door dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 7px 16px; font-size: 14px; }
+  .door dt { color: var(--faint); font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; padding-top: 3px; }
+  .door dd { margin: 0; color: var(--ink); }
+  .door .cmd {
+    font-family: var(--mono); font-size: 13px; background: var(--wash);
+    color: var(--tone); border-radius: 6px; padding: 9px 12px; margin-top: 2px;
+  }
+
+  .phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 0; border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; background: var(--surface); }
+  .phase { padding: 20px; border-right: 1px solid var(--rule); display: flex; flex-direction: column; gap: 7px; }
+  .phase:last-child { border-right: 0; }
+  .phase .n { font-family: var(--mono); font-size: 11px; color: var(--faint); letter-spacing: 0.1em; }
+  .phase h3 { font-family: var(--mono); font-size: 15px; }
+  .phase p { font-size: 13.5px; color: var(--muted); }
+  .phase .out { font-family: var(--mono); font-size: 12px; color: var(--ink); background: var(--sunk); border-radius: 5px; padding: 5px 8px; align-self: flex-start; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 12px; background: var(--surface); }
+  th, td { text-align: left; padding: 11px 16px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  thead th { font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); font-weight: 500; background: var(--sunk); }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.cmdcell { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+  td.note { color: var(--muted); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 12.5px; padding: 5px 10px; border-radius: 20px;
+    border: 1px solid var(--rule); background: var(--surface); color: var(--ink);
+  }
+  .chip.core { border-color: var(--agent); color: var(--agent); font-weight: 600; }
+
+  .status { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+  .stage {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+    padding: 15px 17px; display: flex; flex-direction: column; gap: 5px;
+  }
+  .stage .st { font-family: var(--mono); font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; }
+  .stage.done .st { color: var(--done); }
+  .stage.now .st { color: var(--warn); }
+  .stage.next .st { color: var(--faint); }
+  .stage b { font-size: 14.5px; font-weight: 600; }
+  .stage span { font-size: 13px; color: var(--muted); }
+
+  .fine { font-size: 13.5px; color: var(--muted); max-width: 70ch; }
+  .fine code { background: var(--sunk); padding: 1px 5px; border-radius: 4px; }
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+
+
+  /* walkthrough */
+  .trace { display: grid; grid-template-columns: 1fr; gap: 0; }
+  .step {
+    display: grid; grid-template-columns: 54px 1fr; gap: 0 18px;
+    position: relative; padding-bottom: 20px;
+  }
+  .step:last-child { padding-bottom: 0; }
+  .step .rail { position: relative; display: flex; justify-content: center; }
+  .step .rail::before {
+    content: ""; position: absolute; top: 24px; bottom: -20px; width: 1px; background: var(--rule);
+  }
+  .step:last-child .rail::before { display: none; }
+  .seq {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    width: 26px; height: 26px; border-radius: 50%;
+    display: grid; place-items: center; position: relative; z-index: 1;
+    background: var(--agent-soft); color: var(--agent); border: 1px solid var(--agent);
+  }
+  .seq.pair { background: var(--surface); color: var(--faint); border-color: var(--rule); font-size: 13px; }
+  .seq.term { background: var(--agent); color: var(--surface); border-color: var(--agent); }
+  .step .body { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 2px; }
+  .step .etype { font-family: var(--mono); font-size: 13.5px; font-weight: 600; color: var(--ink); word-break: break-word; }
+  .step .gloss { font-size: 14px; color: var(--muted); max-width: 62ch; }
+  .step .who { font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+  pre.env {
+    margin: 6px 0 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+    background: var(--sunk); color: var(--ink); border: 1px solid var(--rule);
+    border-radius: 8px; padding: 13px 15px; overflow-x: auto;
+  }
+  pre.env .k { color: var(--faint); }
+  pre.env .hi { color: var(--agent); font-weight: 600; }
+  .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 13px; height: 13px; border-radius: 50%; display: inline-block; }
+  .broke {
+    border: 1px solid var(--warn); background: var(--warn-soft); border-radius: 12px;
+    padding: 22px; display: flex; flex-direction: column; gap: 13px;
+  }
+  .broke h3 { color: var(--warn); }
+  .broke p { font-size: 14px; color: var(--ink); max-width: 66ch; }
+  pre.diag {
+    margin: 0; font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 13px 15px; overflow-x: auto; color: var(--ink);
+  }
+  pre.diag .k { color: var(--faint); }
+  pre.diag .hi { color: var(--warn); font-weight: 600; }
+  pre.diag .cmt { color: var(--faint); font-style: italic; }
+
+  .svg-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; fill: var(--faint); text-transform: uppercase; }
+  .svg-title { font-family: var(--sans); font-size: 14px; font-weight: 600; fill: var(--ink); }
+  .svg-sub { font-family: var(--sans); font-size: 11.5px; fill: var(--muted); }
+  .svg-mono { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+  .svg-edge { font-family: var(--mono); font-size: 10px; fill: var(--faint); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="hero">
+    <p class="eyebrow">Open Agent Protocol · schema v0.1</p>
+    <h1>One wire between a control layer and an agent loop</h1>
+    <p class="lede">OAP is a CC0 draft protocol plus an executable core that proves it. Everything in the tree serves one invariant: an adapter over somebody else's agent harness must emit event traces the shared validator accepts.</p>
+    <div class="binaries">
+      <div class="bin"><b>oap</b><span>Go · ships today · the reference and the oracle</span></div>
+      <div class="bin"><b>oapx</b><span>Zig · the binary that ships next · port in progress</span></div>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">The shape of it</p>
+      <h2>Two doors, neither downstream of the other</h2>
+      <p>A caller picks a profile, not a product. The agent door speaks sessions and runs; the provider door speaks inferences and parts. One process can open both.</p>
+    </div>
+
+    <div class="scroller">
+      <svg viewBox="0 0 960 560" role="img" aria-label="Callers on the left reach two profile doors inside one binary; harnesses and inference vendors sit behind them on the right.">
+        <defs>
+          <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--faint)"/>
+          </marker>
+        </defs>
+
+        <!-- left column -->
+        <text class="svg-label" x="24" y="34">callers</text>
+        <g>
+          <rect x="24" y="48" width="186" height="66" rx="9" fill="var(--surface)" stroke="var(--rule)"/>
+          <text class="svg-title" x="40" y="74">you</text>
+          <text class="svg-sub" x="40" y="94">TUI, or one shot from the CLI</text>
+        </g>
+        <g>
+          <rect x="24" y="152" width="186" height="80" rx="9" fill="var(--surface)" stroke="var(--rule)"/>
+          <text class="svg-title" x="40" y="178">your apps</text>
+          <text class="svg-mono" x="40" y="198">ts · python · go · rust</text>
+          <text class="svg-sub" x="40" y="216">over HTTP+SSE or stdio</text>
+        </g>
+        <g>
+          <rect x="24" y="404" width="186" height="66" rx="9" fill="var(--surface)" stroke="var(--rule)"/>
+          <text class="svg-title" x="40" y="430">inference callers</text>
+          <text class="svg-sub" x="40" y="450">one vocabulary, no agent</text>
+        </g>
+
+        <!-- binary -->
+        <rect x="266" y="24" width="428" height="512" rx="14" fill="none" stroke="var(--rule)" stroke-dasharray="5 4"/>
+        <text class="svg-label" x="286" y="48">one binary</text>
+
+        <!-- agent door -->
+        <rect x="288" y="62" width="384" height="170" rx="10" fill="var(--agent-soft)" stroke="var(--agent)"/>
+        <text class="svg-title" x="308" y="90" fill="var(--agent)">agent profile</text>
+        <text class="svg-mono" x="308" y="110" fill="var(--agent)">open-agent-protocol.agent-control-core</text>
+        <text class="svg-sub" x="308" y="134">sessions · runs · tools · permissions · user input</text>
+        <line x1="308" y1="150" x2="652" y2="150" stroke="var(--agent)" stroke-opacity="0.25"/>
+        <text class="svg-mono" x="308" y="172">session.message.submit.request →</text>
+        <text class="svg-mono" x="308" y="190">run.started · content.delta · action.call.requested</text>
+        <text class="svg-mono" x="308" y="208">run.completed | run.failed | run.cancelled</text>
+
+        <!-- validator -->
+        <rect x="288" y="256" width="384" height="94" rx="10" fill="var(--sunk)" stroke="var(--rule)"/>
+        <text class="svg-title" x="308" y="284">validator</text>
+        <text class="svg-sub" x="308" y="304">in process, always available — no second install</text>
+        <text class="svg-mono" x="308" y="330">decode → schema → semantic</text>
+
+        <!-- provider door -->
+        <rect x="288" y="374" width="384" height="140" rx="10" fill="var(--provider-soft)" stroke="var(--provider)"/>
+        <text class="svg-title" x="308" y="402" fill="var(--provider)">provider profile</text>
+        <text class="svg-mono" x="308" y="422" fill="var(--provider)">open-agent-protocol.model-provider-core</text>
+        <text class="svg-sub" x="308" y="446">inference · streamed parts · carry · credentials</text>
+        <line x1="308" y1="462" x2="652" y2="462" stroke="var(--provider)" stroke-opacity="0.25"/>
+        <text class="svg-mono" x="308" y="484">inference.part.started · .delta · .ended</text>
+        <text class="svg-mono" x="308" y="502">inference.completed — the assembly of the parts</text>
+
+        <!-- right column -->
+        <text class="svg-label" x="750" y="34">behind the door</text>
+        <g>
+          <rect x="750" y="48" width="188" height="184" rx="9" fill="var(--surface)" stroke="var(--rule)"/>
+          <text class="svg-title" x="766" y="74">agent harnesses</text>
+          <text class="svg-sub" x="766" y="94">each pinned to one commit</text>
+          <text class="svg-mono" x="766" y="120">claude</text>
+          <text class="svg-mono" x="766" y="138">codex</text>
+          <text class="svg-mono" x="766" y="156">acp</text>
+          <text class="svg-mono" x="766" y="174">deepseek</text>
+          <text class="svg-mono" x="766" y="192">hermes</text>
+          <text class="svg-mono" x="766" y="210">opencode · pi</text>
+        </g>
+        <g>
+          <rect x="750" y="374" width="188" height="96" rx="9" fill="var(--surface)" stroke="var(--rule)"/>
+          <text class="svg-title" x="766" y="400">inference vendors</text>
+          <text class="svg-mono" x="766" y="424">anthropic</text>
+          <text class="svg-mono" x="766" y="442">openai</text>
+          <text class="svg-mono" x="766" y="460">ollama · zai</text>
+        </g>
+
+        <!-- edges -->
+        <path d="M 210 81 L 282 110" stroke="var(--faint)" fill="none" marker-end="url(#arw)"/>
+        <path d="M 210 192 L 282 150" stroke="var(--faint)" fill="none" marker-end="url(#arw)"/>
+        <text class="svg-edge" x="214" y="128">OAP envelopes</text>
+        <path d="M 210 437 L 282 440" stroke="var(--faint)" fill="none" marker-end="url(#arw)"/>
+
+        <path d="M 672 150 L 744 140" stroke="var(--agent)" fill="none" marker-end="url(#arw)"/>
+        <text class="svg-edge" x="676" y="128" fill="var(--agent)">--backend</text>
+        <path d="M 672 440 L 744 422" stroke="var(--provider)" fill="none" marker-end="url(#arw)"/>
+
+        <path d="M 480 232 L 480 250" stroke="var(--rule)" fill="none" marker-end="url(#arw)"/>
+        <path d="M 480 356 L 480 368" stroke="var(--rule)" fill="none" marker-end="url(#arw)"/>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Pick a door</p>
+      <h2>What each profile is for</h2>
+    </div>
+    <div class="doors">
+      <div class="door agent">
+        <div>
+          <h3>Agent control</h3>
+          <p class="profile">open-agent-protocol.agent-control-core</p>
+        </div>
+        <dl>
+          <dt>For</dt><dd>A control layer driving an agent loop it does not own.</dd>
+          <dt>Speaks</dt><dd>Sessions, runs, streamed content, tool calls, permission and input interactions, cancellation.</dd>
+          <dt>Guarantees</dt><dd>One nonterminal run per session. Contiguous per-run sequence. Exactly one terminal.</dd>
+          <dt>Behind it</dt><dd>Its own loop, or any pinned harness via <code>--backend</code>.</dd>
+        </dl>
+        <div class="cmd">oapx serve agent --backend claude</div>
+      </div>
+      <div class="door provider">
+        <div>
+          <h3>Model provider</h3>
+          <p class="profile">open-agent-protocol.model-provider-core</p>
+        </div>
+        <dl>
+          <dt>For</dt><dd>A caller that wants one vocabulary across many inference vendors and no agent loop at all.</dd>
+          <dt>Speaks</dt><dd>Inference requests, streamed parts, opaque carry, credential grants.</dd>
+          <dt>Guarantees</dt><dd>A terminal is the assembly of the parts that ended. Credentials never travel on the wire.</dd>
+          <dt>Behind it</dt><dd>Anthropic, OpenAI, Ollama and friends.</dd>
+        </dl>
+        <div class="cmd">oapx serve provider</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">The thing that makes it a protocol</p>
+      <h2>Every trace goes through three phases</h2>
+      <p>The validator is the arbiter, not a linter. An adapter conforms when the validator accepts what it emits — nothing else counts as evidence.</p>
+    </div>
+    <div class="phases">
+      <div class="phase">
+        <span class="n">PHASE 01</span>
+        <h3>decode</h3>
+        <p>Is this JSON, and does any object repeat a key? A duplicate key means two readers disagree about the same bytes.</p>
+        <span class="out">duplicate_key · malformed_json</span>
+      </div>
+      <div class="phase">
+        <span class="n">PHASE 02</span>
+        <h3>schema</h3>
+        <p>JSON Schema 2020-12 over twelve bundled documents. Envelope types are a discriminated union; extension packs compose new branches into it.</p>
+        <span class="out">schema_invalid</span>
+      </div>
+      <div class="phase">
+        <span class="n">PHASE 03</span>
+        <h3>semantic</h3>
+        <p>A state machine over the whole trace: admission, sequence, terminals, interactions, capability claims, queue bounds.</p>
+        <span class="out">53 typed diagnostic codes</span>
+      </div>
+    </div>
+    <p class="fine">Fixtures are normative. <code>fixtures/manifest.json</code> lists 546 traces — positive ones plus invalid ones carrying the exact codes the validator must emit. Change validator behaviour, add a fixture.</p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">A trace, envelope by envelope</p>
+      <h2>What a run actually looks like on the wire</h2>
+      <p>This is <code>fixtures/valid/tools-permission-completed.json</code>, unedited — eleven envelopes covering discovery, admission, a tool call that needs permission, and a terminal. Every field shown is in the file.</p>
+    </div>
+
+    <div class="legend">
+      <span><i style="background: var(--surface); border: 1px solid var(--rule);"></i> request / response pair, outside the run sequence</span>
+      <span><i style="background: var(--agent-soft); border: 1px solid var(--agent);"></i> run-scoped event, numbered</span>
+    </div>
+
+    <div class="trace">
+
+      <div class="step">
+        <div class="rail"><div class="seq pair">&rarr;</div></div>
+        <div class="body">
+          <p class="who">control layer → endpoint</p>
+          <p class="etype">capabilities.request</p>
+          <p class="gloss">Before anything else: what can you actually do? No session yet, no run.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq pair">&larr;</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">capabilities.response</p>
+          <p class="gloss">The descriptor, stamped with a revision. From here on, an envelope that exercises an optional feature must cite <code>v1</code> or be told it is stale. The permission envelope below carries it; the admission and the terminal do not, and need not. <code>native</code> is a real claim: emulated and degraded are the honest alternatives.</p>
+<pre class="env">{ <span class="k">"type"</span>: <span class="hi">"capabilities.response"</span>,
+  <span class="k">"in_reply_to"</span>: "capq",
+  <span class="k">"capability_revision"</span>: "v1",
+  <span class="k">"payload"</span>: {
+    <span class="k">"endpoint"</span>: { "id": "agent" },
+    <span class="k">"features"</span>: {
+      "tools":       { "level": "native" },
+      "permissions": { "level": "native" } } } }</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq pair">&rarr;</div></div>
+        <div class="body">
+          <p class="who">control layer → endpoint</p>
+          <p class="etype">session.message.submit.request</p>
+          <p class="gloss">A message for session <code>s1</code>, delivery <code>auto</code> — the caller is not saying whether to start now or queue. That is the endpoint's call to make and report.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq pair">&larr;</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">session.message.submit.response</p>
+          <p class="gloss">Admission. The subtlest envelope in the protocol: three fields have to tell one story in three vocabularies. <code>auto</code> resolved to <em>started</em>, which is <code>admission: started</code>, <code>effective_delivery: start</code>, <code>status: running</code> &mdash; and the only other whole story is <code>queued</code> / <code>queue</code> / <code>queued</code>. Any other mix is rejected. The run gets its identity here, before it emits anything.</p>
+<pre class="env">{ <span class="k">"type"</span>: <span class="hi">"session.message.submit.response"</span>,
+  <span class="k">"in_reply_to"</span>: "req1",
+  <span class="k">"payload"</span>: {
+    <span class="k">"accepted"</span>: true,
+    <span class="k">"run_id"</span>: "r1",
+    <span class="k">"requested_delivery"</span>: "auto",
+    <span class="k">"admission"</span>: <span class="hi">"started"</span>,
+    <span class="k">"effective_delivery"</span>: <span class="hi">"start"</span>,
+    <span class="k">"status"</span>: <span class="hi">"running"</span> } }</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq">1</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">run.started</p>
+          <p class="gloss">The run sequence opens at 1 and is contiguous from here. Requests and responses never consume a number — only run-scoped events do.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq">2</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">action.call.requested</p>
+          <p class="gloss">The agent wants to run <code>shell</code>. <code>execution_owner: agent</code> says who will execute it — a control-owned call would name the control layer instead and resolve down a different path.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq">3</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">action.permission.requested</p>
+          <p class="gloss">An interaction opens, and it names its own responder. Only <code>user</code> may resolve <code>p1</code>, and only once. The run is now holding something open.</p>
+<pre class="env">{ <span class="k">"type"</span>: <span class="hi">"action.permission.requested"</span>,
+  <span class="k">"sequence"</span>: 3,
+  <span class="k">"capability_revision"</span>: "v1",
+  <span class="k">"payload"</span>: {
+    <span class="k">"interaction_id"</span>: "p1",
+    <span class="k">"tool_call_id"</span>: "t1",
+    <span class="k">"requested_by"</span>: "agent",
+    <span class="k">"responded_by"</span>: <span class="hi">"user"</span>,
+    <span class="k">"title"</span>: "Allow",
+    <span class="k">"choices"</span>: [ { "id": "yes", "label": "Yes" } ] } }</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq">4</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">action.permission.resolved</p>
+          <p class="gloss">Granted, by the declared responder. The interaction is settled and the run is free to proceed.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq">5</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">action.call.started</p>
+          <p class="gloss">The tool call moves through its own lifecycle, tracked per <code>tool_call_id</code>.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq">6</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">action.call.completed</p>
+          <p class="gloss">It carries a result. A call that ends any other way says so with <code>failed</code> or <code>cancelled</code> — it never simply stops.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="rail"><div class="seq term">7</div></div>
+        <div class="body">
+          <p class="who">endpoint → control layer</p>
+          <p class="etype">run.completed</p>
+          <p class="gloss">Exactly one terminal per run, and nothing follows it. A run may settle as <code>failed</code> or <code>cancelled</code> before it ever starts — but never as <code>completed</code>.</p>
+<pre class="env">{ <span class="k">"type"</span>: <span class="hi">"run.completed"</span>,
+  <span class="k">"sequence"</span>: 7,
+  <span class="k">"payload"</span>: {
+    <span class="k">"run_id"</span>: "r1",
+    <span class="k">"stop_reason"</span>: "end_turn",
+    <span class="k">"final_response"</span>: {
+      "role": "assistant", "content": "ok" } } }</pre>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="broke">
+      <h3>Now break one thing</h3>
+      <p>A sibling fixture, <code>fixtures/semantic-invalid/pending-interaction.json</code>, makes the same mistake one envelope earlier: it opens a <code>user.input.requested</code> interaction <code>i1</code>, then completes the run while <code>i1</code> is still waiting on its responder. Nothing about any single envelope is malformed; the schema phase passes. The defect only exists across the trace, which is what the semantic phase is for.</p>
+<pre class="diag">$ oap validate --format=json fixtures/semantic-invalid/pending-interaction.json
+
+[
+  {
+    <span class="k">"file"</span>: "fixtures/semantic-invalid/pending-interaction.json",
+    <span class="k">"valid"</span>: <span class="hi">false</span>,
+    <span class="k">"diagnostics"</span>: [
+      {
+        <span class="k">"fixture"</span>: "fixtures/semantic-invalid/pending-interaction.json",
+        <span class="k">"phase"</span>: <span class="hi">"semantic"</span>,
+        <span class="k">"code"</span>: <span class="hi">"pending_interaction_at_terminal"</span>,
+        <span class="k">"index"</span>: 6,
+        <span class="k">"envelope_id"</span>: "ev-done",
+        <span class="k">"type"</span>: "run.completed",
+        <span class="k">"pointer"</span>: "/type",
+        <span class="k">"related_ids"</span>: [
+          "i1"
+        ],
+        <span class="k">"message"</span>: "run terminated with a pending interaction"
+      }
+    ]
+  }
+]
+oap: validation failed            <span class="cmt">(on stderr; exit status 1)</span></pre>
+      <p>The diagnostic names the envelope that broke the rule, the pointer inside it, and the interaction it left hanging. A fixture in the manifest pins that exact code, so an implementation that stops emitting it fails the suite.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Using it</p>
+      <h2>Commands</h2>
+      <p>The Go binary is what you can run today. The Zig one keeps the same verbs and adds a TUI and a one-shot loop.</p>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td class="cmdcell">oap check</td><td class="note">Compiles the schemas, runs every fixture, drives the memory adapter demo. The one command that says yes or no.</td></tr>
+          <tr><td class="cmdcell">oap validate trace.json</td><td class="note">Validate a trace you captured. <code>--format=json</code> for machine output.</td></tr>
+          <tr><td class="cmdcell">oap serve</td><td class="note">HTTP+SSE daemon over the hub: a registry, multi-session fan-out, cursor replay. Loopback only, no auth, single user.</td></tr>
+          <tr><td class="cmdcell">oap serve --stdio</td><td class="note">The same hub over newline JSON — twelve ops, each line wrapping an envelope in a transport object.</td></tr>
+          <tr><td class="cmdcell">oap endpoint</td><td class="note">One agent loop, raw OAP envelopes, one per line. The shape a harness implementing OAP natively takes.</td></tr>
+          <tr><td class="cmdcell">oap conformance --command "…"</td><td class="note">Spawn somebody's endpoint binary, drive a scripted session, assemble the exchange and run it through the real validator.</td></tr>
+          <tr><td class="cmdcell">oapx</td><td class="note">The TUI.</td></tr>
+          <tr><td class="cmdcell">oapx run "fix the failing test"</td><td class="note">One shot, same loop, no server.</td></tr>
+          <tr><td class="cmdcell">oapx serve agent provider</td><td class="note">Both profiles in one process.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="fine"><strong>Hub and endpoint are different layers.</strong> The hub is a multiplexer you talk to; the endpoint is one agent loop that speaks OAP directly. <code>conformance</code> drives the second, not the first.</p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Claiming conformance</p>
+      <h2>A core profile, then additive units</h2>
+      <p>The core claim covers sessions, one run at a time, streamed content, correlated requests, bounded recovery and the three terminal outcomes. Anything beyond it is a unit you claim by name.</p>
+    </div>
+    <div class="chips">
+      <span class="chip core">agent-control-core</span>
+      <span class="chip">+tools</span>
+      <span class="chip">+permissions</span>
+      <span class="chip">+user-input</span>
+      <span class="chip">+run-controls</span>
+      <span class="chip">+tool-sources</span>
+      <span class="chip">+control-tools</span>
+      <span class="chip">+models</span>
+      <span class="chip">+queue</span>
+      <span class="chip">+compound-open</span>
+      <span class="chip">+steer</span>
+      <span class="chip">+btw</span>
+    </div>
+    <p class="fine">Capabilities report effective fidelity — <code>native</code>, <code>emulated</code>, <code>degraded</code>, <code>unavailable</code> — never an idealized harness. An endpoint that emulates a feature says so, and the validator holds it to the claim it made.</p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <p class="eyebrow">Where the port stands</p>
+      <h2>Go is the oracle; Zig is what ships</h2>
+      <p>Both implementations run side by side against the same corpus &mdash; 546 fixtures at the time of writing. The Go tree is the answer key until the Zig one reproduces it. Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>zig/src/validation/semantic_gate.zig</code> names each declared exception.</p>
+    </div>
+    <div class="status">
+      <div class="stage done"><span class="st">complete</span><b>1 · Types</b><span>Wire model and strict decode.</span></div>
+      <div class="stage done"><span class="st">complete</span><b>2 · Schema</b><span>Interpreted, not generated. Every fixture judged or explicitly accounted for.</span></div>
+      <div class="stage now"><span class="st">in progress</span><b>3 · Semantic</b><span>Landing unit by unit. The gate names every fixture still disagreeing, so the remainder is always in the tree.</span></div>
+      <div class="stage next"><span class="st">next</span><b>4 · Adapters</b><span>Seven harnesses, ~24k lines, one corpus each.</span></div>
+      <div class="stage next"><span class="st">then</span><b>5 · Oracle</b><span>Retired, or kept in CI.</span></div>
+    </div>
+    <p class="fine">There is never a moment without a working product: each stage adds a capability to a binary that already ships. The names stay apart on purpose — differential execution needs both on one <code>PATH</code>, and two executables cannot both be <code>oap</code>.</p>
+  </section>
+
+</div>
+</body>
+</html>
