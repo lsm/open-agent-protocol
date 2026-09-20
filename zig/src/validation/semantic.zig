@@ -3576,6 +3576,25 @@ test "a keyword value the metaschema rejects is refused at submission, as the or
         .{ .schema =
         \\{"type":"object","properties":{"n":true}}
         , .codes = clean },
+        .{
+            .schema =
+            \\{"type":"object","properties":{"n":{"oneOf":[{"$ref":"#/$defs/a"}]}},
+            \\"$defs":{"a":{"$ref":"#/$defs/b"},"b":{"$ref":"#/$defs/a"}}}
+            ,
+            .result =
+            \\{"type":"x"}
+            ,
+            .codes = unapplied,
+        },
+        .{
+            .schema =
+            \\{"type":"object","properties":{"n":{"oneOf":[false]}}}
+            ,
+            .result =
+            \\{"type":"x"}
+            ,
+            .codes = unapplied,
+        },
     };
     for (cases) |entry| {
         const trace = try std.mem.concat(

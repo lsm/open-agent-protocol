@@ -225,9 +225,12 @@ instead.
 
 Two bounds stand in for machinery the oracle has and the port does not.
 Following `$ref` while judging a schema stops at a reference already followed,
-and both the judging walk and the validator stop at a depth of 256; the oracle
-detects the cycle exactly and reports it as the instance failing, which is what
-the bounded walk produces on every cycle the corpus and the case table contain.
+and every walk that follows a reference stops at a depth of 256 — the judging
+walk, the validator, and the flattening the `oneOf` discriminator does, which
+is the easiest one to forget because it is reached only when no branch matched.
+The oracle detects the cycle exactly and reports it as the instance failing,
+which is what each bounded walk produces on every cycle the corpus and the case
+table contain.
 
 ### Two ways a rule can be missing, and only one of them is safe
 

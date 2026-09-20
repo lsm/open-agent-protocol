@@ -623,6 +623,7 @@ pub const Validator = struct {
         if (declared != .string) return null;
         for (branches) |branch| {
             const resolved = try self.flatten(branch, document);
+            if (resolved != .object) continue;
             const properties = resolved.object.get("properties") orelse continue;
             if (properties != .object) continue;
             const type_schema = properties.object.get("type") orelse continue;
@@ -636,6 +637,9 @@ pub const Validator = struct {
 
     fn flatten(self: *Validator, schema: std.json.Value, document: []const u8) Error!std.json.Value {
         if (schema != .object) return schema;
+        if (self.depth == reference_depth_limit) return schema;
+        self.depth += 1;
+        defer self.depth -= 1;
         if (schema.object.get("$ref")) |ref| {
             if (ref != .string) return schema;
             const target = try self.resolve(ref.string, document);
