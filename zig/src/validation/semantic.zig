@@ -2143,15 +2143,60 @@ fn outputSchemaDefect(raw: std.json.Value) bool {
             else => return true,
         }
     }
-    return schemaNodeDefect(.{ .object = raw.object });
+    return schemaNodeDefect(raw, .{ .object = raw.object });
 }
 
-fn schemaNodeDefect(node: std.json.Value) bool {
+fn pointerSegment(allocator: std.mem.Allocator, token: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, token, '~') == null) return token;
+    var out = std.ArrayList(u8).empty;
+    var at: usize = 0;
+    while (at < token.len) : (at += 1) {
+        if (token[at] == '~' and at + 1 < token.len) {
+            if (token[at + 1] == '0') {
+                try out.append(allocator, '~');
+                at += 1;
+                continue;
+            }
+            if (token[at + 1] == '1') {
+                try out.append(allocator, '/');
+                at += 1;
+                continue;
+            }
+        }
+        try out.append(allocator, token[at]);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn resolvesLocally(root: std.json.Value, reference: []const u8) bool {
+    if (std.mem.eql(u8, reference, "#")) return true;
+    if (!std.mem.startsWith(u8, reference, "#/")) return false;
+    var buffer: [1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    var node = root;
+    var parts = std.mem.splitScalar(u8, reference["#/".len..], '/');
+    while (parts.next()) |raw_token| {
+        const token = pointerSegment(fixed.allocator(), raw_token) catch return false;
+        switch (node) {
+            .object => |object| node = object.get(token) orelse return false,
+            .array => |items| {
+                const at = std.fmt.parseUnsigned(usize, token, 10) catch return false;
+                if (at >= items.items.len) return false;
+                node = items.items[at];
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
+
+fn schemaNodeDefect(root: std.json.Value, node: std.json.Value) bool {
     switch (node) {
         .object => |object| {
             if (object.get("$ref")) |reference| {
                 if (reference != .string) return true;
                 if (!std.mem.startsWith(u8, reference.string, "#")) return true;
+                if (!resolvesLocally(root, reference.string)) return true;
             }
             if (object.get("required")) |required| {
                 if (required != .array) return true;
@@ -2167,13 +2212,13 @@ fn schemaNodeDefect(node: std.json.Value) bool {
                 if (std.mem.eql(u8, entry.key_ptr.*, "required")) continue;
                 if (std.mem.eql(u8, entry.key_ptr.*, "enum")) continue;
                 if (std.mem.eql(u8, entry.key_ptr.*, "const")) continue;
-                if (schemaNodeDefect(entry.value_ptr.*)) return true;
+                if (schemaNodeDefect(root, entry.value_ptr.*)) return true;
             }
             return false;
         },
         .array => |items| {
             for (items.items) |entry| {
-                if (schemaNodeDefect(entry)) return true;
+                if (schemaNodeDefect(root, entry)) return true;
             }
             return false;
         },
@@ -2819,4 +2864,30 @@ test "an update continues the revision it replaces, and introduces a different o
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
         \\{"type":"capabilities.updated","id":"k2","capability_revision":"v1","payload":{"previous_revision":"v1"}}]
     , &.{"stale_capability_revision"});
+}
+
+test "an output schema referring to a definition it does not carry is a schema nothing can satisfy" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/missing"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1","payload":{}}]
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/ok"}},
+        \\"$defs":{"ok":{"type":"integer"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
+    , &.{});
 }
