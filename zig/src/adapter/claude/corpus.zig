@@ -98,6 +98,19 @@ fn runCase(allocator: std.mem.Allocator, root: []const u8, case: Case) !Outcome 
             try reducer.observe(message);
             continue;
         }
+        if (std.mem.eql(u8, action, "oap-control")) {
+            if (raw != .object) return error.InvalidScriptLine;
+            const op = stringMember(raw.object, "op") orelse return error.InvalidScriptLine;
+            if (!std.mem.eql(u8, op, "resolve")) continue;
+            const decision = stringMember(raw.object, "decision") orelse return error.InvalidScriptLine;
+            const pending = reducer.pendingInteraction() orelse return error.NoPendingInteraction;
+            if (std.mem.eql(u8, decision, "allow")) {
+                try reducer.resolve(pending, .allow);
+            } else if (std.mem.eql(u8, decision, "deny")) {
+                try reducer.resolve(pending, .deny);
+            } else return error.InvalidScriptLine;
+            continue;
+        }
     }
 
     const expected = try std.json.parseFromSliceLeaky(std.json.Value, scratch, expected_text, .{});
@@ -124,6 +137,7 @@ fn runCase(allocator: std.mem.Allocator, root: []const u8, case: Case) !Outcome 
 const passing_cases = [_]Case{
     .{ .id = "initialize-lifecycle", .path = "initialize-lifecycle" },
     .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
+    .{ .id = "permission-gates", .path = "permission-gates" },
 };
 
 test "the Zig reducer reproduces every expectation it claims" {

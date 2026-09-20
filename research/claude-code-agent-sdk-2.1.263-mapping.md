@@ -698,6 +698,31 @@ the corpus feeds native frames and compares emitted envelopes, while a state
 read is an inbound OAP request, so this is a unit test on both sides or it is
 nothing.
 
+A third property surfaced porting `tool-lifecycle`, and this one the corpus
+does pin: **`source` on an action call is looked up, not stamped.** The
+reducer projects a name-to-source map from `system/init`'s tool list, so a
+call to a tool that init never advertised carries no source at all -- which is
+why the case's second run, calling `Read` against an init advertising only
+`Task` and `Bash`, emits three call envelopes with the member absent while the
+first and third runs' `Bash` calls carry `claude-code-native`. The Go oracle
+then publishes only the entries whose source is the endpoint's own declared
+source, so a tool namespaced to a declared MCP server is not attributed either
+until a served `action.tools.list` response supplies one. The Zig port asks
+that as a predicate (`servedByHarness`) rather than deriving an `mcp:<server>`
+id: it serves no tool catalog, and a helper named for a source it never
+returns is the shape that rots invisibly in a tree with no comments.
+
+Two divergences in the Zig port are deliberate and bounded. A gate's prompt is
+built by re-encoding the parsed `input` value, where Go interpolates the raw
+`json.RawMessage` bytes; the two agree for compact native frames, which is
+every frame the corpus holds, and differ on interior whitespace. And the Zig
+reducer clears its run slot at settlement while the oracle keeps a run
+addressable through `gate.run` and `tool.run`, so the `run.terminal` disjunct
+that guards `openGate` and `resolve` on the Go side cannot fire on the Zig
+side yet -- a mutation removing it kills no test. `interrupt-cancel` is the
+case that makes it reachable, since a run may settle `cancelled` before it
+started, and the guard earns a mutation there rather than here.
+
 Cases: initialize-lifecycle, admission-corroboration, settlement-statuses,
 interrupt-cancel, queued-continuation, background-children,
 streaming-provenance, tool-lifecycle, permission-gates, process-exit,

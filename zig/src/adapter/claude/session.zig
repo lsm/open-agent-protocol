@@ -13,7 +13,10 @@ pub const mcp_tool_prefix = "mcp__";
 pub const Options = struct {
     session_id: []const u8 = "session",
     model: []const u8 = "claude-test",
+    responder: []const u8 = "user",
 };
+
+pub const Decision = enum { allow, deny };
 
 const Run = struct {
     id: []const u8 = "",
@@ -36,6 +39,12 @@ const Tool = struct {
     terminal: bool = false,
 };
 
+const Gate = struct {
+    id: []const u8,
+    requested_event: []const u8 = "",
+    resolved: bool = false,
+};
+
 pub const Reducer = struct {
     arena: *std.heap.ArenaAllocator,
     options: Options,
@@ -45,6 +54,7 @@ pub const Reducer = struct {
     run: ?Run = null,
     tools: std.ArrayList(Tool) = .empty,
     attribution: std.StringHashMapUnmanaged([]const u8) = .empty,
+    gates: std.ArrayList(Gate) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
@@ -89,6 +99,10 @@ pub const Reducer = struct {
         try map.put(self.allocator(), key, value);
     }
 
+    fn array(self: *Reducer) std.json.Array {
+        return .init(self.allocator());
+    }
+
     fn str(text: []const u8) std.json.Value {
         return .{ .string = text };
     }
@@ -98,10 +112,26 @@ pub const Reducer = struct {
     }
 
     fn emit(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value) ![]const u8 {
-        return self.emitCorrelated(run, kind, payload, "", "");
+        return self.emitEnvelope(run, kind, payload, .{});
     }
 
     fn emitCorrelated(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, tool_call_id: []const u8, in_reply_to: []const u8) ![]const u8 {
+        return self.emitEnvelope(run, kind, payload, .{ .tool_call_id = tool_call_id, .in_reply_to = in_reply_to });
+    }
+
+    fn emitTurn(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, turn_id: []const u8, in_reply_to: []const u8) ![]const u8 {
+        return self.emitEnvelope(run, kind, payload, .{ .turn_id = turn_id, .in_reply_to = in_reply_to });
+    }
+
+    const Correlation = struct {
+        tool_call_id: []const u8 = "",
+        turn_id: []const u8 = "",
+        in_reply_to: []const u8 = "",
+    };
+
+    fn emitEnvelope(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, correlation: Correlation) ![]const u8 {
+        const tool_call_id = correlation.tool_call_id;
+        const in_reply_to = correlation.in_reply_to;
         run.sequence += 1;
         const id = try self.nextID("event");
         var envelope = self.object();
@@ -117,6 +147,7 @@ pub const Reducer = struct {
         try self.put(&envelope, "session_id", str(self.options.session_id));
         try self.put(&envelope, "run_id", str(run.id));
         if (tool_call_id.len > 0) try self.put(&envelope, "tool_call_id", str(tool_call_id));
+        if (correlation.turn_id.len > 0) try self.put(&envelope, "turn_id", str(correlation.turn_id));
         try self.put(&envelope, "capability_revision", str(capability_revision));
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
         return id;
@@ -181,6 +212,121 @@ pub const Reducer = struct {
         }
         try self.put(&payload, "result", content orelse str(""));
         _ = try self.emitCorrelated(run, "action.call.completed", .{ .object = payload }, tool.id, tool.started_event);
+    }
+
+    pub fn pendingInteraction(self: *Reducer) ?[]const u8 {
+        for (self.gates.items) |gate| {
+            if (!gate.resolved) return gate.id;
+        }
+        return null;
+    }
+
+    fn findGate(self: *Reducer, id: []const u8) ?*Gate {
+        for (self.gates.items) |*gate| {
+            if (std.mem.eql(u8, gate.id, id)) return gate;
+        }
+        return null;
+    }
+
+    fn statusPayload(self: *Reducer, run: *Run, status: []const u8, pending: []const u8) !std.json.Value {
+        var payload = self.object();
+        try self.put(&payload, "session_id", str(self.options.session_id));
+        try self.put(&payload, "run_id", str(run.id));
+        try self.put(&payload, "status", str(status));
+        if (pending.len > 0) try self.put(&payload, "pending_user_input_id", str(pending));
+        try self.put(&payload, "updated_at_ms", int(self.now()));
+        return .{ .object = payload };
+    }
+
+    fn openGate(self: *Reducer, message: rpc.Message) !void {
+        if (self.run == null) return;
+        const run = &self.run.?;
+        if (!run.started or run.terminal) return;
+        const request = message.object.object.get("request") orelse return;
+        if (request != .object) return;
+        const ask = request.object;
+        const tool_name = stringMember(ask, "tool_name") orelse "";
+
+        const id = try self.nextID("interaction");
+        const title = stringMember(ask, "title") orelse
+            try std.fmt.allocPrint(self.allocator(), "Use {s}", .{tool_name});
+        const description = stringMember(ask, "description") orelse
+            stringMember(ask, "decision_reason") orelse "";
+
+        var prompt = tool_name;
+        if (ask.get("input")) |input| {
+            const encoded = try std.json.Stringify.valueAlloc(self.allocator(), input, .{});
+            if (encoded.len > 0) {
+                prompt = try std.fmt.allocPrint(self.allocator(), "{s} {s}", .{ tool_name, encoded });
+            }
+        }
+
+        var payload = self.object();
+        try self.put(&payload, "interaction_id", str(id));
+        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "responded_by", str(self.options.responder));
+        try self.put(&payload, "session_id", str(self.options.session_id));
+        try self.put(&payload, "run_id", str(run.id));
+        try self.put(&payload, "title", str(title));
+        if (description.len > 0) try self.put(&payload, "description", str(description));
+        try self.put(&payload, "questions", try self.decisionQuestions(prompt));
+        try self.put(&payload, "allow_cancel", .{ .bool = true });
+
+        const requested = try self.emitTurn(run, "user.input.requested", .{ .object = payload }, id, "");
+        try self.gates.append(self.allocator(), .{ .id = id, .requested_event = requested });
+        _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "waiting_for_input", id));
+    }
+
+    fn decisionQuestions(self: *Reducer, prompt: []const u8) !std.json.Value {
+        var allow = self.object();
+        try self.put(&allow, "id", str("allow"));
+        try self.put(&allow, "label", str("Allow"));
+        var deny = self.object();
+        try self.put(&deny, "id", str("deny"));
+        try self.put(&deny, "label", str("Deny"));
+        var options = self.array();
+        try options.append(.{ .object = allow });
+        try options.append(.{ .object = deny });
+
+        var question = self.object();
+        try self.put(&question, "id", str("decision"));
+        try self.put(&question, "prompt", str(prompt));
+        try self.put(&question, "kind", str("single_choice"));
+        try self.put(&question, "required", .{ .bool = true });
+        try self.put(&question, "options", .{ .array = options });
+
+        var questions = self.array();
+        try questions.append(.{ .object = question });
+        return .{ .array = questions };
+    }
+
+    pub fn resolve(self: *Reducer, interaction_id: []const u8, decision: Decision) !void {
+        if (self.run == null) return;
+        const run = &self.run.?;
+        if (run.terminal) return;
+        const gate = self.findGate(interaction_id) orelse return;
+        if (gate.resolved) return;
+        gate.resolved = true;
+
+        var selected = self.array();
+        try selected.append(str(@tagName(decision)));
+        var answer = self.object();
+        try self.put(&answer, "question_id", str("decision"));
+        try self.put(&answer, "selected_option_ids", .{ .array = selected });
+        var answers = self.array();
+        try answers.append(.{ .object = answer });
+
+        var payload = self.object();
+        try self.put(&payload, "interaction_id", str(gate.id));
+        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "responded_by", str(self.options.responder));
+        try self.put(&payload, "session_id", str(self.options.session_id));
+        try self.put(&payload, "run_id", str(run.id));
+        try self.put(&payload, "status", str("submitted"));
+        try self.put(&payload, "answers", .{ .array = answers });
+
+        _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event);
+        _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "running", ""));
     }
 
     fn startRun(self: *Reducer) !void {
@@ -264,6 +410,10 @@ pub const Reducer = struct {
     }
 
     pub fn observe(self: *Reducer, message: rpc.Message) !void {
+        if (message.kind == .control_request) {
+            if (std.mem.eql(u8, message.subtype, "can_use_tool")) try self.openGate(message);
+            return;
+        }
         if (message.kind != .observation) return;
         if (self.run) |run| {
             if (!run.started and !run.terminal) {
@@ -419,6 +569,12 @@ pub const Reducer = struct {
         }
     }
 };
+
+fn stringMember(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = map.get(key) orelse return null;
+    if (value != .string or value.string.len == 0) return null;
+    return value.string;
+}
 
 fn namesASubmission(frame: std.json.ObjectMap) bool {
     if (frame.get("user_message_uuid")) |single| {
@@ -649,6 +805,89 @@ test "a delta echoing another submission is not attributed to this run" {
     const kinds = try emittedTypes(&reducer, scratch);
     try testing.expectEqual(@as(usize, 2), kinds.len);
     try testing.expectEqualStrings("content.delta", kinds[1]);
+}
+
+fn startedRun(reducer: *Reducer, arena: std.mem.Allocator, uuid: []const u8) !void {
+    try reducer.submit(uuid);
+    const text = try std.fmt.allocPrint(arena,
+        \\{{"type":"stream_event","event":{{"type":"message_start"}},"uuid":"e","user_message_uuid":"{s}"}}
+    , .{uuid});
+    try observeText(reducer, arena, text);
+}
+
+fn gateRequest(reducer: *Reducer, arena: std.mem.Allocator, extra: []const u8) !void {
+    const text = try std.fmt.allocPrint(arena,
+        \\{{"type":"control_request","request_id":"ask-1","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"ls"}}{s}}}}}
+    , .{extra});
+    try observeText(reducer, arena, text);
+}
+
+fn firstPayload(reducer: *Reducer, kind: []const u8) ?std.json.ObjectMap {
+    for (reducer.envelopes.items) |envelope| {
+        if (std.mem.eql(u8, envelope.object.get("type").?.string, kind)) {
+            return envelope.object.get("payload").?.object;
+        }
+    }
+    return null;
+}
+
+test "a permission ask outside an owned run opens no gate" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try gateRequest(&reducer, scratch, "");
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
+
+    try reducer.submit("turn-1");
+    try gateRequest(&reducer, scratch, "");
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
+}
+
+test "the harness names the gate when it can, and the reducer names it when it cannot" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var named = Reducer.init(&arena, .{});
+    named.open();
+    try startedRun(&named, scratch, "turn-1");
+    try gateRequest(&named, scratch,
+        \\,"title":"Run a command","decision_reason":"outside the workspace"
+    );
+    const named_payload = firstPayload(&named, "user.input.requested").?;
+    try testing.expectEqualStrings("Run a command", named_payload.get("title").?.string);
+    try testing.expectEqualStrings("outside the workspace", named_payload.get("description").?.string);
+
+    var bare = Reducer.init(&arena, .{});
+    bare.open();
+    try startedRun(&bare, scratch, "turn-1");
+    try gateRequest(&bare, scratch, "");
+    const bare_payload = firstPayload(&bare, "user.input.requested").?;
+    try testing.expectEqualStrings("Use Bash", bare_payload.get("title").?.string);
+    try testing.expectEqual(@as(?std.json.Value, null), bare_payload.get("description"));
+}
+
+test "a gate is resolved once, whatever the second answer says" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try gateRequest(&reducer, scratch, "");
+    const pending = reducer.pendingInteraction().?;
+    try reducer.resolve(pending, .allow);
+    const settled = reducer.envelopes.items.len;
+
+    try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
+    try reducer.resolve(pending, .deny);
+    try testing.expectEqual(settled, reducer.envelopes.items.len);
 }
 
 test "an init outside a pending run is adopted when it arrives" {
