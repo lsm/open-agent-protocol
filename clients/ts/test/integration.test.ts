@@ -85,7 +85,7 @@ test(
     const adapters = await client.adapters();
     assert.ok(adapters.some((adapter) => adapter.name === 'memory'));
     const caps = await client.capabilities('memory');
-    assert.equal(caps.revision, 'reference-memory-v10');
+    assert.equal(caps.revision, 'reference-memory-v11');
     assert.equal(caps.descriptor.endpoint.id, 'reference.memory');
 
     // An unknown adapter is a coded refusal.

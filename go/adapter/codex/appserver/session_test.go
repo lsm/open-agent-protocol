@@ -955,7 +955,7 @@ func TestSubmitRefusesUnadvertisedControls(t *testing.T) {
 		feature string
 	}{
 		"instructions":  {request: protocol.MessageSubmitRequest{Instructions: protocol.ControlValue("be terse")}, feature: protocol.FeatureInstructions},
-		"tool choice":   {request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"none"}`)}, feature: protocol.FeatureToolSelection},
+		"tool choice":   {request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"allowed":[]}`)}, feature: protocol.FeatureToolSelection},
 		"output schema": {request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"object"}`)}, feature: protocol.FeatureStructuredOutput},
 	} {
 		client, session, _ := openFake(t)

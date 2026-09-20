@@ -572,21 +572,17 @@ func TestSubmitJudgesEveryControl(t *testing.T) {
 			feature: protocol.FeatureToolSelection,
 		},
 		"unknown tool choice member": {
-			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"auto","limit":2}`)},
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"allowed":["scripted_tool"],"limit":2}`)},
 			feature: protocol.FeatureToolSelection,
 		},
 		"allowed and disallowed": {
-			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"auto","allowed":["scripted_tool"],"disallowed":["scripted_tool"]}`)},
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"allowed":["scripted_tool"],"disallowed":["scripted_tool"]}`)},
 			feature: protocol.FeatureToolSelection,
 		},
 		"tool outside the catalog": {
-			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`)},
+			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"allowed":["absent_tool"]}`)},
 			feature: protocol.FeatureToolSelection,
 			tool:    "absent_tool",
-		},
-		"required against an empty filtered set": {
-			request: protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(`{"mode":"required","disallowed":["scripted_tool"]}`)},
-			feature: protocol.FeatureToolSelection,
 		},
 		"non-object output schema": {
 			request: protocol.MessageSubmitRequest{OutputSchema: json.RawMessage(`{"type":"array"}`)},
@@ -630,11 +626,10 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 		policy string
 		calls  int
 	}{
-		"none":       {policy: `{"mode":"none"}`},
-		"disallowed": {policy: `{"mode":"auto","disallowed":["scripted_tool"]}`},
+		"disallowed": {policy: `{"disallowed":["scripted_tool"]}`},
 
-		"empty allowlist":     {policy: `{"mode":"auto","allowed":[]}`},
-		"allowlist with tool": {policy: `{"mode":"auto","allowed":["scripted_tool"]}`, calls: 1},
+		"empty allowlist":     {policy: `{"allowed":[]}`},
+		"allowlist with tool": {policy: `{"allowed":["scripted_tool"]}`, calls: 1},
 	} {
 		session := newTestSession(t, 64)
 		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
@@ -657,21 +652,10 @@ func TestSubmitExecutesToolChoiceAndOutputSchema(t *testing.T) {
 		}
 	}
 
-	session0 := newTestSession(t, 64)
-	_, _, err0 := session0.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
-		ToolChoice: json.RawMessage(`{"mode":"required","allowed":[]}`),
-		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	})
-	var emptyRequired *adapter.UnsupportedControlError
-	if !errors.As(err0, &emptyRequired) || emptyRequired.Feature != protocol.FeatureToolSelection || emptyRequired.Reason != adapter.ControlUnsatisfiable {
-		t.Fatalf("required over an empty allowlist: got %v, want an unsatisfiable tool_selection refusal", err0)
-	}
-
 	session := newTestSession(t, 64)
 	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
-		ToolChoice:   json.RawMessage(`{"mode":"none"}`),
+		ToolChoice:   json.RawMessage(`{"allowed":[]}`),
 		OutputSchema: json.RawMessage(`{"type":"object","properties":{"ok":{"type":"boolean"}}}`),
 		Instructions: protocol.ControlValue("Be terse."),
 		Messages:     []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
@@ -822,7 +806,7 @@ func TestDescriptorAdvertisesEmittedOptionalFeatures(t *testing.T) {
 }
 
 func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
-	unsatisfiableChoice := json.RawMessage(`{"mode":"named","name":"absent_tool"}`)
+	unsatisfiableChoice := json.RawMessage(`{"allowed":["absent_tool"]}`)
 	uncompilableSchema := json.RawMessage(`{"type":"object","required":"x"}`)
 	for name, testCase := range map[string]struct {
 		request protocol.MessageSubmitRequest
@@ -872,7 +856,7 @@ func TestRefusalPrecedenceRanksByCapabilityKey(t *testing.T) {
 
 func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
-	unsatisfiable := json.RawMessage(`{"mode":"named","name":"absent_tool"}`)
+	unsatisfiable := json.RawMessage(`{"allowed":["absent_tool"]}`)
 	for name, request := range map[string]protocol.MessageSubmitRequest{
 		"no messages":      {SessionID: "session-1", Delivery: protocol.DeliveryAuto, ToolChoice: unsatisfiable},
 		"no session":       {Delivery: protocol.DeliveryAuto, ToolChoice: unsatisfiable, Messages: message},
@@ -899,10 +883,10 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 
 func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 	for name, policy := range map[string]string{
-		"named":    `{"mode":"named","name":"scripted_tool"}`,
-		"required": `{"mode":"required"}`,
-		"auto":     `{"mode":"auto"}`,
-		"allowed":  `{"mode":"auto","allowed":["scripted_tool"]}`,
+		"named":    `{"allowed":["scripted_tool"]}`,
+		"required": `{"allowed":["scripted_tool"]}`,
+		"auto":     `{"disallowed":[]}`,
+		"allowed":  `{"allowed":["scripted_tool"]}`,
 	} {
 		session := newTestSession(t, 64)
 		request := protocol.MessageSubmitRequest{
@@ -930,7 +914,7 @@ func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 	session := newTestSession(t, 64)
 	if _, _, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
 		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
-		ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`),
+		ToolChoice: json.RawMessage(`{"allowed":["absent_tool"]}`),
 		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
 	}); err == nil {
 		t.Fatal("a tool outside the published catalog was admitted")

@@ -18,13 +18,7 @@
       },
       "features": {
         "run.tool_selection": {
-          "level": "emulated",
-          "modes": [
-            "auto",
-            "none",
-            "required",
-            "named"
-          ]
+          "level": "emulated"
         },
         "session.message.delivery.auto": {
           "level": "native"

@@ -737,7 +737,7 @@ Unit name: `run-controls`. Decision:
 `model_id` execution. `instructions`, `tool_choice`, and `output_schema` keep
 frozen shapes and reference-adapter execution; each graduates by an amendment
 to 0005 when a native adapter advertises its key against a pinned ledger. What
-shipped differs from the plan below in four recorded places: the
+shipped differs from the plan below in five recorded places: the
 `run.model_selection` honour deferral turned out to be unnecessary (a refusal
 of an advertised `model_id` under `unsupported_feature` is wrong whatever the
 id is, since the wire assigns every catalog miss to `model_not_found`), the
@@ -749,8 +749,13 @@ no fixture, and
 later extended `mode` to `run.tool_selection`, where the plan below gives it
 only `modes`. That amendment adds a disclosure axis and no behaviour: the mode
 is optional there, because no rule keys on it until a tool policy can be
-retained past its run, and the plan's `modes` requirement is unchanged and
-still judged separately.
+retained past its run. Finally,
+[Decision 0022](../decisions/0022-tool-choice-is-a-filter-here-and-a-mode-there.md)
+removed the four `tool_choice` modes from this profile, so the typed policy
+below is now its two filters alone and the `modes` requirement it describes is
+withdrawn. The modes keep their only implementations, against the provider
+APIs that define them; `modes` itself survives for
+`action.tool_sources.attach`, which is untouched.
 
 ### Scope
 

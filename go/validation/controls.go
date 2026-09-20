@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"math/big"
 	"reflect"
-	"slices"
 	"sort"
 	"strings"
 
@@ -310,7 +309,7 @@ func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, pendi
 			return unsatisfiableAs(defect.Pointer, "tool", defect.Tool, defect.Reason), false
 		}
 
-		return nil, disclosedMode(s.featureDetail(key), policy.Mode)
+		return nil, true
 	case protocol.FeatureStructuredOutput:
 		compiled, err := CompileOutputSchema(p.OutputSchema)
 		if err != nil {
@@ -338,31 +337,11 @@ func isJSONObject(document json.RawMessage) bool {
 	return json.Unmarshal(trimmed, &value) == nil
 }
 
-var knownToolChoiceModes = []string{protocol.ToolChoiceAuto, protocol.ToolChoiceNone, protocol.ToolChoiceRequired, protocol.ToolChoiceNamed}
-
-func enforcesAKnownMode(modes []string) bool {
-	for _, mode := range modes {
-		if slices.Contains(knownToolChoiceModes, mode) {
-			return true
-		}
-	}
-	return false
-}
-
 func describeModes(modes []string) string {
 	if len(modes) == 0 {
 		return "none"
 	}
 	return strings.Join(modes, ", ")
-}
-
-func disclosedMode(support protocol.FeatureSupport, mode string) bool {
-	for _, disclosed := range support.Modes {
-		if disclosed == mode {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *state) toolCatalog() ([]string, bool) {
@@ -542,18 +521,6 @@ func (s *state) checkCompletedControls(i, line int, e protocol.Envelope, r *runS
 			}
 		}
 	}
-	if choice := controls.choice; choice != nil {
-		switch choice.Mode {
-		case protocol.ToolChoiceRequired:
-			if len(controls.calls) == 0 {
-				s.addExpected(CodeUnappliedControl, i, line, e, "/payload", "run admitted with tool_choice required completed without requesting a tool", "at least one action.call.requested", "none", string(r.id))
-			}
-		case protocol.ToolChoiceNamed:
-			if !controls.calls[choice.Name] {
-				s.addExpected(CodeUnappliedControl, i, line, e, "/payload", "run admitted with a named tool_choice completed without requesting that tool", choice.Name, "none", string(r.id))
-			}
-		}
-	}
 }
 
 func (s *state) checkCallAgainstChoice(i, line int, e protocol.Envelope, r *runState) {
@@ -629,14 +596,8 @@ func canonical(value any) any {
 }
 
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) {
-		if !enforcesAKnownMode(support.Modes) {
-
-			s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/modes", "run.tool_selection is advertised without disclosing a tool_choice mode the endpoint enforces", "at least one of "+strings.Join(knownToolChoiceModes, ", "), describeModes(support.Modes))
-		}
-		if support.Mode != "" && support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
-			s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/mode", "run.tool_selection discloses an application mode that is not one the protocol defines", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
-		}
+	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) && support.Mode != "" && support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
+		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/mode", "run.tool_selection discloses an application mode that is not one the protocol defines", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
 	}
 
 	support, ok := p.EffectiveSupport(protocol.FeatureModelSelection)

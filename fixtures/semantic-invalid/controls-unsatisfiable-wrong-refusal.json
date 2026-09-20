@@ -18,13 +18,7 @@
       },
       "features": {
         "run.tool_selection": {
-          "level": "emulated",
-          "modes": [
-            "auto",
-            "none",
-            "required",
-            "named"
-          ]
+          "level": "emulated"
         },
         "session.message.delivery.auto": {
           "level": "native"
@@ -64,11 +58,9 @@
       ],
       "session_id": "s1",
       "tool_choice": {
-        "disallowed": [
-          "scripted_tool"
-        ],
-        "mode": "named",
-        "name": "scripted_tool"
+        "allowed": [
+          "absent_tool"
+        ]
       }
     },
     "profile": "open-agent-protocol.agent-control-core",
