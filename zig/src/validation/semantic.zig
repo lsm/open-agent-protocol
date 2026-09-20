@@ -549,8 +549,7 @@ pub const Machine = struct {
             const level = memberString(entry.value_ptr.*, "level");
             if (level.len == 0) continue;
             try self.features.put(self.allocator, entry.key_ptr.*, level);
-            const mode = memberString(entry.value_ptr.*, "mode");
-            if (mode.len != 0) try self.modes.put(self.allocator, entry.key_ptr.*, mode);
+            try self.modes.put(self.allocator, entry.key_ptr.*, memberString(entry.value_ptr.*, "mode"));
             try self.supports.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
     }
@@ -2706,4 +2705,35 @@ test "a bound the endpoint honoured is not raised against the open it admitted" 
         \\"tool_sources":[{"id":"a","kind":"http"}]}},
         \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}}]
     , &.{});
+}
+
+test "the layer that wins a feature wins its mode too, including the mode it omits" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"layers":{
+        \\"alpha":{"features":{"run.model_selection":{"level":"native","mode":"session_mutation"}}},
+        \\"beta":{"features":{"session.message.delivery.queue":{"level":"native"}}}},
+        \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"payload":{}},
+        \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1",
+        \\"payload":{"session_id":"s","delivery":"auto","model_id":"m"}},
+        \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
+    , &.{"missing_run_terminal"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"layers":{
+        \\"alpha":{"features":{"run.model_selection":{"level":"native"}}},
+        \\"beta":{"features":{"run.model_selection":{"level":"native","mode":"session_mutation"},
+        \\"session.message.delivery.queue":{"level":"native"}}}},
+        \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"payload":{}},
+        \\{"type":"session.message.submit.request","id":"q2","capability_revision":"v1",
+        \\"payload":{"session_id":"s","delivery":"auto","model_id":"m"}},
+        \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
+    , &.{ "queue_limit_exceeded", "missing_run_terminal" });
 }
