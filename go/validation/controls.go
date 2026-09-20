@@ -191,7 +191,7 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 			continue
 		}
 		if control.key == protocol.FeatureToolSelection {
-			s.duplicateToolNames(i, line, e)
+			s.duplicateToolNames(i, line, e, p.SessionID)
 		}
 		defect, satisfiable := s.unsatisfiable(control.key, p, pending)
 		if defect != nil {
@@ -300,7 +300,7 @@ func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, pendi
 
 			return unsatisfiableAs("/payload/tool_choice", "", "", "tool_choice carries no typed policy"), false
 		}
-		catalog, known := s.toolCatalog()
+		catalog, known := s.toolCatalog(p.SessionID)
 
 		known = known && duplicateToolName(catalog) == ""
 		controls.catalog, controls.catalogKnown = catalog, known
@@ -344,11 +344,17 @@ func describeModes(modes []string) string {
 	return strings.Join(modes, ", ")
 }
 
-func (s *state) toolCatalog() ([]string, bool) {
+func (s *state) toolCatalog(session protocol.SessionID) ([]string, bool) {
 	if !s.catalogKnown {
 		return nil, false
 	}
-	return s.catalog, true
+	track := s.sessions[session]
+	if track == nil || len(track.providedOrder) == 0 {
+		return s.catalog, true
+	}
+	catalog := make([]string, 0, len(s.catalog)+len(track.providedOrder))
+	catalog = append(catalog, s.catalog...)
+	return append(catalog, track.providedOrder...), true
 }
 
 func duplicateToolName(catalog []string) string {
@@ -484,12 +490,12 @@ func describeRefusal(err protocol.ProtocolError) string {
 	return description
 }
 
-func (s *state) duplicateToolNames(i, line int, e protocol.Envelope) {
+func (s *state) duplicateToolNames(i, line int, e protocol.Envelope, session protocol.SessionID) {
 	if s.catalogAmbiguous {
 
 		return
 	}
-	catalog, known := s.toolCatalog()
+	catalog, known := s.toolCatalog(session)
 	if !known {
 		return
 	}

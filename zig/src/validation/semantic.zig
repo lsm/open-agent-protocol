@@ -1499,11 +1499,12 @@ pub const Machine = struct {
                 pending.satisfies = false;
                 return unsatisfiableAs(key, "/payload/tool_choice", "", "");
             };
-            const known = self.catalog_known and duplicateToolName(self.catalog.items) == null;
+            const session_catalog = try self.sessionCatalog(pending.session);
+            const known = self.catalog_known and duplicateToolName(session_catalog) == null;
             pending.controls.choice = policy;
-            pending.controls.catalog = try self.arena.allocator().dupe([]const u8, self.catalog.items);
+            pending.controls.catalog = session_catalog;
             pending.controls.catalog_known = known;
-            if (try self.toolChoiceDefect(policy, known)) |defect| {
+            if (try self.toolChoiceDefect(session_catalog, policy, known)) |defect| {
                 pending.satisfies = false;
                 const detail: []const u8 = if (defect.tool.len == 0) "" else "tool";
                 return unsatisfiableAs(key, defect.pointer, detail, defect.tool);
@@ -1531,10 +1532,19 @@ pub const Machine = struct {
 
     const ChoiceDefect = struct { pointer: []const u8, tool: []const u8 = "" };
 
-    fn toolChoiceDefect(self: *Machine, policy: ToolChoice, known: bool) !?ChoiceDefect {
+    fn sessionCatalog(self: *Machine, session: []const u8) ![]const []const u8 {
+        const holder = self.sessions.get(session) orelse return self.arena.allocator().dupe([]const u8, self.catalog.items);
+        var names = std.ArrayList([]const u8).empty;
+        defer names.deinit(self.allocator);
+        try names.appendSlice(self.allocator, self.catalog.items);
+        try names.appendSlice(self.allocator, holder.provided.items);
+        return self.arena.allocator().dupe([]const u8, names.items);
+    }
+
+    fn toolChoiceDefect(_: *Machine, catalog: []const []const u8, policy: ToolChoice, known: bool) !?ChoiceDefect {
         if (!known) return null;
         for (policy.allowed) |name| {
-            if (!listedIn(self.catalog.items, name)) return .{ .pointer = "/payload/tool_choice/allowed", .tool = name };
+            if (!listedIn(catalog, name)) return .{ .pointer = "/payload/tool_choice/allowed", .tool = name };
         }
         return null;
     }
