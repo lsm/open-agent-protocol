@@ -301,6 +301,40 @@ const Request = struct {
     revision: []const u8 = "",
     carries_message: bool = false,
     responded: bool = false,
+    gates: []const Gate = &.{},
+};
+
+pub const PackedType = struct {
+    name: []const u8,
+    role: []const u8,
+    capability: []const u8 = "",
+    response: []const u8 = "",
+    refusals: []const []const u8 = &.{},
+};
+
+pub const PackedMember = struct {
+    payload_type: []const u8,
+    name: []const u8,
+    capability: []const u8 = "",
+};
+
+pub const Packs = struct {
+    types: []const PackedType = &.{},
+    members: []const PackedMember = &.{},
+
+    fn declaredType(self: Packs, name: []const u8) ?PackedType {
+        for (self.types) |held| {
+            if (std.mem.eql(u8, held.name, name)) return held;
+        }
+        return null;
+    }
+};
+
+const Gate = struct {
+    key: []const u8,
+    refusals: []const []const u8 = &.{},
+    typed: bool = false,
+    advertised: bool = false,
 };
 
 pub const Machine = struct {
@@ -312,6 +346,7 @@ pub const Machine = struct {
     sessions: std.StringArrayHashMapUnmanaged(*Session) = .empty,
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
+    packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     modes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     supports: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
@@ -376,7 +411,7 @@ pub const Machine = struct {
         const declared = field(envelope, "type");
         const payload = member(envelope, "payload") orelse std.json.Value{ .null = {} };
 
-        if (std.mem.endsWith(u8, declared, ".request")) {
+        if (self.isRequestType(declared)) {
             try self.requests.put(self.allocator, id, .{
                 .declared = declared,
                 .revision = field(envelope, "capability_revision"),
@@ -397,6 +432,102 @@ pub const Machine = struct {
         }
         if (duplicate) return;
 
+        try self.dispatch(index, envelope, declared, payload);
+        try self.packEnvelope(index, envelope, declared, payload);
+    }
+
+    fn isRequestType(self: *const Machine, declared: []const u8) bool {
+        if (self.packs.declaredType(declared)) |held| return std.mem.eql(u8, held.role, "request");
+        return std.mem.endsWith(u8, declared, ".request");
+    }
+
+    fn advertisedKey(self: *const Machine, key: []const u8) bool {
+        if (self.current_capability.len == 0 or self.capabilities_stale) return false;
+        return affirmative(self.features.get(key) orelse "");
+    }
+
+    fn memberGates(self: *Machine, declared: []const u8, payload: std.json.Value, out: *std.ArrayList(Gate)) !void {
+        if (payload != .object) return;
+        for (self.packs.members) |held| {
+            if (held.capability.len == 0) continue;
+            if (!std.mem.eql(u8, held.payload_type, declared)) continue;
+            if (payload.object.get(held.name) == null) continue;
+            try out.append(self.arena.allocator(), .{ .key = held.capability });
+        }
+    }
+
+    fn packEnvelope(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        if (self.packs.types.len == 0 and self.packs.members.len == 0) return;
+        const packed_type = self.packs.declaredType(declared);
+        const role = if (packed_type) |held| held.role else if (std.mem.endsWith(u8, declared, ".request"))
+            "request"
+        else if (std.mem.endsWith(u8, declared, ".response"))
+            "response"
+        else
+            "event";
+
+        if (packed_type) |held| {
+            if (std.mem.eql(u8, role, "event") and held.capability.len != 0) {
+                try self.featureKeys(index, envelope, &.{held.capability});
+            }
+        }
+
+        var gates = std.ArrayList(Gate).empty;
+        if (!std.mem.eql(u8, role, "request")) {
+            try self.memberGates(declared, payload, &gates);
+            for (gates.items) |gate| try self.featureKeys(index, envelope, &.{gate.key});
+            gates.clearRetainingCapacity();
+        }
+
+        if (std.mem.eql(u8, role, "request")) {
+            if (packed_type) |held| {
+                if (held.capability.len != 0) {
+                    try gates.append(self.arena.allocator(), .{
+                        .key = held.capability,
+                        .refusals = held.refusals,
+                        .typed = true,
+                    });
+                }
+            }
+            try self.memberGates(declared, payload, &gates);
+            for (gates.items) |*gate| gate.advertised = self.advertisedKey(gate.key);
+            if (self.requests.getPtr(field(envelope, "id"))) |asked| {
+                asked.gates = try gates.toOwnedSlice(self.arena.allocator());
+            }
+            return;
+        }
+
+        const failure = std.mem.eql(u8, declared, "error.response");
+        if (!std.mem.eql(u8, role, "response") and !failure) return;
+        const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+        if (failure) {
+            try self.settlePackRefusal(index, payload, asked.gates);
+            return;
+        }
+        for (asked.gates) |gate| {
+            if (!gate.advertised) try self.add(code_unavailable_capability, index);
+        }
+    }
+
+    fn settlePackRefusal(self: *Machine, index: usize, payload: std.json.Value, gates: []const Gate) !void {
+        const raised = member(payload, "error") orelse std.json.Value{ .null = {} };
+        var unadvertised = false;
+        var named_by_refusal = false;
+        const details = member(raised, "details") orelse std.json.Value{ .null = {} };
+        const named = memberString(details, "feature");
+        for (gates) |gate| {
+            if (gate.advertised) continue;
+            unadvertised = true;
+            if (std.mem.eql(u8, gate.key, named)) named_by_refusal = true;
+        }
+        if (!unadvertised) return;
+        if (std.mem.eql(u8, memberString(raised, "code"), error_unsupported_feature) and
+            std.mem.eql(u8, memberString(details, "reason"), reason_unadvertised) and
+            named_by_refusal) return;
+        try self.add(code_unavailable_capability, index);
+    }
+
+    fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
         if (std.mem.eql(u8, declared, "capabilities.response")) {
             try self.capabilitiesResponse(index, envelope, payload);
             return;

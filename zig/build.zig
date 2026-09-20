@@ -92,6 +92,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     semantic_gate_mod.addImport("semantic", semantic_mod);
+    semantic_gate_mod.addImport("packs", packs_mod);
     const provider_semantic_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/provider_semantic.zig"),
         .target = target,
