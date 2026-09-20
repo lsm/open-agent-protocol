@@ -7674,6 +7674,23 @@
       ]
     },
     {
+      "id": "compound-open-reveals-its-own-provided-tool",
+      "path": "valid/compound-open-reveals-its-own-provided-tool.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls",
+        "control-tools"
+      ],
+      "provenance": [
+        "decisions/0024-the-filter-judges-the-session-catalog.md",
+        "decisions/0009-compound-open.md"
+      ]
+    },
+    {
       "id": "open-provide-unadvertised-rejected",
       "path": "valid/open-provide-unadvertised-rejected.json",
       "kind": "positive",

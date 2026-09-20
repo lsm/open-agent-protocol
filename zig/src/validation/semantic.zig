@@ -1499,7 +1499,7 @@ pub const Machine = struct {
                 pending.satisfies = false;
                 return unsatisfiableAs(key, "/payload/tool_choice", "", "");
             };
-            const session_catalog = try self.sessionCatalog(pending.session);
+            const session_catalog = try self.sessionCatalog(pending.session, pending.provided);
             const known = self.catalog_known and duplicateToolName(session_catalog) == null;
             pending.controls.choice = policy;
             pending.controls.catalog = session_catalog;
@@ -1532,12 +1532,16 @@ pub const Machine = struct {
 
     const ChoiceDefect = struct { pointer: []const u8, tool: []const u8 = "" };
 
-    fn sessionCatalog(self: *Machine, session: []const u8) ![]const []const u8 {
-        const holder = self.sessions.get(session) orelse return self.arena.allocator().dupe([]const u8, self.catalog.items);
+    fn sessionCatalog(self: *Machine, session: []const u8, provided: []const []const u8) ![]const []const u8 {
         var names = std.ArrayList([]const u8).empty;
         defer names.deinit(self.allocator);
         try names.appendSlice(self.allocator, self.catalog.items);
-        try names.appendSlice(self.allocator, holder.provided.items);
+        if (self.sessions.get(session)) |holder| {
+            try names.appendSlice(self.allocator, holder.provided.items);
+        }
+        for (provided) |name| {
+            if (!listedIn(names.items, name)) try names.append(self.allocator, name);
+        }
         return self.arena.allocator().dupe([]const u8, names.items);
     }
 

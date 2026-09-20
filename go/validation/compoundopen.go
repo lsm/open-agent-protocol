@@ -15,7 +15,11 @@ func (s *state) compoundOpenRequest(i, line int, e protocol.Envelope, p protocol
 	}
 	submission := p.Message.Submit(p.SessionID)
 
-	s.submitControls(i, line, e, submission)
+	provided := make([]string, 0, len(p.Tools))
+	for _, tool := range p.Tools {
+		provided = append(provided, tool.Name)
+	}
+	s.submitControls(i, line, e, submission, provided...)
 	if submission.Delivery != protocol.DeliveryAuto && submission.Delivery != protocol.DeliveryQueue &&
 		!(s.tolerant && foreignRequestedDelivery(submission.Delivery)) {
 

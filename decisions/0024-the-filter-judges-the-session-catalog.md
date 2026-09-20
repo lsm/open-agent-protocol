@@ -52,6 +52,14 @@ The catalog is per session, because provisioning is. A tool provided to one
 session is not in another's catalog, and a policy naming it there is refused
 for the same reason it always was.
 
+A compound open judges its own message against its own tools. Under
+[Decision 0009](0009-compound-open.md) one request may provide tools and carry
+a submission, and the submission is judged while the request is read — before
+the response that records what the session holds. The names the request itself
+supplies therefore count for the message it carries, or the rule above would
+hold for every run but the first, and exactly the refusal this decision removes
+would survive wherever it mattered most.
+
 Nothing about what may be called changes. `Permits` already asked the same
 question of the same membership, and the reference adapter already answered it
 with the session's tools; this aligns the validator with the behaviour the
@@ -89,6 +97,10 @@ lists them, then runs twice — the first `allowed: ["grep"]`, the second
 complete. Under the previous rule the second run was refused
 `unsatisfiable_control`; that refusal is what this decision removes, and the
 fixture is the trace it was found with.
+
+`valid/compound-open-reveals-its-own-provided-tool.json` is the same rule on
+one envelope: an open that provides the tool and carries a message naming it in
+`allowed`. It was refused until the request's own names were counted.
 
 Reference execution: `adapter/memory.go` is unchanged. It already composed its
 catalog this way, which is why no adapter test moved.
