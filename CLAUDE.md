@@ -8,7 +8,7 @@ Open Agent Protocol (OAP): a CC0 draft protocol for the boundary between a contr
 
 ## Commands
 
-Go 1.27 module, no Makefile. CI (`.github/workflows/ci.yml`) has two independent jobs. The Go job runs exactly these, in order, and fails on any `gofmt -l` output:
+Go 1.26 module, no Makefile. CI (`.github/workflows/ci.yml`) has two independent jobs. The Go job runs exactly these, in order, and fails on any `gofmt -l` output:
 
 ```sh
 test -z "$(gofmt -l .)"
