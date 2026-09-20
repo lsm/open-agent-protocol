@@ -297,6 +297,7 @@ const Recovery = struct {
 
 const Request = struct {
     message: ?std.json.Value = null,
+    payload: std.json.Value = .{ .null = {} },
     declared: []const u8,
     revision: []const u8 = "",
     carries_message: bool = false,
@@ -379,6 +380,7 @@ pub const Machine = struct {
         if (std.mem.endsWith(u8, declared, ".request")) {
             try self.requests.put(self.allocator, id, .{
                 .declared = declared,
+                .payload = payload,
                 .revision = field(envelope, "capability_revision"),
                 .message = member(payload, "message"),
                 .carries_message = member(payload, "message") != null,
@@ -1609,6 +1611,17 @@ pub const Machine = struct {
         }
         if (!queued) return;
 
+        const request = field(envelope, "in_reply_to");
+        if (!self.queueAlreadyGated(request)) {
+            if (self.advertisedLevel(feature_delivery_queue)) |level| {
+                if (!affirmative(level)) {
+                    try self.add(code_unavailable_capability, index);
+                } else if (std.mem.eql(u8, level, "degraded") and !self.optedIntoQueue(request)) {
+                    try self.add(code_degraded_without_optin, index);
+                }
+            }
+        }
+
         const limits = self.limits orelse return;
         const counts = self.queueCounts(memberString(payload, "session_id"));
         if (limits.max_active) |bound| {
@@ -1622,6 +1635,17 @@ pub const Machine = struct {
                 try self.add(code_queue_limit_exceeded, index);
             }
         }
+    }
+
+    fn queueAlreadyGated(self: *const Machine, request: []const u8) bool {
+        const pending = self.submits.get(request) orelse return false;
+        const expectation = pending.control orelse return false;
+        return std.mem.eql(u8, expectation.key, feature_delivery_queue);
+    }
+
+    fn optedIntoQueue(self: *const Machine, request: []const u8) bool {
+        const asked = self.requests.get(request) orelse return false;
+        return allowsDegraded(asked.payload, feature_delivery_queue);
     }
 
     fn checkQueueOrder(self: *Machine, index: usize, envelope: std.json.Value, run: *Run, declared: []const u8) !void {
@@ -3176,4 +3200,31 @@ test "a completion is judged against the schema its own definitions describe" {
         \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
         \\"payload":{"result":{"n":"one"}}}]
     , &.{"unapplied_control"});
+}
+
+test "a reservation the endpoint never advertised a queue for is the capability missing" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}}]
+    , &.{ "unavailable_capability", "missing_run_started", "missing_run_terminal" });
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"session.message.delivery.queue":{"level":"degraded"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}}]
+    , &.{ "undisclosed_queue_limit", "degraded_without_optin", "missing_run_started", "missing_run_terminal" });
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"session.message.delivery.queue":{"level":"degraded"}},
+        \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","allow_degraded_features":["session.message.delivery.queue"]}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}}]
+    , &.{ "missing_run_started", "missing_run_terminal" });
 }
