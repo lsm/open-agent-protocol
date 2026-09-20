@@ -14,7 +14,6 @@ const pack_capability_keys_pending = [_][]const u8{
 };
 
 const model_reconciliation_pending = [_][]const u8{
-    "compound-open-anonymous-model-reconciled",
     "models-listed-selection-false-miss",
     "models-stale-catalog-does-not-displace",
     "models-stale-catalog-raises-no-change",

@@ -624,6 +624,9 @@ pub const Machine = struct {
         defer self.submits.put(self.allocator, field(envelope, "id"), pending) catch {};
 
         try self.subscribeGate(index, envelope, payload, pending);
+        if (member(payload, "message")) |message| {
+            try self.submitControls(index, envelope, message, pending);
+        }
         if (!attaching and !providing) return;
         _ = try self.controlDescriptor(index, envelope, feature_tool_sources_attach) orelse return;
         if (attaching) try self.attachExpectations(payload, sources.?, pending);
@@ -1594,6 +1597,13 @@ pub const Machine = struct {
     fn compoundOpen(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, session_id: []const u8) !void {
         const request = self.requests.get(field(envelope, "in_reply_to")) orelse return;
         if (!request.carries_message) return;
+        if (self.submits.get(field(envelope, "in_reply_to"))) |held| {
+            if (!std.mem.eql(u8, held.session, session_id)) {
+                held.session = session_id;
+                if (self.windows.get(field(envelope, "in_reply_to"))) |window| window.session = session_id;
+                try self.refreshQueueWindows(session_id);
+            }
+        }
 
         const listed = member(payload, "active_runs") orelse return;
         if (listed != .array) return;
@@ -1616,7 +1626,12 @@ pub const Machine = struct {
         try synthesized.put(allocator, "status", .{ .string = status });
         try synthesized.put(allocator, "admission", .{ .string = admissionFor(status) });
         try synthesized.put(allocator, "effective_delivery", .{ .string = effectiveFor(status) });
-        try self.admit(index, envelope, .{ .object = synthesized }, .{});
+        const opened = self.submits.get(field(envelope, "in_reply_to"));
+        const selected = if (opened) |held| held.controls.model else "";
+        const attributed = if (selected.len != 0) selected else memberString(payload, "current_model_id");
+        if (attributed.len != 0) try synthesized.put(allocator, "model_id", .{ .string = attributed });
+        const carried = try self.settleSubmitAdmission(index, envelope, .{ .object = synthesized });
+        try self.admit(index, envelope, .{ .object = synthesized }, carried);
     }
 
     fn bootstrapRecoveredRuns(self: *Machine, index: usize, session_id: []const u8, payload: std.json.Value) !void {
