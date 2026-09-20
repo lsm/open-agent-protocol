@@ -163,8 +163,9 @@ pub const Registry = struct {
         errdefer parsed.deinit();
         const owned = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned);
-        try self.owned_keys.append(self.allocator, owned);
+        try self.owned_keys.ensureUnusedCapacity(self.allocator, 1);
         try self.documents.put(self.allocator, owned, parsed);
+        self.owned_keys.appendAssumeCapacity(owned);
     }
 
     pub fn root(self: *const Registry, name: []const u8) ?std.json.Value {
@@ -785,4 +786,15 @@ test "a registry owns the names it duplicated, wherever they sit" {
     try std.testing.expect(registry.root("https://example.test/one.json") != null);
     try std.testing.expect(registry.root("https://example.test/two.json") != null);
     try std.testing.expectEqual(@as(usize, 2), registry.owned_keys.items.len);
+}
+
+test "a registry frees a duplicated name exactly once, on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var registry = Registry{ .allocator = allocator };
+            defer registry.deinit();
+            try registry.addDocument("https://example.test/one.json", "{\"type\":\"object\"}");
+            try registry.addDocument("https://example.test/two.json", "{\"type\":\"string\"}");
+        }
+    }.run, .{});
 }
