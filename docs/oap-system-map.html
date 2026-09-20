@@ -219,6 +219,7 @@
   }
   pre.diag .k { color: var(--faint); }
   pre.diag .hi { color: var(--warn); font-weight: 600; }
+  pre.diag .cmt { color: var(--faint); font-style: italic; }
 
   .svg-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; fill: var(--faint); text-transform: uppercase; }
   .svg-title { font-family: var(--sans); font-size: 14px; font-weight: 600; fill: var(--ink); }
@@ -555,17 +556,31 @@
 
     <div class="broke">
       <h3>Now break one thing</h3>
-      <p>Leave the interaction open — the run completes while <code>p1</code> is still waiting on its responder. Nothing about any single envelope is malformed; the schema phase passes. The defect only exists across the trace, which is what the semantic phase is for.</p>
-<pre class="diag">$ oap validate --format=json pending-interaction.json
+      <p>A sibling fixture, <code>fixtures/semantic-invalid/pending-interaction.json</code>, makes the same mistake one envelope earlier: it opens a <code>user.input.requested</code> interaction <code>i1</code>, then completes the run while <code>i1</code> is still waiting on its responder. Nothing about any single envelope is malformed; the schema phase passes. The defect only exists across the trace, which is what the semantic phase is for.</p>
+<pre class="diag">$ oap validate --format=json fixtures/semantic-invalid/pending-interaction.json
 
-{ <span class="k">"phase"</span>: <span class="hi">"semantic"</span>,
-  <span class="k">"code"</span>: <span class="hi">"pending_interaction_at_terminal"</span>,
-  <span class="k">"index"</span>: 6,
-  <span class="k">"envelope_id"</span>: "ev-done",
-  <span class="k">"type"</span>: "run.completed",
-  <span class="k">"pointer"</span>: "/type",
-  <span class="k">"related_ids"</span>: [ "i1" ],
-  <span class="k">"message"</span>: "run terminated with a pending interaction" }</pre>
+[
+  {
+    <span class="k">"file"</span>: "fixtures/semantic-invalid/pending-interaction.json",
+    <span class="k">"valid"</span>: <span class="hi">false</span>,
+    <span class="k">"diagnostics"</span>: [
+      {
+        <span class="k">"fixture"</span>: "fixtures/semantic-invalid/pending-interaction.json",
+        <span class="k">"phase"</span>: <span class="hi">"semantic"</span>,
+        <span class="k">"code"</span>: <span class="hi">"pending_interaction_at_terminal"</span>,
+        <span class="k">"index"</span>: 6,
+        <span class="k">"envelope_id"</span>: "ev-done",
+        <span class="k">"type"</span>: "run.completed",
+        <span class="k">"pointer"</span>: "/type",
+        <span class="k">"related_ids"</span>: [
+          "i1"
+        ],
+        <span class="k">"message"</span>: "run terminated with a pending interaction"
+      }
+    ]
+  }
+]
+oap: validation failed            <span class="cmt">(on stderr; exit status 1)</span></pre>
       <p>The diagnostic names the envelope that broke the rule, the pointer inside it, and the interaction it left hanging. A fixture in the manifest pins that exact code, so an implementation that stops emitting it fails the suite.</p>
     </div>
   </section>
@@ -622,12 +637,12 @@
     <div class="sec-head">
       <p class="eyebrow">Where the port stands</p>
       <h2>Go is the oracle; Zig is what ships</h2>
-      <p>Both implementations run side by side against the same 546 fixtures. The Go tree is the answer key until the Zig one reproduces it.</p>
+      <p>Both implementations run side by side against the same corpus &mdash; 546 fixtures at the time of writing. The Go tree is the answer key until the Zig one reproduces it. Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>zig/src/validation/semantic_gate.zig</code> names each declared exception.</p>
     </div>
     <div class="status">
       <div class="stage done"><span class="st">complete</span><b>1 · Types</b><span>Wire model and strict decode.</span></div>
-      <div class="stage done"><span class="st">complete</span><b>2 · Schema</b><span>Interpreted, not generated. 520 of 546 judged, all accounted.</span></div>
-      <div class="stage now"><span class="st">in progress</span><b>3 · Semantic</b><span>479 of 483 agree. Pack capability keys remain.</span></div>
+      <div class="stage done"><span class="st">complete</span><b>2 · Schema</b><span>Interpreted, not generated. Every fixture judged or explicitly accounted for.</span></div>
+      <div class="stage now"><span class="st">in progress</span><b>3 · Semantic</b><span>Landing unit by unit. The gate names every fixture still disagreeing, so the remainder is always in the tree.</span></div>
       <div class="stage next"><span class="st">next</span><b>4 · Adapters</b><span>Seven harnesses, ~24k lines, one corpus each.</span></div>
       <div class="stage next"><span class="st">then</span><b>5 · Oracle</b><span>Retired, or kept in CI.</span></div>
     </div>
