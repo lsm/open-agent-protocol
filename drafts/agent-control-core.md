@@ -437,10 +437,12 @@ shapes and reference-adapter execution, with native evidence pending: each
 becomes executable by an amendment to that decision when an adapter advertises
 its key against a pinned ledger.
 
-`tool_choice` is a policy over tools already exposed by the endpoint. The core
-submit request does not mean the control layer normally provides executable tool
-definitions: control-layer-provided tools stay in the staged `+control-tools`
-unit. Attaching a tool *source* at session open is executable under
+`tool_choice` is a policy over the tools the session can already call: the ones
+the endpoint exposes, plus the ones the control layer provided at open under
+`+control-tools`. It names tools, never defines them. The core submit request
+does not mean the control layer normally provides executable tool definitions:
+control-layer-provided tools stay in the staged `+control-tools` unit, and a
+submission carries a filter rather than a definition. Attaching a tool *source* at session open is executable under
 `+tool-sources` (Decision 0008), which describes and attaches a source the
 harness runs; per-run attachment remains staged.
 

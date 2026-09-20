@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -123,10 +124,12 @@ type pendingSubmit struct {
 
 	modelUnjudged bool
 	modelListed   bool
+
+	provided []string
 }
 
-func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.MessageSubmitRequest) {
-	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability}
+func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.MessageSubmitRequest, provided ...string) {
+	pending := &pendingSubmit{satisfiable: map[string]bool{}, index: i, line: line, session: p.SessionID, revision: s.currentCapability, provided: provided}
 	var expectations []*controlExpectation
 	defer func() {
 
@@ -191,7 +194,7 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 			continue
 		}
 		if control.key == protocol.FeatureToolSelection {
-			s.duplicateToolNames(i, line, e)
+			s.duplicateToolNames(i, line, e, p.SessionID)
 		}
 		defect, satisfiable := s.unsatisfiable(control.key, p, pending)
 		if defect != nil {
@@ -300,7 +303,7 @@ func (s *state) unsatisfiable(key string, p protocol.MessageSubmitRequest, pendi
 
 			return unsatisfiableAs("/payload/tool_choice", "", "", "tool_choice carries no typed policy"), false
 		}
-		catalog, known := s.toolCatalog()
+		catalog, known := s.toolCatalog(p.SessionID, pending.provided...)
 
 		known = known && duplicateToolName(catalog) == ""
 		controls.catalog, controls.catalogKnown = catalog, known
@@ -344,11 +347,26 @@ func describeModes(modes []string) string {
 	return strings.Join(modes, ", ")
 }
 
-func (s *state) toolCatalog() ([]string, bool) {
+func (s *state) toolCatalog(session protocol.SessionID, provided ...string) ([]string, bool) {
 	if !s.catalogKnown {
 		return nil, false
 	}
-	return s.catalog, true
+	var recorded []string
+	if track := s.sessions[session]; track != nil {
+		recorded = track.providedOrder
+	}
+	if len(recorded) == 0 && len(provided) == 0 {
+		return s.catalog, true
+	}
+	catalog := make([]string, 0, len(s.catalog)+len(recorded)+len(provided))
+	catalog = append(catalog, s.catalog...)
+	catalog = append(catalog, recorded...)
+	for _, name := range provided {
+		if !slices.Contains(catalog, name) {
+			catalog = append(catalog, name)
+		}
+	}
+	return catalog, true
 }
 
 func duplicateToolName(catalog []string) string {
@@ -484,12 +502,12 @@ func describeRefusal(err protocol.ProtocolError) string {
 	return description
 }
 
-func (s *state) duplicateToolNames(i, line int, e protocol.Envelope) {
+func (s *state) duplicateToolNames(i, line int, e protocol.Envelope, session protocol.SessionID) {
 	if s.catalogAmbiguous {
 
 		return
 	}
-	catalog, known := s.toolCatalog()
+	catalog, known := s.toolCatalog(session)
 	if !known {
 		return
 	}
