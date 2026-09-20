@@ -711,7 +711,9 @@ pub const Machine = struct {
         const support = self.supports.get(key) orelse return;
         const limits = member(support, "limits") orelse return;
         if (member(limits, "max_sources")) |declared| {
-            if (declared == .integer and sources.array.items.len > declared.integer) {
+            if (declared == .integer and declared.integer >= 1 and
+                sources.array.items.len > @as(usize, @intCast(declared.integer)))
+            {
                 const at: usize = @intCast(declared.integer);
                 self.propose(&pending.attachment, .{
                     .rung = rung_unsatisfiable,
@@ -1646,7 +1648,7 @@ pub const Machine = struct {
         {
             const holder = try self.sessionFor(session_id);
             if (self.submits.get(field(envelope, "in_reply_to"))) |opened| {
-                if (opened.attachment == null and opened.subscribe == null) {
+                if (opened.attachment == null) {
                     for (opened.provided) |name| try holder.provided.append(self.allocator, name);
                 }
             }
@@ -2586,4 +2588,43 @@ test "an outstanding sibling moves the bound a refusal is judged against" {
         \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}},
         \\{"type":"error.response","id":"x1","in_reply_to":"q2","payload":{"error":{"code":"run_active"}}}]
     , &.{ "missing_run_started", "missing_run_terminal" });
+}
+
+test "a bound below one is no bound at all" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":-1}}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"process"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":0}}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"process"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":1}}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"process"},{"id":"b","kind":"process"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{"unavailable_capability"});
+}
+
+test "an open records what it provided even when another surface refused" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.provide":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"subscribe":true,"tools":[{"name":"echo"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}},
+        \\{"type":"capabilities.response","id":"k3","capability_revision":"v2","payload":{"features":
+        \\{"action.tools.provide":{"level":"native"}},"tools":[{"name":"echo"}]}}]
+    , &.{ "unavailable_capability", "duplicate_tool_name" });
 }
