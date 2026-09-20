@@ -121,8 +121,26 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const claude_rpc_test = b.addTest(.{ .root_module = claude_rpc_mod });
+    const claude_session_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    claude_session_mod.addImport("rpc", claude_rpc_mod);
+    const claude_session_test = b.addTest(.{ .root_module = claude_session_mod });
+    const claude_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    claude_corpus_mod.addImport("rpc", claude_rpc_mod);
+    claude_corpus_mod.addImport("session", claude_session_mod);
+    claude_corpus_mod.addOptions("build_options", gate_options);
+    const claude_corpus_test = b.addTest(.{ .root_module = claude_corpus_mod });
     const test_unit_claude_step = b.step("test-unit-claude", "Run Claude adapter unit tests");
     test_unit_claude_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
+    test_unit_claude_step.dependOn(&b.addRunArtifact(claude_session_test).step);
+    test_unit_claude_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
 
     const schema_bytes_test = b.addTest(.{ .root_module = schema_bytes_mod });
     const test_unit_validation_step = b.step("test-unit-validation", "Run validation unit tests");
@@ -1970,6 +1988,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_session_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
