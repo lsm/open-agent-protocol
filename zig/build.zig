@@ -179,6 +179,14 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const pi_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/pi/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const pi_rpc_test = b.addTest(.{ .root_module = pi_rpc_mod });
+
+
     const oap_endpoint_client_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/oap/endpoint_client.zig"),
         .target = target,
@@ -2057,6 +2065,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
+    test_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
@@ -2093,6 +2102,8 @@ pub fn build(b: *std.Build) void {
     test_unit_transport_step.dependOn(&b.addRunArtifact(in_process_transport_test).step);
     test_unit_transport_step.dependOn(&b.addRunArtifact(transport_retry_test).step);
 
+    const test_unit_pi_step = b.step("test-unit-pi", "Run pi adapter unit tests");
+    test_unit_pi_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     const test_unit_protocol_step = b.step("test-unit-protocol", "Run protocol layer unit tests");
     test_unit_protocol_step.dependOn(&b.addRunArtifact(provider_base_url_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_model_ref_test).step);
