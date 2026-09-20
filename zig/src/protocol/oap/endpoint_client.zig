@@ -279,3 +279,29 @@ test "a child sees only the names the operator allowlisted, never the ambient en
     defer std.testing.allocator.free(granted);
     try std.testing.expectEqualStrings(ambient, granted);
 }
+
+test "the client drives a real endpoint binary when the operator names one" {
+    const named = compat.getEnvVarOwned(std.testing.allocator, "OAPX_ENDPOINT_BIN") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(named);
+    if (named.len == 0 or !std.fs.path.isAbsolute(named)) return error.SkipZigTest;
+
+    var client = try Client.spawn(std.testing.allocator, .{
+        .command = named,
+        .args = &.{ "endpoint", "--adapter", "memory" },
+        .environment = &.{ "HOME", "PATH" },
+    });
+    defer client.deinit();
+
+    try client.write("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
+
+    const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(10000), .clock = .boot } };
+    var attempts: usize = 0;
+    while (attempts < 60) : (attempts += 1) {
+        const frame = try client.next(deadline) orelse continue;
+        try std.testing.expect(frame == .envelope);
+        try std.testing.expect(std.mem.indexOf(u8, frame.envelope, "\"type\":\"capabilities.response\"") != null);
+        try std.testing.expect(std.mem.indexOf(u8, frame.envelope, "\"in_reply_to\":\"q1\"") != null);
+        return;
+    }
+    return error.EndpointAnsweredNothing;
+}
