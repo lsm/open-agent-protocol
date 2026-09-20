@@ -1443,8 +1443,7 @@ pub const Machine = struct {
         try validator.overrides.put(self.allocator, output_schema_document, schema);
         const failure = validator.validateSchema(schema, output_schema_document, result) catch |raised| switch (raised) {
             error.OutOfMemory => return error.OutOfMemory,
-            error.UnsupportedKeyword, error.UnsupportedPattern => return true,
-            error.UnresolvableRef, error.InvalidSchema => return false,
+            else => return false,
         };
         return failure == null;
     }
@@ -2227,6 +2226,7 @@ fn outputSchemaDefect(raw: std.json.Value) bool {
             else => return true,
         }
     }
+    if (jsonschema.unsupportedKeyword(raw) != null) return true;
     return schemaNodeDefect(raw, .{ .object = raw.object });
 }
 
@@ -3227,4 +3227,59 @@ test "a reservation the endpoint never advertised a queue for is the capability 
         \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
         \\{"session_id":"s","accepted":true,"run_id":"a","admission":"queued","effective_delivery":"queue","status":"queued"}}]
     , &.{ "missing_run_started", "missing_run_terminal" });
+}
+
+test "a schema this interpreter cannot fully evaluate is refused, not waved through" {
+    {
+        var plain = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+            \\{"type":"object","properties":{"n":{"type":"string"}}}
+        , .{});
+        defer plain.deinit();
+        try std.testing.expect(jsonschema.unsupportedKeyword(plain.value) == null);
+    }
+    {
+        var bounded = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+            \\{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}
+        , .{});
+        defer bounded.deinit();
+        try std.testing.expectEqualStrings("maxLength", jsonschema.unsupportedKeyword(bounded.value).?);
+    }
+
+    const declared =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}}
+    ;
+    const tail =
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":"xxxxxxxx"}}}]
+    ;
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}}},
+    ++ tail
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string"}}}}},
+    ++ tail
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","pattern":"^x+$"}}}}},
+    ++ tail
+    , &.{"unapplied_control"});
 }

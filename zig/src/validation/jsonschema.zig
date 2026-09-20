@@ -36,6 +36,34 @@ fn keywordSupported(name: []const u8) bool {
     return false;
 }
 
+pub fn unsupportedKeyword(schema: std.json.Value) ?[]const u8 {
+    if (schema != .object) return null;
+    var it = schema.object.iterator();
+    while (it.next()) |entry| {
+        if (!keywordSupported(entry.key_ptr.*)) return entry.key_ptr.*;
+    }
+    for ([_][]const u8{ "items", "not", "if", "then", "else", "contains", "additionalProperties" }) |name| {
+        const child = schema.object.get(name) orelse continue;
+        if (unsupportedKeyword(child)) |found| return found;
+    }
+    for ([_][]const u8{ "allOf", "anyOf", "oneOf" }) |name| {
+        const children = schema.object.get(name) orelse continue;
+        if (children != .array) continue;
+        for (children.array.items) |child| {
+            if (unsupportedKeyword(child)) |found| return found;
+        }
+    }
+    for ([_][]const u8{ "properties", "$defs" }) |name| {
+        const children = schema.object.get(name) orelse continue;
+        if (children != .object) continue;
+        var kids = children.object.iterator();
+        while (kids.next()) |kid| {
+            if (unsupportedKeyword(kid.value_ptr.*)) |found| return found;
+        }
+    }
+    return null;
+}
+
 pub const Registry = struct {
     allocator: std.mem.Allocator,
     documents: std.StringArrayHashMapUnmanaged(std.json.Parsed(std.json.Value)) = .empty,
