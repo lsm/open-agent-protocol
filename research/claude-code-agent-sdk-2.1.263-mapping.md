@@ -756,6 +756,29 @@ dropped. `Tool.terminal` and `Gate.resolved` stay on the Zig side for the same
 reason the oracle needs them: the sweep at settlement has to tell an open call
 from a settled one.
 
+`tools-catalog-sources` closes the `source` story and shows why the predicate
+that `tool-lifecycle` alone justified was not enough. Attribution has two
+modes, and a **state read changes which one is in force**: before anything
+serves a catalog, only tools whose source is the endpoint's own declared
+source are attributed, so an MCP-namespaced call carries no `source` at all;
+once `action.tools.list` has served the catalog once, the served map is the
+attribution and the same call carries `mcp:files`. The case is two identical
+runs on either side of one `action.tools.list`, and they differ in exactly
+that member. So the Zig port now resolves the real source id -- longest
+matching server namespace after `mcp__`, native when nothing matches -- rather
+than asking whether the harness owns the tool. Serving a catalog before an
+`init` has published one is the boundary case that matters: it must not latch
+an empty served map, or the native tools lose their source for the rest of the
+session, and the corpus does not exercise it because its first assertion is
+followed by an assertion after `init`.
+
+Four resolution rules carry tests on the Zig side, because the case's three
+tool names cover only one of them: the longest of two overlapping server
+namespaces wins regardless of the order the servers are advertised in, a
+server name that matches without the `__` separator is not a match, a
+namespace no server claims is native, and a name repeated in `init` is served
+once.
+
 Two divergences in the Zig port are deliberate and bounded. A gate's prompt is
 built by re-encoding the parsed `input` value, where Go interpolates the raw
 `json.RawMessage` bytes; the two agree for compact native frames, which is

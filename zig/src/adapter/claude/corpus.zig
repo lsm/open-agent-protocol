@@ -127,6 +127,10 @@ fn replayCase(arena: *std.heap.ArenaAllocator, root: []const u8, case: Case) !Re
         if (std.mem.eql(u8, action, "oap-control")) {
             if (raw != .object) return error.InvalidScriptLine;
             const op = stringMember(raw.object, "op") orelse return error.InvalidScriptLine;
+            if (std.mem.eql(u8, op, "assert-catalog")) {
+                _ = try reducer.listTools();
+                continue;
+            }
             if (!std.mem.eql(u8, op, "resolve")) continue;
             const decision = stringMember(raw.object, "decision") orelse return error.InvalidScriptLine;
             const pending = reducer.pendingInteraction() orelse return error.NoPendingInteraction;
@@ -184,6 +188,7 @@ const claimed_cases = [_]Case{
     .{ .id = "malformed-stdout", .path = "malformed-stdout" },
     .{ .id = "hygiene-recovery", .path = "hygiene-recovery" },
     .{ .id = "queued-continuation", .path = "queued-continuation" },
+    .{ .id = "tools-catalog-sources", .path = "tools-catalog-sources" },
 };
 
 test "the Zig reducer reproduces every expectation it claims" {

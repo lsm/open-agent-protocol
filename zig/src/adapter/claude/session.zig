@@ -9,6 +9,7 @@ pub const endpoint_id = "claude-code.cli";
 pub const harness_owner = "claude-code";
 pub const native_source = "claude-code-native";
 pub const mcp_tool_prefix = "mcp__";
+pub const mcp_source_prefix = "mcp:";
 
 pub const Options = struct {
     session_id: []const u8 = "session",
@@ -28,6 +29,11 @@ const Run = struct {
     sequence: i64 = 0,
     buffered: std.ArrayList(rpc.Message) = .empty,
     deferred: ?std.json.ObjectMap = null,
+};
+
+pub const CatalogEntry = struct {
+    name: []const u8,
+    source: []const u8,
 };
 
 const Child = struct {
@@ -59,6 +65,9 @@ pub const Reducer = struct {
     current_model: []const u8,
     run: ?Run = null,
     tools: std.ArrayList(Tool) = .empty,
+    catalog: std.ArrayList(CatalogEntry) = .empty,
+    catalog_known: bool = false,
+    served: ?std.StringHashMapUnmanaged([]const u8) = null,
     attribution: std.StringHashMapUnmanaged([]const u8) = .empty,
     gates: std.ArrayList(Gate) = .empty,
     children: std.ArrayList(Child) = .empty,
@@ -576,22 +585,61 @@ pub const Reducer = struct {
             if (listed == .array) {
                 for (listed.array.items) |entry| {
                     if (entry != .object) continue;
-                    const name = entry.object.get("name") orelse continue;
-                    if (name != .string or name.string.len == 0) continue;
-                    if (containsName(servers.items, name.string)) continue;
-                    try servers.append(self.allocator(), name.string);
+                    const name = stringMember(entry.object, "name") orelse continue;
+                    if (containsName(servers.items, name)) continue;
+                    try servers.append(self.allocator(), name);
                 }
             }
         }
-        self.attribution.clearRetainingCapacity();
-        const listed = frame.get("tools") orelse return;
-        if (listed != .array) return;
-        for (listed.array.items) |entry| {
-            if (entry != .string or entry.string.len == 0) continue;
-            if (self.attribution.contains(entry.string)) continue;
-            if (!servedByHarness(entry.string, servers.items)) continue;
-            try self.attribution.put(self.allocator(), entry.string, native_source);
+        self.catalog.clearRetainingCapacity();
+        if (frame.get("tools")) |listed| {
+            if (listed == .array) {
+                for (listed.array.items) |entry| {
+                    if (entry != .string or entry.string.len == 0) continue;
+                    if (self.catalogHolds(entry.string)) continue;
+                    try self.catalog.append(self.allocator(), .{
+                        .name = entry.string,
+                        .source = toolSourceFor(self.allocator(), entry.string, servers.items) catch native_source,
+                    });
+                }
+            }
         }
+        self.catalog_known = true;
+        try self.publishAttribution();
+    }
+
+    fn catalogHolds(self: *Reducer, name: []const u8) bool {
+        for (self.catalog.items) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return true;
+        }
+        return false;
+    }
+
+    fn publishAttribution(self: *Reducer) !void {
+        self.attribution.clearRetainingCapacity();
+        if (self.served) |served| {
+            var it = served.iterator();
+            while (it.next()) |entry| {
+                try self.attribution.put(self.allocator(), entry.key_ptr.*, entry.value_ptr.*);
+            }
+            return;
+        }
+        for (self.catalog.items) |entry| {
+            if (!std.mem.eql(u8, entry.source, native_source)) continue;
+            try self.attribution.put(self.allocator(), entry.name, entry.source);
+        }
+    }
+
+    pub fn listTools(self: *Reducer) !?[]const CatalogEntry {
+        if (!self.catalog_known) return null;
+        var served: std.StringHashMapUnmanaged([]const u8) = .empty;
+        for (self.catalog.items) |entry| {
+            if (entry.source.len == 0) continue;
+            try served.put(self.allocator(), entry.name, entry.source);
+        }
+        self.served = served;
+        try self.publishAttribution();
+        return self.catalog.items;
     }
 
     fn attributionFor(self: *Reducer, name: []const u8) []const u8 {
@@ -741,15 +789,19 @@ fn containsName(names: []const []const u8, candidate: []const u8) bool {
     return false;
 }
 
-fn servedByHarness(name: []const u8, servers: []const []const u8) bool {
-    if (!std.mem.startsWith(u8, name, mcp_tool_prefix)) return true;
+fn toolSourceFor(allocator: std.mem.Allocator, name: []const u8, servers: []const []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, name, mcp_tool_prefix)) return native_source;
     const rest = name[mcp_tool_prefix.len..];
+    var longest: []const u8 = "";
     for (servers) |server| {
-        if (rest.len <= server.len + 2) continue;
-        if (!std.mem.startsWith(u8, rest, server)) continue;
-        if (std.mem.startsWith(u8, rest[server.len..], "__")) return false;
+        if (server.len <= longest.len) continue;
+        if (rest.len < server.len + 2) continue;
+        if (!std.mem.eql(u8, rest[0..server.len], server)) continue;
+        if (!std.mem.eql(u8, rest[server.len .. server.len + 2], "__")) continue;
+        longest = server;
     }
-    return true;
+    if (longest.len == 0) return native_source;
+    return std.fmt.allocPrint(allocator, mcp_source_prefix ++ "{s}", .{longest});
 }
 
 fn integerMember(map: std.json.ObjectMap, key: []const u8) ?i64 {
@@ -1254,6 +1306,62 @@ test "an idle session publishes a terminal its children are still holding" {
     );
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
     try testing.expectEqualStrings("run.completed", reducer.envelopes.items[1].object.get("type").?.string);
+}
+
+fn advertise(reducer: *Reducer, arena: std.mem.Allocator) !void {
+    reducer.open();
+    try observeText(reducer, arena,
+        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1","mcp_servers":[{"name":"files__nested"},{"name":"files"}],"tools":["Bash","mcp__files__read","mcp__files__nested__read","mcp__filesXread","mcp__absent__ghost","Bash"]}
+    );
+}
+
+fn callEachTool(reducer: *Reducer, arena: std.mem.Allocator) !void {
+    try startedRun(reducer, arena, "turn-1");
+    try observeText(reducer, arena,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"},{"type":"tool_use","id":"t2","name":"mcp__files__read"},{"type":"tool_use","id":"t3","name":"mcp__files__nested__read"},{"type":"tool_use","id":"t4","name":"mcp__filesXread"},{"type":"tool_use","id":"t5","name":"mcp__absent__ghost"}]},"uuid":"a1"}
+    );
+}
+
+test "a tool's source is the longest server namespace its name matches" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+
+    try advertise(&reducer, scratch);
+    const served = (try reducer.listTools()).?;
+    try testing.expectEqual(@as(usize, 5), served.len);
+
+    try callEachTool(&reducer, scratch);
+    const sources = try toolSources(&reducer, scratch);
+    try testing.expectEqual(@as(usize, 5), sources.len);
+    try testing.expectEqualStrings(native_source, sources[0]);
+    try testing.expectEqualStrings("mcp:files", sources[1]);
+    try testing.expectEqualStrings("mcp:files__nested", sources[2]);
+    try testing.expectEqualStrings(native_source, sources[3]);
+    try testing.expectEqualStrings(native_source, sources[4]);
+}
+
+test "a catalog nobody has served attributes only what the endpoint owns" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+
+    reducer.open();
+    try testing.expectEqual(@as(?[]const CatalogEntry, null), try reducer.listTools());
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1","mcp_servers":[{"name":"files__nested"},{"name":"files"}],"tools":["Bash","mcp__files__read","mcp__files__nested__read","mcp__filesXread","mcp__absent__ghost","Bash"]}
+    );
+    try callEachTool(&reducer, scratch);
+
+    const sources = try toolSources(&reducer, scratch);
+    try testing.expectEqualStrings(native_source, sources[0]);
+    try testing.expectEqualStrings("", sources[1]);
+    try testing.expectEqualStrings("", sources[2]);
+    try testing.expectEqualStrings(native_source, sources[3]);
+    try testing.expectEqualStrings(native_source, sources[4]);
 }
 
 test "an init outside a pending run is adopted when it arrives" {
