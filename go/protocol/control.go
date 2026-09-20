@@ -568,11 +568,6 @@ func (c ToolChoice) Unsatisfiable(catalog []string, known bool) *ToolChoiceDefec
 			return &ToolChoiceDefect{Pointer: fmt.Sprintf("/payload/tool_choice/allowed/%d", index), Tool: name, Reason: "allowed names a tool outside the catalog"}
 		}
 	}
-	for index, name := range c.Disallowed {
-		if known && !listed[name] {
-			return &ToolChoiceDefect{Pointer: fmt.Sprintf("/payload/tool_choice/disallowed/%d", index), Tool: name, Reason: "disallowed names a tool outside the catalog"}
-		}
-	}
 	return nil
 }
 

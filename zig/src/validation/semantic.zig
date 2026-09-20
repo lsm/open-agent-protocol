@@ -1531,21 +1531,9 @@ pub const Machine = struct {
     const ChoiceDefect = struct { pointer: []const u8, tool: []const u8 = "" };
 
     fn toolChoiceDefect(self: *Machine, policy: ToolChoice, known: bool) !?ChoiceDefect {
-        const catalog = self.catalog.items;
-        if (known) {
-            for (policy.allowed) |name| {
-                if (!listedIn(catalog, name)) return .{ .pointer = "/payload/tool_choice/allowed", .tool = name };
-            }
-            for (policy.disallowed) |name| {
-                if (!listedIn(catalog, name)) return .{ .pointer = "/payload/tool_choice/disallowed", .tool = name };
-            }
-        }
-        var filtered = std.ArrayList([]const u8).empty;
-        defer filtered.deinit(self.allocator);
-        for (catalog) |name| {
-            if (policy.has_allowed and !listedIn(policy.allowed, name)) continue;
-            if (listedIn(policy.disallowed, name)) continue;
-            try filtered.append(self.allocator, name);
+        if (!known) return null;
+        for (policy.allowed) |name| {
+            if (!listedIn(self.catalog.items, name)) return .{ .pointer = "/payload/tool_choice/allowed", .tool = name };
         }
         return null;
     }
