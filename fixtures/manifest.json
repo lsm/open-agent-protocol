@@ -2137,8 +2137,8 @@
       ]
     },
     {
-      "id": "controls-tool-selection-session-mutation-mode",
-      "path": "valid/controls-tool-selection-session-mutation-mode.json",
+      "id": "controls-tool-selection-session-scope",
+      "path": "valid/controls-tool-selection-session-scope.json",
       "kind": "positive",
       "valid": true,
       "phase": "",
@@ -2153,13 +2153,13 @@
       ]
     },
     {
-      "id": "controls-tool-selection-unknown-application-mode",
-      "path": "semantic-invalid/controls-tool-selection-unknown-application-mode.json",
+      "id": "controls-tool-selection-unknown-scope",
+      "path": "semantic-invalid/controls-tool-selection-unknown-scope.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
       "codes": [
-        "undisclosed_selection_modes"
+        "undisclosed_selection_scope"
       ],
       "units": [
         "core",
@@ -2365,13 +2365,13 @@
       ]
     },
     {
-      "id": "controls-model-mode-missing",
-      "path": "semantic-invalid/controls-model-mode-missing.json",
+      "id": "controls-model-scope-missing",
+      "path": "semantic-invalid/controls-model-scope-missing.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
       "codes": [
-        "undisclosed_selection_modes"
+        "undisclosed_selection_scope"
       ],
       "units": [
         "core",
@@ -2383,13 +2383,13 @@
       ]
     },
     {
-      "id": "controls-model-mode-unknown",
-      "path": "semantic-invalid/controls-model-mode-unknown.json",
+      "id": "controls-model-scope-unknown",
+      "path": "semantic-invalid/controls-model-scope-unknown.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
       "codes": [
-        "undisclosed_selection_modes"
+        "undisclosed_selection_scope"
       ],
       "units": [
         "core",

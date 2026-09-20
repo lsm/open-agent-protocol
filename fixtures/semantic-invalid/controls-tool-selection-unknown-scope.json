@@ -19,7 +19,7 @@
       "features": {
         "run.tool_selection": {
           "level": "emulated",
-          "mode": "per_turn"
+          "scope": "per_turn"
         },
         "session.message.delivery.auto": {
           "level": "native"

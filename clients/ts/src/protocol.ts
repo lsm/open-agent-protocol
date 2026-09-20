@@ -232,8 +232,8 @@ export interface Participant {
 export interface FeatureSupport {
   level: SupportLevel;
   reason?: string;
-  /** The one application mode a key has one of: `run.model_selection` discloses `per_run` or `session_mutation`, and `run.tool_selection` may disclose the same pair — omitting it there means the policy applies to the run that carried it. */
-  mode?: string;
+  /** How long an admitted control lives: `run.model_selection` discloses `run` or `session`, and `run.tool_selection` may disclose the same pair — omitting it there means the policy applies to the run that carried it. */
+  scope?: string;
   /** The modes a key can enforce more than one of: `action.tool_sources.attach` lists where it attaches — `session_open` wherever attachment is usable at all, plus `remote` when a source the operator never configured is accepted. */
   modes?: string[];
   /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries — an object, because only an object is a structured result. */

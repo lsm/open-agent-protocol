@@ -102,7 +102,7 @@ above `unavailable`, so an endpoint that supports none of the four still
 claims the unit by refusing all four correctly.
 [Decision 0005](decisions/0005-run-controls.md) graduates the discipline and
 `model_id`: Codex applies it natively per run
-(`run.model_selection`, mode `per_run`), which means the model binds that run
+(`run.model_selection`, scope `run`), which means the model binds that run
 alone and `current_model_id` — the model the next control-free submission
 would use — does not move. The reference adapter executes all four.
 

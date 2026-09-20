@@ -19,7 +19,7 @@
       "features": {
         "run.tool_selection": {
           "level": "emulated",
-          "mode": "session_mutation"
+          "scope": "session"
         },
         "session.message.delivery.auto": {
           "level": "native"

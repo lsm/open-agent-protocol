@@ -23,7 +23,7 @@
         },
         "run.model_selection": {
           "level": "degraded",
-          "mode": "per_run",
+          "scope": "run",
           "reason": "attribution is unconfirmed"
         },
         "session.message.delivery.auto": {

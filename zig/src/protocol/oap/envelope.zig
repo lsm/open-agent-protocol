@@ -205,7 +205,7 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                     try w.writeKey(feature.key);
                     try w.beginObject();
                     try w.writeStringField("level", @tagName(feature.level));
-                    if (feature.mode) |mode| try w.writeStringField("mode", mode);
+                    if (feature.scope) |scope| try w.writeStringField("scope", scope);
                     if (feature.reason) |reason| try w.writeStringField("reason", reason);
                     try w.endObject();
                 }
@@ -1016,10 +1016,10 @@ fn deserializeCapabilities(
             const key = try allocator.dupe(u8, entry.key_ptr.*);
             errdefer allocator.free(key);
             const level = try requiredEnum(oap_types.SupportLevel, entry.value_ptr.object, "level");
-            const mode = try optionalOwnedString(entry.value_ptr.object, "mode", allocator);
-            errdefer if (mode) |owned| allocator.free(owned);
+            const scope = try optionalOwnedString(entry.value_ptr.object, "scope", allocator);
+            errdefer if (scope) |owned| allocator.free(owned);
             const reason = try optionalOwnedString(entry.value_ptr.object, "reason", allocator);
-            features[filled] = .{ .key = key, .level = level, .mode = mode, .reason = reason };
+            features[filled] = .{ .key = key, .level = level, .scope = scope, .reason = reason };
             filled += 1;
         }
         result.features = features;
@@ -1199,7 +1199,7 @@ test "round trips a capabilities response with features and degradation" {
     var bindings = [_]oap_types.Binding{.{ .kind = "stdio", .serialization = "jsonl" }};
     var features = [_]oap_types.Feature{
         .{ .key = "run.cancel", .level = .degraded, .reason = "session scoped" },
-        .{ .key = "run.model_selection", .level = .native, .mode = "per_run" },
+        .{ .key = "run.model_selection", .level = .native, .scope = "run" },
     };
     var degradation = [_]oap_types.Degradation{.{
         .feature = "run.cancel",
@@ -1238,7 +1238,7 @@ test "round trips a capabilities response with features and degradation" {
     const capabilities = decoded.payload.capabilities_response;
     try std.testing.expectEqualStrings("makai", capabilities.endpoint.id);
     try std.testing.expectEqual(oap_types.SupportLevel.degraded, capabilities.feature("run.cancel").?.level);
-    try std.testing.expectEqualStrings("per_run", capabilities.feature("run.model_selection").?.mode.?);
+    try std.testing.expectEqualStrings("run", capabilities.feature("run.model_selection").?.scope.?);
     try std.testing.expectEqual(@as(usize, 1), capabilities.degradation.len);
     try std.testing.expectEqual(oap_types.SupportLevel.degraded, capabilities.degradation[0].to);
     try std.testing.expectEqual(@as(usize, 1), capabilities.requested_delivery_modes.len);

@@ -44,7 +44,7 @@ const (
 type FeatureSupport struct {
 	Level       SupportLevel               `json:"level"`
 	Reason      string                     `json:"reason,omitempty"`
-	Mode        string                     `json:"mode,omitempty"`
+	Scope       string                     `json:"scope,omitempty"`
 	Modes       []string                   `json:"modes,omitempty"`
 	Constraints map[string]json.RawMessage `json:"constraints,omitempty"`
 	Limits      map[string]json.RawMessage `json:"limits,omitempty"`
@@ -159,9 +159,9 @@ func (f FeatureSupport) DisclosesMode(mode string) bool {
 }
 
 const (
-	ModePerRun          = "per_run"
-	ModeSessionMutation = "session_mutation"
-	ModeRestart         = "restart"
+	ScopeRun     = "run"
+	ScopeSession = "session"
+	ScopeRestart = "restart"
 )
 
 const ConstraintFixedResult = "fixed_result"

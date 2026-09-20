@@ -153,13 +153,13 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"action.permissions":              {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		"user_input":                      {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 
-		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Mode: protocol.ModePerRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
+		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Scope: protocol.ScopeRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
 
 		protocol.FeatureModelsList:   {Level: protocol.SupportNative, Reason: "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},
 		protocol.FeatureInstructions: {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
 		protocol.FeatureToolSelection: {
 			Level:  protocol.SupportEmulated,
-			Mode:   protocol.ModePerRun,
+			Scope:  protocol.ScopeRun,
 			Reason: "the policy filters the scripted tool and is not retained past the run",
 		},
 		protocol.FeatureStructuredOutput: {

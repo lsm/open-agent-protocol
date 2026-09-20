@@ -161,7 +161,7 @@ func (s *state) submitControls(i, line int, e protocol.Envelope, p protocol.Mess
 		return
 	}
 	pending.controls.present = true
-	pending.controls.mode = s.featureDetail(protocol.FeatureModelSelection).Mode
+	pending.controls.mode = s.featureDetail(protocol.FeatureModelSelection).Scope
 	for _, control := range controls {
 		if !control.present {
 			continue
@@ -596,16 +596,16 @@ func canonical(value any) any {
 }
 
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) && support.Mode != "" && support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
-		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/mode", "run.tool_selection discloses an application mode that is not one the protocol defines", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
+	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) && support.Scope != "" && support.Scope != protocol.ScopeRun && support.Scope != protocol.ScopeSession {
+		s.addExpected(CodeUndisclosedSelectionScope, i, line, e, "/payload/features/run.tool_selection/scope", "run.tool_selection discloses a scope that is not one the protocol defines", protocol.ScopeRun+" or "+protocol.ScopeSession, support.Scope)
 	}
 
 	support, ok := p.EffectiveSupport(protocol.FeatureModelSelection)
 	if !ok || !affirmative(support.Level) {
 		return
 	}
-	if support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
-		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.model_selection/mode", "run.model_selection is advertised without disclosing how a selection is applied", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
+	if support.Scope != protocol.ScopeRun && support.Scope != protocol.ScopeSession {
+		s.addExpected(CodeUndisclosedSelectionScope, i, line, e, "/payload/features/run.model_selection/scope", "run.model_selection is advertised without disclosing how long a selection lives", protocol.ScopeRun+" or "+protocol.ScopeSession, support.Scope)
 	}
 }
 

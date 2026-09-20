@@ -91,8 +91,8 @@ const samples: PayloadSample[] = [
     profiles: ['open-agent-protocol.agent-control-core'],
     bindings: [{ kind: 'stdio', serialization: 'jsonrpc' }],
     features: {
-      'session.open': { level: 'native', reason: 'because', mode: 'direct' },
-      'run.tool_selection': { level: 'emulated', modes: ['auto', 'named'] },
+      'session.open': { level: 'native', reason: 'because', scope: 'run' },
+      'run.tool_selection': { level: 'emulated', scope: 'run' },
       'run.structured_output': { level: 'emulated', constraints: { fixed_result: { ok: true } } },
       'action.tool_sources.attach': {
         level: 'emulated',
@@ -107,7 +107,7 @@ const samples: PayloadSample[] = [
     limits: { max_active_runs_per_session: 2, max_queued_runs_per_session: 1 },
     layers: {
       core: {
-        features: { 'session.open': { level: 'native', reason: 'because', mode: 'direct' } },
+        features: { 'session.open': { level: 'native', reason: 'because', scope: 'run' } },
         requested_delivery_modes: ['auto'],
         effective_delivery_modes: ['start'],
         sources: [{ id: 'native', kind: 'native', display_name: 'Layer source' }],

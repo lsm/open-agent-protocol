@@ -19,7 +19,7 @@
       "features": {
         "run.model_selection": {
           "level": "emulated",
-          "mode": "whenever"
+          "scope": "whenever"
         },
         "session.message.delivery.auto": {
           "level": "native"

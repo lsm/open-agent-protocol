@@ -52,7 +52,7 @@ const (
 	CodeUnsatisfiableControl      = "unsatisfiable_control"
 	CodeDegradedWithoutOptin      = "degraded_without_optin"
 	CodeDuplicateToolName         = "duplicate_tool_name"
-	CodeUndisclosedSelectionModes = "undisclosed_selection_modes"
+	CodeUndisclosedSelectionScope = "undisclosed_selection_scope"
 
 	CodeQueueOrderViolation      = "queue_order_violation"
 	CodeQueueLimitExceeded       = "queue_limit_exceeded"

@@ -28,7 +28,7 @@
         },
         "run.model_selection": {
           "level": "native",
-          "mode": "per_run"
+          "scope": "run"
         }
       }
     }

@@ -46,11 +46,11 @@ func modelSubmit(model string) []string {
 	}
 }
 
-const modelsNative = `{"models.list":{"level":"native"},"run.model_selection":{"level":"emulated","mode":"per_run"},"session.message.submit":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.state":{"level":"native"}}`
+const modelsNative = `{"models.list":{"level":"native"},"run.model_selection":{"level":"emulated","scope":"run"},"session.message.submit":{"level":"native"},"session.message.delivery.auto":{"level":"native"},"session.state":{"level":"native"}}`
 
 func TestDegradedCatalogDoesNotBindAdmissions(t *testing.T) {
 	v := MustNew()
-	degraded := `{"models.list":{"level":"degraded","reason":"refreshed per turn"},"run.model_selection":{"level":"emulated","mode":"per_run"},"session.message.submit":{"level":"native"},"session.message.delivery.auto":{"level":"native"}}`
+	degraded := `{"models.list":{"level":"degraded","reason":"refreshed per turn"},"run.model_selection":{"level":"emulated","scope":"run"},"session.message.submit":{"level":"native"},"session.message.delivery.auto":{"level":"native"}}`
 	trace := modelsTrace(degraded, modelsQuery(`["models.list"]`), modelsCatalog(`"current_model_id":"m1","models":[{"id":"m1","default":true}]`), modelSubmit("m2")...)
 	if got := v.ValidateBytes(trace, "degraded-catalog"); !got.Valid() {
 		t.Fatalf("a degraded catalog bound an admission: %+v", got.Diagnostics)

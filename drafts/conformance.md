@@ -233,9 +233,9 @@ Execution, per advertised control, is that an implementation:
 
 - applies an admitted `model_id` to the run it was requested for, repeats it
   on the admission and on `run.started`, and never attributes the run to
-  another model. `run.model_selection`'s `mode` discloses how: `per_run`
+  another model. `run.model_selection`'s `scope` discloses how long: `run`
   leaves `current_model_id` — the model the next control-free submission
-  would use — untouched, and `session_mutation` moves it and reports the
+  would use — untouched, and `session` moves it and reports the
   native truth afterwards;
 - accepts `instructions` it advertises. Whether admitted instructions took
   effect is not a wire observable, so the key means "this endpoint accepts
@@ -354,7 +354,7 @@ For attachment at open (`action.tool_sources.attach`), an implementation:
   `undisclosed_attach_modes` on the `capabilities.response` itself, because
   `session_open` is the only application this unit defines and a key no open
   can elect promises nothing. Names outside the vocabulary are tolerated beside
-  it, since the vocabulary is additive. This is `undisclosed_selection_modes`'
+  it, since the vocabulary is additive. This is `undisclosed_selection_scope`'
   rule for this key, and it is what makes the plural a set rather than a
   costume: disclosing `remote` is an addition, never a substitution. An
   open attaching a `remote` source to an endpoint whose set omits it is

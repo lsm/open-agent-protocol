@@ -755,7 +755,11 @@ removed the four `tool_choice` modes from this profile, so the typed policy
 below is now its two filters alone and the `modes` requirement it describes is
 withdrawn. The modes keep their only implementations, against the provider
 APIs that define them; `modes` itself survives for
-`action.tool_sources.attach`, which is untouched.
+`action.tool_sources.attach`, which is untouched. The same decision renames
+`FeatureSupport.mode` to `scope` with the values `run` and `session`, so
+wherever the plan below writes `mode`, `per_run` or `session_mutation` for a
+selection key, read `scope`, `run` and `session`, and read
+`undisclosed_selection_scope` for `undisclosed_selection_modes`.
 
 ### Scope
 

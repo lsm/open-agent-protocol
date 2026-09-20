@@ -33,7 +33,7 @@ func refusalEnvelope(code string, details map[string]any) string {
 
 func TestRefusalPrecedencePrefersTheCapabilityRung(t *testing.T) {
 	v := MustNew()
-	features := `{"run.model_selection":{"level":"degraded","mode":"per_run","reason":"attribution is unconfirmed"},"run.instructions":{"level":"unavailable","reason":"no per-run surface"}}`
+	features := `{"run.model_selection":{"level":"degraded","scope":"run","reason":"attribution is unconfirmed"},"run.instructions":{"level":"unavailable","reason":"no per-run surface"}}`
 	controls := `,"model_id":"m1","instructions":"be terse"`
 
 	conforming := controlsTrace(features, controls, refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.instructions", "reason": "unadvertised"}))
@@ -154,7 +154,7 @@ func TestRunControlDiagnosticsAreRegistered(t *testing.T) {
 	known := diagnosticCodes()
 	for _, code := range []string{
 		CodeUnappliedControl, CodeUnsatisfiableControl, CodeDegradedWithoutOptin,
-		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
+		CodeDuplicateToolName, CodeUndisclosedSelectionScope,
 	} {
 		if !known[code] {
 			t.Fatalf("diagnostic %q is not registered", code)
@@ -272,7 +272,7 @@ func modelAdmission(admitted, started string) string {
 
 func TestStartedRepeatsTheAdmittedModel(t *testing.T) {
 	v := MustNew()
-	features := `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`
+	features := `{"run.model_selection":{"level":"emulated","scope":"run"}}`
 	omitted := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "")), "started-omits-model")
 	if !omitted.HasCode(CodeUnappliedControl) {
 		t.Fatalf("want %s when run.started omits the admitted model: %+v", CodeUnappliedControl, omitted.Diagnostics)
@@ -367,29 +367,29 @@ func TestEmptyAllowlistPermitsNothing(t *testing.T) {
 	}
 }
 
-func TestModelSelectionMustDiscloseItsApplicationMode(t *testing.T) {
+func TestModelSelectionMustDiscloseHowLongASelectionLives(t *testing.T) {
 	v := MustNew()
 	for name, support := range map[string]string{
 		"missing":       `{"level":"emulated"}`,
-		"empty":         `{"level":"emulated","mode":""}`,
-		"unknown":       `{"level":"emulated","mode":"whenever"}`,
-		"not yet ruled": `{"level":"emulated","mode":"restart"}`,
-		"degraded":      `{"level":"degraded","mode":"","reason":"attribution is unconfirmed"}`,
+		"empty":         `{"level":"emulated","scope":""}`,
+		"unknown":       `{"level":"emulated","scope":"whenever"}`,
+		"not yet ruled": `{"level":"emulated","scope":"restart"}`,
+		"degraded":      `{"level":"degraded","scope":"","reason":"attribution is unconfirmed"}`,
 	} {
 		features := `{"run.model_selection":` + support + `}`
-		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "mode-"+name)
-		if !result.HasCode(CodeUndisclosedSelectionModes) {
-			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionModes, result.Diagnostics)
+		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "scope-"+name)
+		if !result.HasCode(CodeUndisclosedSelectionScope) {
+			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionScope, result.Diagnostics)
 		}
 	}
 
 	for name, features := range map[string]string{
-		"per_run":          `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`,
-		"session_mutation": `{"run.model_selection":{"level":"native","mode":"session_mutation"}}`,
+		"run":     `{"run.model_selection":{"level":"emulated","scope":"run"}}`,
+		"session": `{"run.model_selection":{"level":"native","scope":"session"}}`,
 	} {
-		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "mode-"+name)
+		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "scope-"+name)
 		if !result.Valid() {
-			t.Fatalf("%s: a disclosed mode was rejected: %+v", name, result.Diagnostics)
+			t.Fatalf("%s: a disclosed scope was rejected: %+v", name, result.Diagnostics)
 		}
 	}
 	unadvertised := `{"run.model_selection":{"level":"unavailable","reason":"no per-run surface"}}`
