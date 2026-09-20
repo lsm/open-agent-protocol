@@ -454,8 +454,7 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "session.message.submit.response")) {
-            const controls = try self.settleSubmitAdmission(index, envelope, payload);
-            try self.admit(index, envelope, payload, controls);
+            try self.admit(index, envelope, payload);
             try self.closeSubmitWindow(field(envelope, "in_reply_to"));
             return;
         }
@@ -474,7 +473,6 @@ pub const Machine = struct {
             return;
         }
         if (isRunEvent(declared)) {
-            if (runEventFeature(declared)) |name| try self.feature(index, envelope, name);
             try self.runEvent(index, envelope, declared);
         }
     }
@@ -587,8 +585,6 @@ pub const Machine = struct {
             };
             return;
         }
-        pending.satisfies = true;
-        try pending.satisfiable.put(self.arena.allocator(), key, {});
     }
 
     fn disclosesMode(self: *const Machine, key: []const u8, mode: []const u8) bool {
@@ -649,6 +645,7 @@ pub const Machine = struct {
         _ = try self.controlDescriptor(index, envelope, feature_tool_sources_attach) orelse return;
         if (attaching) try self.attachExpectations(payload, sources.?, pending);
         if (providing) try self.provideExpectations(payload, tools.?, sources, pending);
+        if (pending.attachment != null) pending.limit_refusal = null;
     }
 
     fn attachExpectations(self: *Machine, payload: std.json.Value, sources: std.json.Value, pending: *Pending) !void {
@@ -699,12 +696,6 @@ pub const Machine = struct {
         }
         if (defective) return;
         try self.attachLimitViolation(key, sources, pending);
-        if (pending.attachment) |held| {
-            if (std.mem.eql(u8, held.pointer, "/payload/tool_sources/limit")) {
-                pending.limit_refusal = held;
-                pending.attachment = null;
-            }
-        }
     }
 
     fn attachLimitViolation(self: *Machine, key: []const u8, sources: std.json.Value, pending: *Pending) !void {
@@ -715,7 +706,7 @@ pub const Machine = struct {
                 sources.array.items.len > @as(usize, @intCast(declared.integer)))
             {
                 const at: usize = @intCast(declared.integer);
-                self.propose(&pending.attachment, .{
+                self.propose(&pending.limit_refusal, .{
                     .rung = rung_unsatisfiable,
                     .key = key,
                     .pointer = "/payload/tool_sources/limit",
@@ -737,7 +728,7 @@ pub const Machine = struct {
                 if (entry == .string and std.mem.eql(u8, entry.string, kind)) disclosed = true;
             }
             if (disclosed) continue;
-            self.propose(&pending.attachment, .{
+            self.propose(&pending.limit_refusal, .{
                 .rung = rung_unsatisfiable,
                 .key = key,
                 .pointer = "/payload/tool_sources/kind",
@@ -1584,7 +1575,7 @@ pub const Machine = struct {
         }
     }
 
-    fn admit(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, controls: Controls) !void {
+    fn admit(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         if (!memberBool(payload, "accepted")) {
             try self.add(code_illegal_run_transition, index);
             return;
@@ -1612,6 +1603,7 @@ pub const Machine = struct {
 
         const overlap = try self.queueOverlap(index, payload);
         if (!overlap) try self.queueAdmission(index, envelope, payload);
+        const controls = try self.settleSubmitAdmission(index, envelope, payload);
         if (controls.present and controls.model_present and !queued) self.applyModelControl(holder, controls);
 
         const run = try self.arena.allocator().create(Run);
@@ -1721,8 +1713,7 @@ pub const Machine = struct {
         const selected = if (opened) |held| held.controls.model else "";
         const attributed = if (selected.len != 0) selected else memberString(payload, "current_model_id");
         if (attributed.len != 0) try synthesized.put(allocator, "model_id", .{ .string = attributed });
-        const carried = try self.settleSubmitAdmission(index, envelope, .{ .object = synthesized });
-        try self.admit(index, envelope, .{ .object = synthesized }, carried);
+        try self.admit(index, envelope, .{ .object = synthesized });
     }
 
     fn bootstrapRecoveredRuns(self: *Machine, index: usize, session_id: []const u8, payload: std.json.Value) !void {
@@ -1905,6 +1896,8 @@ pub const Machine = struct {
                 state.status = next_status;
             }
         }
+
+        if (runEventFeature(declared)) |name| try self.feature(index, envelope, name);
 
         if (std.mem.eql(u8, declared, "action.call.requested")) {
             try self.checkCallAgainstChoice(index, member(envelope, "payload") orelse std.json.Value{ .null = {} }, state);
@@ -2627,4 +2620,90 @@ test "an open records what it provided even when another surface refused" {
         \\{"type":"capabilities.response","id":"k3","capability_revision":"v2","payload":{"features":
         \\{"action.tools.provide":{"level":"native"}},"tools":[{"name":"echo"}]}}]
     , &.{ "unavailable_capability", "duplicate_tool_name" });
+}
+
+test "a rejected submission is one refusal, not a verdict on the controls it carried" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","model_id":"m"}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1",
+        \\"payload":{"session_id":"s","accepted":false}}]
+    , &.{"illegal_run_transition"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","model_id":"m"}},
+        \\{"type":"error.response","id":"r1","in_reply_to":"q1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{"unavailable_capability"});
+}
+
+test "a catalog query is not a control this machine judges the refusal of" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.list":{"level":"native"}}}},
+        \\{"type":"action.tools.list.request","id":"t1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"error.response","id":"t2","in_reply_to":"t1","payload":{"error":{"code":"unsupported_feature",
+        \\"details":{"feature":"action.tools.list"}}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"action.tools.list.request","id":"t1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"error.response","id":"t2","in_reply_to":"t1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{"unavailable_capability"});
+}
+
+test "a settled run reports the settlement it broke, not the capability it also wanted" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+    ++ admitted ++
+        \\,
+        \\{"type":"run.started","id":"e1","run_id":"run","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":{}},
+        \\{"type":"action.call.requested","id":"e3","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1",
+        \\"payload":{"call_id":"c","name":"echo"}}]
+    , &.{"event_after_terminal"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+    ++ admitted ++
+        \\,
+        \\{"type":"run.started","id":"e1","run_id":"run","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"action.call.requested","id":"e3","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"call_id":"c","name":"echo"}},
+        \\{"type":"run.completed","id":"e2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":{}}]
+    , &.{"unavailable_capability"});
+}
+
+test "a defect on one surface speaks before a bound the other surface merely reached" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":1}},
+        \\"action.tools.provide":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"process"},{"id":"b","kind":"process"}],
+        \\"tools":[{"name":"echo"},{"name":"echo"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{"duplicate_tool_name"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":1}},
+        \\"action.tools.provide":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"process"},{"id":"b","kind":"process"}],
+        \\"tools":[{"name":"echo"}]}},
+        \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{"unavailable_capability"});
+}
+
+test "a bound the endpoint honoured is not raised against the open it admitted" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],
+        \\"limits":{"transports":["process"]}}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"a","kind":"http"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}}]
+    , &.{});
 }
