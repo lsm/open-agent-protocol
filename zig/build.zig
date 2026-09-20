@@ -179,6 +179,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const oap_endpoint_client_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/oap/endpoint_client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    oap_endpoint_client_mod.addImport("compat", compat_mod);
+    const oap_endpoint_client_test = b.addTest(.{ .root_module = oap_endpoint_client_mod });
+
+
     const provider_base_url_mod = b.createModule(.{
         .root_source_file = b.path("src/provider_base_url.zig"),
         .target = target,
@@ -1868,26 +1877,26 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const makai_cli = b.addExecutable(.{
-        .name = "makai",
+    const oapx_cli = b.addExecutable(.{
+        .name = "oapx",
         .root_module = makai_cli_module,
     });
     const makai_cli_test = b.addTest(.{ .root_module = makai_cli_module });
     const makai_cli_test_run = b.addRunArtifact(makai_cli_test);
     const auth_cli_test = b.addTest(.{ .root_module = auth_cli_mod });
     const auth_cli_test_run = b.addRunArtifact(auth_cli_test);
-    b.installArtifact(makai_cli);
+    b.installArtifact(oapx_cli);
 
-    const run_cmd = b.addRunArtifact(makai_cli);
+    const run_cmd = b.addRunArtifact(oapx_cli);
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run the Makai CLI");
+    const run_step = b.step("run", "Run the oapx CLI");
     run_step.dependOn(&run_cmd.step);
 
-    const run_tui_cmd = b.addRunArtifact(makai_cli);
+    const run_tui_cmd = b.addRunArtifact(oapx_cli);
     run_tui_cmd.addArg("--tui");
-    const run_tui_step = b.step("run-tui", "Run the Makai TUI");
+    const run_tui_step = b.step("run-tui", "Run the oapx TUI");
     run_tui_step.dependOn(&run_tui_cmd.step);
 
     const counting_allocator_mod = b.createModule(.{
@@ -2047,6 +2056,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
@@ -2108,6 +2118,7 @@ pub fn build(b: *std.Build) void {
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
