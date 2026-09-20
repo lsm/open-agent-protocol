@@ -484,7 +484,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		}
 	}
 
-	if e.Type == protocol.TypeSessionMessageSubmitResponse || e.Type == protocol.TypeErrorResponse {
+	if e.Type == protocol.TypeSessionMessageSubmitResponse || e.Type == protocol.TypeErrorResponse || e.Type == protocol.TypeSessionOpenResponse {
 		s.closeSubmitWindow(e.InReplyTo)
 	}
 

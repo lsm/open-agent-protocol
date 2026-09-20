@@ -7382,6 +7382,25 @@
       ]
     },
     {
+      "id": "queue-compound-open-window-closes",
+      "path": "semantic-invalid/queue-compound-open-window-closes.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "queue_limit_exceeded"
+      ],
+      "units": [
+        "core",
+        "queue",
+        "compound-open"
+      ],
+      "provenance": [
+        "decisions/0009-compound-open.md",
+        "decisions/0007-queue-delivery.md"
+      ]
+    },
+    {
       "id": "compound-open-admits-its-message",
       "path": "valid/compound-open-admits-its-message.json",
       "kind": "positive",
