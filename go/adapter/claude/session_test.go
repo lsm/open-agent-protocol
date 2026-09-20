@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1180,7 +1181,7 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 				t.Fatalf("the served catalog encodes tools as null: %s", encoded)
 			}
 
-			implementation, err := New(Config{Executable: "/bin/claude", WorkingDirectory: "/tmp"})
+			implementation, err := New(Config{Executable: "/bin/claude", WorkingDirectory: "/tmp", Tools: UnrestrictedTools()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1370,5 +1371,153 @@ func TestCallCarriesTheCatalogSource(t *testing.T) {
 		if tool.Name == "mcp__files__read_file" && tool.Source != mcpSourcePrefix+"files" {
 			t.Fatalf("the catalog lost the attribution the call gave up: %+v", tool)
 		}
+	}
+}
+
+func spawnArgv(t *testing.T, config Config) []string {
+	t.Helper()
+	var captured []string
+	config.Executable = "/bin/claude"
+	config.ProcessFactory = ProcessFactoryFunc(func(_ context.Context, c rpc.ProcessConfig) (ProcessBridge, error) {
+		captured = append([]string(nil), c.Args...)
+		return nil, errors.New("not spawning in this test")
+	})
+	implementation, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}})
+	return captured
+}
+
+func TestToolPostureMustBeStated(t *testing.T) {
+	_, err := New(Config{Executable: "/bin/claude"})
+	if !errors.Is(err, ErrToolPostureUnstated) {
+		t.Fatalf("constructing without a posture returned %v, want ErrToolPostureUnstated", err)
+	}
+
+	if _, err := New(Config{Executable: "/bin/claude", Tools: AllowTools()}); err == nil {
+		t.Fatal("an allowlist naming no tool was accepted")
+	}
+	if _, err := New(Config{Executable: "/bin/claude", Tools: AllowTools("Read", "")}); err == nil {
+		t.Fatal("an allowlist naming an empty tool was accepted")
+	}
+}
+
+func TestToolPostureIsNotRequiredOfACallerSuppliedFactory(t *testing.T) {
+	peer := newWirePeer(t)
+	if _, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return peer.client, nil })}); err != nil {
+		t.Fatalf("a caller-supplied factory spawns its own process and was refused: %v", err)
+	}
+}
+
+func TestToolPostureReachesTheSpawn(t *testing.T) {
+	restricted := spawnArgv(t, Config{Tools: AllowTools("Read", "Grep", "Glob")})
+	joined := strings.Join(restricted, " ")
+	if !strings.Contains(joined, "--allowedTools Read Grep Glob") {
+		t.Fatalf("the allowlist did not reach the spawn: %v", restricted)
+	}
+
+	unrestricted := spawnArgv(t, Config{Tools: UnrestrictedTools()})
+	if strings.Contains(strings.Join(unrestricted, " "), "--allowedTools") {
+		t.Fatalf("an unrestricted posture still restricted the spawn: %v", unrestricted)
+	}
+
+	trailing := spawnArgv(t, Config{Tools: AllowTools("Read"), Args: []string{"--append-system-prompt", "x"}})
+	allowAt := slices.Index(trailing, "--allowedTools")
+	argsAt := slices.Index(trailing, "--append-system-prompt")
+	if allowAt < 0 || argsAt < 0 || allowAt > argsAt {
+		t.Fatalf("Config.Args must stay last so a caller can still override: %v", trailing)
+	}
+}
+
+func submitWithChoice(session base.Session, choice string) (protocol.MessageSubmitResponse, base.EventStream, error) {
+	return session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		SessionID:  "session",
+		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+		Delivery:   protocol.DeliveryAuto,
+		ToolChoice: json.RawMessage(choice),
+	})
+}
+
+func TestToolSelectionDeniesAGateOutsideThePolicy(t *testing.T) {
+	_, session, peer := openWire(t)
+
+	type submitted struct {
+		admission protocol.MessageSubmitResponse
+		stream    base.EventStream
+		err       error
+	}
+	done := make(chan submitted, 1)
+	go func() {
+		admission, stream, err := submitWithChoice(session, `{"disallowed":["Bash"]}`)
+		done <- submitted{admission, stream, err}
+	}()
+	uuid := turnUUIDOf(t, peer.writtenUser())
+	peer.send(initFrame)
+	peer.send(streamEcho(uuid))
+	outcome := <-done
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+
+	peer.send(`{"type":"control_request","request_id":"ask-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"touch /tmp/x"},"tool_use_id":"toolu_01"}}`)
+	message, _ := peer.written()
+	if message.Kind != rpc.KindControlResponse {
+		t.Fatalf("a gate outside the policy was surfaced instead of denied: %+v", message)
+	}
+	var decision struct {
+		Behavior string `json:"behavior"`
+	}
+	if err := json.Unmarshal(message.Response.Response, &decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision.Behavior != "deny" {
+		t.Fatalf("decision = %s, want deny", message.Response.Response)
+	}
+
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestToolChoicePermitsReadsAnAllowlistAndADenylist(t *testing.T) {
+	if permits := toolChoicePermits(&protocol.ToolChoice{Disallowed: []string{"Bash"}}, "Bash"); permits {
+		t.Fatal("a disallowed tool was permitted")
+	}
+	if permits := toolChoicePermits(&protocol.ToolChoice{Disallowed: []string{"Bash"}}, "Read"); !permits {
+		t.Fatal("a tool outside the denylist was refused")
+	}
+	if permits := toolChoicePermits(&protocol.ToolChoice{Allowed: []string{"Read"}}, "Bash"); permits {
+		t.Fatal("an allowlist did not exclude a tool it omits")
+	}
+	if permits := toolChoicePermits(&protocol.ToolChoice{Allowed: []string{}}, "Read"); permits {
+		t.Fatal("an allowlist naming nothing permitted a tool; an empty allowlist is not an absent one")
+	}
+	if permits := toolChoicePermits(&protocol.ToolChoice{}, "Read"); !permits {
+		t.Fatal("an absent allowlist excluded a tool")
+	}
+}
+
+func TestToolSelectionRefusesAPolicyNamingAToolTheCatalogLacks(t *testing.T) {
+	_, session, peer := openWire(t)
+
+	uuid, outcome := admit(t, session, peer)
+	peer.send(resultFrame(uuid, "success", false, "completed", "one", 0))
+	adaptertest.Drain(t, outcome.stream, 5*time.Second)
+
+	_, _, err := submitWithChoice(session, `{"allowed":["Nonexistent"]}`)
+	if err == nil {
+		t.Fatal("a policy naming a tool the session catalog lacks was admitted")
+	}
+	var unsupported *base.UnsupportedControlError
+	if !errors.As(err, &unsupported) || unsupported.Feature != protocol.FeatureToolSelection {
+		t.Fatalf("refusal = %v, want an unsupported-control error naming %s", err, protocol.FeatureToolSelection)
+	}
+
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

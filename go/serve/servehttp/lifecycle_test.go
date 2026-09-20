@@ -204,7 +204,7 @@ func TestCloseSessionsSettlesActiveRuns(t *testing.T) {
 func TestDaemonOutputNeverCarriesEnvironmentValues(t *testing.T) {
 	const secret = "super-secret-value"
 	registry, err := serve.LoadRegistry(writeConfig(t,
-		`{"adapters": {"claude": {"type": "claude", "executable": "/bin/claude", "environment": ["OAP_SECRET"], "working_directory": "/tmp"}}}`),
+		`{"adapters": {"claude": {"type": "claude", "executable": "/bin/claude", "environment": ["OAP_SECRET"], "working_directory": "/tmp", "unrestricted_tools": true}}}`),
 		staticEnviron(map[string]string{"OAP_SECRET": secret}))
 	if err != nil {
 		t.Fatal(err)
