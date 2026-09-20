@@ -124,7 +124,11 @@ test("resolveMakaiBinary leaves no temp file when the download cannot be finaliz
 
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { "Content-Type": "application/octet-stream" });
-    setTimeout(() => res.end(payload), 200);
+    void (async () => {
+      await fs.mkdir(cachePath, { recursive: true });
+      await fs.writeFile(path.join(cachePath, "occupant"), "x");
+      res.end(payload);
+    })();
   });
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
@@ -132,13 +136,6 @@ test("resolveMakaiBinary leaves no temp file when the download cannot be finaliz
     server.close();
     throw new Error("test server did not expose a TCP address");
   }
-
-  const occupy = setTimeout(() => {
-    void (async () => {
-      await fs.mkdir(cachePath, { recursive: true });
-      await fs.writeFile(path.join(cachePath, "occupant"), "x");
-    })();
-  }, 50);
 
   const prevUrl = process.env[ENV_BINARY_URL];
   const prevChecksum = process.env[ENV_BINARY_SHA256];
@@ -150,7 +147,6 @@ test("resolveMakaiBinary leaves no temp file when the download cannot be finaliz
     await assert.rejects(resolveMakaiBinary({ cacheDir }));
     await assert.rejects(fs.stat(`${cachePath}.tmp`), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
   } finally {
-    clearTimeout(occupy);
     if (prevUrl === undefined) delete process.env[ENV_BINARY_URL];
     else process.env[ENV_BINARY_URL] = prevUrl;
     if (prevChecksum === undefined) delete process.env[ENV_BINARY_SHA256];
