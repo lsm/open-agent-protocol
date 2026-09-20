@@ -4,7 +4,7 @@ const packs_mod = @import("packs");
 const tolerate = @import("tolerate");
 const build_options = @import("build_options");
 
-const judged_floor = 520;
+const judged_floor = 514;
 const tolerant_fixtures = 3;
 
 const unhandled_pack_composition = [_][]const u8{

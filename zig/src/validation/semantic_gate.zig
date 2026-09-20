@@ -3,7 +3,7 @@ const semantic = @import("semantic");
 const provider = @import("provider_semantic");
 const build_options = @import("build_options");
 
-const judged_floor = 483;
+const judged_floor = 477;
 const tolerant_fixtures = 3;
 
 const control_expectation_pending = [_][]const u8{

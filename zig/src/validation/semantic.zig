@@ -200,7 +200,7 @@ pub const Machine = struct {
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
-    modes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     current_capability: []const u8 = "",
     capabilities_stale: bool = false,
     limits: ?Limits = null,
@@ -217,7 +217,7 @@ pub const Machine = struct {
         self.recoveries.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
-        self.modes.deinit(self.allocator);
+        self.scopes.deinit(self.allocator);
         self.windows.deinit(self.allocator);
         for (self.sessions.values()) |holder| holder.order.deinit(self.allocator);
         self.sessions.deinit(self.allocator);
@@ -321,7 +321,7 @@ pub const Machine = struct {
         self.current_capability = field(envelope, "capability_revision");
         self.capabilities_stale = false;
         self.features.clearRetainingCapacity();
-        self.modes.clearRetainingCapacity();
+        self.scopes.clearRetainingCapacity();
         try self.collectFeatures(payload);
         self.limits = readLimits(member(payload, "limits"));
         try self.checkQueueLimits(index);
@@ -353,7 +353,7 @@ pub const Machine = struct {
             const level = memberString(entry.value_ptr.*, "level");
             if (level.len == 0) continue;
             try self.features.put(self.allocator, entry.key_ptr.*, level);
-            try self.modes.put(self.allocator, entry.key_ptr.*, memberString(entry.value_ptr.*, "mode"));
+            try self.scopes.put(self.allocator, entry.key_ptr.*, memberString(entry.value_ptr.*, "scope"));
         }
     }
 
@@ -458,7 +458,7 @@ pub const Machine = struct {
             .max_active = if (self.limits) |held| held.max_active else null,
             .max_queued = if (self.limits) |held| held.max_queued else null,
             .mutation = member(payload, "model_id") != null and
-                std.mem.eql(u8, self.modes.get(feature_model_selection) orelse "", "session_mutation"),
+                std.mem.eql(u8, self.scopes.get(feature_model_selection) orelse "", "session"),
         };
         window.reached_strict = exceeds(window, counts, 0);
         window.reached_loose = exceeds(window, counts, open.items.len);
@@ -1216,7 +1216,7 @@ test "an outstanding sibling moves the bound a refusal is judged against" {
 test "the layer that wins a feature wins its mode too, including the mode it omits" {
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"layers":{
-        \\"alpha":{"features":{"run.model_selection":{"level":"native","mode":"session_mutation"}}},
+        \\"alpha":{"features":{"run.model_selection":{"level":"native","scope":"session"}}},
         \\"beta":{"features":{"session.message.delivery.queue":{"level":"native"}}}},
         \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
@@ -1231,7 +1231,7 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"layers":{
         \\"alpha":{"features":{"run.model_selection":{"level":"native"}}},
-        \\"beta":{"features":{"run.model_selection":{"level":"native","mode":"session_mutation"},
+        \\"beta":{"features":{"run.model_selection":{"level":"native","scope":"session"},
         \\"session.message.delivery.queue":{"level":"native"}}}},
         \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
