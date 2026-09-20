@@ -224,21 +224,10 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool_use/tool_result projection; started synthesized; tool_progress observed-only"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the CLI executes tools internally"},
 
-		protocol.FeatureToolsList:     {Level: protocol.SupportDegraded, Reason: "system/init republishes the tool and MCP server lists per turn; there is none before the first"},
-		protocol.FeatureToolSelection: {Level: protocol.SupportEmulated, Reason: "enforced by denying can_use_tool for a tool the run's policy excludes; the CLI keeps the tool in its catalog and prompt, and a tool it never asks permission for is never filtered"},
-		"action.permissions":          {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
-		"user_input":                  {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
+		protocol.FeatureToolsList: {Level: protocol.SupportDegraded, Reason: "system/init republishes the tool and MCP server lists per turn; there is none before the first"},
+		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
+		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
 	}
-}
-
-func advertisedControls() []string {
-	var keys []string
-	for _, key := range []string{protocol.FeatureInstructions, protocol.FeatureModelSelection, protocol.FeatureStructuredOutput, protocol.FeatureToolSelection} {
-		if support, ok := advertisedFeatures()[key]; ok && support.Level != protocol.SupportUnavailable {
-			keys = append(keys, key)
-		}
-	}
-	return keys
 }
 
 func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {

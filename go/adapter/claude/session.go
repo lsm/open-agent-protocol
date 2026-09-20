@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -65,7 +64,6 @@ type Session struct {
 
 type runState struct {
 	id       protocol.RunID
-	choice   *protocol.ToolChoice
 	status   protocol.RunStatus
 	next     uint64
 	started  bool
@@ -151,13 +149,6 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.promptMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunActive
 	}
-	choice, choiceErr := admittedToolChoice(req, s.catalogNamesLocked(), s.catalogKnown)
-	if choiceErr != nil {
-		s.mu.Unlock()
-		s.reduceMu.Unlock()
-		s.promptMu.Unlock()
-		return protocol.MessageSubmitResponse{}, nil, choiceErr
-	}
 	submissionUUID := s.ids.NewID("turn")
 	if err := native.ValidateTurnUUID(submissionUUID); err != nil {
 		s.mu.Unlock()
@@ -172,7 +163,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.promptMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	run := &runState{status: protocol.RunQueued, next: 1, submissionUUID: submissionUUID, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), model: s.state.CurrentModelID, choice: choice, startResult: make(chan error, 1), children: map[string]bool{}}
+	run := &runState{status: protocol.RunQueued, next: 1, submissionUUID: submissionUUID, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), model: s.state.CurrentModelID, startResult: make(chan error, 1), children: map[string]bool{}}
 	stream := make(chan base.Result, streamCapacity+1)
 	run.subscribers = []chan base.Result{stream}
 	s.pending = run
@@ -219,7 +210,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
 
-	if err := base.RefuseUnadvertisedControls(req, advertisedControls()...); err != nil {
+	if err := base.RefuseUnadvertisedControls(req); err != nil {
 		return "", err
 	}
 	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) {
@@ -730,10 +721,6 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 		s.foreignActivity("can_use_tool outside an owned run")
 		return
 	}
-	if run.choice != nil && !toolChoicePermits(run.choice, ask.ToolName) {
-		_ = control.Respond(context.Background(), native.PermissionDeny{Behavior: "deny", Message: "the run's tool_choice does not permit " + ask.ToolName})
-		return
-	}
 	id := protocol.InteractionID(s.ids.NewID("interaction"))
 	title := ask.Title
 	if title == "" {
@@ -764,38 +751,6 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 	}
 	gate.requested = requested.ID
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunWaitingForInput, PendingUserInputID: id, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
-}
-
-func (s *Session) catalogNamesLocked() []string {
-	names := make([]string, 0, len(s.catalog))
-	for _, tool := range s.catalog {
-		names = append(names, tool.Name)
-	}
-	return names
-}
-
-func admittedToolChoice(req protocol.MessageSubmitRequest, catalog []string, known bool) (*protocol.ToolChoice, error) {
-	policy, err := req.ToolChoicePolicy()
-	if err != nil {
-		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: base.ControlUnsatisfiable, Detail: err.Error()}
-	}
-	if policy == nil {
-		return nil, nil
-	}
-	if defect := policy.Unsatisfiable(catalog, known); defect != nil {
-		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: base.ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason}
-	}
-	return policy, nil
-}
-
-func toolChoicePermits(choice *protocol.ToolChoice, name string) bool {
-	if slices.Contains(choice.Disallowed, name) {
-		return false
-	}
-	if choice.Allowed != nil && !slices.Contains(choice.Allowed, name) {
-		return false
-	}
-	return true
 }
 
 func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolution) error {
