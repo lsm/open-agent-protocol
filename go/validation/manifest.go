@@ -182,7 +182,7 @@ func diagnosticCodes() map[string]bool {
 		CodeCancelNotSettled, CodeUndeclaredReplayGap, CodeUnknownParticipant,
 		CodeSessionStateMismatch,
 		CodeUnappliedControl, CodeUnsatisfiableControl, CodeDegradedWithoutOptin,
-		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
+		CodeDuplicateToolName, CodeUndisclosedSelectionScope,
 		CodeQueueOrderViolation, CodeQueueLimitExceeded,
 		CodePrematureSessionMutation, CodeUndisclosedQueueLimit,
 		CodeUnmatchedToolSource, CodeDuplicateToolSource, CodeCatalogMismatch,

@@ -2009,40 +2009,6 @@
       ]
     },
     {
-      "id": "controls-tool-choice-contradictory",
-      "path": "semantic-invalid/controls-tool-choice-contradictory.json",
-      "kind": "semantic-invalid",
-      "valid": false,
-      "phase": "semantic",
-      "codes": [
-        "unsatisfiable_control"
-      ],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
-      "id": "controls-tool-choice-contradictory-rejected",
-      "path": "valid/controls-tool-choice-contradictory-rejected.json",
-      "kind": "positive",
-      "valid": true,
-      "phase": "",
-      "codes": [],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
       "id": "controls-unsatisfiable-wrong-refusal",
       "path": "semantic-invalid/controls-unsatisfiable-wrong-refusal.json",
       "kind": "semantic-invalid",
@@ -2119,8 +2085,8 @@
       ]
     },
     {
-      "id": "controls-tool-choice-undisclosed-mode",
-      "path": "valid/controls-tool-choice-undisclosed-mode.json",
+      "id": "controls-tool-choice-neither-filter-refused",
+      "path": "valid/controls-tool-choice-neither-filter-refused.json",
       "kind": "positive",
       "valid": true,
       "phase": "",
@@ -2137,42 +2103,6 @@
     {
       "id": "controls-tool-choice-ignored",
       "path": "semantic-invalid/controls-tool-choice-ignored.json",
-      "kind": "semantic-invalid",
-      "valid": false,
-      "phase": "semantic",
-      "codes": [
-        "unapplied_control"
-      ],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
-      "id": "controls-required-without-call",
-      "path": "semantic-invalid/controls-required-without-call.json",
-      "kind": "semantic-invalid",
-      "valid": false,
-      "phase": "semantic",
-      "codes": [
-        "unapplied_control"
-      ],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
-      "id": "controls-named-without-call",
-      "path": "semantic-invalid/controls-named-without-call.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
@@ -2207,26 +2137,8 @@
       ]
     },
     {
-      "id": "controls-undisclosed-selection-modes",
-      "path": "semantic-invalid/controls-undisclosed-selection-modes.json",
-      "kind": "semantic-invalid",
-      "valid": false,
-      "phase": "semantic",
-      "codes": [
-        "undisclosed_selection_modes"
-      ],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
-      "id": "controls-tool-selection-session-mutation-mode",
-      "path": "valid/controls-tool-selection-session-mutation-mode.json",
+      "id": "controls-tool-selection-session-scope",
+      "path": "valid/controls-tool-selection-session-scope.json",
       "kind": "positive",
       "valid": true,
       "phase": "",
@@ -2241,13 +2153,13 @@
       ]
     },
     {
-      "id": "controls-tool-selection-unknown-application-mode",
-      "path": "semantic-invalid/controls-tool-selection-unknown-application-mode.json",
+      "id": "controls-tool-selection-unknown-scope",
+      "path": "semantic-invalid/controls-tool-selection-unknown-scope.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
       "codes": [
-        "undisclosed_selection_modes"
+        "undisclosed_selection_scope"
       ],
       "units": [
         "core",
@@ -2435,24 +2347,6 @@
       ]
     },
     {
-      "id": "controls-tool-choice-empty-allowlist-required",
-      "path": "semantic-invalid/controls-tool-choice-empty-allowlist-required.json",
-      "kind": "semantic-invalid",
-      "valid": false,
-      "phase": "semantic",
-      "codes": [
-        "unsatisfiable_control"
-      ],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
       "id": "controls-tool-choice-empty-allowlist-call",
       "path": "semantic-invalid/controls-tool-choice-empty-allowlist-call.json",
       "kind": "semantic-invalid",
@@ -2471,13 +2365,13 @@
       ]
     },
     {
-      "id": "controls-model-mode-missing",
-      "path": "semantic-invalid/controls-model-mode-missing.json",
+      "id": "controls-model-scope-missing",
+      "path": "semantic-invalid/controls-model-scope-missing.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
       "codes": [
-        "undisclosed_selection_modes"
+        "undisclosed_selection_scope"
       ],
       "units": [
         "core",
@@ -2489,46 +2383,14 @@
       ]
     },
     {
-      "id": "controls-model-mode-unknown",
-      "path": "semantic-invalid/controls-model-mode-unknown.json",
+      "id": "controls-model-scope-unknown",
+      "path": "semantic-invalid/controls-model-scope-unknown.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
       "codes": [
-        "undisclosed_selection_modes"
+        "undisclosed_selection_scope"
       ],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
-      "id": "controls-tool-choice-unenforced-modes",
-      "path": "semantic-invalid/controls-tool-choice-unenforced-modes.json",
-      "kind": "semantic-invalid",
-      "valid": false,
-      "phase": "semantic",
-      "codes": [
-        "undisclosed_selection_modes"
-      ],
-      "units": [
-        "core",
-        "run-controls"
-      ],
-      "provenance": [
-        "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
-      ]
-    },
-    {
-      "id": "controls-tool-choice-extra-mode",
-      "path": "valid/controls-tool-choice-extra-mode.json",
-      "kind": "positive",
-      "valid": true,
       "units": [
         "core",
         "run-controls"

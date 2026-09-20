@@ -814,10 +814,10 @@ func requestedSubmission(req *requestState) protocol.MessageSubmitRequest {
 
 func (s *state) applyModelControl(st *sessionTrack, controls admittedControls) {
 	switch controls.mode {
-	case protocol.ModePerRun:
+	case protocol.ScopeRun:
 
 		st.expectedDefault, st.guardDefault = st.currentModel, st.currentKnown
-	case protocol.ModeSessionMutation:
+	case protocol.ScopeSession:
 
 		st.currentModel, st.currentKnown = controls.model, true
 		st.mutated = true
@@ -888,7 +888,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 			r.status = protocol.RunRunning
 			s.promote(i, e, r)
 		}
-		if r.controls.modelPresent && r.controls.mode == protocol.ModeSessionMutation && e.Sequence != nil {
+		if r.controls.modelPresent && r.controls.mode == protocol.ScopeSession && e.Sequence != nil {
 
 			s.observeModel(r.session, r.controls.model, r.id, *e.Sequence)
 		}

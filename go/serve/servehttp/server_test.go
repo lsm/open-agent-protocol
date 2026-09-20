@@ -727,7 +727,7 @@ func TestSubmitRejections(t *testing.T) {
 	requireErrorResponse(t, status, http.StatusNotFound, errorEnvelope, "unknown_session")
 
 	rejected := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-refused", protocol.MessageSubmitRequest{
-		SessionID: "reject", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`{"mode":"named","name":"absent_tool"}`),
+		SessionID: "reject", Delivery: protocol.DeliveryAuto, ToolChoice: json.RawMessage(`{"allowed":["absent_tool"]}`),
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 	}, "reject", "", "")
 	status, errorEnvelope = postEnvelope(t, server, "/sessions/reject/submit", rejected)

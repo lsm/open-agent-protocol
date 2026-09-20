@@ -33,7 +33,7 @@ func refusalEnvelope(code string, details map[string]any) string {
 
 func TestRefusalPrecedencePrefersTheCapabilityRung(t *testing.T) {
 	v := MustNew()
-	features := `{"run.model_selection":{"level":"degraded","mode":"per_run","reason":"attribution is unconfirmed"},"run.instructions":{"level":"unavailable","reason":"no per-run surface"}}`
+	features := `{"run.model_selection":{"level":"degraded","scope":"run","reason":"attribution is unconfirmed"},"run.instructions":{"level":"unavailable","reason":"no per-run surface"}}`
 	controls := `,"model_id":"m1","instructions":"be terse"`
 
 	conforming := controlsTrace(features, controls, refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.instructions", "reason": "unadvertised"}))
@@ -63,8 +63,8 @@ func TestRefusalPrecedenceOrdersPeersByKey(t *testing.T) {
 
 func TestUnsatisfiableToolChoiceNamesTheFirstOffendingEntry(t *testing.T) {
 	v := MustNew()
-	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
-	controls := `,"tool_choice":{"mode":"auto","allowed":["absent_a","absent_b"]}`
+	features := `{"run.tool_selection":{"level":"emulated"}}`
+	controls := `,"tool_choice":{"allowed":["absent_a","absent_b"]}`
 	trace := func(tool string) []byte {
 		return controlsTrace(features, controls, refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.tool_selection", "reason": "unsatisfiable", "tool": tool}))
 	}
@@ -82,18 +82,6 @@ func TestControlGateLeavesUnrelatedRefusalsAlone(t *testing.T) {
 	trace := controlsTrace(features, `,"instructions":"be terse"`, refusalEnvelope("run_active", map[string]any{"run_id": "r0"}))
 	if got := v.ValidateBytes(trace, "unrelated-refusal"); !got.Valid() {
 		t.Fatalf("a state refusal was judged as a control refusal: %+v", got.Diagnostics)
-	}
-}
-
-func TestUndisclosedToolChoiceModeMayBeRefused(t *testing.T) {
-	v := MustNew()
-	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
-	refused := refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.tool_selection", "reason": "unsatisfiable"})
-	if got := v.ValidateBytes(controlsTrace(features, `,"tool_choice":{"mode":"required"}`, refused), "undisclosed-mode"); !got.Valid() {
-		t.Fatalf("refusing an undisclosed mode was diagnosed: %+v", got.Diagnostics)
-	}
-	if got := v.ValidateBytes(controlsTrace(features, `,"tool_choice":{"mode":"auto"}`, refused), "disclosed-mode"); !got.HasCode(CodeUnsatisfiableControl) {
-		t.Fatalf("want %s when a disclosed mode is refused: %+v", CodeUnsatisfiableControl, got.Diagnostics)
 	}
 }
 
@@ -166,7 +154,7 @@ func TestRunControlDiagnosticsAreRegistered(t *testing.T) {
 	known := diagnosticCodes()
 	for _, code := range []string{
 		CodeUnappliedControl, CodeUnsatisfiableControl, CodeDegradedWithoutOptin,
-		CodeDuplicateToolName, CodeUndisclosedSelectionModes,
+		CodeDuplicateToolName, CodeUndisclosedSelectionScope,
 	} {
 		if !known[code] {
 			t.Fatalf("diagnostic %q is not registered", code)
@@ -242,10 +230,8 @@ func TestFixedResultComparisonKeepsIntegerPrecision(t *testing.T) {
 func TestPolicyPermitsOnlyCataloguedTools(t *testing.T) {
 	catalog := []string{"scripted_tool", "other_tool"}
 	for name, policy := range map[string]protocol.ToolChoice{
-		"auto":                 {Mode: protocol.ToolChoiceAuto},
-		"required":             {Mode: protocol.ToolChoiceRequired},
-		"auto with allowed":    {Mode: protocol.ToolChoiceAuto, Allowed: []string{"scripted_tool"}},
-		"auto with disallowed": {Mode: protocol.ToolChoiceAuto, Disallowed: []string{"other_tool"}},
+		"allowed":    {Allowed: []string{"scripted_tool"}},
+		"disallowed": {Disallowed: []string{"other_tool"}},
 	} {
 		if policy.Permits("unlisted_tool", catalog, true) {
 			t.Fatalf("%s: a tool the catalog does not carry was permitted", name)
@@ -264,10 +250,9 @@ func TestPolicyPermitsOnlyCataloguedTools(t *testing.T) {
 	}
 
 	for name, policy := range map[string]protocol.ToolChoice{
-		"disallowed":      {Mode: protocol.ToolChoiceAuto, Disallowed: []string{"other_tool"}},
-		"outside allowed": {Mode: protocol.ToolChoiceAuto, Allowed: []string{"scripted_tool"}},
-		"named elsewhere": {Mode: protocol.ToolChoiceNamed, Name: "scripted_tool"},
-		"none":            {Mode: protocol.ToolChoiceNone},
+		"disallowed":      {Disallowed: []string{"other_tool"}},
+		"outside allowed": {Allowed: []string{"scripted_tool"}},
+		"empty allowlist": {Allowed: []string{}},
 	} {
 		if policy.Permits("other_tool", catalog, true) {
 			t.Fatalf("%s: the policy permitted a tool it excludes", name)
@@ -287,7 +272,7 @@ func modelAdmission(admitted, started string) string {
 
 func TestStartedRepeatsTheAdmittedModel(t *testing.T) {
 	v := MustNew()
-	features := `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`
+	features := `{"run.model_selection":{"level":"emulated","scope":"run"}}`
 	omitted := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "")), "started-omits-model")
 	if !omitted.HasCode(CodeUnappliedControl) {
 		t.Fatalf("want %s when run.started omits the admitted model: %+v", CodeUnappliedControl, omitted.Diagnostics)
@@ -306,7 +291,7 @@ func TestStartedRepeatsTheAdmittedModel(t *testing.T) {
 func TestRefusalMustNameTheFeatureItAnswersFor(t *testing.T) {
 	v := MustNew()
 	features := `{"run.tool_selection":{"level":"emulated","modes":["auto","none","required","named"]}}`
-	control := `,"tool_choice":{"mode":"named","name":"absent_tool"}`
+	control := `,"tool_choice":{"allowed":["absent_tool"]}`
 	for name, details := range map[string]map[string]any{
 		"feature omitted":      {"reason": "unsatisfiable", "tool": "absent_tool"},
 		"wrong feature":        {"feature": "run.structured_output", "reason": "unsatisfiable", "tool": "absent_tool"},
@@ -325,14 +310,13 @@ func TestRefusalMustNameTheFeatureItAnswersFor(t *testing.T) {
 
 func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 	for name, encoded := range map[string]string{
-		"empty name off named mode": `{"mode":"auto","name":""}`,
-		"null name off named mode":  `{"mode":"auto","name":null}`,
-		"null name on named mode":   `{"mode":"named","name":null}`,
-		"empty name on named mode":  `{"mode":"named","name":""}`,
-		"both filters empty":        `{"mode":"auto","allowed":[],"disallowed":[]}`,
-		"both filters present":      `{"mode":"auto","allowed":["scripted_tool"],"disallowed":[]}`,
-		"null allowed":              `{"mode":"auto","allowed":null}`,
-		"null disallowed":           `{"mode":"auto","disallowed":null}`,
+		"mode is no longer a member": `{"mode":"auto","allowed":["scripted_tool"]}`,
+		"name is no longer a member": `{"name":"scripted_tool","allowed":["scripted_tool"]}`,
+		"neither filter":             `{}`,
+		"both filters empty":         `{"allowed":[],"disallowed":[]}`,
+		"both filters present":       `{"allowed":["scripted_tool"],"disallowed":[]}`,
+		"null allowed":               `{"allowed":null}`,
+		"null disallowed":            `{"disallowed":null}`,
 	} {
 		policy, err := (protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(encoded)}).ToolChoicePolicy()
 		if err == nil {
@@ -341,10 +325,9 @@ func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 	}
 
 	for name, encoded := range map[string]string{
-		"empty allowed":    `{"mode":"auto","allowed":[]}`,
-		"empty disallowed": `{"mode":"auto","disallowed":[]}`,
-		"named with name":  `{"mode":"named","name":"scripted_tool"}`,
-		"bare auto":        `{"mode":"auto"}`,
+		"empty allowed":     `{"allowed":[]}`,
+		"empty disallowed":  `{"disallowed":[]}`,
+		"populated allowed": `{"allowed":["scripted_tool"]}`,
 	} {
 		if _, err := (protocol.MessageSubmitRequest{ToolChoice: json.RawMessage(encoded)}).ToolChoicePolicy(); err != nil {
 			t.Fatalf("%s: %s was refused as untyped: %v", name, encoded, err)
@@ -352,8 +335,8 @@ func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 	}
 
 	v := MustNew()
-	features := `{"run.tool_selection":{"level":"emulated","modes":["auto"]}}`
-	admitted := v.ValidateBytes(controlsTrace(features, `,"tool_choice":{"mode":"auto","allowed":[],"disallowed":[]}`, controlsAdmission), "empty-filters")
+	features := `{"run.tool_selection":{"level":"emulated"}}`
+	admitted := v.ValidateBytes(controlsTrace(features, `,"tool_choice":{"allowed":[],"disallowed":[]}`, controlsAdmission), "empty-filters")
 	if !admitted.HasCode(CodeUnsatisfiableControl) {
 		t.Fatalf("want %s when both filters are present: %+v", CodeUnsatisfiableControl, admitted.Diagnostics)
 	}
@@ -361,7 +344,7 @@ func TestToolChoiceShapeIsJudgedByMemberPresence(t *testing.T) {
 
 func TestEmptyAllowlistPermitsNothing(t *testing.T) {
 	catalog := []string{"scripted_tool", "other_tool"}
-	empty := protocol.ToolChoice{Mode: protocol.ToolChoiceAuto, Allowed: []string{}}
+	empty := protocol.ToolChoice{Allowed: []string{}}
 	if filtered := empty.Filter(catalog); len(filtered) != 0 {
 		t.Fatalf("an empty allowlist filtered to %v, want nothing", filtered)
 	}
@@ -371,7 +354,7 @@ func TestEmptyAllowlistPermitsNothing(t *testing.T) {
 		}
 	}
 
-	absent := protocol.ToolChoice{Mode: protocol.ToolChoiceAuto}
+	absent := protocol.ToolChoice{}
 	if filtered := absent.Filter(catalog); len(filtered) != len(catalog) {
 		t.Fatalf("an absent allowlist filtered to %v, want the catalog", filtered)
 	}
@@ -379,78 +362,40 @@ func TestEmptyAllowlistPermitsNothing(t *testing.T) {
 		t.Fatalf("an absent allowlist refused a catalogued tool")
 	}
 
-	required := protocol.ToolChoice{Mode: protocol.ToolChoiceRequired, Allowed: []string{}}
-	defect := required.Unsatisfiable(catalog, true)
-	if defect == nil || defect.Pointer != "/payload/tool_choice/mode" {
-		t.Fatalf("required over an empty allowlist: defect %+v, want the empty filtered set", defect)
-	}
-
-	named := protocol.ToolChoice{Mode: protocol.ToolChoiceNamed, Name: "scripted_tool", Allowed: []string{}}
-	if defect := named.Unsatisfiable(catalog, true); defect == nil {
-		t.Fatal("named over an empty allowlist was satisfiable")
-	}
-
 	if defect := empty.Unsatisfiable(catalog, true); defect != nil {
-		t.Fatalf("auto over an empty allowlist was refused: %+v", defect)
+		t.Fatalf("an empty allowlist was refused: %+v", defect)
 	}
 }
 
-func TestModelSelectionMustDiscloseItsApplicationMode(t *testing.T) {
+func TestModelSelectionMustDiscloseHowLongASelectionLives(t *testing.T) {
 	v := MustNew()
 	for name, support := range map[string]string{
 		"missing":       `{"level":"emulated"}`,
-		"empty":         `{"level":"emulated","mode":""}`,
-		"unknown":       `{"level":"emulated","mode":"whenever"}`,
-		"not yet ruled": `{"level":"emulated","mode":"restart"}`,
-		"degraded":      `{"level":"degraded","mode":"","reason":"attribution is unconfirmed"}`,
+		"empty":         `{"level":"emulated","scope":""}`,
+		"unknown":       `{"level":"emulated","scope":"whenever"}`,
+		"not yet ruled": `{"level":"emulated","scope":"restart"}`,
+		"degraded":      `{"level":"degraded","scope":"","reason":"attribution is unconfirmed"}`,
 	} {
 		features := `{"run.model_selection":` + support + `}`
-		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "mode-"+name)
-		if !result.HasCode(CodeUndisclosedSelectionModes) {
-			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionModes, result.Diagnostics)
+		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "scope-"+name)
+		if !result.HasCode(CodeUndisclosedSelectionScope) {
+			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionScope, result.Diagnostics)
 		}
 	}
 
 	for name, features := range map[string]string{
-		"per_run":          `{"run.model_selection":{"level":"emulated","mode":"per_run"}}`,
-		"session_mutation": `{"run.model_selection":{"level":"native","mode":"session_mutation"}}`,
+		"run":     `{"run.model_selection":{"level":"emulated","scope":"run"}}`,
+		"session": `{"run.model_selection":{"level":"native","scope":"session"}}`,
 	} {
-		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "mode-"+name)
+		result := v.ValidateBytes(controlsTrace(features, `,"model_id":"m1"`, modelAdmission("m1", "m1")), "scope-"+name)
 		if !result.Valid() {
-			t.Fatalf("%s: a disclosed mode was rejected: %+v", name, result.Diagnostics)
+			t.Fatalf("%s: a disclosed scope was rejected: %+v", name, result.Diagnostics)
 		}
 	}
 	unadvertised := `{"run.model_selection":{"level":"unavailable","reason":"no per-run surface"}}`
 	refusal := refusalEnvelope("unsupported_feature", map[string]any{"feature": "run.model_selection", "reason": "unadvertised"})
 	if result := v.ValidateBytes(controlsTrace(unadvertised, `,"model_id":"m1"`, refusal), "mode-unavailable"); !result.Valid() {
 		t.Fatalf("an unavailable key was held to a mode: %+v", result.Diagnostics)
-	}
-}
-
-func TestToolSelectionMustEnforceAModeCallersCanSend(t *testing.T) {
-	v := MustNew()
-	policy := `,"tool_choice":{"mode":"auto"}`
-	for name, modes := range map[string]string{
-		"none at all":     `[]`,
-		"nothing known":   `["whenever"]`,
-		"several unknown": `["whenever","someday"]`,
-	} {
-		features := `{"run.tool_selection":{"level":"emulated","modes":` + modes + `}}`
-		result := v.ValidateBytes(controlsTrace(features, policy, controlsAdmission), "modes-"+name)
-		if !result.HasCode(CodeUndisclosedSelectionModes) {
-			t.Fatalf("%s: want %s: %+v", name, CodeUndisclosedSelectionModes, result.Diagnostics)
-		}
-	}
-	for name, modes := range map[string]string{
-		"one known":            `["auto"]`,
-		"known and unknown":    `["auto","later_mode"]`,
-		"every mode this unit": `["auto","none","required","named"]`,
-	} {
-		features := `{"run.tool_selection":{"level":"emulated","modes":` + modes + `}}`
-		result := v.ValidateBytes(controlsTrace(features, policy, controlsAdmission), "modes-"+name)
-		if !result.Valid() {
-			t.Fatalf("%s: a disclosed mode was rejected: %+v", name, result.Diagnostics)
-		}
 	}
 }
 

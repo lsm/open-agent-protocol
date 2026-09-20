@@ -14,7 +14,7 @@ pub const DELIVERY_RESOLUTION_IDLE = "session_idle";
 pub const AdvertisedFeature = struct {
     key: []const u8,
     level: oap_types.SupportLevel,
-    mode: ?[]const u8 = null,
+    scope: ?[]const u8 = null,
     reason: ?[]const u8 = null,
 };
 
@@ -33,7 +33,7 @@ pub const advertised_features = [_]AdvertisedFeature{
         .reason = "cancellation is session scoped teardown; the session closes with the run",
     },
     .{ .key = "content.reasoning", .level = .native },
-    .{ .key = "run.model_selection", .level = .native, .mode = "per_run" },
+    .{ .key = "run.model_selection", .level = .native, .scope = "run" },
 };
 
 pub const advertised_degradation = [_]oap_types.Degradation{
@@ -1448,10 +1448,10 @@ pub const Server = struct {
         for (advertised_features, 0..) |source, index| {
             const key = try self.allocator.dupe(u8, source.key);
             errdefer self.allocator.free(key);
-            const mode = if (source.mode) |value| try self.allocator.dupe(u8, value) else null;
-            errdefer if (mode) |value| self.allocator.free(value);
+            const scope = if (source.scope) |value| try self.allocator.dupe(u8, value) else null;
+            errdefer if (scope) |value| self.allocator.free(value);
             const reason = if (source.reason) |value| try self.allocator.dupe(u8, value) else null;
-            features[index] = .{ .key = key, .level = source.level, .mode = mode, .reason = reason };
+            features[index] = .{ .key = key, .level = source.level, .scope = scope, .reason = reason };
             filled = index + 1;
         }
 
@@ -1713,7 +1713,7 @@ test "capabilities answers a revisioned descriptor with degradation records" {
     const capabilities = reply.payload.capabilities_response;
     try std.testing.expectEqual(oap_types.SupportLevel.native, capabilities.feature("session.message.delivery.auto").?.level);
     try std.testing.expectEqual(oap_types.SupportLevel.degraded, capabilities.feature("run.cancel").?.level);
-    try std.testing.expectEqualStrings("per_run", capabilities.feature("run.model_selection").?.mode.?);
+    try std.testing.expectEqualStrings("run", capabilities.feature("run.model_selection").?.scope.?);
     try std.testing.expect(capabilities.feature("action.tools.list") == null);
     try std.testing.expect(capabilities.feature("session.message.delivery.queue") == null);
     try std.testing.expectEqual(@as(usize, advertised_degradation.len), capabilities.degradation.len);
@@ -2201,7 +2201,7 @@ test "run control refusal follows the declared control order" {
             .delivery = .auto,
             .model_id = "",
             .instructions = "be terse",
-            .tool_choice_json = "{\"mode\":\"auto\"}",
+            .tool_choice_json = "{\"disallowed\":[]}",
             .output_schema_json = "{}",
         } },
     });

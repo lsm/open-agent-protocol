@@ -127,7 +127,7 @@ binding is declared in the descriptor as `{kind: "stdio", serialization:
 `+run-controls` is claimed in its refusal half plus one executed control. Three
 of the four controls are unadvertised and refused before admission with
 `unsupported_feature` / `details.reason: "unadvertised"`; `run.model_selection`
-is advertised `native` with `mode: "per_run"`, because makai genuinely applies a
+is advertised `native` with `scope: "run"`, because makai genuinely applies a
 per-message `model_ref` to the run it was requested for and leaves the session
 default alone.
 

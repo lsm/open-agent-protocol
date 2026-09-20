@@ -159,7 +159,7 @@ func (s *state) deliveryExpectations(i, line int, e protocol.Envelope, p protoco
 	window := &queueWindow{
 		request: e.ID, session: p.SessionID, delivery: p.Delivery,
 		busyAtRequest: active > 0, busyEver: active > 0, startedEver: started > 0,
-		mutation: p.ModelID != nil && s.featureDetail(protocol.FeatureModelSelection).Mode == protocol.ModeSessionMutation,
+		mutation: p.ModelID != nil && s.featureDetail(protocol.FeatureModelSelection).Scope == protocol.ScopeSession,
 	}
 	if s.limits != nil {
 		window.maxActive, window.maxQueued = s.limits.MaxActiveRunsPerSession, s.limits.MaxQueuedRunsPerSession
@@ -566,7 +566,7 @@ func (s *state) judgeCaptureModel(claim *deferredStateClaim, r *runState) {
 }
 
 func mutationModel(r *runState) (string, bool) {
-	if r == nil || !r.controls.present || !r.controls.modelPresent || r.controls.mode != protocol.ModeSessionMutation {
+	if r == nil || !r.controls.present || !r.controls.modelPresent || r.controls.mode != protocol.ScopeSession {
 		return "", false
 	}
 	return r.controls.model, true

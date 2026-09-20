@@ -232,9 +232,9 @@ export interface Participant {
 export interface FeatureSupport {
   level: SupportLevel;
   reason?: string;
-  /** The one application mode a key has one of: `run.model_selection` discloses `per_run` or `session_mutation`, and `run.tool_selection` may disclose the same pair — omitting it there means the policy applies to the run that carried it. */
-  mode?: string;
-  /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it, and `action.tool_sources.attach` lists where it attaches — `session_open` wherever attachment is usable at all, plus `remote` when a source the operator never configured is accepted. */
+  /** How long an admitted control lives: `run.model_selection` discloses `run` or `session`, and `run.tool_selection` may disclose the same pair — omitting it there means the policy applies to the run that carried it. */
+  scope?: string;
+  /** The modes a key can enforce more than one of: `action.tool_sources.attach` lists where it attaches — `session_open` wherever attachment is usable at all, plus `remote` when a source the operator never configured is accepted. */
   modes?: string[];
   /** Endpoint-specific limits a caller can check: `run.structured_output`'s `fixed_result` is the exact object every `run.completed` under an accepted `output_schema` carries — an object, because only an object is a structured result. */
   constraints?: { fixed_result?: Record<string, unknown> } & Record<string, unknown>;
@@ -562,16 +562,13 @@ export interface SessionCapture {
  * `tool_choice` permissive, so this shape is enforced by the validator's
  * run-controls rules and by adapters rather than by the schema.
  *
- * Precedence is fixed: `allowed` or `disallowed` filters the advertised
- * catalog first, then `mode` applies to the filtered set. `name` is present
- * when and only when `mode` is `named`, and `allowed`/`disallowed` are
- * mutually exclusive.
+ * The policy is a filter over the advertised catalog and nothing else.
+ * Exactly one of `allowed` or `disallowed` is present, and an empty `allowed`
+ * admits no tool at all.
  */
 export type ToolChoicePolicy =
-  | { mode: 'auto' | 'none' | 'required'; name?: undefined; allowed?: string[]; disallowed?: undefined }
-  | { mode: 'auto' | 'none' | 'required'; name?: undefined; allowed?: undefined; disallowed?: string[] }
-  | { mode: 'named'; name: string; allowed?: string[]; disallowed?: undefined }
-  | { mode: 'named'; name: string; allowed?: undefined; disallowed?: string[] };
+  | { allowed: string[]; disallowed?: undefined }
+  | { allowed?: undefined; disallowed: string[] };
 
 export interface MessageSubmitRequest {
   session_id: string;

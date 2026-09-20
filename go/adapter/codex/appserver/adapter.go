@@ -131,7 +131,7 @@ func (implementation *Adapter) Probe(context.Context) (adapter.Descriptor, error
 		"session.message.submit":        {Level: protocol.SupportNative},
 		"session.message.delivery.auto": {Level: protocol.SupportNative},
 
-		protocol.FeatureModelSelection:   {Level: protocol.SupportNative, Mode: protocol.ModePerRun, Reason: "turn/start carries the model for one turn"},
+		protocol.FeatureModelSelection:   {Level: protocol.SupportNative, Scope: protocol.ScopeRun, Reason: "turn/start carries the model for one turn"},
 		protocol.FeatureInstructions:     {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn instruction override"},
 		protocol.FeatureToolSelection:    {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn tool policy"},
 		protocol.FeatureStructuredOutput: {Level: protocol.SupportUnavailable, Reason: "this pin exposes no per-turn output schema"},

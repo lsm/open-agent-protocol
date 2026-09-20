@@ -17,11 +17,9 @@
         "name": "Run-controls fixture endpoint"
       },
       "features": {
-        "run.tool_selection": {
+        "run.model_selection": {
           "level": "emulated",
-          "modes": [
-            "whenever"
-          ]
+          "scope": "whenever"
         },
         "session.message.delivery.auto": {
           "level": "native"
@@ -32,16 +30,7 @@
         "session.state": {
           "level": "native"
         }
-      },
-      "tools": [
-        {
-          "execution_owner": "agent",
-          "input_schema": {
-            "type": "object"
-          },
-          "name": "scripted_tool"
-        }
-      ]
+      }
     },
     "profile": "open-agent-protocol.agent-control-core",
     "protocol": "open-agent-protocol",
@@ -59,10 +48,8 @@
           "role": "user"
         }
       ],
-      "session_id": "s1",
-      "tool_choice": {
-        "mode": "auto"
-      }
+      "model_id": "m1",
+      "session_id": "s1"
     },
     "profile": "open-agent-protocol.agent-control-core",
     "protocol": "open-agent-protocol",
@@ -78,6 +65,7 @@
       "accepted": true,
       "admission": "started",
       "effective_delivery": "start",
+      "model_id": "m1",
       "requested_delivery": "auto",
       "run_id": "r1",
       "session_id": "s1",
@@ -94,6 +82,7 @@
   {
     "id": "ev-start",
     "payload": {
+      "model_id": "m1",
       "run_id": "r1",
       "session_id": "s1",
       "status": "running"

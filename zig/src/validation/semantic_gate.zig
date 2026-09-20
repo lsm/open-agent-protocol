@@ -4,7 +4,7 @@ const provider = @import("provider_semantic");
 const packs_mod = @import("packs");
 const build_options = @import("build_options");
 
-const judged_floor = 483;
+const judged_floor = 477;
 const tolerant_fixtures = 3;
 
 const nothing_outstanding = [_][]const u8{};

@@ -49,9 +49,7 @@
         }
       ],
       "session_id": "s1",
-      "tool_choice": {
-        "mode": "auto"
-      }
+      "tool_choice": {}
     },
     "profile": "open-agent-protocol.agent-control-core",
     "protocol": "open-agent-protocol",

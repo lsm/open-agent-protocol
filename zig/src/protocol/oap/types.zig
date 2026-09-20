@@ -241,12 +241,12 @@ pub const Participant = struct {
 pub const Feature = struct {
     key: []const u8,
     level: SupportLevel,
-    mode: ?[]const u8 = null,
+    scope: ?[]const u8 = null,
     reason: ?[]const u8 = null,
 
     pub fn deinit(self: *Feature, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
-        if (self.mode) |value| allocator.free(value);
+        if (self.scope) |value| allocator.free(value);
         if (self.reason) |value| allocator.free(value);
     }
 };

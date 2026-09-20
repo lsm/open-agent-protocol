@@ -254,8 +254,6 @@ const Pending = struct {
 };
 
 const ToolChoice = struct {
-    mode: []const u8 = "",
-    name: []const u8 = "",
     allowed: []const []const u8 = &.{},
     disallowed: []const []const u8 = &.{},
     has_allowed: bool = false,
@@ -350,7 +348,7 @@ pub const Machine = struct {
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
-    modes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     supports: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     catalog: std.ArrayList([]const u8) = .empty,
     declared_sources: std.StringArrayHashMapUnmanaged(void) = .empty,
@@ -375,7 +373,7 @@ pub const Machine = struct {
         self.recoveries.deinit(self.allocator);
         self.requests.deinit(self.allocator);
         self.features.deinit(self.allocator);
-        self.modes.deinit(self.allocator);
+        self.scopes.deinit(self.allocator);
         self.supports.deinit(self.allocator);
         self.catalog.deinit(self.allocator);
         self.declared_sources.deinit(self.allocator);
@@ -673,7 +671,7 @@ pub const Machine = struct {
         self.current_capability = field(envelope, "capability_revision");
         self.capabilities_stale = false;
         self.features.clearRetainingCapacity();
-        self.modes.clearRetainingCapacity();
+        self.scopes.clearRetainingCapacity();
         self.supports.clearRetainingCapacity();
         self.catalog.clearRetainingCapacity();
         try self.collectFeatures(payload);
@@ -714,7 +712,7 @@ pub const Machine = struct {
             const level = memberString(entry.value_ptr.*, "level");
             if (level.len == 0) continue;
             try self.features.put(self.allocator, entry.key_ptr.*, level);
-            try self.modes.put(self.allocator, entry.key_ptr.*, memberString(entry.value_ptr.*, "mode"));
+            try self.scopes.put(self.allocator, entry.key_ptr.*, memberString(entry.value_ptr.*, "scope"));
             try self.supports.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
     }
@@ -1373,7 +1371,7 @@ pub const Machine = struct {
         }
         if (!any) return;
         pending.controls.present = true;
-        pending.controls.mode = self.modes.get(feature_model_selection) orelse "";
+        pending.controls.mode = self.scopes.get(feature_model_selection) orelse "";
 
         for (carried) |control| {
             if (member(payload, control.member) == null) continue;
@@ -1509,7 +1507,7 @@ pub const Machine = struct {
                 const detail: []const u8 = if (defect.tool.len == 0) "" else "tool";
                 return unsatisfiableAs(key, defect.pointer, detail, defect.tool);
             }
-            pending.satisfies = self.disclosedMode(key, policy.mode);
+            pending.satisfies = true;
             return null;
         }
         if (std.mem.eql(u8, key, feature_structured_output)) {
@@ -1548,15 +1546,6 @@ pub const Machine = struct {
             if (policy.has_allowed and !listedIn(policy.allowed, name)) continue;
             if (listedIn(policy.disallowed, name)) continue;
             try filtered.append(self.allocator, name);
-        }
-        if (std.mem.eql(u8, policy.mode, "required") and known and filtered.items.len == 0) {
-            return .{ .pointer = "/payload/tool_choice/mode" };
-        }
-        if (std.mem.eql(u8, policy.mode, "named")) {
-            const named = ChoiceDefect{ .pointer = "/payload/tool_choice/name", .tool = policy.name };
-            if (listedIn(policy.disallowed, policy.name)) return named;
-            if (policy.has_allowed and !listedIn(policy.allowed, policy.name)) return named;
-            if (known and !listedIn(filtered.items, policy.name)) return named;
         }
         return null;
     }
@@ -1651,12 +1640,12 @@ pub const Machine = struct {
 
     fn applyModelControl(self: *Machine, holder: *Session, controls: Controls) void {
         _ = self;
-        if (std.mem.eql(u8, controls.mode, "per_run")) {
+        if (std.mem.eql(u8, controls.mode, "run")) {
             holder.expected_default = holder.current_model;
             holder.guard_default = holder.current_known;
             return;
         }
-        if (std.mem.eql(u8, controls.mode, "session_mutation")) {
+        if (std.mem.eql(u8, controls.mode, "session")) {
             holder.current_model = controls.model;
             holder.current_known = true;
         }
@@ -1701,14 +1690,6 @@ pub const Machine = struct {
                 try self.add(code_unapplied_control, index);
             } else if (controls.fixed_result) |fixed| {
                 if (!valueEql(fixed, result.?)) try self.add(code_unapplied_control, index);
-            }
-        }
-        if (controls.choice) |choice| {
-            if (std.mem.eql(u8, choice.mode, "required") and controls.calls.count() == 0) {
-                try self.add(code_unapplied_control, index);
-            }
-            if (std.mem.eql(u8, choice.mode, "named") and controls.calls.get(choice.name) == null) {
-                try self.add(code_unapplied_control, index);
             }
         }
     }
@@ -1777,7 +1758,7 @@ pub const Machine = struct {
             .max_active = if (self.limits) |held| held.max_active else null,
             .max_queued = if (self.limits) |held| held.max_queued else null,
             .mutation = member(payload, "model_id") != null and
-                std.mem.eql(u8, self.modes.get(feature_model_selection) orelse "", "session_mutation"),
+                std.mem.eql(u8, self.scopes.get(feature_model_selection) orelse "", "session"),
         };
         window.reached_strict = exceeds(window, counts, 0);
         window.reached_loose = exceeds(window, counts, open.items.len);
@@ -2339,11 +2320,9 @@ fn exemptFromRevision(declared: []const u8) bool {
 }
 
 fn permits(choice: ToolChoice, name: []const u8, catalog: []const []const u8, known: bool) bool {
-    if (std.mem.eql(u8, choice.mode, "none")) return false;
     if (known and !listedIn(catalog, name)) return false;
     if (choice.has_allowed and !listedIn(choice.allowed, name)) return false;
     if (listedIn(choice.disallowed, name)) return false;
-    if (std.mem.eql(u8, choice.mode, "named") and !std.mem.eql(u8, name, choice.name)) return false;
     return true;
 }
 
@@ -2439,29 +2418,13 @@ fn toolChoicePolicy(allocator: std.mem.Allocator, raw: std.json.Value) !ToolChoi
     var it = raw.object.iterator();
     while (it.next()) |entry| {
         const key = entry.key_ptr.*;
-        if (!std.mem.eql(u8, key, "mode") and !std.mem.eql(u8, key, "name") and
-            !std.mem.eql(u8, key, "allowed") and !std.mem.eql(u8, key, "disallowed"))
-        {
+        if (!std.mem.eql(u8, key, "allowed") and !std.mem.eql(u8, key, "disallowed")) {
             return ToolChoiceDefect.NotThePolicy;
         }
     }
-    if (raw.object.get("mode")) |mode| {
-        if (mode != .string) return ToolChoiceDefect.NotThePolicy;
-        policy.mode = mode.string;
-    }
-    if (!listedIn(&.{ "auto", "none", "required", "named" }, policy.mode)) {
-        return ToolChoiceDefect.NotThePolicy;
-    }
-    const named = raw.object.get("name");
-    if ((named != null) != std.mem.eql(u8, policy.mode, "named")) {
-        return ToolChoiceDefect.NotThePolicy;
-    }
-    if (named) |value| {
-        if (value != .string or value.string.len == 0) return ToolChoiceDefect.NotThePolicy;
-        policy.name = value.string;
-    }
     const allowed = raw.object.get("allowed");
     const disallowed = raw.object.get("disallowed");
+    if (allowed == null and disallowed == null) return ToolChoiceDefect.NotThePolicy;
     if (allowed != null and disallowed != null) return ToolChoiceDefect.NotThePolicy;
     if (allowed) |value| {
         policy.allowed = try stringList(allocator, value);
@@ -3097,7 +3060,7 @@ test "a bound the endpoint honoured is not raised against the open it admitted" 
 test "the layer that wins a feature wins its mode too, including the mode it omits" {
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"layers":{
-        \\"alpha":{"features":{"run.model_selection":{"level":"native","mode":"session_mutation"}}},
+        \\"alpha":{"features":{"run.model_selection":{"level":"native","scope":"session"}}},
         \\"beta":{"features":{"session.message.delivery.queue":{"level":"native"}}}},
         \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
@@ -3112,7 +3075,7 @@ test "the layer that wins a feature wins its mode too, including the mode it omi
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"layers":{
         \\"alpha":{"features":{"run.model_selection":{"level":"native"}}},
-        \\"beta":{"features":{"run.model_selection":{"level":"native","mode":"session_mutation"},
+        \\"beta":{"features":{"run.model_selection":{"level":"native","scope":"session"},
         \\"session.message.delivery.queue":{"level":"native"}}}},
         \\"limits":{"max_active_runs_per_session":5,"max_queued_runs_per_session":2}}},
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s","delivery":"auto"}},
@@ -3219,7 +3182,7 @@ test "a refusal naming the tool the filter could not resolve discharges the expe
     ;
     const submitted =
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
-        \\"delivery":"auto","tool_choice":{"mode":"auto","allowed":["ghost"]}}}
+        \\"delivery":"auto","tool_choice":{"allowed":["ghost"]}}}
     ;
     try expectCodes(
         \\[

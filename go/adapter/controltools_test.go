@@ -473,7 +473,7 @@ func TestEveryListedToolIsSelectableAndReachable(t *testing.T) {
 		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
 			SessionID:  "control-tools",
 			Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-			ToolChoice: json.RawMessage(`{"mode":"named","name":"` + name + `"}`),
+			ToolChoice: json.RawMessage(`{"allowed":["` + name + `"]}`),
 		})
 		if err != nil {
 			t.Fatalf("tool_choice naming the listed tool %q was refused: %v", name, err)

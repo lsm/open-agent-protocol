@@ -44,7 +44,7 @@ const (
 type FeatureSupport struct {
 	Level       SupportLevel               `json:"level"`
 	Reason      string                     `json:"reason,omitempty"`
-	Mode        string                     `json:"mode,omitempty"`
+	Scope       string                     `json:"scope,omitempty"`
 	Modes       []string                   `json:"modes,omitempty"`
 	Constraints map[string]json.RawMessage `json:"constraints,omitempty"`
 	Limits      map[string]json.RawMessage `json:"limits,omitempty"`
@@ -159,9 +159,9 @@ func (f FeatureSupport) DisclosesMode(mode string) bool {
 }
 
 const (
-	ModePerRun          = "per_run"
-	ModeSessionMutation = "session_mutation"
-	ModeRestart         = "restart"
+	ScopeRun     = "run"
+	ScopeSession = "session"
+	ScopeRestart = "restart"
 )
 
 const ConstraintFixedResult = "fixed_result"
@@ -479,18 +479,9 @@ const (
 )
 
 type ToolChoice struct {
-	Mode       string   `json:"mode,omitempty"`
-	Name       string   `json:"name,omitempty"`
 	Allowed    []string `json:"allowed,omitempty"`
 	Disallowed []string `json:"disallowed,omitempty"`
 }
-
-const (
-	ToolChoiceAuto     = "auto"
-	ToolChoiceNone     = "none"
-	ToolChoiceRequired = "required"
-	ToolChoiceNamed    = "named"
-)
 
 type MessageSubmitRequest struct {
 	SessionID             SessionID                  `json:"session_id"`
@@ -540,24 +531,14 @@ func (r MessageSubmitRequest) ToolChoicePolicy() (*ToolChoice, error) {
 	}
 
 	var members struct {
-		Name       json.RawMessage `json:"name"`
 		Allowed    json.RawMessage `json:"allowed"`
 		Disallowed json.RawMessage `json:"disallowed"`
 	}
 	if err := json.Unmarshal(r.ToolChoice, &members); err != nil {
 		return nil, fmt.Errorf("tool_choice is not the typed policy: %w", err)
 	}
-	switch policy.Mode {
-	case ToolChoiceAuto, ToolChoiceNone, ToolChoiceRequired, ToolChoiceNamed:
-	default:
-		return nil, fmt.Errorf("tool_choice mode %q is not one of auto, none, required, named", policy.Mode)
-	}
-	if (members.Name != nil) != (policy.Mode == ToolChoiceNamed) {
-		return nil, fmt.Errorf("tool_choice name is present when and only when mode is %q", ToolChoiceNamed)
-	}
-
-	if members.Name != nil && policy.Name == "" {
-		return nil, fmt.Errorf("tool_choice name must be a non-empty tool name")
+	if members.Allowed == nil && members.Disallowed == nil {
+		return nil, fmt.Errorf("tool_choice carries neither allowed nor disallowed")
 	}
 	if members.Allowed != nil && members.Disallowed != nil {
 		return nil, fmt.Errorf("tool_choice allowed and disallowed are mutually exclusive")
@@ -592,31 +573,6 @@ func (c ToolChoice) Unsatisfiable(catalog []string, known bool) *ToolChoiceDefec
 			return &ToolChoiceDefect{Pointer: fmt.Sprintf("/payload/tool_choice/disallowed/%d", index), Tool: name, Reason: "disallowed names a tool outside the catalog"}
 		}
 	}
-	filtered := c.Filter(catalog)
-	if c.Mode == ToolChoiceRequired && known && len(filtered) == 0 {
-		return &ToolChoiceDefect{Pointer: "/payload/tool_choice/mode", Reason: "required cannot be honoured against an empty filtered set"}
-	}
-	if c.Mode == ToolChoiceNamed {
-		for _, name := range c.Disallowed {
-			if name == c.Name {
-				return &ToolChoiceDefect{Pointer: "/payload/tool_choice/name", Tool: c.Name, Reason: "named tool is excluded by its own disallowed list"}
-			}
-		}
-		if c.Allowed != nil {
-			permitted := false
-			for _, name := range c.Allowed {
-				if name == c.Name {
-					permitted = true
-				}
-			}
-			if !permitted {
-				return &ToolChoiceDefect{Pointer: "/payload/tool_choice/name", Tool: c.Name, Reason: "named tool is outside its own allowed list"}
-			}
-		}
-		if known && !slices.Contains(filtered, c.Name) {
-			return &ToolChoiceDefect{Pointer: "/payload/tool_choice/name", Tool: c.Name, Reason: "named tool is not in the filtered catalog"}
-		}
-	}
 	return nil
 }
 
@@ -636,9 +592,6 @@ func (c ToolChoice) Filter(catalog []string) []string {
 }
 
 func (c ToolChoice) Permits(name string, catalog []string, known bool) bool {
-	if c.Mode == ToolChoiceNone {
-		return false
-	}
 	if known && !slices.Contains(catalog, name) {
 		return false
 	}
@@ -646,9 +599,6 @@ func (c ToolChoice) Permits(name string, catalog []string, known bool) bool {
 		return false
 	}
 	if slices.Contains(c.Disallowed, name) {
-		return false
-	}
-	if c.Mode == ToolChoiceNamed && name != c.Name {
 		return false
 	}
 	return true

@@ -87,7 +87,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v10"
+const CapabilityRevision = "reference-memory-v11"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -153,15 +153,14 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"action.permissions":              {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		"user_input":                      {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 
-		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Mode: protocol.ModePerRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
+		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Scope: protocol.ScopeRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
 
 		protocol.FeatureModelsList:   {Level: protocol.SupportNative, Reason: "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},
 		protocol.FeatureInstructions: {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
 		protocol.FeatureToolSelection: {
 			Level:  protocol.SupportEmulated,
-			Mode:   protocol.ModePerRun,
-			Modes:  []string{protocol.ToolChoiceAuto, protocol.ToolChoiceNone, protocol.ToolChoiceRequired, protocol.ToolChoiceNamed},
-			Reason: "the policy selects whether the scripted tool is called and is not retained past the run",
+			Scope:  protocol.ScopeRun,
+			Reason: "the policy filters the scripted tool and is not retained past the run",
 		},
 		protocol.FeatureStructuredOutput: {
 			Level:       protocol.SupportEmulated,

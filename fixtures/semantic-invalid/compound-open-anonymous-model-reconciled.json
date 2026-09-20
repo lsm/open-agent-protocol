@@ -24,7 +24,7 @@
         },
         "run.model_selection": {
           "level": "emulated",
-          "mode": "per_run"
+          "scope": "run"
         },
         "session.message.delivery.auto": {
           "level": "native"

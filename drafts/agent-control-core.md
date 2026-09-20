@@ -431,7 +431,7 @@ a control.
 [Decision 0005](../decisions/0005-run-controls.md) graduates that discipline
 for all four controls and the execution of `model_id`, which is applied to the
 run it was requested for and reported on the admission and on `run.started`;
-under `run.model_selection`'s `per_run` mode it leaves `current_model_id`
+under `run.model_selection`'s `run` scope it leaves `current_model_id`
 unchanged. `instructions`, `tool_choice`, and `output_schema` have frozen
 shapes and reference-adapter execution, with native evidence pending: each
 becomes executable by an amendment to that decision when an adapter advertises
