@@ -143,7 +143,7 @@ func (s *state) closeSubmitWindow(request protocol.EnvelopeID) {
 	if pending == nil || pending.queue == nil {
 		return
 	}
-	session := pending.queue.session
+	session := pending.session
 	open := s.openSubmits[session]
 	for i, candidate := range open {
 		if candidate == pending {
