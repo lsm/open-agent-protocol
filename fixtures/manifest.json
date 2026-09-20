@@ -1915,6 +1915,24 @@
       ]
     },
     {
+      "id": "controls-structured-keyword-value-mistyped",
+      "path": "semantic-invalid/controls-structured-keyword-value-mistyped.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "decisions/0005-run-controls.md",
+        "decisions/0019-one-binary.md"
+      ]
+    },
+    {
       "id": "controls-structured-uncompilable-schema",
       "path": "semantic-invalid/controls-structured-uncompilable-schema.json",
       "kind": "semantic-invalid",
