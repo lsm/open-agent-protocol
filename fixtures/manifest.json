@@ -2236,7 +2236,7 @@
         "run-controls"
       ],
       "provenance": [
-        "drafts/staged-units-graduation.md",
+        "decisions/0021-a-tool-policy-says-whether-it-outlives-its-run.md",
         "decisions/0005-run-controls.md"
       ]
     },
@@ -2254,7 +2254,7 @@
         "run-controls"
       ],
       "provenance": [
-        "drafts/staged-units-graduation.md",
+        "decisions/0021-a-tool-policy-says-whether-it-outlives-its-run.md",
         "decisions/0005-run-controls.md"
       ]
     },
