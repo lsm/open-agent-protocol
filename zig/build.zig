@@ -115,6 +115,15 @@ pub fn build(b: *std.Build) void {
     const tolerate_test = b.addTest(.{ .root_module = tolerate_mod });
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
 
+    const claude_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const claude_rpc_test = b.addTest(.{ .root_module = claude_rpc_mod });
+    const test_unit_claude_step = b.step("test-unit-claude", "Run Claude adapter unit tests");
+    test_unit_claude_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
+
     const schema_bytes_test = b.addTest(.{ .root_module = schema_bytes_mod });
     const test_unit_validation_step = b.step("test-unit-validation", "Run validation unit tests");
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
@@ -1960,6 +1969,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
