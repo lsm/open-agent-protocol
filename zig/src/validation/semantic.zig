@@ -268,8 +268,14 @@ pub const Machine = struct {
             self.limits = null;
             return;
         }
+        if (std.mem.eql(u8, declared, "session.open.request")) {
+            if (member(payload, "message")) |message| {
+                try self.openSubmitWindow(index, envelope, message, memberString(payload, "session_id"));
+            }
+            return;
+        }
         if (std.mem.eql(u8, declared, "session.message.submit.request")) {
-            try self.openSubmitWindow(index, envelope, payload);
+            try self.openSubmitWindow(index, envelope, payload, "");
             return;
         }
         if (std.mem.eql(u8, declared, "error.response")) {
@@ -433,9 +439,9 @@ pub const Machine = struct {
         return found.responded;
     }
 
-    fn openSubmitWindow(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+    fn openSubmitWindow(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, scope: []const u8) !void {
         _ = index;
-        const session = memberString(payload, "session_id");
+        const session = if (scope.len != 0) scope else memberString(payload, "session_id");
         const counts = self.queueCounts(session);
         var open = std.ArrayList(*Window).empty;
         defer open.deinit(self.allocator);
@@ -648,6 +654,12 @@ pub const Machine = struct {
         try synthesized.put(allocator, "status", .{ .string = status });
         try synthesized.put(allocator, "admission", .{ .string = admissionFor(status) });
         try synthesized.put(allocator, "effective_delivery", .{ .string = effectiveFor(status) });
+        if (self.requests.get(field(envelope, "in_reply_to"))) |asked| {
+            if (asked.message) |message| {
+                const delivery = memberString(message, "delivery");
+                if (delivery.len != 0) try synthesized.put(allocator, "requested_delivery", .{ .string = delivery });
+            }
+        }
         try self.admit(index, envelope, .{ .object = synthesized });
     }
 
@@ -751,7 +763,6 @@ pub const Machine = struct {
         }
         const state = run.?;
         state.last_index = index;
-        try self.checkQueueOrder(index, envelope, state, declared);
 
         const sequence = unsigned(envelope, "sequence");
         if (self.recoveries.get(state.session)) |recovery| {
@@ -783,6 +794,7 @@ pub const Machine = struct {
             }
             return;
         }
+        try self.checkQueueOrder(index, envelope, state, declared);
 
         if (std.mem.eql(u8, declared, "run.started")) {
             if (state.started) {
@@ -791,7 +803,6 @@ pub const Machine = struct {
                 state.started = true;
                 state.status = "running";
                 if (self.sessions.get(state.session)) |holder| holder.active = state.id;
-                try self.refreshQueueWindows(state.session);
             }
             return;
         }
