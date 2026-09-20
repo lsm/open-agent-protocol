@@ -1877,26 +1877,26 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const oapx_cli = b.addExecutable(.{
-        .name = "oapx",
+    const makai_cli = b.addExecutable(.{
+        .name = "makai",
         .root_module = makai_cli_module,
     });
     const makai_cli_test = b.addTest(.{ .root_module = makai_cli_module });
     const makai_cli_test_run = b.addRunArtifact(makai_cli_test);
     const auth_cli_test = b.addTest(.{ .root_module = auth_cli_mod });
     const auth_cli_test_run = b.addRunArtifact(auth_cli_test);
-    b.installArtifact(oapx_cli);
+    b.installArtifact(makai_cli);
 
-    const run_cmd = b.addRunArtifact(oapx_cli);
+    const run_cmd = b.addRunArtifact(makai_cli);
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run the oapx CLI");
+    const run_step = b.step("run", "Run the Makai CLI");
     run_step.dependOn(&run_cmd.step);
 
-    const run_tui_cmd = b.addRunArtifact(oapx_cli);
+    const run_tui_cmd = b.addRunArtifact(makai_cli);
     run_tui_cmd.addArg("--tui");
-    const run_tui_step = b.step("run-tui", "Run the oapx TUI");
+    const run_tui_step = b.step("run-tui", "Run the Makai TUI");
     run_tui_step.dependOn(&run_tui_cmd.step);
 
     const counting_allocator_mod = b.createModule(.{
