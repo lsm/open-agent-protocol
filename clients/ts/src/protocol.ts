@@ -232,7 +232,7 @@ export interface Participant {
 export interface FeatureSupport {
   level: SupportLevel;
   reason?: string;
-  /** The one application mode a key has one of: `run.model_selection` discloses `per_run` or `session_mutation`. */
+  /** The one application mode a key has one of: `run.model_selection` discloses `per_run` or `session_mutation`, and `run.tool_selection` may disclose the same pair — omitting it there means the policy applies to the run that carried it. */
   mode?: string;
   /** The modes a key can enforce more than one of: `run.tool_selection` lists the `tool_choice` modes the endpoint honours, so a refusal is conforming only for a mode outside it, and `action.tool_sources.attach` lists where it attaches — `session_open` wherever attachment is usable at all, plus `remote` when a source the operator never configured is accepted. */
   modes?: string[];

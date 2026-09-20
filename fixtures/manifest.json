@@ -2225,6 +2225,40 @@
       ]
     },
     {
+      "id": "controls-tool-selection-session-mutation-mode",
+      "path": "valid/controls-tool-selection-session-mutation-mode.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
+      "id": "controls-tool-selection-unknown-application-mode",
+      "path": "semantic-invalid/controls-tool-selection-unknown-application-mode.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "undisclosed_selection_modes"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md"
+      ]
+    },
+    {
       "id": "controls-degraded-without-optin",
       "path": "valid/controls-degraded-without-optin.json",
       "kind": "positive",

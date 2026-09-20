@@ -1,0 +1,55 @@
+[
+ {
+  "id": "caps-req",
+  "payload": {},
+  "profile": "open-agent-protocol.agent-control-core",
+  "protocol": "open-agent-protocol",
+  "type": "capabilities.request",
+  "version": "0.1"
+ },
+ {
+  "capability_revision": "tool-selection-mode-v1",
+  "id": "caps-resp",
+  "in_reply_to": "caps-req",
+  "payload": {
+   "endpoint": {
+    "id": "fixture.endpoint",
+    "name": "Run-controls fixture endpoint"
+   },
+   "features": {
+    "run.tool_selection": {
+     "level": "emulated",
+     "mode": "per_turn",
+     "modes": [
+      "auto",
+      "none",
+      "required",
+      "named"
+     ]
+    },
+    "session.message.delivery.auto": {
+     "level": "native"
+    },
+    "session.message.submit": {
+     "level": "native"
+    },
+    "session.state": {
+     "level": "native"
+    }
+   },
+   "tools": [
+    {
+     "execution_owner": "agent",
+     "input_schema": {
+      "type": "object"
+     },
+     "name": "scripted_tool"
+    }
+   ]
+  },
+  "profile": "open-agent-protocol.agent-control-core",
+  "protocol": "open-agent-protocol",
+  "type": "capabilities.response",
+  "version": "0.1"
+ }
+]
