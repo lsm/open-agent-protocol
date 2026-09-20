@@ -1438,7 +1438,12 @@ pub const Machine = struct {
         defer registry.deinit();
         var validator = jsonschema.Validator.init(self.allocator, &registry);
         defer validator.deinit();
-        const failure = validator.validateSchema(schema, "output-schema", result) catch return true;
+        try validator.overrides.put(self.allocator, output_schema_document, schema);
+        const failure = validator.validateSchema(schema, output_schema_document, result) catch |raised| switch (raised) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.UnsupportedKeyword, error.UnsupportedPattern => return true,
+            error.UnresolvableRef, error.InvalidSchema => return false,
+        };
         return failure == null;
     }
 
@@ -1998,6 +2003,7 @@ pub const Machine = struct {
 };
 
 pub const feature_delivery_queue = "session.message.delivery.queue";
+const output_schema_document = "output-schema";
 const feature_model_selection = "run.model_selection";
 const feature_models_list = "models.list";
 const feature_tools_list = "action.tools.list";
@@ -3138,4 +3144,36 @@ test "the bound that speaks is the one earliest in the payload, counting indices
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"unsupported_feature",
         \\"details":{"feature":"action.tool_sources.attach","reason":"unsatisfiable","source":"s10"}}}}]
     , &.{"unavailable_capability"});
+}
+
+test "a completion is judged against the schema its own definitions describe" {
+    const declared =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}}
+    ;
+    const submitted =
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","required":["n"],
+        \\"properties":{"n":{"$ref":"#/$defs/count"}},"$defs":{"count":{"type":"integer"}}}}}
+    ;
+    const started =
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}}
+    ;
+    try expectCodes(
+        \\[
+    ++ declared ++ "," ++ submitted ++ "," ++ started ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[
+    ++ declared ++ "," ++ submitted ++ "," ++ started ++
+        \\,
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":"one"}}}]
+    , &.{"unapplied_control"});
 }

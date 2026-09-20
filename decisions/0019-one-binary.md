@@ -172,6 +172,20 @@ would take to carry it. The list is expected to shrink.
   vendoring an engine, which is its own decision. The sibling bounds
   `max_tools` and `schema_dialect` are ported.
 
+- **Exact decimal comparison of a `fixed_result`.** Go decodes with
+  `UseNumber` and compares through `big.Rat`, so it holds the literal. Zig's
+  `std.json` with default options parses `9007199254740993.0` to the nearest
+  double before any comparison runs, and the literal is gone. Past 2^53 the two
+  spellings of one value are then indistinguishable, and either choice diverges
+  on one of them: comparing exactly reports a difference Go does not see when
+  the result is written in float form, and comparing as doubles misses a
+  difference Go does see when it is written as an integer. The port compares
+  exactly, so it errs toward raising `unapplied_control` rather than missing
+  one. Carrying it properly means parsing traces with `parse_numbers = false`
+  so every number stays a `number_string`, which the schema validator already
+  accepts, and auditing the handful of places that switch on `.integer`. No
+  fixture writes a number past 2^53 in either form.
+
 ### Every stage is gated on data that already exists
 
 The port does not need the Go tests. It needs the Go *fixtures*, which are
