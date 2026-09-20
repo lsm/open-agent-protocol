@@ -626,6 +626,7 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "session.open.response")) {
             try self.openResponse(index, envelope, payload);
+            try self.closeSubmitWindow(field(envelope, "in_reply_to"));
             return;
         }
         if (std.mem.eql(u8, declared, "session.state.response") or
