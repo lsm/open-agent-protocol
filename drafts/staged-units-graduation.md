@@ -1233,10 +1233,10 @@ No new envelope types. Changes to
   Where a retained choice is reconciled at the first list (the gap rule
   below), the false refusal is diagnosed there instead, on the same
   terms. Fixtures `controls-tool-choice-listed-false-refusal`
-  (`unsatisfiable_control`; a policy naming a listed tool under a
-  disclosed mode, refused) and `controls-tool-choice-undisclosed-mode`
-  (positive; the same refusal for a mode the endpoint never disclosed). For a run
-  admitted under `per_run` (the mode `runState` retains from admission,
+  (`unsatisfiable_control`; a policy naming a listed tool, refused) and
+  `controls-tool-choice-neither-filter-refused`
+  (positive; the same refusal for a policy carrying neither filter). For a run
+  admitted under scope `run` (the scope `runState` retains from admission,
   below, together with `defaultModel`, the session default
   `sessionTrack.currentModel` held at that admission), a `session.state`
   snapshot whose `current_model_id`

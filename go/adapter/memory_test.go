@@ -883,10 +883,8 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 
 func TestPublishedCatalogGovernsToolSelection(t *testing.T) {
 	for name, policy := range map[string]string{
-		"named":    `{"allowed":["scripted_tool"]}`,
-		"required": `{"allowed":["scripted_tool"]}`,
-		"auto":     `{"disallowed":[]}`,
-		"allowed":  `{"allowed":["scripted_tool"]}`,
+		"allowlist naming the catalogued tool": `{"allowed":["scripted_tool"]}`,
+		"denylist excluding nothing":           `{"disallowed":[]}`,
 	} {
 		session := newTestSession(t, 64)
 		request := protocol.MessageSubmitRequest{

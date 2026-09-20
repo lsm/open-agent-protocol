@@ -2085,8 +2085,8 @@
       ]
     },
     {
-      "id": "controls-tool-choice-undisclosed-mode",
-      "path": "valid/controls-tool-choice-undisclosed-mode.json",
+      "id": "controls-tool-choice-neither-filter-refused",
+      "path": "valid/controls-tool-choice-neither-filter-refused.json",
       "kind": "positive",
       "valid": true,
       "phase": "",
