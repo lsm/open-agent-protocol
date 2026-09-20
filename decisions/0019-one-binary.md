@@ -197,6 +197,30 @@ would take to carry it. The list is expected to shrink.
   is what type-checks keyword values, and the gate can then be replaced by
   validating the candidate against it.
 
+### Two ways a rule can be missing, and only one of them is safe
+
+Stage 3 lands the semantic machine unit by unit, so at any moment most
+diagnostic codes are unported. The gate handles that by restricting its
+comparison to the codes the port claims: an unported code is asserted to stay
+*silent*, on all 546 fixtures, which is a stronger statement than passing the
+positives. A whole unported unit is therefore visible and checked, and the
+claimed set in the Zig machine is its record.
+
+An unported *site* of a **ported** code is the dangerous case. The gate cannot
+see it: it compares emitted codes, so a rule nobody wrote and a rule correctly
+silent are the same observation, and the only thing that catches it is a
+fixture happening to reach that site. Three were found this way during the
+controls unit — `capabilities.updated` not checking the revision it continues,
+`queueAdmission` not re-checking queue availability, and a limit surviving a
+defect the port does not emit. None changed a fixture.
+
+So the rule is: a code is ported at every site the oracle raises it from, or
+it is not ported at all. `unmatched_tool_source` is an example of the second
+kind — the oracle raises it from eight sites across the descriptor, catalog,
+call-attribution and refresh paths, most of them the tool-sources unit rather
+than controls, so the controls unit does not carry it and the machine does not
+claim it.
+
 ### Every stage is gated on data that already exists
 
 The port does not need the Go tests. It needs the Go *fixtures*, which are

@@ -1926,7 +1926,10 @@ pub const Machine = struct {
             const holder = try self.sessionFor(session_id);
             if (self.submits.get(field(envelope, "in_reply_to"))) |opened| {
                 if (opened.attachment == null) {
-                    for (opened.provided) |name| try holder.provided.append(self.allocator, name);
+                    for (opened.provided) |name| {
+                        if (listedIn(holder.provided.items, name)) continue;
+                        try holder.provided.append(self.allocator, name);
+                    }
                 }
             }
             const reported = memberString(payload, "current_model_id");
@@ -3562,4 +3565,20 @@ test "a packed exchange is correlated by the reply its pack declares" {
     const unwired = try countingWith(allocator, trace, &.{});
     const wired = try countingWith(allocator, trace, &storage);
     try std.testing.expectEqual(unwired + 1, wired);
+}
+
+test "a session records a provided name once, however many opens supply it" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.provide":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"echo"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"session.open.request","id":"o3","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"echo"}]}},
+        \\{"type":"session.open.response","id":"o4","in_reply_to":"o3","capability_revision":"v1","payload":{"session_id":"s"}},
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}},
+        \\{"type":"capabilities.response","id":"k3","capability_revision":"v2","payload":{"features":
+        \\{"action.tools.provide":{"level":"native"}},"tools":[{"name":"echo"}]}}]
+    , &.{"duplicate_tool_name"});
 }
