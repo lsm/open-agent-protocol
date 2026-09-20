@@ -737,14 +737,20 @@ Unit name: `run-controls`. Decision:
 `model_id` execution. `instructions`, `tool_choice`, and `output_schema` keep
 frozen shapes and reference-adapter execution; each graduates by an amendment
 to 0005 when a native adapter advertises its key against a pinned ledger. What
-shipped differs from the plan below in three recorded places: the
+shipped differs from the plan below in four recorded places: the
 `run.model_selection` honour deferral turned out to be unnecessary (a refusal
 of an advertised `model_id` under `unsupported_feature` is wrong whatever the
 id is, since the wire assigns every catalog miss to `model_not_found`), the
 gate fixtures for the other three keys were added because the
-corpus-completeness check requires one per key, and
+corpus-completeness check requires one per key,
 `controls-undisclosed-selection-modes` was added for the rule below that names
-no fixture.
+no fixture, and
+[Decision 0021](../decisions/0021-a-tool-policy-says-whether-it-outlives-its-run.md)
+later extended `mode` to `run.tool_selection`, where the plan below gives it
+only `modes`. That amendment adds a disclosure axis and no behaviour: the mode
+is optional there, because no rule keys on it until a tool policy can be
+retained past its run, and the plan's `modes` requirement is unchanged and
+still judged separately.
 
 ### Scope
 
@@ -942,7 +948,7 @@ No new envelope types. Changes to
   | --- | --- | --- |
   | `run.model_selection` | `model_id` | Codex and Makai `native` (`per_run`); memory `emulated` (fixed catalog); others `unavailable` until evidence |
   | `run.instructions` | `instructions` | memory `emulated`; others `unavailable` |
-  | `run.tool_selection` | `tool_choice` | memory `emulated`; others `unavailable` |
+  | `run.tool_selection` | `tool_choice` | memory `emulated` (`per_run` from Decision 0021); others `unavailable` |
   | `run.structured_output` | `output_schema` | memory `emulated`; others `unavailable` |
 
   `run.model_selection` is new; the other three are already named in the
