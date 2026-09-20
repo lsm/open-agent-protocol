@@ -285,8 +285,7 @@ fn exactInteger(value: std.json.Value) ?i128 {
 fn integralFloat(value: f64) ?i128 {
     if (!std.math.isFinite(value)) return null;
     if (@trunc(value) != value) return null;
-    if (value < -170141183460469231731687303715884105728.0) return null;
-    if (value > 170141183460469231731687303715884105727.0) return null;
+    if (value >= 0x1p127 or value < -0x1p127) return null;
     return @intFromFloat(value);
 }
 

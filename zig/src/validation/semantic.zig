@@ -2078,8 +2078,7 @@ fn exactInteger(value: std.json.Value) ?i128 {
 fn integralFloat(value: f64) ?i128 {
     if (!std.math.isFinite(value)) return null;
     if (@trunc(value) != value) return null;
-    if (value < -170141183460469231731687303715884105728.0) return null;
-    if (value > 170141183460469231731687303715884105727.0) return null;
+    if (value >= 0x1p127 or value < -0x1p127) return null;
     return @intFromFloat(value);
 }
 
@@ -3042,4 +3041,25 @@ test "an open past the tool count the endpoint disclosed is refused for that bou
         \\,
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
     , &.{"unavailable_capability"});
+}
+
+test "a magnitude past what an i128 holds is not an exact integer" {
+    try std.testing.expect(integralFloat(0x1p127) == null);
+    try std.testing.expect(integralFloat(-0x1p127).? == std.math.minInt(i128));
+    try std.testing.expect(integralFloat(0x1p126).? == 1 << 126);
+    try std.testing.expect(integralFloat(1.5) == null);
+    try std.testing.expect(integralFloat(std.math.inf(f64)) == null);
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native","constraints":{"fixed_result":
+        \\{"n":170141183460469231731687303715884105728.0}}}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object"}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":170141183460469231731687303715884105728.0}}}]
+    , &.{});
 }
