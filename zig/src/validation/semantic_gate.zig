@@ -1,17 +1,13 @@
 const std = @import("std");
 const semantic = @import("semantic");
 const provider = @import("provider_semantic");
+const packs_mod = @import("packs");
 const build_options = @import("build_options");
 
 const judged_floor = 483;
 const tolerant_fixtures = 3;
 
-const pack_capability_keys_pending = [_][]const u8{
-    "ext-member-on-event-unadvertised",
-    "ext-packed-event-unadvertised",
-    "ext-packed-request-wrong-refusal",
-    "ext-packed-type-unadvertised",
-};
+const nothing_outstanding = [_][]const u8{};
 
 fn readAll(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(64 * 1024 * 1024));
@@ -100,8 +96,43 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
             try machine.close();
             for (machine.diagnostics.items) |diagnostic| try emitted.append(allocator, diagnostic.code);
         } else {
+            var pack_dirs = std.ArrayList([]const u8).empty;
+            defer {
+                for (pack_dirs.items) |dir| allocator.free(dir);
+                pack_dirs.deinit(allocator);
+            }
+            if (entry.get("packs")) |declared_packs| {
+                for (declared_packs.array.items) |name| {
+                    try pack_dirs.append(allocator, try std.fs.path.join(allocator, &.{ root, "fixtures", name.string }));
+                }
+            }
+            var loaded = try packs_mod.describe(allocator, pack_dirs.items);
+            defer loaded.deinit();
+
+            var types = std.ArrayList(semantic.PackedType).empty;
+            defer types.deinit(allocator);
+            for (loaded.types) |held| {
+                try types.append(allocator, .{
+                    .name = held.name,
+                    .role = held.role,
+                    .capability = held.capability,
+                    .response = held.response,
+                    .refusals = held.refusals,
+                });
+            }
+            var declared_members = std.ArrayList(semantic.PackedMember).empty;
+            defer declared_members.deinit(allocator);
+            for (loaded.members) |held| {
+                try declared_members.append(allocator, .{
+                    .payload_type = held.payload_type,
+                    .name = held.name,
+                    .capability = held.capability,
+                });
+            }
+
             var machine = semantic.Machine.init(allocator);
             defer machine.deinit();
+            machine.packs = .{ .types = types.items, .members = declared_members.items };
             for (envelopes, 0..) |envelope, index| try machine.apply(index, envelope);
             try machine.close();
             for (machine.diagnostics.items) |diagnostic| try emitted.append(allocator, diagnostic.code);
@@ -123,7 +154,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
     std.mem.sort([]const u8, disagreeing.items, {}, lessThan);
     var declared = std.ArrayList([]const u8).empty;
     defer declared.deinit(allocator);
-    for (pack_capability_keys_pending) |name| try declared.append(allocator, name);
+    for (nothing_outstanding) |name| try declared.append(allocator, name);
     const outstanding = try joined(allocator, disagreeing.items);
     defer allocator.free(outstanding);
     const accounted = try joined(allocator, declared.items);

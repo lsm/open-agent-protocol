@@ -303,6 +303,40 @@ const Request = struct {
     revision: []const u8 = "",
     carries_message: bool = false,
     responded: bool = false,
+    gates: []const Gate = &.{},
+};
+
+pub const PackedType = struct {
+    name: []const u8,
+    role: []const u8,
+    capability: []const u8 = "",
+    response: []const u8 = "",
+    refusals: []const []const u8 = &.{},
+};
+
+pub const PackedMember = struct {
+    payload_type: []const u8,
+    name: []const u8,
+    capability: []const u8 = "",
+};
+
+pub const Packs = struct {
+    types: []const PackedType = &.{},
+    members: []const PackedMember = &.{},
+
+    fn declaredType(self: Packs, name: []const u8) ?PackedType {
+        for (self.types) |held| {
+            if (std.mem.eql(u8, held.name, name)) return held;
+        }
+        return null;
+    }
+};
+
+const Gate = struct {
+    key: []const u8,
+    refusals: []const []const u8 = &.{},
+    typed: bool = false,
+    advertised: bool = false,
 };
 
 pub const Machine = struct {
@@ -314,6 +348,7 @@ pub const Machine = struct {
     sessions: std.StringArrayHashMapUnmanaged(*Session) = .empty,
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
+    packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     modes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     supports: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
@@ -381,7 +416,7 @@ pub const Machine = struct {
         const declared = field(envelope, "type");
         const payload = member(envelope, "payload") orelse std.json.Value{ .null = {} };
 
-        if (std.mem.endsWith(u8, declared, ".request")) {
+        if (self.isRequestType(declared)) {
             try self.requests.put(self.allocator, id, .{
                 .declared = declared,
                 .payload = payload,
@@ -391,7 +426,7 @@ pub const Machine = struct {
             });
         }
         var duplicate = false;
-        if (std.mem.endsWith(u8, declared, ".response")) {
+        if (self.isResponseType(declared)) {
             duplicate = try self.correlate(index, envelope, declared);
         }
         const revision = field(envelope, "capability_revision");
@@ -403,6 +438,119 @@ pub const Machine = struct {
         }
         if (duplicate) return;
 
+        try self.dispatch(index, envelope, declared, payload);
+        try self.packEnvelope(index, envelope, declared, payload);
+    }
+
+    fn isRequestType(self: *const Machine, declared: []const u8) bool {
+        if (self.packs.declaredType(declared)) |held| return std.mem.eql(u8, held.role, "request");
+        return std.mem.endsWith(u8, declared, ".request");
+    }
+
+    fn isResponseType(self: *const Machine, declared: []const u8) bool {
+        if (self.packs.declaredType(declared)) |held| return std.mem.eql(u8, held.role, "response");
+        return std.mem.endsWith(u8, declared, ".response");
+    }
+
+    fn answers(self: *const Machine, asked: []const u8, declared: []const u8) bool {
+        if (self.packs.declaredType(asked)) |held| {
+            if (held.response.len == 0) return false;
+            return std.mem.eql(u8, declared, held.response);
+        }
+        const suffix = ".request";
+        if (!std.mem.endsWith(u8, asked, suffix)) return false;
+        const stem = asked[0 .. asked.len - suffix.len];
+        if (!std.mem.startsWith(u8, declared, stem)) return false;
+        return std.mem.eql(u8, declared[stem.len..], ".response");
+    }
+
+    fn advertisedKey(self: *const Machine, key: []const u8) bool {
+        if (self.current_capability.len == 0 or self.capabilities_stale) return false;
+        return affirmative(self.features.get(key) orelse "");
+    }
+
+    fn memberGates(self: *Machine, declared: []const u8, payload: std.json.Value, out: *std.ArrayList(Gate)) !void {
+        if (payload != .object) return;
+        for (self.packs.members) |held| {
+            if (held.capability.len == 0) continue;
+            if (!std.mem.eql(u8, held.payload_type, declared)) continue;
+            if (payload.object.get(held.name) == null) continue;
+            try out.append(self.arena.allocator(), .{ .key = held.capability });
+        }
+    }
+
+    fn packEnvelope(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
+        if (self.packs.types.len == 0 and self.packs.members.len == 0) return;
+        const packed_type = self.packs.declaredType(declared);
+        const role = if (packed_type) |held| held.role else if (std.mem.endsWith(u8, declared, ".request"))
+            "request"
+        else if (std.mem.endsWith(u8, declared, ".response"))
+            "response"
+        else
+            "event";
+
+        if (packed_type) |held| {
+            if (std.mem.eql(u8, role, "event") and held.capability.len != 0) {
+                try self.featureKeys(index, envelope, &.{held.capability});
+            }
+        }
+
+        var gates = std.ArrayList(Gate).empty;
+        if (!std.mem.eql(u8, role, "request")) {
+            try self.memberGates(declared, payload, &gates);
+            for (gates.items) |gate| try self.featureKeys(index, envelope, &.{gate.key});
+            gates.clearRetainingCapacity();
+        }
+
+        if (std.mem.eql(u8, role, "request")) {
+            if (packed_type) |held| {
+                if (held.capability.len != 0) {
+                    try gates.append(self.arena.allocator(), .{
+                        .key = held.capability,
+                        .refusals = held.refusals,
+                        .typed = true,
+                    });
+                }
+            }
+            try self.memberGates(declared, payload, &gates);
+            for (gates.items) |*gate| gate.advertised = self.advertisedKey(gate.key);
+            if (self.requests.getPtr(field(envelope, "id"))) |asked| {
+                asked.gates = try gates.toOwnedSlice(self.arena.allocator());
+            }
+            return;
+        }
+
+        const failure = std.mem.eql(u8, declared, "error.response");
+        if (!std.mem.eql(u8, role, "response") and !failure) return;
+        const asked = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+        if (failure) {
+            try self.settlePackRefusal(index, payload, asked.gates);
+            return;
+        }
+        for (asked.gates) |gate| {
+            if (!gate.advertised) try self.add(code_unavailable_capability, index);
+        }
+    }
+
+    fn settlePackRefusal(self: *Machine, index: usize, payload: std.json.Value, gates: []const Gate) !void {
+        const raised = member(payload, "error") orelse std.json.Value{ .null = {} };
+        var unadvertised = false;
+        var named_by_refusal = false;
+        const details = member(raised, "details") orelse std.json.Value{ .null = {} };
+        const named = memberString(details, "feature");
+        for (gates) |gate| {
+            if (gate.advertised) continue;
+            unadvertised = true;
+            if (std.mem.eql(u8, gate.key, named)) named_by_refusal = true;
+        }
+        if (!unadvertised) return;
+        if (std.mem.eql(u8, memberString(raised, "code"), error_unsupported_feature) and
+            std.mem.eql(u8, memberString(details, "reason"), reason_unadvertised) and
+            named_by_refusal) return;
+        try self.add(code_unavailable_capability, index);
+    }
+
+    fn dispatch(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8, payload: std.json.Value) !void {
         if (std.mem.eql(u8, declared, "protocol.initialize.request")) {
             if (member(payload, "participant")) |who| {
                 const named = memberString(who, "id");
@@ -500,11 +648,7 @@ pub const Machine = struct {
     fn correlate(self: *Machine, index: usize, envelope: std.json.Value, declared: []const u8) !bool {
         const request = self.requests.getPtr(field(envelope, "in_reply_to")) orelse return false;
         const failure = std.mem.eql(u8, declared, "error.response");
-        if (!failure) {
-            const stem = request.declared[0 .. request.declared.len - ".request".len];
-            if (!std.mem.startsWith(u8, declared, stem) or
-                !std.mem.eql(u8, declared[stem.len..], ".response")) return false;
-        }
+        if (!failure and !self.answers(request.declared, declared)) return false;
         if (request.responded) return true;
         request.responded = true;
         if (!failure and
@@ -3390,6 +3534,37 @@ test "an attachment reusing an id the session already resolves silences the boun
         \\"tool_sources":[{"id":"already","kind":"process"},{"id":"fresh","kind":"process"}]}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
     , &.{});
+}
+
+fn countingWith(allocator: std.mem.Allocator, trace: []const u8, types: []const PackedType) !usize {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, trace, .{});
+    defer parsed.deinit();
+    var machine = Machine.init(allocator);
+    defer machine.deinit();
+    machine.packs = .{ .types = types };
+    for (parsed.value.array.items, 0..) |envelope, index| try machine.apply(index, envelope);
+    try machine.close();
+    var stale: usize = 0;
+    for (machine.diagnostics.items) |diagnostic| {
+        if (std.mem.eql(u8, diagnostic.code, code_stale_capability_revision)) stale += 1;
+    }
+    return stale;
+}
+
+test "a packed exchange is correlated by the reply its pack declares" {
+    const storage = [_]PackedType{
+        .{ .name = "x", .role = "request", .response = "x.done" },
+        .{ .name = "x.done", .role = "response" },
+    };
+    const trace =
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{}}},
+        \\{"type":"x","id":"q1","capability_revision":"v1","payload":{}},
+        \\{"type":"x.done","id":"r1","in_reply_to":"q1","capability_revision":"v2","payload":{}}]
+    ;
+    const allocator = std.testing.allocator;
+    const unwired = try countingWith(allocator, trace, &.{});
+    const wired = try countingWith(allocator, trace, &storage);
+    try std.testing.expectEqual(unwired + 1, wired);
 }
 
 test "a session records a provided name once, however many opens supply it" {
