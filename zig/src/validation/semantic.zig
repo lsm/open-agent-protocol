@@ -2288,20 +2288,40 @@ fn openLevelRefusal(code: []const u8) bool {
     return listedIn(&.{ "session_exists", "unknown_adapter", "session_closed", "stale_capabilities" }, code);
 }
 
+fn lastWithId(listed: std.json.Value, id: []const u8) ?std.json.Value {
+    var found: ?std.json.Value = null;
+    for (listed.array.items) |model| {
+        if (std.mem.eql(u8, memberString(model, "id"), id)) found = model;
+    }
+    return found;
+}
+
+fn firstOccurrence(listed: std.json.Value, at: usize, id: []const u8) bool {
+    for (listed.array.items[0..at]) |earlier| {
+        if (std.mem.eql(u8, memberString(earlier, "id"), id)) return false;
+    }
+    return true;
+}
+
+fn distinctIds(listed: std.json.Value) usize {
+    var count: usize = 0;
+    for (listed.array.items, 0..) |model, at| {
+        if (firstOccurrence(listed, at, memberString(model, "id"))) count += 1;
+    }
+    return count;
+}
+
 fn sameCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
     const left = a orelse return b == null;
     const right = b orelse return false;
     if (left != .array or right != .array) return valueEql(left, right);
-    if (left.array.items.len != right.array.items.len) return false;
-    for (left.array.items) |model| {
+    if (distinctIds(left) != distinctIds(right)) return false;
+    for (left.array.items, 0..) |model, at| {
         const id = memberString(model, "id");
-        var matched = false;
-        for (right.array.items) |other| {
-            if (!std.mem.eql(u8, memberString(other, "id"), id)) continue;
-            if (!valueEql(model, other)) return false;
-            matched = true;
-        }
-        if (!matched) return false;
+        if (!firstOccurrence(left, at, id)) continue;
+        const mine = lastWithId(left, id) orelse return false;
+        const theirs = lastWithId(right, id) orelse return false;
+        if (!valueEql(mine, theirs)) return false;
     }
     return true;
 }
@@ -3648,4 +3668,26 @@ test "the earliest defect speaks even when this port has no name for it" {
         \\"tools":[{"name":"a"},{"name":"a"},{"name":"b","execution_owner":"mallory"}]}},
     ++ answered
     , &.{"duplicate_tool_name"});
+}
+
+test "a catalog is compared by the ids it resolves, not the rows it printed" {
+    const advertised =
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"models.list":{"level":"native"}}}}
+    ;
+    try expectCodes(
+        \\[
+    ++ advertised ++
+        \\,
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"models":[{"id":"a"},{"id":"a"}]}},
+        \\{"type":"models.response","id":"m2","capability_revision":"v1","payload":{"models":[{"id":"a"},{"id":"b"}]}}]
+    , &.{ "duplicate_model_id", "unannounced_catalog_change" });
+
+    try expectCodes(
+        \\[
+    ++ advertised ++
+        \\,
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"models":[{"id":"a"},{"id":"a"}]}},
+        \\{"type":"models.response","id":"m2","capability_revision":"v1","payload":{"models":[{"id":"a"}]}}]
+    , &.{"duplicate_model_id"});
 }
