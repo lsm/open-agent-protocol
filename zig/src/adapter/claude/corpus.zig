@@ -5,6 +5,17 @@ const build_options = @import("build_options");
 
 const corpus_relative = "fixtures/adapters/claude-code-2.1.263";
 
+const transport_only_actions = [_][]const u8{ "expect-write", "reply", "wait-run", "drain" };
+
+const reducer_blind_control_ops = [_][]const u8{ "close", "assert-state", "resume", "cancel" };
+
+fn containsName(names: []const []const u8, candidate: []const u8) bool {
+    for (names) |name| {
+        if (std.mem.eql(u8, name, candidate)) return true;
+    }
+    return false;
+}
+
 const Case = struct {
     id: []const u8,
     path: []const u8,
@@ -79,19 +90,7 @@ const Replay = struct {
     emitted: []std.json.Value,
 };
 
-fn replayCase(arena: *std.heap.ArenaAllocator, root: []const u8, case: Case) !Replay {
-    const scratch = arena.allocator();
-
-    const dir = try std.fs.path.join(scratch, &.{ root, case.path });
-    const native_path = try std.fs.path.join(scratch, &.{ dir, "native.jsonl" });
-    const expected_path = try std.fs.path.join(scratch, &.{ dir, "expected-oap.json" });
-
-    const native = try readFile(scratch, native_path);
-    const expected_text = try readFile(scratch, expected_path);
-
-    var reducer = session.Reducer.init(arena, .{});
-    reducer.open();
-
+fn drive(reducer: *session.Reducer, scratch: std.mem.Allocator, native: []const u8, case: Case) !void {
     var reader = rpc.FrameReader{ .source = native };
     while (try reader.next()) |line| {
         const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
@@ -131,7 +130,10 @@ fn replayCase(arena: *std.heap.ArenaAllocator, root: []const u8, case: Case) !Re
                 _ = try reducer.listTools();
                 continue;
             }
-            if (!std.mem.eql(u8, op, "resolve")) continue;
+            if (!std.mem.eql(u8, op, "resolve")) {
+                if (!containsName(&reducer_blind_control_ops, op)) return error.UnhandledControlOp;
+                continue;
+            }
             const decision = stringMember(raw.object, "decision") orelse return error.InvalidScriptLine;
             const pending = reducer.pendingInteraction() orelse return error.NoPendingInteraction;
             if (std.mem.eql(u8, decision, "allow")) {
@@ -141,7 +143,23 @@ fn replayCase(arena: *std.heap.ArenaAllocator, root: []const u8, case: Case) !Re
             } else return error.InvalidScriptLine;
             continue;
         }
+        if (!containsName(&transport_only_actions, action)) return error.UnhandledScriptAction;
     }
+}
+
+fn replayCase(arena: *std.heap.ArenaAllocator, root: []const u8, case: Case) !Replay {
+    const scratch = arena.allocator();
+
+    const dir = try std.fs.path.join(scratch, &.{ root, case.path });
+    const native_path = try std.fs.path.join(scratch, &.{ dir, "native.jsonl" });
+    const expected_path = try std.fs.path.join(scratch, &.{ dir, "expected-oap.json" });
+
+    const native = try readFile(scratch, native_path);
+    const expected_text = try readFile(scratch, expected_path);
+
+    var reducer = session.Reducer.init(arena, .{});
+    reducer.open();
+    try drive(&reducer, scratch, native, case);
 
     const expected = try std.json.parseFromSliceLeaky(std.json.Value, scratch, expected_text, .{});
     if (expected != .array) return error.InvalidExpectation;
@@ -232,4 +250,32 @@ test "process-exit differs only where its expectation quotes the oracle host's r
     const got_error = replay.emitted[last].object.get("payload").?.object.get("error").?.object;
     try std.testing.expectEqualStrings("io: read/write on closed pipe", want_error.get("message").?.string);
     try std.testing.expectEqualStrings(transport_error_case.transport_error, got_error.get("message").?.string);
+}
+
+fn driveScript(script: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = session.Reducer.init(&arena, .{});
+    reducer.open();
+    try drive(&reducer, arena.allocator(), script, .{ .id = "inline", .path = "" });
+}
+
+test "a script step this harness does not drive is refused, not skipped" {
+    try driveScript(
+        \\{"action":"wait-run","raw":{"type":"harness_sync","op":"wait-run"}}
+        ++ "\n",
+    );
+    try std.testing.expectError(error.UnhandledScriptAction, driveScript(
+        \\{"action":"invented-later","raw":{}}
+        ++ "\n",
+    ));
+
+    try driveScript(
+        \\{"action":"oap-control","raw":{"type":"oap_control","op":"close"}}
+        ++ "\n",
+    );
+    try std.testing.expectError(error.UnhandledControlOp, driveScript(
+        \\{"action":"oap-control","raw":{"type":"oap_control","op":"invented-later"}}
+        ++ "\n",
+    ));
 }
