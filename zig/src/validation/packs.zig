@@ -9,12 +9,22 @@ pub const Member = struct {
     payload_type: []const u8,
     name: []const u8,
     schema: std.json.Value,
+    capability: []const u8 = "",
+};
+
+pub const Declared = struct {
+    name: []const u8,
+    role: []const u8,
+    capability: []const u8 = "",
+    response: []const u8 = "",
+    refusals: []const []const u8 = &.{},
 };
 
 pub const Loaded = struct {
     arena: std.heap.ArenaAllocator,
     branches: []Branch,
     members: []Member,
+    types: []Declared = &.{},
 
     pub fn deinit(self: *Loaded) void {
         self.arena.deinit();
@@ -30,12 +40,25 @@ pub fn load(
     registry: *jsonschema.Registry,
     pack_dirs: []const []const u8,
 ) !Loaded {
+    return gather(parent, registry, pack_dirs);
+}
+
+pub fn describe(parent: std.mem.Allocator, pack_dirs: []const []const u8) !Loaded {
+    return gather(parent, null, pack_dirs);
+}
+
+fn gather(
+    parent: std.mem.Allocator,
+    registry: ?*jsonschema.Registry,
+    pack_dirs: []const []const u8,
+) !Loaded {
     var arena = std.heap.ArenaAllocator.init(parent);
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
     var branches = std.ArrayList(Branch).empty;
     var members = std.ArrayList(Member).empty;
+    var types = std.ArrayList(Declared).empty;
 
     for (pack_dirs) |dir| {
         const descriptor_path = try std.fs.path.join(allocator, &.{ dir, "pack.json" });
@@ -45,22 +68,50 @@ pub fn load(
         const pack_id = (descriptor.object.get("id") orelse return error.InvalidPackDescriptor).string;
         const version = (descriptor.object.get("version") orelse return error.InvalidPackDescriptor).string;
 
-        if (descriptor.object.get("schemas")) |schemas| {
-            for (schemas.array.items) |schema_name| {
-                const file = schema_name.string;
-                const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
-                const schema_bytes = try readAll(allocator, schema_path);
-                const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
-                try registry.addDocument(key, schema_bytes);
+        if (registry) |target| {
+            if (descriptor.object.get("schemas")) |schemas| {
+                for (schemas.array.items) |schema_name| {
+                    const file = schema_name.string;
+                    const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
+                    const schema_bytes = try readAll(allocator, schema_path);
+                    const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
+                    try target.addDocument(key, schema_bytes);
+                }
             }
         }
 
+        const gates = descriptor.object.get("gates");
+
         if (descriptor.object.get("payload_members")) |declared_members| {
             for (declared_members.array.items) |entry| {
+                const payload_type = (entry.object.get("payload_type") orelse continue).string;
+                const name = (entry.object.get("member") orelse continue).string;
                 try members.append(allocator, .{
-                    .payload_type = (entry.object.get("payload_type") orelse continue).string,
-                    .name = (entry.object.get("member") orelse continue).string,
+                    .payload_type = payload_type,
+                    .name = name,
                     .schema = entry.object.get("schema") orelse continue,
+                    .capability = memberCapability(gates, payload_type, name),
+                });
+            }
+        }
+
+        if (descriptor.object.get("envelope_types")) |declared_types| {
+            for (declared_types.array.items) |entry| {
+                const name = (entry.object.get("type") orelse continue).string;
+                var refusals = std.ArrayList([]const u8).empty;
+                if (entry.object.get("refusals")) |listed| {
+                    if (listed == .array) {
+                        for (listed.array.items) |code| {
+                            if (code == .string) try refusals.append(allocator, code.string);
+                        }
+                    }
+                }
+                try types.append(allocator, .{
+                    .name = name,
+                    .role = if (entry.object.get("role")) |role| role.string else "",
+                    .capability = typeCapability(gates, name),
+                    .response = responseFor(declared_types, name),
+                    .refusals = try refusals.toOwnedSlice(allocator),
                 });
             }
         }
@@ -89,7 +140,47 @@ pub fn load(
         .arena = arena,
         .branches = try branches.toOwnedSlice(allocator),
         .members = try members.toOwnedSlice(allocator),
+        .types = try types.toOwnedSlice(allocator),
     };
+}
+
+fn gateString(gate: std.json.Value, key: []const u8) []const u8 {
+    if (gate != .object) return "";
+    const held = gate.object.get(key) orelse return "";
+    return if (held == .string) held.string else "";
+}
+
+fn typeCapability(gates: ?std.json.Value, name: []const u8) []const u8 {
+    const declared = gates orelse return "";
+    if (declared != .array) return "";
+    for (declared.array.items) |gate| {
+        if (std.mem.eql(u8, gateString(gate, "type"), name)) return gateString(gate, "capability");
+    }
+    return "";
+}
+
+fn memberCapability(gates: ?std.json.Value, payload_type: []const u8, name: []const u8) []const u8 {
+    const declared = gates orelse return "";
+    if (declared != .array) return "";
+    for (declared.array.items) |gate| {
+        if (std.mem.eql(u8, gateString(gate, "payload_type"), payload_type) and
+            std.mem.eql(u8, gateString(gate, "member"), name)) return gateString(gate, "capability");
+    }
+    return "";
+}
+
+fn responseFor(declared_types: std.json.Value, name: []const u8) []const u8 {
+    for (declared_types.array.items) |entry| {
+        if (entry != .object) continue;
+        const role = entry.object.get("role") orelse continue;
+        if (role != .string or !std.mem.eql(u8, role.string, "response")) continue;
+        const replies = entry.object.get("replies_to") orelse continue;
+        if (replies == .string and std.mem.eql(u8, replies.string, name)) {
+            const answer = entry.object.get("type") orelse continue;
+            if (answer == .string) return answer.string;
+        }
+    }
+    return "";
 }
 
 pub const PayloadTarget = struct {

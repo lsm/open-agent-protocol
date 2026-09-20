@@ -36,9 +36,89 @@ fn keywordSupported(name: []const u8) bool {
     return false;
 }
 
+pub fn pointerTokenEql(token: []const u8, key: []const u8) bool {
+    var at: usize = 0;
+    var into: usize = 0;
+    while (at < token.len) {
+        var decoded = token[at];
+        if (decoded == '~' and at + 1 < token.len and (token[at + 1] == '0' or token[at + 1] == '1')) {
+            decoded = if (token[at + 1] == '0') '~' else '/';
+            at += 2;
+        } else {
+            at += 1;
+        }
+        if (into >= key.len or key[into] != decoded) return false;
+        into += 1;
+    }
+    return into == key.len;
+}
+
+pub fn pointerMember(object: std.json.ObjectMap, token: []const u8) ?std.json.Value {
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        if (pointerTokenEql(token, entry.key_ptr.*)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
+pub fn resolvesLocally(root: std.json.Value, reference: []const u8) bool {
+    if (std.mem.eql(u8, reference, "#")) return true;
+    if (!std.mem.startsWith(u8, reference, "#/")) return false;
+    var node = root;
+    var parts = std.mem.splitScalar(u8, reference["#/".len..], '/');
+    while (parts.next()) |token| {
+        switch (node) {
+            .object => |object| node = pointerMember(object, token) orelse return false,
+            .array => |items| {
+                const at = std.fmt.parseUnsigned(usize, token, 10) catch return false;
+                if (at >= items.items.len) return false;
+                node = items.items[at];
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
+
+pub fn unsupportedKeyword(schema: std.json.Value) ?[]const u8 {
+    if (schema != .object) return null;
+    var it = schema.object.iterator();
+    while (it.next()) |entry| {
+        if (!keywordSupported(entry.key_ptr.*)) return entry.key_ptr.*;
+    }
+    if (schema.object.get("pattern")) |expression| {
+        if (expression != .string) return "pattern";
+        if (!std.mem.eql(u8, expression.string, dotted_lowercase_label)) return "pattern";
+    }
+    if (schema.object.get("items")) |elements| {
+        if (elements == .array) return "items";
+    }
+    for ([_][]const u8{ "items", "not", "if", "then", "else", "contains", "additionalProperties" }) |name| {
+        const child = schema.object.get(name) orelse continue;
+        if (unsupportedKeyword(child)) |found| return found;
+    }
+    for ([_][]const u8{ "allOf", "anyOf", "oneOf" }) |name| {
+        const children = schema.object.get(name) orelse continue;
+        if (children != .array) continue;
+        for (children.array.items) |child| {
+            if (unsupportedKeyword(child)) |found| return found;
+        }
+    }
+    for ([_][]const u8{ "properties", "$defs" }) |name| {
+        const children = schema.object.get(name) orelse continue;
+        if (children != .object) continue;
+        var kids = children.object.iterator();
+        while (kids.next()) |kid| {
+            if (unsupportedKeyword(kid.value_ptr.*)) |found| return found;
+        }
+    }
+    return null;
+}
+
 pub const Registry = struct {
     allocator: std.mem.Allocator,
     documents: std.StringArrayHashMapUnmanaged(std.json.Parsed(std.json.Value)) = .empty,
+    owned_keys: std.ArrayList([]const u8) = .empty,
 
     pub fn initFromBundled(allocator: std.mem.Allocator) !Registry {
         var self = Registry{ .allocator = allocator };
@@ -53,9 +133,8 @@ pub const Registry = struct {
 
     pub fn deinit(self: *Registry) void {
         for (self.documents.values()) |parsed| parsed.deinit();
-        for (self.documents.keys(), 0..) |key, index| {
-            if (index >= schema_bytes.all.len) self.allocator.free(key);
-        }
+        for (self.owned_keys.items) |key| self.allocator.free(key);
+        self.owned_keys.deinit(self.allocator);
         self.documents.deinit(self.allocator);
     }
 
@@ -84,7 +163,9 @@ pub const Registry = struct {
         errdefer parsed.deinit();
         const owned = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned);
+        try self.owned_keys.ensureUnusedCapacity(self.allocator, 1);
         try self.documents.put(self.allocator, owned, parsed);
+        self.owned_keys.appendAssumeCapacity(owned);
     }
 
     pub fn root(self: *const Registry, name: []const u8) ?std.json.Value {
@@ -446,7 +527,7 @@ pub const Validator = struct {
         while (parts.next()) |part| {
             if (part.len == 0) continue;
             if (node != .object) return Unsupported.UnresolvableRef;
-            node = node.object.get(part) orelse return Unsupported.UnresolvableRef;
+            node = pointerMember(node.object, part) orelse return Unsupported.UnresolvableRef;
         }
         return .{ .schema = node, .document = target_document };
     }
@@ -694,4 +775,26 @@ test "a pack branch does not excuse an envelope from the root the profile requir
         const failure = try validator.validateWithBranches("envelope.schema.json", parsed.value, &branches);
         try std.testing.expectEqual(case.accepted, failure == null);
     }
+}
+
+test "a registry owns the names it duplicated, wherever they sit" {
+    var registry = Registry{ .allocator = std.testing.allocator };
+    defer registry.deinit();
+    try registry.addDocument("https://example.test/one.json", "{\"type\":\"object\"}");
+    try registry.addDocument("https://example.test/two.json", "{\"type\":\"string\"}");
+    try registry.addDocument("https://example.test/one.json", "{\"type\":\"array\"}");
+    try std.testing.expect(registry.root("https://example.test/one.json") != null);
+    try std.testing.expect(registry.root("https://example.test/two.json") != null);
+    try std.testing.expectEqual(@as(usize, 2), registry.owned_keys.items.len);
+}
+
+test "a registry frees a duplicated name exactly once, on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var registry = Registry{ .allocator = allocator };
+            defer registry.deinit();
+            try registry.addDocument("https://example.test/one.json", "{\"type\":\"object\"}");
+            try registry.addDocument("https://example.test/two.json", "{\"type\":\"string\"}");
+        }
+    }.run, .{});
 }
