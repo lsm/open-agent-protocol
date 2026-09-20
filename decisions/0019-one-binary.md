@@ -186,6 +186,17 @@ would take to carry it. The list is expected to shrink.
   accepts, and auditing the handful of places that switch on `.integer`. No
   fixture writes a number past 2^53 in either form.
 
+- **Type-checking a schema keyword's value.** The evaluable-schema gate in
+  front of `output_schema` rejects a keyword the interpreter does not
+  implement, a `pattern` whose expression it cannot decide, and the array form
+  of `items`. It does not check that every keyword's *value* has the shape
+  2020-12 requires, so `{"enum": "notalist"}` is admitted and then fails at
+  validation, where Go's compiler refuses it at submission. The port reports
+  `unapplied_control` where the oracle reports `unsatisfiable_control`. This is
+  the same missing piece as the entry above and closes with it: the metaschema
+  is what type-checks keyword values, and the gate can then be replaced by
+  validating the candidate against it.
+
 ### Every stage is gated on data that already exists
 
 The port does not need the Go tests. It needs the Go *fixtures*, which are
