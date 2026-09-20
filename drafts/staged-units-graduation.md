@@ -29,7 +29,7 @@ The wire already carries more than the executable subset accepts:
 - `session.message.submit.request` carries `model_id`, `instructions`,
   `tool_choice`, `output_schema`, `allow_degraded_features`, and `metadata`
   ([`schema/v0.1/session.schema.json`](../schema/v0.1/session.schema.json),
-  [`protocol/control.go`](../protocol/control.go)). Every executable adapter
+  [`go/protocol/control.go`](../go/protocol/control.go)). Every executable adapter
   rejects `instructions`, `tool_choice`, and `output_schema` before admission.
   Codex applies `model_id` to `turn/start` and Makai applies it as
   `agent_message.model_ref`, both natively per run and both without
