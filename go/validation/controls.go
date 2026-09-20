@@ -629,9 +629,14 @@ func canonical(value any) any {
 }
 
 func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol.CapabilitiesResponse) {
-	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) && !enforcesAKnownMode(support.Modes) {
+	if support, ok := p.EffectiveSupport(protocol.FeatureToolSelection); ok && affirmative(support.Level) {
+		if !enforcesAKnownMode(support.Modes) {
 
-		s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/modes", "run.tool_selection is advertised without disclosing a tool_choice mode the endpoint enforces", "at least one of "+strings.Join(knownToolChoiceModes, ", "), describeModes(support.Modes))
+			s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/modes", "run.tool_selection is advertised without disclosing a tool_choice mode the endpoint enforces", "at least one of "+strings.Join(knownToolChoiceModes, ", "), describeModes(support.Modes))
+		}
+		if support.Mode != "" && support.Mode != protocol.ModePerRun && support.Mode != protocol.ModeSessionMutation {
+			s.addExpected(CodeUndisclosedSelectionModes, i, line, e, "/payload/features/run.tool_selection/mode", "run.tool_selection discloses an application mode that is not one the protocol defines", protocol.ModePerRun+" or "+protocol.ModeSessionMutation, support.Mode)
+		}
 	}
 
 	support, ok := p.EffectiveSupport(protocol.FeatureModelSelection)

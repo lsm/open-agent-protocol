@@ -110,7 +110,7 @@ func Example() {
 	}
 	fmt.Println("closed")
 	// Output:
-	// adapter: memory revision: reference-memory-v9
+	// adapter: memory revision: reference-memory-v10
 	// event: run.started
 	// event: content.delta
 	// event: action.call.requested

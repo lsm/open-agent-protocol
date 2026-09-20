@@ -87,7 +87,7 @@ var attachSupport = protocol.FeatureSupport{
 	Reason: "sources are described and published back; the reference adapter runs no client for them",
 }
 
-const CapabilityRevision = "reference-memory-v9"
+const CapabilityRevision = "reference-memory-v10"
 
 var errTerminalWon = fmt.Errorf("adapter: terminal event already emitted")
 
@@ -159,8 +159,9 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		protocol.FeatureInstructions: {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
 		protocol.FeatureToolSelection: {
 			Level:  protocol.SupportEmulated,
+			Mode:   protocol.ModePerRun,
 			Modes:  []string{protocol.ToolChoiceAuto, protocol.ToolChoiceNone, protocol.ToolChoiceRequired, protocol.ToolChoiceNamed},
-			Reason: "the policy selects whether the scripted tool is called",
+			Reason: "the policy selects whether the scripted tool is called and is not retained past the run",
 		},
 		protocol.FeatureStructuredOutput: {
 			Level:       protocol.SupportEmulated,
