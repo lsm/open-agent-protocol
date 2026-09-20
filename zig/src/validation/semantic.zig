@@ -2285,57 +2285,13 @@ fn outputSchemaDefect(raw: std.json.Value) bool {
     return schemaNodeDefect(raw, .{ .object = raw.object });
 }
 
-fn pointerTokenEql(token: []const u8, key: []const u8) bool {
-    var at: usize = 0;
-    var into: usize = 0;
-    while (at < token.len) {
-        var decoded = token[at];
-        if (decoded == '~' and at + 1 < token.len and (token[at + 1] == '0' or token[at + 1] == '1')) {
-            decoded = if (token[at + 1] == '0') '~' else '/';
-            at += 2;
-        } else {
-            at += 1;
-        }
-        if (into >= key.len or key[into] != decoded) return false;
-        into += 1;
-    }
-    return into == key.len;
-}
-
-fn pointerMember(object: std.json.ObjectMap, token: []const u8) ?std.json.Value {
-    var it = object.iterator();
-    while (it.next()) |entry| {
-        if (pointerTokenEql(token, entry.key_ptr.*)) return entry.value_ptr.*;
-    }
-    return null;
-}
-
-fn resolvesLocally(root: std.json.Value, reference: []const u8) bool {
-    if (std.mem.eql(u8, reference, "#")) return true;
-    if (!std.mem.startsWith(u8, reference, "#/")) return false;
-    var node = root;
-    var parts = std.mem.splitScalar(u8, reference["#/".len..], '/');
-    while (parts.next()) |token| {
-        switch (node) {
-            .object => |object| node = pointerMember(object, token) orelse return false,
-            .array => |items| {
-                const at = std.fmt.parseUnsigned(usize, token, 10) catch return false;
-                if (at >= items.items.len) return false;
-                node = items.items[at];
-            },
-            else => return false,
-        }
-    }
-    return true;
-}
-
 fn schemaNodeDefect(root: std.json.Value, node: std.json.Value) bool {
     switch (node) {
         .object => |object| {
             if (object.get("$ref")) |reference| {
                 if (reference != .string) return true;
                 if (!std.mem.startsWith(u8, reference.string, "#")) return true;
-                if (!resolvesLocally(root, reference.string)) return true;
+                if (!jsonschema.resolvesLocally(root, reference.string)) return true;
             }
             if (object.get("required")) |required| {
                 if (required != .array) return true;
@@ -3336,6 +3292,52 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","pattern":"^x+$"}}}}},
     ++ tail
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"items":[{"type":"string"}]}}}}},
+    ++ tail
+    , &.{"unsatisfiable_control"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"enum":"notalist"}}}}},
+    ++ tail
+    , &.{"unapplied_control"});
+}
+
+test "an escaped reference resolves the same way on both sides of the boundary" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/a~1b"}},
+        \\"$defs":{"a/b":{"type":"integer"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":1}}}]
+    , &.{});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"run.structured_output":{"level":"native"}}}},
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"$ref":"#/$defs/a~1b"}},
+        \\"$defs":{"a/b":{"type":"integer"}}}}},
+        \\{"type":"session.message.submit.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","payload":
+        \\{"session_id":"s","accepted":true,"run_id":"a","admission":"started","effective_delivery":"start","status":"running"}},
+        \\{"type":"run.started","id":"e1","run_id":"a","session_id":"s","sequence":1,"capability_revision":"v1","payload":{}},
+        \\{"type":"run.completed","id":"e2","run_id":"a","session_id":"s","sequence":2,"capability_revision":"v1",
+        \\"payload":{"result":{"n":"one"}}}]
     , &.{"unapplied_control"});
 }
 
