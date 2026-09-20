@@ -2063,6 +2063,22 @@
       ]
     },
     {
+      "id": "controls-tool-choice-disallows-an-uncatalogued-tool",
+      "path": "valid/controls-tool-choice-disallows-an-uncatalogued-tool.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "decisions/0023-a-denylist-does-not-assert-the-catalog.md",
+        "decisions/0022-tool-choice-is-a-filter-here-and-a-mode-there.md"
+      ]
+    },
+    {
       "id": "controls-tool-choice-two-unknown-entries",
       "path": "valid/controls-tool-choice-two-unknown-entries.json",
       "kind": "positive",
