@@ -841,6 +841,31 @@ Both gates were executed against the pinned linux-x64 binary
 (sha256 `26d02035…d5ba`) with the digest bound, five consecutive times each,
 all green.
 
+### Open question: is the permission gate the tool boundary, or only most of it?
+
+The child is spawned with `--permission-prompt-tool stdio` and
+`--setting-sources=` and no `--allowedTools` (`adapter/claude/adapter.go`). Read
+together those say the boundary is the gate: every tool call arrives as a
+`can_use_tool` control request that the control layer answers, and no settings
+file can pre-approve anything behind it. If that reading is right, the absence
+of an allowlist is not a gap, because nothing runs unanswered.
+
+It is not established. A spike reported a `Bash` call completing with no gate
+observed. Both cannot be true. Either some tools do not consult the permission
+system at that pin, in which case an allowlist is the only thing that stops
+them and the posture is materially weaker than the flags suggest; or the
+spike's auto-allowing harness answered a gate without recording that it had,
+in which case the boundary held and the report was an artifact of the
+instrument.
+
+Nothing in the tree settles it, and the corpus cannot: its `can_use_tool`
+frames are scripted, so they prove the reducer surfaces a gate it is given,
+never that the CLI raises one for every tool. The decidable form is a
+real-process assertion, and it belongs in the smoke gate rather than in prose
+here: provoke a `Bash` call against the pinned binary and fail if the call
+settles without a `can_use_tool` arriving first. Until that runs, an adapter
+must not be described as gating every tool call.
+
 Implementation discovery made executable by the smoke gate (fixed): the
 default factory originally ran the initialize exchange inside
 `Factory.Start`, i.e. before the session's dispatch loop existed — and the
