@@ -522,6 +522,13 @@ fn blocksContent(reducer: *Reducer, blocks: std.json.Value) !std.json.Value {
     return .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try parts.toOwnedSlice(reducer.arena)) };
 }
 
+fn totalTokens(reducer: *Reducer, input: i64, output: i64) !std.json.Value {
+    const wrapped = input +% output;
+    if (wrapped >= 0) return .{ .integer = wrapped };
+    const unsigned: u64 = @bitCast(wrapped);
+    return .{ .number_string = try std.fmt.allocPrint(reducer.arena, "{d}", .{unsigned}) };
+}
+
 fn trySettle(reducer: *Reducer) !void {
     if (!reducer.turn_ended or !reducer.idle_after_end or reducer.terminal) return;
     var failed_child = false;
@@ -564,7 +571,7 @@ fn trySettle(reducer: *Reducer) !void {
             const usage = try reducer.object();
             try usage.put(reducer.arena, "input_tokens", .{ .integer = input });
             try usage.put(reducer.arena, "output_tokens", .{ .integer = output });
-            try usage.put(reducer.arena, "total_tokens", .{ .integer = input +% output });
+            try usage.put(reducer.arena, "total_tokens", try totalTokens(reducer, input, output));
             try payload.put(reducer.arena, "usage", .{ .object = usage.* });
         }
     }
@@ -1336,4 +1343,23 @@ test "closing over a reserved run is refused, and closing twice is not" {
     abortSubmission(&reserved);
     try close(&reserved);
     try std.testing.expect(reserved.closed);
+}
+
+test "a token total past the signed range stays nonnegative, as the oracle reinterprets it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = Reducer.init(a);
+
+    const ordinary = try totalTokens(&reducer, 3, 4);
+    try std.testing.expect(ordinary == .integer);
+    try std.testing.expectEqual(@as(i64, 7), ordinary.integer);
+
+    const overflowed = try totalTokens(&reducer, std.math.maxInt(i64), 1);
+    try std.testing.expect(overflowed == .number_string);
+    try std.testing.expectEqualStrings("9223372036854775808", overflowed.number_string);
+
+    const both = try totalTokens(&reducer, std.math.maxInt(i64), std.math.maxInt(i64));
+    try std.testing.expect(both == .number_string);
+    try std.testing.expectEqualStrings("18446744073709551614", both.number_string);
 }
