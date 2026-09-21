@@ -1745,19 +1745,53 @@ fn expectUpdateAccepted(nested: []const u8) !void {
     try std.testing.expect(lastFailure(&reducer) == null);
 }
 
-test "a nested tool call carries whatever the harness sent, typed but not required" {
+fn expectUpdateRefused(nested: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    const line = try std.fmt.allocPrint(a, "{{\"type\":\"message_update\",\"usage\":{{}},\"assistantMessageEvent\":{{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{s}}}}}", .{nested});
+    try apply(&reducer, try parse(a, line));
+    try std.testing.expectEqualStrings("pi_invalid_message_update", lastFailure(&reducer) orelse return error.NoRefusal);
+}
+
+test "a nested tool call requires no member and accepts a null for every one" {
     for ([_][]const u8{
         "null",
         "{}",
+        "{\"type\":\"toolCall\"}",
+        "{\"type\":null}",
         "{\"id\":\"c\"}",
+        "{\"id\":null}",
+        "{\"name\":null}",
+        "{\"thoughtSignature\":null}",
+        "{\"namespace\":null}",
         "{\"id\":\"c\",\"name\":\"grep\"}",
-        "{\"arguments\":null}",
     }) |nested| try expectUpdateAccepted(nested);
+}
 
-    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":7}");
-    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":[]}");
-    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"bogus\":1}}");
-    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"type\":\"toolCall\",\"id\":7,\"name\":\"grep\",\"arguments\":{}}}");
+test "a nested tool call refuses a wrong type on each string member of its own" {
+    for ([_][]const u8{
+        "{\"type\":7}",
+        "{\"id\":7}",
+        "{\"name\":7}",
+        "{\"thoughtSignature\":7}",
+        "{\"namespace\":7}",
+    }) |nested| try expectUpdateRefused(nested);
+}
+
+test "a nested tool call refuses a shape that is not an object and a member outside the set" {
+    for ([_][]const u8{ "7", "[]", "\"x\"", "{\"bogus\":1}" }) |nested| try expectUpdateRefused(nested);
+}
+
+test "nested tool call arguments are raw, so no value of them can be refused" {
+    for ([_][]const u8{
+        "{\"arguments\":7}",
+        "{\"arguments\":\"x\"}",
+        "{\"arguments\":null}",
+        "{\"arguments\":[]}",
+        "{\"arguments\":{}}",
+    }) |nested| try expectUpdateAccepted(nested);
 }
 
 test "a final message tool call block still requires the three members a nested one does not" {
