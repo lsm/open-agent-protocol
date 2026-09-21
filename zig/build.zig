@@ -236,6 +236,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    acp_rpc_mod.addImport("gojson", adapter_gojson_mod);
     const acp_rpc_test = b.addTest(.{ .root_module = acp_rpc_mod });
 
     const acp_session_mod = b.createModule(.{
