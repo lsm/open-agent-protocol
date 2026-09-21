@@ -863,3 +863,12 @@ func TestDuplicateChildStartBeforeAdmissionIsRefusedOnReplay(t *testing.T) {
 	}
 	assertFailedWith(t, drain(t, got.st), "deepseek_child_lifecycle", "invalid buffered child start")
 }
+
+func TestCompletedTurnWithNoAssistantMessageIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	assertFailedWith(t, events, "deepseek_missing_final_message", "completed turn omitted assistant message")
+}
