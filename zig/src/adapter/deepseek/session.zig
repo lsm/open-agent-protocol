@@ -596,12 +596,13 @@ fn directUser(source: std.json.Value) bool {
     if (source != .object) return false;
     if (!std.mem.eql(u8, textOf(source, "kind"), "user")) return false;
     for ([_][]const u8{ "plugin", "provider", "model", "callId", "form", "summary" }) |name| {
-        if (textOf(source, name).len != 0) return false;
+        const carried = memberOf(source, name) orelse continue;
+        if (carried == .null) continue;
+        if (carried != .string) return false;
+        if (carried.string.len != 0) return false;
     }
     for ([_][]const u8{ "sections", "replayState" }) |name| {
-        if (memberOf(source, name)) |carried| {
-            if (carried == .array and carried.array.items.len != 0) return false;
-        }
+        if (memberOf(source, name) != null) return false;
     }
     return true;
 }
@@ -1362,4 +1363,40 @@ test "a token total past the signed range stays nonnegative, as the oracle reint
     const both = try totalTokens(&reducer, std.math.maxInt(i64), std.math.maxInt(i64));
     try std.testing.expect(both == .number_string);
     try std.testing.expectEqualStrings("18446744073709551614", both.number_string);
+}
+
+fn admitsWithSource(a: std.mem.Allocator, source_text: []const u8) !bool {
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    try submit(&reducer);
+    const spliced = try std.fmt.allocPrint(a, "{{\"type\":\"agent/inbox/spliced\",\"data\":{{\"inserted\":[{{\"id\":\"m-1\",\"source\":{s}}}]}}}}", .{source_text});
+    try observe(&reducer, try parse(a, spliced));
+    try receipt(&reducer, "m-1");
+    try observe(&reducer, try parse(a, "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}"));
+    try observe(&reducer, try parse(a, "{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":1}}"));
+    const message = try std.fmt.allocPrint(a, "{{\"type\":\"user/message\",\"data\":{{\"id\":\"m-1\",\"source\":{s}}}}}", .{source_text});
+    try observe(&reducer, try parse(a, message));
+    return reducer.started;
+}
+
+test "any present sections or replayState disqualifies the ownership proof" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try std.testing.expect(try admitsWithSource(a, "{\"kind\":\"user\"}"));
+    try std.testing.expect(try admitsWithSource(a, "{\"kind\":\"user\",\"plugin\":\"\"}"));
+    try std.testing.expect(try admitsWithSource(a, "{\"kind\":\"user\",\"plugin\":null}"));
+
+    for ([_][]const u8{
+        "{\"kind\":\"user\",\"sections\":[]}",
+        "{\"kind\":\"user\",\"sections\":null}",
+        "{\"kind\":\"user\",\"sections\":{}}",
+        "{\"kind\":\"user\",\"sections\":[\"a\"]}",
+        "{\"kind\":\"user\",\"replayState\":[]}",
+        "{\"kind\":\"user\",\"replayState\":null}",
+        "{\"kind\":\"user\",\"plugin\":7}",
+    }) |source| {
+        try std.testing.expect(!try admitsWithSource(a, source));
+    }
 }
