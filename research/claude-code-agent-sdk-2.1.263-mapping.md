@@ -587,11 +587,13 @@ compensated.
   not a boundary. Six patch releases separate that help text from the pinned
   binary, so the section under "the control layer does not see every tool
   call" carries the reasoning and neither reading is asserted here.
-  **What holds either way**: the default permission mode auto-approves safe
-  commands without asking anyone, as probe 6 records against the pinned
-  binary, so a control layer sees the calls that ask and not the ones the CLI
-  settles by itself. This adapter gates the calls that ask, and must never be
-  described as gating every call
+  **What holds either way, for an unrestricted session**: the default
+  permission mode auto-approves safe commands without asking anyone, as probe
+  6 records against the pinned binary, so a control layer sees the calls that
+  ask and not the ones the CLI settles by itself. Whether a restricted
+  posture can withhold the auto-approved ones depends on the unresolved flag
+  reading. This adapter gates the calls that ask, and must never be described
+  as gating every call
 - initialize / capability revision: `emulated` (initialize exchange at open;
   per-turn `system/init` refresh recorded)
 - session association (process + initialize + first-turn init frame): `emulated`
@@ -1159,12 +1161,14 @@ untested, and were removed rather than left: an empty cancel id cannot reach
 `cancelGate` because the codec refuses one, and two guards in the tool paths
 could not fire. What survived removal has a test.
 
-### Settled: the control layer does not see every tool call
+### Settled for an unrestricted session: the control layer does not see every call
 
-This was carried as an open question. It is not open — the evidence that
-closes it is the live probe recorded above, and it says the gate is partial.
+This was carried as an open question. It is closed for the session probe 6
+actually ran, and that scope is the whole of what follows: the gate is
+partial where `Bash` is admitted.
 
-Neither mechanism this adapter operates is a complete boundary.
+Neither mechanism this adapter operates is a complete boundary **in such a
+session**.
 
 The posture is not one. `--allowedTools` names the tools that may run
 *without* asking, and the flag that bounds the surface, `--tools`, is one this
@@ -1179,9 +1183,11 @@ it directly: `echo probe` was auto-approved with no ask, while `touch
 /tmp/...` produced a `can_use_tool`. The CLI decides which commands are safe,
 and the control layer is never told about the ones it decides for.
 
-So a control layer on this adapter at this pin can inspect and deny an
-ask-gated call and cannot inspect an auto-approved one. That is the property
-to design against.
+Probe 6 ran an unrestricted session. What it establishes is therefore
+scoped: **in a session where `Bash` is admitted, a control layer on this
+adapter at this pin cannot inspect every call.** It says nothing about a
+session where `Bash` is not admitted, and whether a posture can withhold it
+is the unresolved question below.
 
 Which posture is safer **cannot be stated here**, because the two readings of
 `--allowedTools` below give opposite answers and only one of them can be
@@ -1194,12 +1200,21 @@ auto-approval probe 6 recorded. An earlier revision of this section
 recommended `UnrestrictedTools()` outright. That was advice resting on the
 half of the evidence that is not verified, and it is withdrawn.
 
-What holds under both readings is narrower and is the thing to design
-against: neither posture makes the control layer the boundary, because the
-CLI settles some calls without asking anyone. A caller who needs a real
-boundary has to establish which flag bounds the surface on its own pinned
-binary and pass it through `Config.Args`, rather than inferring it from the
-posture.
+Three revisions of this section have now tried to state something that holds
+across both readings, and each one overreached. The last said neither posture
+makes the control layer the boundary — but under the surface-allowlist
+reading, a posture admitting only tools that always ask would make the
+posture and gate a boundary together, and probe 6 would not contradict it
+because it never ran such a posture. There is no cross-reading conclusion to
+draw, and this section stops trying to draw one.
+
+What a caller can act on is the scoped fact and the two branches. Under an
+unrestricted posture the control layer does not see every call, whichever
+reading is right, because probe 6 ran exactly that. Under a restricted
+posture the answer depends on which reading is right, and that is not
+settled at this pin. A caller who needs a boundary either runs the smoke-gate
+assertions against its own binary or passes an availability flag through
+`Config.Args` explicitly, rather than inferring one from the posture.
 
 What remains genuinely open is narrower, and it is a lever this adapter does
 not currently pull. `--permission-mode` selects the mode the auto-approval
@@ -1218,9 +1233,10 @@ to own the caller args too.
 The two halves of this rest on different evidence, and only one of them is
 verified at the pin.
 
-The auto-approval behaviour is. Probe 6 ran against the pinned 2.1.263
-binary, so "the control layer does not see every tool call" is established
-for the adapter being mapped.
+The auto-approval behaviour is, for the session it ran in. Probe 6 used the
+pinned 2.1.263 binary and an unrestricted posture, so "the control layer does
+not see every call" is established for that configuration of the adapter
+being mapped, and not for a restricted posture.
 
 The reading of the two tool flags is **not**. It comes from `--help` on
 2.1.269, six patch releases past the pin, and this ledger's own rule is that
