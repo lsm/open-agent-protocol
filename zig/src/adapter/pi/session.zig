@@ -195,26 +195,41 @@ pub const WireMessage = struct {
     error_message: []const u8,
 };
 
+fn foldedMember(raw: std.json.Value, name: []const u8) ?std.json.Value {
+    if (raw.object.get(name)) |value| return value;
+    for (raw.object.keys()) |key| {
+        if (std.ascii.eqlIgnoreCase(key, name)) return raw.object.get(key);
+    }
+    return null;
+}
+
+fn foldedIn(names: []const []const u8, name: []const u8) bool {
+    for (names) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry, name)) return true;
+    }
+    return false;
+}
+
 fn closedRoleMembers(raw: std.json.Value, names: []const []const u8) !void {
     for (raw.object.keys()) |name| {
-        if (!listed(names, name)) return Error.InvalidFrame;
+        if (!foldedIn(names, name)) return Error.InvalidFrame;
     }
 }
 
 fn typedStrings(raw: std.json.Value, names: []const []const u8) !void {
     for (names) |name| {
-        const value = raw.object.get(name) orelse continue;
+        const value = foldedMember(raw, name) orelse continue;
         if (value != .string and value != .null) return Error.InvalidFrame;
     }
 }
 
 fn typedArray(raw: std.json.Value, name: []const u8) !void {
-    const value = raw.object.get(name) orelse return;
+    const value = foldedMember(raw, name) orelse return;
     if (value != .array and value != .null) return Error.InvalidFrame;
 }
 
 fn typedStringArray(raw: std.json.Value, name: []const u8) !void {
-    const value = raw.object.get(name) orelse return;
+    const value = foldedMember(raw, name) orelse return;
     if (value == .null) return;
     if (value != .array) return Error.InvalidFrame;
     for (value.array.items) |entry| {
@@ -223,12 +238,12 @@ fn typedStringArray(raw: std.json.Value, name: []const u8) !void {
 }
 
 fn typedBool(raw: std.json.Value, name: []const u8) !void {
-    const value = raw.object.get(name) orelse return;
+    const value = foldedMember(raw, name) orelse return;
     if (value != .bool and value != .null) return Error.InvalidFrame;
 }
 
 fn typedInteger(raw: std.json.Value, name: []const u8) !void {
-    const value = raw.object.get(name) orelse return;
+    const value = foldedMember(raw, name) orelse return;
     if (value != .integer and value != .null) return Error.InvalidFrame;
 }
 
@@ -353,7 +368,7 @@ fn requireMembers(value: std.json.Value, names: []const []const u8) !void {
 
 fn closedMembers(part: std.json.Value, allowed: []const []const u8) !void {
     for (part.object.keys()) |name| {
-        if (!listed(allowed, name)) return Error.InvalidFrame;
+        if (!foldedIn(allowed, name)) return Error.InvalidFrame;
     }
 }
 
@@ -1130,6 +1145,51 @@ fn expectExtensionRefusal(request: []const u8, code: []const u8) !void {
 
 test "a select extension offering no options is refused" {
     try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[]}", "pi_invalid_extension");
+}
+
+fn expectFinalMessage(message: []const u8, want: ?[]const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    const line = try std.fmt.allocPrint(a, "{{\"type\":\"message_end\",\"message\":{s}}}", .{message});
+    try apply(&reducer, try parse(a, line));
+    if (want) |code| {
+        try std.testing.expectEqualStrings(code, lastFailure(&reducer) orelse return error.NoRefusal);
+    } else {
+        try std.testing.expect(lastFailure(&reducer) == null);
+    }
+}
+
+test "an optional wire member is matched the way encoding/json matches a tag" {
+    const base = "\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1,\"content\":[]";
+    try expectFinalMessage("{" ++ base ++ ",\"responseModel\":\"x\"}", null);
+    try expectFinalMessage("{" ++ base ++ ",\"responsemodel\":\"x\"}", null);
+    try expectFinalMessage("{" ++ base ++ ",\"RESPONSEMODEL\":\"x\"}", null);
+    try expectFinalMessage("{" ++ base ++ ",\"response_model\":\"x\"}", "pi_invalid_message_end");
+}
+
+test "a case-folded member keeps the type its tag declares" {
+    const base = "\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1,\"content\":[]";
+    try expectFinalMessage("{" ++ base ++ ",\"responsemodel\":7}", "pi_invalid_message_end");
+    try expectFinalMessage("{" ++ base ++ ",\"RESPONSEMODEL\":7}", "pi_invalid_message_end");
+    try expectFinalMessage("{" ++ base ++ ",\"endturn\":\"yes\"}", "pi_invalid_message_end");
+    try expectFinalMessage("{" ++ base ++ ",\"ENDTURN\":true}", null);
+}
+
+test "a required member is the one thing case does not fold" {
+    const tail = "\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1";
+    try expectFinalMessage("{\"ROLE\":\"assistant\"," ++ tail ++ ",\"content\":[]}", "pi_invalid_message_end");
+    try expectFinalMessage("{\"role\":\"assistant\"," ++ tail ++ ",\"CONTENT\":[]}", "pi_invalid_message_end");
+    try expectFinalMessage("{\"role\":\"assistant\"," ++ tail ++ ",\"content\":[]}", null);
+}
+
+test "a content block matches its optional members the same way" {
+    const base = "\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1";
+    try expectFinalMessage("{" ++ base ++ ",\"content\":[{\"type\":\"text\",\"text\":\"hi\",\"textSignature\":\"s\"}]}", null);
+    try expectFinalMessage("{" ++ base ++ ",\"content\":[{\"type\":\"text\",\"text\":\"hi\",\"textsignature\":\"s\"}]}", null);
+    try expectFinalMessage("{" ++ base ++ ",\"content\":[{\"type\":\"text\",\"text\":\"hi\",\"textsignature\":7}]}", "pi_invalid_message_end");
+    try expectFinalMessage("{" ++ base ++ ",\"content\":[{\"type\":\"text\",\"text\":\"hi\",\"bogus\":\"s\"}]}", "pi_invalid_message_end");
 }
 
 test "a message_end with no message fails the run rather than escaping the reducer" {
