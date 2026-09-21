@@ -394,7 +394,7 @@ pub const Reducer = struct {
             return;
         }
         const native_session = gojson.foldedSet(params.object, &.{"sessionId"}) orelse std.json.Value{ .null = {} };
-        if (native_session != .string or !std.mem.eql(u8, native_session.string, self.options.native_id)) {
+        if (gojson.foldedWrongType(params.object, "sessionId", .string) or native_session != .string or !std.mem.eql(u8, native_session.string, self.options.native_id)) {
             try self.failActive("acp_invalid_update", "malformed or foreign session/update");
             return;
         }
@@ -456,7 +456,7 @@ pub const Reducer = struct {
 
     fn applyChunk(self: *Reducer, update: std.json.ObjectMap) !void {
         const content = gojson.foldedSet(update, &.{"content"}) orelse std.json.Value{ .null = {} };
-        if (content != .object or !chunkDecodes(update, content.object)) {
+        if (gojson.foldedWrongType(update, "content", .object) or content != .object or !chunkDecodes(update, content.object)) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
@@ -793,7 +793,7 @@ fn stringMember(map: std.json.ObjectMap, key: []const u8) []const u8 {
 }
 
 fn presentString(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const value = gojson.foldedSet(map, &.{key}) orelse return null;
+    const value = gojson.foldedLast(map, &.{key}) orelse return null;
     return if (value == .string) value.string else null;
 }
 
@@ -829,10 +829,13 @@ fn permissionDecodes(params: std.json.Value, native_id: []const u8) bool {
     if (params != .object) return false;
     const session = gojson.foldedSet(params.object, &.{"sessionId"}) orelse return false;
     if (session != .string or !std.mem.eql(u8, session.string, native_id)) return false;
+    if (gojson.foldedWrongType(params.object, "sessionId", .string)) return false;
     const tool_call = gojson.foldedSet(params.object, &.{"toolCall"}) orelse return false;
+    if (gojson.foldedWrongType(params.object, "toolCall", .object)) return false;
     if (tool_call != .object or !toolCallDecodes(tool_call.object)) return false;
     if (stringMember(tool_call.object, "toolCallId").len == 0) return false;
-    const options = gojson.foldedSet(params.object, &.{"options"}) orelse return false;
+    if (gojson.foldedWrongType(params.object, "options", .array)) return false;
+    const options = gojson.foldedLast(params.object, &.{"options"}) orelse return false;
     if (options != .array or options.array.items.len == 0) return false;
     for (options.array.items) |entry| {
         if (entry == .null) continue;
@@ -2086,4 +2089,80 @@ test "the envelope around the update is read exactly, because the codec reads it
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
     try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
     try testing.expectEqualStrings("acp_invalid_update", codeAt(&reducer, 1));
+}
+
+test "a null spelling clears a pointer member and is a no-op on a plain one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"t","TITLE":"second","title":null,"status":"in_progress"}
+    ));
+
+    try testing.expectEqualStrings("action.call.started", typeAt(&reducer, 2));
+    try testing.expectEqualStrings("first", payloadAt(&reducer, 2).get("name").?.string);
+
+    var kept = try openRun(&arena);
+    try feed(&kept, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","CONTENT":{"type":"text","text":"hi"},"content":null}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&kept, 1));
+    try testing.expectEqualStrings("hi", payloadAt(&kept, 1).get("part").?.object.get("text").?.string);
+}
+
+test "a null spelling clears a slice member, so the gate has no options left" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"first"},"OPTIONS":[{"optionId":"o","name":"n","kind":"allow_once"}],"options":null}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, last));
+    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, last));
+}
+
+test "a mistyped options spelling refuses the gate, even behind a valid one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"first"},"options":7,"OPTIONS":[{"optionId":"o","name":"n","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, last));
+    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, last));
+}
+
+test "a mistyped spelling refuses whatever it names, whichever order it arrives in" {
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":7,"SESSIONID":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}
+    , "acp_invalid_update", "malformed or foreign session/update");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":7,"CONTENT":{"type":"text","text":"hi"}}
+    ));
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("acp_invalid_message_chunk", codeAt(&reducer, 1));
 }
