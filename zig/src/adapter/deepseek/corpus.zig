@@ -97,7 +97,10 @@ const Driver = struct {
             return .handled;
         }
         if (std.mem.eql(u8, action, "wait-submit")) return .handled;
-        if (std.mem.eql(u8, action, "oap-control")) return .handled;
+        if (std.mem.eql(u8, action, "oap-control")) {
+            try assertControl(reducer, item.raw);
+            return .handled;
+        }
         if (std.mem.eql(u8, action, "open")) {
             const params = item.raw.object.get("params") orelse return .handled;
             const model = if (params == .object) corpus.stringMember(params.object, "model") orelse "" else "";
@@ -145,6 +148,36 @@ const Driver = struct {
         return reducer.envelopes();
     }
 };
+
+fn advertisedControl(op: []const u8) !bool {
+    if (std.mem.eql(u8, op, "cancel")) return @hasDecl(session, "cancel");
+    if (std.mem.eql(u8, op, "resume")) return @hasDecl(session, "resume");
+    if (std.mem.eql(u8, op, "resolve")) return @hasDecl(session, "resolve");
+    return error.UnroutedControlOperation;
+}
+
+fn assertControl(reducer: *session.Reducer, raw: std.json.Value) !void {
+    if (raw != .object) return error.ControlIsNotAnObject;
+    const op = corpus.stringMember(raw.object, "op") orelse return error.ControlWithoutOperation;
+    const expect = corpus.stringMember(raw.object, "expect") orelse "";
+
+    if (std.mem.eql(u8, op, "assert-state")) {
+        const want = corpus.stringMember(raw.object, "status") orelse return error.ControlWithoutStatus;
+        const running = reducer.started and !reducer.terminal;
+        if (std.mem.eql(u8, want, "running")) {
+            if (!running) return error.ReducerIsNotRunning;
+            return;
+        }
+        if (std.mem.eql(u8, want, "idle")) {
+            if (running) return error.ReducerIsNotIdle;
+            return;
+        }
+        return error.UnroutedControlStatus;
+    }
+
+    if (!std.mem.eql(u8, expect, "unavailable")) return error.UnroutedControlExpectation;
+    if (try advertisedControl(op)) return error.ControlRecordedUnavailableIsAdvertised;
+}
 
 pub const Harness = corpus.Harness(Driver);
 
@@ -215,4 +248,32 @@ test "a script line the production codec refuses fails the case at the call site
     session.openSession(&accepted_reducer);
     const accepted = "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"status\":\"idle\"}}}\n";
     try Harness.steps(scratch, accepted, &accepted_reducer, .{ .id = "inline", .path = "inline" });
+}
+
+test "a control assertion that does not hold fails the case at the call site" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+
+    var idle = session.Reducer.init(scratch);
+    session.openSession(&idle);
+    const wants_running = "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"assert-state\",\"status\":\"running\",\"expect\":\"\"}}\n";
+    try std.testing.expectError(
+        error.ReducerIsNotRunning,
+        Harness.steps(scratch, wants_running, &idle, inline_case),
+    );
+
+    var held = session.Reducer.init(scratch);
+    session.openSession(&held);
+    const wants_idle = "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"assert-state\",\"status\":\"idle\",\"expect\":\"\"}}\n";
+    try Harness.steps(scratch, wants_idle, &held, inline_case);
+
+    var unavailable = session.Reducer.init(scratch);
+    session.openSession(&unavailable);
+    const unknown_op = "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"teleport\",\"expect\":\"unavailable\"}}\n";
+    try std.testing.expectError(
+        error.UnroutedControlOperation,
+        Harness.steps(scratch, unknown_op, &unavailable, inline_case),
+    );
 }
