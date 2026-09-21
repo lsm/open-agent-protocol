@@ -506,3 +506,36 @@ pipes, the runtime's next notification died on `EPIPE`, and the child exited 1
 
 Outcome: both gates PASS at `fb2c4b9e69`, and the DeepSeek package, its
 corpus, and the repository acceptance run are green under Go 1.27.
+
+## What the Zig port does not validate (2026-09-21)
+
+`zig/src/adapter/deepseek/` reproduces the reducer and the line codec. It does
+not reproduce `internal/native`'s payload validation, and that absence is a
+property of the port's failure mode, not only a gap in its coverage.
+
+The Go adapter refuses at two layers. `rpc` refuses a frame that does not
+decode; `native` refuses a frame whose payload fails a predicate. `Event.Validate`
+requires a tool call to carry a non-empty `callId` and `name`, `validBlock`
+requires the same of a `tool-call` content block, and `validUsage` refuses a
+negative token count. The port carries the first layer and none of the second,
+so a frame the oracle rejects before a session sees it reaches the reducer here
+and is projected. Three reachable consequences:
+
+| native member | where the oracle refuses | what the port emits |
+| --- | --- | --- |
+| tool call `name` | `Event.Validate`, `validBlock` | `action.call.requested` and `.started` carrying `"name": ""`, which the schema declares `nonEmptyString` |
+| `usage.inputTokens`, `usage.outputTokens` | `validUsage` | `"input_tokens": -5`, which the schema declares `minimum: 0` |
+| tool call `callId` | `Event.Validate` | nothing observable: the emitted `tool_call_id` is minted, so only the internal key is empty |
+
+None of these is patched in the reducer. The oracle refuses them before a run
+exists, so there is no `run.failed` to reproduce, and a reducer-level guard
+would invent a terminal the oracle never emits. Matching the oracle includes
+matching where it refuses, not only what it emits. Tracked as #143.
+
+The direction of the gap is worth recording because it is the opposite of the
+pi port's. pi carries a hand-written member validator, so its defects have been
+over-strictness: it refused a `toolcall_end` whose nested `toolCall` was `null`,
+and refused again when that object was merely incomplete, where the oracle
+decodes both into a zero-valued `wireToolCallContent` without error. This port
+cannot fail that way, because it asserts nothing about a payload's member set.
+A port's failure modes follow from which of the oracle's layers it reproduced.
