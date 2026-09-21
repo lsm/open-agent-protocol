@@ -1167,10 +1167,12 @@ fn wireContentOf(reducer: *Reducer, raw: std.json.Value) !std.json.Value {
         } else if (std.mem.eql(u8, kind, "toolCall")) {
             try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
             const tool = findTool(reducer, textOf(part, "id")) orelse return Error.InvalidFrame;
+            const name = textOf(part, "name");
+            if (name.len == 0) return Error.InvalidFrame;
             const shape = try reducer.object();
             try shape.put(reducer.arena, "type", Reducer.str("tool_call"));
             try shape.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
-            try shape.put(reducer.arena, "name", Reducer.str(textOf(part, "name")));
+            try shape.put(reducer.arena, "name", Reducer.str(name));
             if (part.object.get("arguments")) |arguments| try shape.put(reducer.arena, "arguments_json", arguments);
             try parts.append(reducer.arena, .{ .object = shape.* });
         } else return Error.InvalidFrame;
@@ -1237,6 +1239,15 @@ test "a final toolCall part carries the OAP tool-call id, not the native one" {
     const content = finalContent(&reducer) orelse return error.NoCompletion;
     try std.testing.expectEqualStrings("tool_call", textOf(content.array.items[0], "type"));
     try std.testing.expectEqualStrings("tool-call-6", textOf(content.array.items[0], "tool_call_id"));
+}
+
+test "a final toolCall part with an empty name is refused, not emitted without one" {
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":false}",
+        agentEndWith("[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"\",\"arguments\":{}}]"),
+        settled_text,
+    }, "pi_invalid_final_message");
 }
 
 test "a final message referencing a tool the run never started is refused" {
