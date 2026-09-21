@@ -1177,11 +1177,27 @@ test "a case-folded member keeps the type its tag declares" {
     try expectFinalMessage("{" ++ base ++ ",\"ENDTURN\":true}", null);
 }
 
+fn expectEvent(event: []const u8, want: ?[]const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    const line = try std.fmt.allocPrint(a, "{{\"type\":\"message_update\",\"usage\":{{}},\"assistantMessageEvent\":{s}}}", .{event});
+    try apply(&reducer, try parse(a, line));
+    if (want) |code| {
+        try std.testing.expectEqualStrings(code, lastFailure(&reducer) orelse return error.NoRefusal);
+    } else {
+        try std.testing.expect(lastFailure(&reducer) == null);
+    }
+}
+
 test "a provider event's required member is found by name, not by fold" {
-    try expectUpdateRefused("{\"type\":\"toolcall_end\",\"CONTENTINDEX\":0,\"toolCall\":{\"id\":\"a\",\"name\":\"n\",\"arguments\":{}}}");
-    try expectUpdateRefused("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"TOOLCALL\":{\"id\":\"a\",\"name\":\"n\",\"arguments\":{}}}");
-    try expectUpdateRefused("{\"type\":\"text_delta\",\"contentIndex\":0,\"DELTA\":\"x\"}");
-    try expectUpdateAccepted("{\"id\":\"a\",\"name\":\"n\",\"arguments\":{},\"thoughtsignature\":\"s\"}");
+    const call = "{\"id\":\"a\",\"name\":\"n\",\"arguments\":{}}";
+    try expectEvent("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":" ++ call ++ "}", null);
+    try expectEvent("{\"type\":\"toolcall_end\",\"CONTENTINDEX\":0,\"toolCall\":" ++ call ++ "}", "pi_invalid_message_update");
+    try expectEvent("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"TOOLCALL\":" ++ call ++ "}", "pi_invalid_message_update");
+    try expectEvent("{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"x\"}", null);
+    try expectEvent("{\"type\":\"text_delta\",\"contentIndex\":0,\"DELTA\":\"x\"}", "pi_invalid_message_update");
 }
 
 test "a required member is the one thing case does not fold" {
