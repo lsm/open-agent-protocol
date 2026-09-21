@@ -1316,6 +1316,27 @@ test "a nested control member that is not an object names the cause the oracle n
     try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
 }
 
+test "a number is accepted exactly where the oracle's Go type accepts it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const result = "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s\",";
+    try accepts(&arena, result ++ "\"duration_ms\":9223372036854775807}");
+    try accepts(&arena, result ++ "\"duration_ms\":-9223372036854775808}");
+    try refuses(&arena, result ++ "\"duration_ms\":9223372036854775808}");
+    try refuses(&arena, result ++ "\"duration_ms\":99999999999999999999}");
+    try refuses(&arena, result ++ "\"duration_ms\":1e3}");
+
+    try accepts(&arena, result ++ "\"total_cost_usd\":1e308}");
+    try refuses(&arena, result ++ "\"total_cost_usd\":1e400}");
+
+    try refuses(&arena, result ++ "\"usage\":7}");
+    try refuses(&arena, result ++ "\"usage\":[]}");
+    try refuses(&arena, result ++ "\"errors\":\"x\"}");
+    try refuses(&arena, result ++ "\"errors\":{}}");
+    try refuses(&arena, result ++ "\"origin\":7}");
+}
+
 test "a folded null overwrites only the fields the oracle nils" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
