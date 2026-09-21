@@ -115,6 +115,15 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
 
+    const deepseek_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/deepseek/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const deepseek_rpc_test = b.addTest(.{ .root_module = deepseek_rpc_mod });
+    const test_unit_deepseek_step = b.step("test-unit-deepseek", "Run deepseek adapter unit tests");
+    test_unit_deepseek_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
+
     const ai_types_mod = b.createModule(.{
         .root_source_file = b.path("src/ai_types.zig"),
         .target = target,
@@ -1942,6 +1951,7 @@ pub fn build(b: *std.Build) void {
     const bench_compare_test = b.addTest(.{ .root_module = bench_compare_mod });
 
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
