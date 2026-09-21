@@ -277,7 +277,14 @@ func claudeToolPosture(name string, entry adapterEntry) (claude.ToolPosture, err
 	case entry.UnrestrictedTools:
 		return claude.UnrestrictedTools(), nil
 	case len(entry.AllowedTools) > 0:
+		for _, tool := range entry.AllowedTools {
+			if tool == "" {
+				return claude.ToolPosture{}, fmt.Errorf("serve: adapter %q: \"allowed_tools\" names an empty tool", name)
+			}
+		}
 		return claude.AllowTools(entry.AllowedTools...), nil
+	case entry.AllowedTools != nil:
+		return claude.ToolPosture{}, fmt.Errorf("serve: adapter %q: \"allowed_tools\" names no tool; name at least one, or set \"unrestricted_tools\": true to give it the harness default", name)
 	}
 	return claude.ToolPosture{}, nil
 }

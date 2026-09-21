@@ -1430,3 +1430,35 @@ func TestToolPostureReachesTheSpawn(t *testing.T) {
 		t.Fatalf("Config.Args must stay last so a caller can still override: %v", trailing)
 	}
 }
+
+func TestToolSelectionIsUnadvertisedBecauseItsProjectionFailsValidation(t *testing.T) {
+	descriptor := testDescriptor(t)
+	if support, ok := descriptor.Capabilities.Features[protocol.FeatureToolSelection]; ok && support.Level != protocol.SupportUnavailable {
+		t.Fatalf("%s is advertised as %s", protocol.FeatureToolSelection, support.Level)
+	}
+
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"toolu_09","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a9"}`)
+	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_09","type":"tool_result","content":"ok","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u9"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+
+	assertValidTrace(t, outcome.admission, events)
+
+	excluded := protocol.MessageSubmitRequest{
+		SessionID:  "session",
+		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+		Delivery:   protocol.DeliveryAuto,
+		ToolChoice: json.RawMessage(`{"disallowed":["Bash"]}`),
+	}
+	adaptertest.AssertProtocolInvalidWithSubmit(t, excluded, outcome.admission, descriptor, events, "unavailable_capability")
+
+	advertising := testDescriptor(t)
+	advertising.Capabilities.Features[protocol.FeatureToolSelection] = protocol.FeatureSupport{Level: protocol.SupportEmulated}
+	adaptertest.AssertProtocolInvalidWithSubmit(t, excluded, outcome.admission, advertising, events, "unapplied_control")
+
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

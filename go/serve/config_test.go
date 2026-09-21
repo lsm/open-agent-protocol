@@ -112,6 +112,10 @@ func TestLoadRegistryConstructorErrors(t *testing.T) {
 		wanted []string
 	}{
 		{"claude without executable", `"claude": {"type": "claude"}`, []string{"claude", "executable"}},
+		{"claude without a tool posture", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp"}`, []string{"claude", "allowed_tools", "unrestricted_tools"}},
+		{"claude naming an empty tool", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "allowed_tools": [""]}`, []string{"claude", "allowed_tools", "empty tool"}},
+		{"claude allowing nothing", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "allowed_tools": []}`, []string{"claude", "allowed_tools", "names no tool"}},
+		{"claude stating both postures", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "allowed_tools": ["Read"], "unrestricted_tools": true}`, []string{"claude", "not both"}},
 		{"acp relative directory", `"acp": {"type": "acp", "executable": "/bin/x", "working_directory": "relative"}`, []string{"acp", "absolute working directory"}},
 		{"deepseek without provider", `"deepseek": {"type": "deepseek", "executable": "/bin/x", "working_directory": "/tmp", "model": "m"}`, []string{"deepseek", "provider"}},
 		{"opencode without endpoint", `"opencode": {"type": "opencode"}`, []string{"opencode", "endpoint"}},
