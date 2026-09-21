@@ -740,7 +740,8 @@ fn decodeProviderEvent(raw: std.json.Value) !?Part {
     if (kind.len == 0) return Error.InvalidFrame;
     if (std.mem.eql(u8, kind, "text_delta") or std.mem.eql(u8, kind, "thinking_delta")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "delta" });
-        const delta_value = raw.object.get("delta") orelse return Error.InvalidFrame;
+        try requireMembers(raw, &.{"delta"});
+        const delta_value = foldedMember(raw, "delta") orelse return Error.InvalidFrame;
         const delta: []const u8 = switch (delta_value) {
             .string => |s| s,
             .null => "",
@@ -878,7 +879,7 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
     const question = try reducer.object();
     try question.put(reducer.arena, "id", Reducer.str("value"));
     if (std.mem.eql(u8, method, "select")) {
-        const options = memberOf(request, "options") orelse std.json.Value{ .null = {} };
+        const options = foldedMember(request, "options") orelse std.json.Value{ .null = {} };
         if (options != .array or options.array.items.len == 0) {
             try failRun(reducer, "pi_invalid_extension", "select extension offered no options");
             return;
@@ -1247,6 +1248,37 @@ test "a provider event's required member is found by name, not by fold" {
     try expectEvent("{\"type\":\"text_delta\",\"contentIndex\":0,\"DELTA\":\"x\"}", "pi_invalid_message_update");
 }
 
+test "a delta is required by name and read by fold, because Go gates one and decodes the other" {
+    try expectEvent("{\"type\":\"text_delta\",\"contentIndex\":0,\"DELTA\":\"x\"}", "pi_invalid_message_update");
+    try expectEvent("{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"x\",\"DELTA\":\"y\"}", null);
+}
+
+fn deltaText(event: []const u8) ![]const u8 {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    const line = try std.fmt.allocPrint(a, "{{\"type\":\"message_update\",\"usage\":{{}},\"assistantMessageEvent\":{s}}}", .{event});
+    try apply(&reducer, try parse(a, line));
+    for (reducer.emitted.items) |envelope| {
+        if (!std.mem.eql(u8, textOf(envelope, "type"), "content.delta")) continue;
+        const payload = memberOf(envelope, "payload") orelse continue;
+        const part = memberOf(payload, "part") orelse continue;
+        return try std.testing.allocator.dupe(u8, textOf(part, "text"));
+    }
+    return error.NoDelta;
+}
+
+test "the last spelling of a delta is the one that reaches the part" {
+    const later = try deltaText("{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"x\",\"DELTA\":\"y\"}");
+    defer std.testing.allocator.free(later);
+    try std.testing.expectEqualStrings("y", later);
+
+    const earlier = try deltaText("{\"type\":\"text_delta\",\"contentIndex\":0,\"DELTA\":\"y\",\"delta\":\"x\"}");
+    defer std.testing.allocator.free(earlier);
+    try std.testing.expectEqualStrings("x", earlier);
+}
+
 test "a required member is the one thing case does not fold" {
     const tail = "\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1";
     try expectFinalMessage("{\"ROLE\":\"assistant\"," ++ tail ++ ",\"content\":[]}", "pi_invalid_message_end");
@@ -1356,7 +1388,7 @@ fn wireContentOf(reducer: *Reducer, raw: std.json.Value) !std.json.Value {
             try shape.put(reducer.arena, "type", Reducer.str("tool_call"));
             try shape.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
             try shape.put(reducer.arena, "name", Reducer.str(name));
-            if (part.object.get("arguments")) |arguments| try shape.put(reducer.arena, "arguments_json", arguments);
+            if (foldedMember(part, "arguments")) |arguments| try shape.put(reducer.arena, "arguments_json", arguments);
             try parts.append(reducer.arena, .{ .object = shape.* });
         } else return Error.InvalidFrame;
     }

@@ -259,7 +259,13 @@ fn presentAndNotNull(object: std.json.ObjectMap, name: []const u8) bool {
     return value != .null;
 }
 
+fn foldedDiscriminator(object: std.json.ObjectMap, declared: []const u8) bool {
+    const found = foldedMember(object, "type") orelse return false;
+    return found == .string and std.mem.eql(u8, found.string, declared);
+}
+
 fn validateResponse(object: std.json.ObjectMap) !void {
+    if (!foldedDiscriminator(object, "response")) return Error.InvalidFrame;
     const command = foldedMember(object, "command") orelse return Error.InvalidFrame;
     if (command != .string or !namedIn(&commands, command.string)) return Error.InvalidFrame;
 
@@ -282,6 +288,7 @@ fn validateResponse(object: std.json.ObjectMap) !void {
 }
 
 fn validateExtensionRequest(object: std.json.ObjectMap) !void {
+    if (!foldedDiscriminator(object, "extension_ui_request")) return Error.InvalidFrame;
     if (!nonEmptyString(object, "id")) return Error.InvalidFrame;
     const method = foldedMember(object, "method") orelse return Error.InvalidFrame;
     if (method != .string) return Error.InvalidFrame;
@@ -827,6 +834,18 @@ test "an absent success member is false rather than missing" {
 
 test "a response carrying a member the struct does not declare is refused" {
     try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":true,\"surprise\":1}"));
+}
+
+test "a second type spelling decides the discriminator, as the pinned struct decode does" {
+    const same = try classify(std.testing.allocator, "{\"type\":\"response\",\"TYPE\":\"response\",\"command\":\"get_state\",\"success\":true}");
+    try std.testing.expectEqual(Kind.response, same.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"TYPE\":\"x\",\"command\":\"get_state\",\"success\":true}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"TYPE\":\"x\",\"id\":\"u1\",\"method\":\"confirm\",\"title\":\"t\",\"message\":\"m\"}"));
+}
+
+test "the frame is routed by the exact type, because the pinned header reads a map" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"TYPE\":\"response\",\"command\":\"get_state\",\"success\":true}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"agent_start\",\"TYPE\":\"x\"}"));
 }
 
 test "a response matches its member names the way encoding/json matches a tag" {
