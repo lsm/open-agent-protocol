@@ -56,6 +56,8 @@ pub const Reducer = struct {
     tools: std.ArrayList(*ToolState) = .empty,
     interaction_id: []const u8 = "",
     interaction_resolved: bool = false,
+    interaction_text: bool = false,
+    pending_ui: std.ArrayList(std.json.Value) = .empty,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -107,7 +109,15 @@ pub const Reducer = struct {
     }
 };
 
-const message_members = [_][]const u8{
+const user_members = [_][]const u8{ "role", "content", "timestamp" };
+
+const tool_result_members = [_][]const u8{
+    "role",      "toolCallId", "toolName", "content",
+    "usage",     "details",    "isError",  "addedToolNames",
+    "timestamp",
+};
+
+const assistant_members = [_][]const u8{
     "role",          "content",      "api",                   "provider",
     "model",         "usage",        "stopReason",            "timestamp",
     "responseModel", "responseId",   "providerThinkingLevel", "diagnostics",
@@ -177,11 +187,14 @@ pub const WireMessage = struct {
     error_message: []const u8,
 };
 
+fn closedRoleMembers(raw: std.json.Value, names: []const []const u8) !void {
+    for (raw.object.keys()) |name| {
+        if (!listed(names, name)) return Error.InvalidFrame;
+    }
+}
+
 pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
     if (raw != .object) return Error.InvalidFrame;
-    for (raw.object.keys()) |name| {
-        if (!listed(&message_members, name)) return Error.InvalidFrame;
-    }
     const role_value = raw.object.get("role") orelse return Error.InvalidFrame;
     const role: []const u8 = switch (role_value) {
         .string => |s| s,
@@ -189,6 +202,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         else => return Error.InvalidFrame,
     };
     if (std.mem.eql(u8, role, "assistant")) {
+        try closedRoleMembers(raw, &assistant_members);
         for (&assistant_required) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
@@ -200,6 +214,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         };
     }
     if (std.mem.eql(u8, role, "user")) {
+        try closedRoleMembers(raw, &user_members);
         for (&[_][]const u8{ "content", "timestamp" }) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
@@ -207,6 +222,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         return null;
     }
     if (std.mem.eql(u8, role, "toolResult")) {
+        try closedRoleMembers(raw, &tool_result_members);
         for (&[_][]const u8{ "toolCallId", "toolName", "content", "isError", "timestamp" }) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
@@ -217,7 +233,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
 }
 
 pub fn validateWireContent(raw: std.json.Value, allow_image: bool) !void {
-    if (raw == .string) return;
+    if (raw == .null or raw == .string) return;
     if (raw != .array) return Error.InvalidFrame;
     for (raw.array.items) |part| {
         if (part != .object) return Error.InvalidFrame;
@@ -315,6 +331,11 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         for (queued) |pending| {
             if (reducer.terminal) break;
             try apply(reducer, pending);
+        }
+        const waiting = try reducer.pending_ui.toOwnedSlice(reducer.arena);
+        for (waiting) |request| {
+            if (reducer.terminal) break;
+            try applyExtension(reducer, request);
         }
         return;
     }
@@ -546,7 +567,12 @@ fn endTool(reducer: *Reducer, event: std.json.Value) !void {
     }
     tool.result = memberOf(event, "result");
     tool.terminal = true;
-    const failed = if (memberOf(event, "isError")) |flag| flag == .bool and flag.bool else false;
+    const carried = memberOf(event, "isError") orelse std.json.Value{ .null = {} };
+    if (carried != .bool and carried != .null) {
+        try failRun(reducer, "pi_invalid_event", "tool end carried a non-boolean isError");
+        return;
+    }
+    const failed = carried == .bool and carried.bool;
     if (failed) {
         var payload = try toolPayload(reducer, tool, false, false, false);
         const err = try reducer.object();
@@ -678,6 +704,7 @@ pub fn cancel(reducer: *Reducer) !void {
 
 pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
     if (reducer.terminal or !reducer.started) return;
+    try settleChildren(reducer, false);
     const err = try reducer.object();
     try err.put(reducer.arena, "code", Reducer.str("pi_process_exit"));
     try err.put(reducer.arena, "message", Reducer.str(message));
@@ -692,7 +719,11 @@ pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
 const interactive_methods = [_][]const u8{ "select", "input", "editor", "confirm" };
 
 pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
-    if (!reducer.started or reducer.terminal) return;
+    if (reducer.terminal) return;
+    if (!reducer.started) {
+        try reducer.pending_ui.append(reducer.arena, request);
+        return;
+    }
     const method = textOf(request, "method");
     if (!listed(&interactive_methods, method)) return;
     const title = textOf(request, "title");
@@ -741,6 +772,8 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
         try question.put(reducer.arena, "kind", Reducer.str("text"));
         try question.put(reducer.arena, "required", .{ .bool = true });
     }
+    reducer.interaction_text = !std.mem.eql(u8, method, "select") and !std.mem.eql(u8, method, "confirm");
+    reducer.interaction_resolved = false;
     reducer.interaction_id = try reducer.counters.nextID(reducer.arena, "interaction");
     var questions = std.ArrayList(std.json.Value).empty;
     try questions.append(reducer.arena, .{ .object = question.* });
@@ -758,13 +791,18 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
     try statusUpdate(reducer, "waiting_for_input", reducer.interaction_id);
 }
 
-pub fn resolveExtension(reducer: *Reducer, option_id: []const u8) !void {
-    if (reducer.terminal or reducer.interaction_id.len == 0) return;
+pub fn resolveExtension(reducer: *Reducer, answer: []const u8) !void {
+    if (reducer.terminal or reducer.interaction_id.len == 0 or reducer.interaction_resolved) return;
     const selected = try reducer.object();
-    var ids = std.ArrayList(std.json.Value).empty;
-    try ids.append(reducer.arena, Reducer.str(option_id));
     try selected.put(reducer.arena, "question_id", Reducer.str("value"));
-    try selected.put(reducer.arena, "selected_option_ids", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try ids.toOwnedSlice(reducer.arena)) });
+    if (reducer.interaction_text) {
+        if (answer.len == 0) return;
+        try selected.put(reducer.arena, "text", Reducer.str(answer));
+    } else {
+        var ids = std.ArrayList(std.json.Value).empty;
+        try ids.append(reducer.arena, Reducer.str(answer));
+        try selected.put(reducer.arena, "selected_option_ids", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try ids.toOwnedSlice(reducer.arena)) });
+    }
     var answers = std.ArrayList(std.json.Value).empty;
     try answers.append(reducer.arena, .{ .object = selected.* });
     const payload = try reducer.object();
@@ -1153,4 +1191,127 @@ test "a cancel recorded before the start publishes the cancelling status after i
     const kinds = typesOf(&reducer, &buffer);
     try std.testing.expectEqualStrings("run.started", kinds[0]);
     try std.testing.expectEqualStrings("run.status.updated", kinds[1]);
+}
+
+fn payloadOf(reducer: *Reducer, kind: []const u8) ?std.json.Value {
+    var index = reducer.emitted.items.len;
+    while (index > 0) {
+        index -= 1;
+        if (!std.mem.eql(u8, textOf(reducer.emitted.items[index], "type"), kind)) continue;
+        return memberOf(reducer.emitted.items[index], "payload");
+    }
+    return null;
+}
+
+fn countOf(reducer: *Reducer, kind: []const u8) usize {
+    var seen: usize = 0;
+    for (reducer.emitted.items) |envelope| {
+        if (std.mem.eql(u8, textOf(envelope, "type"), kind)) seen += 1;
+    }
+    return seen;
+}
+
+const text_request = "{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"input\",\"title\":\"Name?\",\"message\":\"\"}";
+const confirm_request = "{\"type\":\"extension_ui_request\",\"id\":\"ui-2\",\"method\":\"confirm\",\"title\":\"Go?\",\"message\":\"Continue\"}";
+
+test "a toolResult message carries members the assistant shape does not admit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const result = "{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":\"ok\",\"isError\":false,\"timestamp\":1,\"details\":{},\"usage\":{},\"addedToolNames\":[]}";
+    try std.testing.expect(try decodeWireMessage(try parse(a, result)) == null);
+
+    const crossed = "{\"role\":\"user\",\"content\":\"hi\",\"timestamp\":1,\"api\":\"a\"}";
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, crossed)));
+
+    const user_with_tool_member = "{\"role\":\"user\",\"content\":\"hi\",\"timestamp\":1,\"toolName\":\"grep\"}";
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, user_with_tool_member)));
+
+    const assistant_with_tool_member = "{\"role\":\"assistant\",\"content\":\"hi\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"end_turn\",\"timestamp\":1,\"toolCallId\":\"t1\"}";
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, assistant_with_tool_member)));
+}
+
+test "a null final content reaches the delta fallback rather than failing the run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"streamed\"}}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"end_turn\",\"timestamp\":1,\"content\":null}}"));
+    try apply(&reducer, try parse(a, agentEndWith("null")));
+    try apply(&reducer, try parse(a, settled_text));
+    try std.testing.expect(lastFailure(&reducer) == null);
+    const payload = payloadOf(&reducer, "run.completed") orelse return error.RunDidNotComplete;
+    const response = memberOf(payload, "final_response") orelse return error.NoFinalResponse;
+    const content = memberOf(response, "content") orelse return error.NoContent;
+    try std.testing.expect(content == .string);
+    try std.testing.expectEqualStrings("streamed", content.string);
+}
+
+test "a tool end whose isError is not a boolean is refused" {
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":\"r\",\"isError\":\"true\"}",
+    }, "pi_invalid_event");
+}
+
+test "a process exit with an open tool settles it before the failure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}"));
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    try transportFailed(&reducer, "gone");
+    var buffer: [16][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("run.failed", kinds[kinds.len - 1]);
+    try std.testing.expectEqualStrings("user.input.resolved", kinds[kinds.len - 2]);
+    try std.testing.expectEqualStrings("action.call.failed", kinds[kinds.len - 3]);
+}
+
+test "an extension request before the start is replayed, not dropped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = Reducer.init(a);
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    try std.testing.expect(countOf(&reducer, "user.input.requested") == 0);
+    try open(&reducer);
+    try std.testing.expect(countOf(&reducer, "user.input.requested") == 1);
+}
+
+test "a text interaction is answered with text, never with an option id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, text_request));
+    try resolveExtension(&reducer, "Ada");
+
+    const payload = payloadOf(&reducer, "user.input.resolved") orelse return error.NoResolution;
+    const answers = memberOf(payload, "answers") orelse return error.NoAnswers;
+    try std.testing.expect(answers == .array and answers.array.items.len == 1);
+    const answer = answers.array.items[0];
+    try std.testing.expectEqualStrings("Ada", textOf(answer, "text"));
+    try std.testing.expect(memberOf(answer, "selected_option_ids") == null);
+}
+
+test "a second interaction is not born resolved, and a resolved one is not resolved twice" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    try resolveExtension(&reducer, "yes");
+    try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
+
+    try resolveExtension(&reducer, "yes");
+    try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
+
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    try apply(&reducer, try parse(a, agentEndWith("\"done\"")));
+    try apply(&reducer, try parse(a, settled_text));
+    try std.testing.expect(countOf(&reducer, "user.input.resolved") == 2);
 }
