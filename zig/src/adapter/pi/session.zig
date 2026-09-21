@@ -49,12 +49,13 @@ pub const Reducer = struct {
     cancel_intent: bool = false,
     candidate: ?std.json.Value = null,
     candidate_present: bool = false,
-    final: ?std.json.Value = null,
+    final: ?WireMessage = null,
     text: std.ArrayList(u8) = .empty,
     reasoning: std.ArrayList(u8) = .empty,
     pending: std.ArrayList(std.json.Value) = .empty,
     tools: std.ArrayList(*ToolState) = .empty,
     interaction_id: []const u8 = "",
+    interaction_resolved: bool = false,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -114,6 +115,41 @@ const message_members = [_][]const u8{
 };
 
 const assistant_required = [_][]const u8{ "content", "api", "provider", "model", "usage", "stopReason", "timestamp" };
+
+const EventShape = struct { name: []const u8, members: []const []const u8 };
+
+const event_shapes = [_]EventShape{
+    .{ .name = "agent_start", .members = &.{"type"} },
+    .{ .name = "agent_settled", .members = &.{"type"} },
+    .{ .name = "message_update", .members = &.{ "type", "usage", "assistantMessageEvent" } },
+    .{ .name = "message_end", .members = &.{ "type", "message" } },
+    .{ .name = "agent_end", .members = &.{ "type", "messages", "willRetry" } },
+    .{ .name = "tool_execution_start", .members = &.{ "type", "toolCallId", "toolName", "args" } },
+    .{ .name = "tool_execution_update", .members = &.{ "type", "toolCallId", "toolName", "args", "partialResult" } },
+    .{ .name = "tool_execution_end", .members = &.{ "type", "toolCallId", "toolName", "result", "isError" } },
+};
+
+fn eventShape(name: []const u8) ?EventShape {
+    for (&event_shapes) |shape| {
+        if (std.mem.eql(u8, shape.name, name)) return shape;
+    }
+    return null;
+}
+
+fn decodeEvent(reducer: *Reducer, event: std.json.Value, kind: []const u8) !bool {
+    const shape = eventShape(kind) orelse return true;
+    if (event != .object) {
+        try failRun(reducer, "pi_invalid_event", "event is not an object");
+        return false;
+    }
+    for (event.object.keys()) |name| {
+        if (!listed(shape.members, name)) {
+            try failRun(reducer, "pi_invalid_event", "event carried a member outside its pinned shape");
+            return false;
+        }
+    }
+    return true;
+}
 
 fn listed(names: []const []const u8, name: []const u8) bool {
     for (names) |candidate| {
@@ -214,6 +250,12 @@ pub fn validateWireContent(raw: std.json.Value, allow_image: bool) !void {
     }
 }
 
+fn requireMembers(value: std.json.Value, names: []const []const u8) !void {
+    for (names) |name| {
+        if (value.object.get(name) == null) return Error.InvalidFrame;
+    }
+}
+
 fn closedMembers(part: std.json.Value, allowed: []const []const u8) !void {
     for (part.object.keys()) |name| {
         if (!listed(allowed, name)) return Error.InvalidFrame;
@@ -254,6 +296,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         try reducer.pending.append(reducer.arena, event);
         return;
     }
+    if (!try decodeEvent(reducer, event, kind)) return;
     if (std.mem.eql(u8, kind, "agent_start")) {
         if (reducer.started) {
             try failRun(reducer, "pi_invalid_lifecycle", "duplicate agent_start");
@@ -267,6 +310,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         try payload.put(reducer.arena, "status", Reducer.str("running"));
         try payload.put(reducer.arena, "started_at_ms", .{ .integer = started_at });
         try reducer.emit("run.started", .{ .object = payload.* }, false);
+        if (reducer.cancel_intent) try statusUpdate(reducer, "cancelling", "");
         const queued = try reducer.pending.toOwnedSlice(reducer.arena);
         for (queued) |pending| {
             if (reducer.terminal) break;
@@ -280,7 +324,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
             try failRun(reducer, "pi_invalid_message_end", "message_end carried an undecodable message");
             return;
         };
-        if (decoded) |message| reducer.final = message.content;
+        if (decoded) |message| reducer.final = message;
         return;
     }
     if (std.mem.eql(u8, kind, "agent_end")) {
@@ -338,18 +382,13 @@ fn settleRun(reducer: *Reducer) !void {
             }
         }
     }
-    var content: ?std.json.Value = if (final) |message| message.content else null;
-    var stop_reason: []const u8 = if (final) |message| message.stop_reason else "";
-    var error_message: []const u8 = if (final) |message| message.error_message else "";
-    if (final == null and reducer.candidate_present) {
-        content = reducer.final;
-        if (content != null) {
-            stop_reason = "";
-            error_message = "";
-        }
-    }
+    if (final == null and reducer.candidate_present) final = reducer.final;
+    const content: ?std.json.Value = if (final) |message| message.content else null;
+    const stop_reason: []const u8 = if (final) |message| message.stop_reason else "";
+    const error_message: []const u8 = if (final) |message| message.error_message else "";
     const aborted = final != null and std.mem.eql(u8, stop_reason, "aborted");
     if (reducer.cancel_intent and (!reducer.candidate_present or aborted)) {
+        try settleChildren(reducer, true);
         const payload = try reducer.object();
         try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
         try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
@@ -357,6 +396,7 @@ fn settleRun(reducer: *Reducer) !void {
         try reducer.emit("run.cancelled", .{ .object = payload.* }, true);
         return;
     }
+    try settleChildren(reducer, false);
     if (!reducer.candidate_present) {
         try failRun(reducer, "pi_missing_agent_end", "agent_settled arrived without terminal agent_end");
         return;
@@ -371,10 +411,14 @@ fn settleRun(reducer: *Reducer) !void {
         return;
     }
     const reason = if (stop_reason.len == 0) "end_turn" else stop_reason;
+    const converted = wireContentOf(reducer, content.?) catch {
+        try failRun(reducer, "pi_invalid_final_message", "final message carried content the reducer cannot map");
+        return;
+    };
     const response = try reducer.object();
     try response.put(reducer.arena, "id", Reducer.str(reducer.message_id));
     try response.put(reducer.arena, "role", Reducer.str("assistant"));
-    try response.put(reducer.arena, "content", content.?);
+    try response.put(reducer.arena, "content", converted);
     const payload = try reducer.object();
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
@@ -392,6 +436,7 @@ fn failRun(reducer: *Reducer, code: []const u8, message: []const u8) !void {
 }
 
 fn failWith(reducer: *Reducer, code: []const u8, message: []const u8) !void {
+    try settleChildren(reducer, true);
     const err = try reducer.object();
     try err.put(reducer.arena, "code", Reducer.str(code));
     try err.put(reducer.arena, "message", Reducer.str(message));
@@ -443,7 +488,10 @@ fn toolPayload(reducer: *Reducer, tool: *ToolState, carry_arguments: bool, carry
 fn startTool(reducer: *Reducer, event: std.json.Value) !void {
     const native_id = textOf(event, "toolCallId");
     const name = textOf(event, "toolName");
-    const args = memberOf(event, "args") orelse std.json.Value{ .null = {} };
+    const args = memberOf(event, "args") orelse {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "invalid tool start");
+        return;
+    };
     if (native_id.len == 0 or name.len == 0) {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "invalid tool start");
         return;
@@ -474,6 +522,10 @@ fn updateTool(reducer: *Reducer, event: std.json.Value) !void {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "tool update without matching active start");
         return;
     }
+    if (memberOf(event, "partialResult") == null) {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "tool update without matching active start");
+        return;
+    }
     tool.progress = memberOf(event, "partialResult");
     _ = try reducer.emitReplying("action.call.progress", try toolPayload(reducer, tool, false, true, false), false, tool.started_event);
 }
@@ -485,6 +537,10 @@ fn endTool(reducer: *Reducer, event: std.json.Value) !void {
         return;
     };
     if (tool.terminal or !std.mem.eql(u8, tool.name, textOf(event, "toolName"))) {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "tool end without matching active start");
+        return;
+    }
+    if (memberOf(event, "result") == null) {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "tool end without matching active start");
         return;
     }
@@ -502,8 +558,6 @@ fn endTool(reducer: *Reducer, event: std.json.Value) !void {
     }
     _ = try reducer.emitReplying("action.call.completed", try toolPayload(reducer, tool, false, false, true), false, tool.started_event);
 }
-
-const message_update_members = [_][]const u8{ "type", "usage", "assistantMessageEvent" };
 
 const Part = struct { kind: []const u8, text: []const u8 };
 
@@ -551,22 +605,35 @@ fn decodeProviderEvent(raw: std.json.Value) !?Part {
         if (raw.object.get("contentIndex") == null) return Error.InvalidFrame;
         return null;
     }
-    if (std.mem.eql(u8, kind, "toolcall_start") or std.mem.eql(u8, kind, "toolcall_end") or std.mem.eql(u8, kind, "toolcall_delta")) {
+    if (std.mem.eql(u8, kind, "toolcall_start")) {
+        try closedMembers(raw, &.{ "type", "contentIndex", "id", "toolName" });
+        try requireMembers(raw, &.{ "id", "toolName", "contentIndex" });
         return null;
     }
-    if (std.mem.eql(u8, kind, "done") or std.mem.eql(u8, kind, "error")) {
+    if (std.mem.eql(u8, kind, "toolcall_end")) {
+        try closedMembers(raw, &.{ "type", "contentIndex", "toolCall" });
+        try requireMembers(raw, &.{ "toolCall", "contentIndex" });
+        return null;
+    }
+    if (std.mem.eql(u8, kind, "toolcall_delta")) {
+        try closedMembers(raw, &.{ "type", "contentIndex", "delta" });
+        try requireMembers(raw, &.{ "delta", "contentIndex" });
+        return null;
+    }
+    if (std.mem.eql(u8, kind, "done")) {
+        try closedMembers(raw, &.{ "type", "reason", "message" });
+        try requireMembers(raw, &.{ "reason", "message" });
+        return null;
+    }
+    if (std.mem.eql(u8, kind, "error")) {
+        try closedMembers(raw, &.{ "type", "reason", "error" });
+        try requireMembers(raw, &.{ "reason", "error" });
         return null;
     }
     return Error.InvalidFrame;
 }
 
 fn applyMessageUpdate(reducer: *Reducer, event: std.json.Value) !void {
-    for (event.object.keys()) |name| {
-        if (!listed(&message_update_members, name)) {
-            try failRun(reducer, "pi_invalid_message_update", "message_update carried an unknown member");
-            return;
-        }
-    }
     const carried = event.object.get("assistantMessageEvent") orelse {
         try failRun(reducer, "pi_invalid_message_update", "message_update carried no assistant event");
         return;
@@ -708,6 +775,7 @@ pub fn resolveExtension(reducer: *Reducer, option_id: []const u8) !void {
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "status", Reducer.str("submitted"));
     try payload.put(reducer.arena, "answers", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try answers.toOwnedSlice(reducer.arena)) });
+    reducer.interaction_resolved = true;
     try reducer.emit("user.input.resolved", .{ .object = payload.* }, false);
     try statusUpdate(reducer, "running", "");
 }
@@ -817,8 +885,29 @@ test "a tool end naming no start, or one already settled, is refused" {
     }, "pi_invalid_tool_lifecycle");
 }
 
-test "a message_update with an unknown member is refused" {
-    try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"x\"},\"extra\":1}"}, "pi_invalid_message_update");
+test "an event carrying a member outside its pinned shape is refused" {
+    try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"x\"},\"extra\":1}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"agent_start\",\"extra\":1}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{},\"extra\":1}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"agent_end\",\"messages\":[],\"willRetry\":false,\"extra\":1}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"message_end\",\"message\":{},\"extra\":1}"}, "pi_invalid_event");
+}
+
+test "a tool frame omitting its payload member is refused" {
+    try expectRefusal(&.{"{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\"}"}, "pi_invalid_tool_lifecycle");
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_update\",\"toolCallId\":\"t1\",\"toolName\":\"grep\"}",
+    }, "pi_invalid_tool_lifecycle");
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"isError\":false}",
+    }, "pi_invalid_tool_lifecycle");
+}
+
+test "a provider event failing its closed shape is refused" {
+    try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"done\",\"reason\":\"stop\"}}"}, "pi_invalid_message_update");
+    try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"toolcall_delta\",\"contentIndex\":0,\"delta\":\"x\",\"extra\":1}}"}, "pi_invalid_message_update");
 }
 
 test "a message_update carrying no assistant event is refused" {
@@ -844,4 +933,224 @@ test "a select extension offering no options is refused" {
 
 test "a select extension offering an empty option label is refused" {
     try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[\"ok\",\"\"]}", "pi_invalid_extension");
+}
+
+fn settleChildren(reducer: *Reducer, cancelled: bool) !void {
+    for (reducer.tools.items) |tool| {
+        if (tool.terminal) continue;
+        tool.terminal = true;
+        var payload = try toolPayload(reducer, tool, false, false, true);
+        if (cancelled) {
+            _ = try reducer.emitReplying("action.call.cancelled", payload, false, tool.started_event);
+            continue;
+        }
+        const err = try reducer.object();
+        try err.put(reducer.arena, "code", Reducer.str("pi_incomplete_tool"));
+        try err.put(reducer.arena, "message", Reducer.str("Pi run settled before tool completion"));
+        try payload.object.put(reducer.arena, "error", .{ .object = err.* });
+        _ = try reducer.emitReplying("action.call.failed", payload, false, tool.started_event);
+    }
+    if (reducer.interaction_id.len != 0 and !reducer.interaction_resolved) {
+        reducer.interaction_resolved = true;
+        const payload = try reducer.object();
+        try payload.put(reducer.arena, "interaction_id", Reducer.str(reducer.interaction_id));
+        try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
+        try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
+        try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+        try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+        try payload.put(reducer.arena, "status", Reducer.str("cancelled"));
+        try reducer.emit("user.input.resolved", .{ .object = payload.* }, false);
+    }
+}
+
+fn textPart(reducer: *Reducer, kind: []const u8, body: []const u8) !std.json.Value {
+    const shape = try reducer.object();
+    try shape.put(reducer.arena, "type", Reducer.str(kind));
+    try shape.put(reducer.arena, kind, Reducer.str(body));
+    return .{ .object = shape.* };
+}
+
+fn fallbackContent(reducer: *Reducer) !std.json.Value {
+    var parts = std.ArrayList(std.json.Value).empty;
+    if (reducer.reasoning.items.len != 0) try parts.append(reducer.arena, try textPart(reducer, "reasoning", reducer.reasoning.items));
+    if (reducer.text.items.len != 0) try parts.append(reducer.arena, try textPart(reducer, "text", reducer.text.items));
+    if (parts.items.len == 0) return Reducer.str("");
+    if (parts.items.len == 1 and std.mem.eql(u8, textOf(parts.items[0], "type"), "text")) {
+        return Reducer.str(textOf(parts.items[0], "text"));
+    }
+    return .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try parts.toOwnedSlice(reducer.arena)) };
+}
+
+fn wireContentOf(reducer: *Reducer, raw: std.json.Value) !std.json.Value {
+    if (raw == .null) return fallbackContent(reducer);
+    if (raw == .string) return raw;
+    if (raw != .array) return Error.InvalidFrame;
+    var parts = std.ArrayList(std.json.Value).empty;
+    for (raw.array.items) |part| {
+        if (part != .object) return Error.InvalidFrame;
+        const kind = textOf(part, "type");
+        if (std.mem.eql(u8, kind, "text")) {
+            try closedMembers(part, &.{ "type", "text", "textSignature" });
+            try parts.append(reducer.arena, try textPart(reducer, "text", textOf(part, "text")));
+        } else if (std.mem.eql(u8, kind, "thinking")) {
+            try closedMembers(part, &.{ "type", "thinking", "thinkingSignature", "redacted" });
+            try parts.append(reducer.arena, try textPart(reducer, "reasoning", textOf(part, "thinking")));
+        } else if (std.mem.eql(u8, kind, "toolCall")) {
+            try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
+            const tool = findTool(reducer, textOf(part, "id")) orelse return Error.InvalidFrame;
+            const shape = try reducer.object();
+            try shape.put(reducer.arena, "type", Reducer.str("tool_call"));
+            try shape.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
+            try shape.put(reducer.arena, "name", Reducer.str(textOf(part, "name")));
+            if (part.object.get("arguments")) |arguments| try shape.put(reducer.arena, "arguments_json", arguments);
+            try parts.append(reducer.arena, .{ .object = shape.* });
+        } else return Error.InvalidFrame;
+    }
+    if (parts.items.len == 0) return fallbackContent(reducer);
+    return .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try parts.toOwnedSlice(reducer.arena)) };
+}
+
+fn replay(arena: std.mem.Allocator, script: []const []const u8) !Reducer {
+    var reducer = try started(arena);
+    for (script) |line| {
+        try apply(&reducer, try parse(arena, line));
+    }
+    return reducer;
+}
+
+fn typesOf(reducer: *Reducer, out: [][]const u8) [][]const u8 {
+    for (reducer.emitted.items, 0..) |envelope, at| {
+        if (at >= out.len) break;
+        out[at] = textOf(envelope, "type");
+    }
+    return out[0..@min(out.len, reducer.emitted.items.len)];
+}
+
+fn finalContent(reducer: *Reducer) ?std.json.Value {
+    for (reducer.emitted.items) |envelope| {
+        if (!std.mem.eql(u8, textOf(envelope, "type"), "run.completed")) continue;
+        const payload = memberOf(envelope, "payload") orelse return null;
+        const response = memberOf(payload, "final_response") orelse return null;
+        return memberOf(response, "content");
+    }
+    return null;
+}
+
+const settled_text = "{\"type\":\"agent_settled\"}";
+
+fn agentEndWith(comptime content: []const u8) []const u8 {
+    return "{\"type\":\"agent_end\",\"willRetry\":false,\"messages\":[{\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1,\"content\":" ++ content ++ "}]}";
+}
+
+test "a thinking part becomes a reasoning part rather than travelling as itself" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try replay(arena.allocator(), &.{
+        agentEndWith("[{\"type\":\"thinking\",\"thinking\":\"why\"},{\"type\":\"text\",\"text\":\"so\"}]"),
+        settled_text,
+    });
+    const content = finalContent(&reducer) orelse return error.NoCompletion;
+    try std.testing.expect(content == .array);
+    try std.testing.expectEqualStrings("reasoning", textOf(content.array.items[0], "type"));
+    try std.testing.expectEqualStrings("why", textOf(content.array.items[0], "reasoning"));
+    try std.testing.expectEqualStrings("text", textOf(content.array.items[1], "type"));
+}
+
+test "a final toolCall part carries the OAP tool-call id, not the native one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try replay(arena.allocator(), &.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":false}",
+        agentEndWith("[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"grep\",\"arguments\":{}}]"),
+        settled_text,
+    });
+    const content = finalContent(&reducer) orelse return error.NoCompletion;
+    try std.testing.expectEqualStrings("tool_call", textOf(content.array.items[0], "type"));
+    try std.testing.expectEqualStrings("tool-call-6", textOf(content.array.items[0], "tool_call_id"));
+}
+
+test "a final message referencing a tool the run never started is refused" {
+    try expectRefusal(&.{
+        agentEndWith("[{\"type\":\"toolCall\",\"id\":\"missing\",\"name\":\"grep\",\"arguments\":{}}]"),
+        settled_text,
+    }, "pi_invalid_final_message");
+}
+
+test "an empty final content falls back to the accumulated deltas" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try replay(arena.allocator(), &.{
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"thinking_delta\",\"contentIndex\":0,\"delta\":\"why\"}}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":1,\"delta\":\"so\"}}",
+        agentEndWith("[]"),
+        settled_text,
+    });
+    const content = finalContent(&reducer) orelse return error.NoCompletion;
+    try std.testing.expect(content == .array);
+    try std.testing.expectEqualStrings("reasoning", textOf(content.array.items[0], "type"));
+    try std.testing.expectEqualStrings("so", textOf(content.array.items[1], "text"));
+}
+
+test "a settlement with an open tool fails it rather than leaving it dangling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try replay(arena.allocator(), &.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        agentEndWith("\"done\""),
+        settled_text,
+    });
+    var buffer: [8][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("action.call.failed", kinds[kinds.len - 2]);
+    try std.testing.expectEqualStrings("run.completed", kinds[kinds.len - 1]);
+}
+
+test "a cancellation with an open tool cancels it rather than failing it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    try apply(&reducer, try parse(arena.allocator(), "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}"));
+    try cancel(&reducer);
+    try apply(&reducer, try parse(arena.allocator(), settled_text));
+    var buffer: [8][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("action.call.cancelled", kinds[kinds.len - 2]);
+    try std.testing.expectEqualStrings("run.cancelled", kinds[kinds.len - 1]);
+}
+
+test "a settlement with an unresolved interaction cancels it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    try applyExtension(&reducer, try parse(arena.allocator(), "{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"confirm\",\"title\":\"Go?\",\"message\":\"Continue\"}"));
+    try apply(&reducer, try parse(arena.allocator(), agentEndWith("\"done\"")));
+    try apply(&reducer, try parse(arena.allocator(), settled_text));
+    var buffer: [8][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("user.input.resolved", kinds[kinds.len - 2]);
+}
+
+test "a message_end error carries its stop reason into the settlement" {
+    try expectRefusal(&.{
+        "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"error\",\"timestamp\":1,\"content\":\"boom\"}}",
+        "{\"type\":\"agent_end\",\"willRetry\":false,\"messages\":[]}",
+        settled_text,
+    }, "pi_agent_failed");
+}
+
+test "a cancel recorded before the start publishes the cancelling status after it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(arena.allocator());
+    _ = try reducer.counters.nextID(arena.allocator(), "message");
+    reducer.run_id = try reducer.counters.nextID(arena.allocator(), "run");
+    reducer.message_id = try reducer.counters.nextID(arena.allocator(), "message");
+    try cancel(&reducer);
+    try std.testing.expect(reducer.emitted.items.len == 0);
+    try apply(&reducer, try parse(arena.allocator(), "{\"type\":\"agent_start\"}"));
+    var buffer: [4][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("run.started", kinds[0]);
+    try std.testing.expectEqualStrings("run.status.updated", kinds[1]);
 }
