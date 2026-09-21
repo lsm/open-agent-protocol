@@ -1614,20 +1614,55 @@ test "an injected run id takes the place of the minted one without taking its le
     try std.testing.expectEqual(minted.counters.ids, injected.counters.ids);
 }
 
-test "the endpoint and the revision an envelope cites are the ones the caller supplied" {
+fn callingRun(arena: std.mem.Allocator, reducer: *Reducer) !void {
+    try admittedAs(arena, .{}, reducer);
+    try applyEvent(reducer, try parse(arena, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+}
+
+fn citedBy(reducer: *Reducer, kind: []const u8, member: []const u8) ?[]const u8 {
+    for (reducer.emitted.items) |envelope| {
+        const typed = envelope.object.get("type") orelse continue;
+        if (!std.mem.eql(u8, typed.string, kind)) continue;
+        const payload = envelope.object.get("payload") orelse continue;
+        const cited = payload.object.get(member) orelse continue;
+        return cited.string;
+    }
+    return null;
+}
+
+test "the endpoint an action call names as its requester is the one the caller supplied" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
 
     var stock: Reducer = undefined;
-    try admittedAs(scratch, .{}, &stock);
-    try std.testing.expectEqualStrings(capability_revision, stock.emitted.items[0].object.get("capability_revision").?.string);
+    try callingRun(scratch, &stock);
+    try std.testing.expectEqualStrings(endpoint_id, citedBy(&stock, "action.call.requested", "requested_by") orelse return error.NoActionCall);
+
+    var supplied: Reducer = undefined;
+    try admittedAs(scratch, .{}, &supplied);
+    supplied.endpoint = "makai.agent-control";
+    try applyEvent(&supplied, try parse(scratch, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+    try std.testing.expectEqualStrings("makai.agent-control", citedBy(&supplied, "action.call.requested", "requested_by") orelse return error.NoActionCall);
+}
+
+test "the revision every envelope cites is the one the caller supplied" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var stock: Reducer = undefined;
+    try callingRun(scratch, &stock);
+    for (stock.emitted.items) |envelope| {
+        try std.testing.expectEqualStrings(capability_revision, envelope.object.get("capability_revision").?.string);
+    }
 
     var supplied: Reducer = undefined;
     try admittedAs(scratch, .{}, &supplied);
     supplied.revision = "makai-oap-core-v1";
-    supplied.endpoint = "makai.agent-control";
-    try observe(&supplied, try parse(scratch, "{\"type\":\"assistant/message/delta\",\"data\":{\"turn\":1,\"step\":1,\"text\":\"hi\"}}"));
+    try applyEvent(&supplied, try parse(scratch, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+
     const last = supplied.emitted.items[supplied.emitted.items.len - 1];
+    try std.testing.expectEqualStrings("action.call.started", last.object.get("type").?.string);
     try std.testing.expectEqualStrings("makai-oap-core-v1", last.object.get("capability_revision").?.string);
 }
