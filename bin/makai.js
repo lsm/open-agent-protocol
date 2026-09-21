@@ -29,12 +29,18 @@ if (!packageName) {
 }
 
 let binaryPath;
-try {
-  const binaryName = process.platform === "win32" ? "makai.exe" : "makai";
-  binaryPath = require.resolve(`${packageName}/bin/${binaryName}`);
-} catch {
+for (const name of ["oapx", "makai"]) {
+  const binaryName = process.platform === "win32" ? `${name}.exe` : name;
+  try {
+    binaryPath = require.resolve(`${packageName}/bin/${binaryName}`);
+    break;
+  } catch {
+    continue;
+  }
+}
+if (!binaryPath) {
   console.error(
-    `Error: Could not find Makai binary for ${platformKey}.\n` +
+    `Error: Could not find the oapx binary for ${platformKey}.\n` +
       `The package ${packageName} may not be installed.\n` +
       `Try reinstalling: npm install -g makai`
   );

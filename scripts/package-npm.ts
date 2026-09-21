@@ -21,6 +21,9 @@ const PLATFORMS = [
   { target: "win32-arm64", os: "win32", cpu: "arm64", binary: "oapx-win32-arm64" },
 ];
 
+const withheldIdx = process.argv.indexOf("--withhold");
+const WITHHELD_TARGETS = withheldIdx !== -1 ? process.argv[withheldIdx + 1].split(",").filter(Boolean) : [];
+
 console.log(`Packaging npm packages (version ${VERSION})...\n`);
 
 for (const { target, os, cpu, binary } of PLATFORMS) {
@@ -34,6 +37,10 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
   const destBinary = join(binDir, os === "win32" ? "oapx.exe" : "oapx");
 
   if (!require("fs").existsSync(srcBinary)) {
+    if (WITHHELD_TARGETS.includes(target)) {
+      console.log(`  skip ${pkgName}: ${binary} was withheld by the release build`);
+      continue;
+    }
     throw new Error(`Binary not found: ${srcBinary} (required for ${pkgName})`);
   }
   copyFileSync(srcBinary, destBinary);

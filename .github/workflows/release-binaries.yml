@@ -112,7 +112,14 @@ jobs:
 
           if [ -z "${APPLE_CERTIFICATE:-}" ]; then
             if [ "${{ github.event_name }}" = "push" ]; then
-              echo "::error::APPLE_CERTIFICATE is unset on a tag build; a release must ship signed macOS binaries"
+              case "$GITHUB_REF_NAME" in
+                *-*)
+                  echo "MACOS_WITHHELD=true" >> "$GITHUB_ENV"
+                  echo "::warning::APPLE_CERTIFICATE is unset on the prerelease tag $GITHUB_REF_NAME; withholding the ${{ matrix.arch_name }} macOS artifact rather than shipping it unsigned"
+                  exit 0
+                  ;;
+              esac
+              echo "::error::APPLE_CERTIFICATE is unset on a stable tag build; a release must ship signed macOS binaries"
               exit 1
             fi
             echo "::warning::macOS signing secrets are unset; leaving ${{ matrix.arch_name }} binary unsigned (workflow_dispatch only)"
@@ -168,7 +175,7 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/codesign.keychain-db" 2>/dev/null || true
 
       - name: Package tar.gz
-        if: matrix.archive == 'tar.gz'
+        if: matrix.archive == 'tar.gz' && env.MACOS_WITHHELD != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -182,7 +189,7 @@ jobs:
           tar -C "$BIN_DIR" -czf "$GITHUB_WORKSPACE/dist/$ARTIFACT" "${{ matrix.binary_name }}"
 
       - name: Package zip
-        if: matrix.archive == 'zip'
+        if: matrix.archive == 'zip' && env.MACOS_WITHHELD != 'true'
         shell: pwsh
         run: |
           $version = if ($env:GITHUB_REF -like 'refs/tags/v*') {
@@ -196,6 +203,7 @@ jobs:
           Compress-Archive -Path "$binDir/${{ matrix.binary_name }}" -DestinationPath "$env:GITHUB_WORKSPACE/dist/$artifact" -Force
 
       - name: Upload packaged artifact
+        if: env.MACOS_WITHHELD != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: oapx-${{ matrix.os_name }}-${{ matrix.arch_name }}
@@ -203,6 +211,7 @@ jobs:
           if-no-files-found: error
 
       - name: Stage binary for npm packaging
+        if: env.MACOS_WITHHELD != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -211,6 +220,7 @@ jobs:
              "$GITHUB_WORKSPACE/dist-npm-upload/oapx-${{ matrix.npm_target }}"
 
       - name: Upload binary for npm packaging
+        if: env.MACOS_WITHHELD != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: npm-binary-${{ matrix.npm_target }}
@@ -309,7 +319,13 @@ jobs:
           mv dist/bin-flat dist/bin
 
       - name: Package npm packages
-        run: npx tsx scripts/package-npm.ts --version "${GITHUB_REF_NAME#v}"
+        run: |
+          set -euo pipefail
+          WITHHELD=""
+          case "$GITHUB_REF_NAME" in
+            *-*) WITHHELD="darwin-arm64,darwin-x64" ;;
+          esac
+          npx tsx scripts/package-npm.ts --version "${GITHUB_REF_NAME#v}" --withhold "$WITHHELD"
 
       - name: Upload npm packages
         uses: actions/upload-artifact@v4
