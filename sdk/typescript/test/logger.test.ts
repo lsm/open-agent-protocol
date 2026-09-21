@@ -191,6 +191,8 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   delete process.env.MAKAI_BINARY_PATH;
   delete process.env.MAKAI_BINARY_URL;
   delete process.env.MAKAI_BINARY_SHA256;
+  const prevSearchPath = process.env.PATH;
+  process.env.PATH = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-path-"));
   try {
     const resolved = await resolveMakaiBinary({ logger, cwd: emptyCwd, resolveModule });
     const notFoundLog = logger.entries.find((e) => e.message === "binary: bundled package not found");
@@ -219,7 +221,37 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     else process.env.MAKAI_BINARY_URL = prevUrl;
     if (prevChecksum === undefined) delete process.env.MAKAI_BINARY_SHA256;
     else process.env.MAKAI_BINARY_SHA256 = prevChecksum;
+    if (prevSearchPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevSearchPath;
     await fs.promises.rm(emptyCwd, { recursive: true, force: true });
+  }
+});
+
+test("binary resolver finds an install predating the rename on PATH", async () => {
+  const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  const pathDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-path-"));
+  const legacy = path.join(pathDir, process.platform === "win32" ? "makai.exe" : "makai");
+  await fs.promises.writeFile(legacy, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const resolveModule = (specifier: string): string => {
+    throw new Error(`Cannot find module '${specifier}'`);
+  };
+  const prevBinaryPath = process.env.MAKAI_BINARY_PATH;
+  const prevBinaryUrl = process.env.MAKAI_BINARY_URL;
+  const prevSearchPath = process.env.PATH;
+  delete process.env.MAKAI_BINARY_PATH;
+  delete process.env.MAKAI_BINARY_URL;
+  process.env.PATH = pathDir;
+  try {
+    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), legacy);
+  } finally {
+    if (prevBinaryPath === undefined) delete process.env.MAKAI_BINARY_PATH;
+    else process.env.MAKAI_BINARY_PATH = prevBinaryPath;
+    if (prevBinaryUrl === undefined) delete process.env.MAKAI_BINARY_URL;
+    else process.env.MAKAI_BINARY_URL = prevBinaryUrl;
+    if (prevSearchPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevSearchPath;
+    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
+    await fs.promises.rm(pathDir, { recursive: true, force: true });
   }
 });
 

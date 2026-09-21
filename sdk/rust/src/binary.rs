@@ -1,4 +1,4 @@
-//! Locating the `makai` runtime binary.
+//! Locating the `oapx` runtime binary.
 //!
 //! The order mirrors `typescript/src/binary_resolver.ts`:
 //!
@@ -6,9 +6,9 @@
 //! 2. a URL (`binary_url` / `MAKAI_BINARY_URL`) with a **required** SHA-256
 //!    checksum, cached on disk;
 //! 3. *(TypeScript only)* the `@makai/cli-<platform>-<arch>` npm package;
-//! 4. `./zig-out/bin/makai`;
-//! 5. `./zig/zig-out/bin/makai`;
-//! 6. `makai` on `PATH`.
+//! 4. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`;
+//! 5. the same pair under `./zig/zig-out/bin/`;
+//! 6. `oapx` on `PATH`.
 //!
 //! Step 3 has no Rust counterpart and is deliberately skipped. It resolves
 //! through Node's module resolution against an optional npm dependency; Rust has
@@ -49,13 +49,20 @@ pub struct BinaryResolver {
     pub base_dir: Option<PathBuf>,
 }
 
-/// The name of the runtime executable on this platform.
-fn binary_name() -> &'static str {
+/// The names of the runtime executable on this platform, preferred first.
+///
+/// `makai` trails `oapx` so an install predating the rename keeps resolving.
+fn binary_names() -> &'static [&'static str] {
     if cfg!(windows) {
-        "makai.exe"
+        &["oapx.exe", "makai.exe"]
     } else {
-        "makai"
+        &["oapx", "makai"]
     }
+}
+
+/// The preferred name of the runtime executable on this platform.
+fn binary_name() -> &'static str {
+    binary_names()[0]
 }
 
 fn env_var(key: &str) -> Option<String> {
@@ -123,16 +130,15 @@ impl BinaryResolver {
             Some(base) => base.clone(),
             None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
-        for candidate in [
-            base.join("zig-out").join("bin").join(binary_name()),
-            base.join("zig")
-                .join("zig-out")
-                .join("bin")
-                .join(binary_name()),
-        ] {
-            if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
-                tracing::debug!(path = %candidate.display(), "resolved binary from local build");
-                return Ok(candidate);
+        for name in binary_names() {
+            for candidate in [
+                base.join("zig-out").join("bin").join(name),
+                base.join("zig").join("zig-out").join("bin").join(name),
+            ] {
+                if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
+                    tracing::debug!(path = %candidate.display(), "resolved binary from local build");
+                    return Ok(candidate);
+                }
             }
         }
 
@@ -436,9 +442,11 @@ mod tests {
     #[test]
     fn the_binary_name_matches_the_platform() {
         if cfg!(windows) {
-            assert_eq!(binary_name(), "makai.exe");
+            assert_eq!(binary_name(), "oapx.exe");
+            assert_eq!(binary_names(), &["oapx.exe", "makai.exe"]);
         } else {
-            assert_eq!(binary_name(), "makai");
+            assert_eq!(binary_name(), "oapx");
+            assert_eq!(binary_names(), &["oapx", "makai"]);
         }
     }
 }

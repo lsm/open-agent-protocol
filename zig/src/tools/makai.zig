@@ -2304,12 +2304,15 @@ fn runServe(
     stdout: std.Io.File,
     stderr: std.Io.File,
 ) !void {
-    if (args.len == 0) return error.InvalidArgument;
+    if (args.len == 0) {
+        try compat.stdio.writeAll(stderr, "serve takes a role, agent or provider\n\n");
+        return error.InvalidServeRole;
+    }
     const role = serveRole(args[0]) orelse {
         var buf: [256]u8 = undefined;
         const msg = try std.fmt.bufPrint(&buf, "serve takes a role, agent or provider: {s}\n\n", .{args[0]});
         try compat.stdio.writeAll(stderr, msg);
-        return error.InvalidArgument;
+        return error.InvalidServeRole;
     };
     return switch (role) {
         .agent => runOapMode(allocator, args[1..], stdin, stdout, stderr),
@@ -2340,7 +2343,7 @@ fn runServeProvider(
             var buf: [256]u8 = undefined;
             const msg = try std.fmt.bufPrint(&buf, "serve provider takes only --specimens: {s}\n\n", .{args[0]});
             try compat.stdio.writeAll(stderr, msg);
-            return error.InvalidArgument;
+            return error.InvalidServeOption;
         }
     }
     return runOapProviderMode(allocator, stdin, stdout, stderr, answers_specimens);
@@ -6459,7 +6462,10 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "serve")) {
         runServe(allocator, args[2..], stdin, stdout, stderr) catch |err| {
-            if (err == error.InvalidArgument) try printUsage(stderr);
+            if (err == error.InvalidServeRole or err == error.InvalidServeOption) {
+                try printUsage(stderr);
+                return error.InvalidArgument;
+            }
             if (err == error.MalformedLine or err == error.UnaddressableEnvelope) std.process.exit(1);
             return err;
         };

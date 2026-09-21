@@ -194,6 +194,25 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
     }
   }
 
+  for (const name of binaryNames) {
+    const onPath = await findOnPath(name);
+    if (onPath !== undefined) {
+      logger.debug("binary: resolved from PATH", { path: onPath });
+      return onPath;
+    }
+  }
+
   logger.debug("binary: falling back to PATH lookup", { binary: binaryNames[0] });
   return "oapx";
+}
+
+async function findOnPath(name: string): Promise<string | undefined> {
+  const raw = process.env.PATH;
+  if (!raw) return undefined;
+  for (const dir of raw.split(path.delimiter)) {
+    if (dir.length === 0) continue;
+    const candidate = path.join(dir, name);
+    if (await fileExists(candidate)) return candidate;
+  }
+  return undefined;
 }

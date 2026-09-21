@@ -63,8 +63,13 @@ class BinaryResolverOptions:
     cache_dir: Optional[str] = None
 
 
+def _binary_names() -> tuple[str, ...]:
+    suffix = ".exe" if os.name == "nt" else ""
+    return tuple(f"{name}{suffix}" for name in ("oapx", "makai"))
+
+
 def _binary_name() -> str:
-    return "oapx.exe" if os.name == "nt" else "oapx"
+    return _binary_names()[0]
 
 
 def _sha256(content: bytes) -> str:
@@ -93,18 +98,19 @@ def resolve_makai_binary(options: Optional[BinaryResolverOptions] = None) -> str
     if binary_url:
         return _resolve_from_url(binary_url, checksum, options.cache_dir)
 
-    name = _binary_name()
-    for candidate in (
-        Path.cwd() / "zig-out" / "bin" / name,
-        Path.cwd() / "zig" / "zig-out" / "bin" / name,
-    ):
-        if candidate.exists():
-            return str(candidate)
+    for name in _binary_names():
+        for candidate in (
+            Path.cwd() / "zig-out" / "bin" / name,
+            Path.cwd() / "zig" / "zig-out" / "bin" / name,
+        ):
+            if candidate.exists():
+                return str(candidate)
 
-    from_path = shutil.which(name)
-    if from_path:
-        return from_path
-    return name
+    for name in _binary_names():
+        from_path = shutil.which(name)
+        if from_path:
+            return from_path
+    return _binary_name()
 
 
 def _resolve_from_url(binary_url: str, checksum: Optional[str], cache_dir: Optional[str]) -> str:

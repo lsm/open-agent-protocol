@@ -150,6 +150,43 @@ async fn local_builds_are_checked_in_order() {
 }
 
 #[tokio::test]
+async fn oapx_wins_over_makai_in_the_same_directory() {
+    let _guard = EnvGuard::set(&clear_env());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin = temp.path().join("zig-out").join("bin");
+    std::fs::create_dir_all(&bin).expect("create bin");
+    std::fs::write(bin.join("makai"), b"#!/bin/sh\nexit 0\n").expect("write makai");
+    std::fs::write(bin.join("oapx"), b"#!/bin/sh\nexit 0\n").expect("write oapx");
+
+    let resolved = BinaryResolver {
+        base_dir: Some(temp.path().to_path_buf()),
+        ..Default::default()
+    }
+    .resolve()
+    .await
+    .expect("resolves");
+    assert_eq!(resolved, bin.join("oapx"));
+}
+
+#[tokio::test]
+async fn an_install_predating_the_rename_still_resolves() {
+    let _guard = EnvGuard::set(&clear_env());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin = temp.path().join("zig-out").join("bin");
+    std::fs::create_dir_all(&bin).expect("create bin");
+    std::fs::write(bin.join("makai"), b"#!/bin/sh\nexit 0\n").expect("write makai");
+
+    let resolved = BinaryResolver {
+        base_dir: Some(temp.path().to_path_buf()),
+        ..Default::default()
+    }
+    .resolve()
+    .await
+    .expect("resolves");
+    assert_eq!(resolved, bin.join("makai"));
+}
+
+#[tokio::test]
 async fn with_nothing_to_find_the_bare_command_is_returned_for_path_lookup() {
     let _guard = EnvGuard::set(&clear_env());
     let temp = tempfile::tempdir().expect("tempdir");
@@ -161,7 +198,7 @@ async fn with_nothing_to_find_the_bare_command_is_returned_for_path_lookup() {
     .resolve()
     .await
     .expect("resolves");
-    let expected = if cfg!(windows) { "makai.exe" } else { "makai" };
+    let expected = if cfg!(windows) { "oapx.exe" } else { "oapx" };
     assert_eq!(resolved, PathBuf::from(expected));
 }
 
