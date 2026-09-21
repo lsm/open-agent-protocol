@@ -904,7 +904,7 @@ pub fn resolveExtension(reducer: *Reducer, answer: []const u8) !void {
     const selected = try reducer.object();
     try selected.put(reducer.arena, "question_id", Reducer.str("value"));
     if (interaction.text) {
-        if (answer.len == 0) return;
+        if (answer.len == 0) return Error.InvalidResolution;
         try selected.put(reducer.arena, "text", Reducer.str(answer));
     } else {
         if (!offers(interaction, answer)) return Error.InvalidResolution;
@@ -1130,7 +1130,7 @@ fn fallbackContent(reducer: *Reducer) !std.json.Value {
 }
 
 fn wireContentOf(reducer: *Reducer, raw: std.json.Value) !std.json.Value {
-    if (raw == .null) return fallbackContent(reducer);
+    if (raw == .null) return Reducer.str("");
     if (raw == .string) return raw;
     if (raw != .array) return Error.InvalidFrame;
     var parts = std.ArrayList(std.json.Value).empty;
@@ -1342,7 +1342,7 @@ test "a toolResult message carries members the assistant shape does not admit" {
     try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, assistant_with_tool_member)));
 }
 
-test "a null final content reaches the delta fallback rather than failing the run" {
+test "a null final content is empty text, and an empty part list is the delta fallback" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1356,7 +1356,20 @@ test "a null final content reaches the delta fallback rather than failing the ru
     const response = memberOf(payload, "final_response") orelse return error.NoFinalResponse;
     const content = memberOf(response, "content") orelse return error.NoContent;
     try std.testing.expect(content == .string);
-    try std.testing.expectEqualStrings("streamed", content.string);
+    try std.testing.expectEqualStrings("", content.string);
+
+    var second = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer second.deinit();
+    const b = second.allocator();
+    var fell_back = try started(b);
+    try apply(&fell_back, try parse(b, "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"streamed\"}}"));
+    try apply(&fell_back, try parse(b, "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"end_turn\",\"timestamp\":1,\"content\":[]}}"));
+    try apply(&fell_back, try parse(b, agentEndWith("[]")));
+    try apply(&fell_back, try parse(b, settled_text));
+    const fallback_payload = payloadOf(&fell_back, "run.completed") orelse return error.RunDidNotComplete;
+    const fallback_response = memberOf(fallback_payload, "final_response") orelse return error.NoFinalResponse;
+    const fallback_content = memberOf(fallback_response, "content") orelse return error.NoContent;
+    try std.testing.expectEqualStrings("streamed", fallback_content.string);
 }
 
 test "a tool end whose isError is not a boolean is refused" {
@@ -1629,5 +1642,18 @@ test "a text interaction still takes any answer" {
     var reducer = try started(a);
     try applyExtension(&reducer, try parse(a, text_request));
     try resolveExtension(&reducer, "anything at all");
+    try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
+}
+
+test "an empty answer to a text interaction is refused, not silently dropped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, text_request));
+    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&reducer, ""));
+    try std.testing.expect(countOf(&reducer, "user.input.resolved") == 0);
+    try std.testing.expect(!reducer.interactions.items[0].resolved);
+    try resolveExtension(&reducer, "Ada");
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
 }
