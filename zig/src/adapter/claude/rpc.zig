@@ -33,9 +33,15 @@ pub const Diagnostic = struct {
         self.message = message;
         return Error.InvalidMessage;
     }
+
+    fn refuseQuoted(self: *Diagnostic, arena: std.mem.Allocator, kind: Error, comptime shape: []const u8, value: []const u8) Error {
+        const prefix: []const u8 = if (kind == Error.InvalidControl) invalid_control_prefix else invalid_frame_prefix;
+        self.message = std.fmt.allocPrint(arena, "{s}: " ++ shape, .{ prefix, value }) catch prefix;
+        return kind;
+    }
 };
 
-pub const Need = enum { present, text, array, number, boolean, text_array };
+pub const Need = enum { present, text, array, number, boolean, text_array, object, object_array };
 
 pub const Member = struct {
     path: []const []const u8,
@@ -56,7 +62,6 @@ const session_state_detail = frameDetail("session_state_changed requires state")
 const task_started_detail = frameDetail("task_started requires task_id, description, uuid, and session_id");
 const task_progress_detail = frameDetail("task_progress requires task_id, description, uuid, and session_id");
 const task_notification_detail = frameDetail("task_notification requires task_id, status, output_file, summary, uuid, and session_id");
-const task_status_detail = frameDetail("task_notification status is not completed, failed, or stopped");
 const task_updated_detail = frameDetail("task_updated requires task_id");
 
 const user_members = [_]Member{
@@ -202,39 +207,82 @@ fn unsatisfied(object: std.json.ObjectMap, required: []const Member) ?[]const u8
 }
 
 const Declared = struct {
-    key: []const u8,
+    path: []const []const u8,
     need: Need,
 };
 
+const Nested = struct {
+    path: []const []const u8,
+    need: Need,
+};
+
+const user_nested = [_]Nested{
+    .{ .path = &.{"origin"}, .need = .object },
+    .{ .path = &.{ "message", "content" }, .need = .object_array },
+};
+const assistant_nested = [_]Nested{
+    .{ .path = &.{ "message", "content" }, .need = .object_array },
+};
+const task_updated_nested = [_]Nested{
+    .{ .path = &.{"patch"}, .need = .object },
+};
+
+fn nestedMembers(frame_type: []const u8, subtype: []const u8) []const Nested {
+    if (std.mem.eql(u8, frame_type, "user")) return &user_nested;
+    if (std.mem.eql(u8, frame_type, "assistant")) return &assistant_nested;
+    if (std.mem.eql(u8, frame_type, "system") and std.mem.eql(u8, subtype, "task_updated")) return &task_updated_nested;
+    return &.{};
+}
+
+fn wrongNestedType(object: std.json.ObjectMap, nested: []const Nested) bool {
+    for (nested) |need| {
+        const value = member(object, need.path) orelse continue;
+        if (value == .null) continue;
+        const ok = switch (need.need) {
+            .object => value == .object,
+            .object_array => blk: {
+                if (value != .array) break :blk true;
+                for (value.array.items) |item| {
+                    if (item != .object) break :blk false;
+                }
+                break :blk true;
+            },
+            else => true,
+        };
+        if (!ok) return true;
+    }
+    return false;
+}
+
 const result_declared = [_]Declared{
-    .{ .key = "duration_ms", .need = .number },
-    .{ .key = "duration_api_ms", .need = .number },
-    .{ .key = "is_error", .need = .boolean },
-    .{ .key = "num_turns", .need = .number },
-    .{ .key = "queued_turn_count", .need = .number },
-    .{ .key = "api_error_status", .need = .number },
-    .{ .key = "total_cost_usd", .need = .number },
-    .{ .key = "errors", .need = .text_array },
-    .{ .key = "user_message_uuid", .need = .text },
-    .{ .key = "user_message_uuids", .need = .text_array },
-    .{ .key = "terminal_reason", .need = .text },
-    .{ .key = "result", .need = .text },
-    .{ .key = "stop_reason", .need = .text },
-    .{ .key = "uuid", .need = .text },
+    .{ .path = &.{"duration_ms"}, .need = .number },
+    .{ .path = &.{"duration_api_ms"}, .need = .number },
+    .{ .path = &.{"is_error"}, .need = .boolean },
+    .{ .path = &.{"num_turns"}, .need = .number },
+    .{ .path = &.{"queued_turn_count"}, .need = .number },
+    .{ .path = &.{"api_error_status"}, .need = .number },
+    .{ .path = &.{"total_cost_usd"}, .need = .number },
+    .{ .path = &.{"errors"}, .need = .text_array },
+    .{ .path = &.{"user_message_uuid"}, .need = .text },
+    .{ .path = &.{"user_message_uuids"}, .need = .text_array },
+    .{ .path = &.{"terminal_reason"}, .need = .text },
+    .{ .path = &.{"result"}, .need = .text },
+    .{ .path = &.{"stop_reason"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
 };
 const stream_event_declared = [_]Declared{
-    .{ .key = "user_message_uuid", .need = .text },
-    .{ .key = "user_message_uuids", .need = .text_array },
+    .{ .path = &.{"user_message_uuid"}, .need = .text },
+    .{ .path = &.{"user_message_uuids"}, .need = .text_array },
 };
 const assistant_declared = [_]Declared{
-    .{ .key = "user_message_uuid", .need = .text },
-    .{ .key = "user_message_uuids", .need = .text_array },
-    .{ .key = "is_api_error_message", .need = .boolean },
-    .{ .key = "error", .need = .text },
+    .{ .path = &.{"user_message_uuid"}, .need = .text },
+    .{ .path = &.{"user_message_uuids"}, .need = .text_array },
+    .{ .path = &.{"is_api_error_message"}, .need = .boolean },
+    .{ .path = &.{"error"}, .need = .text },
 };
 const task_updated_declared = [_]Declared{
-    .{ .key = "uuid", .need = .text },
-    .{ .key = "session_id", .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+    .{ .path = &.{"session_id"}, .need = .text },
 };
 
 fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared {
@@ -247,10 +295,9 @@ fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared
 
 fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
     for (declared) |need| {
-        const value = object.get(need.key) orelse continue;
+        const value = member(object, need.path) orelse continue;
         if (value == .null) continue;
         const ok = switch (need.need) {
-            .present => true,
             .text => value == .string,
             .array => value == .array,
             .number => value == .integer or value == .float,
@@ -262,6 +309,7 @@ fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
                 }
                 break :blk true;
             },
+            else => true,
         };
         if (!ok) return true;
     }
@@ -307,8 +355,8 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     if (parsed != .object) return report.invalid("frame must be exactly one JSON object");
     const object = parsed.object;
 
-    const type_value = object.get("type") orelse return report.invalid("frame requires type");
-    if (type_value != .string or type_value.string.len == 0) return report.invalid("frame requires type");
+    const type_value = object.get("type") orelse return report.invalid("type is required");
+    if (type_value != .string or type_value.string.len == 0) return report.invalid("type must be a non-empty string");
 
     var message = Message{
         .kind = .observation,
@@ -317,19 +365,19 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         .object = parsed,
     };
     if (object.get("subtype")) |subtype| {
-        if (subtype != .string or subtype.string.len == 0) return report.invalid("frame subtype must not be empty");
+        if (subtype != .string or subtype.string.len == 0) return report.invalid("subtype must be a non-empty string");
         message.subtype = subtype.string;
     }
 
     if (std.mem.eql(u8, message.type, type_control_request)) {
         message.kind = .control_request;
-        const id = object.get("request_id") orelse return report.invalidControl("control request requires request_id");
-        if (id != .string or id.string.len == 0) return report.invalidControl("control request requires request_id");
+        const id = object.get("request_id") orelse return report.invalidControl("control_request requires a non-empty request_id");
+        if (id != .string or id.string.len == 0) return report.invalidControl("control_request requires a non-empty request_id");
         message.request_id = id.string;
-        const request = object.get("request") orelse return report.invalidControl("control request requires request");
-        if (request != .object) return report.invalidControl("control request requires request");
-        const subtype = request.object.get("subtype") orelse return report.invalidControl("control request requires request.subtype");
-        if (subtype != .string or subtype.string.len == 0) return report.invalidControl("control request requires request.subtype");
+        const request = object.get("request") orelse return report.invalidControl("request is required");
+        if (request != .object) return report.invalidControl("request must be one object");
+        const subtype = request.object.get("subtype") orelse return report.invalidControl("control request requires a non-empty subtype");
+        if (subtype != .string or subtype.string.len == 0) return report.invalidControl("control request requires a non-empty subtype");
         message.subtype = subtype.string;
         if (std.mem.eql(u8, message.subtype, "can_use_tool")) {
             if (unsatisfied(object, &can_use_tool_members)) |detail| return report.refuseFrame(detail);
@@ -338,12 +386,12 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     }
     if (std.mem.eql(u8, message.type, type_control_response)) {
         message.kind = .control_response;
-        const response = object.get("response") orelse return report.invalidControl("control response requires response");
-        if (response != .object) return report.invalidControl("control response requires response");
-        const state = response.object.get("subtype") orelse return report.invalidControl("control response requires response.subtype");
-        if (state != .string or state.string.len == 0) return report.invalidControl("control response requires response.subtype");
-        const id = response.object.get("request_id") orelse return report.invalidControl("control response requires response.request_id");
-        if (id != .string or id.string.len == 0) return report.invalidControl("control response requires response.request_id");
+        const response = object.get("response") orelse return report.invalidControl("response is required");
+        if (response != .object) return report.invalidControl("response must be one object");
+        const state = response.object.get("subtype") orelse return report.invalidControl("control response requires a non-empty subtype");
+        if (state != .string or state.string.len == 0) return report.invalidControl("control response requires a non-empty subtype");
+        const id = response.object.get("request_id") orelse return report.invalidControl("control response requires a non-empty request_id");
+        if (id != .string or id.string.len == 0) return report.invalidControl("control response requires a non-empty request_id");
         var envelope = ControlResponse{ .request_id = id.string };
         if (std.mem.eql(u8, state.string, "success")) {
             envelope.success = true;
@@ -351,17 +399,17 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
                 if (payload != .null) envelope.response = payload;
             }
         } else if (std.mem.eql(u8, state.string, "error")) {
-            const detail = response.object.get("error") orelse return report.invalidControl("an error control response requires error");
-            if (detail != .string or detail.string.len == 0) return report.invalidControl("an error control response requires error");
+            const detail = response.object.get("error") orelse return report.invalidControl("error control response requires a non-empty error");
+            if (detail != .string or detail.string.len == 0) return report.invalidControl("error control response requires a non-empty error");
             envelope.err = detail.string;
-        } else return report.invalidControl("control response subtype is neither success nor error");
+        } else return report.refuseQuoted(arena, Error.InvalidControl, "control response subtype \"{s}\" is not success or error", state.string);
         message.response = envelope;
         return message;
     }
     if (std.mem.eql(u8, message.type, type_control_cancel)) {
         message.kind = .control_cancel;
-        const id = object.get("request_id") orelse return report.invalidControl("control cancel requires request_id");
-        if (id != .string or id.string.len == 0) return report.invalidControl("control cancel requires request_id");
+        const id = object.get("request_id") orelse return report.invalidControl("control_cancel_request requires a non-empty request_id");
+        if (id != .string or id.string.len == 0) return report.invalidControl("control_cancel_request requires a non-empty request_id");
         message.request_id = id.string;
         return message;
     }
@@ -369,9 +417,13 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         return report.refuseFrame(detail);
     }
     if (std.mem.eql(u8, message.type, "system") and std.mem.eql(u8, message.subtype, "task_notification") and !taskStatusIsTerminal(object)) {
-        return report.refuseFrame(task_status_detail);
+        const status = member(object, &.{"status"}) orelse std.json.Value{ .string = "" };
+        const shown = if (status == .string) status.string else "";
+        return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status \"{s}\" is not completed, failed, or stopped", shown);
     }
-    if (wrongType(object, declaredMembers(message.type, message.subtype))) {
+    if (wrongType(object, declaredMembers(message.type, message.subtype)) or
+        wrongNestedType(object, nestedMembers(message.type, message.subtype)))
+    {
         return report.refuseFrame(frameDetail("frame declares a member of the wrong type"));
     }
     return message;
@@ -606,4 +658,45 @@ test "a declared member of the wrong type is fatal" {
     try accepts(&arena, result ++ "\"is_error\":true,\"queued_turn_count\":2,\"duration_ms\":130,\"errors\":[\"a\"],\"user_message_uuids\":[\"turn-1\"]}");
     try accepts(&arena, result ++ "\"is_error\":false,\"queued_turn_count\":null,\"stop_reason\":null}");
     try accepts(&arena, result ++ "\"total_cost_usd\":0.5}");
+}
+
+test "a nested member of the wrong type is fatal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try refuses(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[]},\"origin\":\"human\"}");
+    try accepts(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[]},\"origin\":{\"kind\":\"human\"}}");
+    try accepts(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[]},\"origin\":null}");
+
+    try refuses(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[7]}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[\"text\"]}}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[{\"type\":\"text\"}]}}");
+
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"task_updated\",\"session_id\":\"s\",\"task_id\":\"t\",\"patch\":7}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"task_updated\",\"session_id\":\"s\",\"task_id\":\"t\",\"patch\":{\"status\":\"killed\"}}");
+}
+
+test "a refusal quotes the value the oracle quotes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var state = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_response\",\"response\":{\"subtype\":\"maybe\",\"request_id\":\"r\"}}", &state));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": control response subtype \"maybe\" is not success or error", state.message);
+
+    var status = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"system\",\"subtype\":\"task_notification\",\"session_id\":\"s\",\"task_id\":\"t\",\"status\":\"running\",\"output_file\":\"/o\",\"summary\":\"d\",\"uuid\":\"u\"}", &status));
+    try testing.expectEqualStrings(invalid_frame_prefix ++ ": task_notification status \"running\" is not completed, failed, or stopped", status.message);
+
+    var missing = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"subtype\":\"init\"}", &missing));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": type is required", missing.message);
+
+    var empty = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"\"}", &empty));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": type must be a non-empty string", empty.message);
+
+    var cancel = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_cancel_request\"}", &cancel));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": control_cancel_request requires a non-empty request_id", cancel.message);
 }

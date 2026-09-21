@@ -211,7 +211,7 @@ pub const Reducer = struct {
         };
 
         var requested = try self.toolPayload(run, tool);
-        if (input) |value| try self.put(&requested, "arguments_json", value);
+        try self.put(&requested, "arguments_json", input orelse .null);
         const requested_id = try self.emitCorrelated(run, "action.call.requested", .{ .object = requested }, tool.id, "");
 
         const started = try self.toolPayload(run, tool);
@@ -462,7 +462,7 @@ pub const Reducer = struct {
     fn closeTerminal(self: *Reducer, frame: std.json.ObjectMap, payload: *std.json.ObjectMap) !void {
         try self.put(payload, "usage", try self.usageOf(frame));
         if (integerMember(frame, "duration_ms")) |duration| {
-            try self.put(payload, "duration_ms", int(duration));
+            if (duration != 0) try self.put(payload, "duration_ms", int(duration));
         }
     }
 
@@ -1668,7 +1668,7 @@ test "a gate the CLI withdraws resolves as cancelled and releases the run" {
     try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
 }
 
-test "a delta whose member is absent is still the oracle's empty part" {
+test "a delta whose member is absent emits an empty part the oracle omits" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1773,6 +1773,44 @@ test "a submission arriving under a live run is refused, not substituted" {
     );
     try reducer.submit("turn-2");
     try testing.expectEqualStrings("turn-2", reducer.run.?.submission_uuid);
+}
+
+test "a call with no input still carries the member the schema requires" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    const requested = firstPayload(&reducer, "action.call.requested").?;
+    const arguments = requested.get("arguments_json").?;
+    try testing.expectEqual(std.json.Value{ .null = {} }, arguments);
+}
+
+test "a terminal omits a duration the oracle would not have sent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var instant = Reducer.init(&arena, .{});
+    instant.open();
+    try startedRun(&instant, scratch, "turn-1");
+    try observeText(&instant, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","result":"one","duration_ms":0,"user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqual(@as(?std.json.Value, null), firstPayload(&instant, "run.completed").?.get("duration_ms"));
+
+    var measured = Reducer.init(&arena, .{});
+    measured.open();
+    try startedRun(&measured, scratch, "turn-1");
+    try observeText(&measured, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","result":"one","duration_ms":130,"user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqual(@as(i64, 130), firstPayload(&measured, "run.completed").?.get("duration_ms").?.integer);
 }
 
 test "an init outside a pending run is adopted when it arrives" {

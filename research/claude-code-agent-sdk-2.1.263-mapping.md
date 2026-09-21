@@ -867,9 +867,20 @@ case:
   past its terminal, so nothing could see either half.
 - A `control_cancel_request` withdraws the matching open gate, resolving it
   `cancelled` and returning the run to `running`. No case contains one.
-- A `text_delta` carrying no `text` member still emits an empty content part,
-  because the oracle decodes into a struct whose zero value is the empty
-  string. Every fixture's delta carries its text.
+- A `text_delta` carrying no `text` member still produces a content part rather
+  than nothing, because the oracle decodes into a struct whose zero value is the
+  empty string. Every fixture's delta carries its text.
+
+  **The two implementations do not agree on that part's shape, and the
+  divergence is in the port's favour**, which is why it is listed here as a
+  divergence rather than among the matched behaviours. `protocol.ContentPart`
+  tags `text` and `reasoning` `omitempty`, so the oracle emits `{"type":"text"}`
+  with no `text` member at all -- and `contentPart` in
+  `schema/v0.1/common.schema.json` carries no `required` list, so that shape is
+  schema-legal but says less than the port's `{"type":"text","text":""}`. The
+  port emits the member. Nobody should read this as parity: it is a deliberate
+  choice to emit the more explicit of two legal shapes, and if the schema ever
+  requires `text`, the oracle is the side that breaks.
 - **The codec is fail-closed on shape, and that is the largest of the six.**
   `native.DecodeObservation` and `DecodeControlRequest` enforce a required-member
   table per frame type -- a `user` frame needs `message.role` and
@@ -892,10 +903,23 @@ members**: `is_error: "yes"` or `queued_turn_count: "2"` on an otherwise
 complete result frame kills the Go transport, because the members are declared
 `bool` and `*int`. The Zig port now carries a second table for that, covering
 the declared members of `result`, `stream_event`, `assistant` and
-`system/task_updated` -- the frames whose members the reducer reads. It is not
-every declared field of every frame, and the difference is the honest bound: a
-wrong-typed member of a frame neither implementation reads is fatal in Go and
-ignored here. **And a submission arriving under a live run is refused**, with
+`system/task_updated` -- the frames whose members the reducer reads -- plus the
+nested members whose shape the reducer walks into: a `user` frame's `origin`,
+the items of `message.content` on a `user` or `assistant` frame, and a
+`task_updated` `patch`. It is not every declared field of every frame, and the
+difference is the honest bound: a wrong-typed member of a frame neither
+implementation reads is fatal in Go and ignored here.
+
+Two payload shapes came from the same review and are worth separating from the
+codec, because they are what a *schema* requires rather than what a decoder
+refuses. `arguments_json` is required on `action.call.requested`, and the oracle
+satisfies it for a `tool_use` block with no `input` by marshalling the absent
+raw message to the literal `null` before the payload's `omitempty` can see it --
+so the member is emitted, not dropped. A port that skips the member instead
+emits a trace the shared validator rejects, which is the one invariant every
+adapter here exists to hold. And `duration_ms` is `omitempty` on all three
+terminal payloads, so a turn that settles instantly omits it rather than sending
+a zero. **And a submission arriving under a live run is refused**, with
 `ErrRunActive` in the oracle, rather than replacing it; silently substituting
 orphans the first run's tools and gates and restarts its sequence.
 
