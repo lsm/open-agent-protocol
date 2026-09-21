@@ -40,9 +40,10 @@ func (i *testIDs) NewID(k string) string {
 }
 
 type promptReply struct {
-	id     string
-	err    error
-	before func()
+	id       string
+	err      error
+	startErr error
+	before   func()
 }
 type fakeClient struct {
 	in      chan rpc.InboundMessage
@@ -68,11 +69,14 @@ func (f *fakeClient) CallStarted(_ context.Context, m string, _ any, r any, star
 	f.calls++
 	f.mu.Unlock()
 	f.started <- struct{}{}
+	o := <-f.prompts
 	if started != nil {
-		started <- nil
+		started <- o.startErr
 		close(started)
 	}
-	o := <-f.prompts
+	if o.startErr != nil {
+		return o.startErr
+	}
 	if o.before != nil {
 		o.before()
 	}
@@ -645,4 +649,226 @@ func TestNativeSequenceRegressionStillRejected(t *testing.T) {
 	if events[len(events)-1].Type != protocol.TypeRunFailed {
 		t.Fatalf("regressed sequence produced %s", events[len(events)-1].Type)
 	}
+}
+
+func assertFailedWith(t *testing.T, events []protocol.Envelope, code, message string) {
+	t.Helper()
+	for _, e := range events {
+		if e.Type != protocol.TypeRunFailed {
+			continue
+		}
+		var p protocol.RunFailedPayload
+		if err := e.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Error.Code != code || p.Error.Message != message {
+			t.Fatalf("failure=%q/%q want %q/%q", p.Error.Code, p.Error.Message, code, message)
+		}
+		return
+	}
+	var got []protocol.EnvelopeType
+	for _, e := range events {
+		got = append(got, e.Type)
+	}
+	t.Fatalf("no run.failed among %v", got)
+}
+
+func failingTurn(t *testing.T, drive func(f *fakeClient)) []protocol.Envelope {
+	t.Helper()
+	s, f := openTest(t)
+	_, st := admission(t, s, f, "receipt")
+	drive(f)
+	return drain(t, st)
+}
+
+func TestSessionEventForAnotherSessionIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SessionEventNotification{SessionID: "someone-else", Event: event(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})})
+	})
+	assertFailedWith(t, events, "deepseek_session_mismatch", "session.event for foreign session")
+}
+
+func TestSessionStatusForAnotherSessionIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SessionStatusNotification{SessionID: "someone-else", Status: "idle"})
+	})
+	assertFailedWith(t, events, "deepseek_session_mismatch", "session.status for foreign session")
+}
+
+func TestSubagentOfAnotherParentIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SubagentStartedNotification{ParentSessionID: "someone-else", ChildSessionID: "child-1"})
+	})
+	assertFailedWith(t, events, "deepseek_external_activity", "foreign or recursive subagent")
+}
+
+func TestSubagentThatIsItsOwnParentIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "session"})
+	})
+	assertFailedWith(t, events, "deepseek_external_activity", "foreign or recursive subagent")
+}
+
+func TestRepeatedSubagentStartIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "child-1"})
+		f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "child-1"})
+	})
+	assertFailedWith(t, events, "deepseek_child_lifecycle", "duplicate child start")
+}
+
+func TestSubagentFinishFromAnotherParentIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SubagentFinishedNotification{ParentSessionID: "someone-else", ChildSessionID: "child-1", Status: "ok"})
+	})
+	assertFailedWith(t, events, "deepseek_external_activity", "foreign child finish")
+}
+
+func TestSubagentFinishWithoutItsStartIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SubagentFinishedNotification{ParentSessionID: "session", ChildSessionID: "never-started", Status: "ok"})
+	})
+	assertFailedWith(t, events, "deepseek_child_lifecycle", "unmatched child finish")
+}
+
+func TestSubagentThatFailedFailsTheParent(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "child-1"})
+		f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SubagentFinishedNotification{ParentSessionID: "session", ChildSessionID: "child-1", Status: "error"})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	assertFailedWith(t, events, "deepseek_child_failed", "subagent failed")
+}
+
+func TestATurnStartNamingAnotherTurnIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "turn/start", native.TurnStart{Turn: 9})
+	})
+	assertFailedWith(t, events, "deepseek_invalid_grammar", "overlapping foreign turn")
+}
+
+func TestAStepStartThatDoesNotAdvanceIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+	})
+	assertFailedWith(t, events, "deepseek_invalid_grammar", "invalid step start")
+}
+
+func TestAStepEndNamingAnotherStepIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 9})
+	})
+	assertFailedWith(t, events, "deepseek_invalid_grammar", "invalid step end")
+}
+
+func TestASecondTurnEndIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.ev(7, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	})
+	assertFailedWith(t, events, "deepseek_invalid_grammar", "invalid turn end")
+}
+
+func TestAnEventTheGrammarDoesNotKnowIsRefusedByName(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "invented/later", struct{}{})
+	})
+	assertFailedWith(t, events, "deepseek_unknown_event", `unknown required event "invented/later"`)
+}
+
+func TestRepeatedToolCallIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		call := native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`}
+		f.ev(5, "tool/call", call)
+		f.ev(6, "tool/call", call)
+	})
+	assertFailedWith(t, events, "deepseek_tool_lifecycle", "duplicate tool call")
+}
+
+func TestToolResultWithoutItsCallIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "never-called"}}})
+	})
+	assertFailedWith(t, events, "deepseek_tool_lifecycle", "unmatched tool result")
+}
+
+func TestEventOutsideTheOpenStepIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "tool/call", native.ToolCall{Turn: 9, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
+	})
+	assertFailedWith(t, events, "deepseek_invalid_grammar", "event outside open owned step")
+}
+
+func TestFinalMessageNamingAnUnknownToolIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "tool-call", ID: "never-called", Name: "read"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
+		f.ev(6, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(7, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	assertFailedWith(t, events, "deepseek_invalid_final_message", `final message references unknown tool "never-called"`)
+}
+
+func TestNotificationTheAdapterDoesNotKnowIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		n := rpc.NotificationMessage{Method: "session/invented-later"}
+		f.in <- rpc.InboundMessage{Notification: &n}
+	})
+	assertFailedWith(t, events, "deepseek_unknown_notification", "unknown notification")
+}
+
+func TestPromptRefusedAtStartAbortsWithoutRunEvents(t *testing.T) {
+	s, f := openTest(t)
+	refusal := errors.New("harness refused the prompt")
+	ch := submitAsync(s)
+	<-f.started
+	f.prompts <- promptReply{startErr: refusal}
+	got := <-ch
+	if !errors.Is(got.err, refusal) {
+		t.Fatalf("Submit err=%v, want the start refusal", got.err)
+	}
+	if events := drain(t, got.st); len(events) != 0 {
+		t.Fatalf("a run that never started emitted %d envelopes", len(events))
+	}
+}
+
+func TestReverseRequestIsExternalActivity(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		r := rpc.IncomingRequest{}
+		f.in <- rpc.InboundMessage{Request: &r}
+	})
+	assertFailedWith(t, events, "deepseek_external_activity", "reverse request")
+}
+
+func TestDuplicateChildStartBeforeAdmissionIsRefusedOnReplay(t *testing.T) {
+	s, f := openTest(t)
+	ch := submitAsync(s)
+	<-f.started
+	f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "child"})
+	f.notify(&native.SubagentStartedNotification{ParentSessionID: "session", ChildSessionID: "child"})
+	bar := make(chan struct{})
+	f.in <- rpc.InboundMessage{Barrier: bar}
+	<-bar
+	f.prompts <- promptReply{id: "receipt"}
+	f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{}, Source: source("user")}}})
+	f.ev(2, "turn/start", native.TurnStart{Turn: 1})
+	f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+	f.ev(4, "user/message", native.UserMessage{ID: "receipt", Role: "user", Content: []native.ContentBlock{}, Source: source("user")})
+	got := <-ch
+	if got.err != nil {
+		t.Fatalf("admission failed: %v", got.err)
+	}
+	assertFailedWith(t, drain(t, got.st), "deepseek_child_lifecycle", "invalid buffered child start")
+}
+
+func TestCompletedTurnWithNoAssistantMessageIsRefused(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(6, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	assertFailedWith(t, events, "deepseek_missing_final_message", "completed turn omitted assistant message")
 }
