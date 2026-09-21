@@ -265,7 +265,17 @@ const Frame = struct {
 fn hexEscapeAt(data: []const u8, index: usize) ?u21 {
     if (index + 6 > data.len) return null;
     if (data[index] != '\\' or data[index + 1] != 'u') return null;
-    return std.fmt.parseInt(u21, data[index + 2 .. index + 6], 16) catch null;
+    var code: u21 = 0;
+    for (data[index + 2 .. index + 6]) |digit| {
+        const nibble: u21 = switch (digit) {
+            '0'...'9' => digit - '0',
+            'a'...'f' => digit - 'a' + 10,
+            'A'...'F' => digit - 'A' + 10,
+            else => return null,
+        };
+        code = code * 16 + nibble;
+    }
+    return code;
 }
 
 fn isSurrogate(code: u21) bool {
@@ -1124,6 +1134,19 @@ fn nestedObjectFrame(arena: std.mem.Allocator, depth: usize) ![]const u8 {
     return out.items;
 }
 
+test "an escape is four hex digits and nothing JSON does not spell" {
+    try testing.expectEqual(@as(?u21, 0xd800), hexEscapeAt("\\ud800", 0));
+    try testing.expectEqual(@as(?u21, 0xd800), hexEscapeAt("\\uD800", 0));
+    try testing.expectEqual(@as(?u21, 0x0041), hexEscapeAt("\\u0041", 0));
+
+    try testing.expectEqual(@as(?u21, null), hexEscapeAt("\\U0041", 0));
+    try testing.expectEqual(@as(?u21, null), hexEscapeAt("\\u+d80", 0));
+    try testing.expectEqual(@as(?u21, null), hexEscapeAt("\\ud_80", 0));
+    try testing.expectEqual(@as(?u21, null), hexEscapeAt("\\u 800", 0));
+    try testing.expectEqual(@as(?u21, null), hexEscapeAt("\\ud80", 0));
+    try testing.expectEqual(@as(?u21, null), hexEscapeAt("x\\ud800", 0));
+}
+
 test "an unpaired surrogate escape becomes the replacement character the oracle substitutes" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1146,6 +1169,15 @@ test "an unpaired surrogate escape becomes the replacement character the oracle 
 
     const trailing_text = try parseMessage(scratch, "{\"type\":\"\\ud800a\"}", null);
     try testing.expectEqualStrings("\u{fffd}a", trailing_text.type);
+
+    for ([_][]const u8{ "{\"type\":\"\\u+d80\"}", "{\"type\":\"\\ud_80\"}", "{\"type\":\"\\u 800\"}" }) |lax| {
+        var report = Diagnostic{};
+        try testing.expectError(Error.InvalidMessage, parseMessage(scratch, lax, &report));
+        try testing.expectEqualStrings(invalid_message_prefix ++ ": frame is not decodable JSON", report.message);
+    }
+
+    const upper_hex = try parseMessage(scratch, "{\"type\":\"\\uD800\"}", null);
+    try testing.expectEqualStrings("\u{fffd}", upper_hex.type);
 
     var upper = Diagnostic{};
     try testing.expectError(Error.InvalidMessage, parseMessage(scratch, "{\"type\":\"\\Ud800\"}", &upper));
