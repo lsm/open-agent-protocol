@@ -475,7 +475,7 @@ pub const Reducer = struct {
     fn closeTerminal(self: *Reducer, frame: std.json.ObjectMap, payload: *std.json.ObjectMap) !void {
         try self.put(payload, "usage", try self.usageOf(frame));
         if (integerMember(frame, "duration_ms")) |duration| {
-            if (duration != 0) try self.put(payload, "duration_ms", int(duration));
+            if (duration > 0) try self.put(payload, "duration_ms", int(duration));
         }
     }
 
@@ -1927,6 +1927,29 @@ test "a number outside i64 is dropped rather than converted" {
     try testing.expectEqual(@as(?i64, null), integerMember(map, "nan"));
     try testing.expectEqual(@as(?i64, 12), integerMember(map, "fits"));
     try testing.expectEqual(@as(?i64, std.math.maxInt(i64)), integerMember(map, "exact"));
+}
+
+test "a negative duration is omitted rather than emitted past the schema floor" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"x","user_message_uuid":"turn-1","uuid":"r1","duration_ms":-5}
+    );
+    const completed = firstPayload(&reducer, "run.completed").?;
+    try testing.expectEqual(@as(?std.json.Value, null), completed.get("duration_ms"));
+
+    var positive = Reducer.init(&arena, .{});
+    positive.open();
+    try startedRun(&positive, scratch, "turn-2");
+    try observeText(&positive, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"x","user_message_uuid":"turn-2","uuid":"r2","duration_ms":5}
+    );
+    try testing.expectEqual(@as(i64, 5), firstPayload(&positive, "run.completed").?.get("duration_ms").?.integer);
 }
 
 test "a token count is emitted unsigned the way the oracle emits it" {
