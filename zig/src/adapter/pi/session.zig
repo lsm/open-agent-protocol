@@ -419,7 +419,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         return;
     }
     if (std.mem.eql(u8, kind, "message_end")) {
-        const carried = memberOf(event, "message") orelse return Error.InvalidFrame;
+        const carried = memberOf(event, "message") orelse std.json.Value{ .null = {} };
         const decoded = decodeWireMessage(carried) catch {
             try failRun(reducer, "pi_invalid_message_end", "message_end carried an undecodable message");
             return;
@@ -1102,6 +1102,21 @@ fn expectExtensionRefusal(request: []const u8, code: []const u8) !void {
 
 test "a select extension offering no options is refused" {
     try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[]}", "pi_invalid_extension");
+}
+
+test "a message_end with no message fails the run rather than escaping the reducer" {
+    for ([_][]const u8{
+        "{\"type\":\"message_end\"}",
+        "{\"type\":\"message_end\",\"message\":null}",
+        "{\"type\":\"message_end\",\"message\":7}",
+    }) |line| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var reducer = try started(a);
+        try apply(&reducer, try parse(a, line));
+        try std.testing.expectEqualStrings("pi_invalid_message_end", lastFailure(&reducer) orelse return error.NoRefusal);
+    }
 }
 
 test "a select extension offering an empty option label is refused" {
