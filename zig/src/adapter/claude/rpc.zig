@@ -394,23 +394,36 @@ fn foldEql(left: []const u8, right: []const u8) bool {
 }
 
 pub fn lookup(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
-    if (object.get(key)) |value| return value;
-    var entries = object.iterator();
-    while (entries.next()) |entry| {
-        if (foldEql(entry.key_ptr.*, key)) return entry.value_ptr.*;
-    }
-    return null;
+    return member(object, &.{key});
 }
 
 fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
-    var current = object;
-    for (path, 0..) |key, depth| {
-        const value = lookup(current, key) orelse return null;
-        if (depth + 1 == path.len) return value;
-        if (value != .object) return null;
-        current = value.object;
+    var found: ?std.json.Value = null;
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (!foldEql(entry.key_ptr.*, path[0])) continue;
+        if (path.len == 1) {
+            found = entry.value_ptr.*;
+            continue;
+        }
+        if (entry.value_ptr.* != .object) continue;
+        if (member(entry.value_ptr.object, path[1..])) |nested| found = nested;
     }
-    return null;
+    return found;
+}
+
+fn anyWrong(object: std.json.ObjectMap, path: []const []const u8, need: Declared) bool {
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (!foldEql(entry.key_ptr.*, path[0])) continue;
+        if (path.len == 1) {
+            if (wrongValue(entry.value_ptr.*, need)) return true;
+            continue;
+        }
+        if (entry.value_ptr.* != .object) continue;
+        if (anyWrong(entry.value_ptr.object, path[1..], need)) return true;
+    }
+    return false;
 }
 
 fn unsatisfied(object: std.json.ObjectMap, required: []const Member) ?[]const u8 {
@@ -612,17 +625,7 @@ fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared
 
 fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
     for (declared) |need| {
-        const parent = if (need.path.len == 1) object else blk: {
-            const container = member(object, need.path[0 .. need.path.len - 1]) orelse continue;
-            if (container != .object) continue;
-            break :blk container.object;
-        };
-        const leaf = need.path[need.path.len - 1];
-        var entries = parent.iterator();
-        while (entries.next()) |entry| {
-            if (!foldEql(entry.key_ptr.*, leaf)) continue;
-            if (wrongValue(entry.value_ptr.*, need)) return true;
-        }
+        if (anyWrong(object, need.path, need)) return true;
     }
     return false;
 }
@@ -634,17 +637,7 @@ fn wrongRequiredType(object: std.json.ObjectMap, required: []const Member) bool 
             .array => .array,
             else => continue,
         };
-        const parent = if (need.path.len == 1) object else blk: {
-            const container = member(object, need.path[0 .. need.path.len - 1]) orelse continue;
-            if (container != .object) continue;
-            break :blk container.object;
-        };
-        const leaf = need.path[need.path.len - 1];
-        var entries = parent.iterator();
-        while (entries.next()) |entry| {
-            if (!foldEql(entry.key_ptr.*, leaf)) continue;
-            if (wrongValue(entry.value_ptr.*, .{ .path = need.path, .need = typed })) return true;
-        }
+        if (anyWrong(object, need.path, .{ .path = need.path, .need = typed })) return true;
     }
     return false;
 }
@@ -1341,10 +1334,28 @@ test "a frame member matches the way encoding/json matches a struct tag" {
     try accepts(&arena, result ++ "\"is_error\":true,\"Is_Error\":false}");
 
     var both: std.json.ObjectMap = .empty;
-    try both.put(arena.allocator(), "SESSION_ID", .{ .string = "folded" });
-    try both.put(arena.allocator(), "session_id", .{ .string = "exact" });
-    try testing.expectEqualStrings("exact", lookup(both, "session_id").?.string);
-    try testing.expectEqualStrings("folded", lookup(both, "SESSION_ID").?.string);
+    try both.put(arena.allocator(), "SESSION_ID", .{ .string = "first" });
+    try both.put(arena.allocator(), "session_id", .{ .string = "last" });
+    try testing.expectEqualStrings("last", lookup(both, "session_id").?.string);
+    try testing.expectEqualStrings("last", lookup(both, "SESSION_ID").?.string);
+
+    var reversed: std.json.ObjectMap = .empty;
+    try reversed.put(arena.allocator(), "session_id", .{ .string = "first" });
+    try reversed.put(arena.allocator(), "SESSION_ID", .{ .string = "last" });
+    try testing.expectEqualStrings("last", lookup(reversed, "session_id").?.string);
+
+    try refuses(&arena, result ++ "\"SESSION_ID\":\"\"}");
+    try accepts(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"SESSION_ID\":\"\",\"session_id\":\"s\"}");
+    try accepts(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"\",\"SESSION_ID\":\"s\"}");
+
+    const updated = "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"t\",";
+    try refuses(&arena, updated ++ "\"patch\":{\"status\":7},\"PATCH\":{}}");
+    try refuses(&arena, updated ++ "\"patch\":{},\"PATCH\":{\"status\":7}}");
+    try accepts(&arena, updated ++ "\"patch\":{\"status\":\"completed\"},\"PATCH\":{\"description\":\"d\"}}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"m\"},\"MESSAGE\":{\"content\":[]}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"a\",\"content\":[]},\"MESSAGE\":{\"model\":\"\"}}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"MESSAGE\":{\"model\":\"\"},\"message\":{\"model\":\"a\",\"content\":[]}}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"\",\"content\":[]},\"MESSAGE\":{\"model\":\"a\"}}");
 
     var envelope = Diagnostic{};
     try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"TYPE\":\"keep_alive\"}", &envelope));
