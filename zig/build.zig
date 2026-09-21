@@ -239,6 +239,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     acp_session_mod.addImport("rpc", acp_rpc_mod);
+    deepseek_session_mod.addImport("goquote", adapter_goquote_mod);
     acp_session_mod.addImport("goquote", adapter_goquote_mod);
     const acp_session_test = b.addTest(.{ .root_module = acp_session_mod });
 

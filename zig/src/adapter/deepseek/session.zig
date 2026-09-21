@@ -1,4 +1,5 @@
 const std = @import("std");
+const goquote = @import("goquote");
 
 pub const capability_revision = "deepseek-harness-47f9438-oap-v1";
 pub const endpoint_id = "deepseek.harness";
@@ -362,7 +363,8 @@ pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
     if (memberOf(event, "ignorable")) |flag| {
         if (flag == .bool and flag.bool) return;
     }
-    try failRun(reducer, "deepseek_unknown_event", "unknown required event");
+    const detail = try std.fmt.allocPrint(reducer.arena, "unknown required event {s}", .{goquote.quote(reducer.arena, kind)});
+    try failRun(reducer, "deepseek_unknown_event", detail);
 }
 
 pub fn observeStatus(reducer: *Reducer, status: []const u8) !void {
@@ -579,7 +581,7 @@ fn trySettle(reducer: *Reducer) !void {
 }
 
 pub fn invalidObservation(reducer: *Reducer, event_type: []const u8) !void {
-    const message = try std.fmt.allocPrint(reducer.arena, "deepseek native: invalid pinned message: unknown required event \"{s}\"", .{event_type});
+    const message = try std.fmt.allocPrint(reducer.arena, "deepseek native: invalid pinned message: unknown required event {s}", .{goquote.quote(reducer.arena, event_type)});
     try transportFailed(reducer, message);
 }
 
@@ -871,6 +873,43 @@ fn lastFailure(reducer: *Reducer) ?[]const u8 {
     const payload = memberOf(last, "payload") orelse return null;
     const err = memberOf(payload, "error") orelse return null;
     return textOf(err, "code");
+}
+
+fn failureMessage(reducer: *Reducer) ?[]const u8 {
+    if (reducer.emitted.items.len == 0) return null;
+    const last = reducer.emitted.items[reducer.emitted.items.len - 1];
+    if (!std.mem.eql(u8, textOf(last, "type"), "run.failed")) return null;
+    const payload = memberOf(last, "payload") orelse return null;
+    const err = memberOf(payload, "error") orelse return null;
+    return textOf(err, "message");
+}
+
+fn expectUnknownEvent(event_type: []const u8, want: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    const line = try std.fmt.allocPrint(arena.allocator(), "{{\"type\":{s},\"data\":{{}}}}", .{goquote.quote(arena.allocator(), event_type)});
+    try applyEvent(&reducer, try parse(arena.allocator(), line));
+    try std.testing.expectEqualStrings("deepseek_unknown_event", lastFailure(&reducer) orelse return error.NoRefusal);
+    try std.testing.expectEqualStrings(want, failureMessage(&reducer) orelse return error.NoRefusal);
+}
+
+test "an unknown event type reaches the failure message Go-quoted" {
+    try expectUnknownEvent("future/required-control", "unknown required event \"future/required-control\"");
+    try expectUnknownEvent("future/say \"hi\"", "unknown required event \"future/say \\\"hi\\\"\"");
+    try expectUnknownEvent("a\u{200b}b", "unknown required event \"a\\u200bb\"");
+    try expectUnknownEvent("tab\there", "unknown required event \"tab\\there\"");
+}
+
+test "an invalid observation reports the refused type the way the native layer does" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try invalidObservation(&reducer, "assistant/say \"hi\"");
+    try std.testing.expectEqualStrings(
+        "deepseek native: invalid pinned message: unknown required event \"assistant/say \\\"hi\\\"\"",
+        failureMessage(&reducer) orelse return error.NoRefusal,
+    );
 }
 
 fn expectRefusal(script: []const []const u8, code: []const u8) !void {
