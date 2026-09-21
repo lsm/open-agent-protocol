@@ -1874,3 +1874,93 @@ test "a run reports the model it was opened with and omits it when there is none
     try named.submit(1);
     try testing.expectEqualStrings("gpt-5-codex", payloadAt(&named, 0).get("model_id").?.string);
 }
+
+test "a chunk content block decoded by value refuses every shape the oracle refuses" {
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk"}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":null}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{}}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":null}}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"bogus":1}}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":7}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":[]}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":7}}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+}
+
+fn expectPermissionRefusal(tool_call: []const u8, code: []const u8, message: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    const text = try std.mem.concat(scratch, u8, &.{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"native-session\",\"toolCall\":",
+        tool_call,
+        ",\"options\":[{\"optionId\":\"a\",\"name\":\"A\",\"kind\":\"allow_once\"}]}}",
+    });
+    try feed(&reducer, scratch, text);
+
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings(code, codeAt(&reducer, 1));
+    try testing.expectEqualStrings(message, messageAt(&reducer, 1));
+}
+
+test "a permission tool call decoded by value splits the same way the oracle splits it" {
+    try expectPermissionRefusal("null", "acp_invalid_permission", "malformed permission request");
+    try expectPermissionRefusal("{}", "acp_invalid_permission", "malformed permission request");
+    try expectPermissionRefusal("7", "acp_invalid_permission", "malformed permission request");
+    try expectPermissionRefusal("[]", "acp_invalid_permission", "malformed permission request");
+    try expectPermissionRefusal("{\"toolCallId\":7,\"title\":\"T\"}", "acp_invalid_permission", "malformed permission request");
+
+    try expectPermissionRefusal("{\"toolCallId\":\"t\",\"title\":7}", "acp_invalid_permission", "malformed permission request");
+    try expectPermissionRefusal("{\"toolCallId\":\"t\",\"title\":\"T\",\"kind\":7}", "acp_invalid_permission", "malformed permission request");
+    try expectPermissionRefusal("{\"toolCallId\":\"t\",\"title\":\"T\",\"status\":7}", "acp_invalid_permission", "malformed permission request");
+    try expectPermissionRefusal("{\"toolCallId\":\"t\",\"title\":\"T\",\"sessionUpdate\":7}", "acp_invalid_permission", "malformed permission request");
+
+    try expectPermissionRefusal("{\"toolCallId\":\"t\"}", "acp_invalid_tool_call", "tool id and title are required");
+    try expectPermissionRefusal("{\"toolCallId\":\"t\",\"title\":null}", "acp_invalid_tool_call", "tool id and title are required");
+}
+
+const raw_tool_members = [_][]const u8{ "rawInput", "rawOutput", "content", "locations" };
+
+test "every raw member of a permission tool call takes any JSON, because a RawMessage cannot fail" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    for (raw_tool_members) |member| {
+        for ([_][]const u8{ "7", "\"x\"", "null", "[]", "{}", "true" }) |value| {
+            var reducer = try openRun(&arena);
+            const text = try std.mem.concat(scratch, u8, &.{
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"native-session\",\"toolCall\":{\"toolCallId\":\"t\",\"title\":\"T\",\"",
+                member,
+                "\":",
+                value,
+                "},\"options\":[{\"optionId\":\"a\",\"name\":\"A\",\"kind\":\"allow_once\"}]}}",
+            });
+            try feed(&reducer, scratch, text);
+            try testing.expectEqualStrings("action.call.requested", typeAt(&reducer, 1));
+            try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, 2));
+        }
+    }
+
+    var carried = try openRun(&arena);
+    try feed(&carried, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T","rawInput":7},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
+    );
+    try testing.expectEqual(@as(i64, 7), payloadAt(&carried, 1).get("arguments_json").?.integer);
+}
