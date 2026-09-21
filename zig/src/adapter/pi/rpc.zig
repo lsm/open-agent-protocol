@@ -139,7 +139,7 @@ const commands = [_][]const u8{
     "set_session_name",              "get_messages",        "get_commands",
 };
 
-const MemberType = enum { text, flag, number, text_list, any };
+const MemberType = enum { text, flag, number, text_list, image_list, any };
 
 const Omission = enum { on_null, on_zero };
 
@@ -201,6 +201,20 @@ fn memberTypeHolds(value: std.json.Value, kind: MemberType) bool {
             if (value != .array) break :blk false;
             for (value.array.items) |entry| {
                 if (entry != .string) break :blk false;
+            }
+            break :blk true;
+        },
+        .image_list => blk: {
+            if (value != .array) break :blk false;
+            for (value.array.items) |entry| {
+                if (entry == .null) continue;
+                if (entry != .object) break :blk false;
+                var fields = entry.object.iterator();
+                while (fields.next()) |field| {
+                    if (!namedIn(&image_members, field.key_ptr.*)) break :blk false;
+                    const carried = field.value_ptr.*;
+                    if (carried != .string and carried != .null) break :blk false;
+                }
             }
             break :blk true;
         },
@@ -307,6 +321,180 @@ fn admitsExtension(line: []const u8) !void {
 
 fn refusesExtension(line: []const u8) !void {
     try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, line));
+}
+
+const image_members = [_][]const u8{ "type", "data", "mimeType" };
+
+const command_members = [_]Member{
+    .{ .name = "type", .kind = .text },
+    .{ .name = "id", .kind = .text },
+    .{ .name = "message", .kind = .text, .omits = .on_null },
+    .{ .name = "images", .kind = .image_list },
+    .{ .name = "streamingBehavior", .kind = .text },
+    .{ .name = "parentSession", .kind = .text, .omits = .on_null },
+    .{ .name = "provider", .kind = .text, .omits = .on_null },
+    .{ .name = "modelId", .kind = .text, .omits = .on_null },
+    .{ .name = "level", .kind = .text },
+    .{ .name = "mode", .kind = .text },
+    .{ .name = "customInstructions", .kind = .text, .omits = .on_null },
+    .{ .name = "enabled", .kind = .flag, .omits = .on_null },
+    .{ .name = "command", .kind = .text, .omits = .on_null },
+    .{ .name = "excludeFromContext", .kind = .flag, .omits = .on_null },
+    .{ .name = "outputPath", .kind = .text, .omits = .on_null },
+    .{ .name = "sessionPath", .kind = .text, .omits = .on_null },
+    .{ .name = "entryId", .kind = .text, .omits = .on_null },
+    .{ .name = "since", .kind = .text, .omits = .on_null },
+    .{ .name = "name", .kind = .text, .omits = .on_null },
+};
+
+const thinking_levels = [_][]const u8{ "off", "minimal", "low", "medium", "high", "xhigh", "max" };
+
+const queue_modes = [_][]const u8{ "all", "one-at-a-time" };
+
+const CommandShape = struct {
+    name: []const u8,
+    allowed: []const []const u8 = &.{},
+    required: []const []const u8 = &.{},
+    constrained: []const u8 = "",
+    permitted: []const []const u8 = &.{},
+};
+
+const command_shapes = [_]CommandShape{
+    .{ .name = "prompt", .allowed = &.{ "message", "images", "streamingBehavior" }, .required = &.{"message"} },
+    .{ .name = "steer", .allowed = &.{ "message", "images" }, .required = &.{"message"} },
+    .{ .name = "follow_up", .allowed = &.{ "message", "images" }, .required = &.{"message"} },
+    .{ .name = "new_session", .allowed = &.{"parentSession"} },
+    .{ .name = "set_model", .allowed = &.{ "provider", "modelId" }, .required = &.{ "provider", "modelId" } },
+    .{ .name = "set_thinking_level", .allowed = &.{"level"}, .constrained = "level", .permitted = &thinking_levels },
+    .{ .name = "set_steering_mode", .allowed = &.{"mode"}, .constrained = "mode", .permitted = &queue_modes },
+    .{ .name = "set_follow_up_mode", .allowed = &.{"mode"}, .constrained = "mode", .permitted = &queue_modes },
+    .{ .name = "compact", .allowed = &.{"customInstructions"} },
+    .{ .name = "set_auto_compaction", .allowed = &.{"enabled"}, .required = &.{"enabled"} },
+    .{ .name = "set_auto_retry", .allowed = &.{"enabled"}, .required = &.{"enabled"} },
+    .{ .name = "bash", .allowed = &.{ "command", "excludeFromContext" }, .required = &.{"command"} },
+    .{ .name = "export_html", .allowed = &.{"outputPath"} },
+    .{ .name = "switch_session", .allowed = &.{"sessionPath"}, .required = &.{"sessionPath"} },
+    .{ .name = "fork", .allowed = &.{"entryId"}, .required = &.{"entryId"} },
+    .{ .name = "get_entries", .allowed = &.{"since"} },
+    .{ .name = "set_session_name", .allowed = &.{"name"}, .required = &.{"name"} },
+};
+
+fn commandShape(name: []const u8) CommandShape {
+    for (command_shapes) |shape| {
+        if (std.mem.eql(u8, shape.name, name)) return shape;
+    }
+    return .{ .name = name };
+}
+
+pub fn validateCommand(value: std.json.Value) !void {
+    if (value != .object) return Error.InvalidFrame;
+    const object = value.object;
+
+    const declared = object.get("type") orelse return Error.InvalidFrame;
+    if (declared != .string or !namedIn(&commands, declared.string)) return Error.InvalidFrame;
+    const shape = commandShape(declared.string);
+
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const member = declaredMember(&command_members, name) orelse return Error.InvalidFrame;
+        if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
+        if (std.mem.eql(u8, name, "type") or std.mem.eql(u8, name, "id")) continue;
+        if (namedIn(shape.allowed, name)) continue;
+        if (omittedByMarshal(entry.value_ptr.*, member)) continue;
+        return Error.InvalidFrame;
+    }
+
+    for (shape.required) |name| {
+        const carried = object.get(name) orelse return Error.InvalidFrame;
+        if (carried == .null) return Error.InvalidFrame;
+    }
+
+    if (shape.constrained.len != 0) {
+        const carried = object.get(shape.constrained) orelse std.json.Value{ .null = {} };
+        const text: []const u8 = if (carried == .string) carried.string else "";
+        if (!namedIn(shape.permitted, text)) return Error.InvalidFrame;
+    }
+}
+
+fn expectCommand(text: []const u8, want: anyerror!void) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), text, .{}) catch {
+        return error.ProbeTextIsNotJson;
+    };
+    const got = validateCommand(parsed);
+    if (want) |_| {
+        try got;
+    } else |expected| {
+        try std.testing.expectError(expected, got);
+    }
+}
+
+test "a command names a type this pin declares, and is an object" {
+    try expectCommand("{\"type\":\"abort\"}", {});
+    try expectCommand("{\"type\":\"nonesuch\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":7}", Error.InvalidFrame);
+    try expectCommand("{}", Error.InvalidFrame);
+    try expectCommand("[]", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"bogus\":1}", Error.InvalidFrame);
+}
+
+test "a command requires the members its own type names, and a null is not one" {
+    try expectCommand("{\"type\":\"prompt\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"message\":null}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"message\":\"\"}", {});
+    try expectCommand("{\"type\":\"prompt\",\"message\":\"hi\"}", {});
+    try expectCommand("{\"type\":\"set_model\",\"provider\":\"p\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_model\",\"provider\":\"p\",\"modelId\":\"m\"}", {});
+    try expectCommand("{\"type\":\"bash\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"bash\",\"command\":\"ls\",\"excludeFromContext\":true}", {});
+    try expectCommand("{\"type\":\"switch_session\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"fork\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_session_name\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_auto_retry\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_auto_retry\",\"enabled\":null}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_auto_retry\",\"enabled\":false}", {});
+}
+
+test "a constrained command member is read as its zero value when absent" {
+    try expectCommand("{\"type\":\"set_thinking_level\",\"level\":\"high\"}", {});
+    try expectCommand("{\"type\":\"set_thinking_level\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_thinking_level\",\"level\":\"\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_thinking_level\",\"level\":\"nonesuch\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_steering_mode\",\"mode\":\"all\"}", {});
+    try expectCommand("{\"type\":\"set_follow_up_mode\",\"mode\":\"one-at-a-time\"}", {});
+    try expectCommand("{\"type\":\"set_steering_mode\"}", Error.InvalidFrame);
+}
+
+test "a member foreign to a command escapes the check only where omitempty would drop it" {
+    try expectCommand("{\"type\":\"abort\",\"message\":\"x\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"message\":\"\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"message\":null}", {});
+    try expectCommand("{\"type\":\"abort\",\"enabled\":false}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"enabled\":null}", {});
+    try expectCommand("{\"type\":\"abort\",\"level\":\"high\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"level\":\"\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"streamingBehavior\":\"steer\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"streamingBehavior\":\"\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"images\":[]}", {});
+    try expectCommand("{\"type\":\"abort\",\"images\":null}", {});
+    try expectCommand("{\"type\":\"abort\",\"images\":[null]}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"id\":\"r1\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"id\":\"\"}", {});
+}
+
+test "a command image is an object of three strings, or a null standing for one" {
+    const prefix = "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":";
+    try expectCommand(prefix ++ "[{\"type\":\"image\",\"data\":\"d\",\"mimeType\":\"image/png\"}]}", {});
+    try expectCommand(prefix ++ "[{}]}", {});
+    try expectCommand(prefix ++ "[null]}", {});
+    try expectCommand(prefix ++ "[{\"type\":null,\"data\":null,\"mimeType\":null}]}", {});
+    try expectCommand(prefix ++ "[{\"type\":7}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[{\"bogus\":1}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[7]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[\"x\"]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "{}}", Error.InvalidFrame);
 }
 
 test "a constrained member holding null is absent, and an empty one is unconstrained" {

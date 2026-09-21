@@ -53,8 +53,20 @@ fn checkControl(script: std.json.Value, raw: std.json.Value) !void {
     if (reported.len == 0) return error.InvalidHarnessControl;
 }
 
+fn checkCommand(script: std.json.Value, raw: std.json.Value) !void {
+    const direction = directionOf(script) orelse return error.UnroutedScriptDirection;
+    if (direction != .host_to_pi) return;
+    const refuses = std.mem.eql(u8, actionOf(script), "decode-error");
+    rpc.validateCommand(raw) catch {
+        if (refuses) return;
+        return error.ProductionCodecRefusedCorpusCommand;
+    };
+    if (refuses) return error.ProductionCodecAcceptedInvalidCommand;
+}
+
 fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !void {
     try checkControl(item.script, item.raw);
+    try checkCommand(item.script, item.raw);
     return decodeWire(scratch, item.script, item.encoded);
 }
 
@@ -220,6 +232,59 @@ test "an inbound frame recorded as a decode error must be refused, not accepted"
     const refusing = "{\"direction\":\"pi-to-host\",\"action\":\"decode-error\"}";
     try expectWire(refusing, "{\"type\":\"turn_end\"}", {});
     try expectWire(refusing, "{\"type\":\"turn_start\"}", error.ProductionCodecAcceptedInvalidFrame);
+}
+
+fn expectCommandLine(script_line: []const u8, raw_line: []const u8, want: anyerror!void) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, script_line, .{});
+    const raw = try std.json.parseFromSliceLeaky(std.json.Value, scratch, raw_line, .{});
+    const got = checkCommand(script, raw);
+    if (want) |_| {
+        try got;
+    } else |expected| {
+        try std.testing.expectError(expected, got);
+    }
+}
+
+test "an outbound command is proved against the command vocabulary" {
+    const sending = "{\"direction\":\"host-to-pi\",\"action\":\"outbound-only\"}";
+    try expectCommandLine(sending, "{\"type\":\"steer\",\"message\":\"adjust\"}", {});
+    try expectCommandLine(sending, "{\"type\":\"get_state\"}", {});
+    try expectCommandLine(sending, "{\"type\":\"steer\"}", error.ProductionCodecRefusedCorpusCommand);
+    try expectCommandLine(sending, "{\"type\":\"nonesuch\"}", error.ProductionCodecRefusedCorpusCommand);
+}
+
+test "an outbound command recorded as a decode error must be refused, not accepted" {
+    const failing = "{\"direction\":\"host-to-pi\",\"action\":\"decode-error\"}";
+    try expectCommandLine(failing, "{\"type\":\"prompt\"}", {});
+    try expectCommandLine(failing, "{\"type\":\"get_state\"}", error.ProductionCodecAcceptedInvalidCommand);
+}
+
+test "a command check ignores the directions that carry no command" {
+    for ([_][]const u8{ "{\"direction\":\"pi-to-host\"}", "{\"direction\":\"harness-control\"}" }) |script| {
+        try expectCommandLine(script, "{\"type\":\"steer\"}", {});
+        try expectCommandLine(script, "{\"type\":\"nonesuch\"}", {});
+    }
+}
+
+test "an outbound command the vocabulary refuses fails the case at the call site" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+
+    var reducer = session.Reducer.init(scratch);
+    const refused_line = "{\"direction\":\"host-to-pi\",\"action\":\"outbound-only\",\"raw\":{\"type\":\"steer\"}}\n";
+    try std.testing.expectError(
+        error.ProductionCodecRefusedCorpusCommand,
+        Harness.steps(scratch, refused_line, &reducer, inline_case),
+    );
+
+    var accepted_reducer = session.Reducer.init(scratch);
+    const accepted = "{\"direction\":\"host-to-pi\",\"action\":\"outbound-only\",\"raw\":{\"type\":\"steer\",\"message\":\"adjust\"}}\n";
+    try Harness.steps(scratch, accepted, &accepted_reducer, inline_case);
 }
 
 test "a script line the production codec refuses fails the case at the call site" {
