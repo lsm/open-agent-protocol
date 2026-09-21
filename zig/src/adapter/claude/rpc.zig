@@ -420,7 +420,8 @@ fn anyWrong(object: std.json.ObjectMap, path: []const []const u8, need: Declared
             if (wrongValue(entry.value_ptr.*, need)) return true;
             continue;
         }
-        if (entry.value_ptr.* != .object) continue;
+        if (entry.value_ptr.* == .null) continue;
+        if (entry.value_ptr.* != .object) return true;
         if (anyWrong(entry.value_ptr.object, path[1..], need)) return true;
     }
     return false;
@@ -1354,6 +1355,13 @@ test "a frame member matches the way encoding/json matches a struct tag" {
     try accepts(&arena, updated ++ "\"patch\":{\"status\":\"completed\"},\"PATCH\":{\"description\":\"d\"}}");
     try accepts(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"m\"},\"MESSAGE\":{\"content\":[]}}");
     try refuses(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"a\",\"content\":[]},\"MESSAGE\":{\"model\":\"\"}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":\"hello\",\"MESSAGE\":{\"model\":\"m\",\"content\":[]}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":7,\"MESSAGE\":{\"model\":\"m\",\"content\":[]}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":[],\"MESSAGE\":{\"model\":\"m\",\"content\":[]}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[]},\"MESSAGE\":\"hello\"}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":null,\"MESSAGE\":{\"model\":\"m\",\"content\":[]}}");
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"t\",\"patch\":\"x\"}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"t\",\"patch\":null}");
     try accepts(&arena, "{\"type\":\"assistant\",\"MESSAGE\":{\"model\":\"\"},\"message\":{\"model\":\"a\",\"content\":[]}}");
     try accepts(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"\",\"content\":[]},\"MESSAGE\":{\"model\":\"a\"}}");
 
