@@ -292,7 +292,7 @@ fn validateToolCallBlock(part: std.json.Value) !void {
     if (part != .object) return Error.InvalidFrame;
     try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
     try requireMembers(part, &.{ "id", "name", "arguments" });
-    try typedStrings(part, &.{ "id", "name", "thoughtSignature", "namespace" });
+    try typedStrings(part, &.{ "type", "id", "name", "thoughtSignature", "namespace" });
 }
 
 pub fn validateWireContent(raw: std.json.Value, allow_image: bool) !void {
@@ -412,7 +412,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
     }
     if (std.mem.eql(u8, kind, "agent_end")) {
         const listed_messages = memberOf(event, "messages") orelse std.json.Value{ .null = {} };
-        if (listed_messages != .array) {
+        if (listed_messages != .array and listed_messages != .null) {
             try failRun(reducer, "pi_invalid_event", "agent_end carried a messages member that is not a list");
             return;
         }
@@ -1554,4 +1554,24 @@ test "the structured optionals on a message carry their declared shapes" {
     try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, result_head ++ ",\"addedToolNames\":{}}")));
     try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, result_head ++ ",\"addedToolNames\":[7]}")));
     try std.testing.expect(try decodeWireMessage(try parse(a, result_head ++ ",\"addedToolNames\":[\"grep\"]}")) == null);
+}
+
+test "a null agent_end message list is a nil slice, not a defect" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"end_turn\",\"timestamp\":1,\"content\":\"earlier\"}}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"agent_end\",\"willRetry\":false,\"messages\":null}"));
+    try apply(&reducer, try parse(a, settled_text));
+
+    try std.testing.expect(lastFailure(&reducer) == null);
+    const payload = payloadOf(&reducer, "run.completed") orelse return error.RunDidNotComplete;
+    const response = memberOf(payload, "final_response") orelse return error.NoFinalResponse;
+    const content = memberOf(response, "content") orelse return error.NoContent;
+    try std.testing.expectEqualStrings("earlier", content.string);
+}
+
+test "a nested tool call block carries its own type as a string" {
+    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"type\":7,\"id\":\"c\",\"name\":\"grep\",\"arguments\":{}}}");
 }
