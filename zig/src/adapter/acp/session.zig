@@ -335,6 +335,11 @@ pub const Reducer = struct {
             const tool = &self.tools.items[tool_index];
             if (!std.mem.eql(u8, tool.run_id, run.id) or tool.terminal) continue;
             tool.terminal = true;
+            if (!tool.started) {
+                tool.started = true;
+                const started = try self.toolPayload(tool, .{ .arguments = true });
+                _ = try self.emit(run, "action.call.started", .{ .object = started });
+            }
             var payload = try self.toolPayload(tool, .{});
             if (!cancelling) {
                 var failure = self.object();
@@ -1378,9 +1383,11 @@ test "a tool id first seen under an earlier run is a reuse, not a patch" {
     try reducer.submit(1);
     try feed(&reducer, scratch, tool_call_frame);
 
-    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 5));
-    try testing.expectEqualStrings("acp_tool_id_reuse", codeAt(&reducer, 5));
-    try testing.expectEqualStrings("tool id reused across prompts", messageAt(&reducer, 5));
+    try testing.expectEqualStrings("action.call.started", typeAt(&reducer, 2));
+    try testing.expectEqualStrings("action.call.failed", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 6));
+    try testing.expectEqualStrings("acp_tool_id_reuse", codeAt(&reducer, 6));
+    try testing.expectEqualStrings("tool id reused across prompts", messageAt(&reducer, 6));
 
     var patched = try openRun(&arena);
     try feed(&patched, scratch, tool_call_frame);
@@ -1389,7 +1396,7 @@ test "a tool id first seen under an earlier run is a reuse, not a patch" {
     try feed(&patched, scratch, wrap(
         \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","status":"completed"}
     ));
-    try testing.expectEqualStrings("acp_tool_patch_without_call", codeAt(&patched, 5));
+    try testing.expectEqualStrings("acp_tool_patch_without_call", codeAt(&patched, 6));
 }
 
 test "a settled tool refuses both a repeat call and a later patch" {
@@ -1427,9 +1434,10 @@ test "a status outside the four ACP names is refused" {
     ));
 
     try testing.expectEqualStrings("action.call.requested", typeAt(&reducer, 1));
-    try testing.expectEqualStrings("action.call.cancelled", typeAt(&reducer, 2));
-    try testing.expectEqualStrings("acp_invalid_tool_status", codeAt(&reducer, 3));
-    try testing.expectEqualStrings("unknown tool status", messageAt(&reducer, 3));
+    try testing.expectEqualStrings("action.call.started", typeAt(&reducer, 2));
+    try testing.expectEqualStrings("action.call.cancelled", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("acp_invalid_tool_status", codeAt(&reducer, 4));
+    try testing.expectEqualStrings("unknown tool status", messageAt(&reducer, 4));
 }
 
 test "a pending status is a no-op while in_progress starts the call exactly once" {
@@ -1534,19 +1542,22 @@ test "an unfinished tool fails on completion and is cancelled on cancellation" {
     var completed = try openRun(&arena);
     try feed(&completed, scratch, tool_call_frame);
     try completed.settlePrompt("end_turn");
-    try testing.expectEqualStrings("action.call.failed", typeAt(&completed, 2));
-    const failure = payloadAt(&completed, 2).get("error").?.object;
+    try testing.expectEqualStrings("action.call.started", typeAt(&completed, 2));
+    try testing.expectEqualStrings("Read file", payloadAt(&completed, 2).get("name").?.string);
+    try testing.expectEqualStrings("action.call.failed", typeAt(&completed, 3));
+    const failure = payloadAt(&completed, 3).get("error").?.object;
     try testing.expectEqualStrings("incomplete_tool", failure.get("code").?.string);
     try testing.expectEqualStrings("prompt completed with unfinished ACP tool", failure.get("message").?.string);
-    try testing.expectEqualStrings("run.completed", typeAt(&completed, 3));
+    try testing.expectEqualStrings("run.completed", typeAt(&completed, 4));
 
     var cancelled = try openRun(&arena);
     try feed(&cancelled, scratch, tool_call_frame);
     try cancelled.settlePrompt("cancelled");
-    try testing.expectEqualStrings("action.call.cancelled", typeAt(&cancelled, 2));
-    try testing.expect(payloadAt(&cancelled, 2).get("error") == null);
-    try testing.expect(payloadAt(&cancelled, 2).get("arguments_json") == null);
-    try testing.expectEqualStrings("run.cancelled", typeAt(&cancelled, 3));
+    try testing.expectEqualStrings("action.call.started", typeAt(&cancelled, 2));
+    try testing.expectEqualStrings("action.call.cancelled", typeAt(&cancelled, 3));
+    try testing.expect(payloadAt(&cancelled, 3).get("error") == null);
+    try testing.expect(payloadAt(&cancelled, 3).get("arguments_json") == null);
+    try testing.expectEqualStrings("run.cancelled", typeAt(&cancelled, 4));
 }
 
 const permission_frame =
@@ -1610,10 +1621,11 @@ test "options that all lack an id are a distinct refusal from a malformed reques
     );
 
     try testing.expectEqualStrings("action.call.requested", typeAt(&reducer, 1));
-    try testing.expectEqualStrings("action.call.cancelled", typeAt(&reducer, 2));
-    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, 3));
-    try testing.expectEqualStrings("empty permission options", messageAt(&reducer, 3));
-    try testing.expectEqualStrings("event-j", reducer.envelopes.items[3].object.get("id").?.string);
+    try testing.expectEqualStrings("action.call.started", typeAt(&reducer, 2));
+    try testing.expectEqualStrings("action.call.cancelled", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, 4));
+    try testing.expectEqualStrings("empty permission options", messageAt(&reducer, 4));
+    try testing.expectEqualStrings("event-k", reducer.envelopes.items[4].object.get("id").?.string);
 }
 
 test "a permission request naming an unusable tool call raises the tool refusal" {
@@ -1699,7 +1711,7 @@ test "a null option is skipped the way a zero-valued one is, not refused" {
     try feed(&only, scratch,
         \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[null]}}
     );
-    try testing.expectEqualStrings("empty permission options", messageAt(&only, 3));
+    try testing.expectEqualStrings("empty permission options", messageAt(&only, 4));
 
     var typed = try openRun(&arena);
     try feed(&typed, scratch,
@@ -1717,8 +1729,8 @@ test "a request whose every option is unusable raises the empty-options refusal"
         \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[{"optionId":"future","name":"Future","kind":"allow_for_this_repository"}]}}
     );
 
-    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, 3));
-    try testing.expectEqualStrings("empty permission options", messageAt(&reducer, 3));
+    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, 4));
+    try testing.expectEqualStrings("empty permission options", messageAt(&reducer, 4));
 }
 
 test "a standing grant is a grant and a prompt error outside cancellation stays a failure" {
@@ -1799,8 +1811,9 @@ test "a run that settles under an open gate cancels it with the reason it settle
     try testing.expectEqualStrings("run_settled", reason.get("code").?.string);
     try testing.expectEqualStrings("parent run settled the permission request", reason.get("message").?.string);
 
-    try testing.expectEqualStrings("action.call.cancelled", typeAt(&reducer, 4));
-    try testing.expectEqualStrings("run.cancelled", typeAt(&reducer, 5));
+    try testing.expectEqualStrings("action.call.started", typeAt(&reducer, 4));
+    try testing.expectEqualStrings("action.call.cancelled", typeAt(&reducer, 5));
+    try testing.expectEqualStrings("run.cancelled", typeAt(&reducer, 6));
 }
 
 test "every envelope carries the frozen descriptor revision and the session it belongs to" {
