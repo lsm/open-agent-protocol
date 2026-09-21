@@ -6,6 +6,7 @@ pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";
 
 pub const Error = error{
+    InvalidResolution,
     InvalidFrame,
     OutOfMemory,
 };
@@ -40,6 +41,7 @@ const Status = enum {
 pub const Interaction = struct {
     id: []const u8,
     text: bool,
+    offered: []const []const u8 = &.{},
     resolved: bool = false,
 };
 
@@ -860,6 +862,7 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
     interaction.* = .{
         .id = try reducer.counters.nextID(reducer.arena, "interaction"),
         .text = !std.mem.eql(u8, method, "select") and !std.mem.eql(u8, method, "confirm"),
+        .offered = try offeredOptions(reducer, question),
     };
     try reducer.interactions.append(reducer.arena, interaction);
     var questions = std.ArrayList(std.json.Value).empty;
@@ -878,6 +881,23 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
     try statusUpdate(reducer, "waiting_for_input", interaction.id);
 }
 
+fn offeredOptions(reducer: *Reducer, question: *std.json.ObjectMap) ![]const []const u8 {
+    const listed_value = question.get("options") orelse return &.{};
+    if (listed_value != .array) return &.{};
+    var ids = std.ArrayList([]const u8).empty;
+    for (listed_value.array.items) |option| {
+        try ids.append(reducer.arena, textOf(option, "id"));
+    }
+    return try ids.toOwnedSlice(reducer.arena);
+}
+
+fn offers(interaction: *Interaction, id: []const u8) bool {
+    for (interaction.offered) |candidate| {
+        if (std.mem.eql(u8, candidate, id)) return true;
+    }
+    return false;
+}
+
 pub fn resolveExtension(reducer: *Reducer, answer: []const u8) !void {
     if (reducer.terminal) return;
     const interaction = pendingInteraction(reducer) orelse return;
@@ -887,6 +907,7 @@ pub fn resolveExtension(reducer: *Reducer, answer: []const u8) !void {
         if (answer.len == 0) return;
         try selected.put(reducer.arena, "text", Reducer.str(answer));
     } else {
+        if (!offers(interaction, answer)) return Error.InvalidResolution;
         var ids = std.ArrayList(std.json.Value).empty;
         try ids.append(reducer.arena, Reducer.str(answer));
         try selected.put(reducer.arena, "selected_option_ids", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try ids.toOwnedSlice(reducer.arena)) });
@@ -1574,4 +1595,39 @@ test "a null agent_end message list is a nil slice, not a defect" {
 
 test "a nested tool call block carries its own type as a string" {
     try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"type\":7,\"id\":\"c\",\"name\":\"grep\",\"arguments\":{}}}");
+}
+
+const select_request = "{\"type\":\"extension_ui_request\",\"id\":\"ui-3\",\"method\":\"select\",\"title\":\"Pick\",\"message\":\"\",\"options\":[\"alpha\",\"beta\"]}";
+
+test "a choice answer outside the advertised options is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var confirm = try started(a);
+    try applyExtension(&confirm, try parse(a, confirm_request));
+    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&confirm, "maybe"));
+    try std.testing.expect(countOf(&confirm, "user.input.resolved") == 0);
+    try std.testing.expect(!confirm.interactions.items[0].resolved);
+    try resolveExtension(&confirm, "no");
+    try std.testing.expect(countOf(&confirm, "user.input.resolved") == 1);
+
+    var choice = try started(a);
+    try applyExtension(&choice, try parse(a, select_request));
+    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&choice, "option-99"));
+    try resolveExtension(&choice, "option-2");
+    const payload = payloadOf(&choice, "user.input.resolved") orelse return error.NoResolution;
+    const answers = memberOf(payload, "answers") orelse return error.NoAnswers;
+    const ids = memberOf(answers.array.items[0], "selected_option_ids") orelse return error.NoIds;
+    try std.testing.expectEqualStrings("option-2", ids.array.items[0].string);
+}
+
+test "a text interaction still takes any answer" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, text_request));
+    try resolveExtension(&reducer, "anything at all");
+    try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
 }
