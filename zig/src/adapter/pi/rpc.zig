@@ -250,31 +250,31 @@ fn methodShape(name: []const u8) ?MethodShape {
 }
 
 fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) bool {
-    const value = object.get(name) orelse return false;
+    const value = foldedMember(object, name) orelse return false;
     return value == .string and value.string.len != 0;
 }
 
 fn presentAndNotNull(object: std.json.ObjectMap, name: []const u8) bool {
-    const value = object.get(name) orelse return false;
+    const value = foldedMember(object, name) orelse return false;
     return value != .null;
 }
 
 fn validateResponse(object: std.json.ObjectMap) !void {
-    const command = object.get("command") orelse return Error.InvalidFrame;
+    const command = foldedMember(object, "command") orelse return Error.InvalidFrame;
     if (command != .string or !namedIn(&commands, command.string)) return Error.InvalidFrame;
 
     var it = object.iterator();
     while (it.next()) |entry| {
-        const member = declaredMember(&response_members, entry.key_ptr.*) orelse return Error.InvalidFrame;
+        const member = foldedDeclared(&response_members, entry.key_ptr.*) orelse return Error.InvalidFrame;
         if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
     }
 
     var succeeded = false;
-    if (object.get("success")) |value| {
+    if (foldedMember(object, "success")) |value| {
         if (value == .bool) succeeded = value.bool;
     }
     var reported = false;
-    if (object.get("error")) |value| {
+    if (foldedMember(object, "error")) |value| {
         reported = value == .string and value.string.len != 0;
     }
     if (succeeded and reported) return Error.InvalidFrame;
@@ -283,7 +283,7 @@ fn validateResponse(object: std.json.ObjectMap) !void {
 
 fn validateExtensionRequest(object: std.json.ObjectMap) !void {
     if (!nonEmptyString(object, "id")) return Error.InvalidFrame;
-    const method = object.get("method") orelse return Error.InvalidFrame;
+    const method = foldedMember(object, "method") orelse return Error.InvalidFrame;
     if (method != .string) return Error.InvalidFrame;
     const shape = methodShape(method.string) orelse return Error.InvalidFrame;
 
@@ -294,7 +294,7 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
         if (!presentAndNotNull(object, name)) return Error.InvalidFrame;
     }
     if (shape.constrained.len != 0) {
-        if (object.get(shape.constrained)) |value| {
+        if (foldedMember(object, shape.constrained)) |value| {
             if (value != .null) {
                 if (value != .string) return Error.InvalidFrame;
                 if (value.string.len != 0 and !namedIn(shape.permitted, value.string)) return Error.InvalidFrame;
@@ -304,12 +304,12 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
     var it = object.iterator();
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;
-        const member = declaredMember(&extension_members, name) orelse return Error.InvalidFrame;
+        const member = foldedDeclared(&extension_members, name) orelse return Error.InvalidFrame;
         if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
-        if (std.mem.eql(u8, name, "type") or std.mem.eql(u8, name, "id") or std.mem.eql(u8, name, "method")) continue;
-        if (namedIn(shape.required_text, name)) continue;
-        if (namedIn(shape.required_any, name)) continue;
-        if (namedIn(shape.optional, name)) continue;
+        if (foldedIn(&.{ "type", "id", "method" }, name)) continue;
+        if (foldedIn(shape.required_text, name)) continue;
+        if (foldedIn(shape.required_any, name)) continue;
+        if (foldedIn(shape.optional, name)) continue;
         if (omittedByMarshal(entry.value_ptr.*, member)) continue;
         return Error.InvalidFrame;
     }
@@ -380,11 +380,12 @@ const command_shapes = [_]CommandShape{
 };
 
 fn foldedMember(object: std.json.ObjectMap, name: []const u8) ?std.json.Value {
-    if (object.get(name)) |value| return value;
-    for (object.keys()) |key| {
-        if (std.ascii.eqlIgnoreCase(key, name)) return object.get(key);
+    var surviving: ?std.json.Value = null;
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) surviving = entry.value_ptr.*;
     }
-    return null;
+    return surviving;
 }
 
 fn foldedIn(names: []const []const u8, name: []const u8) bool {
@@ -826,6 +827,34 @@ test "an absent success member is false rather than missing" {
 
 test "a response carrying a member the struct does not declare is refused" {
     try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":true,\"surprise\":1}"));
+}
+
+test "a response matches its member names the way encoding/json matches a tag" {
+    const upper = try classify(std.testing.allocator, "{\"type\":\"response\",\"COMMAND\":\"get_state\",\"SUCCESS\":true}");
+    try std.testing.expectEqual(Kind.response, upper.kind);
+    const mixed = try classify(std.testing.allocator, "{\"type\":\"response\",\"Command\":\"get_state\",\"Error\":\"boom\"}");
+    try std.testing.expectEqual(Kind.response, mixed.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"COMMAND\":\"invented\",\"success\":true}"));
+}
+
+test "a response command names a value, and a value does not fold" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"GET_STATE\",\"success\":true}"));
+}
+
+test "the last spelling of a folded response member is the one that decides" {
+    const later = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"invented\",\"COMMAND\":\"get_state\",\"success\":true}");
+    try std.testing.expectEqual(Kind.response, later.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"COMMAND\":\"invented\",\"success\":true}"));
+}
+
+test "an extension request matches its member names the way encoding/json matches a tag" {
+    const upper = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"ID\":\"u1\",\"METHOD\":\"confirm\",\"TITLE\":\"t\",\"MESSAGE\":\"m\"}");
+    try std.testing.expectEqual(Kind.extension_ui_request, upper.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"ID\":\"u1\",\"METHOD\":\"confirm\",\"TITLE\":\"t\"}"));
+}
+
+test "an extension method names a value, and a value does not fold" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"CONFIRM\",\"title\":\"t\",\"message\":\"m\"}"));
 }
 
 test "an extension request names a method the pinned union declares" {

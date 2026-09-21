@@ -27,19 +27,20 @@ fn actionOf(script: std.json.Value) []const u8 {
     return corpus.stringMember(script.object, "action") orelse "";
 }
 
-fn decodeWire(scratch: std.mem.Allocator, script: std.json.Value, wire: []const u8) !void {
+fn decodeWire(scratch: std.mem.Allocator, script: std.json.Value, wire: []const u8) !?rpc.Kind {
     const direction = directionOf(script) orelse return error.UnroutedScriptDirection;
-    if (direction != .pi_to_host) return;
+    if (direction != .pi_to_host) return null;
     const refuses = std.mem.eql(u8, actionOf(script), "decode-error");
 
     const source = try std.mem.concat(scratch, u8, &.{ wire, "\n" });
     var decoder = rpc.Decoder{ .source = source };
     const decoded = decoder.next(scratch) catch {
-        if (refuses) return;
+        if (refuses) return null;
         return error.ProductionCodecRefusedCorpusFrame;
     };
     if (refuses) return error.ProductionCodecAcceptedInvalidFrame;
-    _ = decoded orelse return error.ProductionCodecYieldedNoFrame;
+    const frame = decoded orelse return error.ProductionCodecYieldedNoFrame;
+    return frame.kind;
 }
 
 fn checkControl(script: std.json.Value, raw: std.json.Value) !void {
@@ -65,7 +66,7 @@ fn checkCommand(scratch: std.mem.Allocator, script: std.json.Value, raw: std.jso
     if (!std.mem.eql(u8, canonical, source)) return error.NoncanonicalCorpusCommand;
 }
 
-fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !void {
+fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !?rpc.Kind {
     try checkControl(item.script, item.raw);
     try checkCommand(scratch, item.script, item.raw, item.source);
     return decodeWire(scratch, item.script, item.encoded);
@@ -93,7 +94,7 @@ const Driver = struct {
 
     pub fn step(reducer: *Reducer, scratch: std.mem.Allocator, item: corpus.Step, case: CorpusCase) !corpus.Handled {
         _ = case;
-        try decodeFrame(scratch, item);
+        const kind = try decodeFrame(scratch, item);
         if (std.mem.eql(u8, item.action, "outbound-only")) return .handled;
         if (std.mem.eql(u8, item.action, "state")) return .handled;
         if (std.mem.eql(u8, item.action, "decode-error")) return .handled;
@@ -106,18 +107,19 @@ const Driver = struct {
             try session.transportFailed(reducer, corpus.stringMember(item.raw.object, "error") orelse "");
             return .handled;
         }
-        if (std.mem.eql(u8, item.action, "observe-extension")) {
-            try session.applyExtension(reducer, item.raw);
-            return .handled;
-        }
         if (std.mem.eql(u8, item.action, "resolve-extension")) {
             const pending = session.pendingInteractionID(reducer) orelse return error.NoInteractionToResolve;
             try session.resolveExtension(reducer, pending, "yes");
-            try session.apply(reducer, item.raw);
             return .handled;
         }
-        if (std.mem.eql(u8, item.action, "observe") or item.action.len == 0) {
-            try session.apply(reducer, item.raw);
+        if (std.mem.eql(u8, item.action, "observe-extension") or
+            std.mem.eql(u8, item.action, "observe") or item.action.len == 0)
+        {
+            switch (kind orelse return error.UnroutedCorpusFrame) {
+                .event => try session.apply(reducer, item.raw),
+                .extension_ui_request => try session.applyExtension(reducer, item.raw),
+                .response => {},
+            }
             return .handled;
         }
         return .unhandled;
@@ -152,10 +154,18 @@ fn expectWire(script_line: []const u8, wire: []const u8, want: anyerror!void) !v
     const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, script_line, .{});
     const got = decodeWire(scratch, script, wire);
     if (want) |_| {
-        try got;
+        _ = try got;
     } else |expected| {
         try std.testing.expectError(expected, got);
     }
+}
+
+fn expectKind(wire: []const u8, want: ?rpc.Kind) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"direction\":\"pi-to-host\"}", .{});
+    try std.testing.expectEqual(want, try decodeWire(scratch, script, wire));
 }
 
 fn expectInbound(wire: []const u8, want: anyerror!void) !void {

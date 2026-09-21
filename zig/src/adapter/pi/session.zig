@@ -182,7 +182,8 @@ fn memberOf(value: std.json.Value, name: []const u8) ?std.json.Value {
 }
 
 fn textOf(value: std.json.Value, name: []const u8) []const u8 {
-    const found = memberOf(value, name) orelse return "";
+    if (value != .object) return "";
+    const found = foldedMember(value, name) orelse return "";
     return switch (found) {
         .string => |s| s,
         else => "",
@@ -196,11 +197,12 @@ pub const WireMessage = struct {
 };
 
 fn foldedMember(raw: std.json.Value, name: []const u8) ?std.json.Value {
-    if (raw.object.get(name)) |value| return value;
-    for (raw.object.keys()) |key| {
-        if (std.ascii.eqlIgnoreCase(key, name)) return raw.object.get(key);
+    var surviving: ?std.json.Value = null;
+    var it = raw.object.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) surviving = entry.value_ptr.*;
     }
-    return null;
+    return surviving;
 }
 
 fn foldedIn(names: []const []const u8, name: []const u8) bool {
@@ -217,34 +219,52 @@ fn closedRoleMembers(raw: std.json.Value, names: []const []const u8) !void {
 }
 
 fn typedStrings(raw: std.json.Value, names: []const []const u8) !void {
-    for (names) |name| {
-        const value = foldedMember(raw, name) orelse continue;
+    var it = raw.object.iterator();
+    while (it.next()) |entry| {
+        if (!foldedIn(names, entry.key_ptr.*)) continue;
+        const value = entry.value_ptr.*;
         if (value != .string and value != .null) return Error.InvalidFrame;
     }
 }
 
 fn typedArray(raw: std.json.Value, name: []const u8) !void {
-    const value = foldedMember(raw, name) orelse return;
-    if (value != .array and value != .null) return Error.InvalidFrame;
+    var it = raw.object.iterator();
+    while (it.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) continue;
+        const value = entry.value_ptr.*;
+        if (value != .array and value != .null) return Error.InvalidFrame;
+    }
 }
 
 fn typedStringArray(raw: std.json.Value, name: []const u8) !void {
-    const value = foldedMember(raw, name) orelse return;
-    if (value == .null) return;
-    if (value != .array) return Error.InvalidFrame;
-    for (value.array.items) |entry| {
-        if (entry != .string and entry != .null) return Error.InvalidFrame;
+    var it = raw.object.iterator();
+    while (it.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) continue;
+        const value = entry.value_ptr.*;
+        if (value == .null) continue;
+        if (value != .array) return Error.InvalidFrame;
+        for (value.array.items) |item| {
+            if (item != .string and item != .null) return Error.InvalidFrame;
+        }
     }
 }
 
 fn typedBool(raw: std.json.Value, name: []const u8) !void {
-    const value = foldedMember(raw, name) orelse return;
-    if (value != .bool and value != .null) return Error.InvalidFrame;
+    var it = raw.object.iterator();
+    while (it.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) continue;
+        const value = entry.value_ptr.*;
+        if (value != .bool and value != .null) return Error.InvalidFrame;
+    }
 }
 
 fn typedInteger(raw: std.json.Value, name: []const u8) !void {
-    const value = foldedMember(raw, name) orelse return;
-    if (value != .integer and value != .null) return Error.InvalidFrame;
+    var it = raw.object.iterator();
+    while (it.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) continue;
+        const value = entry.value_ptr.*;
+        if (value != .integer and value != .null) return Error.InvalidFrame;
+    }
 }
 
 fn findInteraction(reducer: *Reducer, id: []const u8) ?*Interaction {
@@ -1167,6 +1187,33 @@ test "an optional wire member is matched the way encoding/json matches a tag" {
     try expectFinalMessage("{" ++ base ++ ",\"responsemodel\":\"x\"}", null);
     try expectFinalMessage("{" ++ base ++ ",\"RESPONSEMODEL\":\"x\"}", null);
     try expectFinalMessage("{" ++ base ++ ",\"response_model\":\"x\"}", "pi_invalid_message_end");
+}
+
+fn expectTerminal(message: []const u8, want: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    const line = try std.fmt.allocPrint(a, "{{\"type\":\"agent_end\",\"willRetry\":false,\"messages\":[{s}]}}", .{message});
+    try apply(&reducer, try parse(a, line));
+    try apply(&reducer, try parse(a, settled_text));
+    var buffer: [16][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings(want, kinds[kinds.len - 1]);
+}
+
+test "the last spelling of a folded member is the one that decides" {
+    const base = "\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"timestamp\":1,\"content\":[]";
+    try expectTerminal("{" ++ base ++ ",\"stopReason\":\"stop\"}", "run.completed");
+    try expectTerminal("{" ++ base ++ ",\"stopReason\":\"stop\",\"STOPREASON\":\"error\"}", "run.failed");
+    try expectTerminal("{" ++ base ++ ",\"STOPREASON\":\"error\",\"stopReason\":\"stop\"}", "run.completed");
+}
+
+test "every spelling of a folded member is held to its declared type" {
+    const base = "\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"timestamp\":1,\"content\":[]";
+    try expectFinalMessage("{" ++ base ++ ",\"stopReason\":\"stop\",\"STOPREASON\":7}", "pi_invalid_message_end");
+    try expectFinalMessage("{" ++ base ++ ",\"STOPREASON\":7,\"stopReason\":\"stop\"}", "pi_invalid_message_end");
+    try expectFinalMessage("{" ++ base ++ ",\"stopReason\":\"stop\",\"STOPREASON\":\"error\"}", null);
 }
 
 test "a case-folded member keeps the type its tag declares" {
