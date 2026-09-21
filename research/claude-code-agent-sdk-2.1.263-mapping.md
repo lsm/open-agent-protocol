@@ -588,10 +588,12 @@ compensated.
   the posture says. Naming a tool therefore does not keep the others out of
   the prompt; it exempts the named one from asking, which removes it from the
   gate's coverage rather than adding to it. `UnrestrictedTools()` passes no
-  tool flag at all and is the posture under which every call is gated.
-  **Whether every tool consults the permission system is not established** —
-  a spike observed a Bash call starting with no gate arriving. Until the smoke
-  gate asserts it, this adapter must not be described as gating every call
+  tool flag at all and is the posture that adds no exemptions of its own.
+  **Neither mechanism is a complete boundary**: the default permission mode
+  auto-approves safe commands without asking anyone, as probe 6 records, so a
+  control layer sees the calls that ask and not the ones the CLI settles by
+  itself. This adapter gates the calls that ask, and must never be described
+  as gating every call
 - initialize / capability revision: `emulated` (initialize exchange at open;
   per-turn `system/init` refresh recorded)
 - session association (process + initialize + first-turn init frame): `emulated`
@@ -1159,50 +1161,52 @@ untested, and were removed rather than left: an empty cancel id cannot reach
 `cancelGate` because the codec refuses one, and two guards in the tool paths
 could not fire. What survived removal has a test.
 
-### Open question: does the permission gate cover every call?
+### Settled: the control layer does not see every tool call
 
-There is one boundary here, not two, and it is the gate.
-`--permission-prompt-tool stdio` routes every call that consults the
-permission system to the control channel, and `--setting-sources=` stops a
-settings file pre-approving one behind the control layer's back. The posture
-is not a second boundary: `--allowedTools` names the tools that may run
-*without* asking, and the flag that would bound the surface, `--tools`, is one
-this adapter never passes. So the child always has the full built-in set, and
-naming a tool in the posture subtracts from the gate's coverage instead of
-adding a boundary in front of it.
+This was carried as an open question. It is not open — the evidence that
+closes it is the live probe recorded above, and it says the gate is partial.
 
-That reading comes from the CLI's own `--help`, read on 2.1.269 against a pin
-of 2.1.263, and from the argv this adapter builds. It has not been confirmed
-by running the pinned binary, which is the only thing that would settle it.
+Neither mechanism this adapter operates is a complete boundary.
 
-A spike observed a `Bash` call starting with no gate arriving. Three readings
-now fit rather than two. Some tools may not consult the permission system at
-this pin, in which case the gate is not the boundary and nothing else is
-either. The spike's auto-allowing harness may have answered a gate without
-recording it, in which case the gate held and the report was an artifact of
-the instrument. Or the spike's posture named `Bash`, in which case an ungated
-`Bash` call is the documented behaviour of the flag and there is no defect to
-explain. The third reading is the cheapest to eliminate and was not available
-while the flag was read backwards.
+The posture is not one. `--allowedTools` names the tools that may run
+*without* asking, and the flag that bounds the surface, `--tools`, is one this
+adapter never passes. The child always has the full built-in set, so naming a
+tool subtracts from the gate's coverage instead of adding a boundary in front
+of it.
 
-Until it is decided, the operative advice is `UnrestrictedTools()` with the
-gate answered by the control layer. That is the posture under which every call
-is gated. `AllowTools(...)` reads like the conservative choice and is not: each
-name it carries is a tool the control layer will not be asked about.
+The gate is not one either. `--permission-prompt-tool stdio` routes to the
+control channel every call *that consults the permission system*, and the
+default permission mode does not send every call there. Probe 6 above records
+it directly: `echo probe` was auto-approved with no ask, while `touch
+/tmp/...` produced a `can_use_tool`. The CLI decides which commands are safe,
+and the control layer is never told about the ones it decides for.
 
-Nothing in the tree settles it, and the corpus cannot: its `can_use_tool`
-frames are scripted, so they prove the reducer surfaces a gate it is given,
-never that the CLI raises one for every tool. The decidable form is a
-real-process assertion, and it belongs in the smoke gate rather than in prose
-here: provoke a `Bash` call against the pinned binary and fail if the call
-settles without a `can_use_tool` arriving first. The gate already spawns with
-`UnrestrictedTools()`, which is the posture that test needs — naming `Bash` in
-an allowlist would make it pass for the wrong reason, because that is the one
-posture under which an ungated `Bash` call is expected — so what is missing is
-the assertion, not the setup. The same run settles the flag's meaning for free:
-assert the converse, that `AllowTools("Bash")` produces a `Bash` call with no
-gate. Until it runs, this adapter must not be described as gating every tool
-call.
+So a control layer on this adapter at this pin can inspect and deny an
+ask-gated call and cannot inspect an auto-approved one. That is the property
+to design against. `UnrestrictedTools()` with the gate answered by the control
+layer is still the posture to prefer, because it is the one that adds no
+further exemptions — but it buys coverage of the asking calls, not of all of
+them. `AllowTools(...)` reads like the conservative choice and is not: each
+name it carries is one more tool the control layer will not be asked about.
+
+What remains genuinely open is narrower, and it is a lever this adapter does
+not currently pull. `--permission-mode` selects the mode the auto-approval
+runs under, and the spawn argv passes none, so every session runs in the
+default. Whether a non-default mode routes the calls the default one settles
+by itself is untested here, and it is the only thing that could turn the gate
+into a complete boundary.
+
+The reading of the two tool flags comes from the CLI's own `--help`, read on
+2.1.269 against a pin of 2.1.263. The auto-approval behaviour comes from the
+live probe against the pinned binary and needs no re-confirmation.
+
+The corpus cannot carry any of this: its `can_use_tool` frames are scripted,
+so they prove the reducer surfaces a gate it is given, never which calls the
+CLI raises one for. The assertions belong in the smoke gate — that an
+ask-gated command produces a `can_use_tool` before it settles, that a safe
+command does not, and that `AllowTools("Bash")` exempts an otherwise
+ask-gated `Bash`. Until those run, this adapter must be described as gating
+the calls that ask, and never as gating every tool call.
 
 Implementation discovery made executable by the smoke gate (fixed): the
 default factory originally ran the initialize exchange inside
