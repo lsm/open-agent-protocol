@@ -11,6 +11,7 @@ pub const Error = error{
 pub const invalid_message_prefix = "claude rpc: invalid stream-json message";
 pub const invalid_control_prefix = "claude rpc: invalid control-plane message";
 pub const invalid_frame_prefix = "claude native: invalid frame for a known type";
+pub const frame_too_large_message = "claude rpc: frame exceeds configured limit";
 
 fn frameDetail(comptime detail: []const u8) []const u8 {
     return invalid_frame_prefix ++ ": " ++ detail;
@@ -52,6 +53,11 @@ pub const Diagnostic = struct {
     fn invalidControl(self: *Diagnostic, comptime detail: []const u8) Error {
         self.message = invalid_control_prefix ++ ": " ++ detail;
         return Error.InvalidControl;
+    }
+
+    fn tooLarge(self: *Diagnostic) Error {
+        self.message = frame_too_large_message;
+        return Error.FrameTooLarge;
     }
 
     fn invalidNested(self: *Diagnostic, arena: std.mem.Allocator, comptime member_name: []const u8) Error {
@@ -201,20 +207,22 @@ pub const FrameReader = struct {
     cursor: usize = 0,
     limit: usize = default_frame_limit,
 
-    pub fn next(self: *FrameReader) !?[]const u8 {
+    pub fn next(self: *FrameReader, diagnostic: ?*Diagnostic) !?[]const u8 {
+        var discard = Diagnostic{};
+        const report = diagnostic orelse &discard;
         if (self.cursor >= self.source.len) return null;
         const rest = self.source[self.cursor..];
         const newline = std.mem.indexOfScalar(u8, rest, '\n') orelse {
             self.cursor = self.source.len;
-            if (rest.len > self.limit + 1) return Error.FrameTooLarge;
-            return Error.InvalidMessage;
+            if (rest.len > self.limit + 1) return report.tooLarge();
+            return report.invalid("unterminated frame");
         };
-        if (newline > self.limit) return Error.FrameTooLarge;
+        if (newline > self.limit) return report.tooLarge();
         const frame = rest[0..newline];
         self.cursor += newline + 1;
-        if (frame.len == 0) return Error.InvalidMessage;
-        if (std.mem.indexOfScalar(u8, frame, '\r') != null) return Error.InvalidMessage;
-        if (!std.unicode.utf8ValidateSlice(frame)) return Error.InvalidMessage;
+        if (std.mem.indexOfScalar(u8, frame, '\r') != null) return report.invalid("carriage return is not valid framing");
+        if (frame.len == 0) return report.invalid("empty frame");
+        if (!std.unicode.utf8ValidateSlice(frame)) return report.invalid("frame is not UTF-8");
         return frame;
     }
 };
@@ -637,28 +645,60 @@ fn parseForTest(text: []const u8, arena: *std.heap.ArenaAllocator) !Message {
 
 test "a frame must be one newline-terminated UTF-8 object" {
     var reader = FrameReader{ .source = "{\"type\":\"result\"}\n" };
-    try testing.expectEqualStrings("{\"type\":\"result\"}", (try reader.next()).?);
-    try testing.expectEqual(@as(?[]const u8, null), try reader.next());
+    try testing.expectEqualStrings("{\"type\":\"result\"}", (try reader.next(null)).?);
+    try testing.expectEqual(@as(?[]const u8, null), try reader.next(null));
 
     var empty = FrameReader{ .source = "\n" };
-    try testing.expectError(Error.InvalidMessage, empty.next());
+    try testing.expectError(Error.InvalidMessage, empty.next(null));
 
     var carriage = FrameReader{ .source = "{\"type\":\"a\"}\r\n" };
-    try testing.expectError(Error.InvalidMessage, carriage.next());
+    try testing.expectError(Error.InvalidMessage, carriage.next(null));
 
     var unterminated = FrameReader{ .source = "{\"type\":\"a\"}" };
-    try testing.expectError(Error.InvalidMessage, unterminated.next());
+    try testing.expectError(Error.InvalidMessage, unterminated.next(null));
 
     var invalid_utf8 = FrameReader{ .source = "{\"a\":\"\xff\"}\n" };
-    try testing.expectError(Error.InvalidMessage, invalid_utf8.next());
+    try testing.expectError(Error.InvalidMessage, invalid_utf8.next(null));
 
     var eof = FrameReader{ .source = "" };
-    try testing.expectEqual(@as(?[]const u8, null), try eof.next());
+    try testing.expectEqual(@as(?[]const u8, null), try eof.next(null));
+}
+
+test "every framing refusal names itself the way the oracle names it" {
+    var empty = FrameReader{ .source = "\n" };
+    var empty_report = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, empty.next(&empty_report));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": empty frame", empty_report.message);
+
+    var carriage = FrameReader{ .source = "{\"type\":\"a\"}\r\n" };
+    var carriage_report = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, carriage.next(&carriage_report));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": carriage return is not valid framing", carriage_report.message);
+
+    var not_utf8 = FrameReader{ .source = "{\"a\":\"\xff\"}\n" };
+    var utf8_report = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, not_utf8.next(&utf8_report));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": frame is not UTF-8", utf8_report.message);
+
+    var unterminated = FrameReader{ .source = "{\"type\":\"a\"}" };
+    var unterminated_report = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, unterminated.next(&unterminated_report));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": unterminated frame", unterminated_report.message);
+
+    var oversized = FrameReader{ .source = "{\"type\":\"result\"}\n", .limit = 4 };
+    var oversized_report = Diagnostic{};
+    try testing.expectError(Error.FrameTooLarge, oversized.next(&oversized_report));
+    try testing.expectEqualStrings(frame_too_large_message, oversized_report.message);
+
+    var unterminated_oversized = FrameReader{ .source = "{\"type\":\"result\"}", .limit = 4 };
+    var unterminated_oversized_report = Diagnostic{};
+    try testing.expectError(Error.FrameTooLarge, unterminated_oversized.next(&unterminated_oversized_report));
+    try testing.expectEqualStrings(frame_too_large_message, unterminated_oversized_report.message);
 }
 
 test "a frame past the limit is refused rather than buffered" {
     var reader = FrameReader{ .source = "{\"type\":\"result\"}\n", .limit = 4 };
-    try testing.expectError(Error.FrameTooLarge, reader.next());
+    try testing.expectError(Error.FrameTooLarge, reader.next(null));
 }
 
 test "a duplicate key anywhere in the frame is fatal" {
@@ -921,13 +961,13 @@ test "a quoted value is escaped the way %q escapes it" {
 
 test "an oversized unterminated tail is too large, not malformed" {
     var short = FrameReader{ .source = "{\"type\":\"result\"}", .limit = 4 };
-    try testing.expectError(Error.FrameTooLarge, short.next());
+    try testing.expectError(Error.FrameTooLarge, short.next(null));
 
     var within = FrameReader{ .source = "{}", .limit = 64 };
-    try testing.expectError(Error.InvalidMessage, within.next());
+    try testing.expectError(Error.InvalidMessage, within.next(null));
 
     var terminated = FrameReader{ .source = "{\"type\":\"result\"}\n", .limit = 4 };
-    try testing.expectError(Error.FrameTooLarge, terminated.next());
+    try testing.expectError(Error.FrameTooLarge, terminated.next(null));
 }
 
 test "a duplicate key is classified as one, not as undecodable JSON" {
