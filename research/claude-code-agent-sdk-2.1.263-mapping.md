@@ -1059,8 +1059,9 @@ The consequence is bounded and worth stating rather than hiding: both
 implementations refuse the same frames, and only the text of an already-failing
 run differs.
 
-A tool block the harness leaves nameless has no correct handling in the oracle,
-and this is the one place the port deliberately does something else. `ContentBlock`
+A tool block the harness leaves nameless had no correct handling in the oracle,
+and was for a while the one place the port deliberately did something else.
+`ContentBlock`
 declares `name` as a plain string, so an absent one decodes to `""` and the
 oracle calls `startTool` with it; only an empty `id` skips the block. The payload
 struct then carries `json:"name,omitempty"`, so the member is dropped, and
@@ -1072,7 +1073,9 @@ what this port did first, fails the same validator on `minLength`. There is no
 shape a nameless block can take that the schema accepts, so the reducer fails the
 run with `claude_tool_lifecycle` rather than emitting either one: a failed run is
 a valid trace, and the invariant every adapter exists to hold is that the
-validator accepts what it emits. Filed upstream against the Go adapter.
+validator accepts what it emits. Filed upstream as #133 and fixed there: the Go
+adapter now refuses the same frame with the same code and the same message, so
+this is no longer a divergence.
 
 The codec refuses a *wrong-typed* id or name, which is what the oracle's decode
 does.
@@ -1118,7 +1121,10 @@ so the member is emitted, not dropped. A port that skips the member instead
 emits a trace the shared validator rejects, which is the one invariant every
 adapter here exists to hold. And `duration_ms` is `omitempty` on all three
 terminal payloads, so a turn that settles instantly omits it rather than sending
-a zero. **And a submission arriving under a live run is refused**, with
+a zero. A *negative* elapsed time has no meaning and the schema types the member
+`minimum: 0`, so the port reports only a positive one; the oracle passed it
+through and emitted a trace the validator refuses, which is #136 and is now
+fixed there the same way. **And a submission arriving under a live run is refused**, with
 `ErrRunActive` in the oracle, rather than replacing it; silently substituting
 orphans the first run's tools and gates and restarts its sequence.
 

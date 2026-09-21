@@ -534,9 +534,16 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 		}
 		for i := range frame.Message.Content {
 			block := frame.Message.Content[i]
-			if block.Type == "tool_use" && block.ID != "" {
-				s.startTool(run, block.ID, block.Name, block.Input)
+			if block.Type != "tool_use" || block.ID == "" {
+				continue
 			}
+			s.mu.Lock()
+			settled := run.terminal
+			s.mu.Unlock()
+			if settled {
+				return
+			}
+			s.startTool(run, block.ID, block.Name, block.Input)
 		}
 	case *native.UserFrame:
 		if frame.ParentToolUseID != nil {
@@ -634,7 +641,18 @@ func (s *Session) emitDelta(run *runState, kind, text string) {
 	_ = s.emit(run, protocol.TypeContentDelta, protocol.ContentDeltaPayload{SessionID: s.state.SessionID, RunID: run.id, MessageID: run.messageID, Part: part}, false)
 }
 
+func reportedDuration(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
 func (s *Session) startTool(run *runState, nativeID, name string, input json.RawMessage) {
+	if name == "" {
+		s.failRun(run, "claude_tool_lifecycle", "tool call without a name")
+		return
+	}
 	if s.tools[nativeID] != nil {
 		s.failRun(run, "claude_tool_lifecycle", "duplicate tool call")
 		return
@@ -943,11 +961,11 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens), TotalTokens: uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens)}
 	switch {
 	case frame.Cancelled():
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "interrupt confirmed by terminal_reason " + frame.TerminalReason, Usage: usage, DurationMS: frame.DurationMS}, true)
+		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "interrupt confirmed by terminal_reason " + frame.TerminalReason, Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
 	case frame.MaxTurns():
-		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: "max_turns", Usage: usage, DurationMS: frame.DurationMS}, true)
+		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: "max_turns", Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
 	case !frame.IsError && frame.Subtype == native.ResultSuccess:
-		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: stopReason(frame), Usage: usage, DurationMS: frame.DurationMS}, true)
+		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: stopReason(frame), Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
 	default:
 		code := "claude_" + frame.Subtype
 		if frame.TerminalReason != "" && frame.Subtype == native.ResultSuccess {
@@ -956,7 +974,7 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 		if frame.APIErrorStatus != nil {
 			code = "claude_api_" + strconv.Itoa(*frame.APIErrorStatus)
 		}
-		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: errorResultText(frame)}, Usage: usage, DurationMS: frame.DurationMS}, true)
+		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: errorResultText(frame)}, Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
 	}
 }
 
@@ -1112,6 +1130,7 @@ func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: %s", ErrNativeProtocol, msg))
 		return
 	}
+	s.sweepRun(run)
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}, SettledBy: settledBy}, true)
 }
 

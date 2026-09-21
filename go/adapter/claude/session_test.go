@@ -1549,3 +1549,108 @@ func TestToolSelectionIsUnadvertisedBecauseItsProjectionFailsValidation(t *testi
 		t.Fatal(err)
 	}
 }
+
+func TestNamelessToolUseFailsRunInsteadOfEmittingAnInvalidTrace(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_nameless","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-nameless","user_message_uuid":"` + uuid + `"}`)
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+
+	terminal := terminalOf(events)
+	if terminal.Type != protocol.TypeRunFailed {
+		t.Fatalf("terminal = %s, want run.failed", terminal.Type)
+	}
+	var payload protocol.RunFailedPayload
+	if err := terminal.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Error.Code != "claude_tool_lifecycle" || payload.Error.Message != "tool call without a name" {
+		t.Fatalf("error = %+v", payload.Error)
+	}
+	for _, e := range events {
+		if e.Type == protocol.TypeActionCallRequested || e.Type == protocol.TypeActionCallStarted {
+			t.Fatalf("a nameless tool was announced as %s: %s", e.Type, e.Payload)
+		}
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNegativeDurationIsNotReported(t *testing.T) {
+	for _, elapsed := range []int64{-5, 0, 130} {
+		_, session, peer := openWire(t)
+		uuid, outcome := admit(t, session, peer)
+		frame := strings.Replace(resultFrame(uuid, "success", false, "completed", "done", 0), `"duration_ms":130`, `"duration_ms":`+jsonInt(elapsed), 1)
+		peer.send(frame)
+		events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+		assertValidTrace(t, outcome.admission, events)
+
+		var payload protocol.RunCompletedPayload
+		terminal := terminalOf(events)
+		if err := terminal.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		want := elapsed
+		if want < 0 {
+			want = 0
+		}
+		if payload.DurationMS != want {
+			t.Fatalf("duration_ms = %d for a frame reporting %d, want %d", payload.DurationMS, elapsed, want)
+		}
+		if err := session.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAFailedRunSweepsToolsStartedBeforeTheFailure(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"toolu_nameless","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-mixed","user_message_uuid":"` + uuid + `"}`)
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+
+	var kinds []protocol.EnvelopeType
+	for _, e := range events {
+		kinds = append(kinds, e.Type)
+	}
+	if len(kinds) != 5 || kinds[3] != protocol.TypeActionCallCancelled || kinds[4] != protocol.TypeRunFailed {
+		t.Fatalf("trace = %v, want the started call cancelled before the terminal", kinds)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestABlockAfterATerminalizingOneIsNotStarted(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_nameless","input":{}},{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-rev","user_message_uuid":"` + uuid + `"}`)
+	assertValidTrace(t, outcome.admission, adaptertest.Drain(t, outcome.stream, 5*time.Second))
+
+	impl := session.(*Session)
+	impl.mu.Lock()
+	leftover := len(impl.tools)
+	impl.mu.Unlock()
+	if leftover != 0 {
+		t.Fatalf("tools left behind by a terminalized frame = %d, want 0", leftover)
+	}
+
+	uuid2, outcome2 := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m2","model":"claude-test","content":[{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-rev2","user_message_uuid":"` + uuid2 + `"}`)
+	peer.send(resultFrame(uuid2, "success", false, "completed", "done", 0))
+	second := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
+	assertValidTrace(t, outcome2.admission, second)
+	var kinds []protocol.EnvelopeType
+	for _, e := range second {
+		kinds = append(kinds, e.Type)
+	}
+	if len(kinds) < 2 || kinds[1] != protocol.TypeActionCallRequested {
+		t.Fatalf("the next run reusing that tool id produced %v", kinds)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

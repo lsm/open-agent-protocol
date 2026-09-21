@@ -615,6 +615,22 @@ reads only `native.jsonl` and `expected-oap.json`; `case.json`, `mapping.json`
 and `omissions.json` are the Go side's obligation and the Zig side does not
 duplicate it.
 
+The Zig driver does read the two fields the script lines carry beside `action`
+and `raw`, and asserts both per line: a line declaring `await_events` must emit
+exactly that many envelopes, and a line classified `observed-only` must emit
+none. The envelope-for-envelope comparison cannot see either. It compares the
+assembled trace, so a frame that stops emitting and a later frame that emits an
+identical envelope cancel out; per-line counts are what catch that. A line
+carrying no `classification` is refused rather than assumed, because a corpus
+line that stops recording why it is there is a corpus defect.
+
+`direction` is recorded too and is not asserted, for a reason worth stating
+rather than leaving implicit: across all forty-four ACP lines every `action`
+maps to exactly one `direction`, so the driver's action table is one-to-one
+with it and an assertion would restate what dispatch already decides. That is a
+property of this corpus, not a general one — in the pi corpus one action spans
+both directions, and there the table cannot stand in for the field.
+
 Within the frames it does read, the Zig driver decodes **every** line through
 the production `rpc.parseMessage`, including the handshake responses and the
 settlement frames that never reach the reducer, so a corpus line that stops
@@ -734,26 +750,44 @@ is the range cast, which is one `std.math.cast`.
 No corpus case reaches any of this, so it is those twelve byte sequences and a
 155-chunk run or it is nothing.
 
-### Where the port and the oracle disagree on purpose
+### Where the port and the oracle disagreed on purpose
 
-Three inputs make the Go adapter emit a payload the shared validator refuses,
-and a fourth makes it misreport one. All four are raised as #142 so the two
-implementations settle on one answer; the port takes the valid answer now,
-which is what it did for the negative `duration_ms` in #136.
+Three inputs made the Go adapter emit a payload the shared validator refuses
+and a fourth made it misreport one; all were raised as #142 and are fixed on
+both sides now. The table keeps them because it is the record of what the
+class looks like, not a list of open divergences. Its fifth row is not a
+defect at all --- both implementations emit the same accepted envelope there
+--- and it is kept because the two never-started rows only make sense read
+together.
+
+The last two rows were found while fixing the other three, and the first of them
+is the most reachable: an agent that announces a tool and ends the turn before
+running it is ordinary, not exotic. The split between them is the validator's
+own: `requested -> cancelled` is legal because `tool()` admits any
+non-terminal current state for a cancellation, while `requested -> failed`
+falls to the default arm and demands `started`. Synthesizing a start on the
+cancellation path as well --- which the first fix did --- publishes an
+execution event the harness never reported, so the rule is narrower than
+"always start before settling". It is also the one no corpus case could have caught for a
+structural reason worth naming — no ACP case emits `action.call.failed` or
+`action.call.cancelled` at all, so the entire settle-children path was
+corpus-invisible in both implementations.
 
 | Input | Go | Zig |
 | --- | --- | --- |
 | `tool_call_update` carrying `title: ""` | assigns it, and `omitempty` then drops the required `name` | retains the admitted title; a patch renames a call but cannot un-name it |
 | a permission option with an empty `name` | publishes `label: ""`, which `permissionChoice` refuses with minLength | does not offer the option |
 | a permission option whose `kind` is outside ACP v1 | classifies it as rejecting, so a `granted:false` resolution is accepted and reported as a denial | does not offer the option; a request with no usable option raises the existing empty-options refusal |
+| a tool requested but never started, failed by its run | emits `action.call.failed` straight after `action.call.requested`, which the validator refuses as an illegal transition | synthesizes the start first, as `applyToolStatus` already does for a terminal status arriving without one |
+| a tool requested but never started, cancelled by its run | emits `action.call.cancelled`, which the validator accepts | emits the same, and does **not** synthesize a start |
 
-The third is a decision rather than a patch, which is why it is in the issue
-and not only in the port. Dropping an unusable option is loud at a pinned
-version boundary, matching what the adapter already does with a session-update
-discriminator outside the defined set; refusing the whole request would be
-louder. Either beats reporting an unclassifiable option as a denial.
+The third was a decision rather than a patch, and it was settled by dropping
+the unusable option in both implementations: that is loud at a pinned version
+boundary, matching what the adapter already does with a session-update
+discriminator outside the defined set, and refusing the whole request would be
+louder still. Either beats reporting an unclassifiable option as a denial.
 
-None of the three is reachable from the eleven corpus cases.
+None of the four is reachable from the eleven corpus cases.
 
 ### Where the oracle's Go runtime shows through
 

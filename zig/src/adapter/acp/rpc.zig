@@ -1,4 +1,5 @@
 const std = @import("std");
+const gojson = @import("gojson");
 
 pub const frame_limit_default: usize = 8 << 20;
 
@@ -30,7 +31,7 @@ pub const Decoder = struct {
         if (self.at >= self.source.len) return null;
         const rest = self.source[self.at..];
         const break_at = std.mem.indexOfScalar(u8, rest, '\n') orelse {
-            if (rest.len > self.limit) return Error.FrameTooLarge;
+            if (rest.len - 1 > self.limit) return Error.FrameTooLarge;
             return Error.InvalidMessage;
         };
         if (break_at > self.limit) return Error.FrameTooLarge;
@@ -44,6 +45,7 @@ pub const Decoder = struct {
 };
 
 pub fn parseMessage(arena: std.mem.Allocator, line: []const u8) !Message {
+    if (!gojson.withinNestingLimit(line)) return Error.InvalidMessage;
     const document = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{}) catch return Error.InvalidMessage;
     if (document != .object) return Error.InvalidMessage;
     const object = document.object;
@@ -252,4 +254,88 @@ test "a duplicate key is refused at every nesting level" {
     defer if (holder) |*a| a.deinit();
     try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"method\":\"y\"}"));
     try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":{\"a\":1,\"a\":2}}"));
+}
+
+const Bound = struct {
+    content: usize,
+    terminated: bool,
+    verdict: []const u8,
+};
+
+const frame_bounds = [_]Bound{
+    .{ .content = 31, .terminated = true, .verdict = "accepted" },
+    .{ .content = 31, .terminated = false, .verdict = "unterminated" },
+    .{ .content = 32, .terminated = true, .verdict = "accepted" },
+    .{ .content = 32, .terminated = false, .verdict = "unterminated" },
+    .{ .content = 33, .terminated = true, .verdict = "too-large" },
+    .{ .content = 33, .terminated = false, .verdict = "unterminated" },
+    .{ .content = 34, .terminated = true, .verdict = "too-large" },
+    .{ .content = 34, .terminated = false, .verdict = "too-large" },
+};
+
+test "the limit counts the terminator, so an unterminated frame gets one byte more than a terminated one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    for (frame_bounds) |bound| {
+        const name = try allocator.alloc(u8, bound.content - 29);
+        @memset(name, 'x');
+        const frame = try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\"}}{s}", .{ name, if (bound.terminated) "\n" else "" });
+        try std.testing.expectEqual(bound.content + @as(usize, if (bound.terminated) 1 else 0), frame.len);
+
+        var decoder = Decoder{ .source = frame, .limit = 32 };
+        const outcome = decoder.next(allocator);
+        if (std.mem.eql(u8, bound.verdict, "accepted")) {
+            try std.testing.expectEqual(Kind.notification, (try outcome).?.kind);
+        } else if (std.mem.eql(u8, bound.verdict, "unterminated")) {
+            try std.testing.expectError(Error.InvalidMessage, outcome);
+        } else {
+            try std.testing.expectError(Error.FrameTooLarge, outcome);
+        }
+    }
+}
+
+fn nested(allocator: std.mem.Allocator, arrays: usize) ![]const u8 {
+    var body = std.ArrayList(u8).empty;
+    try body.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":");
+    try body.appendNTimes(allocator, '[', arrays);
+    try body.appendNTimes(allocator, ']', arrays);
+    try body.appendSlice(allocator, "}");
+    return body.items;
+}
+
+test "a frame is refused once it nests past ten thousand containers, counting the frame object itself" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqual(Kind.notification, (try parseMessage(allocator, try nested(allocator, 9998))).kind);
+    try std.testing.expectEqual(Kind.notification, (try parseMessage(allocator, try nested(allocator, 9999))).kind);
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(allocator, try nested(allocator, 10000)));
+}
+
+test "brackets inside a string value are text, not nesting" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var body = std.ArrayList(u8).empty;
+    try body.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":{\"a\":\"");
+    try body.appendNTimes(allocator, '[', 10001);
+    try body.appendSlice(allocator, "\"}}");
+
+    try std.testing.expectEqual(Kind.notification, (try parseMessage(allocator, body.items)).kind);
+}
+
+test "a limit at the top of usize bounds nothing, rather than overflowing the bound" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var unterminated = Decoder{ .source = "{\"jsonrpc\":\"2.0\",\"method\":\"x\"}", .limit = std.math.maxInt(usize) };
+    try std.testing.expectError(Error.InvalidMessage, unterminated.next(allocator));
+
+    var terminated = Decoder{ .source = "{\"jsonrpc\":\"2.0\",\"method\":\"x\"}\n", .limit = std.math.maxInt(usize) };
+    try std.testing.expectEqual(Kind.notification, (try terminated.next(allocator)).?.kind);
 }

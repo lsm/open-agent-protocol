@@ -1243,3 +1243,129 @@ func TestToolIdReusedByALaterPromptIsRefused(t *testing.T) {
 	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read", Status: "pending"})
 	assertFailedWith(t, adaptertest.Drain(t, second, 2*time.Second), "acp_tool_id_reuse", "tool id reused across prompts")
 }
+
+func acpPermission(t *testing.T, s base.Session, f *fakeClient, admission protocol.MessageSubmitResponse, stream base.EventStream, options string) (protocol.PermissionRequestedPayload, []protocol.Envelope) {
+	t.Helper()
+	params := json.RawMessage(`{"sessionId":"native-session","toolCall":{"toolCallId":"call-1","title":"Act"},"options":` + options + `}`)
+	f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID("perm-1"), native.MethodSessionRequestPermission, params))}
+	var requested protocol.PermissionRequestedPayload
+	var seen []protocol.Envelope
+	for requested.InteractionID == "" {
+		envelope := adaptertest.Next(t, stream, 2*time.Second)
+		seen = append(seen, envelope)
+		if envelope.Type == protocol.TypeRunFailed {
+			return requested, seen
+		}
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			if err := envelope.DecodePayload(&requested); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	_ = admission
+	return requested, seen
+}
+
+func TestEmptyPatchedTitleKeepsTheCallNamed(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Read", Status: "pending"})
+	empty := ""
+	status := "completed"
+	f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "tool", Title: &empty, Status: &status, RawOutput: json.RawMessage(`{"ok":true}`)})
+	waitCursor(t, s, "4")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	assertValidTrace(t, admission, events)
+
+	named := 0
+	for _, e := range events {
+		if e.Type != protocol.TypeActionCallStarted && e.Type != protocol.TypeActionCallRequested {
+			continue
+		}
+		var payload protocol.ActionCallPayload
+		if err := e.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Name != "Read" {
+			t.Fatalf("%s name = %q, want Read", e.Type, payload.Name)
+		}
+		named++
+	}
+	if named != 2 {
+		t.Fatalf("named envelopes = %d, want 2", named)
+	}
+}
+
+func TestOnlyOptionsTheSchemaAndACPBothAcceptAreOffered(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	requested, prefix := acpPermission(t, s, f, admission, stream,
+		`[{"optionId":"","name":"Nameless","kind":"allow_once"},{"optionId":"blank","name":"","kind":"allow_once"},{"optionId":"future","name":"Future","kind":"allow_for_this_repository"},{"optionId":"no","name":"Reject","kind":"reject_always"}]`)
+
+	if len(requested.Choices) != 1 || requested.Choices[0].ID != "no" {
+		t.Fatalf("choices = %+v, want only the reject_always option", requested.Choices)
+	}
+	reject := base.InteractionResolution{RunID: admission.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: requested.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: admission.SessionID, RunID: admission.RunID, ChoiceID: "future", Granted: false}}
+	if err := s.Resolve(context.Background(), reject); !errors.Is(err, base.ErrInvalidResolution) {
+		t.Fatalf("resolving an unoffered option: got %v, want ErrInvalidResolution", err)
+	}
+	reject.Permission.ChoiceID = "no"
+	if err := s.Resolve(context.Background(), reject); err != nil {
+		t.Fatalf("resolving the offered option: %v", err)
+	}
+	prefix = append(prefix, adaptertest.Next(t, stream, 2*time.Second))
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	assertValidTrace(t, admission, append(prefix, collect(t, stream)...))
+}
+
+func TestARequestWithNoUsableOptionIsRefused(t *testing.T) {
+	for _, options := range []string{
+		`[{"optionId":"future","name":"Future","kind":"allow_for_this_repository"}]`,
+		`[{"optionId":"blank","name":"","kind":"allow_once"}]`,
+	} {
+		events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+			params := json.RawMessage(`{"sessionId":"native-session","toolCall":{"toolCallId":"call-1","title":"Act"},"options":` + options + `}`)
+			f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID("perm-1"), native.MethodSessionRequestPermission, params))}
+		})
+		assertFailedWith(t, events, "acp_invalid_permission", "empty permission options")
+	}
+}
+
+func TestAToolThatNeverStartedIsStartedOnlyWhereTheValidatorNeedsIt(t *testing.T) {
+	for _, settlement := range []struct {
+		stop string
+		want []protocol.EnvelopeType
+	}{
+		{"end_turn", []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallFailed, protocol.TypeRunCompleted}},
+		{"cancelled", []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallCancelled, protocol.TypeRunCancelled}},
+	} {
+		s, f := openTest(t, 64)
+		admission, stream := submit(t, s)
+		<-f.promptStarted
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "tool", Title: "Act", Status: "pending"})
+		waitCursor(t, s, "2")
+		f.prompt <- promptOutcome{result: native.PromptResult{StopReason: settlement.stop}}
+		events := collect(t, stream)
+		if settlement.stop == "cancelled" {
+			assertCancelledTrace(t, admission, events)
+		} else {
+			assertValidTrace(t, admission, events)
+		}
+
+		var kinds []protocol.EnvelopeType
+		for _, e := range events {
+			kinds = append(kinds, e.Type)
+		}
+		if len(kinds) != len(settlement.want) {
+			t.Fatalf("%s produced %v, want %v", settlement.stop, kinds, settlement.want)
+		}
+		for i, want := range settlement.want {
+			if kinds[i] != want {
+				t.Fatalf("%s produced %v, want %v", settlement.stop, kinds, settlement.want)
+			}
+		}
+	}
+}
