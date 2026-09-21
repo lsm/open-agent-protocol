@@ -595,3 +595,235 @@ checked-in real-provider examples are never reused, and the child environment
 is fully replaced (isolated `HOME`, `TELEMETRY_ENABLED=false`, dead-loopback
 proxies with loopback-only `NO_PROXY`, and only a fixed non-secret placeholder
 token).
+
+## Second-runtime port (Zig)
+
+`zig/src/adapter/acp/` carries a second implementation of this mapping:
+`rpc.zig` (line codec and JSON-RPC frame table), `session.zig` (the reducer,
+with its unit tests), `corpus.zig` (the evidence driver). It exists so the
+ledger can be falsified by something other than the implementation it
+describes. All eleven ACP corpus cases are claimed: each case's `native.jsonl`
+is replayed through the Zig reducer and compared envelope for envelope with the
+Go expectation.
+
+### What the two corpora cover, and where they differ
+
+The Go corpus test decodes every script line into `rpc.NotificationMessage` /
+`rpc.IncomingRequest` values and additionally asserts each frame's
+classification against `mapping.json` and `omissions.json`. The Zig driver
+reads only `native.jsonl` and `expected-oap.json`; `case.json`, `mapping.json`
+and `omissions.json` are the Go side's obligation and the Zig side does not
+duplicate it.
+
+Within the frames it does read, the Zig driver decodes **every** line through
+the production `rpc.parseMessage`, including the handshake responses and the
+settlement frames that never reach the reducer, so a corpus line that stops
+being a well-formed JSON-RPC message fails the case rather than being skipped.
+What that does *not* cover is byte-level framing: the driver re-serializes the
+script's `raw` object, so duplicate keys, CRLF, invalid UTF-8 and the frame
+limit are exercised by `rpc.zig`'s own tests and not here. Only `session/update`
+and `session/request_permission` reach the reducer; `complete`, `cancel`,
+`prompt-error` and `process-exit` are control calls in both runtimes and
+exercise no codec on either side.
+
+The shared harness gained one field for this adapter. `corpus.Step` now carries
+`script`, the whole parsed script line, because an ACP `permission` line states
+its `choice_id` and `granted` as siblings of `action` rather than inside `raw`,
+and the resolution is part of the case. This does not widen what a driver may
+read on a boundary that was previously narrow: `raw` was already handed over
+whole and unvalidated, and existing drivers already dig fields out of it.
+
+### Properties the expected traces pin that no type holds
+
+**Submission, message, run, tool-call, interaction and event ids come from one
+counter.** `run-b`, `session/message-c`, `event-d` in a single turn is a
+statement about allocation order across six kinds, not six sequences;
+reordering two allocations rewrites every later id in the trace. Two orderings
+are load-bearing and neither is visible to an assertion that reads only the
+last envelope:
+
+- `submit` mints the prompt's message ids, then the run, then the run's own
+  message, ticks the clock once, ticks again for `started_at_ms`, emits
+  `run.started`, and burns a submission id afterwards. That submission id never
+  reaches the wire; it exists only to advance the counter, so dropping it
+  shifts every later event letter by one and nothing else.
+- a permission request mints its interaction id **before** it filters the
+  options, so a request whose options all lack an `optionId` burns a letter
+  before `acp_invalid_permission` is raised.
+
+Both carry named tests in `zig/src/adapter/acp/session.zig`. No corpus case can
+express the second: the only case with a gate has usable options.
+
+### Where the run boundary lives
+
+Go has no `terminal` flag to consult from the notification path. `emitRecorded`
+sets `s.active = nil` at the terminal, and `handleNotification` and
+`handleRequest` both read `s.active` and return when it is nil, so a frame
+arriving after settlement is dropped before it can reach a reducer function.
+The Zig port keeps its run slot populated after settlement — `submit` needs it
+to refuse a second prompt, and `settlePrompt` needs it to be idempotent — so it
+must reproduce that boundary explicitly. `active()` returns the run only while
+it is nonterminal, and `observe` and `handleRequest` gate on it.
+
+Getting this wrong is not a suppressed event, which is why it is worth naming.
+The first Zig port suppressed the *emit* and let the frame through, so a late
+`tool_call` still minted a tool-call id, burned an event letter and wrote the
+session's tool table; the next prompt then refused that native id with
+`acp_tool_id_reuse` for a call it had never legitimately seen. A trace-level
+comparison cannot see any of that: the emitted envelopes were identical. The
+tests therefore assert the id counter and the tool and gate tables, not the
+envelope count alone.
+
+### Guards present in Go and deliberately absent in Zig
+
+Three Go guards have no reachable mutation in the Zig reducer. An unkillable
+guard is worse than none, because nothing fails when it rots, so each was
+removed rather than left in place unexercised.
+
+1. `handleNotification` guards text accumulation with `if !run.terminal`. In
+   Zig a settled run is not active, so the chunk path is unreachable after
+   settlement, and nothing reads the text buffer afterwards in any case — a
+   second settlement returns early and the next `submit` mints a fresh message
+   id and clears the bindings. The run boundary holds the rule alone.
+2. `toolPayload` re-tests `t.status == "in_progress"` before attaching progress
+   and `t.status == "failed"` before attaching the error object. Every caller
+   has already decided the status: `started && !terminal` implies
+   `in_progress`, and the failed branch sets `failed` itself. Zig decides once,
+   at the call site.
+3. `Resolve` compares the gate's run against the session's active run. A gate
+   whose run is not the active one has already been resolved by
+   `settleChildren`, so that comparison cannot fire. Zig replaces it with the
+   reachable check: a resolution names the run it answers for, which is what
+   `PermissionResolveRequest.run_id` carries on the wire, and one naming another
+   run is refused.
+
+The third is a divergence toward the oracle, not away from it: Go's `Resolve`
+validates `res.RunID` too, and the Zig seam now takes the same argument.
+
+A fourth guard was removed for the same reason after the fact. The Zig emitter
+began with its own `if (run.terminal)` early return, which was killable only
+while the run boundary was missing; once `observe` and `handleRequest` gated on
+`active()`, every remaining path to the emitter already refused a settled run
+and no mutation of the emitter's check could fail a test. It came out. The
+lesson is worth the sentence: a guard can be load-bearing on Monday and dead on
+Tuesday because a different defect was fixed, so the mutation set has to be
+re-run after a fix and not only after a feature.
+
+### Id allocation is a code point, not a byte
+
+The Go test oracle mints its letter with `string(rune('a' + n - 1))`. That is a
+code point, and it leaves ASCII sooner than it looks: the 27th id is `{`, the
+**32nd** is U+0080, which Go encodes as `c2 80`, and the 160th is `Ā`. A port
+that reads the expected traces as ASCII letters and casts to a byte agrees with
+every corpus case — none reaches even `z` — and then, from the 32nd id, emits a
+bare `0x80`..`0xFF`, which is not valid UTF-8 and so not a trace the shared
+validator can read at all. Casting to `u8` additionally traps at 160. Both
+thresholds sit inside an ordinary long answer of a couple of hundred streamed
+chunks.
+
+Naming the wrong threshold is easy and was done twice, here and independently
+on the deepseek port, both times by deriving it rather than running it. The
+boundaries are therefore pinned as emitted bytes against the output of a Go
+program, not as characters worked out by hand, at every value Go's conversion
+treats specially: the ASCII edge, the two-byte edge, both ends of the surrogate
+block, the first code point above it, U+10FFFF, and the two ranges Go replaces
+with U+FFFD. Zig's `{u}` makes the same two substitutions Go's rune conversion
+makes, so the port needs no guard for them and carries none; what it does need
+is the range cast, which is one `std.math.cast`.
+
+No corpus case reaches any of this, so it is those twelve byte sequences and a
+155-chunk run or it is nothing.
+
+### Where the port and the oracle disagree on purpose
+
+Three inputs make the Go adapter emit a payload the shared validator refuses,
+and a fourth makes it misreport one. All four are raised as #142 so the two
+implementations settle on one answer; the port takes the valid answer now,
+which is what it did for the negative `duration_ms` in #136.
+
+| Input | Go | Zig |
+| --- | --- | --- |
+| `tool_call_update` carrying `title: ""` | assigns it, and `omitempty` then drops the required `name` | retains the admitted title; a patch renames a call but cannot un-name it |
+| a permission option with an empty `name` | publishes `label: ""`, which `permissionChoice` refuses with minLength | does not offer the option |
+| a permission option whose `kind` is outside ACP v1 | classifies it as rejecting, so a `granted:false` resolution is accepted and reported as a denial | does not offer the option; a request with no usable option raises the existing empty-options refusal |
+
+The third is a decision rather than a patch, which is why it is in the issue
+and not only in the port. Dropping an unusable option is loud at a pinned
+version boundary, matching what the adapter already does with a session-update
+discriminator outside the defined set; refusing the whole request would be
+louder. Either beats reporting an unclassifiable option as a denial.
+
+None of the three is reachable from the eleven corpus cases.
+
+### Where the oracle's Go runtime shows through
+
+Go semantics leak into the wire in places the ACP specification never
+mentions. Each is a trace difference rather than an internal one, and the
+recurring rule underneath four of them is that **a present `null` is not an
+absent member**: decoding null into a Go value is a no-op, so the field keeps
+its zero value and the frame stays valid, while an absent member may instead
+fail the decode outright.
+
+| Input | Settles | Because |
+| --- | --- | --- |
+| `update` absent | `acp_invalid_update` | a nil `json.RawMessage` fails to unmarshal |
+| `update: null` | `acp_unknown_update` | the four bytes unmarshal as a no-op, leaving an empty discriminator |
+| `update: "x"`, `[]`, `7` | `acp_invalid_update` | the typed decode fails |
+| `sessionUpdate` absent, `null`, `""` | `acp_unknown_update` | the switch reaches its default |
+| `sessionUpdate: 7`, `true`, `{}` | `acp_invalid_update` | the typed decode fails |
+| `options: [null, …]` | the remaining choices are published | null decodes to a zero-valued option the empty-`optionId` filter drops |
+| `options: [7]` | `acp_invalid_permission` | the typed decode fails |
+
+Ordering is observable too, so the port reproduces it: a wrongly typed update
+refuses before the active run is consulted, a null one after, which is why a
+null update arriving before any submit is dropped rather than refused.
+
+Diagnostics carry Go's formatting verbs. `RequestID.String()` is
+`strconv.Quote`, so a prompt error naming a string id reads
+`for request "req-7"` with quotes and escapes; an integer id is bare decimal
+and an unset one is `<unset>`. The unsupported-stop-reason message uses `%q`
+on the same helper. That helper is `zig/src/adapter/goquote.zig` — a module
+rather than a copy per codec, because Claude's diagnostics need it for the
+same reason — and it is `strconv.Quote` rather than an approximation of it:
+`strconv.IsPrint` is a Unicode table, not a predicate, so `go/tools/goprintable`
+walks the scalar range through it and generates the 741 printable spans the
+helper binary-searches, recording the toolchain that produced them. An
+approximation is what made the helper wrong in the first place, and it was
+wrong in a direction no ASCII test could see — U+200B, U+2028, U+FEFF, the
+private-use area and every unassigned code point all quote as escapes.
+
+Every one of these was settled by driving the Go adapter and reading its
+output, never by reading its source. Twice the source would have given the
+wrong answer, both times on a null.
+
+### Mutation evidence
+
+84 mutants over the reducer, every one compiling, every one killed by a named
+test. Six survived the first pass. Two were unkillable guards and were removed;
+one exposed the missing run-id argument on `resolve`; three were gaps in
+assertion rather than in rule — a grant of kind `allow_always`, a prompt error
+carrying a code other than -32800 on a run that had already requested
+cancellation, and a repeated `in_progress` whose payload was never checked for
+an error object it must not carry. A seventh was reported as surviving and was
+not: the mutation moved a declaration without moving it past the check it was
+meant to escape, which asserts nothing.
+
+Twenty-eight of them cover the thirteen defects five rounds of Codex review
+found on the reducer unit, and **not one of the thirteen is reachable from the
+eleven corpus cases**. That is the single most useful thing this port
+established, so it is worth saying why rather than only that.
+
+Four were reachable only past the end of a case or on a frame no case carries:
+the byte-wide id letter, the missing run boundary, the session-global message
+bindings and the tolerated wrong-typed chunk member. Three were the
+schema-validity class above — inputs the Go adapter turns into an envelope the
+shared validator refuses, on a frame its own codec accepts. Six were the
+Go-runtime class: quoting, printability, and the null-versus-absent rule in
+four places.
+
+A corpus is a record of what a harness was observed to send, so by
+construction it cannot contain the input that makes its own reducer misbehave.
+Finding these takes reading the schema's constraints against what the reducer
+fills — the sweep that produced #136 — or a second implementer asking why a
+value is never checked. The corpus proves the mapping; it does not bound the
+reducer, and a green corpus is not evidence that one is correct.

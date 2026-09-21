@@ -570,22 +570,33 @@ compensated.
 - tool posture: the caller states one and there is no default. `--allowedTools`
   is present when the posture names tools and absent when it states the
   harness default, and `Config.Tools` is refused when it states neither, so
-  the surface the child receives is always a decision somebody made rather
-  than one nobody did. The flag form is taken from a working invocation
-  against this pin in one-shot mode and is **unverified in stream-json mode**;
-  the smoke gate is where that closes. Caller args follow the posture, so a
-  caller can still add or override flags
-- tool gating versus tool surface: these are two mechanisms and the ledger
-  states only the second. `--permission-prompt-tool stdio` routes every call
+  what the child receives is always a decision somebody made rather than one
+  nobody did. **What that decision controls is not settled at this pin** —
+  whether the flag names the tools that skip the prompt or the tools that
+  exist is the question the gating-versus-surface entry below carries. The
+  flag form is taken
+  from a working invocation against this pin in one-shot mode and is
+  **unverified in stream-json mode**; the smoke gate is where that closes.
+  Caller args follow the posture, so a caller can still add or override flags
+- tool gating versus tool surface: these are two mechanisms, and which of
+  them this adapter operates is **settled only for the gate**.
+  `--permission-prompt-tool stdio` routes every call
   that consults the permission system to the control channel, and
   `--setting-sources=` stops a settings file pre-approving one behind the
-  control layer's back. That is a per-call gate, not an allowlist: it decides
-  what runs this time, while the posture decides what the child can attempt at
-  all, and an excluded tool never enters the prompt. **Whether every tool
-  consults the permission system is not established** — a spike observed a
-  Bash call starting with no gate arriving, which the argv above says should
-  not happen. Until the smoke gate asserts it, this adapter must not be
-  described as gating every call
+  control layer's back. Whether `--allowedTools` is the second mechanism is
+  **not settled at this pin**. `--help` on 2.1.269 documents it as a list of
+  tool names "to allow" and documents a separate `--tools` as the list of
+  available built-ins, which would make the posture a pre-approval list and
+  not a boundary. Six patch releases separate that help text from the pinned
+  binary, so the section under "Settled for an unrestricted session" carries
+  the reasoning and neither reading is asserted here.
+  **What holds either way, for an unrestricted session**: the default
+  permission mode auto-approves safe commands without asking anyone, as probe
+  6 records against the pinned binary, so a control layer sees the calls that
+  ask and not the ones the CLI settles by itself. Whether a restricted
+  posture can withhold the auto-approved ones depends on the unresolved flag
+  reading. This adapter gates the calls that ask, and must never be described
+  as gating every call
 - initialize / capability revision: `emulated` (initialize exchange at open;
   per-turn `system/init` refresh recorded)
 - session association (process + initialize + first-turn init frame): `emulated`
@@ -661,6 +672,134 @@ to a `@request` placeholder). The initialize exchange at open is issued
 exactly like the production process factory, so its wire shape is behavioral
 evidence, not metadata.
 
+Two properties the expected traces pin that no type in either implementation
+holds, recorded here because a reader refactoring one allocation site has no
+other way to learn them. **Submission, message, run and event ids come from one
+counter**, so `message-2`, `run-3`, `event-4` in a single turn is a statement
+about allocation order across four kinds rather than four independent
+sequences; reordering two allocations changes every later id in the trace. And
+**a run reports the model captured when its submission was accepted**, not the
+one session state holds when it starts, even though `system/init` publishes a
+model earlier in the same turn. The corpus demonstrates the second only at the
+first run of a session: every `init` frame in every case publishes
+`claude-sonnet-4-5`, so from the second run onward a reducer that reads session
+state live is indistinguishable from one that captured it. Both properties
+therefore want a named test beside the corpus rather than the corpus alone;
+`zig/src/adapter/claude/session.zig` carries one each.
+
+The second property is guarded differently in each implementation, which
+matters to anyone changing either. The Go reducer buffers an observation whose
+echo does not match the run's submission uuid (`reserveObservation`), and
+`system/init` carries no `user_message_uuid`, so the turn's own init is still
+in the buffer when `run.started` is built and is replayed only afterwards; the
+captured and live values are necessarily equal at that point, and a Go mutation
+from one to the other is unobservable rather than untested. The Zig reducer is
+fed frames synchronously and applies init when it sees it, so there the capture
+is what holds the rule. Same emitted trace, different guard: removing the
+buffering in Go, or the capture in Zig, breaks only that side, and the shared
+corpus reports neither. The consequence is protocol-visible rather than internal:
+`current_model_id` is a wire field, so when an adapter adopts an init is
+observable behaviour and the oracle governs it. The rule both sides now hold is
+that **a pending run's init is not adopted until the run starts**; an init
+arriving with no pending run, or with a started one, is adopted when it
+arrives. The Zig reducer buffers every observation whose echo does not match
+the pending run's submission uuid and replays after `run.started`, which is the
+Go mechanism rather than an init special case. No corpus case can express this:
+the corpus feeds native frames and compares emitted envelopes, while a state
+read is an inbound OAP request, so this is a unit test on both sides or it is
+nothing.
+
+A third property surfaced porting `tool-lifecycle`, and this one the corpus
+does pin: **`source` on an action call is looked up, not stamped.** The
+reducer projects a name-to-source map from `system/init`'s tool list, so a
+call to a tool that init never advertised carries no source at all -- which is
+why the case's second run, calling `Read` against an init advertising only
+`Task` and `Bash`, emits three call envelopes with the member absent while the
+first and third runs' `Bash` calls carry `claude-code-native`. The Go oracle
+then publishes only the entries whose source is the endpoint's own declared
+source, so a tool namespaced to a declared MCP server is not attributed either
+until a served `action.tools.list` response supplies one. The Zig port asks
+that as a predicate (`servedByHarness`) rather than deriving an `mcp:<server>`
+id: it serves no tool catalog, and a helper named for a source it never
+returns is the shape that rots invisibly in a tree with no comments.
+
+A **third** property the corpus cannot discriminate came out of porting the
+terminal deferral, and it is the sharpest of the three because a reducer can
+get it wrong in both directions and pass every case. A result frame does not
+always settle its run: a positive `queued_turn_count`, or an unsettled child
+whose `task_type` is `local_agent` or `local_workflow`, holds the frame, and
+the run settles later -- when the child reports terminal through
+`task_notification` or a terminal `task_updated` patch, or when a
+`session_state` of `idle` publishes whatever is held regardless of children.
+`queued-continuation` pins the first half, because a second result frame
+arrives and its content, not the held one's, is what `run.completed` carries.
+`background-children` pins nothing: its two runs each defer and then publish,
+and a reducer that ignored children entirely emits the identical trace with
+identical ids, sequences and timestamps, because the clock only advances when
+an envelope is emitted and no envelope is emitted in between. The Zig port
+settled at the result frame for one commit and `background-children` passed.
+Four rules therefore carry named tests on the Zig side, each verified by
+mutation: a local child holds the terminal, a child of any other kind holds
+nothing, a non-terminal patch does not settle a child, and `idle` -- and only
+`idle` -- publishes past a child that is still running.
+
+One of the thirteen expectations is not portable, and that is a fact about
+the corpus rather than about either reducer. `process-exit` fails its run with
+`message: "io: read/write on closed pipe"`, which is the Go runtime's own text
+for a closed pipe, reached through `fmt.Sprint(s.client.Err())`. No
+implementation on another runtime can emit that string, so the Zig side does
+not claim the case; it asserts instead that every envelope matches and that
+the last one differs at exactly `payload.error.message` and nowhere else, with
+both texts named in the test. If the expectation is ever regenerated against a
+transport-neutral message the assertion fails and the case can be claimed.
+`malformed-stdout` is the contrast that shows the line is real: its failure
+message is the adapter's **own** rpc error, so the Zig codec reproduces it
+verbatim and the case is claimed like any other.
+
+The Zig reducer keeps no per-run terminal flag. It clears its run slot at every
+settlement -- native terminal, transport death, decode failure -- so
+`self.run == null` is the only reachable "this run is over" state, and a
+mutation removing any `run.terminal` disjunct killed no test because none of
+them could fire. The flag and its seven readers are gone rather than left as
+branches a reader would assume were load-bearing. The oracle needs its own,
+because a gate or a tool there holds a pointer to a run the session has already
+dropped. `Tool.terminal` and `Gate.resolved` stay on the Zig side for the same
+reason the oracle needs them: the sweep at settlement has to tell an open call
+from a settled one.
+
+`tools-catalog-sources` closes the `source` story and shows why the predicate
+that `tool-lifecycle` alone justified was not enough. Attribution has two
+modes, and a **state read changes which one is in force**: before anything
+serves a catalog, only tools whose source is the endpoint's own declared
+source are attributed, so an MCP-namespaced call carries no `source` at all;
+once `action.tools.list` has served the catalog once, the served map is the
+attribution and the same call carries `mcp:files`. The case is two identical
+runs on either side of one `action.tools.list`, and they differ in exactly
+that member. So the Zig port now resolves the real source id -- longest
+matching server namespace after `mcp__`, native when nothing matches -- rather
+than asking whether the harness owns the tool. Serving a catalog before an
+`init` has published one is the boundary case that matters: it must not latch
+an empty served map, or the native tools lose their source for the rest of the
+session, and the corpus does not exercise it because its first assertion is
+followed by an assertion after `init`.
+
+Four resolution rules carry tests on the Zig side, because the case's three
+tool names cover only one of them: the longest of two overlapping server
+namespaces wins regardless of the order the servers are advertised in, a
+server name that matches without the `__` separator is not a match, a
+namespace no server claims is native, and a name repeated in `init` is served
+once.
+
+Two divergences in the Zig port are deliberate and bounded. A gate's prompt is
+built by re-encoding the parsed `input` value, where Go interpolates the raw
+`json.RawMessage` bytes; the two agree for compact native frames, which is
+every frame the corpus holds, and differ on interior whitespace. And the Zig
+reducer clears its run slot at settlement while the oracle keeps a run
+addressable through `gate.run` and `tool.run`, so the `run.terminal` disjunct
+that guards `openGate` and `resolve` on the Go side cannot fire on the Zig
+side yet -- a mutation removing it kills no test. Both disjuncts were removed with the
+flag, as recorded above.
+
 Cases: initialize-lifecycle, admission-corroboration, settlement-statuses,
 interrupt-cancel, queued-continuation, background-children,
 streaming-provenance, tool-lifecycle, permission-gates, process-exit,
@@ -712,6 +851,439 @@ presence alone never enables execution.
 Both gates were executed against the pinned linux-x64 binary
 (sha256 `26d02035…d5ba`) with the digest bound, five consecutive times each,
 all green.
+
+### What the corpus cannot see, and why that is structural
+
+Review of the Zig port found two divergences from the oracle that all thirteen
+cases pass over, a sweep of every entry point for the same shape found four
+more, and a second review round found that the sweep had itself been incomplete:
+it walked the reducer's entry points and not the codec's, which is where the
+largest of them was. The class is specific: **any oracle branch reachable only from a frame the
+fixtures happen not to contain.** The corpus was assembled from observed
+sessions, so it holds the shapes a healthy harness produces and almost none of
+the shapes a misbehaving one does. Seven divergences, none visible to a single
+case:
+
+- A repeated `tool_use` id and a `tool_result` naming no call in flight both
+  fail the run with `claude_tool_lifecycle`. Every fixture pairs its calls.
+- A failure message joins several `errors` with `"; "` and falls back to
+  `API error (HTTP N)`. Every fixture's error list has exactly one entry.
+- A reverse control request that is not `can_use_tool` is **external activity**:
+  it fails the run with `claude_external_activity` and marks the session
+  unusable. The corpus's only observed control requests are `can_use_tool`.
+- That unusable mark is a latch, not a flag, and its scope is narrower than it
+  first looks: `applyObservation` consults it only when a run is current, so a
+  broken session still adopts an idle `system/init` while refusing to reduce
+  anything into a run and admitting no further submission. No case continues
+  past its terminal, so nothing could see either half.
+- A `control_cancel_request` withdraws the matching open gate, resolving it
+  `cancelled` and returning the run to `running`. No case contains one.
+- A `text_delta` carrying no `text` member still produces a content part rather
+  than nothing, because the oracle decodes into a struct whose zero value is the
+  empty string. Every fixture's delta carries its text.
+
+  **The two implementations do not agree on that part's shape, and the
+  divergence is in the port's favour**, which is why it is listed here as a
+  divergence rather than among the matched behaviours. `protocol.ContentPart`
+  tags `text` and `reasoning` `omitempty`, so the oracle emits `{"type":"text"}`
+  with no `text` member at all -- and `contentPart` in
+  `schema/v0.1/common.schema.json` carries no `required` list, so that shape is
+  schema-legal but says less than the port's `{"type":"text","text":""}`. The
+  port emits the member. Nobody should read this as parity: it is a deliberate
+  choice to emit the more explicit of two legal shapes, and if the schema ever
+  requires `text`, the oracle is the side that breaks.
+- **The codec is fail-closed on shape, and that is the largest of the six.**
+  `native.DecodeObservation` and `DecodeControlRequest` enforce a required-member
+  table per frame type -- a `user` frame needs `message.role` and
+  `message.content`, an `assistant` frame needs `message.model` and an array
+  `message.content`, `system/init` needs `session_id`, `model` and `tools`, a
+  `task_notification` needs six members *and* a terminal `status`, a
+  `can_use_tool` needs `tool_name`, `tool_use_id` and `input` -- and a failure
+  is not a skipped frame but `client.closeWith`, which fails the run
+  `claude_process_exit` and makes the session unusable. Every fixture is
+  well-formed, so no case reaches any of it.
+
+Three refinements came out of review of the port, and each is a bound worth
+stating rather than a detail. **A refusal must name itself**: the oracle wraps
+every one in a named error -- `claude rpc: invalid stream-json message`,
+`claude rpc: invalid control-plane message`, `claude native: invalid frame for
+a known type` -- and the run it fails carries that text as its message, so a
+port that refuses the right frames with an empty diagnostic still diverges
+where anyone would look first. **The typed decode refuses more than missing
+members**: `is_error: "yes"` or `queued_turn_count: "2"` on an otherwise
+complete result frame kills the Go transport, because the members are declared
+`bool` and `*int`. The Zig port now carries a second table for that. It began as
+the four frames whose members the reducer reads, which review showed was the
+wrong bound twice over: Go's decode is recursive, so a top-level-only table was
+tolerant exactly where no fixture could see it, and Go's declared integers are
+`int64`, so a fractional or oversized number is fatal there and was accepted
+here. Every frame `DecodeObservation` types now has a table covering its members
+to the depth Go declares them, with an integer need that refuses a float and an
+item list for object and object-array members.
+
+**The diagnostics the port reproduces are the ones `message.go` composes, not
+the ones it borrows**, and separating those two took a probe rather than a read.
+`parseObject` reports whatever `rejectDuplicateKeys` and its decode return, and
+that is a mix. Fourteen malformed frames put through the oracle produced twelve
+distinct strings: `{"type":}` reports `missing value after object key`,
+`{"a":tru}` reports `invalid character '}' in literal true (expecting 'e')`,
+`{3:1}` reports `object member name must be a string`. Those are
+`encoding/json`'s scanner vocabulary, and reproducing it would bind this port to
+the wording of a parser it does not use and rot silently on a Go upgrade with no
+test on either side able to notice, so the port substitutes one string, `frame
+is not decodable JSON`, for all of them. The classification is identical either
+way -- both sides refuse with the invalid-message error, which is what the
+reducer acts on -- and only the text a human reads differs.
+
+`rejectDuplicateKeys` also composes three strings of its own, and exactly one of
+them is reachable. `trailing JSON value` fires for a frame carrying a second
+object, and the port now reproduces it from its own token walk: the walk already
+tracks container depth for the duplicate check, so a value arriving after the
+top-level container closes is a fact it can state. `object key is not a string`
+and `unexpected closing delimiter` are dead, because Go's scanner errors before
+the adapter's own check is reached -- a non-string key in any of the three
+nesting positions reports `object member name must be a string`, and every input
+that would reach the closing-delimiter branch reports a scanner error first. That
+is the same "dead by construction" claim the replay guard taught us to distrust,
+so it is recorded as a probe result against a pinned commit rather than as a
+property, and the two strings are named here so a future reader can retest them.
+
+The nested-cause chain in `requireObject` is reproduced verbatim rather than
+substituted, because a member that reached it came out of a successful decode, so
+its only possible failure is the bookend check whose text the adapter owns.
+
+Two limits of the Go decoder are not diagnostics at all but behaviour, and the
+port had to reimplement both. `encoding/json` refuses past 10,000 levels of
+nesting, and the port accepted such frames; worse, its own duplicate-key walk
+pushed a frame per level before the value tree was built, so the frame limit had
+stopped bounding memory the way the oracle's does. The cap is now enforced at the
+boundary a probe established -- 9,999 nested containers inside the frame object
+accepted, 10,000 refused, arrays and objects alike -- and it keeps the oracle's
+`exceeded max depth` wording, because a limit the port implements itself is one
+whose message it owns. And `encoding/json` replaces an unpaired `\uD800`-`\uDFFF`
+escape with U+FFFD and accepts the frame, where Zig's `std.json` returns a syntax
+error: the port was killing runs the oracle keeps alive. A lone surrogate escape
+is now rewritten before the walk and the parse, with the oracle's pairing rule, so
+`\ud83d\ud83d\ude00` is a replacement character followed by an emoji rather than
+two emoji, and a backslash that is itself escaped starts no escape.
+
+**A frame member is not found by its name but by `encoding/json`'s field
+matching**, and getting that wrong was worth five findings on its own. The
+decoder matches a struct tag exactly first and case-insensitively otherwise, so
+`SESSION_ID` reaches `SessionID` and the oracle accepts a frame this port refused.
+It also assigns *every* key that folds to a field, in document order, so both
+spellings are type checked and the last assignment is the value that survives:
+`{"session_id":"s","SESSION_ID":""}` leaves the field empty and fails the
+required check, which makes this refusal parity and not merely value selection --
+a distinction this ledger got wrong once before it was probed. Folded containers
+merge, because the second key decodes into the struct the first produced, so
+`message:{model}` beside `MESSAGE:{content}` satisfies both required members
+while `message:{model:"a"}` beside `MESSAGE:{model:""}` is fatal and the reverse
+order is not. An intermediate that is present and is not an object fails the
+decode outright. Resolution here is one ordered walk keeping the last match at
+every level; the typed pass is a second walk refusing if any occurrence at any
+spelling is wrong-typed, which is what Go does by failing on the assignment
+rather than on the final value.
+
+The fold is Unicode, not ASCII, and the port implements it completely rather
+than taking a bound. Every name in these tables is ASCII, and exactly two
+non-ASCII runes fold to an ASCII letter -- U+017F LATIN SMALL LETTER LONG S to
+`s` and U+212A KELVIN SIGN to `k` -- so handling those two is the whole of the
+rule here. That is the difference from the printability table this port declined
+to ship: a partial predicate there leaves the claim false, while here the pair is
+exhaustive.
+
+The evidence, against go1.27.0 and `DecodeObservation`, because review reasonably
+doubted it from a commit message that had lost the characters: a frame carrying
+`session_id: "s"` beside `ſession_id: 7` is refused, one carrying only
+`ſESSION_ID: "s"` is accepted, and a `task_notification` whose summary is spelled
+`ſummary` is accepted. That last case has no `k` in the field name or anywhere in
+the frame, which matters because `encoding/json` used to gate its rune-aware fold
+on names containing `k`, `K`, `ſ` or `K`. `foldFunc` and that gating were removed
+in Go 1.20; the decoder now builds a folded name for every field with
+`appendFoldedName` and matches uniformly. A port pinned to an older Go would need
+the gate back.
+
+The fold stops at the frame tables. `ParseMessage` reads `type`, `subtype`,
+`request_id`, `request` and `response` out of a `map[string]json.RawMessage`,
+which is a plain map read, so `TYPE` is not a type in either implementation.
+Both layers were probed rather than assumed to share one rule. What is left
+divergent is which of two folding spellings a *reducer* reads when both carry
+usable values, since that is ordering inside a merge rather than an accept or a
+refuse.
+
+**The null rule has needed six statements, and an inventory is what stops a
+seventh.** Every one of them turned on the Go type behind the member rather than
+on anything visible in the JSON, and each was found separately, by review, after
+the previous one had been written down as if it settled the question. The
+inventory below is the form that actually settles it, because it enumerates
+rather than generalises.
+
+| Go type | null does | port reads with |
+| --- | --- | --- |
+| `string`, `int64`, `bool`, struct | nothing; the zero value or the earlier spelling stands | the resolving lookup, which skips nulls |
+| pointer, slice, map | sets it nil, so a later null clears an earlier value | the resolving lookup, whose absence is the same thing |
+| `json.RawMessage` | stores the four bytes of the literal, so the member is *present* and reads `null` | the raw lookup, which keeps nulls |
+
+Four raw members are reachable from the reducer, and only one of them needed the
+raw lookup: `can_use_tool`'s `input`, whose literal reaches the gate prompt, so
+the oracle prompts `Bash null`. The other three agree for reasons of their own
+and were checked rather than assumed -- a `tool_use` input defaults to null and
+is emitted as null, a `tool_result` content defaults to null and normalises to
+the empty string, and a null `event` fails the delta decode on both sides.
+`tool_use_result`, `modelUsage`, `permission_denials`, `permission_suggestions`
+and `updatedInput` are raw as well and are never read. `usage` is the trap in
+this list: it is a raw message on `AssistantFrame` and a typed struct on
+`ResultFrame`, and only the result one is read, through a terminal path whose
+three call sites all sit in `settle`.
+
+**Null means absence at four different levels, and the answer is not uniform.**
+It took three separate findings to state the rule at the member, the array item
+and the intermediate, so the fourth -- the required-member table -- was swept
+deliberately rather than waited for. A null required string refuses, because the
+oracle checks the decoded value and null decodes to the empty string. A null
+required array refuses, because the check is against nil and null leaves the
+slice nil. A null required raw message accepts, because the field holds the four
+bytes of the literal and the check is on its length. One JSON value, three
+answers, decided entirely by the Go type behind it -- which is why each level
+had to be probed rather than reasoned about from the level above.
+
+The quoting bound is the one place review asked for more and the answer was no.
+`quoteGo` matches `%q` through U+00FF, including invalid UTF-8, which it escapes
+byte by byte as `\xNN`. Above that it passes unprintable runes through. Matching
+there is not a predicate that can be extended: `strconv.IsPrint` is a table, and
+one of its inputs is the set of unassigned code points, so a partial extension
+leaves the claim false and a complete one ships a copy of the Unicode database
+bound to a Go version, with nothing on either side able to notice when it drifts.
+The consequence is bounded and worth stating rather than hiding: both
+implementations refuse the same frames, and only the text of an already-failing
+run differs.
+
+A tool block the harness leaves nameless has no correct handling in the oracle,
+and this is the one place the port deliberately does something else. `ContentBlock`
+declares `name` as a plain string, so an absent one decodes to `""` and the
+oracle calls `startTool` with it; only an empty `id` skips the block. The payload
+struct then carries `json:"name,omitempty"`, so the member is dropped, and
+`action.schema.json` makes `name` **required** on `callRequested` and
+`callStarted` and types it `nonEmptyString`. Feeding that frame to the Go adapter
+and handing the trace to the shared validator returns
+`schema_invalid: missing property 'name'` twice. Emitting `""` instead, which is
+what this port did first, fails the same validator on `minLength`. There is no
+shape a nameless block can take that the schema accepts, so the reducer fails the
+run with `claude_tool_lifecycle` rather than emitting either one: a failed run is
+a valid trace, and the invariant every adapter exists to hold is that the
+validator accepts what it emits. Filed upstream against the Go adapter.
+
+The codec refuses a *wrong-typed* id or name, which is what the oracle's decode
+does.
+
+A user frame whose content is not a list of content blocks is skipped whole.
+`UserFrame.Message.Content` is a `json.RawMessage` and `Blocks()` decodes it
+lazily into `[]ContentBlock`, so one malformed item makes the whole decode fail
+and the oracle's `if !ok { return }` drops every block in that frame, leaving any
+open call to be cancelled at settle. This port iterated the array and skipped
+only the offending item, so a `tool_result` carrying `"is_error":"yes"` beside a
+well-formed sibling completed a call the oracle never completes. The codec's
+block typing is now reachable from the reducer for user frames as well, and the
+frame is skipped rather than filtered.
+
+Three members a harness may write as JSON `null` each needed the oracle's decode
+rather than a type test. Go reaches all three through `encoding/json`, where
+unmarshalling `null` into a non-pointer is a documented no-op: `name: null` on a
+`tool_use` block leaves `ContentBlock.Name` as `""` and takes the nameless path
+above, `origin: null` leaves `UserFrame.Origin` nil so the frame is reduced
+rather than skipped as foreign, and `content: null` on a `tool_result` leaves the
+string empty so `normalizedToolResult` emits `""`. This port read `.string` off
+the raw value for the first, which is an inactive-union-field access and a panic;
+treated the second as a foreign origin and dropped every `tool_result` in the
+frame, leaving calls open that the oracle completes; and passed the third through
+as `null`. All three verdicts were read off the oracle with a probe.
+
+Two numeric conversions were illegal behavior rather than a divergence. Go's
+declared integers are `int64` and its decode refuses a fractional or oversized
+number outright, so the typed table is what keeps a float away from
+`integerMember`; a gap there would have reached `@intFromFloat` and panicked in
+Debug and ReleaseSafe and been undefined in ReleaseFast. The conversion is now
+range-checked at the site, because a table that is correct today is not the same
+thing as a conversion that cannot trap. The usage total is computed with `+%`:
+Go's `InputTokens + OutputTokens` is int64 arithmetic that wraps silently, and
+matching the oracle means wrapping, not trapping.
+
+Two payload shapes came from the same review and are worth separating from the
+codec, because they are what a *schema* requires rather than what a decoder
+refuses. `arguments_json` is required on `action.call.requested`, and the oracle
+satisfies it for a `tool_use` block with no `input` by marshalling the absent
+raw message to the literal `null` before the payload's `omitempty` can see it --
+so the member is emitted, not dropped. A port that skips the member instead
+emits a trace the shared validator rejects, which is the one invariant every
+adapter here exists to hold. And `duration_ms` is `omitempty` on all three
+terminal payloads, so a turn that settles instantly omits it rather than sending
+a zero. **And a submission arriving under a live run is refused**, with
+`ErrRunActive` in the oracle, rather than replacing it; silently substituting
+orphans the first run's tools and gates and restarts its sequence.
+
+The last one carries a lesson about the sweep itself. Porting it rejected
+thirty-three of this port's own unit-test frames, because they had been written
+minimal -- an `assistant` frame with content and no model, an `init` with a
+model and no tools. Those frames are ones the oracle refuses outright, so a
+suite built on them was asserting reducer behaviour on inputs that can never
+reach a reducer. Writing tests against the frame vocabulary rather than against
+the *decoded* vocabulary is a trap any port can fall into, and the codec's
+validation table is what makes it visible.
+
+The lesson generalises past this adapter, which is why it is recorded here
+rather than in a commit. A hermetic corpus of observed traffic proves a reducer
+handles what a harness *does*; it says nothing about what the reducer does when
+the harness misbehaves, and that is exactly the half a second implementation is
+most likely to get wrong. Every port should sweep its oracle's entry points for
+branches no fixture reaches, and carry a named test for each, rather than
+trusting a green corpus.
+
+One of those removals was wrong, and the way it was wrong is the more useful
+record. The replay loop's "stop once the run is gone" guard was deleted as dead
+because the only settlement reachable from a buffered frame was `settle`, which
+needs an echo match a buffered frame cannot have. That was true when it was
+written and stopped being true two commits later, when `failRun` arrived for the
+tool lifecycle: a buffered `assistant` frame carrying a duplicate `tool_use`
+fails the run mid-replay, and without the guard the next buffered `system/init`
+still reaches `observeIdle` and overwrites the model and catalog the *following*
+run will report. **"Dead by construction" is a claim about the code at a moment,
+not a property of the guard**, and deleting on that basis needs re-checking
+whenever a new settlement path appears. The oracle's own loop returns on
+`run.terminal && run.deferred == nil`, which is the same rule with the deferred
+case spelled out.
+
+`sweepRun` now prunes what the oracle prunes. Go deletes the settled run's gates
+from `s.interactions` and its children from `s.children`; it does **not** delete
+from `s.tools`, which is keyed by native id and lives as long as the session, so
+the port keeps its tool list too and only the two collections Go deletes from are
+pruned here.
+
+Three guards found during the same sweep were dead by construction rather than
+untested, and were removed rather than left: an empty cancel id cannot reach
+`cancelGate` because the codec refuses one, and two guards in the tool paths
+could not fire. What survived removal has a test.
+
+### Settled for an unrestricted session: the control layer does not see every call
+
+This was carried as an open question. It is closed for the session probe 6
+actually ran, and that scope is the whole of what follows: the gate is
+partial where `Bash` is admitted.
+
+Neither mechanism this adapter operates is a complete boundary **in such a
+session**.
+
+The posture is not one, and in an unrestricted session that needs no reading
+of the flags at all: `UnrestrictedTools()` passes no tool flag, so nothing
+about the posture restricts anything.
+
+What the posture does in a *restricted* session is where the unverified
+reading enters, and this paragraph is that reading rather than a fact. On
+2.1.269 `--help`, `--allowedTools` names the tools that may run *without*
+asking and `--tools` names the available built-ins; this adapter passes only
+the first. If that holds at the pin, naming a tool subtracts from the gate's
+coverage instead of adding a boundary in front of it, and the child always has
+the full built-in set. None of that is established for 2.1.263 — see the
+evidence split below, which is the authority for how far to trust it.
+
+The gate is not one either. `--permission-prompt-tool stdio` routes to the
+control channel every call *that consults the permission system*, and the
+default permission mode does not send every call there. Probe 6 above records
+it directly: `echo probe` was auto-approved with no ask, while `touch
+/tmp/...` produced a `can_use_tool`. The CLI decides which commands are safe,
+and the control layer is never told about the ones it decides for.
+
+Probe 6 ran an unrestricted session. What it establishes is therefore
+scoped: **in a session where `Bash` is admitted, a control layer on this
+adapter at this pin cannot inspect every call.** It says nothing about a
+session where `Bash` is not admitted, and whether a posture can withhold it
+is the unresolved question below.
+
+Which posture is safer **cannot be stated here**, because the two readings of
+`--allowedTools` below give opposite answers and only one of them can be
+right. Read as a pre-approval list, `AllowTools(...)` is the dangerous choice:
+each name is one more tool the control layer is never asked about, and
+`UnrestrictedTools()` adds no exemptions. Read as a surface allowlist,
+`AllowTools(...)` is the safer one: the omitted tools cannot be attempted at
+all, where `UnrestrictedTools()` leaves every built-in exposed to the
+auto-approval probe 6 recorded. An earlier revision of this section
+recommended `UnrestrictedTools()` outright. That was advice resting on the
+half of the evidence that is not verified, and it is withdrawn.
+
+Three revisions of this section have now tried to state something that holds
+across both readings, and each one overreached. The last said neither posture
+makes the control layer the boundary — but under the surface-allowlist
+reading, a posture admitting only tools that always ask would make the
+posture and gate a boundary together, and probe 6 would not contradict it
+because it never ran such a posture. There is no cross-reading conclusion to
+draw, and this section stops trying to draw one.
+
+What a caller can act on is the scoped fact and the two branches. Under an
+unrestricted posture the control layer does not see every call, whichever
+reading is right, because probe 6 ran exactly that. Under a restricted
+posture the answer depends on which reading is right, and that is not
+settled at this pin. A caller who needs a boundary either runs the smoke-gate
+assertions against its own binary or passes an availability flag through
+`Config.Args` explicitly, rather than inferring one from the posture.
+
+What remains genuinely open is narrower, and it is a lever this adapter does
+not currently pull. `--permission-mode` selects the mode the auto-approval
+runs under, and the spawn argv passes none, so a session runs in the default
+unless the caller supplies one. Whether a non-default mode routes the calls
+the default one settles by itself is untested here, and it is the only thing
+that could turn the gate into a complete boundary.
+
+All of this describes the argv this adapter builds. `Config.Args` is appended
+after the posture, so a caller can pass `--tools`, `--restricted` or
+`--permission-mode` and change any of it. That is deliberate — the flags are
+the caller's to override — but it makes these properties of the default spawn
+rather than invariants of the adapter. A control layer that relies on them has
+to own the caller args too.
+
+The two halves of this rest on different evidence, and only one of them is
+verified at the pin.
+
+The auto-approval behaviour is, for the session it ran in. Probe 6 used the
+pinned 2.1.263 binary and an unrestricted posture, so "the control layer does
+not see every call" is established for that configuration of the adapter
+being mapped, and not for a restricted posture.
+
+The reading of the two tool flags is **not**. It comes from `--help` on
+2.1.269, six patch releases past the pin, and this ledger's own rule is that
+behaviour not exercisable through the SDK sources is unverified. Six releases
+is enough for a flag's meaning to move, and the flag form is separately
+unverified in stream-json mode. So treat "`AllowTools` removes gate coverage"
+and "the default spawn exposes every built-in" as the best available reading
+rather than as established, and do not build a security boundary on either
+until the smoke gate runs them against 2.1.263.
+
+Probe 6 alone is enough for the claim that the gate is partial, which is why
+that one stands. It is not enough to rank the two postures, and the paragraph
+above no longer tries to.
+
+The corpus cannot carry any of this: its `can_use_tool` frames are scripted,
+so they prove the reducer surfaces a gate it is given, never which calls the
+CLI raises one for. The assertions belong in the smoke gate, which is the
+only thing here that runs 2.1.263:
+
+1. an ask-gated command produces a `can_use_tool` before it settles;
+2. a safe command does not;
+3. `AllowTools("Bash")` exempts an otherwise ask-gated `Bash`;
+4. a spawn carrying `--tools` without `Bash` cannot attempt `Bash` at all,
+   while the default spawn can;
+5. `AllowTools("Read")` — a posture omitting `Bash` — still lets `Bash` be
+   attempted.
+
+The last three settle the flag reading between them, and none of them is
+redundant. Three tests only whether naming a tool pre-approves it. Four
+tests only whether `--tools` bounds the surface. Five is what separates the
+pre-approval reading from a hybrid: an implementation that both pre-approved
+named tools *and* hid omitted ones would satisfy three and four while making
+"a restricted posture still exposes every built-in" false. Only five asks
+whether `--allowedTools` bounds anything.
+
+Until those run, this adapter must be described as gating the calls that ask,
+and never as gating every tool call.
 
 Implementation discovery made executable by the smoke gate (fixed): the
 default factory originally ran the initialize exchange inside
