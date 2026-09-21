@@ -26,7 +26,11 @@ fn quoteGo(arena: std.mem.Allocator, value: []const u8) []const u8 {
             '\n' => out.appendSlice(arena, "\\n") catch return value,
             '\r' => out.appendSlice(arena, "\\r") catch return value,
             '\t' => out.appendSlice(arena, "\\t") catch return value,
-            0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f, 0x7f => {
+            0x07 => out.appendSlice(arena, "\\a") catch return value,
+            0x08 => out.appendSlice(arena, "\\b") catch return value,
+            0x0b => out.appendSlice(arena, "\\v") catch return value,
+            0x0c => out.appendSlice(arena, "\\f") catch return value,
+            0x00...0x06, 0x0e...0x1f, 0x7f => {
                 const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
                 out.appendSlice(arena, hex) catch return value;
             },
@@ -50,6 +54,16 @@ pub const Diagnostic = struct {
         return Error.InvalidControl;
     }
 
+    fn invalidNested(self: *Diagnostic, arena: std.mem.Allocator, comptime member_name: []const u8) Error {
+        self.message = std.fmt.allocPrint(arena, "{s}: " ++ member_name ++ " must be one object: {s}: frame must be exactly one JSON object", .{ invalid_control_prefix, invalid_message_prefix }) catch invalid_control_prefix;
+        return Error.InvalidControl;
+    }
+
+    fn duplicateKey(self: *Diagnostic, arena: std.mem.Allocator, key: []const u8) Error {
+        self.message = std.fmt.allocPrint(arena, "{s}: duplicate object key {s}", .{ invalid_message_prefix, quoteGo(arena, key) }) catch invalid_message_prefix;
+        return Error.InvalidMessage;
+    }
+
     fn refuseFrame(self: *Diagnostic, message: []const u8) Error {
         self.message = message;
         return Error.InvalidMessage;
@@ -62,7 +76,7 @@ pub const Diagnostic = struct {
     }
 };
 
-pub const Need = enum { present, text, array, number, boolean, text_array, object, object_array };
+pub const Need = enum { present, text, array, number, integer, boolean, text_array, object, object_array };
 
 pub const Member = struct {
     path: []const []const u8,
@@ -205,6 +219,46 @@ pub const FrameReader = struct {
     }
 };
 
+const Frame = struct {
+    is_object: bool,
+    expect_key: bool = false,
+    seen: std.StringHashMapUnmanaged(void) = .empty,
+};
+
+fn duplicateKey(arena: std.mem.Allocator, data: []const u8) !?[]const u8 {
+    var scanner = std.json.Scanner.initCompleteInput(arena, data);
+    defer scanner.deinit();
+    var stack = std.ArrayList(Frame).empty;
+    while (true) {
+        const token = scanner.nextAlloc(arena, .alloc_always) catch return null;
+        var closed = false;
+        switch (token) {
+            .object_begin => try stack.append(arena, .{ .is_object = true, .expect_key = true }),
+            .array_begin => try stack.append(arena, .{ .is_object = false }),
+            .object_end, .array_end => {
+                _ = stack.pop();
+                closed = true;
+            },
+            .end_of_document => break,
+            .allocated_string => |text| {
+                const top = &stack.items[stack.items.len - 1];
+                if (top.is_object and top.expect_key) {
+                    if (top.seen.contains(text)) return text;
+                    try top.seen.put(arena, text, {});
+                    top.expect_key = false;
+                    continue;
+                }
+                closed = true;
+            },
+            else => closed = true,
+        }
+        if (!closed or stack.items.len == 0) continue;
+        const top = &stack.items[stack.items.len - 1];
+        if (top.is_object) top.expect_key = true;
+    }
+    return null;
+}
+
 fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
     var current = object;
     for (path, 0..) |key, depth| {
@@ -231,30 +285,28 @@ fn unsatisfied(object: std.json.ObjectMap, required: []const Member) ?[]const u8
 const Declared = struct {
     path: []const []const u8,
     need: Need,
+    items: []const Declared = &.{},
 };
 
-const Nested = struct {
-    path: []const []const u8,
-    need: Need,
+const origin_declared = [_]Declared{
+    .{ .path = &.{"kind"}, .need = .text },
+    .{ .path = &.{"from"}, .need = .text },
 };
-
-const user_nested = [_]Nested{
-    .{ .path = &.{"origin"}, .need = .object },
+const usage_declared = [_]Declared{
+    .{ .path = &.{"input_tokens"}, .need = .integer },
+    .{ .path = &.{"output_tokens"}, .need = .integer },
+    .{ .path = &.{"cache_read_input_tokens"}, .need = .integer },
+    .{ .path = &.{"cache_creation_input_tokens"}, .need = .integer },
 };
-const assistant_nested = [_]Nested{
-    .{ .path = &.{ "message", "content" }, .need = .object_array },
+const task_usage_declared = [_]Declared{
+    .{ .path = &.{"total_tokens"}, .need = .integer },
+    .{ .path = &.{"tool_uses"}, .need = .integer },
+    .{ .path = &.{"duration_ms"}, .need = .integer },
 };
-
-const task_updated_nested = [_]Nested{
-    .{ .path = &.{"patch"}, .need = .object },
+const mcp_server_declared = [_]Declared{
+    .{ .path = &.{"name"}, .need = .text },
+    .{ .path = &.{"status"}, .need = .text },
 };
-
-fn nestedMembers(frame_type: []const u8, subtype: []const u8) []const Nested {
-    if (std.mem.eql(u8, frame_type, "user")) return &user_nested;
-    if (std.mem.eql(u8, frame_type, "assistant")) return &assistant_nested;
-    if (std.mem.eql(u8, frame_type, "system") and std.mem.eql(u8, subtype, "task_updated")) return &task_updated_nested;
-    return &.{};
-}
 
 const block_text_members = [_][]const u8{ "type", "text", "thinking", "id", "name", "tool_use_id" };
 
@@ -275,35 +327,15 @@ fn wrongContentBlock(object: std.json.ObjectMap) bool {
     return false;
 }
 
-fn wrongNestedType(object: std.json.ObjectMap, nested: []const Nested) bool {
-    for (nested) |need| {
-        const value = member(object, need.path) orelse continue;
-        if (value == .null) continue;
-        const ok = switch (need.need) {
-            .object => value == .object,
-            .object_array => blk: {
-                if (value != .array) break :blk true;
-                for (value.array.items) |item| {
-                    if (item != .object) break :blk false;
-                }
-                break :blk true;
-            },
-            else => true,
-        };
-        if (!ok) return true;
-    }
-    return false;
-}
-
 const result_declared = [_]Declared{
-    .{ .path = &.{"usage"}, .need = .object },
-    .{ .path = &.{"origin"}, .need = .object },
-    .{ .path = &.{"duration_ms"}, .need = .number },
-    .{ .path = &.{"duration_api_ms"}, .need = .number },
+    .{ .path = &.{"usage"}, .need = .object, .items = &usage_declared },
+    .{ .path = &.{"origin"}, .need = .object, .items = &origin_declared },
+    .{ .path = &.{"duration_ms"}, .need = .integer },
+    .{ .path = &.{"duration_api_ms"}, .need = .integer },
     .{ .path = &.{"is_error"}, .need = .boolean },
-    .{ .path = &.{"num_turns"}, .need = .number },
-    .{ .path = &.{"queued_turn_count"}, .need = .number },
-    .{ .path = &.{"api_error_status"}, .need = .number },
+    .{ .path = &.{"num_turns"}, .need = .integer },
+    .{ .path = &.{"queued_turn_count"}, .need = .integer },
+    .{ .path = &.{"api_error_status"}, .need = .integer },
     .{ .path = &.{"total_cost_usd"}, .need = .number },
     .{ .path = &.{"errors"}, .need = .text_array },
     .{ .path = &.{"user_message_uuid"}, .need = .text },
@@ -319,6 +351,9 @@ const stream_event_declared = [_]Declared{
     .{ .path = &.{"parent_tool_use_id"}, .need = .text },
 };
 const assistant_declared = [_]Declared{
+    .{ .path = &.{ "message", "content" }, .need = .object_array },
+    .{ .path = &.{ "message", "id" }, .need = .text },
+    .{ .path = &.{ "message", "stop_reason" }, .need = .text },
     .{ .path = &.{"parent_tool_use_id"}, .need = .text },
     .{ .path = &.{"uuid"}, .need = .text },
     .{ .path = &.{"session_id"}, .need = .text },
@@ -328,15 +363,76 @@ const assistant_declared = [_]Declared{
     .{ .path = &.{"error"}, .need = .text },
 };
 const task_updated_declared = [_]Declared{
+    .{ .path = &.{"patch"}, .need = .object },
     .{ .path = &.{"uuid"}, .need = .text },
     .{ .path = &.{"session_id"}, .need = .text },
     .{ .path = &.{ "patch", "status" }, .need = .text },
+    .{ .path = &.{ "patch", "description" }, .need = .text },
+    .{ .path = &.{ "patch", "end_time" }, .need = .integer },
+    .{ .path = &.{ "patch", "error" }, .need = .text },
+    .{ .path = &.{ "patch", "is_backgrounded" }, .need = .boolean },
 };
 
 const user_declared = [_]Declared{
+    .{ .path = &.{"origin"}, .need = .object, .items = &origin_declared },
     .{ .path = &.{"parent_tool_use_id"}, .need = .text },
     .{ .path = &.{"uuid"}, .need = .text },
     .{ .path = &.{"session_id"}, .need = .text },
+};
+
+const init_declared = [_]Declared{
+    .{ .path = &.{"tools"}, .need = .text_array },
+    .{ .path = &.{"capabilities"}, .need = .text_array },
+    .{ .path = &.{"mcp_servers"}, .need = .object_array, .items = &mcp_server_declared },
+    .{ .path = &.{"permissionMode"}, .need = .text },
+    .{ .path = &.{"claude_code_version"}, .need = .text },
+    .{ .path = &.{"apiKeySource"}, .need = .text },
+    .{ .path = &.{"cwd"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+};
+
+const status_declared = [_]Declared{
+    .{ .path = &.{"status"}, .need = .text },
+    .{ .path = &.{"session_id"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+};
+
+const session_state_declared = [_]Declared{
+    .{ .path = &.{"session_id"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+};
+
+const task_started_declared = [_]Declared{
+    .{ .path = &.{"tool_use_id"}, .need = .text },
+    .{ .path = &.{"task_type"}, .need = .text },
+    .{ .path = &.{"subagent_type"}, .need = .text },
+    .{ .path = &.{"is_backgrounded"}, .need = .boolean },
+};
+
+const task_progress_declared = [_]Declared{
+    .{ .path = &.{"tool_use_id"}, .need = .text },
+    .{ .path = &.{"usage"}, .need = .object, .items = &task_usage_declared },
+};
+
+const task_notification_declared = [_]Declared{
+    .{ .path = &.{"tool_use_id"}, .need = .text },
+    .{ .path = &.{"usage"}, .need = .object, .items = &task_usage_declared },
+};
+
+const notice_declared = [_]Declared{
+    .{ .path = &.{"session_id"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+};
+
+const tool_progress_declared = [_]Declared{
+    .{ .path = &.{"parent_tool_use_id"}, .need = .text },
+    .{ .path = &.{"elapsed_time_seconds"}, .need = .number },
+    .{ .path = &.{"task_id"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+};
+
+const command_lifecycle_declared = [_]Declared{
+    .{ .path = &.{"uuid"}, .need = .text },
 };
 
 fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared {
@@ -344,8 +440,17 @@ fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared
     if (std.mem.eql(u8, frame_type, "stream_event")) return &stream_event_declared;
     if (std.mem.eql(u8, frame_type, "assistant")) return &assistant_declared;
     if (std.mem.eql(u8, frame_type, "user")) return &user_declared;
-    if (std.mem.eql(u8, frame_type, "system") and std.mem.eql(u8, subtype, "task_updated")) return &task_updated_declared;
-    return &.{};
+    if (std.mem.eql(u8, frame_type, "tool_progress")) return &tool_progress_declared;
+    if (std.mem.eql(u8, frame_type, "command_lifecycle")) return &command_lifecycle_declared;
+    if (!std.mem.eql(u8, frame_type, "system")) return &.{};
+    if (std.mem.eql(u8, subtype, "init")) return &init_declared;
+    if (std.mem.eql(u8, subtype, "status")) return &status_declared;
+    if (std.mem.eql(u8, subtype, "session_state_changed")) return &session_state_declared;
+    if (std.mem.eql(u8, subtype, "task_started")) return &task_started_declared;
+    if (std.mem.eql(u8, subtype, "task_progress")) return &task_progress_declared;
+    if (std.mem.eql(u8, subtype, "task_notification")) return &task_notification_declared;
+    if (std.mem.eql(u8, subtype, "task_updated")) return &task_updated_declared;
+    return &notice_declared;
 }
 
 fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
@@ -357,6 +462,7 @@ fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
             .array => value == .array,
             .object => value == .object,
             .number => value == .integer or value == .float,
+            .integer => value == .integer,
             .boolean => value == .bool,
             .text_array => blk: {
                 if (value != .array) break :blk false;
@@ -365,9 +471,18 @@ fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
                 }
                 break :blk true;
             },
+            .object_array => blk: {
+                if (value != .array) break :blk false;
+                for (value.array.items) |item| {
+                    if (item != .object) break :blk false;
+                    if (wrongType(item.object, need.items)) break :blk false;
+                }
+                break :blk true;
+            },
             else => true,
         };
         if (!ok) return true;
+        if (need.need == .object and wrongType(value.object, need.items)) return true;
     }
     return false;
 }
@@ -405,8 +520,8 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     if (data.len == 0 or data[0] != '{' or data[data.len - 1] != '}') {
         return report.invalid("frame must be exactly one JSON object");
     }
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch |err| {
-        if (err == error.DuplicateField) return report.invalid("duplicate object key");
+    if (duplicateKey(arena, data) catch null) |key| return report.duplicateKey(arena, key);
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch {
         return report.invalid("frame is not decodable JSON");
     };
     if (parsed != .object) return report.invalid("frame must be exactly one JSON object");
@@ -432,7 +547,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         if (id != .string or id.string.len == 0) return report.invalidControl("control_request requires a non-empty request_id");
         message.request_id = id.string;
         const request = object.get("request") orelse return report.invalidControl("request is required");
-        if (request != .object) return report.invalidControl("request must be one object");
+        if (request != .object) return report.invalidNested(arena, "request");
         const subtype = request.object.get("subtype") orelse return report.invalidControl("control request requires a non-empty subtype");
         if (subtype != .string or subtype.string.len == 0) return report.invalidControl("control request requires a non-empty subtype");
         message.subtype = subtype.string;
@@ -444,7 +559,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     if (std.mem.eql(u8, message.type, type_control_response)) {
         message.kind = .control_response;
         const response = object.get("response") orelse return report.invalidControl("response is required");
-        if (response != .object) return report.invalidControl("response must be one object");
+        if (response != .object) return report.invalidNested(arena, "response");
         const state = response.object.get("subtype") orelse return report.invalidControl("control response requires a non-empty subtype");
         if (state != .string or state.string.len == 0) return report.invalidControl("control response requires a non-empty subtype");
         const id = response.object.get("request_id") orelse return report.invalidControl("control response requires a non-empty request_id");
@@ -479,7 +594,6 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status {s} is not completed, failed, or stopped", shown);
     }
     if (wrongType(object, declaredMembers(message.type, message.subtype)) or
-        wrongNestedType(object, nestedMembers(message.type, message.subtype)) or
         (std.mem.eql(u8, message.type, "assistant") and wrongContentBlock(object)))
     {
         return report.refuseFrame(frameDetail("frame declares a member of the wrong type"));
@@ -769,6 +883,8 @@ test "a quoted value is escaped the way %q escapes it" {
     try testing.expectEqualStrings("\"back\\\\slash\"", quoteGo(scratch, "back\\slash"));
     try testing.expectEqualStrings("\"a\\nb\"", quoteGo(scratch, "a\nb"));
     try testing.expectEqualStrings("\"a\\x00b\"", quoteGo(scratch, "a\x00b"));
+    try testing.expectEqualStrings("\"\\a\\b\\v\\f\"", quoteGo(scratch, "\x07\x08\x0b\x0c"));
+    try testing.expectEqualStrings("\"\\r\\t\\x1f\"", quoteGo(scratch, "\r\t\x1f"));
 
     var quoted = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(scratch, "{\"type\":\"control_response\",\"response\":{\"subtype\":\"we\\\"ird\",\"request_id\":\"r\"}}", &quoted));
@@ -792,11 +908,78 @@ test "a duplicate key is classified as one, not as undecodable JSON" {
 
     var duplicate = Diagnostic{};
     try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\",\"type\":\"b\"}", &duplicate));
-    try testing.expectEqualStrings(invalid_message_prefix ++ ": duplicate object key", duplicate.message);
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": duplicate object key \"type\"", duplicate.message);
+
+    var nested = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\",\"m\":{\"x\":1,\"x\":2}}", &nested));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": duplicate object key \"x\"", nested.message);
+
+    var in_array = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\",\"m\":[{\"x\":1},{\"y\":2,\"y\":3}]}", &in_array));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": duplicate object key \"y\"", in_array.message);
+
+    var quoted = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\",\"a\\tb\":1,\"a\\tb\":2}", &quoted));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": duplicate object key \"a\\tb\"", quoted.message);
 
     var garbage = Diagnostic{};
     try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":}", &garbage));
     try testing.expectEqualStrings(invalid_message_prefix ++ ": frame is not decodable JSON", garbage.message);
+}
+
+test "a nested control member that is not an object names the cause the oracle names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var request = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\",\"request\":7}", &request));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": request must be one object: " ++ invalid_message_prefix ++ ": frame must be exactly one JSON object", request.message);
+
+    var response = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_response\",\"response\":\"no\"}", &response));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": response must be one object: " ++ invalid_message_prefix ++ ": frame must be exactly one JSON object", response.message);
+
+    var missing = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\"}", &missing));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
+}
+
+test "the typed pass covers every declared member of a typed frame" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const assistant = "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[]";
+    try refuses(&arena, assistant ++ ",\"id\":7}}");
+    try refuses(&arena, assistant ++ ",\"stop_reason\":7}}");
+    try accepts(&arena, assistant ++ ",\"id\":\"m1\",\"stop_reason\":null}}");
+
+    const updated = "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"t\",\"patch\":{";
+    try refuses(&arena, updated ++ "\"description\":7}}");
+    try refuses(&arena, updated ++ "\"end_time\":0.5}}");
+    try refuses(&arena, updated ++ "\"error\":7}}");
+    try refuses(&arena, updated ++ "\"is_backgrounded\":\"yes\"}}");
+    try accepts(&arena, updated ++ "\"description\":\"d\",\"end_time\":7,\"error\":\"e\",\"is_backgrounded\":true}}");
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"t\",\"patch\":7}");
+
+    const init = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\",\"tools\":";
+    try refuses(&arena, init ++ "[7]}");
+    try refuses(&arena, init ++ "[],\"mcp_servers\":[{\"name\":7}]}");
+    try refuses(&arena, init ++ "[],\"mcp_servers\":[7]}");
+    try refuses(&arena, init ++ "[],\"permissionMode\":7}");
+    try accepts(&arena, init ++ "[\"Bash\"],\"mcp_servers\":[{\"name\":\"n\",\"status\":\"ok\"}],\"permissionMode\":\"ask\"}");
+
+    const result = "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s\",";
+    try refuses(&arena, result ++ "\"duration_ms\":0.5}");
+    try refuses(&arena, result ++ "\"num_turns\":1.5}");
+    try refuses(&arena, result ++ "\"usage\":{\"input_tokens\":0.5}}");
+    try accepts(&arena, result ++ "\"duration_ms\":12,\"total_cost_usd\":0.5,\"usage\":{\"input_tokens\":3}}");
+
+    const progress = "{\"type\":\"tool_progress\",\"tool_use_id\":\"t\",\"tool_name\":\"Bash\",\"session_id\":\"s\",";
+    try refuses(&arena, progress ++ "\"elapsed_time_seconds\":\"3\"}");
+    try accepts(&arena, progress ++ "\"elapsed_time_seconds\":3.5}");
+
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"uuid\":7}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"uuid\":\"u\"}");
 }
 
 test "the typed table covers the members the reducer gates on" {
