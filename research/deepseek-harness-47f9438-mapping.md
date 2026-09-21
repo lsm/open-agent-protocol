@@ -137,11 +137,15 @@ Three changes reach the wire this adapter decodes.
 
 - **`tool/result.error` gains `reason?: string`** (`session/src/types.ts`), a
   raw user-facing reason the harness states is deliberately outside the
-  model-facing message. `ToolError` accepts it. It is **not mapped** onto the
-  OAP error: `ProtocolError` carries a code and a message, the existing mapping
-  takes those from `code` and `name`, and a third string with different
-  intended audience has nowhere honest to go. Recorded as an omission rather
-  than folded into the message.
+  model-facing message. `ToolError` accepts it, and it **is** mapped: it
+  becomes `ProtocolError.message`, with `name` moving to
+  `details.name`. An earlier revision of this entry recorded it as an
+  omission on the grounds that a third string had nowhere honest to go. That
+  overlooked `details`, which exists for exactly this. It also had the
+  audiences the wrong way round: every other `message` in this tree is a
+  human-readable sentence, so `reason` is what belongs there and `name` is the
+  class, which `code` already ranks beside. Absent a `reason`, `name` stays
+  the message and no `details` is emitted.
 - **An image content block gains `offloaded?: true`** (`llm/src/types.ts`),
   marking a block whose bytes were replaced by placeholder text after an
   offload decision. `ContentBlock` accepts it on an image block only, and only
