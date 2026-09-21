@@ -361,7 +361,7 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	opts := map[string]native.PermissionOption{}
 	choices := make([]protocol.PermissionChoice, 0, len(p.Options))
 	for _, o := range p.Options {
-		if o.OptionID == "" {
+		if o.OptionID == "" || o.Name == "" || !definedOptionKind(o.Kind) {
 			continue
 		}
 		opts[o.OptionID] = o
@@ -378,6 +378,14 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 	s.mu.Unlock()
 
 	_, _ = s.emitRecorded(run, protocol.TypeActionPermissionRequested, protocol.PermissionRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: tool.id, Title: p.ToolCall.Title, Choices: choices, ArgumentsJSON: tool.rawInput}, false, "", func(event protocol.Envelope) { ps.requestEventID = event.ID })
+}
+
+func definedOptionKind(kind string) bool {
+	switch kind {
+	case "allow_once", "allow_always", "reject_once", "reject_always":
+		return true
+	}
+	return false
 }
 
 func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
@@ -439,7 +447,7 @@ func (s *session) applyToolUpdate(run *runState, u native.ToolCallUpdate) {
 		s.failActive("acp_tool_after_terminal", "tool updated after terminal")
 		return
 	}
-	if u.Title != nil {
+	if u.Title != nil && *u.Title != "" {
 		t.title = *u.Title
 	}
 	if u.Kind != nil {
@@ -790,6 +798,14 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID)
 	}
 	for _, t := range tools {
+		if !t.started && !cancel {
+			t.started = true
+			started := s.toolPayload(t)
+			started.Progress = nil
+			started.Result = nil
+			started.Error = nil
+			_ = s.emit(run, protocol.TypeActionCallStarted, started, false)
+		}
 		typ := protocol.TypeActionCallFailed
 		p := s.toolPayload(t)
 
