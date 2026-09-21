@@ -328,7 +328,7 @@ pub const Reducer = struct {
             stringMember(ask, "decision_reason") orelse "";
 
         var prompt = tool_name;
-        if (ask.get("input")) |input| {
+        if (rpc.lookup(ask, "input")) |input| {
             const encoded = try std.json.Stringify.valueAlloc(self.allocator(), input, .{});
             if (encoded.len > 0) {
                 prompt = try std.fmt.allocPrint(self.allocator(), "{s} {s}", .{ tool_name, encoded });
@@ -446,7 +446,7 @@ pub const Reducer = struct {
         var totals = self.object();
         var input: i64 = 0;
         var output: i64 = 0;
-        if (frame.get("usage")) |usage| {
+        if (rpc.lookup(frame, "usage")) |usage| {
             if (usage == .object) {
                 input = integerMember(usage.object, "input_tokens") orelse 0;
                 output = integerMember(usage.object, "output_tokens") orelse 0;
@@ -587,7 +587,7 @@ pub const Reducer = struct {
     }
 
     fn errorResultText(self: *Reducer, frame: std.json.ObjectMap) ![]const u8 {
-        if (frame.get("errors")) |listed| {
+        if (rpc.lookup(frame, "errors")) |listed| {
             if (listed == .array and listed.array.items.len > 0 and everyItemIsAString(listed.array)) {
                 var joined = std.ArrayList(u8).empty;
                 for (listed.array.items, 0..) |entry, index| {
@@ -693,7 +693,7 @@ pub const Reducer = struct {
         if (!std.mem.eql(u8, message.type, "system")) return;
         if (!std.mem.eql(u8, message.subtype, "init")) return;
         const frame = message.object.object;
-        if (frame.get("model")) |model| {
+        if (rpc.lookup(frame, "model")) |model| {
             if (model == .string) self.current_model = model.string;
         }
         try self.projectCatalog(frame);
@@ -701,7 +701,7 @@ pub const Reducer = struct {
 
     fn projectCatalog(self: *Reducer, frame: std.json.ObjectMap) !void {
         var servers = std.ArrayList([]const u8).empty;
-        if (frame.get("mcp_servers")) |listed| {
+        if (rpc.lookup(frame, "mcp_servers")) |listed| {
             if (listed == .array) {
                 for (listed.array.items) |entry| {
                     if (entry != .object) continue;
@@ -712,7 +712,7 @@ pub const Reducer = struct {
             }
         }
         self.catalog.clearRetainingCapacity();
-        if (frame.get("tools")) |listed| {
+        if (rpc.lookup(frame, "tools")) |listed| {
             if (listed == .array) {
                 for (listed.array.items) |entry| {
                     if (entry != .string or entry.string.len == 0) continue;
@@ -772,10 +772,10 @@ pub const Reducer = struct {
 
     fn frameEchoMatches(self: *Reducer, frame: std.json.ObjectMap) bool {
         const run = self.run orelse return false;
-        if (frame.get("user_message_uuid")) |single| {
+        if (rpc.lookup(frame, "user_message_uuid")) |single| {
             if (single == .string and std.mem.eql(u8, single.string, run.submission_uuid)) return true;
         }
-        if (frame.get("user_message_uuids")) |many| {
+        if (rpc.lookup(frame, "user_message_uuids")) |many| {
             if (many == .array) {
                 for (many.array.items) |item| {
                     if (item == .string and std.mem.eql(u8, item.string, run.submission_uuid)) return true;
@@ -810,18 +810,18 @@ pub const Reducer = struct {
             return;
         }
         if (std.mem.eql(u8, message.type, "stream_event")) {
-            if (frame.get("parent_tool_use_id")) |parent| {
+            if (rpc.lookup(frame, "parent_tool_use_id")) |parent| {
                 if (parent != .null) return;
             }
             if (namesASubmission(frame) and !self.echoMatches(message)) return;
-            const event = frame.get("event") orelse return;
+            const event = rpc.lookup(frame, "event") orelse return;
             if (event != .object) return;
-            const event_type = event.object.get("type") orelse return;
+            const event_type = rpc.lookup(event.object, "type") orelse return;
             if (event_type != .string) return;
             if (std.mem.eql(u8, event_type.string, "content_block_delta")) {
-                const delta = event.object.get("delta") orelse return;
+                const delta = rpc.lookup(event.object, "delta") orelse return;
                 if (delta != .object) return;
-                const delta_type = delta.object.get("type") orelse return;
+                const delta_type = rpc.lookup(delta.object, "type") orelse return;
                 if (delta_type != .string) return;
                 if (std.mem.eql(u8, delta_type.string, "text_delta")) {
                     try self.emitDelta("text", deltaText(delta.object, "text") orelse return);
@@ -832,50 +832,50 @@ pub const Reducer = struct {
             return;
         }
         if (std.mem.eql(u8, message.type, "assistant")) {
-            if (frame.get("parent_tool_use_id")) |parent| {
+            if (rpc.lookup(frame, "parent_tool_use_id")) |parent| {
                 if (parent != .null) return;
             }
-            const native_message = frame.get("message") orelse return;
+            const native_message = rpc.lookup(frame, "message") orelse return;
             if (native_message != .object) return;
-            const content = native_message.object.get("content") orelse return;
+            const content = rpc.lookup(native_message.object, "content") orelse return;
             if (content != .array) return;
             for (content.array.items) |block| {
                 if (block != .object) continue;
-                const kind = block.object.get("type") orelse continue;
+                const kind = rpc.lookup(block.object, "type") orelse continue;
                 if (kind != .string or !std.mem.eql(u8, kind.string, "tool_use")) continue;
-                const id = block.object.get("id") orelse continue;
+                const id = rpc.lookup(block.object, "id") orelse continue;
                 if (id != .string or id.string.len == 0) continue;
-                const named = block.object.get("name") orelse std.json.Value.null;
-                try self.startTool(id.string, if (named == .string) named.string else "", block.object.get("input"));
+                const named = rpc.lookup(block.object, "name") orelse std.json.Value.null;
+                try self.startTool(id.string, if (named == .string) named.string else "", rpc.lookup(block.object, "input"));
             }
             return;
         }
         if (std.mem.eql(u8, message.type, "user")) {
-            if (frame.get("parent_tool_use_id")) |parent| {
+            if (rpc.lookup(frame, "parent_tool_use_id")) |parent| {
                 if (parent != .null) return;
             }
-            if (frame.get("origin")) |origin| {
+            if (rpc.lookup(frame, "origin")) |origin| {
                 if (origin == .object) {
-                    const kind = origin.object.get("kind") orelse return;
+                    const kind = rpc.lookup(origin.object, "kind") orelse return;
                     if (kind != .string or !std.mem.eql(u8, kind.string, "human")) return;
                 }
             }
-            const native_message = frame.get("message") orelse return;
+            const native_message = rpc.lookup(frame, "message") orelse return;
             if (native_message != .object) return;
-            const content = native_message.object.get("content") orelse return;
+            const content = rpc.lookup(native_message.object, "content") orelse return;
             if (content != .array) return;
             if (rpc.wrongBlocks(content)) return;
             for (content.array.items) |block| {
                 if (block != .object) continue;
-                const kind = block.object.get("type") orelse continue;
+                const kind = rpc.lookup(block.object, "type") orelse continue;
                 if (kind != .string or !std.mem.eql(u8, kind.string, "tool_result")) continue;
-                const id = block.object.get("tool_use_id") orelse continue;
+                const id = rpc.lookup(block.object, "tool_use_id") orelse continue;
                 if (id != .string or id.string.len == 0) continue;
                 var errored = false;
-                if (block.object.get("is_error")) |flag| {
+                if (rpc.lookup(block.object, "is_error")) |flag| {
                     if (flag == .bool) errored = flag.bool;
                 }
-                try self.endTool(id.string, block.object.get("content"), errored);
+                try self.endTool(id.string, rpc.lookup(block.object, "content"), errored);
             }
             return;
         }
@@ -887,16 +887,16 @@ pub const Reducer = struct {
 };
 
 fn stringMember(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const value = map.get(key) orelse return null;
+    const value = rpc.lookup(map, key) orelse return null;
     if (value != .string or value.string.len == 0) return null;
     return value.string;
 }
 
 fn namesASubmission(frame: std.json.ObjectMap) bool {
-    if (frame.get("user_message_uuid")) |single| {
+    if (rpc.lookup(frame, "user_message_uuid")) |single| {
         if (single == .string and single.string.len > 0) return true;
     }
-    if (frame.get("user_message_uuids")) |many| {
+    if (rpc.lookup(frame, "user_message_uuids")) |many| {
         if (many == .array and many.array.items.len > 0) return true;
     }
     return false;
@@ -925,7 +925,7 @@ fn toolSourceFor(allocator: std.mem.Allocator, name: []const u8, servers: []cons
 }
 
 fn integerMember(map: std.json.ObjectMap, key: []const u8) ?i64 {
-    const value = map.get(key) orelse return null;
+    const value = rpc.lookup(map, key) orelse return null;
     return switch (value) {
         .integer => |number| number,
         .float => |number| if (number >= -9223372036854775808.0 and number < 9223372036854775808.0) @intFromFloat(number) else null,
@@ -945,7 +945,7 @@ fn defersTerminal(task_type: []const u8) bool {
 }
 
 fn terminalTaskPatch(frame: std.json.ObjectMap) bool {
-    const patch = frame.get("patch") orelse return false;
+    const patch = rpc.lookup(frame, "patch") orelse return false;
     if (patch != .object) return false;
     const status = stringMember(patch.object, "status") orelse return false;
     for ([_][]const u8{ "completed", "failed", "stopped", "killed" }) |terminal| {
@@ -971,7 +971,7 @@ fn maxTurns(frame: std.json.ObjectMap) bool {
 
 fn failed(frame: std.json.ObjectMap) bool {
     if (maxTurns(frame)) return false;
-    if (frame.get("is_error")) |flag| {
+    if (rpc.lookup(frame, "is_error")) |flag| {
         if (flag == .bool and flag.bool) return true;
     }
     const subtype = stringMember(frame, "subtype") orelse return true;
@@ -1963,6 +1963,42 @@ test "the three shapes a harness writes as null follow what the oracle decodes" 
     );
     const completed = firstPayload(&second, "action.call.completed").?;
     try testing.expectEqualStrings("", completed.get("result").?.string);
+}
+
+test "a folded member name is read the way the oracle reads a struct tag" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","SESSION_ID":"s","MODEL":"model-b","TOOLS":["Bash"],"uuid":"i1"}
+    );
+    try testing.expectEqualStrings("model-b", reducer.current_model);
+    try testing.expectEqual(@as(usize, 1), reducer.catalog.items.len);
+    try testing.expectEqualStrings("Bash", reducer.catalog.items[0].name);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","MESSAGE":{"MODEL":"model-b","CONTENT":[{"TYPE":"tool_use","ID":"t1","NAME":"Bash"}]},"uuid":"a1"}
+    );
+    const requested = firstPayload(&reducer, "action.call.requested").?;
+    try testing.expectEqualStrings("Bash", requested.get("name").?.string);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"user","session_id":"s","MESSAGE":{"ROLE":"user","CONTENT":[{"TYPE":"tool_result","TOOL_USE_ID":"t1","CONTENT":"out"}]},"uuid":"u1"}
+    );
+    try testing.expect(firstPayload(&reducer, "action.call.completed") != null);
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "run.failed"));
+
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","SUBTYPE":"success","TERMINAL_REASON":"completed","RESULT":"one","USER_MESSAGE_UUID":"turn-1","DURATION_MS":12,"uuid":"r1"}
+    );
+    const completed = firstPayload(&reducer, "run.completed").?;
+    try testing.expectEqual(@as(i64, 12), completed.get("duration_ms").?.integer);
+    try testing.expectEqualStrings("one", completed.get("final_response").?.object.get("content").?.string);
+    try testing.expectEqualStrings("completed", completed.get("stop_reason").?.string);
 }
 
 test "a settled run leaves neither its gates nor its children behind" {
