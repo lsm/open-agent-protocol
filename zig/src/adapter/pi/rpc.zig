@@ -211,7 +211,7 @@ fn memberTypeHolds(value: std.json.Value, kind: MemberType) bool {
                 if (entry != .object) break :blk false;
                 var fields = entry.object.iterator();
                 while (fields.next()) |field| {
-                    if (!namedIn(&image_members, field.key_ptr.*)) break :blk false;
+                    if (!foldedIn(&image_members, field.key_ptr.*)) break :blk false;
                     const carried = field.value_ptr.*;
                     if (carried != .string and carried != .null) break :blk false;
                 }
@@ -379,6 +379,28 @@ const command_shapes = [_]CommandShape{
     .{ .name = "set_session_name", .allowed = &.{"name"}, .required = &.{"name"} },
 };
 
+fn foldedMember(object: std.json.ObjectMap, name: []const u8) ?std.json.Value {
+    if (object.get(name)) |value| return value;
+    for (object.keys()) |key| {
+        if (std.ascii.eqlIgnoreCase(key, name)) return object.get(key);
+    }
+    return null;
+}
+
+fn foldedIn(names: []const []const u8, name: []const u8) bool {
+    for (names) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry, name)) return true;
+    }
+    return false;
+}
+
+fn foldedDeclared(table: []const Member, name: []const u8) ?Member {
+    for (table) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name, name)) return entry;
+    }
+    return null;
+}
+
 fn commandShape(name: []const u8) CommandShape {
     for (command_shapes) |shape| {
         if (std.mem.eql(u8, shape.name, name)) return shape;
@@ -390,28 +412,28 @@ pub fn validateCommand(value: std.json.Value) !void {
     if (value != .object) return Error.InvalidFrame;
     const object = value.object;
 
-    const declared = object.get("type") orelse return Error.InvalidFrame;
+    const declared = foldedMember(object, "type") orelse return Error.InvalidFrame;
     if (declared != .string or !namedIn(&commands, declared.string)) return Error.InvalidFrame;
     const shape = commandShape(declared.string);
 
     var it = object.iterator();
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;
-        const member = declaredMember(&command_members, name) orelse return Error.InvalidFrame;
+        const member = foldedDeclared(&command_members, name) orelse return Error.InvalidFrame;
         if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
-        if (std.mem.eql(u8, name, "type") or std.mem.eql(u8, name, "id")) continue;
-        if (namedIn(shape.allowed, name)) continue;
+        if (std.ascii.eqlIgnoreCase(name, "type") or std.ascii.eqlIgnoreCase(name, "id")) continue;
+        if (foldedIn(shape.allowed, name)) continue;
         if (omittedByMarshal(entry.value_ptr.*, member)) continue;
         return Error.InvalidFrame;
     }
 
     for (shape.required) |name| {
-        const carried = object.get(name) orelse return Error.InvalidFrame;
+        const carried = foldedMember(object, name) orelse return Error.InvalidFrame;
         if (carried == .null) return Error.InvalidFrame;
     }
 
     if (shape.constrained.len != 0) {
-        const carried = object.get(shape.constrained) orelse std.json.Value{ .null = {} };
+        const carried = foldedMember(object, shape.constrained) orelse std.json.Value{ .null = {} };
         const text: []const u8 = if (carried == .string) carried.string else "";
         if (!namedIn(shape.permitted, text)) return Error.InvalidFrame;
     }
@@ -470,7 +492,7 @@ fn writeImages(out: *std.ArrayList(u8), arena: std.mem.Allocator, value: std.jso
             try out.append(arena, ':');
             var text: []const u8 = "";
             if (entry == .object) {
-                if (entry.object.get(name)) |held| {
+                if (foldedMember(entry.object, name)) |held| {
                     if (held == .string) text = held.string;
                 }
             }
@@ -487,8 +509,8 @@ pub fn canonicalCommand(arena: std.mem.Allocator, value: std.json.Value) ![]cons
     try out.append(arena, '{');
     var written: usize = 0;
     for (canonical_order) |name| {
-        const carried = value.object.get(name) orelse continue;
-        const member = declaredMember(&command_members, name) orelse continue;
+        const carried = foldedMember(value.object, name) orelse continue;
+        const member = foldedDeclared(&command_members, name) orelse continue;
         const always = std.mem.eql(u8, name, "type");
         if (!always and omittedByMarshal(carried, member)) continue;
         if (written != 0) try out.append(arena, ',');
@@ -603,6 +625,26 @@ fn expectCommand(text: []const u8, want: anyerror!void) !void {
     } else |expected| {
         try std.testing.expectError(expected, got);
     }
+}
+
+test "a command member is matched the way encoding/json matches its tag" {
+    try expectCommand("{\"type\":\"prompt\",\"Message\":\"hi\"}", {});
+    try expectCommand("{\"type\":\"prompt\",\"MESSAGE\":\"hi\"}", {});
+    try expectCommand("{\"TYPE\":\"prompt\",\"message\":\"hi\"}", {});
+    try expectCommand("{\"type\":\"set_thinking_level\",\"LEVEL\":\"high\"}", {});
+    try expectCommand("{\"type\":\"bash\",\"COMMAND\":\"ls\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"Message\":\"hi\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"Message\":7}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"message_\":\"hi\"}", Error.InvalidFrame);
+}
+
+test "a folded command canonicalises to the spelling its tag declares" {
+    try expectCanonical("{\"type\":\"prompt\",\"Message\":\"hi\"}", "{\"type\":\"prompt\",\"message\":\"hi\"}");
+    try expectCanonical("{\"TYPE\":\"prompt\",\"message\":\"hi\"}", "{\"type\":\"prompt\",\"message\":\"hi\"}");
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"TYPE\":\"image\",\"Data\":\"d\",\"mimetype\":\"image/png\"}]}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"type\":\"image\",\"data\":\"d\",\"mimeType\":\"image/png\"}]}",
+    );
 }
 
 test "a command names a type this pin declares, and is an object" {
