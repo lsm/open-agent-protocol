@@ -1785,6 +1785,40 @@ test "a backed endpoint declares the backend as the agent participant" {
     try std.testing.expectEqualStrings("claude-code-2.1.263-oap-v3", reply.capability_revision.?);
 }
 
+test "a run control is judged against the backend's feature list" {
+    const allocator = std.testing.allocator;
+
+    var backed = try Server.init(allocator, .{ .endpoint_version = "test", .descriptor = backend_descriptor });
+    defer backed.deinit();
+    defer discardPending(&backed, allocator);
+    try openTestSession(&backed, allocator, "sess-1");
+
+    var parts = [_]oap_types.ContentPart{.{ .text = "go" }};
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
+    const submit = oap_types.MessageSubmitRequest{
+        .session_id = "sess-1",
+        .messages = &messages,
+        .delivery = .auto,
+        .model_id = "anthropic/anthropic-messages@m",
+    };
+    try backed.handleEnvelope(.{ .id = "req-1", .session_id = "sess-1", .payload = .{ .message_submit_request = submit } });
+
+    var refusal = try nextEnvelope(&backed, allocator);
+    defer refusal.deinit(allocator);
+    try std.testing.expectEqualStrings("unsupported_feature", refusal.payload.error_response.code);
+    try std.testing.expectEqualStrings("run.model_selection", refusal.payload.error_response.detail("feature").?);
+
+    var native = try Server.init(allocator, .{ .endpoint_version = "test" });
+    defer native.deinit();
+    defer discardPending(&native, allocator);
+    try openTestSession(&native, allocator, "sess-1");
+    try native.handleEnvelope(.{ .id = "req-1", .session_id = "sess-1", .payload = .{ .message_submit_request = submit } });
+
+    var admission = try nextEnvelope(&native, allocator);
+    defer admission.deinit(allocator);
+    try std.testing.expect(admission.payload.message_submit_response.accepted);
+}
+
 test "a backed endpoint measures a stale revision against the backend's" {
     const allocator = std.testing.allocator;
     var server = try Server.init(allocator, .{ .endpoint_version = "test", .descriptor = backend_descriptor });
