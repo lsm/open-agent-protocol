@@ -1108,6 +1108,11 @@ test "a select extension offering an empty option label is refused" {
     try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[\"ok\",\"\"]}", "pi_invalid_extension");
 }
 
+test "a null option reaches the reducer as an empty label, refused there and not at the codec" {
+    try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[null]}", "pi_invalid_extension");
+    try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[\"ok\",null]}", "pi_invalid_extension");
+}
+
 fn settleChildren(reducer: *Reducer, cancelled: bool) !void {
     for (reducer.tools.items) |tool| {
         if (tool.terminal) continue;

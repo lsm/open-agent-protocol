@@ -200,7 +200,7 @@ fn memberTypeHolds(value: std.json.Value, kind: MemberType) bool {
         .text_list => blk: {
             if (value != .array) break :blk false;
             for (value.array.items) |entry| {
-                if (entry != .string) break :blk false;
+                if (entry != .string and entry != .null) break :blk false;
             }
             break :blk true;
         },
@@ -592,6 +592,15 @@ test "a command image is an object of three strings, or a null standing for one"
     try expectCommand(prefix ++ "[7]}", Error.InvalidFrame);
     try expectCommand(prefix ++ "[\"x\"]}", Error.InvalidFrame);
     try expectCommand(prefix ++ "{}}", Error.InvalidFrame);
+}
+
+test "a null entry in a decoded string slice is that slice's zero value, not a defect" {
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[null]}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[\"a\",null]}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"setWidget\",\"widgetKey\":\"k\",\"widgetLines\":[null]}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[7]}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[[]]}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":null}");
 }
 
 test "a constrained member holding null is absent, and an empty one is unconstrained" {
