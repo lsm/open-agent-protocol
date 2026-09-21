@@ -384,6 +384,10 @@ fn settleRun(reducer: *Reducer) !void {
 }
 
 fn failRun(reducer: *Reducer, code: []const u8, message: []const u8) !void {
+    if (!reducer.started) {
+        reducer.terminal = true;
+        return;
+    }
     try failWith(reducer, code, message);
 }
 
@@ -706,4 +710,138 @@ pub fn resolveExtension(reducer: *Reducer, option_id: []const u8) !void {
     try payload.put(reducer.arena, "answers", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try answers.toOwnedSlice(reducer.arena)) });
     try reducer.emit("user.input.resolved", .{ .object = payload.* }, false);
     try statusUpdate(reducer, "running", "");
+}
+
+fn parse(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
+}
+
+fn started(arena: std.mem.Allocator) !Reducer {
+    var reducer = Reducer.init(arena);
+    try open(&reducer);
+    return reducer;
+}
+
+fn lastFailure(reducer: *Reducer) ?[]const u8 {
+    if (reducer.emitted.items.len == 0) return null;
+    const last = reducer.emitted.items[reducer.emitted.items.len - 1];
+    const kind = textOf(last, "type");
+    if (!std.mem.eql(u8, kind, "run.failed")) return null;
+    const payload = memberOf(last, "payload") orelse return null;
+    const err = memberOf(payload, "error") orelse return null;
+    return textOf(err, "code");
+}
+
+fn expectRefusal(script: []const []const u8, code: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    for (script) |line| {
+        try apply(&reducer, try parse(arena.allocator(), line));
+    }
+    const raised = lastFailure(&reducer) orelse {
+        std.debug.print("no refusal; emitted {d} envelopes\n", .{reducer.emitted.items.len});
+        return error.NoRefusal;
+    };
+    try std.testing.expectEqualStrings(code, raised);
+}
+
+test "a second agent_start is a lifecycle defect" {
+    try expectRefusal(&.{"{\"type\":\"agent_start\"}"}, "pi_invalid_lifecycle");
+}
+
+test "agent_settled before any agent_start is a lifecycle defect" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(arena.allocator());
+    _ = try reducer.counters.nextID(arena.allocator(), "message");
+    reducer.run_id = try reducer.counters.nextID(arena.allocator(), "run");
+    reducer.message_id = try reducer.counters.nextID(arena.allocator(), "message");
+    try apply(&reducer, try parse(arena.allocator(), "{\"type\":\"agent_settled\"}"));
+    try std.testing.expect(reducer.emitted.items.len == 0);
+    try std.testing.expect(reducer.terminal);
+}
+
+test "an undecodable message_end is refused" {
+    try expectRefusal(&.{"{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\"}}"}, "pi_invalid_message_end");
+}
+
+test "an event outside the pinned vocabulary is refused" {
+    try expectRefusal(&.{"{\"type\":\"invented_event\"}"}, "pi_unknown_event");
+}
+
+test "a candidate message that will not decode is refused at settlement" {
+    try expectRefusal(&.{
+        "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\"}],\"willRetry\":false}",
+        "{\"type\":\"agent_settled\"}",
+    }, "pi_invalid_final_message");
+}
+
+test "settling without an agent_end is refused" {
+    try expectRefusal(&.{"{\"type\":\"agent_settled\"}"}, "pi_missing_agent_end");
+}
+
+test "settling with an agent_end carrying no assistant message is refused" {
+    try expectRefusal(&.{
+        "{\"type\":\"agent_end\",\"messages\":[],\"willRetry\":false}",
+        "{\"type\":\"agent_settled\"}",
+    }, "pi_missing_final_message");
+}
+
+test "a tool start missing its id or name is refused" {
+    try expectRefusal(&.{"{\"type\":\"tool_execution_start\",\"toolCallId\":\"\",\"toolName\":\"grep\",\"args\":{}}"}, "pi_invalid_tool_lifecycle");
+    try expectRefusal(&.{"{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"\",\"args\":{}}"}, "pi_invalid_tool_lifecycle");
+}
+
+test "a second start for one tool id is refused" {
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+    }, "pi_invalid_tool_lifecycle");
+}
+
+test "a tool update naming no start, or a different name, is refused" {
+    try expectRefusal(&.{"{\"type\":\"tool_execution_update\",\"toolCallId\":\"t9\",\"toolName\":\"grep\",\"partialResult\":{}}"}, "pi_invalid_tool_lifecycle");
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_update\",\"toolCallId\":\"t1\",\"toolName\":\"other\",\"partialResult\":{}}",
+    }, "pi_invalid_tool_lifecycle");
+}
+
+test "a tool end naming no start, or one already settled, is refused" {
+    try expectRefusal(&.{"{\"type\":\"tool_execution_end\",\"toolCallId\":\"t9\",\"toolName\":\"grep\",\"result\":{},\"isError\":false}"}, "pi_invalid_tool_lifecycle");
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":false}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":false}",
+    }, "pi_invalid_tool_lifecycle");
+}
+
+test "a message_update with an unknown member is refused" {
+    try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"x\"},\"extra\":1}"}, "pi_invalid_message_update");
+}
+
+test "a message_update carrying no assistant event is refused" {
+    try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{}}"}, "pi_invalid_message_update");
+}
+
+test "a message_update whose assistant event will not decode is refused" {
+    try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":-1,\"delta\":\"x\"}}"}, "pi_invalid_message_update");
+}
+
+fn expectExtensionRefusal(request: []const u8, code: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    try applyExtension(&reducer, try parse(arena.allocator(), request));
+    const raised = lastFailure(&reducer) orelse return error.NoRefusal;
+    try std.testing.expectEqualStrings(code, raised);
+}
+
+test "a select extension offering no options is refused" {
+    try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[]}", "pi_invalid_extension");
+}
+
+test "a select extension offering an empty option label is refused" {
+    try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[\"ok\",\"\"]}", "pi_invalid_extension");
 }
