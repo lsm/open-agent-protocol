@@ -941,6 +941,32 @@ The nested-cause chain in `requireObject` is reproduced verbatim rather than
 substituted, because a member that reached it came out of a successful decode, so
 its only possible failure is the bookend check whose text the adapter owns.
 
+Two limits of the Go decoder are not diagnostics at all but behaviour, and the
+port had to reimplement both. `encoding/json` refuses past 10,000 levels of
+nesting, and the port accepted such frames; worse, its own duplicate-key walk
+pushed a frame per level before the value tree was built, so the frame limit had
+stopped bounding memory the way the oracle's does. The cap is now enforced at the
+boundary a probe established -- 9,999 nested containers inside the frame object
+accepted, 10,000 refused, arrays and objects alike -- and it keeps the oracle's
+`exceeded max depth` wording, because a limit the port implements itself is one
+whose message it owns. And `encoding/json` replaces an unpaired `\uD800`-`\uDFFF`
+escape with U+FFFD and accepts the frame, where Zig's `std.json` returns a syntax
+error: the port was killing runs the oracle keeps alive. A lone surrogate escape
+is now rewritten before the walk and the parse, with the oracle's pairing rule, so
+`\ud83d\ud83d\ude00` is a replacement character followed by an emoji rather than
+two emoji, and a backslash that is itself escaped starts no escape.
+
+The quoting bound is the one place review asked for more and the answer was no.
+`quoteGo` matches `%q` through U+00FF, including invalid UTF-8, which it escapes
+byte by byte as `\xNN`. Above that it passes unprintable runes through. Matching
+there is not a predicate that can be extended: `strconv.IsPrint` is a table, and
+one of its inputs is the set of unassigned code points, so a partial extension
+leaves the claim false and a complete one ships a copy of the Unicode database
+bound to a Go version, with nothing on either side able to notice when it drifts.
+The consequence is bounded and worth stating rather than hiding: both
+implementations refuse the same frames, and only the text of an already-failing
+run differs.
+
 A tool block the harness leaves nameless has no correct handling in the oracle,
 and this is the one place the port deliberately does something else. `ContentBlock`
 declares `name` as a plain string, so an absent one decodes to `""` and the
