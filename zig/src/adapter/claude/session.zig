@@ -328,7 +328,7 @@ pub const Reducer = struct {
             stringMember(ask, "decision_reason") orelse "";
 
         var prompt = tool_name;
-        if (rpc.lookup(ask, "input")) |input| {
+        if (rpc.lookupRaw(ask, "input")) |input| {
             const encoded = try std.json.Stringify.valueAlloc(self.allocator(), input, .{});
             if (encoded.len > 0) {
                 prompt = try std.fmt.allocPrint(self.allocator(), "{s} {s}", .{ tool_name, encoded });
@@ -1927,6 +1927,31 @@ test "a number outside i64 is dropped rather than converted" {
     try testing.expectEqual(@as(?i64, null), integerMember(map, "nan"));
     try testing.expectEqual(@as(?i64, 12), integerMember(map, "fits"));
     try testing.expectEqual(@as(?i64, std.math.maxInt(i64)), integerMember(map, "exact"));
+}
+
+test "a null tool input reaches the prompt as the literal the oracle keeps" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"control_request","request_id":"ask-1","request":{"subtype":"can_use_tool","tool_use_id":"t1","tool_name":"Bash","input":null}}
+    );
+    const asked = firstPayload(&reducer, "user.input.requested").?;
+    const question = asked.get("questions").?.array.items[0].object;
+    try testing.expectEqualStrings("Bash null", question.get("prompt").?.string);
+
+    var absent = Reducer.init(&arena, .{});
+    absent.open();
+    try startedRun(&absent, scratch, "turn-2");
+    try observeText(&absent, scratch,
+        \\{"type":"control_request","request_id":"ask-2","request":{"subtype":"can_use_tool","tool_use_id":"t2","tool_name":"Bash","input":{"a":1}}}
+    );
+    const shaped = firstPayload(&absent, "user.input.requested").?;
+    try testing.expectEqualStrings("Bash {\"a\":1}", shaped.get("questions").?.array.items[0].object.get("prompt").?.string);
 }
 
 test "a negative duration is omitted rather than emitted past the schema floor" {

@@ -428,6 +428,10 @@ pub fn lookup(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
     return memberSet(object, &.{key});
 }
 
+pub fn lookupRaw(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
+    return member(object, &.{key});
+}
+
 fn memberSet(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
     var found: ?std.json.Value = null;
     var entries = object.iterator();
