@@ -12,6 +12,7 @@ pub const Step = struct {
     raw: std.json.Value,
     encoded: []const u8,
     script: std.json.Value,
+    source: []const u8,
 };
 
 pub const Handled = enum { handled, unhandled };
@@ -34,6 +35,54 @@ pub fn expectedEnvelopes(scratch: std.mem.Allocator, text: []const u8) ![]std.js
         .null => &.{},
         else => error.InvalidExpectation,
     };
+}
+
+pub fn memberSource(scratch: std.mem.Allocator, line: []const u8, wanted: []const u8) ![]const u8 {
+    var scanner = std.json.Scanner.initCompleteInput(scratch, line);
+    defer scanner.deinit();
+    switch (try scanner.next()) {
+        .object_begin => {},
+        else => return error.InvalidScriptLine,
+    }
+    while (true) {
+        const name = switch (try scanner.next()) {
+            .string => |text| text,
+            .allocated_string => |text| text,
+            else => return error.InvalidScriptLine,
+        };
+        const opened = scanner.cursor;
+        try scanner.skipValue();
+        if (!std.mem.eql(u8, name, wanted)) continue;
+        const span = line[opened..scanner.cursor];
+        const colon = std.mem.indexOfScalar(u8, span, ':') orelse return error.InvalidScriptLine;
+        return std.mem.trim(u8, span[colon + 1 ..], " \t");
+    }
+}
+
+test "a member's source is the bytes the line wrote, not a re-encoding of them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    try std.testing.expectEqualStrings(
+        "{\"type\":\"steer\"}",
+        try memberSource(scratch, "{\"action\":\"a\",\"raw\":{\"type\":\"steer\"},\"direction\":\"d\"}", "raw"),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"type\": \"steer\"}",
+        try memberSource(scratch, "{\"action\":\"a\", \"raw\": {\"type\": \"steer\"} }", "raw"),
+    );
+    try std.testing.expectEqualStrings(
+        "\"a\\u003cb\"",
+        try memberSource(scratch, "{\"raw\":\"a\\u003cb\",\"action\":\"a\"}", "raw"),
+    );
+    try std.testing.expectEqualStrings(
+        "[1,2]",
+        try memberSource(scratch, "{\"raw\":[1,2]}", "raw"),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"raw\":\"inner\"}",
+        try memberSource(scratch, "{\"outer\":{\"raw\":\"inner\"},\"raw\":{\"raw\":\"inner\"}}", "raw"),
+    );
 }
 
 pub fn isBlank(policy: BlankExpectation, text: []const u8) bool {
@@ -130,6 +179,7 @@ pub fn Harness(comptime Driver: type) type {
                     .raw = raw,
                     .encoded = try std.json.Stringify.valueAlloc(scratch, raw, .{}),
                     .script = script,
+                    .source = try memberSource(scratch, line, "raw"),
                 };
                 if (try Driver.step(reducer, scratch, step, case) == .unhandled) {
                     return error.UnhandledScriptAction;

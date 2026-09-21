@@ -53,7 +53,7 @@ fn checkControl(script: std.json.Value, raw: std.json.Value) !void {
     if (reported.len == 0) return error.InvalidHarnessControl;
 }
 
-fn checkCommand(scratch: std.mem.Allocator, script: std.json.Value, raw: std.json.Value, encoded: []const u8) !void {
+fn checkCommand(scratch: std.mem.Allocator, script: std.json.Value, raw: std.json.Value, source: []const u8) !void {
     const direction = directionOf(script) orelse return error.UnroutedScriptDirection;
     if (direction != .host_to_pi) return;
     const refuses = std.mem.eql(u8, actionOf(script), "decode-error");
@@ -62,12 +62,12 @@ fn checkCommand(scratch: std.mem.Allocator, script: std.json.Value, raw: std.jso
         return error.ProductionCodecRefusedCorpusCommand;
     };
     if (refuses) return error.ProductionCodecAcceptedInvalidCommand;
-    if (!std.mem.eql(u8, canonical, encoded)) return error.NoncanonicalCorpusCommand;
+    if (!std.mem.eql(u8, canonical, source)) return error.NoncanonicalCorpusCommand;
 }
 
 fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !void {
     try checkControl(item.script, item.raw);
-    try checkCommand(scratch, item.script, item.raw, item.encoded);
+    try checkCommand(scratch, item.script, item.raw, item.source);
     return decodeWire(scratch, item.script, item.encoded);
 }
 
@@ -241,8 +241,7 @@ fn expectCommandLine(script_line: []const u8, raw_line: []const u8, want: anyerr
     const scratch = arena.allocator();
     const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, script_line, .{});
     const raw = try std.json.parseFromSliceLeaky(std.json.Value, scratch, raw_line, .{});
-    const encoded = try std.json.Stringify.valueAlloc(scratch, raw, .{});
-    const got = checkCommand(scratch, script, raw, encoded);
+    const got = checkCommand(scratch, script, raw, raw_line);
     if (want) |_| {
         try got;
     } else |expected| {
@@ -267,16 +266,12 @@ test "an outbound command written in a noncanonical shape fails the case" {
     try expectCommandLine(sending, "{\"type\":\"abort\",\"id\":\"\"}", error.NoncanonicalCorpusCommand);
 }
 
-test "a fixture's own escaping stops being observable once the harness has reparsed it" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const scratch = arena.allocator();
-    const literal = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"type\":\"prompt\",\"message\":\"a<b\"}", .{});
-    const escaped = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}", .{});
-    const left = try std.json.Stringify.valueAlloc(scratch, literal, .{});
-    const right = try std.json.Stringify.valueAlloc(scratch, escaped, .{});
-    try std.testing.expectEqualStrings(left, right);
-    try std.testing.expectEqualStrings(left, try rpc.canonicalCommand(scratch, literal));
+test "a fixture that spells an escape the encoder would not is noncanonical" {
+    const sending = "{\"direction\":\"host-to-pi\",\"action\":\"outbound-only\"}";
+    try expectCommandLine(sending, "{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}", {});
+    try expectCommandLine(sending, "{\"type\":\"prompt\",\"message\":\"a<b\"}", error.NoncanonicalCorpusCommand);
+    try expectCommandLine(sending, "{\"type\":\"prompt\", \"message\":\"hi\"}", error.NoncanonicalCorpusCommand);
+    try expectCommandLine(sending, "{\"type\":\"prompt\",\"message\":\"hi\"}", {});
 }
 
 test "an outbound command recorded as a decode error must be refused, not accepted" {

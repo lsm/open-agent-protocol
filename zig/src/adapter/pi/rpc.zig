@@ -425,43 +425,86 @@ const canonical_order = [_][]const u8{
     "entryId",           "since",              "name",
 };
 
-fn canonicalImages(arena: std.mem.Allocator, value: std.json.Value) !std.json.Value {
-    var items = std.ArrayList(std.json.Value).empty;
-    for (value.array.items) |entry| {
-        const shape = try arena.create(std.json.ObjectMap);
-        shape.* = .{};
-        for (image_members) |name| {
-            const carried = if (entry == .object) entry.object.get(name) else null;
-            var text: []const u8 = "";
-            if (carried) |held| {
-                if (held == .string) text = held.string;
-            }
-            try shape.put(arena, name, .{ .string = text });
+fn writeGoString(out: *std.ArrayList(u8), arena: std.mem.Allocator, text: []const u8) !void {
+    try out.append(arena, '"');
+    var at: usize = 0;
+    while (at < text.len) {
+        const byte = text[at];
+        if (byte == 0xE2 and at + 3 <= text.len and text[at + 1] == 0x80 and (text[at + 2] == 0xA8 or text[at + 2] == 0xA9)) {
+            try out.appendSlice(arena, if (text[at + 2] == 0xA8) "\\u2028" else "\\u2029");
+            at += 3;
+            continue;
         }
-        try items.append(arena, .{ .object = shape.* });
+        at += 1;
+        switch (byte) {
+            '"' => try out.appendSlice(arena, "\\\""),
+            '\\' => try out.appendSlice(arena, "\\\\"),
+            '\n' => try out.appendSlice(arena, "\\n"),
+            '\r' => try out.appendSlice(arena, "\\r"),
+            '\t' => try out.appendSlice(arena, "\\t"),
+            0x08 => try out.appendSlice(arena, "\\b"),
+            0x0c => try out.appendSlice(arena, "\\f"),
+            '<' => try out.appendSlice(arena, "\\u003c"),
+            '>' => try out.appendSlice(arena, "\\u003e"),
+            '&' => try out.appendSlice(arena, "\\u0026"),
+            else => {
+                if (byte < 0x20) {
+                    try out.appendSlice(arena, try std.fmt.allocPrint(arena, "\\u{x:0>4}", .{byte}));
+                } else {
+                    try out.append(arena, byte);
+                }
+            },
+        }
     }
-    return .{ .array = std.json.Array.fromOwnedSlice(arena, try items.toOwnedSlice(arena)) };
+    try out.append(arena, '"');
+}
+
+fn writeImages(out: *std.ArrayList(u8), arena: std.mem.Allocator, value: std.json.Value) !void {
+    try out.append(arena, '[');
+    for (value.array.items, 0..) |entry, at| {
+        if (at != 0) try out.append(arena, ',');
+        try out.append(arena, '{');
+        for (image_members, 0..) |name, index| {
+            if (index != 0) try out.append(arena, ',');
+            try writeGoString(out, arena, name);
+            try out.append(arena, ':');
+            var text: []const u8 = "";
+            if (entry == .object) {
+                if (entry.object.get(name)) |held| {
+                    if (held == .string) text = held.string;
+                }
+            }
+            try writeGoString(out, arena, text);
+        }
+        try out.append(arena, '}');
+    }
+    try out.append(arena, ']');
 }
 
 pub fn canonicalCommand(arena: std.mem.Allocator, value: std.json.Value) ![]const u8 {
     try validateCommand(value);
-    const shape = try arena.create(std.json.ObjectMap);
-    shape.* = .{};
+    var out = std.ArrayList(u8).empty;
+    try out.append(arena, '{');
+    var written: usize = 0;
     for (canonical_order) |name| {
         const carried = value.object.get(name) orelse continue;
-        if (std.mem.eql(u8, name, "type")) {
-            try shape.put(arena, name, carried);
-            continue;
-        }
         const member = declaredMember(&command_members, name) orelse continue;
-        if (omittedByMarshal(carried, member)) continue;
+        const always = std.mem.eql(u8, name, "type");
+        if (!always and omittedByMarshal(carried, member)) continue;
+        if (written != 0) try out.append(arena, ',');
+        written += 1;
+        try writeGoString(&out, arena, name);
+        try out.append(arena, ':');
         if (std.mem.eql(u8, name, "images")) {
-            try shape.put(arena, name, try canonicalImages(arena, carried));
-            continue;
+            try writeImages(&out, arena, carried);
+        } else if (member.kind == .flag) {
+            try out.appendSlice(arena, if (carried == .bool and carried.bool) "true" else "false");
+        } else {
+            try writeGoString(&out, arena, if (carried == .string) carried.string else "");
         }
-        try shape.put(arena, name, carried);
     }
-    return std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = shape.* }, .{});
+    try out.append(arena, '}');
+    return out.toOwnedSlice(arena);
 }
 
 fn expectCanonical(text: []const u8, want: []const u8) !void {
@@ -470,6 +513,43 @@ fn expectCanonical(text: []const u8, want: []const u8) !void {
     const scratch = arena.allocator();
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, text, .{});
     try std.testing.expectEqualStrings(want, try canonicalCommand(scratch, parsed));
+}
+
+test "a canonical command escapes a string the way json.Marshal does" {
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u003eb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u003eb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u0026b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u0026b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\\"b\"}", "{\"type\":\"prompt\",\"message\":\"a\\\"b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\\\b\"}", "{\"type\":\"prompt\",\"message\":\"a\\\\b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\nb\"}", "{\"type\":\"prompt\",\"message\":\"a\\nb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\rb\"}", "{\"type\":\"prompt\",\"message\":\"a\\rb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\tb\"}", "{\"type\":\"prompt\",\"message\":\"a\\tb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\bb\"}", "{\"type\":\"prompt\",\"message\":\"a\\bb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\fb\"}", "{\"type\":\"prompt\",\"message\":\"a\\fb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u000bb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u000bb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u0000b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u0000b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u001fb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u001fb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u2028b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u2028b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u2029b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u2029b\"}");
+}
+
+test "a canonical command leaves every other code point as itself" {
+    for ([_][]const u8{ "caf\u{e9}", "\u{65e5}\u{672c}", "emoji\u{1F600}", "a\u{a0}b", "a\u{200b}b", "a\u{feff}b", "a\u{7f}b", "a/b", "a'b" }) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const line = try std.fmt.allocPrint(scratch, "{{\"type\":\"prompt\",\"message\":\"{s}\"}}", .{text});
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
+        try std.testing.expectEqualStrings(line, try canonicalCommand(scratch, parsed));
+    }
+}
+
+test "a literal character the encoder would escape makes the frame noncanonical" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"type\":\"prompt\",\"message\":\"a<b\"}", .{});
+    try std.testing.expectEqualStrings("{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}", try canonicalCommand(scratch, parsed));
 }
 
 test "a canonical command carries its members in the order the struct declares" {
