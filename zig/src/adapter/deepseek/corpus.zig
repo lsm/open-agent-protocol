@@ -1,6 +1,77 @@
 const std = @import("std");
 const corpus = @import("corpus");
 const session = @import("session.zig");
+const rpc = @import("rpc.zig");
+
+const Direction = enum { dsh_to_host, host_to_dsh, harness_control };
+
+const Routing = struct { action: []const u8, direction: Direction };
+
+const routings = [_]Routing{
+    .{ .action = "auto", .direction = .dsh_to_host },
+    .{ .action = "reply", .direction = .dsh_to_host },
+    .{ .action = "reply-error", .direction = .dsh_to_host },
+    .{ .action = "observe", .direction = .dsh_to_host },
+    .{ .action = "observe-invalid", .direction = .dsh_to_host },
+    .{ .action = "decode-error", .direction = .dsh_to_host },
+    .{ .action = "decode-error-unterminated", .direction = .dsh_to_host },
+    .{ .action = "submit", .direction = .host_to_dsh },
+    .{ .action = "open", .direction = .host_to_dsh },
+    .{ .action = "shutdown", .direction = .host_to_dsh },
+    .{ .action = "overlap-submit", .direction = .host_to_dsh },
+    .{ .action = "process-exit", .direction = .harness_control },
+    .{ .action = "oap-control", .direction = .harness_control },
+    .{ .action = "wait-submit", .direction = .harness_control },
+};
+
+const refused = [_][]const u8{ "decode-error", "decode-error-unterminated" };
+
+fn directionOf(action: []const u8) ?Direction {
+    for (routings) |entry| {
+        if (std.mem.eql(u8, entry.action, action)) return entry.direction;
+    }
+    return null;
+}
+
+fn refusesDecode(action: []const u8) bool {
+    for (refused) |name| {
+        if (std.mem.eql(u8, name, action)) return true;
+    }
+    return false;
+}
+
+fn wireBytes(item: corpus.Step) []const u8 {
+    return if (item.raw == .string) item.raw.string else item.encoded;
+}
+
+fn decodes(scratch: std.mem.Allocator, source: []const u8) bool {
+    var decoder = rpc.Decoder{ .source = source };
+    const decoded = decoder.next(scratch) catch return false;
+    return decoded != null;
+}
+
+fn decodeWire(scratch: std.mem.Allocator, action: []const u8, wire: []const u8) !void {
+    const direction = directionOf(action) orelse return error.UnroutedScriptAction;
+    if (direction == .harness_control) return;
+
+    if (std.mem.eql(u8, action, "decode-error-unterminated")) {
+        if (decodes(scratch, wire)) return error.UnterminatedFrameDecoded;
+        if (!decodes(scratch, try std.mem.concat(scratch, u8, &.{ wire, "\n" }))) {
+            return error.UnterminatedFrameRefusedForSomethingElse;
+        }
+        return;
+    }
+
+    if (decodes(scratch, try std.mem.concat(scratch, u8, &.{ wire, "\n" }))) {
+        if (refusesDecode(action)) return error.ProductionCodecAcceptedInvalidFrame;
+        return;
+    }
+    if (!refusesDecode(action)) return error.ProductionCodecRefusedCorpusFrame;
+}
+
+fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !void {
+    return decodeWire(scratch, item.action, wireBytes(item));
+}
 
 pub const CorpusCase = struct { id: []const u8, path: []const u8 };
 
@@ -18,8 +89,8 @@ const Driver = struct {
     }
 
     pub fn step(reducer: *Reducer, scratch: std.mem.Allocator, item: corpus.Step, case: CorpusCase) !corpus.Handled {
-        _ = scratch;
         _ = case;
+        try decodeFrame(scratch, item);
         const action = item.action;
         if (std.mem.eql(u8, action, "submit")) {
             try session.submit(reducer);
@@ -102,4 +173,35 @@ test "every deepseek corpus case replays to the recorded envelopes" {
         .{ .id = "unknown-events", .path = "unknown-events" },
         .{ .id = "unsupported-controls", .path = "unsupported-controls" },
     });
+}
+
+const notification = "{\"jsonrpc\":\"2.0\",\"method\":\"session.status\"}";
+
+fn expectWire(action: []const u8, wire: []const u8, want: anyerror!void) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const got = decodeWire(arena.allocator(), action, wire);
+    if (want) |_| {
+        try got;
+    } else |expected| {
+        try std.testing.expectError(expected, got);
+    }
+}
+
+test "an unterminated corpus frame must fail bare and decode once terminated" {
+    try expectWire("decode-error-unterminated", notification, {});
+    try expectWire("decode-error-unterminated", notification ++ "\n", error.UnterminatedFrameDecoded);
+    try expectWire("decode-error-unterminated", "{\"jsonrpc\":\"1.0\"}", error.UnterminatedFrameRefusedForSomethingElse);
+}
+
+test "a frame the production codec refuses is a corpus defect unless its action says otherwise" {
+    try expectWire("observe", notification, {});
+    try expectWire("observe", "{\"jsonrpc\":\"1.0\"}", error.ProductionCodecRefusedCorpusFrame);
+    try expectWire("decode-error", "{\"jsonrpc\":\"1.0\"}", {});
+    try expectWire("decode-error", notification, error.ProductionCodecAcceptedInvalidFrame);
+}
+
+test "a harness control line carries no frame, and an unrouted action is refused" {
+    try expectWire("wait-submit", "{\"op\":\"wait-submit\"}", {});
+    try expectWire("nonesuch", notification, error.UnroutedScriptAction);
 }
