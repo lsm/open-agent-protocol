@@ -71,7 +71,10 @@ pub const Transport = struct {
             try environment.put(entry[0..split], entry[split + 1 ..]);
         }
 
-        const child = try std.process.spawn(io(), .{
+        const self = try allocator.create(Transport);
+        errdefer allocator.destroy(self);
+
+        var child = try std.process.spawn(io(), .{
             .argv = argv.items,
             .environ_map = &environment,
             .cwd = if (request.working_directory) |path| .{ .path = path } else .inherit,
@@ -80,8 +83,8 @@ pub const Transport = struct {
             .stderr = .inherit,
             .create_no_window = true,
         });
+        errdefer child.kill(io());
 
-        const self = try allocator.create(Transport);
         self.* = .{
             .allocator = allocator,
             .limit = request.frame_limit,
@@ -168,17 +171,8 @@ pub const Transport = struct {
             stdin.close(io());
             child.stdin = null;
         }
-        if (!self.settles()) {
-            child.kill(io());
-            self.failure = .{ .departure = .stranded };
-            self.child = null;
-            return;
-        }
-        const term = child.wait(io()) catch {
-            self.failure = .{ .departure = .stranded };
-            self.child = null;
-            return;
-        };
+        if (!self.settles()) return self.strand(child);
+        const term = child.wait(io()) catch return self.strand(child);
         self.failure = switch (term) {
             .exited => |status| .{ .departure = .exited, .status = status },
             .signal, .stopped => |signal| .{ .departure = .signalled, .status = @intFromEnum(signal) },
@@ -187,9 +181,16 @@ pub const Transport = struct {
         self.child = null;
     }
 
+    fn strand(self: *Transport, child: *std.process.Child) void {
+        child.kill(io());
+        self.failure = .{ .departure = .stranded };
+        self.child = null;
+    }
+
     fn settles(self: *Transport) bool {
         if (!self.reading or self.ended) return true;
-        const deadline: std.Io.Timeout = .{ .duration = .{ .clock = .awake, .raw = .fromNanoseconds(@intCast(self.grace)) } };
+        const budget: std.Io.Timeout = .{ .duration = .{ .clock = .awake, .raw = .fromNanoseconds(@intCast(self.grace)) } };
+        const deadline = budget.toDeadline(io());
         while (true) {
             self.multi.fill(1, deadline) catch |raised| switch (raised) {
                 error.EndOfStream => {
@@ -377,4 +378,28 @@ test "a child that goes when stdin closes is waited on, not killed" {
     transport.close();
     try testing.expectEqual(Departure.exited, transport.departed().departure);
     try testing.expectEqual(@as(u32, 0), transport.departed().status);
+}
+
+test "closing the transport releases the child's pipes, not only its stdin" {
+    const gone = try shell("printf 'a\\n'", .{ .executable = "" });
+    defer gone.deinit();
+    try testing.expectEqualStrings("a", (try gone.next()).?);
+    gone.close();
+    try testing.expect(gone.child == null);
+
+    const killed = try shell("exec sleep 30", .{ .executable = "", .exit_grace_ns = 50 * std.time.ns_per_ms });
+    defer killed.deinit();
+    killed.close();
+    try testing.expectEqual(Departure.stranded, killed.departed().departure);
+    try testing.expect(killed.child == null);
+}
+
+test "a chatty child that will not go is killed on one budget, not one per read" {
+    const transport = try shell("while :; do printf 'x\\n'; sleep 0.01; done", .{ .executable = "", .exit_grace_ns = 150 * std.time.ns_per_ms });
+    defer transport.deinit();
+
+    _ = try transport.next();
+    transport.close();
+
+    try testing.expectEqual(Departure.stranded, transport.departed().departure);
 }
