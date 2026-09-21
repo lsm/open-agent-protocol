@@ -223,12 +223,11 @@ pub const Reducer = struct {
     }
 
     fn applyEvent(self: *Reducer, kind: []const u8, payload: std.json.Value) !void {
-        if (self.run == null) {
+        const run = self.active() orelse {
             if (!runScoped(kind)) return;
             return self.disown(try std.fmt.allocPrint(self.allocator(), "session event {s} without a reserved run", .{goquote.quote(self.allocator(), kind)}));
-        }
-        if (self.run.?.terminal) return;
-        if (!self.run.?.started) return self.reserveObservation(kind, payload);
+        };
+        if (!run.started) return self.reserveObservation(kind, payload);
         try self.applyRunEvent(kind, payload);
     }
 
@@ -352,8 +351,13 @@ pub const Reducer = struct {
     }
 
     pub fn transportFailed(self: *Reducer, detail: []const u8) !void {
+        self.unusable = true;
         const run = self.active() orelse return;
-        if (!run.started) return;
+        if (!run.started) {
+            run.terminal = true;
+            self.buffered.clearRetainingCapacity();
+            return;
+        }
         var failure = self.object();
         try self.put(&failure, "code", str("hermes_process_exit"));
         try self.put(&failure, "message", str(detail));
@@ -1597,4 +1601,71 @@ test "a completed run always reports usage, and reports only the totals it has" 
     try testing.expectEqual(@as(i64, 3), totals.get("input_tokens").?.integer);
     try testing.expect(totals.get("output_tokens") == null);
     try testing.expectEqual(@as(i64, 3), totals.get("total_tokens").?.integer);
+}
+
+test "a run-scoped event after the run settled belongs to no run, and says so" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feedEvent(&reducer, scratch, "message.complete",
+        \\{"status":"complete","text":"done"}
+    );
+    try testing.expectEqualStrings("run.completed", typeAt(&reducer, 1));
+
+    try feedEvent(&reducer, scratch, "message.delta",
+        \\{"text":"late"}
+    );
+
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expect(reducer.unusable);
+    try testing.expectError(Error.SessionUnusable, reducer.submit());
+}
+
+test "a settled run still tolerates traffic that belongs to no turn" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feedEvent(&reducer, scratch, "message.complete",
+        \\{"status":"complete","text":"done"}
+    );
+    try feedEvent(&reducer, scratch, "gateway.ready",
+        \\{"replay_epoch":"e3"}
+    );
+
+    try testing.expect(!reducer.unusable);
+    try reducer.submit();
+}
+
+test "a transport that dies takes the session with it, started run or not" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var started = try openRun(&arena);
+    try started.transportFailed("gateway exited");
+    try testing.expectEqualStrings("run.failed", typeAt(&started, 1));
+    try testing.expectEqualStrings("inferred", payloadAt(&started, 1).get("settled_by").?.string);
+    try testing.expect(started.unusable);
+    try testing.expectError(Error.SessionUnusable, started.submit());
+
+    var reserved = Reducer.init(&arena, .{});
+    reserved.open();
+    try reserved.submit();
+    try feedEvent(&reserved, scratch, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    try testing.expectEqual(@as(usize, 1), reserved.buffered.items.len);
+
+    try reserved.transportFailed("gateway exited");
+    try testing.expectEqual(@as(usize, 0), reserved.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 0), reserved.buffered.items.len);
+    try testing.expect(reserved.unusable);
+    try testing.expect(reserved.active() == null);
+
+    var idle = Reducer.init(&arena, .{});
+    idle.open();
+    try idle.transportFailed("gateway exited");
+    try testing.expect(idle.unusable);
 }
