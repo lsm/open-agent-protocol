@@ -453,10 +453,16 @@ pub const Reducer = struct {
             }
         }
         const total = input +% output;
-        if (input != 0) try self.put(&totals, "input_tokens", int(input));
-        if (output != 0) try self.put(&totals, "output_tokens", int(output));
-        if (total != 0) try self.put(&totals, "total_tokens", int(total));
+        if (input != 0) try self.put(&totals, "input_tokens", try self.tokens(input));
+        if (output != 0) try self.put(&totals, "output_tokens", try self.tokens(output));
+        if (total != 0) try self.put(&totals, "total_tokens", try self.tokens(total));
         return .{ .object = totals };
+    }
+
+    fn tokens(self: *Reducer, count: i64) !std.json.Value {
+        const bits: u64 = @bitCast(count);
+        if (bits <= std.math.maxInt(i64)) return int(@intCast(bits));
+        return .{ .number_string = try std.fmt.allocPrint(self.allocator(), "{d}", .{bits}) };
     }
 
     fn terminalPayload(self: *Reducer, run: *Run) !std.json.ObjectMap {
@@ -592,7 +598,7 @@ pub const Reducer = struct {
                 var joined = std.ArrayList(u8).empty;
                 for (listed.array.items, 0..) |entry, index| {
                     if (index > 0) try joined.appendSlice(self.allocator(), "; ");
-                    try joined.appendSlice(self.allocator(), entry.string);
+                    if (entry == .string) try joined.appendSlice(self.allocator(), entry.string);
                 }
                 return joined.items;
             }
@@ -979,12 +985,13 @@ fn failed(frame: std.json.ObjectMap) bool {
 }
 
 fn deltaText(delta: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const value = delta.get(key) orelse return "";
+    const value = rpc.lookup(delta, key) orelse return "";
     return if (value == .string) value.string else null;
 }
 
 fn everyItemIsAString(listed: std.json.Array) bool {
     for (listed.items) |entry| {
+        if (entry == .null) continue;
         if (entry != .string) return false;
     }
     return true;
@@ -1922,7 +1929,7 @@ test "a number outside i64 is dropped rather than converted" {
     try testing.expectEqual(@as(?i64, std.math.maxInt(i64)), integerMember(map, "exact"));
 }
 
-test "a token count that overflows the total wraps the way the oracle wraps" {
+test "a token count is emitted unsigned the way the oracle emits it" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1935,7 +1942,56 @@ test "a token count that overflows the total wraps the way the oracle wraps" {
     );
     const usage = firstPayload(&reducer, "run.completed").?.get("usage").?.object;
     try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("input_tokens").?.integer);
-    try testing.expectEqual(@as(i64, std.math.minInt(i64)), usage.get("total_tokens").?.integer);
+    try testing.expectEqualStrings("9223372036854775808", usage.get("total_tokens").?.number_string);
+
+    var negative = Reducer.init(&arena, .{});
+    negative.open();
+    try startedRun(&negative, scratch, "turn-2");
+    try observeText(&negative, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-2","uuid":"r2","usage":{"input_tokens":-1,"output_tokens":0}}
+    );
+    const wrapped = firstPayload(&negative, "run.completed").?.get("usage").?.object;
+    try testing.expectEqualStrings("18446744073709551615", wrapped.get("input_tokens").?.number_string);
+    try testing.expectEqualStrings("18446744073709551615", wrapped.get("total_tokens").?.number_string);
+    try testing.expectEqual(@as(?std.json.Value, null), wrapped.get("output_tokens"));
+}
+
+test "a delta member is folded and a null one is empty rather than dropped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","session_id":"s","uuid":"d1","event":{"type":"content_block_delta","delta":{"type":"text_delta","TEXT":"hi"}}}
+    );
+    const delta = firstPayload(&reducer, "content.delta").?;
+    try testing.expectEqualStrings("hi", delta.get("part").?.object.get("text").?.string);
+
+    var empty = Reducer.init(&arena, .{});
+    empty.open();
+    try startedRun(&empty, scratch, "turn-2");
+    try observeText(&empty, scratch,
+        \\{"type":"stream_event","session_id":"s","uuid":"d2","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":null}}}
+    );
+    try testing.expect(firstPayload(&empty, "content.delta") != null);
+}
+
+test "a null among the errors joins as an empty string" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","subtype":"error_during_execution","is_error":true,"user_message_uuid":"turn-1","uuid":"r1","errors":["a",null]}
+    );
+    const settlement = firstPayload(&reducer, "run.failed").?;
+    try testing.expectEqualStrings("a; ", settlement.get("error").?.object.get("message").?.string);
 }
 
 test "the three shapes a harness writes as null follow what the oracle decodes" {
