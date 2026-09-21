@@ -37,6 +37,12 @@ const Status = enum {
     }
 };
 
+pub const Interaction = struct {
+    id: []const u8,
+    text: bool,
+    resolved: bool = false,
+};
+
 pub const Reducer = struct {
     arena: std.mem.Allocator,
     counters: Counters = .{},
@@ -54,9 +60,7 @@ pub const Reducer = struct {
     reasoning: std.ArrayList(u8) = .empty,
     pending: std.ArrayList(std.json.Value) = .empty,
     tools: std.ArrayList(*ToolState) = .empty,
-    interaction_id: []const u8 = "",
-    interaction_resolved: bool = false,
-    interaction_text: bool = false,
+    interactions: std.ArrayList(*Interaction) = .empty,
     pending_ui: std.ArrayList(std.json.Value) = .empty,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
@@ -193,6 +197,30 @@ fn closedRoleMembers(raw: std.json.Value, names: []const []const u8) !void {
     }
 }
 
+fn typedStrings(raw: std.json.Value, names: []const []const u8) !void {
+    for (names) |name| {
+        const value = raw.object.get(name) orelse continue;
+        if (value != .string and value != .null) return Error.InvalidFrame;
+    }
+}
+
+fn typedInteger(raw: std.json.Value, name: []const u8) !void {
+    const value = raw.object.get(name) orelse return;
+    if (value != .integer and value != .null) return Error.InvalidFrame;
+}
+
+fn pendingInteraction(reducer: *Reducer) ?*Interaction {
+    for (reducer.interactions.items) |interaction| {
+        if (!interaction.resolved) return interaction;
+    }
+    return null;
+}
+
+fn requireIndex(raw: std.json.Value) !void {
+    const index = integerMember(raw, "contentIndex") orelse return Error.InvalidFrame;
+    if (index < 0) return Error.InvalidFrame;
+}
+
 pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
     if (raw != .object) return Error.InvalidFrame;
     const role_value = raw.object.get("role") orelse return Error.InvalidFrame;
@@ -206,6 +234,8 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         for (&assistant_required) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
+        try typedStrings(raw, &.{ "api", "provider", "model", "stopReason", "responseModel", "responseId", "providerThinkingLevel", "errorMessage", "rawStopReason" });
+        try typedInteger(raw, "timestamp");
         try validateWireContent(raw.object.get("content").?, false);
         return .{
             .content = raw.object.get("content"),
@@ -215,6 +245,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
     }
     if (std.mem.eql(u8, role, "user")) {
         try closedRoleMembers(raw, &user_members);
+        try typedInteger(raw, "timestamp");
         for (&[_][]const u8{ "content", "timestamp" }) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
@@ -223,6 +254,8 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
     }
     if (std.mem.eql(u8, role, "toolResult")) {
         try closedRoleMembers(raw, &tool_result_members);
+        try typedStrings(raw, &.{ "toolCallId", "toolName" });
+        try typedInteger(raw, "timestamp");
         for (&[_][]const u8{ "toolCallId", "toolName", "content", "isError", "timestamp" }) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
@@ -357,7 +390,12 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
                 return;
             }
         }
-        reducer.candidate = memberOf(event, "messages");
+        const messages = memberOf(event, "messages") orelse std.json.Value{ .null = {} };
+        if (messages != .array) {
+            try failRun(reducer, "pi_invalid_event", "agent_end carried a messages member that is not a list");
+            return;
+        }
+        reducer.candidate = messages;
         reducer.candidate_present = true;
         return;
     }
@@ -612,8 +650,7 @@ fn decodeProviderEvent(raw: std.json.Value) !?Part {
             .null => "",
             else => return Error.InvalidFrame,
         };
-        const index = integerMember(raw, "contentIndex") orelse return Error.InvalidFrame;
-        if (index < 0) return Error.InvalidFrame;
+        try requireIndex(raw);
         if (std.mem.eql(u8, kind, "text_delta")) return .{ .kind = "text", .text = delta };
         return .{ .kind = "reasoning", .text = delta };
     }
@@ -623,27 +660,31 @@ fn decodeProviderEvent(raw: std.json.Value) !?Part {
     }
     if (std.mem.eql(u8, kind, "text_start") or std.mem.eql(u8, kind, "thinking_start")) {
         try closedMembers(raw, &.{ "type", "contentIndex" });
-        if (raw.object.get("contentIndex") == null) return Error.InvalidFrame;
+        try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "text_end") or std.mem.eql(u8, kind, "thinking_end")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "content" });
-        if (raw.object.get("contentIndex") == null) return Error.InvalidFrame;
+        try requireMembers(raw, &.{"content"});
+        try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "toolcall_start")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "id", "toolName" });
-        try requireMembers(raw, &.{ "id", "toolName", "contentIndex" });
+        try requireMembers(raw, &.{ "id", "toolName" });
+        try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "toolcall_end")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "toolCall" });
-        try requireMembers(raw, &.{ "toolCall", "contentIndex" });
+        try requireMembers(raw, &.{"toolCall"});
+        try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "toolcall_delta")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "delta" });
-        try requireMembers(raw, &.{ "delta", "contentIndex" });
+        try requireMembers(raw, &.{"delta"});
+        try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "done")) {
@@ -776,13 +817,16 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
         try question.put(reducer.arena, "kind", Reducer.str("text"));
         try question.put(reducer.arena, "required", .{ .bool = true });
     }
-    reducer.interaction_text = !std.mem.eql(u8, method, "select") and !std.mem.eql(u8, method, "confirm");
-    reducer.interaction_resolved = false;
-    reducer.interaction_id = try reducer.counters.nextID(reducer.arena, "interaction");
+    const interaction = try reducer.arena.create(Interaction);
+    interaction.* = .{
+        .id = try reducer.counters.nextID(reducer.arena, "interaction"),
+        .text = !std.mem.eql(u8, method, "select") and !std.mem.eql(u8, method, "confirm"),
+    };
+    try reducer.interactions.append(reducer.arena, interaction);
     var questions = std.ArrayList(std.json.Value).empty;
     try questions.append(reducer.arena, .{ .object = question.* });
     const payload = try reducer.object();
-    try payload.put(reducer.arena, "interaction_id", Reducer.str(reducer.interaction_id));
+    try payload.put(reducer.arena, "interaction_id", Reducer.str(interaction.id));
     try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
     try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
@@ -792,14 +836,15 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
     try payload.put(reducer.arena, "questions", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try questions.toOwnedSlice(reducer.arena)) });
     try payload.put(reducer.arena, "allow_cancel", .{ .bool = true });
     try reducer.emit("user.input.requested", .{ .object = payload.* }, false);
-    try statusUpdate(reducer, "waiting_for_input", reducer.interaction_id);
+    try statusUpdate(reducer, "waiting_for_input", interaction.id);
 }
 
 pub fn resolveExtension(reducer: *Reducer, answer: []const u8) !void {
-    if (reducer.terminal or reducer.interaction_id.len == 0 or reducer.interaction_resolved) return;
+    if (reducer.terminal) return;
+    const interaction = pendingInteraction(reducer) orelse return;
     const selected = try reducer.object();
     try selected.put(reducer.arena, "question_id", Reducer.str("value"));
-    if (reducer.interaction_text) {
+    if (interaction.text) {
         if (answer.len == 0) return;
         try selected.put(reducer.arena, "text", Reducer.str(answer));
     } else {
@@ -810,14 +855,14 @@ pub fn resolveExtension(reducer: *Reducer, answer: []const u8) !void {
     var answers = std.ArrayList(std.json.Value).empty;
     try answers.append(reducer.arena, .{ .object = selected.* });
     const payload = try reducer.object();
-    try payload.put(reducer.arena, "interaction_id", Reducer.str(reducer.interaction_id));
+    try payload.put(reducer.arena, "interaction_id", Reducer.str(interaction.id));
     try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
     try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "status", Reducer.str("submitted"));
     try payload.put(reducer.arena, "answers", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try answers.toOwnedSlice(reducer.arena)) });
-    reducer.interaction_resolved = true;
+    interaction.resolved = true;
     try reducer.emit("user.input.resolved", .{ .object = payload.* }, false);
     try statusUpdate(reducer, "running", "");
 }
@@ -992,10 +1037,11 @@ fn settleChildren(reducer: *Reducer, cancelled: bool) !void {
         try payload.object.put(reducer.arena, "error", .{ .object = err.* });
         _ = try reducer.emitReplying("action.call.failed", payload, false, tool.started_event);
     }
-    if (reducer.interaction_id.len != 0 and !reducer.interaction_resolved) {
-        reducer.interaction_resolved = true;
+    for (reducer.interactions.items) |interaction| {
+        if (interaction.resolved) continue;
+        interaction.resolved = true;
         const payload = try reducer.object();
-        try payload.put(reducer.arena, "interaction_id", Reducer.str(reducer.interaction_id));
+        try payload.put(reducer.arena, "interaction_id", Reducer.str(interaction.id));
         try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
         try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
         try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
@@ -1340,4 +1386,59 @@ test "a second interaction is not born resolved, and a resolved one is not resol
     try apply(&reducer, try parse(a, agentEndWith("\"done\"")));
     try apply(&reducer, try parse(a, settled_text));
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 2);
+}
+
+test "a second pending interaction is not lost by the first" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    try applyExtension(&reducer, try parse(a, text_request));
+    try std.testing.expect(countOf(&reducer, "user.input.requested") == 2);
+
+    try apply(&reducer, try parse(a, agentEndWith("\"done\"")));
+    try apply(&reducer, try parse(a, settled_text));
+    try std.testing.expect(countOf(&reducer, "user.input.resolved") == 2);
+}
+
+test "a resolution answers the oldest outstanding interaction" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    try applyExtension(&reducer, try parse(a, text_request));
+    try resolveExtension(&reducer, "yes");
+
+    const payload = payloadOf(&reducer, "user.input.resolved") orelse return error.NoResolution;
+    try std.testing.expectEqualStrings(reducer.interactions.items[0].id, textOf(payload, "interaction_id"));
+    try std.testing.expect(reducer.interactions.items[0].resolved);
+    try std.testing.expect(!reducer.interactions.items[1].resolved);
+}
+
+test "a stop reason that is not a string is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const message = "{\"role\":\"assistant\",\"content\":\"hi\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":true,\"timestamp\":1}";
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, message)));
+
+    const timestamp = "{\"role\":\"assistant\",\"content\":\"hi\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"end_turn\",\"timestamp\":\"1\"}";
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, timestamp)));
+}
+
+test "an agent_end whose messages are not a list is refused" {
+    try expectRefusal(&.{
+        "{\"type\":\"agent_end\",\"willRetry\":false,\"messages\":{\"0\":{}}}",
+    }, "pi_invalid_event");
+}
+
+test "a non-delta provider event with a bad content index is refused" {
+    try expectRefusal(&.{
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_start\",\"contentIndex\":-1}}",
+    }, "pi_invalid_message_update");
+    try expectRefusal(&.{
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"thinking_start\",\"contentIndex\":\"0\"}}",
+    }, "pi_invalid_message_update");
 }
