@@ -8,6 +8,8 @@ pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";
 pub const endpoint_id = "hermes.gateway";
 
+const Reduce = std.mem.Allocator.Error;
+
 pub const Error = error{ RunActive, SessionUnusable, InteractionNotFound, InvalidResolution };
 
 pub const Options = struct {
@@ -56,6 +58,11 @@ pub const Interaction = struct {
     questions: []const Question = &.{},
 };
 
+const Observation = struct {
+    kind: []const u8,
+    payload: std.json.Value,
+};
+
 const Run = struct {
     id: []const u8 = "",
     message_id: []const u8 = "",
@@ -73,6 +80,7 @@ pub const Reducer = struct {
     run: ?Run = null,
     tools: std.ArrayList(Tool) = .empty,
     last_seq: i64 = 0,
+    buffered: std.ArrayList(Observation) = .empty,
     unusable: bool = false,
     interactions: std.ArrayList(Interaction) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
@@ -130,7 +138,7 @@ pub const Reducer = struct {
         self.run = .{ .message_id = try self.nextID("message") };
     }
 
-    fn startRun(self: *Reducer) !void {
+    fn startRun(self: *Reducer) Reduce!void {
         const run = self.active() orelse return;
         if (run.started) return;
         run.started = true;
@@ -143,6 +151,13 @@ pub const Reducer = struct {
         if (self.options.model.len > 0) try self.put(&payload, "model_id", str(self.options.model));
         try self.put(&payload, "started_at_ms", int(self.now()));
         _ = try self.emit(run, "run.started", .{ .object = payload });
+
+        const replay = self.buffered;
+        self.buffered = .empty;
+        for (replay.items) |observation| {
+            if (self.run == null or self.run.?.terminal) return;
+            try self.applyRunEvent(observation.kind, observation.payload);
+        }
     }
 
     fn emit(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value) ![]const u8 {
@@ -182,8 +197,9 @@ pub const Reducer = struct {
     }
 
     pub fn observe(self: *Reducer, message: rpc.Message, parsed: std.json.Value) !void {
+        if (message.kind == .request) return self.disown("reverse request");
         if (message.kind != .notification) return;
-        if (!std.mem.eql(u8, message.method, "event")) return;
+        if (!std.mem.eql(u8, message.method, "event")) return self.disown("non-event notification");
         if (parsed != .object) return;
         const params = parsed.object.get("params") orelse return;
         if (params != .object) return;
@@ -207,16 +223,32 @@ pub const Reducer = struct {
     }
 
     fn applyEvent(self: *Reducer, kind: []const u8, payload: std.json.Value) !void {
-        if (std.mem.eql(u8, kind, "message.start")) {
-            const run = self.active() orelse return;
-            if (run.open_seen) {
-                try self.failRun("hermes_invalid_grammar", "turn opened twice");
-                return;
-            }
-            run.open_seen = true;
-            try self.startRun();
+        if (self.run == null) {
+            if (!runScoped(kind)) return;
+            return self.disown(try std.fmt.allocPrint(self.allocator(), "session event {s} without a reserved run", .{goquote.quote(self.allocator(), kind)}));
+        }
+        if (self.run.?.terminal) return;
+        if (!self.run.?.started) return self.reserveObservation(kind, payload);
+        try self.applyRunEvent(kind, payload);
+    }
+
+    fn reserveObservation(self: *Reducer, kind: []const u8, payload: std.json.Value) !void {
+        if (std.mem.eql(u8, kind, "message.start")) return self.openTurn();
+        try self.buffered.append(self.allocator(), .{ .kind = kind, .payload = payload });
+    }
+
+    fn openTurn(self: *Reducer) Reduce!void {
+        const run = self.active() orelse return;
+        if (run.open_seen) {
+            try self.failRun("hermes_invalid_grammar", "turn opened twice");
             return;
         }
+        run.open_seen = true;
+        if (!run.started) try self.startRun();
+    }
+
+    fn applyRunEvent(self: *Reducer, kind: []const u8, payload: std.json.Value) Reduce!void {
+        if (std.mem.eql(u8, kind, "message.start")) return self.openTurn();
         if (std.mem.eql(u8, kind, "message.delta")) {
             try self.emitDelta(payload, "text");
             return;
@@ -377,15 +409,18 @@ pub const Reducer = struct {
             try self.put(&body, "run_id", str(run.id));
             try self.put(&body, "final_response", .{ .object = response });
             try self.put(&body, "stop_reason", str("completed"));
+            var totals = self.object();
             if (payload.object.get("usage")) |usage| {
                 if (usage == .object) {
-                    var totals = self.object();
-                    try self.put(&totals, "input_tokens", int(integerMember(usage.object, "input")));
-                    try self.put(&totals, "output_tokens", int(integerMember(usage.object, "output")));
-                    try self.put(&totals, "total_tokens", int(integerMember(usage.object, "total")));
-                    try self.put(&body, "usage", .{ .object = totals });
+                    const input = integerMember(usage.object, "input");
+                    const output = integerMember(usage.object, "output");
+                    const total = integerMember(usage.object, "total");
+                    if (input != 0) try self.put(&totals, "input_tokens", int(input));
+                    if (output != 0) try self.put(&totals, "output_tokens", int(output));
+                    if (total != 0) try self.put(&totals, "total_tokens", int(total));
                 }
             }
+            try self.put(&body, "usage", .{ .object = totals });
             _ = try self.emit(run, "run.completed", .{ .object = body });
             run.terminal = true;
             return;
@@ -661,6 +696,19 @@ pub const Reducer = struct {
         const body = try self.resolvedPayload(binding, run, "submitted", answers);
         _ = try self.emitEnvelope(run, "user.input.resolved", body, binding.requested);
         try self.emitStatus(run, "running", "");
+    }
+
+    fn runScoped(kind: []const u8) bool {
+        const scoped = [_][]const u8{
+            "message.start",    "message.delta",  "reasoning.delta", "thinking.delta",
+            "message.complete", "tool.start",     "tool.complete",   "approval.request",
+            "clarify.request",  "sudo.request",   "secret.request",  "secret.expire",
+            "sudo.expire",      "clarify.expire",
+        };
+        for (scoped) |name| {
+            if (std.mem.eql(u8, name, kind)) return true;
+        }
+        return false;
     }
 
     fn disown(self: *Reducer, what: []const u8) !void {
@@ -1454,4 +1502,99 @@ test "a batch that asks the same question twice can never be answered, so it is 
     try expectGateRefused("clarify.request",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"one","question":"second?","choices":["b"]}]}
     , "hermes_invalid_event", "gate with a question nobody can answer");
+}
+
+test "an event that arrives before the turn opens is kept and replayed, not dropped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+
+    try feedEvent(&reducer, scratch, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 1), reducer.buffered.items.len);
+
+    try feedBare(&reducer, scratch, "message.start");
+
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+    try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("run.status.updated", typeAt(&reducer, 2));
+    try testing.expectEqual(@as(usize, 0), reducer.buffered.items.len);
+    try testing.expect(reducer.pendingInteraction("clarify") != null);
+}
+
+test "a run-scoped event with no run reserved is someone else's, and the rest are noise" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var stray = Reducer.init(&arena, .{});
+    stray.open();
+    try feedEvent(&stray, scratch, "message.delta",
+        \\{"text":"x"}
+    );
+    try testing.expect(stray.unusable);
+    try testing.expectEqual(@as(usize, 0), stray.envelopes.items.len);
+    try testing.expectError(Error.SessionUnusable, stray.submit());
+
+    var quiet = Reducer.init(&arena, .{});
+    quiet.open();
+    try feedEvent(&quiet, scratch, "gateway.ready",
+        \\{"replay_epoch":"e3"}
+    );
+    try testing.expect(!quiet.unusable);
+    try quiet.submit();
+}
+
+test "traffic the pinned protocol never carries disowns the session" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reverse = try openRun(&arena);
+    try feed(&reverse, scratch,
+        \\{"jsonrpc":"2.0","id":7,"method":"gateway.ask","params":{}}
+    );
+    try testing.expect(reverse.unusable);
+    try testing.expectEqualStrings("reverse request", payloadAt(&reverse, 1).get("error").?.object.get("message").?.string);
+
+    var stranger = try openRun(&arena);
+    try feed(&stranger, scratch,
+        \\{"jsonrpc":"2.0","method":"gateway.notice","params":{}}
+    );
+    try testing.expect(stranger.unusable);
+    try testing.expectEqualStrings("non-event notification", payloadAt(&stranger, 1).get("error").?.object.get("message").?.string);
+
+    var reply = try openRun(&arena);
+    try feed(&reply, scratch,
+        \\{"jsonrpc":"2.0","id":2,"result":{"status":"streaming"}}
+    );
+    try testing.expect(!reply.unusable);
+    try testing.expectEqual(@as(usize, 1), reply.envelopes.items.len);
+}
+
+test "a completed run always reports usage, and reports only the totals it has" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var none = try openRun(&arena);
+    try feedEvent(&none, scratch, "message.complete",
+        \\{"status":"complete","text":"done"}
+    );
+    const empty = payloadAt(&none, 1).get("usage").?.object;
+    try testing.expectEqual(@as(usize, 0), empty.count());
+
+    var partial = try openRun(&arena);
+    try feedEvent(&partial, scratch, "message.complete",
+        \\{"status":"complete","text":"done","usage":{"input":3,"output":0,"total":3}}
+    );
+    const totals = payloadAt(&partial, 1).get("usage").?.object;
+    try testing.expectEqual(@as(i64, 3), totals.get("input_tokens").?.integer);
+    try testing.expect(totals.get("output_tokens") == null);
+    try testing.expectEqual(@as(i64, 3), totals.get("total_tokens").?.integer);
 }
