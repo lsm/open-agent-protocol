@@ -24,6 +24,12 @@ pub const Options = struct {
     native_id: []const u8 = "native-session",
     responder: []const u8 = "user",
     model: []const u8 = "",
+    endpoint: []const u8 = endpoint_id,
+    revision: []const u8 = capability_revision,
+};
+
+pub const Identity = struct {
+    run_id: []const u8 = "",
 };
 
 const Run = struct {
@@ -149,6 +155,10 @@ pub const Reducer = struct {
     }
 
     pub fn submit(self: *Reducer, message_count: usize) !void {
+        return self.submitAs(message_count, .{});
+    }
+
+    pub fn submitAs(self: *Reducer, message_count: usize, identity: Identity) !void {
         if (self.run) |run| {
             if (!run.terminal) return Error.RunActive;
         }
@@ -156,7 +166,8 @@ pub const Reducer = struct {
         while (minted < message_count) : (minted += 1) {
             _ = try self.nextID("message");
         }
-        const run_id = try self.nextID("run");
+        const minted_run = try self.nextID("run");
+        const run_id = if (identity.run_id.len > 0) identity.run_id else minted_run;
         const message_id = try self.newMessageID();
         _ = self.now();
 
@@ -200,7 +211,7 @@ pub const Reducer = struct {
                 if (carried == .string) try self.put(&envelope, "tool_call_id", carried);
             }
         }
-        try self.put(&envelope, "capability_revision", str(capability_revision));
+        try self.put(&envelope, "capability_revision", str(self.options.revision));
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
         return id;
     }
@@ -320,7 +331,7 @@ pub const Reducer = struct {
             try self.put(&reason, "message", str("parent run settled the permission request"));
             var payload = self.object();
             try self.put(&payload, "interaction_id", str(gate_id));
-            try self.put(&payload, "requested_by", str(endpoint_id));
+            try self.put(&payload, "requested_by", str(self.options.endpoint));
             try self.put(&payload, "responded_by", str(self.options.responder));
             try self.put(&payload, "session_id", str(self.options.session_id));
             try self.put(&payload, "run_id", str(run.id));
@@ -618,7 +629,7 @@ pub const Reducer = struct {
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(tool.run_id));
         try self.put(&payload, "tool_call_id", str(tool.id));
-        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "execution_owner", str(harness_owner));
         if (tool.title.len > 0) try self.put(&payload, "name", str(tool.title));
         if (keep.arguments) {
@@ -692,7 +703,7 @@ pub const Reducer = struct {
 
         var payload = self.object();
         try self.put(&payload, "interaction_id", str(id));
-        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "responded_by", str(self.options.responder));
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
@@ -738,7 +749,7 @@ pub const Reducer = struct {
 
         var payload = self.object();
         try self.put(&payload, "interaction_id", str(interaction_id));
-        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "responded_by", str(self.options.responder));
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
@@ -1963,4 +1974,51 @@ test "every raw member of a permission tool call takes any JSON, because a RawMe
         \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T","rawInput":7},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
     );
     try testing.expectEqual(@as(i64, 7), payloadAt(&carried, 1).get("arguments_json").?.integer);
+}
+
+test "an injected run id takes the place of the minted one without taking its letter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var minted = Reducer.init(&arena, .{});
+    minted.open();
+    try minted.submit(1);
+    try feed(&minted, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}
+    ));
+
+    var injected = Reducer.init(&arena, .{});
+    injected.open();
+    try injected.submitAs(1, .{ .run_id = "01JB0RUN" });
+    try feed(&injected, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}
+    ));
+
+    try testing.expectEqualStrings("run-b", minted.envelopes.items[0].object.get("run_id").?.string);
+    try testing.expectEqualStrings("01JB0RUN", injected.envelopes.items[0].object.get("run_id").?.string);
+    try testing.expectEqual(minted.envelopes.items.len, injected.envelopes.items.len);
+    for (minted.envelopes.items, injected.envelopes.items) |mint, inject| {
+        try testing.expectEqualStrings(
+            mint.object.get("id").?.string,
+            inject.object.get("id").?.string,
+        );
+    }
+    try testing.expectEqual(minted.ids, injected.ids);
+}
+
+test "the endpoint and the revision an envelope cites are the ones the caller supplied" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var supplied = Reducer.init(&arena, .{ .endpoint = "makai.agent-control", .revision = "makai-oap-core-v1" });
+    supplied.open();
+    try supplied.submit(1);
+
+    try testing.expectEqualStrings("makai-oap-core-v1", supplied.envelopes.items[0].object.get("capability_revision").?.string);
+
+    var stock = Reducer.init(&arena, .{});
+    stock.open();
+    try stock.submit(1);
+    try testing.expectEqualStrings(capability_revision, stock.envelopes.items[0].object.get("capability_revision").?.string);
 }
