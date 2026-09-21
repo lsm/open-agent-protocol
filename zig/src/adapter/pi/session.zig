@@ -204,6 +204,20 @@ fn typedStrings(raw: std.json.Value, names: []const []const u8) !void {
     }
 }
 
+fn typedArray(raw: std.json.Value, name: []const u8) !void {
+    const value = raw.object.get(name) orelse return;
+    if (value != .array and value != .null) return Error.InvalidFrame;
+}
+
+fn typedStringArray(raw: std.json.Value, name: []const u8) !void {
+    const value = raw.object.get(name) orelse return;
+    if (value == .null) return;
+    if (value != .array) return Error.InvalidFrame;
+    for (value.array.items) |entry| {
+        if (entry != .string) return Error.InvalidFrame;
+    }
+}
+
 fn typedBool(raw: std.json.Value, name: []const u8) !void {
     const value = raw.object.get(name) orelse return;
     if (value != .bool and value != .null) return Error.InvalidFrame;
@@ -241,6 +255,8 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         }
         try typedStrings(raw, &.{ "api", "provider", "model", "stopReason", "responseModel", "responseId", "providerThinkingLevel", "errorMessage", "rawStopReason" });
         try typedInteger(raw, "timestamp");
+        try typedArray(raw, "diagnostics");
+        try typedBool(raw, "endTurn");
         try validateWireContent(raw.object.get("content").?, false);
         return .{
             .content = raw.object.get("content"),
@@ -262,6 +278,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         try typedStrings(raw, &.{ "toolCallId", "toolName" });
         try typedInteger(raw, "timestamp");
         try typedBool(raw, "isError");
+        try typedStringArray(raw, "addedToolNames");
         for (&[_][]const u8{ "toolCallId", "toolName", "content", "isError", "timestamp" }) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
@@ -1521,4 +1538,20 @@ test "a retrying agent_end still has its message list checked" {
     try expectRefusal(&.{
         "{\"type\":\"agent_end\",\"willRetry\":true,\"messages\":{}}",
     }, "pi_invalid_event");
+}
+
+test "the structured optionals on a message carry their declared shapes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const head = "{\"role\":\"assistant\",\"content\":\"hi\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"end_turn\",\"timestamp\":1";
+
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, head ++ ",\"diagnostics\":{}}")));
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, head ++ ",\"endTurn\":\"yes\"}")));
+    _ = try decodeWireMessage(try parse(a, head ++ ",\"diagnostics\":[],\"endTurn\":true}"));
+
+    const result_head = "{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":\"ok\",\"isError\":false,\"timestamp\":1";
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, result_head ++ ",\"addedToolNames\":{}}")));
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, result_head ++ ",\"addedToolNames\":[7]}")));
+    try std.testing.expect(try decodeWireMessage(try parse(a, result_head ++ ",\"addedToolNames\":[\"grep\"]}")) == null);
 }
