@@ -146,3 +146,54 @@ test "a lone surrogate escape is rewritten and a valid pair is left alone" {
     try expectRewritten("{\"a\":\"plain\"}", "{\"a\":\"plain\"}");
     try expectRewritten("{\"\\ufffd\":1}", "{\"\\ud800\":1}");
 }
+
+pub const nesting_limit: usize = 10000;
+
+pub fn withinNestingLimit(data: []const u8) bool {
+    var depth: usize = 0;
+    var index: usize = 0;
+    var in_string = false;
+    while (index < data.len) : (index += 1) {
+        const byte = data[index];
+        if (in_string) {
+            if (byte == '\\') {
+                index += 1;
+                continue;
+            }
+            if (byte == '"') in_string = false;
+            continue;
+        }
+        switch (byte) {
+            '"' => in_string = true,
+            '{', '[' => {
+                depth += 1;
+                if (depth > nesting_limit) return false;
+            },
+            '}', ']' => depth -|= 1,
+            else => {},
+        }
+    }
+    return true;
+}
+
+test "nesting is bounded where the oracle bounds it, and braces in strings do not count" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    for ([_]usize{ 9998, 9999 }) |arrays| {
+        const opens = try scratch.alloc(u8, arrays);
+        @memset(opens, '[');
+        const closes = try scratch.alloc(u8, arrays);
+        @memset(closes, ']');
+        const frame = try std.mem.concat(scratch, u8, &.{ "{\"a\":{\"b\":", opens, closes, "}}" });
+        try testing.expectEqual(arrays == 9998, withinNestingLimit(frame));
+    }
+
+    const brackets = try scratch.alloc(u8, 10001);
+    @memset(brackets, '[');
+    try testing.expect(withinNestingLimit(try std.mem.concat(scratch, u8, &.{ "{\"a\":\"", brackets, "\"}" })));
+    try testing.expect(withinNestingLimit(try std.mem.concat(scratch, u8, &.{ "{\"a\":\"\\\"", brackets, "\"}" })));
+    try testing.expect(withinNestingLimit("[]"));
+    try testing.expect(withinNestingLimit("]]]]["));
+}

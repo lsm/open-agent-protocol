@@ -41,7 +41,7 @@ pub const Decoder = struct {
         if (self.at >= self.source.len) return null;
         const rest = self.source[self.at..];
         const break_at = std.mem.indexOfScalar(u8, rest, '\n') orelse {
-            if (rest.len > self.limit) return Error.FrameTooLarge;
+            if (rest.len > self.limit + 1) return Error.FrameTooLarge;
             return Error.InvalidMessage;
         };
         if (break_at > self.limit) return Error.FrameTooLarge;
@@ -57,6 +57,7 @@ pub const Decoder = struct {
 pub fn parseMessage(arena: std.mem.Allocator, line: []const u8) !Message {
     if (!std.unicode.utf8ValidateSlice(line)) return Error.InvalidMessage;
     if (line.len == 0 or line[0] != '{' or line[line.len - 1] != '}') return Error.InvalidMessage;
+    if (!gojson.withinNestingLimit(line)) return Error.InvalidMessage;
 
     const document = std.json.parseFromSliceLeaky(std.json.Value, arena, gojson.replaceLoneSurrogates(arena, line), .{}) catch return Error.InvalidMessage;
     if (document != .object) return Error.InvalidMessage;
@@ -210,6 +211,54 @@ test "every frame decodes exactly as the pinned Hermes codec decodes it" {
                 std.debug.print("refused a frame the oracle accepts: {s}\n", .{expectation.frame});
                 return error.TestUnexpectedResult;
             }
+        }
+    }
+}
+
+fn framed(limit: usize, content: usize, terminated: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const pad = try scratch.alloc(u8, content - 29);
+    @memset(pad, 'x');
+    const frame = try std.mem.concat(scratch, u8, &.{ "{\"jsonrpc\":\"2.0\",\"method\":\"", pad, "\"}" });
+    const source = if (terminated) try std.mem.concat(scratch, u8, &.{ frame, "\n" }) else frame;
+    var decoder = Decoder{ .source = source, .limit = limit };
+    _ = try decoder.next(scratch);
+}
+
+fn framedError(limit: usize, content: usize, terminated: bool) anyerror {
+    return if (framed(limit, content, terminated)) |_| error.TestUnexpectedResult else |err| err;
+}
+
+test "only a terminated frame over the limit is too large, an unterminated one is unterminated" {
+    try framed(32, 30, true);
+    try framed(32, 31, true);
+    try framed(32, 32, true);
+    try testing.expectEqual(Error.FrameTooLarge, framedError(32, 33, true));
+
+    try testing.expectEqual(Error.InvalidMessage, framedError(32, 30, false));
+    try testing.expectEqual(Error.InvalidMessage, framedError(32, 32, false));
+    try testing.expectEqual(Error.InvalidMessage, framedError(32, 33, false));
+    try testing.expectEqual(Error.FrameTooLarge, framedError(32, 34, false));
+}
+
+test "a frame nested past the oracle limit is refused before it is parsed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    for ([_]usize{ 9998, 9999 }) |arrays| {
+        const opens = try scratch.alloc(u8, arrays);
+        @memset(opens, '[');
+        const closes = try scratch.alloc(u8, arrays);
+        @memset(closes, ']');
+        const frame = try std.mem.concat(scratch, u8, &.{ "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":{\"a\":", opens, closes, "}}" });
+        if (arrays == 9998) {
+            const message = try parseMessage(scratch, frame);
+            try testing.expectEqualStrings("x", message.method);
+        } else {
+            try testing.expectError(Error.InvalidMessage, parseMessage(scratch, frame));
         }
     }
 }
