@@ -385,10 +385,27 @@ fn walkFrame(arena: std.mem.Allocator, data: []const u8) !Walk {
     return .ok;
 }
 
+fn foldEql(left: []const u8, right: []const u8) bool {
+    if (left.len != right.len) return false;
+    for (left, right) |a, b| {
+        if (std.ascii.toLower(a) != std.ascii.toLower(b)) return false;
+    }
+    return true;
+}
+
+pub fn lookup(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
+    if (object.get(key)) |value| return value;
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (foldEql(entry.key_ptr.*, key)) return entry.value_ptr.*;
+    }
+    return null;
+}
+
 fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
     var current = object;
     for (path, 0..) |key, depth| {
-        const value = current.get(key) orelse return null;
+        const value = lookup(current, key) orelse return null;
         if (depth + 1 == path.len) return value;
         if (value != .object) return null;
         current = value.object;
@@ -447,11 +464,11 @@ pub fn wrongBlocks(content: std.json.Value) bool {
         if (item == .null) continue;
         if (item != .object) return true;
         for (block_text_members) |key| {
-            const value = item.object.get(key) orelse continue;
+            const value = lookup(item.object, key) orelse continue;
             if (value == .null) continue;
             if (value != .string) return true;
         }
-        if (item.object.get("is_error")) |flag| {
+        if (lookup(item.object, "is_error")) |flag| {
             if (flag != .null and flag != .bool) return true;
         }
     }
@@ -595,37 +612,73 @@ fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared
 
 fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
     for (declared) |need| {
-        const value = member(object, need.path) orelse continue;
-        if (value == .null) continue;
-        const ok = switch (need.need) {
-            .text => value == .string,
-            .array => value == .array,
-            .object => value == .object,
-            .number => value == .integer or value == .float,
-            .integer => value == .integer,
-            .boolean => value == .bool,
-            .text_array => blk: {
-                if (value != .array) break :blk false;
-                for (value.array.items) |item| {
-                    if (item == .null) continue;
-                    if (item != .string) break :blk false;
-                }
-                break :blk true;
-            },
-            .object_array => blk: {
-                if (value != .array) break :blk false;
-                for (value.array.items) |item| {
-                    if (item == .null) continue;
-                    if (item != .object) break :blk false;
-                    if (wrongType(item.object, need.items)) break :blk false;
-                }
-                break :blk true;
-            },
-            else => true,
+        const parent = if (need.path.len == 1) object else blk: {
+            const container = member(object, need.path[0 .. need.path.len - 1]) orelse continue;
+            if (container != .object) continue;
+            break :blk container.object;
         };
-        if (!ok) return true;
-        if (need.need == .object and wrongType(value.object, need.items)) return true;
+        const leaf = need.path[need.path.len - 1];
+        var entries = parent.iterator();
+        while (entries.next()) |entry| {
+            if (!foldEql(entry.key_ptr.*, leaf)) continue;
+            if (wrongValue(entry.value_ptr.*, need)) return true;
+        }
     }
+    return false;
+}
+
+fn wrongRequiredType(object: std.json.ObjectMap, required: []const Member) bool {
+    for (required) |need| {
+        const typed: Need = switch (need.need) {
+            .text => .text,
+            .array => .array,
+            else => continue,
+        };
+        const parent = if (need.path.len == 1) object else blk: {
+            const container = member(object, need.path[0 .. need.path.len - 1]) orelse continue;
+            if (container != .object) continue;
+            break :blk container.object;
+        };
+        const leaf = need.path[need.path.len - 1];
+        var entries = parent.iterator();
+        while (entries.next()) |entry| {
+            if (!foldEql(entry.key_ptr.*, leaf)) continue;
+            if (wrongValue(entry.value_ptr.*, .{ .path = need.path, .need = typed })) return true;
+        }
+    }
+    return false;
+}
+
+fn wrongValue(value: std.json.Value, need: Declared) bool {
+    if (value == .null) return false;
+    const ok = switch (need.need) {
+        .text => value == .string,
+        .array => value == .array,
+        .object => value == .object,
+        .number => value == .integer or value == .float,
+        .integer => value == .integer,
+        .boolean => value == .bool,
+        .text_array => blk: {
+            if (value != .array) break :blk false;
+            for (value.array.items) |item| {
+                if (item == .null) continue;
+                if (item != .string) break :blk false;
+            }
+            break :blk true;
+        },
+        .object_array => blk: {
+            if (value != .array) break :blk false;
+            for (value.array.items) |item| {
+                if (item == .null) continue;
+                if (item != .object) break :blk false;
+                if (wrongType(item.object, need.items)) break :blk false;
+            }
+            break :blk true;
+        },
+        else => true,
+    };
+    if (!ok) return true;
+    if (need.need == .object and wrongType(value.object, need.items)) return true;
     return false;
 }
 
@@ -701,7 +754,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         message.subtype = subtype.string;
         if (std.mem.eql(u8, message.subtype, "can_use_tool")) {
             if (unsatisfied(object, &can_use_tool_members)) |detail| return report.refuseFrame(detail);
-            if (wrongType(object, &can_use_tool_declared)) {
+            if (wrongType(object, &can_use_tool_declared) or wrongRequiredType(object, &can_use_tool_members)) {
                 return report.refuseFrame(frameDetail("frame declares a member of the wrong type"));
             }
         }
@@ -745,6 +798,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status {s} is not completed, failed, or stopped", shown);
     }
     if (wrongType(object, declaredMembers(message.type, message.subtype)) or
+        wrongRequiredType(object, observationMembers(message.type, message.subtype)) or
         (std.mem.eql(u8, message.type, "assistant") and wrongContentBlock(object)))
     {
         return report.refuseFrame(frameDetail("frame declares a member of the wrong type"));
@@ -1268,6 +1322,39 @@ test "a null array item is skipped where the oracle unmarshals it as a no-op" {
     try refuses(&arena, init ++ "[],\"mcp_servers\":[{\"name\":7}]}");
 }
 
+test "a frame member matches the way encoding/json matches a struct tag" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try accepts(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"SESSION_ID\":\"s\"}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"init\",\"SESSION_ID\":\"s\",\"MODEL\":\"m\",\"TOOLS\":[]}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"MESSAGE\":{\"MODEL\":\"m\",\"CONTENT\":[]}}");
+
+    const result = "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s\",";
+    try refuses(&arena, result ++ "\"IS_ERROR\":\"yes\"}");
+    try accepts(&arena, result ++ "\"Is_Error\":true}");
+    try refuses(&arena, result ++ "\"DURATION_MS\":0.5}");
+    try refuses(&arena, result ++ "\"SESSION_ID\":7}");
+    try refuses(&arena, result ++ "\"is_error\":true,\"IS_ERROR\":\"yes\"}");
+    try refuses(&arena, result ++ "\"IS_ERROR\":\"yes\",\"is_error\":true}");
+    try refuses(&arena, result ++ "\"uuid\":\"u\",\"UUID\":7}");
+    try accepts(&arena, result ++ "\"is_error\":true,\"Is_Error\":false}");
+
+    var both: std.json.ObjectMap = .empty;
+    try both.put(arena.allocator(), "SESSION_ID", .{ .string = "folded" });
+    try both.put(arena.allocator(), "session_id", .{ .string = "exact" });
+    try testing.expectEqualStrings("exact", lookup(both, "session_id").?.string);
+    try testing.expectEqualStrings("folded", lookup(both, "SESSION_ID").?.string);
+
+    var envelope = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"TYPE\":\"keep_alive\"}", &envelope));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": type is required", envelope.message);
+
+    var control = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"REQUEST_ID\":\"r\",\"request\":{\"subtype\":\"interrupt\"}}", &control));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": control_request requires a non-empty request_id", control.message);
+}
+
 test "a can_use_tool request is typed past its three required members" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1283,6 +1370,8 @@ test "a can_use_tool request is typed past its three required members" {
     try accepts(&arena, base ++ ",\"title\":null}}");
     try accepts(&arena, base ++ ",\"permission_suggestions\":7}}");
     try accepts(&arena, base ++ ",\"title\":\"ok\",\"agent_id\":\"a\"}}");
+    try accepts(&arena, "{\"type\":\"control_request\",\"request_id\":\"r\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_use_id\":\"t1\",\"input\":{},\"TOOL_NAME\":\"Bash\"}}");
+    try refuses(&arena, "{\"type\":\"control_request\",\"request_id\":\"r\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_use_id\":\"t1\",\"input\":{},\"tool_name\":\"Bash\",\"TOOL_NAME\":7}}");
 }
 
 test "the typed pass covers every declared member of a typed frame" {
