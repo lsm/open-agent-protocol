@@ -506,3 +506,55 @@ pipes, the runtime's next notification died on `EPIPE`, and the child exited 1
 
 Outcome: both gates PASS at `fb2c4b9e69`, and the DeepSeek package, its
 corpus, and the repository acceptance run are green under Go 1.27.
+
+## What the Zig port does not validate (2026-09-21)
+
+`zig/src/adapter/deepseek/` reproduces the reducer and the line codec. It does
+not reproduce `internal/native`'s payload validation, and that absence is a
+property of the port's failure mode, not only a gap in its coverage.
+
+A native refusal is not silent, and an earlier revision of this section had it
+wrong by saying it was. `rpc` hands every notification to
+`native.DecodeNotification`, and on error calls `closeWith(err)`
+(`client.go`), which stores that error and closes the transport; the session's
+`transportFailed` then emits `run.failed` carrying `deepseek_process_exit`,
+`settled_by: inferred`, and the native error text verbatim
+(`fmt.Sprint(s.client.Err())`). So for a started run the oracle **does** have a
+terminal for an invalid payload, and it is reproducible. The claim that there
+was none also understated the gap, because a projection the port emits in its
+place is not merely less detailed — it is a different terminal, or none.
+
+The port carries that surface already: `invalidObservation` composes the
+native text for an unknown required event and routes it through
+`transportFailed`, and tool-call arguments the port cannot hold now route the
+same way, as `deepseek native: invalid pinned message: invalid tool/call`.
+
+What remains unreproduced is the set of predicates the port never evaluates, so
+nothing reaches `transportFailed` at all:
+
+| native member | where the oracle refuses | what the oracle emits | what the port emits |
+| --- | --- | --- | --- |
+| tool call `name` | `Event.Validate`, `validBlock` | `run.failed` / `deepseek_process_exit`, `invalid tool/call` | `action.call.requested` and `.started` carrying `"name": ""`, which the schema declares `nonEmptyString` |
+| `usage.inputTokens`, `usage.outputTokens` | `validUsage` | `run.failed` / `deepseek_process_exit`, `invalid assistant/message` | `run.completed` carrying `"input_tokens": -5`, which the schema declares `minimum: 0` |
+| tool call `callId` | `Event.Validate` | `run.failed` / `deepseek_process_exit`, `invalid tool/call` | a completed projection; the emitted `tool_call_id` is minted, so only the internal key is empty |
+
+Each is a missed terminal, and two of the three also produce an envelope the
+shared validator refuses. Tracked as #143, which is smaller than it looks: the
+refusal surface exists, so what is missing is the predicates and the mapping
+from each to its native error text, not a new failure mode.
+
+One divergence is deliberate and is not part of #143. Arguments carrying
+duplicate keys are accepted by the oracle — `json.Valid` tolerates them and the
+raw bytes are projected — and refused here, because a `std.json.Value` has no
+representation for a duplicated key, so the port can neither carry them nor
+report what the harness actually said. #147 holds the question; the oracle's
+own projection produces a trace the shared validator rejects at its decode
+phase, so there is no reading under which both implementations are right.
+
+The direction of the gap is worth recording because it is the opposite of the
+pi port's. pi carries a hand-written member validator, so its defects have been
+over-strictness: it refused a `toolcall_end` whose nested `toolCall` was `null`,
+and refused again when that object was merely incomplete, where the oracle
+decodes both into a zero-valued `wireToolCallContent` without error. This port
+cannot fail that way, because it asserts nothing about a payload's member set.
+A port's failure modes follow from which of the oracle's layers it reproduced.
