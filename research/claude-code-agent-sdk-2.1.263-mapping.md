@@ -901,14 +901,32 @@ port that refuses the right frames with an empty diagnostic still diverges
 where anyone would look first. **The typed decode refuses more than missing
 members**: `is_error: "yes"` or `queued_turn_count: "2"` on an otherwise
 complete result frame kills the Go transport, because the members are declared
-`bool` and `*int`. The Zig port now carries a second table for that, covering
-the declared members of `result`, `stream_event`, `assistant` and
-`system/task_updated` -- the frames whose members the reducer reads -- plus the
-nested members whose shape the reducer walks into: a `user` frame's `origin`,
-the items of `message.content` on a `user` or `assistant` frame, and a
-`task_updated` `patch`. It is not every declared field of every frame, and the
-difference is the honest bound: a wrong-typed member of a frame neither
-implementation reads is fatal in Go and ignored here.
+`bool` and `*int`. The Zig port now carries a second table for that. It began as
+the four frames whose members the reducer reads, which review showed was the
+wrong bound twice over: Go's decode is recursive, so a top-level-only table was
+tolerant exactly where no fixture could see it, and Go's declared integers are
+`int64`, so a fractional or oversized number is fatal there and was accepted
+here. Every frame `DecodeObservation` types now has a table covering its members
+to the depth Go declares them, with an integer need that refuses a float and an
+item list for object and object-array members.
+
+**The diagnostics the port reproduces are the ones `message.go` composes, not
+the ones it borrows.** Three of that file's refusals interpolate an
+`encoding/json` scanner error with `%v`, and those strings belong to Go's
+scanner rather than to the adapter: `{"type":}` reports `missing value after
+object key`, `{"type":"a"} {"type":"b"}` reports `trailing JSON value`,
+`{"a":tru}` reports `invalid character '}' in literal true (expecting 'e')`.
+Fourteen malformed frames put through the oracle produced twelve distinct
+strings, all of them Go's. Reproducing that vocabulary would bind this port to
+the wording of a parser it does not use and would rot silently on a Go upgrade,
+with no test on either side that could notice. So the port substitutes one
+string, `frame is not decodable JSON`, at the single site those three collapse
+into, and reproduces every other diagnostic verbatim. The classification is
+identical either way -- both sides refuse with the invalid-message error, which
+is what the reducer acts on -- and only the text a human reads differs. The
+nested-cause chain in `requireObject` is reproduced verbatim rather than
+substituted, because a member that reached it came out of a successful decode,
+so its only possible failure is the bookend check whose text the adapter owns.
 
 A tool block the harness leaves nameless has no correct handling in the oracle,
 and this is the one place the port deliberately does something else. `ContentBlock`
