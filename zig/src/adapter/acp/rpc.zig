@@ -31,7 +31,7 @@ pub const Decoder = struct {
         if (self.at >= self.source.len) return null;
         const rest = self.source[self.at..];
         const break_at = std.mem.indexOfScalar(u8, rest, '\n') orelse {
-            if (rest.len > self.limit + 1) return Error.FrameTooLarge;
+            if (rest.len - 1 > self.limit) return Error.FrameTooLarge;
             return Error.InvalidMessage;
         };
         if (break_at > self.limit) return Error.FrameTooLarge;
@@ -326,4 +326,16 @@ test "brackets inside a string value are text, not nesting" {
     try body.appendSlice(allocator, "\"}}");
 
     try std.testing.expectEqual(Kind.notification, (try parseMessage(allocator, body.items)).kind);
+}
+
+test "a limit at the top of usize bounds nothing, rather than overflowing the bound" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var unterminated = Decoder{ .source = "{\"jsonrpc\":\"2.0\",\"method\":\"x\"}", .limit = std.math.maxInt(usize) };
+    try std.testing.expectError(Error.InvalidMessage, unterminated.next(allocator));
+
+    var terminated = Decoder{ .source = "{\"jsonrpc\":\"2.0\",\"method\":\"x\"}\n", .limit = std.math.maxInt(usize) };
+    try std.testing.expectEqual(Kind.notification, (try terminated.next(allocator)).?.kind);
 }
