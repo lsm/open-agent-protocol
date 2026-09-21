@@ -119,7 +119,7 @@ const Driver = struct {
         }
         if (std.mem.eql(u8, action, "shutdown")) {
             if (reducer.closed) return error.SessionShutDownTwice;
-            session.abortSubmission(reducer);
+            if (reducer.reserved and !reducer.started) session.abortSubmission(reducer);
             try session.close(reducer);
             return .handled;
         }
@@ -352,6 +352,38 @@ test "a second open in a script is a defect, not a renegotiation" {
         Harness.steps(scratch, open ++ reopen, &twice, inline_case),
     );
     try std.testing.expectEqualStrings("deepseek-reasoner", twice.model);
+}
+
+test "a shutdown settles a reservation that never started and refuses one that did" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+    const shutdown = "{\"action\":\"shutdown\",\"raw\":{\"id\":4,\"jsonrpc\":\"2.0\",\"method\":\"shutdown\"}}\n";
+    const admitted =
+        "{\"action\":\"submit\",\"raw\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"session\",\"contentBlocks\":[{\"type\":\"text\",\"text\":\"hello\"}]}}}\n" ++
+        "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"event\":{\"data\":{\"inserted\":[{\"content\":[{\"text\":\"hello\",\"type\":\"text\"}],\"id\":\"m-1\",\"role\":\"user\",\"source\":{\"kind\":\"user\"}}],\"start\":0,\"target\":\"next-turn\"},\"seq\":1,\"time\":1,\"type\":\"agent/inbox/spliced\"},\"sessionId\":\"session\"}}}\n" ++
+        "{\"action\":\"reply\",\"raw\":{\"id\":1,\"jsonrpc\":\"2.0\",\"result\":{\"messageId\":\"m-1\"}}}\n" ++
+        "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"sessionId\":\"session\",\"status\":\"running\"}}}\n" ++
+        "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"event\":{\"data\":{\"turn\":1},\"seq\":2,\"time\":2,\"type\":\"turn/start\"},\"sessionId\":\"session\"}}}\n" ++
+        "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"event\":{\"data\":{\"step\":1,\"turn\":1},\"seq\":3,\"time\":3,\"type\":\"step/start\"},\"sessionId\":\"session\"}}}\n" ++
+        "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"event\":{\"data\":{\"content\":[{\"text\":\"hello\",\"type\":\"text\"}],\"id\":\"m-1\",\"role\":\"user\",\"source\":{\"kind\":\"user\"}},\"seq\":4,\"surfaceOp\":\"append\",\"time\":4,\"type\":\"user/message\"},\"sessionId\":\"session\"}}}\n" ++
+        "";
+
+    var unstarted = session.Reducer.init(scratch);
+    session.openSession(&unstarted);
+    try Harness.steps(scratch, "{\"action\":\"submit\",\"raw\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"session\",\"contentBlocks\":[{\"type\":\"text\",\"text\":\"hello\"}]}}}\n" ++ shutdown, &unstarted, inline_case);
+    try std.testing.expect(unstarted.closed);
+
+    var running = session.Reducer.init(scratch);
+    session.openSession(&running);
+    try Harness.steps(scratch, admitted, &running, inline_case);
+    try std.testing.expect(running.started);
+    try std.testing.expectError(
+        session.Error.RunActive,
+        Harness.steps(scratch, shutdown, &running, inline_case),
+    );
+    try std.testing.expect(!running.closed);
 }
 
 test "a reverse request retires the session instead of reducing as a notification" {
