@@ -234,6 +234,22 @@ func TestOffloadedMarkerRidesOnlyAnImageBlock(t *testing.T) {
 	}
 }
 
+func TestToolErrorRefusesAReasonThatIsNotAString(t *testing.T) {
+	refused := []string{
+		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":null},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`,
+		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":7},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`,
+	}
+	for _, data := range refused {
+		if _, err := DecodeNotification(NotifySessionEvent, []byte(data)); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("accepted %q: %v", data, err)
+		}
+	}
+	accepted := `{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT"},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`
+	if _, err := DecodeNotification(NotifySessionEvent, []byte(accepted)); err != nil {
+		t.Fatalf("refused an omitted reason: %v", err)
+	}
+}
+
 func TestToolErrorCarriesTheUserFacingReason(t *testing.T) {
 	data := `{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":"a.txt is not there"},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`
 	value, err := DecodeNotification(NotifySessionEvent, []byte(data))
@@ -244,7 +260,8 @@ func TestToolErrorCarriesTheUserFacingReason(t *testing.T) {
 	if err := value.(*SessionEventNotification).Event.DataAs(&result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Error == nil || result.Error.Reason != "a.txt is not there" {
+	reason, ok := result.Error.ReasonText()
+	if result.Error == nil || !ok || reason != "a.txt is not there" {
 		t.Fatalf("reason = %+v", result.Error)
 	}
 }

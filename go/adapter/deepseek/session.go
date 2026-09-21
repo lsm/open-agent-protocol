@@ -700,8 +700,8 @@ func (s *Session) endTool(run *runState, v native.ToolResult) {
 	if v.Error != nil {
 		p.Result = nil
 		p.Error = &protocol.ProtocolError{Code: v.Error.Code, Message: v.Error.Name}
-		if v.Error.Reason != "" {
-			p.Error.Message = v.Error.Reason
+		if reason, ok := v.Error.ReasonText(); ok && reason != "" {
+			p.Error.Message = reason
 			p.Error.Details = map[string]any{"name": v.Error.Name}
 		}
 		_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, p, false, t.started)

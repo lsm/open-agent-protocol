@@ -791,7 +791,7 @@ func TestRepeatedToolCallIsRefused(t *testing.T) {
 func TestToolFailureCarriesTheReasonRatherThanTheErrorClass(t *testing.T) {
 	events := failingTurn(t, func(f *fakeClient) {
 		f.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
-		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT", Reason: "a.txt is not there"}, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
+		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT", Reason: json.RawMessage(`"a.txt is not there"`)}, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
 		f.ev(7, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
 		f.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 		f.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})

@@ -288,10 +288,37 @@ type ToolResult struct {
 	Meta    json.RawMessage `json:"meta,omitempty"`
 }
 type ToolError struct {
-	Name   string `json:"name"`
-	Code   string `json:"code"`
-	Reason string `json:"reason,omitempty"`
+	Name   string          `json:"name"`
+	Code   string          `json:"code"`
+	Reason json.RawMessage `json:"reason,omitempty"`
 }
+
+func (e *ToolError) ReasonText() (string, bool) {
+	trimmed := bytes.TrimSpace(e.Reason)
+	if len(trimmed) == 0 {
+		return "", true
+	}
+	if trimmed[0] != '"' {
+		return "", false
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) != nil {
+		return "", false
+	}
+	return text, true
+}
+
+func validToolError(e *ToolError) bool {
+	if e == nil {
+		return true
+	}
+	if e.Name == "" || e.Code == "" {
+		return false
+	}
+	_, ok := e.ReasonText()
+	return ok
+}
+
 type TodoWrite struct {
 	Todos []Todo `json:"todos"`
 }
@@ -549,7 +576,7 @@ func (event Event) Validate() error {
 		}
 
 		singleMatchingBlock := len(data.Message.Content) == 1 && data.Message.Content[0].Type == "tool-result" && data.Message.Content[0].ToolCallID == data.Message.Source.CallID
-		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !singleMatchingBlock || (data.Error != nil && (data.Error.Name == "" || data.Error.Code == "")) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
+		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !singleMatchingBlock || !validToolError(data.Error) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
 			return fmt.Errorf("%w: invalid tool/result", ErrInvalid)
 		}
 	case *TodoWrite:

@@ -145,7 +145,11 @@ Three changes reach the wire this adapter decodes.
   audiences the wrong way round: every other `message` in this tree is a
   human-readable sentence, so `reason` is what belongs there and `name` is the
   class, which `code` already ranks beside. Absent a `reason`, `name` stays
-  the message and no `details` is emitted.
+  the message and no `details` is emitted. It is carried as a
+  `json.RawMessage` for the same reason `offloaded` is: `encoding/json`
+  unmarshals a `null` into a string without error, so `"reason": null` would
+  otherwise be indistinguishable from an omitted one, and the pinned shape is
+  `reason?: string`.
 - **An image content block gains `offloaded?: true`** (`llm/src/types.ts`),
   marking a block whose bytes were replaced by placeholder text after an
   offload decision. `ContentBlock` accepts it on an image block only, and only
