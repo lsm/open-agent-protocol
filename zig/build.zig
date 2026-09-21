@@ -102,6 +102,16 @@ pub fn build(b: *std.Build) void {
     const provider_semantic_test = b.addTest(.{ .root_module = provider_semantic_mod });
     semantic_gate_mod.addOptions("build_options", gate_options);
     const semantic_gate_test = b.addTest(.{ .root_module = semantic_gate_mod });
+
+    const adapter_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    adapter_corpus_mod.addOptions("build_options", gate_options);
+    const adapter_corpus_test = b.addTest(.{ .root_module = adapter_corpus_mod });
+    const test_unit_adapter_step = b.step("test-unit-adapter", "Run the shared adapter corpus harness tests");
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     const tolerate_test = b.addTest(.{ .root_module = tolerate_mod });
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
 
@@ -194,7 +204,6 @@ pub fn build(b: *std.Build) void {
     });
     oap_endpoint_client_mod.addImport("compat", compat_mod);
     const oap_endpoint_client_test = b.addTest(.{ .root_module = oap_endpoint_client_mod });
-
 
     const provider_base_url_mod = b.createModule(.{
         .root_source_file = b.path("src/provider_base_url.zig"),
@@ -1950,6 +1959,7 @@ pub fn build(b: *std.Build) void {
     const bench_compare_test = b.addTest(.{ .root_module = bench_compare_mod });
 
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
@@ -2065,6 +2075,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
@@ -2102,8 +2113,6 @@ pub fn build(b: *std.Build) void {
     test_unit_transport_step.dependOn(&b.addRunArtifact(in_process_transport_test).step);
     test_unit_transport_step.dependOn(&b.addRunArtifact(transport_retry_test).step);
 
-    const test_unit_acp_step = b.step("test-unit-acp", "Run acp adapter unit tests");
-    test_unit_acp_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     const test_unit_protocol_step = b.step("test-unit-protocol", "Run protocol layer unit tests");
     test_unit_protocol_step.dependOn(&b.addRunArtifact(provider_base_url_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_model_ref_test).step);

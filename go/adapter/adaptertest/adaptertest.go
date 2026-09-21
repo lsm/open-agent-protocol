@@ -87,6 +87,25 @@ func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitR
 	}
 }
 
+func AssertProtocolInvalidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, code string) {
+	t.Helper()
+	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
+	trace, err := protocolTraceWith(&request, admission, descriptor, nil, events, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := validation.MustNew().ValidateBytes(trace, "adaptertest")
+	if result.Valid() {
+		t.Fatalf("adapter trace was expected to fail OAP validation with %s, but it passed\ntrace: %s", code, trace)
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code == code {
+			return
+		}
+	}
+	t.Fatalf("adapter trace failed OAP validation, but not with %s: %v", code, result.Diagnostics)
+}
+
 func AssertProtocolValidWithCancellation(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
 	t.Helper()
 	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, true)
