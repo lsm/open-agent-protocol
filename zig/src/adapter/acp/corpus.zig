@@ -43,6 +43,13 @@ const Driver = struct {
     }
 
     pub fn step(reducer: *Reducer, scratch: std.mem.Allocator, s: corpus.Step, case: Case) !corpus.Handled {
+        const before = reducer.envelopes.items.len;
+        const handled = try dispatch(reducer, scratch, s, case);
+        if (handled == .handled) try expectEmission(s.script, reducer.envelopes.items.len - before);
+        return handled;
+    }
+
+    fn dispatch(reducer: *Reducer, scratch: std.mem.Allocator, s: corpus.Step, case: Case) !corpus.Handled {
         const message = try rpc.parseMessage(scratch, s.encoded);
 
         if (containsName(&handshake_actions, s.action)) return .handled;
@@ -89,6 +96,16 @@ const Driver = struct {
     }
 };
 
+fn expectEmission(script: std.json.Value, emitted: usize) !void {
+    if (script != .object) return error.InvalidScriptLine;
+    if (script.object.get("await_events")) |declared| {
+        if (declared != .integer or declared.integer < 0) return error.InvalidScriptLine;
+        if (emitted != @as(usize, @intCast(declared.integer))) return error.EmissionCountMismatch;
+    }
+    const classification = corpus.stringMember(script.object, "classification") orelse return error.InvalidScriptLine;
+    if (std.mem.eql(u8, classification, "observed-only") and emitted != 0) return error.ObservedOnlyFrameEmitted;
+}
+
 const Harness = corpus.Harness(Driver);
 
 const claimed_cases = [_]Driver.Case{
@@ -119,27 +136,54 @@ fn driveScript(script: []const u8) !void {
 
 test "a script step this harness does not drive is refused, not skipped" {
     try driveScript(
-        \\{"action":"observe","raw":{"jsonrpc":"2.0","id":1,"result":{}}}
+        \\{"action":"observe","classification":"mapped","raw":{"jsonrpc":"2.0","id":1,"result":{}}}
     );
     try std.testing.expectError(error.UnhandledScriptAction, driveScript(
-        \\{"action":"invented-later","raw":{"jsonrpc":"2.0","id":1,"result":{}}}
+        \\{"action":"invented-later","classification":"mapped","raw":{"jsonrpc":"2.0","id":1,"result":{}}}
     ));
 }
 
 test "every line is decoded by the production parser, whether or not it reaches the reducer" {
     try std.testing.expectError(rpc.Error.InvalidMessage, driveScript(
-        \\{"action":"observe","raw":{"jsonrpc":"1.0","id":1,"result":{}}}
+        \\{"action":"observe","classification":"mapped","raw":{"jsonrpc":"1.0","id":1,"result":{}}}
     ));
     try std.testing.expectError(rpc.Error.InvalidID, driveScript(
-        \\{"action":"observe","raw":{"jsonrpc":"2.0","id":1.5,"result":{}}}
+        \\{"action":"observe","classification":"mapped","raw":{"jsonrpc":"2.0","id":1.5,"result":{}}}
     ));
 }
 
 test "a permission line states its decision or the case fails" {
     try std.testing.expectError(error.InvalidScriptLine, driveScript(
-        \\{"action":"permission","raw":{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}}
+        \\{"action":"permission","classification":"mapped","raw":{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}}
     ));
     try driveScript(
-        \\{"action":"permission","choice_id":"a","granted":true,"raw":{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}}
+        \\{"action":"permission","classification":"mapped","choice_id":"a","granted":true,"raw":{"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}}
     );
+}
+
+test "a line that declares an event count must emit exactly that many" {
+    try std.testing.expectError(error.EmissionCountMismatch, driveScript(
+        \\{"action":"observe","classification":"mapped","await_events":1,"raw":{"jsonrpc":"2.0","id":1,"result":{}}}
+    ));
+    try std.testing.expectError(error.EmissionCountMismatch, driveScript(
+        \\{"action":"update","classification":"mapped","await_events":2,"raw":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}}
+    ));
+    try driveScript(
+        \\{"action":"update","classification":"mapped","await_events":1,"raw":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}}
+    );
+}
+
+test "a frame the corpus records as observed-only must reduce to nothing" {
+    try std.testing.expectError(error.ObservedOnlyFrameEmitted, driveScript(
+        \\{"action":"update","classification":"observed-only","raw":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}}
+    ));
+    try driveScript(
+        \\{"action":"update","classification":"observed-only","raw":{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"sessionUpdate":"plan"}}}}
+    );
+}
+
+test "a script line carrying no classification is refused" {
+    try std.testing.expectError(error.InvalidScriptLine, driveScript(
+        \\{"action":"observe","raw":{"jsonrpc":"2.0","id":1,"result":{}}}
+    ));
 }

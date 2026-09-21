@@ -615,6 +615,22 @@ reads only `native.jsonl` and `expected-oap.json`; `case.json`, `mapping.json`
 and `omissions.json` are the Go side's obligation and the Zig side does not
 duplicate it.
 
+The Zig driver does read the two fields the script lines carry beside `action`
+and `raw`, and asserts both per line: a line declaring `await_events` must emit
+exactly that many envelopes, and a line classified `observed-only` must emit
+none. The envelope-for-envelope comparison cannot see either. It compares the
+assembled trace, so a frame that stops emitting and a later frame that emits an
+identical envelope cancel out; per-line counts are what catch that. A line
+carrying no `classification` is refused rather than assumed, because a corpus
+line that stops recording why it is there is a corpus defect.
+
+`direction` is recorded too and is not asserted, for a reason worth stating
+rather than leaving implicit: across all forty-four ACP lines every `action`
+maps to exactly one `direction`, so the driver's action table is one-to-one
+with it and an assertion would restate what dispatch already decides. That is a
+property of this corpus, not a general one — in the pi corpus one action spans
+both directions, and there the table cannot stand in for the field.
+
 Within the frames it does read, the Zig driver decodes **every** line through
 the production `rpc.parseMessage`, including the handshake responses and the
 settlement frames that never reach the reducer, so a corpus line that stops
