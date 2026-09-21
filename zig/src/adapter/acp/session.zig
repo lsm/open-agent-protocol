@@ -246,7 +246,7 @@ pub const Reducer = struct {
             return;
         }
         try self.settleChildren(run, true);
-        const detail = try std.fmt.allocPrint(self.allocator(), "unsupported ACP stop reason \"{s}\"", .{stop_reason});
+        const detail = try std.fmt.allocPrint(self.allocator(), "unsupported ACP stop reason {s}", .{goquote.quote(self.allocator(), stop_reason)});
         try self.emitFailure(run, "acp_invalid_stop_reason", detail, "");
     }
 
@@ -1074,6 +1074,14 @@ test "cancelled and refusal settle differently and an unknown stop reason is quo
     try unknown.settlePrompt("end_of_days");
     try testing.expectEqualStrings("acp_invalid_stop_reason", codeAt(&unknown, 1));
     try testing.expectEqualStrings("unsupported ACP stop reason \"end_of_days\"", messageAt(&unknown, 1));
+
+    var awkward = try openRun(&arena);
+    try awkward.settlePrompt("bad\"\n");
+    try testing.expectEqualStrings("unsupported ACP stop reason \"bad\\\"\\n\"", messageAt(&awkward, 1));
+
+    var exotic = try openRun(&arena);
+    try exotic.settlePrompt("zero\u{200b}width");
+    try testing.expectEqualStrings("unsupported ACP stop reason \"zero\\u200bwidth\"", messageAt(&exotic, 1));
 }
 
 test "a settled run absorbs every later frame without emitting or minting" {
