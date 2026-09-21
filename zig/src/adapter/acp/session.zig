@@ -381,12 +381,19 @@ pub const Reducer = struct {
             try self.failActive("acp_invalid_update", "malformed or foreign session/update");
             return;
         }
-        const update = params.object.get("update") orelse std.json.Value{ .null = {} };
-        if (update != .object) {
+        const update = params.object.get("update") orelse {
+            try self.failActive("acp_invalid_update", "malformed session update");
+            return;
+        };
+        if (update != .object and update != .null) {
             try self.failActive("acp_invalid_update", "malformed session update");
             return;
         }
         if (self.active() == null) return;
+        if (update == .null) {
+            try self.failActive("acp_unknown_update", "unknown stable ACP session update");
+            return;
+        }
 
         const kind = update.object.get("sessionUpdate") orelse std.json.Value{ .null = {} };
         if (kind != .string) {
@@ -925,13 +932,37 @@ test "params that are absent, not an object, or name another session are refused
     , "acp_invalid_update", "malformed or foreign session/update");
 }
 
-test "an update member that is absent or not an object is a separate refusal from a foreign session" {
+test "an update member that is absent or wrongly typed is malformed, while a null one is unknown" {
     try expectRefusal(
         \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session"}}
     , "acp_invalid_update", "malformed session update");
     try expectRefusal(
         \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":"plan"}}
     , "acp_invalid_update", "malformed session update");
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":[]}}
+    , "acp_invalid_update", "malformed session update");
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":7}}
+    , "acp_invalid_update", "malformed session update");
+
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":null}}
+    , "acp_unknown_update", "unknown stable ACP session update");
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{}}}
+    , "acp_unknown_update", "unknown stable ACP session update");
+}
+
+test "a null update before any run is dropped rather than refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try feed(&reducer, arena.allocator(),
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":null}}
+    );
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
 }
 
 test "a discriminator that is absent or null is unknown, and one of the wrong type is malformed" {
