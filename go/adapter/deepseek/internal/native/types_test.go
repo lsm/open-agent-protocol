@@ -208,3 +208,48 @@ func TestMaxTokensSafeIntegerBound(t *testing.T) {
 		t.Fatal("safe maxTokens rejected")
 	}
 }
+
+func TestOffloadedMarkerRidesOnlyAnImageBlock(t *testing.T) {
+	accepted := []string{
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":{"attachmentId":"a","mediaType":"image/png"},"offloaded":true}],"source":{"kind":"user"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":{"attachmentId":"a","mediaType":"image/png"}}],"source":{"kind":"user"}}}}`,
+	}
+	for _, data := range accepted {
+		if _, err := DecodeNotification(NotifySessionEvent, []byte(data)); err != nil {
+			t.Fatalf("refused %q: %v", data, err)
+		}
+	}
+	refused := []string{
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":{"attachmentId":"a","mediaType":"image/png"},"offloaded":false}],"source":{"kind":"user"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x","offloaded":true}],"source":{"kind":"user"}}}}`,
+	}
+	for _, data := range refused {
+		if _, err := DecodeNotification(NotifySessionEvent, []byte(data)); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("accepted %q: %v", data, err)
+		}
+	}
+}
+
+func TestToolErrorCarriesTheUserFacingReason(t *testing.T) {
+	data := `{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":"a.txt is not there"},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`
+	value, err := DecodeNotification(NotifySessionEvent, []byte(data))
+	if err != nil {
+		t.Fatalf("refused a tool error carrying a reason: %v", err)
+	}
+	var result ToolResult
+	if err := value.(*SessionEventNotification).Event.DataAs(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Error == nil || result.Error.Reason != "a.txt is not there" {
+		t.Fatalf("reason = %+v", result.Error)
+	}
+}
+
+func TestWorkspaceChangesIsObservedOnlyAndImageOffloadIsNot(t *testing.T) {
+	if !ObservedOnly("workspace/changes") {
+		t.Fatal("workspace/changes is required, and this adapter maps nothing of it")
+	}
+	if ObservedOnly("image/offload") {
+		t.Fatal("image/offload rewrites the projected message, so it cannot be skipped unmapped")
+	}
+}

@@ -66,6 +66,7 @@ var pinnedObservedOnlyEvents = map[string]bool{
 	"tool/ptc-dispatch":                      true,
 	"tool/ptc-dispatch-start":                true,
 	"web/deepseek-search-llm-request":        true,
+	"workspace/changes":                      true,
 }
 
 func ObservedOnly(eventType string) bool { return pinnedObservedOnlyEvents[eventType] }
@@ -103,6 +104,7 @@ type ContentBlock struct {
 	ToolCallID string          `json:"toolCallId,omitempty"`
 	Content    []ContentBlock  `json:"content,omitempty"`
 	IsError    *bool           `json:"isError,omitempty"`
+	Offloaded  *bool           `json:"offloaded,omitempty"`
 }
 
 type SessionEventNotification struct {
@@ -286,8 +288,9 @@ type ToolResult struct {
 	Meta    json.RawMessage `json:"meta,omitempty"`
 }
 type ToolError struct {
-	Name string `json:"name"`
-	Code string `json:"code"`
+	Name   string `json:"name"`
+	Code   string `json:"code"`
+	Reason string `json:"reason,omitempty"`
 }
 type TodoWrite struct {
 	Todos []Todo `json:"todos"`
@@ -628,13 +631,13 @@ func validBlockRaw(element json.RawMessage) bool {
 func validBlock(block ContentBlock) bool {
 	switch block.Type {
 	case "text", "reasoning":
-		return block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil
+		return block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && block.Offloaded == nil
 	case "image":
-		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil
+		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && (block.Offloaded == nil || *block.Offloaded)
 	case "tool-call":
-		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
+		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && block.Offloaded == nil && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
 	case "tool-result":
-		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && validBlocks(block.Content)
+		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && block.Offloaded == nil && validBlocks(block.Content)
 	default:
 		return false
 	}
