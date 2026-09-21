@@ -261,6 +261,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         try closedRoleMembers(raw, &tool_result_members);
         try typedStrings(raw, &.{ "toolCallId", "toolName" });
         try typedInteger(raw, "timestamp");
+        try typedBool(raw, "isError");
         for (&[_][]const u8{ "toolCallId", "toolName", "content", "isError", "timestamp" }) |name| {
             if (raw.object.get(name) == null) return Error.InvalidFrame;
         }
@@ -268,6 +269,13 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         return null;
     }
     return Error.InvalidFrame;
+}
+
+fn validateToolCallBlock(part: std.json.Value) !void {
+    if (part != .object) return Error.InvalidFrame;
+    try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
+    try requireMembers(part, &.{ "id", "name", "arguments" });
+    try typedStrings(part, &.{ "id", "name", "thoughtSignature", "namespace" });
 }
 
 pub fn validateWireContent(raw: std.json.Value, allow_image: bool) !void {
@@ -293,9 +301,7 @@ pub fn validateWireContent(raw: std.json.Value, allow_image: bool) !void {
             try typedBool(part, "redacted");
         } else if (std.mem.eql(u8, kind, "toolCall")) {
             if (allow_image) return Error.InvalidFrame;
-            try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
-            try requireMembers(part, &.{ "id", "name", "arguments" });
-            try typedStrings(part, &.{ "id", "name", "thoughtSignature", "namespace" });
+            try validateToolCallBlock(part);
         } else if (std.mem.eql(u8, kind, "image")) {
             if (!allow_image) return Error.InvalidFrame;
             try closedMembers(part, &.{ "type", "data", "mimeType" });
@@ -388,6 +394,11 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         return;
     }
     if (std.mem.eql(u8, kind, "agent_end")) {
+        const listed_messages = memberOf(event, "messages") orelse std.json.Value{ .null = {} };
+        if (listed_messages != .array) {
+            try failRun(reducer, "pi_invalid_event", "agent_end carried a messages member that is not a list");
+            return;
+        }
         if (memberOf(event, "willRetry")) |retry| {
             if (retry != .bool and retry != .null) {
                 try failRun(reducer, "pi_invalid_event", "agent_end carried a willRetry that is not a boolean");
@@ -400,12 +411,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
                 return;
             }
         }
-        const messages = memberOf(event, "messages") orelse std.json.Value{ .null = {} };
-        if (messages != .array) {
-            try failRun(reducer, "pi_invalid_event", "agent_end carried a messages member that is not a list");
-            return;
-        }
-        reducer.candidate = messages;
+        reducer.candidate = listed_messages;
         reducer.candidate_present = true;
         return;
     }
@@ -676,35 +682,41 @@ fn decodeProviderEvent(raw: std.json.Value) !?Part {
     if (std.mem.eql(u8, kind, "text_end") or std.mem.eql(u8, kind, "thinking_end")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "content" });
         try requireMembers(raw, &.{"content"});
+        try typedStrings(raw, &.{"content"});
         try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "toolcall_start")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "id", "toolName" });
         try requireMembers(raw, &.{ "id", "toolName" });
+        try typedStrings(raw, &.{ "id", "toolName" });
         try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "toolcall_end")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "toolCall" });
         try requireMembers(raw, &.{"toolCall"});
+        try validateToolCallBlock(raw.object.get("toolCall").?);
         try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "toolcall_delta")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "delta" });
         try requireMembers(raw, &.{"delta"});
+        try typedStrings(raw, &.{"delta"});
         try requireIndex(raw);
         return null;
     }
     if (std.mem.eql(u8, kind, "done")) {
         try closedMembers(raw, &.{ "type", "reason", "message" });
         try requireMembers(raw, &.{ "reason", "message" });
+        try typedStrings(raw, &.{"reason"});
         return null;
     }
     if (std.mem.eql(u8, kind, "error")) {
         try closedMembers(raw, &.{ "type", "reason", "error" });
         try requireMembers(raw, &.{ "reason", "error" });
+        try typedStrings(raw, &.{"reason"});
         return null;
     }
     return Error.InvalidFrame;
@@ -1476,5 +1488,37 @@ test "a content block member of the wrong type is refused, on every block kind" 
 test "an agent_end retry flag that is not a boolean is refused" {
     try expectRefusal(&.{
         "{\"type\":\"agent_end\",\"willRetry\":\"yes\",\"messages\":[]}",
+    }, "pi_invalid_event");
+}
+
+fn expectUpdateRefusal(comptime event_text: []const u8) !void {
+    const line = "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":" ++ event_text ++ "}";
+    try expectRefusal(&.{line}, "pi_invalid_message_update");
+}
+
+test "a non-delta provider payload of the wrong type is refused" {
+    try expectUpdateRefusal("{\"type\":\"text_end\",\"contentIndex\":0,\"content\":7}");
+    try expectUpdateRefusal("{\"type\":\"toolcall_start\",\"contentIndex\":0,\"id\":7,\"toolName\":\"grep\"}");
+    try expectUpdateRefusal("{\"type\":\"toolcall_start\",\"contentIndex\":0,\"id\":\"c\",\"toolName\":7}");
+    try expectUpdateRefusal("{\"type\":\"toolcall_delta\",\"contentIndex\":0,\"delta\":7}");
+    try expectUpdateRefusal("{\"type\":\"done\",\"reason\":7,\"message\":{}}");
+    try expectUpdateRefusal("{\"type\":\"error\",\"reason\":7,\"error\":{}}");
+    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"type\":\"toolCall\",\"id\":7,\"name\":\"grep\",\"arguments\":{}}}");
+}
+
+test "a tool result whose isError is not a boolean is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const bad = "{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":\"ok\",\"isError\":\"true\",\"timestamp\":1}";
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, bad)));
+
+    const good = "{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":\"ok\",\"isError\":false,\"timestamp\":1}";
+    try std.testing.expect(try decodeWireMessage(try parse(a, good)) == null);
+}
+
+test "a retrying agent_end still has its message list checked" {
+    try expectRefusal(&.{
+        "{\"type\":\"agent_end\",\"willRetry\":true,\"messages\":{}}",
     }, "pi_invalid_event");
 }
