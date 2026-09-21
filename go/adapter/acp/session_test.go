@@ -1089,3 +1089,157 @@ func TestAdmittedAttachmentReachesSessionNew(t *testing.T) {
 		t.Fatalf("session/new carried %+v", params.MCPServers)
 	}
 }
+
+func (f *fakeClient) rawUpdate(t *testing.T, sessionID string, update string) {
+	t.Helper()
+	p, err := json.Marshal(native.SessionUpdateParams{SessionID: sessionID, Update: json.RawMessage(update)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := rpc.NotificationMessage{Method: native.MethodSessionUpdate, Params: p}
+	f.inbound <- rpc.InboundMessage{Notification: &n}
+}
+
+func assertFailedWith(t *testing.T, events []protocol.Envelope, code, message string) {
+	t.Helper()
+	for _, e := range events {
+		if e.Type != protocol.TypeRunFailed {
+			continue
+		}
+		var p protocol.RunFailedPayload
+		if err := e.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Error.Code != code || p.Error.Message != message {
+			t.Fatalf("failure=%q/%q want %q/%q", p.Error.Code, p.Error.Message, code, message)
+		}
+		return
+	}
+	t.Fatalf("no run.failed among %v", types(events))
+}
+
+func failingPrompt(t *testing.T, drive func(t *testing.T, f *fakeClient)) []protocol.Envelope {
+	t.Helper()
+	s, f := openTest(t, 64)
+	_, stream := submit(t, s)
+	<-f.promptStarted
+	drive(t, f)
+	return adaptertest.Drain(t, stream, 2*time.Second)
+}
+
+func TestUpdateForAnotherSessionIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.rawUpdate(t, "someone-elses-session", `{"sessionUpdate":"agent_message_chunk"}`)
+	})
+	assertFailedWith(t, events, "acp_invalid_update", "malformed or foreign session/update")
+}
+
+func TestUpdateThatIsNotAnObjectIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.rawUpdate(t, "native-session", `7`)
+	})
+	assertFailedWith(t, events, "acp_invalid_update", "malformed session update")
+}
+
+func TestAssistantChunkThatIsNotTextIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.update(t, native.AgentMessageChunk{SessionUpdate: "agent_message_chunk", Content: native.ContentBlock{Type: "image"}})
+	})
+	assertFailedWith(t, events, "acp_invalid_message_chunk", "unsupported assistant chunk")
+}
+
+func TestMalformedToolCallIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.rawUpdate(t, "native-session", `{"sessionUpdate":"tool_call","toolCallId":7}`)
+	})
+	assertFailedWith(t, events, "acp_invalid_tool_call", "malformed tool call")
+}
+
+func TestToolCallMissingIdentityIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Status: "pending"})
+	})
+	assertFailedWith(t, events, "acp_invalid_tool_call", "tool id and title are required")
+}
+
+func TestMalformedToolUpdateIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.rawUpdate(t, "native-session", `{"sessionUpdate":"tool_call_update","toolCallId":7}`)
+	})
+	assertFailedWith(t, events, "acp_invalid_tool_update", "malformed tool update")
+}
+
+func TestToolPatchBeforeItsCallIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		status := "in_progress"
+		f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "never-created", Status: &status})
+	})
+	assertFailedWith(t, events, "acp_tool_patch_without_call", "tool patch before creation")
+}
+
+func TestToolStatusTheProtocolDoesNotDefineIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read", Status: "pending"})
+		status := "invented_later"
+		f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "call-1", Status: &status})
+	})
+	assertFailedWith(t, events, "acp_invalid_tool_status", "unknown tool status")
+}
+
+func TestToolPatchedAfterItSettledIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read", Status: "pending"})
+		done := "completed"
+		f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "call-1", Status: &done})
+		again := "in_progress"
+		f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "call-1", Status: &again})
+	})
+	assertFailedWith(t, events, "acp_tool_after_terminal", "tool updated after terminal")
+}
+
+func TestToolRecreatedAfterItSettledIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read", Status: "pending"})
+		done := "completed"
+		f.update(t, native.ToolCallUpdate{SessionUpdate: "tool_call_update", ToolCallID: "call-1", Status: &done})
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read again", Status: "pending"})
+	})
+	assertFailedWith(t, events, "acp_tool_after_terminal", "tool updated after terminal")
+}
+
+func TestMalformedPermissionRequestIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		params, err := json.Marshal(native.PermissionRequest{SessionID: "native-session", ToolCall: native.ToolCall{Title: "Read"}, Options: []native.PermissionOption{{OptionID: "allow", Name: "Allow"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID("perm-1"), native.MethodSessionRequestPermission, params))}
+	})
+	assertFailedWith(t, events, "acp_invalid_permission", "malformed permission request")
+}
+
+func TestPermissionOfferingNoUsableOptionIsRefused(t *testing.T) {
+	events := failingPrompt(t, func(t *testing.T, f *fakeClient) {
+		params, err := json.Marshal(native.PermissionRequest{SessionID: "native-session", ToolCall: native.ToolCall{ToolCallID: "call-1", Title: "Read"}, Options: []native.PermissionOption{{OptionID: "", Name: "Nameless"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID("perm-1"), native.MethodSessionRequestPermission, params))}
+	})
+	assertFailedWith(t, events, "acp_invalid_permission", "empty permission options")
+}
+
+func TestToolIdReusedByALaterPromptIsRefused(t *testing.T) {
+	s, f := openTest(t, 64)
+	_, first := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read", Status: "pending"})
+	waitCursor(t, s, "2")
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	adaptertest.Drain(t, first, 2*time.Second)
+
+	_, second := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read", Status: "pending"})
+	assertFailedWith(t, adaptertest.Drain(t, second, 2*time.Second), "acp_tool_id_reuse", "tool id reused across prompts")
+}
