@@ -1,0 +1,1199 @@
+const std = @import("std");
+const rpc = @import("rpc");
+
+pub const capability_revision = "hermes-v2026.8.31-oap-v1";
+pub const protocol_name = "open-agent-protocol";
+pub const protocol_version = "0.1";
+pub const profile = "open-agent-protocol.agent-control-core";
+pub const endpoint_id = "hermes.gateway";
+
+pub const Error = error{ RunActive, InteractionNotFound, InvalidResolution };
+
+pub const Options = struct {
+    session_id: []const u8 = "session",
+    native_id: []const u8 = "sess0001",
+    model: []const u8 = "hermes-test",
+    responder: []const u8 = "user",
+};
+
+const Tool = struct {
+    native_id: []const u8,
+    id: []const u8,
+    run_id: []const u8,
+    name: []const u8 = "",
+    args: ?std.json.Value = null,
+    requested: []const u8 = "",
+    started: []const u8 = "",
+    terminal: bool = false,
+};
+
+pub const Option = struct {
+    id: []const u8,
+    label: []const u8,
+};
+
+pub const Question = struct {
+    id: []const u8,
+    prompt: []const u8,
+    kind: []const u8,
+    options: []const Option = &.{},
+};
+
+pub const Answer = struct {
+    question_id: []const u8,
+    selected_option_ids: []const []const u8 = &.{},
+    text: []const u8 = "",
+};
+
+pub const Interaction = struct {
+    id: []const u8,
+    run_id: []const u8,
+    kind: []const u8,
+    request_id: []const u8 = "",
+    requested: []const u8 = "",
+    resolved: bool = false,
+    questions: []const Question = &.{},
+};
+
+const Run = struct {
+    id: []const u8 = "",
+    message_id: []const u8 = "",
+    sequence: i64 = 0,
+    started: bool = false,
+    open_seen: bool = false,
+    terminal: bool = false,
+};
+
+pub const Reducer = struct {
+    arena: *std.heap.ArenaAllocator,
+    options: Options,
+    ids: usize = 0,
+    clock: i64 = 0,
+    run: ?Run = null,
+    tools: std.ArrayList(Tool) = .empty,
+    interactions: std.ArrayList(Interaction) = .empty,
+    envelopes: std.ArrayList(std.json.Value) = .empty,
+
+    pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
+        return .{ .arena = arena, .options = options };
+    }
+
+    pub fn open(self: *Reducer) void {
+        _ = self.now();
+    }
+
+    fn allocator(self: *Reducer) std.mem.Allocator {
+        return self.arena.allocator();
+    }
+
+    fn now(self: *Reducer) i64 {
+        self.clock += 1;
+        return self.clock;
+    }
+
+    fn nextID(self: *Reducer, kind: []const u8) ![]const u8 {
+        self.ids += 1;
+        return std.fmt.allocPrint(self.allocator(), "{s}-{u}", .{ kind, idScalar(self.ids - 1) });
+    }
+
+    fn object(self: *Reducer) std.json.ObjectMap {
+        _ = self;
+        return .empty;
+    }
+
+    fn put(self: *Reducer, map: *std.json.ObjectMap, key: []const u8, value: std.json.Value) !void {
+        try map.put(self.allocator(), key, value);
+    }
+
+    fn str(text: []const u8) std.json.Value {
+        return .{ .string = text };
+    }
+
+    fn int(value: i64) std.json.Value {
+        return .{ .integer = value };
+    }
+
+    fn active(self: *Reducer) ?*Run {
+        if (self.run == null) return null;
+        const run = &self.run.?;
+        return if (run.terminal) null else run;
+    }
+
+    pub fn submit(self: *Reducer) !void {
+        if (self.run) |run| {
+            if (!run.terminal) return Error.RunActive;
+        }
+        self.run = .{ .message_id = try self.nextID("message") };
+    }
+
+    fn startRun(self: *Reducer) !void {
+        const run = self.active() orelse return;
+        if (run.started) return;
+        run.started = true;
+        run.id = try self.nextID("run");
+
+        var payload = self.object();
+        try self.put(&payload, "session_id", str(self.options.session_id));
+        try self.put(&payload, "run_id", str(run.id));
+        try self.put(&payload, "status", str("running"));
+        if (self.options.model.len > 0) try self.put(&payload, "model_id", str(self.options.model));
+        try self.put(&payload, "started_at_ms", int(self.now()));
+        _ = try self.emit(run, "run.started", .{ .object = payload });
+    }
+
+    fn emit(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value) ![]const u8 {
+        return self.emitEnvelope(run, kind, payload, "");
+    }
+
+    fn emitEnvelope(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, in_reply_to: []const u8) ![]const u8 {
+        const id = try self.nextID("event");
+        run.sequence += 1;
+        var envelope = self.object();
+        try self.put(&envelope, "protocol", str(protocol_name));
+        try self.put(&envelope, "version", str(protocol_version));
+        try self.put(&envelope, "profile", str(profile));
+        try self.put(&envelope, "type", str(kind));
+        try self.put(&envelope, "id", str(id));
+        try self.put(&envelope, "payload", payload);
+        try self.put(&envelope, "sequence", int(run.sequence));
+        try self.put(&envelope, "timestamp_ms", int(self.now()));
+        if (in_reply_to.len > 0) try self.put(&envelope, "in_reply_to", str(in_reply_to));
+        try self.put(&envelope, "session_id", str(self.options.session_id));
+        try self.put(&envelope, "run_id", str(run.id));
+        if (payload == .object) {
+            if (std.mem.startsWith(u8, kind, "action.call.")) {
+                if (payload.object.get("tool_call_id")) |carried| {
+                    if (carried == .string) try self.put(&envelope, "tool_call_id", carried);
+                }
+            }
+            if (std.mem.eql(u8, kind, "user.input.requested") or std.mem.eql(u8, kind, "user.input.resolved")) {
+                if (payload.object.get("interaction_id")) |carried| {
+                    if (carried == .string) try self.put(&envelope, "turn_id", carried);
+                }
+            }
+        }
+        try self.put(&envelope, "capability_revision", str(capability_revision));
+        try self.envelopes.append(self.allocator(), .{ .object = envelope });
+        return id;
+    }
+
+    pub fn observe(self: *Reducer, message: rpc.Message, parsed: std.json.Value) !void {
+        if (message.kind != .notification) return;
+        if (!std.mem.eql(u8, message.method, "event")) return;
+        if (parsed != .object) return;
+        const params = parsed.object.get("params") orelse return;
+        if (params != .object) return;
+        const kind = params.object.get("type") orelse return;
+        if (kind != .string) return;
+        const payload = params.object.get("payload") orelse std.json.Value{ .null = {} };
+        try self.applyEvent(kind.string, payload);
+    }
+
+    fn applyEvent(self: *Reducer, kind: []const u8, payload: std.json.Value) !void {
+        if (std.mem.eql(u8, kind, "message.start")) {
+            const run = self.active() orelse return;
+            if (run.open_seen) {
+                try self.failRun("hermes_invalid_grammar", "turn opened twice");
+                return;
+            }
+            run.open_seen = true;
+            try self.startRun();
+            return;
+        }
+        if (std.mem.eql(u8, kind, "message.delta")) {
+            try self.emitDelta(payload, "text");
+            return;
+        }
+        if (std.mem.eql(u8, kind, "reasoning.delta") or std.mem.eql(u8, kind, "thinking.delta")) {
+            try self.emitDelta(payload, "reasoning");
+            return;
+        }
+        if (std.mem.eql(u8, kind, "message.complete")) {
+            try self.settleRun(payload);
+            return;
+        }
+        if (std.mem.eql(u8, kind, "tool.start")) {
+            try self.startTool(payload);
+            return;
+        }
+        if (std.mem.eql(u8, kind, "tool.complete")) {
+            try self.endTool(payload);
+            return;
+        }
+        if (std.mem.eql(u8, kind, "approval.request") or std.mem.eql(u8, kind, "clarify.request") or std.mem.eql(u8, kind, "sudo.request") or std.mem.eql(u8, kind, "secret.request")) {
+            try self.openInteraction(kind, payload);
+            return;
+        }
+        if (std.mem.eql(u8, kind, "clarify.expire") or std.mem.eql(u8, kind, "sudo.expire") or std.mem.eql(u8, kind, "secret.expire")) {
+            try self.expireInteraction(payload);
+            return;
+        }
+    }
+
+    fn findTool(self: *Reducer, run_id: []const u8, native_id: []const u8) ?usize {
+        for (self.tools.items, 0..) |tool, index| {
+            if (std.mem.eql(u8, tool.run_id, run_id) and std.mem.eql(u8, tool.native_id, native_id)) return index;
+        }
+        return null;
+    }
+
+    fn toolPayload(self: *Reducer, tool: *const Tool, arguments: bool) !std.json.ObjectMap {
+        var body = self.object();
+        try self.put(&body, "session_id", str(self.options.session_id));
+        try self.put(&body, "run_id", str(tool.run_id));
+        try self.put(&body, "tool_call_id", str(tool.id));
+        try self.put(&body, "requested_by", str(endpoint_id));
+        try self.put(&body, "execution_owner", str("hermes"));
+        if (tool.name.len > 0) try self.put(&body, "name", str(tool.name));
+        if (arguments) {
+            if (tool.args) |value| try self.put(&body, "arguments_json", value);
+        }
+        return body;
+    }
+
+    fn startTool(self: *Reducer, payload: std.json.Value) !void {
+        const run = self.active() orelse return;
+        if (!run.started) return;
+        if (payload != .object) {
+            try self.failRun("hermes_invalid_event", "invalid tool start");
+            return;
+        }
+        const native_id = stringMember(payload.object, "tool_id");
+        if (self.findTool(run.id, native_id) != null) {
+            try self.failRun("hermes_tool_lifecycle", "duplicate tool call");
+            return;
+        }
+        const minted = try self.nextID("tool-call");
+        try self.tools.append(self.allocator(), .{
+            .native_id = native_id,
+            .id = minted,
+            .run_id = run.id,
+            .name = stringMember(payload.object, "name"),
+            .args = payload.object.get("args") orelse std.json.Value{ .null = {} },
+        });
+        const at = self.tools.items.len - 1;
+        const requested = try self.toolPayload(&self.tools.items[at], true);
+        const request_id = try self.emit(run, "action.call.requested", .{ .object = requested });
+        const started = try self.toolPayload(&self.tools.items[at], false);
+        const start_id = try self.emitEnvelope(run, "action.call.started", .{ .object = started }, request_id);
+        self.tools.items[at].requested = request_id;
+        self.tools.items[at].started = start_id;
+    }
+
+    fn endTool(self: *Reducer, payload: std.json.Value) !void {
+        const run = self.active() orelse return;
+        if (!run.started) return;
+        if (payload != .object) {
+            try self.failRun("hermes_invalid_event", "invalid tool complete");
+            return;
+        }
+        const native_id = stringMember(payload.object, "tool_id");
+        const at = self.findTool(run.id, native_id) orelse {
+            try self.failRun("hermes_tool_lifecycle", "unmatched tool completion");
+            return;
+        };
+        if (self.tools.items[at].terminal) {
+            try self.failRun("hermes_tool_lifecycle", "unmatched tool completion");
+            return;
+        }
+        self.tools.items[at].terminal = true;
+        var body = try self.toolPayload(&self.tools.items[at], false);
+        try self.put(&body, "result", payload.object.get("result") orelse std.json.Value{ .null = {} });
+        _ = try self.emitEnvelope(run, "action.call.completed", .{ .object = body }, self.tools.items[at].started);
+    }
+
+    pub fn transportFailed(self: *Reducer, detail: []const u8) !void {
+        const run = self.active() orelse return;
+        if (!run.started) return;
+        var failure = self.object();
+        try self.put(&failure, "code", str("hermes_process_exit"));
+        try self.put(&failure, "message", str(detail));
+        var body = self.object();
+        try self.put(&body, "session_id", str(self.options.session_id));
+        try self.put(&body, "run_id", str(run.id));
+        try self.put(&body, "error", .{ .object = failure });
+        try self.put(&body, "settled_by", str("inferred"));
+        _ = try self.emit(run, "run.failed", .{ .object = body });
+        run.terminal = true;
+    }
+
+    fn emitDelta(self: *Reducer, payload: std.json.Value, part_kind: []const u8) !void {
+        const run = self.active() orelse return;
+        if (!run.started) return;
+        if (payload != .object) {
+            try self.failRun("hermes_invalid_event", "invalid delta");
+            return;
+        }
+        const text = stringMember(payload.object, "text");
+
+        var part = self.object();
+        try self.put(&part, "type", str(part_kind));
+        try self.put(&part, part_kind, str(text));
+        var body = self.object();
+        try self.put(&body, "session_id", str(self.options.session_id));
+        try self.put(&body, "run_id", str(run.id));
+        try self.put(&body, "message_id", str(run.message_id));
+        try self.put(&body, "part", .{ .object = part });
+        _ = try self.emit(run, "content.delta", .{ .object = body });
+    }
+
+    fn settleRun(self: *Reducer, payload: std.json.Value) !void {
+        const run = self.active() orelse return;
+        if (!run.started) return;
+        if (payload != .object) {
+            try self.failRun("hermes_invalid_event", "invalid settlement");
+            return;
+        }
+        const status = stringMember(payload.object, "status");
+        if (status.len == 0) {
+            try self.failRun("hermes_invalid_settlement", "child-mirror settlement on the parent stream");
+            return;
+        }
+        if (std.mem.eql(u8, status, "complete")) {
+            var response = self.object();
+            try self.put(&response, "id", str(run.message_id));
+            try self.put(&response, "role", str("assistant"));
+            try self.put(&response, "content", str(stringMember(payload.object, "text")));
+
+            var body = self.object();
+            try self.put(&body, "session_id", str(self.options.session_id));
+            try self.put(&body, "run_id", str(run.id));
+            try self.put(&body, "final_response", .{ .object = response });
+            try self.put(&body, "stop_reason", str("completed"));
+            if (payload.object.get("usage")) |usage| {
+                if (usage == .object) {
+                    var totals = self.object();
+                    try self.put(&totals, "input_tokens", int(integerMember(usage.object, "input")));
+                    try self.put(&totals, "output_tokens", int(integerMember(usage.object, "output")));
+                    try self.put(&totals, "total_tokens", int(integerMember(usage.object, "total")));
+                    try self.put(&body, "usage", .{ .object = totals });
+                }
+            }
+            _ = try self.emit(run, "run.completed", .{ .object = body });
+            run.terminal = true;
+            return;
+        }
+        var code = try std.fmt.allocPrint(self.allocator(), "hermes_{s}", .{status});
+        if (payload.object.get("error_surface")) |surface| {
+            if (surface == .object) {
+                const surfaced = stringMember(surface.object, "code");
+                if (surfaced.len > 0) code = try std.fmt.allocPrint(self.allocator(), "hermes_{s}", .{surfaced});
+            }
+        }
+        var message = stringMember(payload.object, "error");
+        if (message.len == 0) message = stringMember(payload.object, "text");
+        if (message.len == 0) message = try std.fmt.allocPrint(self.allocator(), "turn {s}", .{status});
+        try self.failRun(code, message);
+    }
+
+    fn findInteraction(self: *Reducer, id: []const u8) ?usize {
+        for (self.interactions.items, 0..) |binding, index| {
+            if (std.mem.eql(u8, binding.id, id)) return index;
+        }
+        return null;
+    }
+
+    pub fn pendingInteraction(self: *Reducer, kind: []const u8) ?*const Interaction {
+        for (self.interactions.items) |*binding| {
+            if (binding.resolved) continue;
+            if (!std.mem.eql(u8, binding.kind, kind)) continue;
+            return binding;
+        }
+        return null;
+    }
+
+    fn optionsFrom(self: *Reducer, choices: std.json.Array) ![]const Option {
+        var list = std.ArrayList(Option).empty;
+        for (choices.items) |entry| {
+            try list.append(self.allocator(), .{ .id = entry.string, .label = entry.string });
+        }
+        return list.items;
+    }
+
+    fn questionFrom(self: *Reducer, id: []const u8, prompt: []const u8, choices: ?std.json.Value, multi: bool) !Question {
+        const offered: ?std.json.Array = if (choices) |value| (if (value == .array) value.array else null) else null;
+        if (offered == null or offered.?.items.len == 0) {
+            return .{ .id = id, .prompt = prompt, .kind = "text" };
+        }
+        return .{
+            .id = id,
+            .prompt = prompt,
+            .kind = if (multi) "multi_choice" else "single_choice",
+            .options = try self.optionsFrom(offered.?),
+        };
+    }
+
+    fn questionsValue(self: *Reducer, questions: []const Question) !std.json.Value {
+        var list = std.json.Array.init(self.allocator());
+        for (questions) |question| {
+            var body = self.object();
+            try self.put(&body, "id", str(question.id));
+            try self.put(&body, "prompt", str(question.prompt));
+            try self.put(&body, "kind", str(question.kind));
+            try self.put(&body, "required", .{ .bool = true });
+            if (question.options.len > 0) {
+                var options = std.json.Array.init(self.allocator());
+                for (question.options) |option| {
+                    var entry = self.object();
+                    try self.put(&entry, "id", str(option.id));
+                    try self.put(&entry, "label", str(option.label));
+                    try options.append(.{ .object = entry });
+                }
+                try self.put(&body, "options", .{ .array = options });
+            }
+            try list.append(.{ .object = body });
+        }
+        return .{ .array = list };
+    }
+
+    fn answersValue(self: *Reducer, answers: []const Answer) !std.json.Value {
+        var list = std.json.Array.init(self.allocator());
+        for (answers) |answer| {
+            var body = self.object();
+            try self.put(&body, "question_id", str(answer.question_id));
+            if (answer.text.len > 0) try self.put(&body, "text", str(answer.text));
+            if (answer.selected_option_ids.len > 0) {
+                var ids = std.json.Array.init(self.allocator());
+                for (answer.selected_option_ids) |selected| try ids.append(str(selected));
+                try self.put(&body, "selected_option_ids", .{ .array = ids });
+            }
+            try list.append(.{ .object = body });
+        }
+        return .{ .array = list };
+    }
+
+    fn emitStatus(self: *Reducer, run: *Run, status: []const u8, pending: []const u8) !void {
+        var body = self.object();
+        try self.put(&body, "session_id", str(self.options.session_id));
+        try self.put(&body, "run_id", str(run.id));
+        try self.put(&body, "status", str(status));
+        if (pending.len > 0) try self.put(&body, "pending_user_input_id", str(pending));
+        try self.put(&body, "updated_at_ms", int(self.now()));
+        _ = try self.emit(run, "run.status.updated", .{ .object = body });
+    }
+
+    fn resolvedPayload(self: *Reducer, binding: Interaction, run: *Run, status: []const u8, answers: ?[]const Answer) !std.json.Value {
+        var body = self.object();
+        try self.put(&body, "interaction_id", str(binding.id));
+        try self.put(&body, "requested_by", str(endpoint_id));
+        try self.put(&body, "responded_by", str(self.options.responder));
+        try self.put(&body, "session_id", str(self.options.session_id));
+        try self.put(&body, "run_id", str(run.id));
+        try self.put(&body, "status", str(status));
+        if (answers) |carried| try self.put(&body, "answers", try self.answersValue(carried));
+        return .{ .object = body };
+    }
+
+    fn openInteraction(self: *Reducer, kind: []const u8, payload: std.json.Value) !void {
+        const run = self.active() orelse return;
+        if (!run.started) return;
+        const id = try self.nextID("interaction");
+        var binding = Interaction{ .id = id, .run_id = run.id, .kind = "" };
+        var title: []const u8 = "";
+        var description: []const u8 = "";
+        var questions = std.ArrayList(Question).empty;
+
+        if (std.mem.eql(u8, kind, "approval.request")) {
+            const members = [_]Member{
+                .{ .name = "command", .kind = .string },
+                .{ .name = "pattern_key", .kind = .string },
+                .{ .name = "pattern_keys", .kind = .strings },
+                .{ .name = "description", .kind = .string },
+                .{ .name = "allow_permanent", .kind = .boolean },
+                .{ .name = "allow_session", .kind = .boolean },
+                .{ .name = "smart_denied", .kind = .boolean },
+                .{ .name = "choices", .kind = .strings },
+            };
+            const fields = strictObject(payload, &members) orelse {
+                try self.failRun("hermes_invalid_event", "invalid approval gate");
+                return;
+            };
+            const command = stringMember(fields, "command");
+            binding.kind = "approval";
+            title = "Command approval";
+            description = command;
+            var options: []const Option = &.{};
+            if (fields.get("choices")) |choices| {
+                if (choices == .array) options = try self.optionsFrom(choices.array);
+            }
+            try questions.append(self.allocator(), .{ .id = "choice", .prompt = command, .kind = "single_choice", .options = options });
+        } else if (std.mem.eql(u8, kind, "clarify.request")) {
+            const members = [_]Member{
+                .{ .name = "request_id", .kind = .string },
+                .{ .name = "question", .kind = .string },
+                .{ .name = "choices", .kind = .strings },
+                .{ .name = "multi_select", .kind = .boolean },
+                .{ .name = "questions", .kind = .objects },
+            };
+            const fields = strictObject(payload, &members) orelse {
+                try self.failRun("hermes_invalid_event", "invalid clarify gate");
+                return;
+            };
+            binding.kind = "clarify";
+            binding.request_id = stringMember(fields, "request_id");
+            title = "Clarification";
+            const batch = batched(fields);
+            if (batch) |entries| {
+                const question_members = [_]Member{
+                    .{ .name = "qid", .kind = .string },
+                    .{ .name = "question", .kind = .string },
+                    .{ .name = "choices", .kind = .strings },
+                    .{ .name = "multi_select", .kind = .boolean },
+                };
+                for (entries.items) |entry| {
+                    const carried = strictObject(entry, &question_members) orelse {
+                        try self.failRun("hermes_invalid_event", "invalid clarify gate");
+                        return;
+                    };
+                    try questions.append(self.allocator(), try self.questionFrom(stringMember(carried, "qid"), stringMember(carried, "question"), carried.get("choices"), boolMember(carried, "multi_select")));
+                }
+            } else {
+                try questions.append(self.allocator(), try self.questionFrom("answer", stringMember(fields, "question"), fields.get("choices"), boolMember(fields, "multi_select")));
+            }
+        } else if (std.mem.eql(u8, kind, "sudo.request")) {
+            binding.kind = "sudo";
+            binding.request_id = requestIDProbe(payload);
+            title = "Password required";
+            try questions.append(self.allocator(), .{ .id = "password", .prompt = "Enter the sudo password", .kind = "text" });
+        } else {
+            const members = [_]Member{
+                .{ .name = "request_id", .kind = .string },
+                .{ .name = "prompt", .kind = .string },
+                .{ .name = "env_var", .kind = .string },
+                .{ .name = "metadata", .kind = .any },
+            };
+            const fields = strictObject(payload, &members) orelse {
+                try self.failRun("hermes_invalid_event", "invalid secret gate");
+                return;
+            };
+            binding.kind = "secret";
+            binding.request_id = stringMember(fields, "request_id");
+            title = "Secret required";
+            description = stringMember(fields, "env_var");
+            try questions.append(self.allocator(), .{ .id = "value", .prompt = stringMember(fields, "prompt"), .kind = "text" });
+        }
+
+        if (binding.request_id.len == 0 and !std.mem.eql(u8, binding.kind, "approval")) {
+            try self.failRun("hermes_invalid_event", "gate without request_id");
+            return;
+        }
+        binding.questions = questions.items;
+        try self.interactions.append(self.allocator(), binding);
+        const at = self.interactions.items.len - 1;
+
+        var requested = self.object();
+        try self.put(&requested, "interaction_id", str(id));
+        try self.put(&requested, "requested_by", str(endpoint_id));
+        try self.put(&requested, "responded_by", str(self.options.responder));
+        try self.put(&requested, "session_id", str(self.options.session_id));
+        try self.put(&requested, "run_id", str(run.id));
+        try self.put(&requested, "title", str(title));
+        if (description.len > 0) try self.put(&requested, "description", str(description));
+        try self.put(&requested, "questions", try self.questionsValue(questions.items));
+        try self.put(&requested, "allow_cancel", .{ .bool = true });
+        self.interactions.items[at].requested = try self.emit(run, "user.input.requested", .{ .object = requested });
+        try self.emitStatus(run, "waiting_for_input", id);
+    }
+
+    fn expireInteraction(self: *Reducer, payload: std.json.Value) !void {
+        const run = self.active() orelse return;
+        const members = [_]Member{.{ .name = "request_id", .kind = .string }};
+        const fields = strictObject(payload, &members) orelse {
+            try self.failRun("hermes_invalid_event", "invalid expire");
+            return;
+        };
+        const request_id = stringMember(fields, "request_id");
+        for (self.interactions.items, 0..) |binding, at| {
+            if (binding.resolved) continue;
+            if (!std.mem.eql(u8, binding.run_id, run.id)) continue;
+            if (!std.mem.eql(u8, binding.request_id, request_id)) continue;
+            self.interactions.items[at].resolved = true;
+            const body = try self.resolvedPayload(binding, run, "cancelled", null);
+            _ = try self.emitEnvelope(run, "user.input.resolved", body, binding.requested);
+            try self.emitStatus(run, "running", "");
+            return;
+        }
+    }
+
+    pub fn resolve(self: *Reducer, interaction_id: []const u8, answers: []const Answer) !void {
+        const at = self.findInteraction(interaction_id) orelse return Error.InteractionNotFound;
+        if (self.interactions.items[at].resolved) return Error.InteractionNotFound;
+        const run = self.active() orelse return Error.InteractionNotFound;
+        const binding = self.interactions.items[at];
+        if (!std.mem.eql(u8, binding.run_id, run.id)) return Error.InteractionNotFound;
+        if (answers.len != binding.questions.len) return Error.InvalidResolution;
+        for (binding.questions, answers) |question, answer| {
+            if (!validAnswer(question, answer)) return Error.InvalidResolution;
+        }
+        self.interactions.items[at].resolved = true;
+        const body = try self.resolvedPayload(binding, run, "submitted", answers);
+        _ = try self.emitEnvelope(run, "user.input.resolved", body, binding.requested);
+        try self.emitStatus(run, "running", "");
+    }
+
+    fn failRun(self: *Reducer, code: []const u8, message: []const u8) !void {
+        const run = self.active() orelse return;
+        if (!run.started) return;
+        var failure = self.object();
+        try self.put(&failure, "code", str(code));
+        try self.put(&failure, "message", str(message));
+        var body = self.object();
+        try self.put(&body, "session_id", str(self.options.session_id));
+        try self.put(&body, "run_id", str(run.id));
+        try self.put(&body, "error", .{ .object = failure });
+        _ = try self.emit(run, "run.failed", .{ .object = body });
+        run.terminal = true;
+    }
+};
+
+const MemberKind = enum { string, boolean, strings, objects, any };
+
+const Member = struct {
+    name: []const u8,
+    kind: MemberKind,
+};
+
+fn memberSpec(members: []const Member, name: []const u8) ?Member {
+    for (members) |member| {
+        if (std.mem.eql(u8, member.name, name)) return member;
+    }
+    return null;
+}
+
+fn memberMatches(kind: MemberKind, value: std.json.Value) bool {
+    if (value == .null) return true;
+    return switch (kind) {
+        .string => value == .string,
+        .boolean => value == .bool,
+        .strings => everyEntry(value, .string),
+        .objects => everyEntry(value, .object),
+        .any => true,
+    };
+}
+
+fn everyEntry(value: std.json.Value, want: std.meta.Tag(std.json.Value)) bool {
+    if (value != .array) return false;
+    for (value.array.items) |entry| {
+        if (entry != want) return false;
+    }
+    return true;
+}
+
+fn strictObject(payload: std.json.Value, members: []const Member) ?std.json.ObjectMap {
+    if (payload != .object) return null;
+    var entries = payload.object.iterator();
+    while (entries.next()) |entry| {
+        const spec = memberSpec(members, entry.key_ptr.*) orelse return null;
+        if (!memberMatches(spec.kind, entry.value_ptr.*)) return null;
+    }
+    return payload.object;
+}
+
+fn batched(object: std.json.ObjectMap) ?std.json.Array {
+    const value = object.get("questions") orelse return null;
+    if (value != .array or value.array.items.len == 0) return null;
+    return value.array;
+}
+
+fn requestIDProbe(payload: std.json.Value) []const u8 {
+    if (payload != .object) return "";
+    const value = payload.object.get("request_id") orelse return "";
+    return if (value == .string) value.string else "";
+}
+
+fn boolMember(map: std.json.ObjectMap, key: []const u8) bool {
+    const value = map.get(key) orelse return false;
+    return if (value == .bool) value.bool else false;
+}
+
+fn offers(question: Question, id: []const u8) bool {
+    for (question.options) |option| {
+        if (std.mem.eql(u8, option.id, id)) return true;
+    }
+    return false;
+}
+
+fn validAnswer(question: Question, answer: Answer) bool {
+    if (!std.mem.eql(u8, question.id, answer.question_id)) return false;
+    const has_text = answer.text.len > 0;
+    if (has_text and answer.selected_option_ids.len > 0) return false;
+    if (std.mem.eql(u8, question.kind, "text")) {
+        if (!has_text) return false;
+    } else if (std.mem.eql(u8, question.kind, "single_choice")) {
+        if (answer.selected_option_ids.len != 1) return false;
+    } else if (std.mem.eql(u8, question.kind, "multi_choice")) {
+        if (answer.selected_option_ids.len == 0) return false;
+    } else return false;
+    for (answer.selected_option_ids, 0..) |selected, index| {
+        if (selected.len == 0 or !offers(question, selected)) return false;
+        for (answer.selected_option_ids[0..index]) |earlier| {
+            if (std.mem.eql(u8, earlier, selected)) return false;
+        }
+    }
+    return true;
+}
+
+fn idScalar(index: usize) u21 {
+    return std.math.cast(u21, 'a' + index) orelse 0xFFFD;
+}
+
+fn stringMember(map: std.json.ObjectMap, key: []const u8) []const u8 {
+    const value = map.get(key) orelse return "";
+    return if (value == .string) value.string else "";
+}
+
+fn integerMember(map: std.json.ObjectMap, key: []const u8) i64 {
+    const value = map.get(key) orelse return 0;
+    return if (value == .integer) value.integer else 0;
+}
+
+const testing = std.testing;
+
+fn feed(reducer: *Reducer, scratch: std.mem.Allocator, line: []const u8) !void {
+    const message = try rpc.parseMessage(scratch, line);
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
+    try reducer.observe(message, parsed);
+}
+
+fn event(scratch: std.mem.Allocator, kind: []const u8, payload: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(scratch, "{{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{{\"type\":\"{s}\",\"session_id\":\"sess0001\",\"payload\":{s}}}}}", .{ kind, payload });
+}
+
+fn bare(scratch: std.mem.Allocator, kind: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(scratch, "{{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{{\"type\":\"{s}\",\"session_id\":\"sess0001\"}}}}", .{kind});
+}
+
+fn openRun(arena: *std.heap.ArenaAllocator) !Reducer {
+    var reducer = Reducer.init(arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try feed(&reducer, arena.allocator(), try bare(arena.allocator(), "message.start"));
+    return reducer;
+}
+
+fn gate(arena: *std.heap.ArenaAllocator, kind: []const u8, payload: []const u8) !Reducer {
+    var reducer = try openRun(arena);
+    try feed(&reducer, arena.allocator(), try event(arena.allocator(), kind, payload));
+    return reducer;
+}
+
+fn typeAt(reducer: *Reducer, index: usize) []const u8 {
+    return reducer.envelopes.items[index].object.get("type").?.string;
+}
+
+fn payloadAt(reducer: *Reducer, index: usize) std.json.ObjectMap {
+    return reducer.envelopes.items[index].object.get("payload").?.object;
+}
+
+fn questionsAt(reducer: *Reducer, index: usize) std.json.Array {
+    return payloadAt(reducer, index).get("questions").?.array;
+}
+
+fn expectGateRefused(kind: []const u8, payload: []const u8, code: []const u8, message: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, kind, payload);
+
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+    const failure = payloadAt(&reducer, 1).get("error").?.object;
+    try testing.expectEqualStrings(code, failure.get("code").?.string);
+    try testing.expectEqualStrings(message, failure.get("message").?.string);
+}
+
+test "an approval gate carries the command as both its description and its only prompt" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"rm -rf /tmp/x","choices":["once","deny"]}
+    );
+
+    try testing.expectEqual(@as(usize, 3), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
+    const requested = payloadAt(&reducer, 1);
+    try testing.expectEqualStrings("Command approval", requested.get("title").?.string);
+    try testing.expectEqualStrings("rm -rf /tmp/x", requested.get("description").?.string);
+    try testing.expect(requested.get("allow_cancel").?.bool);
+    try testing.expectEqualStrings(endpoint_id, requested.get("requested_by").?.string);
+    try testing.expectEqualStrings("user", requested.get("responded_by").?.string);
+
+    const questions = questionsAt(&reducer, 1);
+    try testing.expectEqual(@as(usize, 1), questions.items.len);
+    const question = questions.items[0].object;
+    try testing.expectEqualStrings("choice", question.get("id").?.string);
+    try testing.expectEqualStrings("rm -rf /tmp/x", question.get("prompt").?.string);
+    try testing.expectEqualStrings("single_choice", question.get("kind").?.string);
+    try testing.expect(question.get("required").?.bool);
+    const options = question.get("options").?.array;
+    try testing.expectEqual(@as(usize, 2), options.items.len);
+    try testing.expectEqualStrings("once", options.items[0].object.get("id").?.string);
+    try testing.expectEqualStrings("once", options.items[0].object.get("label").?.string);
+    try testing.expectEqualStrings("deny", options.items[1].object.get("id").?.string);
+}
+
+test "a gate announces itself and then parks the run on the interaction it opened" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once"]}
+    );
+
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try testing.expectEqualStrings("interaction-d", interaction);
+    try testing.expectEqualStrings(interaction, reducer.envelopes.items[1].object.get("turn_id").?.string);
+    try testing.expectEqualStrings("run.status.updated", typeAt(&reducer, 2));
+    const status = payloadAt(&reducer, 2);
+    try testing.expectEqualStrings("waiting_for_input", status.get("status").?.string);
+    try testing.expectEqualStrings(interaction, status.get("pending_user_input_id").?.string);
+    try testing.expectEqual(@as(i64, 5), status.get("updated_at_ms").?.integer);
+    try testing.expectEqual(@as(i64, 6), reducer.envelopes.items[2].object.get("timestamp_ms").?.integer);
+}
+
+test "a clarify gate offers the choices it carries and falls back to free text without them" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var offered = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}
+    );
+    const asked = questionsAt(&offered, 1).items[0].object;
+    try testing.expectEqualStrings("Clarification", payloadAt(&offered, 1).get("title").?.string);
+    try testing.expect(payloadAt(&offered, 1).get("description") == null);
+    try testing.expectEqualStrings("answer", asked.get("id").?.string);
+    try testing.expectEqualStrings("which?", asked.get("prompt").?.string);
+    try testing.expectEqualStrings("single_choice", asked.get("kind").?.string);
+
+    var free = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?"}
+    );
+    const open_ended = questionsAt(&free, 1).items[0].object;
+    try testing.expectEqualStrings("text", open_ended.get("kind").?.string);
+    try testing.expect(open_ended.get("options") == null);
+}
+
+test "an empty choice list makes a question free text even when it asks for several answers" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":[],"multi_select":true}
+    );
+
+    try testing.expectEqualStrings("text", questionsAt(&reducer, 1).items[0].object.get("kind").?.string);
+}
+
+test "a batch clarify gate mints one question per entry and reads each entry's own multi_select" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"two","question":"second?","choices":["b","c"],"multi_select":true}]}
+    );
+
+    const questions = questionsAt(&reducer, 1);
+    try testing.expectEqual(@as(usize, 2), questions.items.len);
+    try testing.expectEqualStrings("one", questions.items[0].object.get("id").?.string);
+    try testing.expectEqualStrings("first?", questions.items[0].object.get("prompt").?.string);
+    try testing.expectEqualStrings("single_choice", questions.items[0].object.get("kind").?.string);
+    try testing.expectEqualStrings("two", questions.items[1].object.get("id").?.string);
+    try testing.expectEqualStrings("multi_choice", questions.items[1].object.get("kind").?.string);
+}
+
+test "a batch entry wins over the single form even when both are present" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"ignored","choices":["z"],"questions":[{"qid":"one","question":"first?","choices":["a"]}]}
+    );
+
+    const questions = questionsAt(&reducer, 1);
+    try testing.expectEqual(@as(usize, 1), questions.items.len);
+    try testing.expectEqualStrings("one", questions.items[0].object.get("id").?.string);
+}
+
+test "the sudo gate asks for a password and the secret gate names the variable it fills" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var sudo = try gate(&arena, "sudo.request",
+        \\{"request_id":"bbbb2222"}
+    );
+    const password = questionsAt(&sudo, 1).items[0].object;
+    try testing.expectEqualStrings("Password required", payloadAt(&sudo, 1).get("title").?.string);
+    try testing.expect(payloadAt(&sudo, 1).get("description") == null);
+    try testing.expectEqualStrings("password", password.get("id").?.string);
+    try testing.expectEqualStrings("Enter the sudo password", password.get("prompt").?.string);
+    try testing.expectEqualStrings("text", password.get("kind").?.string);
+
+    var secret = try gate(&arena, "secret.request",
+        \\{"request_id":"cccc3333","prompt":"CI token","env_var":"CI_TOKEN"}
+    );
+    const value = questionsAt(&secret, 1).items[0].object;
+    try testing.expectEqualStrings("Secret required", payloadAt(&secret, 1).get("title").?.string);
+    try testing.expectEqualStrings("CI_TOKEN", payloadAt(&secret, 1).get("description").?.string);
+    try testing.expectEqualStrings("value", value.get("id").?.string);
+    try testing.expectEqualStrings("CI token", value.get("prompt").?.string);
+}
+
+test "only an approval gate may arrive without a request id" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var approval = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once"]}
+    );
+    try testing.expectEqualStrings("user.input.requested", typeAt(&approval, 1));
+
+    try expectGateRefused("clarify.request",
+        \\{"question":"which?","choices":["a"]}
+    , "hermes_invalid_event", "gate without request_id");
+    try expectGateRefused("sudo.request", "{}", "hermes_invalid_event", "gate without request_id");
+    try expectGateRefused("secret.request",
+        \\{"prompt":"CI token","env_var":"CI_TOKEN"}
+    , "hermes_invalid_event", "gate without request_id");
+}
+
+test "a gate payload is refused member by member, and each kind names itself when it is" {
+    try expectGateRefused("approval.request",
+        \\{"command":"ls","choices":["once"],"unknown":1}
+    , "hermes_invalid_event", "invalid approval gate");
+    try expectGateRefused("approval.request",
+        \\{"command":7,"choices":["once"]}
+    , "hermes_invalid_event", "invalid approval gate");
+    try expectGateRefused("approval.request",
+        \\{"command":"ls","choices":[7]}
+    , "hermes_invalid_event", "invalid approval gate");
+    try expectGateRefused("approval.request",
+        \\{"command":"ls","choices":["once"],"allow_session":"yes"}
+    , "hermes_invalid_event", "invalid approval gate");
+    try expectGateRefused("clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","multi_select":1}
+    , "hermes_invalid_event", "invalid clarify gate");
+    try expectGateRefused("clarify.request",
+        \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"],"unknown":1}]}
+    , "hermes_invalid_event", "invalid clarify gate");
+    try expectGateRefused("secret.request",
+        \\{"request_id":"cccc3333","prompt":"CI token","env_var":"CI_TOKEN","unknown":1}
+    , "hermes_invalid_event", "invalid secret gate");
+}
+
+test "a null member is absent to the decoder, as it is to encoding/json" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once"],"description":null,"pattern_keys":null,"smart_denied":null}
+    );
+
+    try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("ls", payloadAt(&reducer, 1).get("description").?.string);
+}
+
+test "the sudo gate reads its request id leniently where the others decode it strictly" {
+    try expectGateRefused("sudo.request",
+        \\{"request_id":7,"extra":true}
+    , "hermes_invalid_event", "gate without request_id");
+    try expectGateRefused("secret.request",
+        \\{"request_id":7,"prompt":"CI token","env_var":"CI_TOKEN"}
+    , "hermes_invalid_event", "invalid secret gate");
+}
+
+test "a gate that arrives before the run started emits nothing and mints nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try feed(&reducer, arena.allocator(), try event(arena.allocator(), "approval.request",
+        \\{"command":"ls","choices":["once"]}
+    ));
+
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 0), reducer.interactions.items.len);
+    try testing.expectEqual(@as(usize, 1), reducer.ids);
+}
+
+test "an expire settles the gate carrying its request id and leaves every other one open" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"dddd4444","question":"which?","choices":["a","b"]}
+    );
+    try feed(&reducer, scratch, try event(scratch, "secret.request",
+        \\{"request_id":"eeee5555","prompt":"CI token","env_var":"CI_TOKEN"}
+    ));
+    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+        \\{"request_id":"dddd4444"}
+    ));
+
+    try testing.expectEqual(@as(usize, 7), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 5));
+    const resolved = payloadAt(&reducer, 5);
+    try testing.expectEqualStrings("cancelled", resolved.get("status").?.string);
+    try testing.expect(resolved.get("answers") == null);
+    try testing.expectEqualStrings(payloadAt(&reducer, 1).get("interaction_id").?.string, resolved.get("interaction_id").?.string);
+    try testing.expectEqualStrings(reducer.envelopes.items[1].object.get("id").?.string, reducer.envelopes.items[5].object.get("in_reply_to").?.string);
+    try testing.expectEqualStrings("run.status.updated", typeAt(&reducer, 6));
+    try testing.expectEqualStrings("running", payloadAt(&reducer, 6).get("status").?.string);
+    try testing.expect(payloadAt(&reducer, 6).get("pending_user_input_id") == null);
+    try testing.expect(!reducer.interactions.items[1].resolved);
+
+    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+        \\{"request_id":"dddd4444"}
+    ));
+    try testing.expectEqual(@as(usize, 7), reducer.envelopes.items.len);
+}
+
+test "an expire naming no open gate is silent, and a malformed one fails the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"dddd4444","question":"which?","choices":["a"]}
+    );
+    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+        \\{"request_id":"ffff6666"}
+    ));
+    try testing.expectEqual(@as(usize, 3), reducer.envelopes.items.len);
+
+    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+        \\{"request_id":"dddd4444","unknown":1}
+    ));
+    try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("invalid expire", payloadAt(&reducer, 3).get("error").?.object.get("message").?.string);
+}
+
+test "a resolution echoes the answers it was given and returns the run to running" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once","deny"]}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "choice", .selected_option_ids = &[_][]const u8{"once"} }});
+
+    try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 3));
+    const resolved = payloadAt(&reducer, 3);
+    try testing.expectEqualStrings("submitted", resolved.get("status").?.string);
+    try testing.expectEqualStrings(interaction, reducer.envelopes.items[3].object.get("turn_id").?.string);
+    try testing.expectEqualStrings(reducer.envelopes.items[1].object.get("id").?.string, reducer.envelopes.items[3].object.get("in_reply_to").?.string);
+    const answers = resolved.get("answers").?.array;
+    try testing.expectEqual(@as(usize, 1), answers.items.len);
+    try testing.expectEqualStrings("choice", answers.items[0].object.get("question_id").?.string);
+    try testing.expect(answers.items[0].object.get("text") == null);
+    try testing.expectEqualStrings("once", answers.items[0].object.get("selected_option_ids").?.array.items[0].string);
+    try testing.expectEqualStrings("running", payloadAt(&reducer, 4).get("status").?.string);
+}
+
+test "a free-text answer carries text where a choice answer carries option ids" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "sudo.request",
+        \\{"request_id":"bbbb2222"}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "password", .text = "hunter2" }});
+
+    const answer = payloadAt(&reducer, 3).get("answers").?.array.items[0].object;
+    try testing.expectEqualStrings("hunter2", answer.get("text").?.string);
+    try testing.expect(answer.get("selected_option_ids") == null);
+}
+
+test "a resolution is refused unless every answer suits the question it names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once","deny"]}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{}));
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "other", .selected_option_ids = &[_][]const u8{"once"} }}));
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "choice", .text = "once" }}));
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "choice", .selected_option_ids = &[_][]const u8{"maybe"} }}));
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "choice", .selected_option_ids = &[_][]const u8{ "once", "deny" } }}));
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "choice", .text = "once", .selected_option_ids = &[_][]const u8{"once"} }}));
+    try testing.expectEqual(@as(usize, 3), reducer.envelopes.items.len);
+}
+
+test "a multi-choice answer takes several distinct options but never the same one twice" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a","b"],"multi_select":true}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{ "a", "a" } }}));
+    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{ "a", "b" } }});
+    try testing.expectEqual(@as(usize, 2), payloadAt(&reducer, 3).get("answers").?.array.items[0].object.get("selected_option_ids").?.array.items.len);
+}
+
+test "a gate resolves once, and an expired one is already spoken for" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }});
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve("interaction-z", &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+
+    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+        \\{"request_id":"aaaa1111"}
+    ));
+    try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
+}
+
+test "a settled run refuses a resolution instead of emitting past its terminal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try feed(&reducer, scratch, try event(scratch, "message.complete",
+        \\{"status":"complete","text":"done"}
+    ));
+
+    try testing.expectEqualStrings("run.completed", typeAt(&reducer, 3));
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
+}
+
+test "the pending gate a driver looks up is the open one of that kind" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    try feed(&reducer, scratch, try event(scratch, "sudo.request",
+        \\{"request_id":"bbbb2222"}
+    ));
+
+    try testing.expect(reducer.pendingInteraction("secret") == null);
+    try testing.expectEqualStrings("sudo", reducer.pendingInteraction("sudo").?.kind);
+    const clarify = reducer.pendingInteraction("clarify").?.id;
+    try reducer.resolve(clarify, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }});
+    try testing.expect(reducer.pendingInteraction("clarify") == null);
+}
+
+test "a gate left open by one run is not answerable from the next" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    const stranded = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try feed(&reducer, scratch, try event(scratch, "message.complete",
+        \\{"status":"complete","text":"done"}
+    ));
+    try reducer.submit();
+    try feed(&reducer, scratch, try bare(scratch, "message.start"));
+
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 4));
+    try testing.expectError(Error.InteractionNotFound, reducer.resolve(stranded, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+    try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
+}

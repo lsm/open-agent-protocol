@@ -229,6 +229,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     hermes_rpc_mod.addImport("gojson", adapter_gojson_mod);
+    const hermes_session_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/hermes/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const hermes_session_test = b.addTest(.{ .root_module = hermes_session_mod });
+    hermes_session_mod.addImport("rpc", hermes_rpc_mod);
     const hermes_rpc_test = b.addTest(.{ .root_module = hermes_rpc_mod });
 
     const acp_rpc_mod = b.createModule(.{
@@ -2162,6 +2169,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(hermes_session_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(hermes_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(hermes_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
