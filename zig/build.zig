@@ -195,6 +195,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const pi_rpc_test = b.addTest(.{ .root_module = pi_rpc_mod });
+    const acp_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/acp/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const acp_rpc_test = b.addTest(.{ .root_module = acp_rpc_mod });
 
 
     const oap_endpoint_client_mod = b.createModule(.{
@@ -2074,6 +2080,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
