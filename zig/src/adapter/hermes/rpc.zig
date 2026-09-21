@@ -41,7 +41,7 @@ pub const Decoder = struct {
         if (self.at >= self.source.len) return null;
         const rest = self.source[self.at..];
         const break_at = std.mem.indexOfScalar(u8, rest, '\n') orelse {
-            if (rest.len > self.limit + 1) return Error.FrameTooLarge;
+            if (rest.len - 1 > self.limit) return Error.FrameTooLarge;
             return Error.InvalidMessage;
         };
         if (break_at > self.limit) return Error.FrameTooLarge;

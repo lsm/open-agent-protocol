@@ -411,7 +411,7 @@ pub const Reducer = struct {
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
         try self.put(&payload, "status", str("running"));
-        try self.put(&payload, "model_id", str(run.model));
+        if (run.model.len > 0) try self.put(&payload, "model_id", str(run.model));
         try self.put(&payload, "started_at_ms", int(self.now()));
         _ = try self.emit(run, "run.started", .{ .object = payload });
 
@@ -2163,4 +2163,29 @@ test "an init outside a pending run is adopted when it arrives" {
         \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":[],"uuid":"i1"}
     );
     try testing.expectEqualStrings("model-a", reducer.current_model);
+}
+
+test "a run that starts before any init frame, with no configured model, names none" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{ .model = "" });
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+
+    const started = reducer.envelopes.items[0].object.get("payload").?.object;
+    try testing.expectEqualStrings("run.started", reducer.envelopes.items[0].object.get("type").?.string);
+    try testing.expect(started.get("model_id") == null);
+
+    var named = Reducer.init(&arena, .{ .model = "model-a" });
+    named.open();
+    try named.submit("turn-1");
+    try observeText(&named, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try testing.expectEqualStrings("model-a", named.envelopes.items[0].object.get("payload").?.object.get("model_id").?.string);
 }

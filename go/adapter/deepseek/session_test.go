@@ -788,6 +788,68 @@ func TestRepeatedToolCallIsRefused(t *testing.T) {
 	assertFailedWith(t, events, "deepseek_tool_lifecycle", "duplicate tool call")
 }
 
+func TestToolFailureCarriesTheReasonRatherThanTheErrorClass(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
+		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT", Reason: json.RawMessage(`"a.txt is not there"`)}, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
+		f.ev(7, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
+		f.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	var failure *protocol.ProtocolError
+	for _, e := range events {
+		if e.Type != protocol.TypeActionCallFailed {
+			continue
+		}
+		var p protocol.ActionCallPayload
+		if err := e.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		failure = p.Error
+	}
+	if failure == nil {
+		t.Fatal("no action.call.failed in the trace")
+	}
+	if failure.Message != "a.txt is not there" {
+		t.Fatalf("message = %q, want the user-facing reason", failure.Message)
+	}
+	if failure.Code != "ENOENT" {
+		t.Fatalf("code = %q", failure.Code)
+	}
+	if failure.Details["name"] != "ToolError" {
+		t.Fatalf("details = %+v, want the error class kept beside the reason", failure.Details)
+	}
+}
+
+func TestToolFailureFallsBackToTheErrorClassWithoutAReason(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		f.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
+		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT"}, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
+		f.ev(7, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
+		f.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	for _, e := range events {
+		if e.Type != protocol.TypeActionCallFailed {
+			continue
+		}
+		var p protocol.ActionCallPayload
+		if err := e.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Error == nil || p.Error.Message != "ToolError" {
+			t.Fatalf("error = %+v, want the class as the fallback", p.Error)
+		}
+		if p.Error.Details != nil {
+			t.Fatalf("details = %+v, want none when the class is already the message", p.Error.Details)
+		}
+		return
+	}
+	t.Fatal("no action.call.failed in the trace")
+}
+
 func TestToolResultWithoutItsCallIsRefused(t *testing.T) {
 	events := failingTurn(t, func(f *fakeClient) {
 		f.ev(5, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "never-called"}}})

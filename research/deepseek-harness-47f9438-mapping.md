@@ -69,48 +69,122 @@ Implementation status:
 ## Provenance
 
 - Repository: `https://github.com/deepseek-ai/deepseek-harness`
-- Implementation target: release `dsh-v0.1.5-rc.2`
-- Tag commit: `fb2c4b9e698e30edb738bca4cf0618587db7d203`
-  (`Merge pull request #3978 from deepseek-harness/worktree/release-dsh-0.1.5-rc.2`)
-- Tag date: 2026-09-10
-- Tag commit tree: `bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38`
-- Prior pin, retained below as superseded evidence:
+- Implementation target: release `dsh-v0.1.6-alpha.2`
+- Tag commit: `ddefc45fbc7f8e46dd73185e68295696d1297887`
+  (`Merge pull request #4469 from deepseek-harness/worktree/release-dsh-0.1.6-alpha.2`)
+- Tag date: 2026-09-17
+- Tag commit tree: `5aca5ee6f8dfd110dc3ae199fbddf8a0f606625f`
+- Prior pins, retained as superseded evidence: `dsh-v0.1.5-rc.2`
+  `fb2c4b9e698e30edb738bca4cf0618587db7d203` (2026-09-10, tree
+  `bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38`), and before it
   `47f943859bef60e4160492346772ded9b24f765a` (2026-08-13, tree
   `f904efab9ef435201d6ba4da88a34d6366568272`).
+- **The evidence corpus is not at this pin.** It stays at
+  `dsh-v0.1.5-rc.2`, and `fixtures/adapters/deepseek-harness-47f9438/manifest.json`
+  continues to record that commit and those blobs. Re-recording it needs the
+  0.1.6 runtime driven through the opt-in gate, which downloads nothing and was
+  not available when the code moved. What the corpus proves is therefore the
+  reducer against 0.1.5-rc.2 frames; what the code accepts is 0.1.6-alpha.2.
+  The gap is bounded by the change list below: every 0.1.6 wire change is
+  additive and optional, so a 0.1.5 trace remains a valid 0.1.6 trace and the
+  corpus stays sound as a regression floor. It is not evidence about anything
+  0.1.6 added.
 
 Reproduce the pin:
 
 ```sh
 git clone https://github.com/deepseek-ai/deepseek-harness.git dsh
-git -C dsh checkout fb2c4b9e698e30edb738bca4cf0618587db7d203
+git -C dsh checkout ddefc45fbc7f8e46dd73185e68295696d1297887
 git -C dsh show -s --format='%H%n%s%n%T' HEAD
-# fb2c4b9e698e30edb738bca4cf0618587db7d203
-# Merge pull request #3978 from deepseek-harness/worktree/release-dsh-0.1.5-rc.2
-# bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38
+# ddefc45fbc7f8e46dd73185e68295696d1297887
+# Merge pull request #4469 from deepseek-harness/worktree/release-dsh-0.1.6-alpha.2
+# 5aca5ee6f8dfd110dc3ae199fbddf8a0f606625f
 ```
 
-Normative inspected sources and exact blobs at the 0.1.5-rc.2 pin:
+Normative inspected sources and exact blobs at the 0.1.6-alpha.2 pin:
 
 | Source | Blob | Contract evidence |
 |---|---|---|
 | `packages/sdk/protocol/src/types.ts` | `605b97cc6945397563e6351e03ffde7a9436b23f` | request, result, and notification wire types; adds `reasoningEffort`, image blocks |
 | `packages/sdk/protocol/src/transport.ts` | `36574f46bf3e34738be045408e25bb79932ff609` | native newline JSON-RPC transport (unchanged) |
-| `packages/sdk/server/src/server.ts` | `1cc17059c9254c6bd4f809441bd9e43bc26a7d2d` | dispatch, initialize validation, lazy sessions, prompt receipt, notifications |
-| `packages/core/session/src/types.ts` | `139fccd5a5660a8d0c4e1ef95f4e4d64b274230f` | durable session-event envelope; `assistant/attempt`, `assistant/message.stream` |
-| `packages/core/session/src/known-event-types.ts` | `dd6411240b0527ec98d5ff51bcfb3e8b5f47e715` | recognized event vocabulary; `assistant/chunk` retired |
+| `packages/sdk/server/src/server.ts` | `031508993be796d10e9572be9b1eedb599ad6d28` | dispatch, initialize validation, lazy sessions, prompt receipt, notifications |
+| `packages/core/session/src/types.ts` | `0b946bd17ac353ff7644a1bfa5422a94d2f06cb6` | durable session-event envelope; `assistant/attempt`, `assistant/message.stream` |
+| `packages/core/session/src/known-event-types.ts` | `49ced22dce6da49bad246b25874efc0b44b89c93` | recognized event vocabulary; `assistant/chunk` retired |
 | `packages/core/agent/src/types.ts` | `d0be69ac58747a042ac937a250878705bcbf0d8f` | durable `agent/inbox/spliced` event |
-| `packages/core/agent-loop/src/inbox.ts` | `db89cd3072677ebd6acbd40f7d496bab15c19cef` | synchronous append and claim deletion (moved from `core/agent/src/`) |
-| `packages/core/agent/src/runtime-types.ts` | `31338e8d8da6ccb2e99fd459abbe2238bf5c1736` | runtime-only `agent/inbox/claimed` event |
-| `packages/core/agent-loop/src/agent.ts` | `06e1f51b57277ba296698b6c8b810f0e455e3695` | status, turn ordering, step entry, attempt settlement, terminal reasons |
-| `packages/llm/llm/src/message.ts` | `6f920fe0191d17c0a272fbc881eb7e37f8142815` | stable message identity and direct-user source shape |
-| `packages/llm/llm/src/types.ts` | `bfddde7fc4b2a08144e2f76f8ca59e61a2b4e37f` | content, finish, and usage vocabulary |
+| `packages/core/agent-loop/src/inbox.ts` | `ef00887a544c2dededb484ff7b9ce0efe83dea21` | synchronous append and claim deletion (moved from `core/agent/src/`) |
+| `packages/core/agent/src/runtime-types.ts` | `2118507b8cc617a920e7ceae9f98d06daa2d4780` | runtime-only `agent/inbox/claimed` event |
+| `packages/core/agent-loop/src/agent.ts` | `4ea7593551dd184a40a4b758ec1cdb342993aea3` | status, turn ordering, step entry, attempt settlement, terminal reasons |
+| `packages/llm/llm/src/message.ts` | `05af6bae3e4ccb81328b8f2a929e008dbe86b046` | stable message identity and direct-user source shape |
+| `packages/llm/llm/src/types.ts` | `d77aa7f04224f5d29e04110eaff01cd6d0bd7bab` | content, finish, and usage vocabulary |
 | `packages/llm/llm/src/assistant-stream.ts` | `5d878020e8a2eab1a1a84d1867bf2923a409527a` | `AssistantStreamRecord` compact union (new) |
-| `packages/core/session/src/invariant.ts` | `6ed0b6b3c5abf84dd4129281ed6029880c7e6ad3` | turn/step/call relational validation |
-| `packages/core/session/src/surface.ts` | `5d8ce74fe2461cb2f777a7bc7556795f337f0c03` | append-surface message projection |
+| `packages/core/session/src/invariant.ts` | `be4b214c86b3dbef853b1837b52cc4a99f58925d` | turn/step/call relational validation |
+| `packages/core/session/src/surface.ts` | `9bc3d32a8ce016ead3b74f1aeecaa6ae16605684` | append-surface message projection |
 
 The project is a Cordis plugin runtime ("everything is a plugin") in developer
 preview with declared compatibility-breaking changes. The commit, tree, and
 source blobs above are therefore part of the adapter contract.
+
+### What 0.1.6-alpha.2 moved, and how each move was absorbed
+
+Ten of the fourteen pinned blobs changed across 1687 commits. Four did not, and
+the two that matter most are among them: `sdk/protocol/src/types.ts`, the
+JSON-RPC request, result and notification shapes, and
+`llm/src/assistant-stream.ts`, the compact stream union. The transport boundary
+and the streaming vocabulary are therefore unmoved, which is why this is a
+source-level upgrade rather than a re-derivation.
+
+Three changes reach the wire this adapter decodes.
+
+- **`tool/result.error` gains `reason?: string`** (`session/src/types.ts`), a
+  raw user-facing reason the harness states is deliberately outside the
+  model-facing message. `ToolError` accepts it, and it **is** mapped: it
+  becomes `ProtocolError.message`, with `name` moving to
+  `details.name`. An earlier revision of this entry recorded it as an
+  omission on the grounds that a third string had nowhere honest to go. That
+  overlooked `details`, which exists for exactly this. It also had the
+  audiences the wrong way round: every other `message` in this tree is a
+  human-readable sentence, so `reason` is what belongs there and `name` is the
+  class, which `code` already ranks beside. Absent a `reason`, `name` stays
+  the message and no `details` is emitted. It is carried as a
+  `json.RawMessage` for the same reason `offloaded` is: `encoding/json`
+  unmarshals a `null` into a string without error, so `"reason": null` would
+  otherwise be indistinguishable from an omitted one, and the pinned shape is
+  `reason?: string`.
+- **An image content block gains `offloaded?: true`** (`llm/src/types.ts`),
+  marking a block whose bytes were replaced by placeholder text after an
+  offload decision. `ContentBlock` accepts it on an image block only, and only
+  as literal `true` — the upstream type admits no `false`, so a `false` is a
+  frame this adapter refuses rather than tolerates. The member is carried as a
+  `json.RawMessage` rather than a `*bool` so that an explicit `null` is
+  distinguishable from an absent member: `encoding/json` decodes `null` into a
+  pointer by leaving it nil, which would have made `"offloaded": null` read as
+  absence and slip past the marker's restriction on every block type.
+- **Two event types join the known vocabulary**
+  (`session/src/known-event-types.ts`): `workspace/changes` and
+  `image/offload`. They are classified differently and the difference is the
+  point. `workspace/changes` is observed-only: nothing in it changes what a run
+  means to a control layer. `image/offload` is **not**, because upstream lists
+  it in the new `MESSAGE_PROJECTION_EVENT_TYPES` — "event types whose
+  model-visible effects require an explicit pure interpreter". An adapter that
+  skipped it unmapped would project a final assistant message that differs from
+  what the model was shown. It is therefore left out of the observed-only set
+  and fails the run as an unknown required event, which is the conservative
+  reading and not a claim that supporting it is hard.
+
+The rest is internal to the harness and invisible here: `llm/src/message.ts`
+renames an interface (`AssistantProvenance` to `AssistantProviderMetadata`)
+without touching `MessageSource`, so the direct-user ownership proof is
+unaffected; `agent-loop/src/agent.ts` renames a surface generation counter and
+guards a wake on disposal; `invariant.ts`, `surface.ts`, `inbox.ts`,
+`runtime-types.ts` and `server.ts` move without changing a decoded shape.
+
+Two things this upgrade does **not** do. It does not re-record the evidence
+corpus, for the reason stated under Provenance. And it does not move the
+capability revision: no advertised feature changed, the three wire changes are
+additive and optional, and a revision bump would assert a descriptor difference
+that does not exist.
+
+
 
 ## Boundary selection
 
@@ -506,3 +580,55 @@ pipes, the runtime's next notification died on `EPIPE`, and the child exited 1
 
 Outcome: both gates PASS at `fb2c4b9e69`, and the DeepSeek package, its
 corpus, and the repository acceptance run are green under Go 1.27.
+
+## What the Zig port does not validate (2026-09-21)
+
+`zig/src/adapter/deepseek/` reproduces the reducer and the line codec. It does
+not reproduce `internal/native`'s payload validation, and that absence is a
+property of the port's failure mode, not only a gap in its coverage.
+
+A native refusal is not silent, and an earlier revision of this section had it
+wrong by saying it was. `rpc` hands every notification to
+`native.DecodeNotification`, and on error calls `closeWith(err)`
+(`client.go`), which stores that error and closes the transport; the session's
+`transportFailed` then emits `run.failed` carrying `deepseek_process_exit`,
+`settled_by: inferred`, and the native error text verbatim
+(`fmt.Sprint(s.client.Err())`). So for a started run the oracle **does** have a
+terminal for an invalid payload, and it is reproducible. The claim that there
+was none also understated the gap, because a projection the port emits in its
+place is not merely less detailed — it is a different terminal, or none.
+
+The port carries that surface already: `invalidObservation` composes the
+native text for an unknown required event and routes it through
+`transportFailed`, and tool-call arguments the port cannot hold now route the
+same way, as `deepseek native: invalid pinned message: invalid tool/call`.
+
+What remains unreproduced is the set of predicates the port never evaluates, so
+nothing reaches `transportFailed` at all:
+
+| native member | where the oracle refuses | what the oracle emits | what the port emits |
+| --- | --- | --- | --- |
+| tool call `name` | `Event.Validate`, `validBlock` | `run.failed` / `deepseek_process_exit`, `invalid tool/call` | `action.call.requested` and `.started` carrying `"name": ""`, which the schema declares `nonEmptyString` |
+| `usage.inputTokens`, `usage.outputTokens` | `validUsage` | `run.failed` / `deepseek_process_exit`, `invalid assistant/message` | `run.completed` carrying `"input_tokens": -5`, which the schema declares `minimum: 0` |
+| tool call `callId` | `Event.Validate` | `run.failed` / `deepseek_process_exit`, `invalid tool/call` | a completed projection; the emitted `tool_call_id` is minted, so only the internal key is empty |
+
+Each is a missed terminal, and two of the three also produce an envelope the
+shared validator refuses. Tracked as #143, which is smaller than it looks: the
+refusal surface exists, so what is missing is the predicates and the mapping
+from each to its native error text, not a new failure mode.
+
+One divergence is deliberate and is not part of #143. Arguments carrying
+duplicate keys are accepted by the oracle — `json.Valid` tolerates them and the
+raw bytes are projected — and refused here, because a `std.json.Value` has no
+representation for a duplicated key, so the port can neither carry them nor
+report what the harness actually said. #147 holds the question; the oracle's
+own projection produces a trace the shared validator rejects at its decode
+phase, so there is no reading under which both implementations are right.
+
+The direction of the gap is worth recording because it is the opposite of the
+pi port's. pi carries a hand-written member validator, so its defects have been
+over-strictness: it refused a `toolcall_end` whose nested `toolCall` was `null`,
+and refused again when that object was merely incomplete, where the oracle
+decodes both into a zero-valued `wireToolCallContent` without error. This port
+cannot fail that way, because it asserts nothing about a payload's member set.
+A port's failure modes follow from which of the oracle's layers it reproduced.

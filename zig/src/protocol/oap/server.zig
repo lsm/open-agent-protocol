@@ -51,6 +51,14 @@ pub const advertised_degradation = [_]oap_types.Degradation{
     },
 };
 
+pub const Descriptor = struct {
+    endpoint_id: []const u8 = ENDPOINT_ID,
+    endpoint_name: []const u8 = ENDPOINT_NAME,
+    capability_revision: []const u8 = CAPABILITY_REVISION,
+    features: []const AdvertisedFeature = &advertised_features,
+    degradation: []const oap_types.Degradation = &advertised_degradation,
+};
+
 pub const PendingSubmission = struct {
     session_id: []const u8,
     run_id: []const u8,
@@ -123,11 +131,13 @@ pub const Server = struct {
         endpoint_version: []const u8 = "dev",
         default_model_id: ?[]const u8 = null,
         session_idle_ttl_ms: u64 = DEFAULT_SESSION_IDLE_TTL_MS,
+        descriptor: Descriptor = .{},
     };
 
     pub const DEFAULT_SESSION_IDLE_TTL_MS: u64 = 30 * 60 * 1000;
 
     allocator: std.mem.Allocator,
+    descriptor: Descriptor,
     endpoint_version: []const u8,
     default_model_id: ?[]const u8,
     initialized: bool = false,
@@ -149,6 +159,7 @@ pub const Server = struct {
             null;
         return .{
             .allocator = allocator,
+            .descriptor = options.descriptor,
             .endpoint_version = endpoint_version,
             .default_model_id = default_model_id,
             .session_idle_ttl_ms = options.session_idle_ttl_ms,
@@ -379,7 +390,7 @@ pub const Server = struct {
 
     fn rejectStaleRevision(self: *Self, env: oap_types.Envelope) !bool {
         const supplied = env.capability_revision orelse return false;
-        if (std.mem.eql(u8, supplied, CAPABILITY_REVISION)) return false;
+        if (std.mem.eql(u8, supplied, self.descriptor.capability_revision)) return false;
         try self.pushError(
             env.id,
             env.session_id,
@@ -388,7 +399,7 @@ pub const Server = struct {
             "request pinned a capability revision this endpoint no longer serves",
             &.{
                 .{ .key = "expected_revision", .value = supplied },
-                .{ .key = "current_revision", .value = CAPABILITY_REVISION },
+                .{ .key = "current_revision", .value = self.descriptor.capability_revision },
             },
         );
         return true;
@@ -418,15 +429,15 @@ pub const Server = struct {
         errdefer self.allocator.free(id);
         const in_reply_to = try self.allocator.dupe(u8, env.id);
         errdefer self.allocator.free(in_reply_to);
-        const revision = try self.allocator.dupe(u8, CAPABILITY_REVISION);
+        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
         errdefer self.allocator.free(revision);
         const protocol_version = try self.allocator.dupe(u8, oap_types.VERSION);
         errdefer self.allocator.free(protocol_version);
         const profile = try self.allocator.dupe(u8, oap_types.PROFILE);
         errdefer self.allocator.free(profile);
-        const endpoint_id = try self.allocator.dupe(u8, ENDPOINT_ID);
+        const endpoint_id = try self.allocator.dupe(u8, self.descriptor.endpoint_id);
         errdefer self.allocator.free(endpoint_id);
-        const endpoint_name = try self.allocator.dupe(u8, ENDPOINT_NAME);
+        const endpoint_name = try self.allocator.dupe(u8, self.descriptor.endpoint_name);
         errdefer self.allocator.free(endpoint_name);
         const endpoint_version = try self.allocator.dupe(u8, self.endpoint_version);
         errdefer self.allocator.free(endpoint_version);
@@ -453,7 +464,7 @@ pub const Server = struct {
         errdefer self.allocator.free(id);
         const in_reply_to = try self.allocator.dupe(u8, env.id);
         errdefer self.allocator.free(in_reply_to);
-        const revision = try self.allocator.dupe(u8, CAPABILITY_REVISION);
+        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
         errdefer self.allocator.free(revision);
 
         var capabilities = try self.buildCapabilities();
@@ -584,7 +595,7 @@ pub const Server = struct {
         errdefer self.allocator.free(in_reply_to);
         const scope_id = try self.allocator.dupe(u8, entry.session_id);
         errdefer self.allocator.free(scope_id);
-        const revision = try self.allocator.dupe(u8, CAPABILITY_REVISION);
+        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
         errdefer self.allocator.free(revision);
 
         const payload_session = try self.allocator.dupe(u8, entry.session_id);
@@ -822,7 +833,7 @@ pub const Server = struct {
         for (ordered) |control| {
             const supplied = payload.control(control) orelse continue;
             const key = control.capabilityKey();
-            const feature = findFeature(key);
+            const feature = findFeature(self.descriptor.features, key);
             if (feature == null or feature.?.level == .unavailable) {
                 try self.pushError(
                     env.id,
@@ -924,7 +935,7 @@ pub const Server = struct {
         errdefer self.allocator.free(in_reply_to);
         const scope_id = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(scope_id);
-        const revision = try self.allocator.dupe(u8, CAPABILITY_REVISION);
+        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
         errdefer self.allocator.free(revision);
         const payload_session = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(payload_session);
@@ -1082,7 +1093,7 @@ pub const Server = struct {
         errdefer self.allocator.free(scope_session);
         const scope_run = try self.allocator.dupe(u8, run_id);
         errdefer self.allocator.free(scope_run);
-        const revision = try self.allocator.dupe(u8, CAPABILITY_REVISION);
+        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
         errdefer self.allocator.free(revision);
         const payload_session = try self.allocator.dupe(u8, session_id);
         errdefer self.allocator.free(payload_session);
@@ -1412,9 +1423,9 @@ pub const Server = struct {
     }
 
     fn buildEndpoint(self: *Self) !oap_types.Endpoint {
-        const id = try self.allocator.dupe(u8, ENDPOINT_ID);
+        const id = try self.allocator.dupe(u8, self.descriptor.endpoint_id);
         errdefer self.allocator.free(id);
-        const name = try self.allocator.dupe(u8, ENDPOINT_NAME);
+        const name = try self.allocator.dupe(u8, self.descriptor.endpoint_name);
         errdefer self.allocator.free(name);
         const version = try self.allocator.dupe(u8, self.endpoint_version);
         return .{ .id = id, .name = name, .version = version };
@@ -1438,14 +1449,14 @@ pub const Server = struct {
     }
 
     fn buildFeatures(self: *Self) ![]oap_types.Feature {
-        const features = try self.allocator.alloc(oap_types.Feature, advertised_features.len);
+        const features = try self.allocator.alloc(oap_types.Feature, self.descriptor.features.len);
         var filled: usize = 0;
         errdefer {
             for (features[0..filled]) |*entry| entry.deinit(self.allocator);
             self.allocator.free(features);
         }
 
-        for (advertised_features, 0..) |source, index| {
+        for (self.descriptor.features, 0..) |source, index| {
             const key = try self.allocator.dupe(u8, source.key);
             errdefer self.allocator.free(key);
             const scope = if (source.scope) |value| try self.allocator.dupe(u8, value) else null;
@@ -1459,14 +1470,14 @@ pub const Server = struct {
     }
 
     fn buildDegradation(self: *Self) ![]oap_types.Degradation {
-        const degradation = try self.allocator.alloc(oap_types.Degradation, advertised_degradation.len);
+        const degradation = try self.allocator.alloc(oap_types.Degradation, self.descriptor.degradation.len);
         var filled: usize = 0;
         errdefer {
             for (degradation[0..filled]) |*record| record.deinit(self.allocator);
             self.allocator.free(degradation);
         }
 
-        for (advertised_degradation, 0..) |source, index| {
+        for (self.descriptor.degradation, 0..) |source, index| {
             const feature = try self.allocator.dupe(u8, source.feature);
             errdefer self.allocator.free(feature);
             const reason = try self.allocator.dupe(u8, source.reason);
@@ -1496,8 +1507,8 @@ fn containsString(list: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
-pub fn findFeature(key: []const u8) ?AdvertisedFeature {
-    for (advertised_features) |feature| {
+pub fn findFeature(features: []const AdvertisedFeature, key: []const u8) ?AdvertisedFeature {
+    for (features) |feature| {
         if (std.mem.eql(u8, feature.key, key)) return feature;
     }
     return null;
@@ -1719,6 +1730,111 @@ test "capabilities answers a revisioned descriptor with degradation records" {
     try std.testing.expectEqual(@as(usize, advertised_degradation.len), capabilities.degradation.len);
     try std.testing.expectEqualStrings("stdio", capabilities.bindings[0].kind);
     try std.testing.expectEqualStrings("jsonl", capabilities.bindings[0].serialization.?);
+}
+
+const backend_features = [_]AdvertisedFeature{
+    .{ .key = "protocol.initialize", .level = .emulated, .reason = "the harness has no negotiation" },
+    .{ .key = "run.streaming", .level = .native },
+};
+
+const backend_degradation = [_]oap_types.Degradation{
+    .{ .feature = "protocol.initialize", .from = .native, .to = .emulated, .reason = "synthesized for a pinned harness" },
+};
+
+const backend_descriptor = Descriptor{
+    .endpoint_id = "claude-code.cli",
+    .endpoint_name = "Claude Code",
+    .capability_revision = "claude-code-2.1.263-oap-v3",
+    .features = &backend_features,
+    .degradation = &backend_degradation,
+};
+
+test "a backed endpoint answers with the backend's descriptor, not its own" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .endpoint_version = "test", .descriptor = backend_descriptor });
+    defer server.deinit();
+
+    try server.handleEnvelope(.{ .id = "cap-1", .payload = .{ .capabilities_request = {} } });
+    var reply = try nextEnvelope(&server, allocator);
+    defer reply.deinit(allocator);
+
+    try std.testing.expectEqualStrings("claude-code-2.1.263-oap-v3", reply.capability_revision.?);
+    const capabilities = reply.payload.capabilities_response;
+    try std.testing.expectEqualStrings("claude-code.cli", capabilities.endpoint.id);
+    try std.testing.expectEqualStrings("Claude Code", capabilities.endpoint.name.?);
+    try std.testing.expectEqual(oap_types.SupportLevel.emulated, capabilities.feature("protocol.initialize").?.level);
+    try std.testing.expect(capabilities.feature("session.message.delivery.auto") == null);
+    try std.testing.expectEqual(@as(usize, backend_degradation.len), capabilities.degradation.len);
+    try std.testing.expectEqualStrings("protocol.initialize", capabilities.degradation[0].feature);
+}
+
+test "a backed endpoint declares the backend as the agent participant" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .endpoint_version = "test", .descriptor = backend_descriptor });
+    defer server.deinit();
+
+    try server.handleEnvelope(.{ .id = "init-1", .payload = .{ .initialize_request = .{
+        .protocol_versions = &.{oap_types.VERSION},
+        .profiles = &.{oap_types.PROFILE},
+    } } });
+
+    var reply = try nextEnvelope(&server, allocator);
+    defer reply.deinit(allocator);
+
+    try std.testing.expectEqualStrings("claude-code.cli", reply.payload.initialize_response.endpoint.id);
+    try std.testing.expectEqualStrings("claude-code-2.1.263-oap-v3", reply.capability_revision.?);
+}
+
+test "a run control is judged against the backend's feature list" {
+    const allocator = std.testing.allocator;
+
+    var backed = try Server.init(allocator, .{ .endpoint_version = "test", .descriptor = backend_descriptor });
+    defer backed.deinit();
+    defer discardPending(&backed, allocator);
+    try openTestSession(&backed, allocator, "sess-1");
+
+    var parts = [_]oap_types.ContentPart{.{ .text = "go" }};
+    var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
+    const submit = oap_types.MessageSubmitRequest{
+        .session_id = "sess-1",
+        .messages = &messages,
+        .delivery = .auto,
+        .model_id = "anthropic/anthropic-messages@m",
+    };
+    try backed.handleEnvelope(.{ .id = "req-1", .session_id = "sess-1", .payload = .{ .message_submit_request = submit } });
+
+    var refusal = try nextEnvelope(&backed, allocator);
+    defer refusal.deinit(allocator);
+    try std.testing.expectEqualStrings("unsupported_feature", refusal.payload.error_response.code);
+    try std.testing.expectEqualStrings("run.model_selection", refusal.payload.error_response.detail("feature").?);
+
+    var native = try Server.init(allocator, .{ .endpoint_version = "test" });
+    defer native.deinit();
+    defer discardPending(&native, allocator);
+    try openTestSession(&native, allocator, "sess-1");
+    try native.handleEnvelope(.{ .id = "req-1", .session_id = "sess-1", .payload = .{ .message_submit_request = submit } });
+
+    var admission = try nextEnvelope(&native, allocator);
+    defer admission.deinit(allocator);
+    try std.testing.expect(admission.payload.message_submit_response.accepted);
+}
+
+test "a backed endpoint measures a stale revision against the backend's" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .endpoint_version = "test", .descriptor = backend_descriptor });
+    defer server.deinit();
+
+    try server.handleEnvelope(.{
+        .id = "cap-stale",
+        .capability_revision = CAPABILITY_REVISION,
+        .payload = .{ .session_state_request = .{ .session_id = "nope" } },
+    });
+
+    var reply = try nextEnvelope(&server, allocator);
+    defer reply.deinit(allocator);
+
+    try std.testing.expectEqualStrings("stale_capabilities", reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("claude-code-2.1.263-oap-v3", reply.payload.error_response.detail("current_revision").?);
 }
 
 test "capabilities and initialize ignore a stale capability revision" {
