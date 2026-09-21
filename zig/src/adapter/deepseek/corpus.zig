@@ -114,7 +114,7 @@ const Driver = struct {
         if (std.mem.eql(u8, action, "open")) {
             const params = item.raw.object.get("params") orelse return .handled;
             const model = if (params == .object) corpus.stringMember(params.object, "model") orelse "" else "";
-            session.initialize(reducer, model);
+            try session.initialize(reducer, model);
             return .handled;
         }
         if (std.mem.eql(u8, action, "shutdown")) {
@@ -330,6 +330,28 @@ test "a shutdown closes the session, and a second one is a script defect" {
         error.SessionShutDownTwice,
         Harness.steps(scratch, shutdown ++ shutdown, &twice, inline_case),
     );
+}
+
+test "a second open in a script is a defect, not a renegotiation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+    const open = "{\"action\":\"open\",\"raw\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"model\":\"deepseek-reasoner\"}}}\n";
+    const reopen = "{\"action\":\"open\",\"raw\":{\"id\":2,\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"model\":\"deepseek-other\"}}}\n";
+
+    var once = session.Reducer.init(scratch);
+    session.openSession(&once);
+    try Harness.steps(scratch, open, &once, inline_case);
+    try std.testing.expectEqualStrings("deepseek-reasoner", once.model);
+
+    var twice = session.Reducer.init(scratch);
+    session.openSession(&twice);
+    try std.testing.expectError(
+        session.Error.AlreadyInitialized,
+        Harness.steps(scratch, open ++ reopen, &twice, inline_case),
+    );
+    try std.testing.expectEqualStrings("deepseek-reasoner", twice.model);
 }
 
 test "a reverse request retires the session instead of reducing as a notification" {

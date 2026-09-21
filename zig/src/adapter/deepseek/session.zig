@@ -8,7 +8,7 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 
-pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClosed, RunActive, NoRunToOverlap, OverlapWasAccepted, UnrepresentableArguments };
+pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClosed, RunActive, NoRunToOverlap, OverlapWasAccepted, UnrepresentableArguments, AlreadyInitialized };
 
 pub const Counters = struct {
     ids: usize = 0,
@@ -52,6 +52,7 @@ pub const Reducer = struct {
     counters: Counters = .{},
     session_id: []const u8 = "session",
     model: []const u8 = "deepseek-chat",
+    initialized: bool = false,
     run_id: []const u8 = "",
     message_id: []const u8 = "",
     sequence: u64 = 1,
@@ -157,7 +158,9 @@ pub fn openSession(reducer: *Reducer) void {
     _ = reducer.counters.nextTick();
 }
 
-pub fn initialize(reducer: *Reducer, model: []const u8) void {
+pub fn initialize(reducer: *Reducer, model: []const u8) !void {
+    if (reducer.initialized) return Error.AlreadyInitialized;
+    reducer.initialized = true;
     if (model.len != 0) reducer.model = model;
 }
 
@@ -1091,6 +1094,28 @@ test "an unmappable final block reports which block and why, the way the oracle 
         "[{\"type\":\"tool-call\",\"id\":\"nope\",\"name\":\"read\",\"arguments\":\"{}\"}]",
         "final message references unknown tool \"nope\"",
     );
+}
+
+test "initialization is one-shot, and a later one cannot renegotiate the model" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(arena.allocator());
+    try std.testing.expectEqualStrings("deepseek-chat", reducer.model);
+    try initialize(&reducer, "deepseek-reasoner");
+    try std.testing.expectEqualStrings("deepseek-reasoner", reducer.model);
+    try std.testing.expectError(Error.AlreadyInitialized, initialize(&reducer, "deepseek-other"));
+    try std.testing.expectEqualStrings("deepseek-reasoner", reducer.model);
+    try std.testing.expectError(Error.AlreadyInitialized, initialize(&reducer, ""));
+}
+
+test "an initialization naming no model freezes on the default rather than staying open" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(arena.allocator());
+    try initialize(&reducer, "");
+    try std.testing.expectEqualStrings("deepseek-chat", reducer.model);
+    try std.testing.expectError(Error.AlreadyInitialized, initialize(&reducer, "deepseek-reasoner"));
+    try std.testing.expectEqualStrings("deepseek-chat", reducer.model);
 }
 
 test "a refusal before the run is admitted emits nothing" {
