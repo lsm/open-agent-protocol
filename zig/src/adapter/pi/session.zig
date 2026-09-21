@@ -1177,6 +1177,13 @@ test "a case-folded member keeps the type its tag declares" {
     try expectFinalMessage("{" ++ base ++ ",\"ENDTURN\":true}", null);
 }
 
+test "a provider event's required member is found by name, not by fold" {
+    try expectUpdateRefused("{\"type\":\"toolcall_end\",\"CONTENTINDEX\":0,\"toolCall\":{\"id\":\"a\",\"name\":\"n\",\"arguments\":{}}}");
+    try expectUpdateRefused("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"TOOLCALL\":{\"id\":\"a\",\"name\":\"n\",\"arguments\":{}}}");
+    try expectUpdateRefused("{\"type\":\"text_delta\",\"contentIndex\":0,\"DELTA\":\"x\"}");
+    try expectUpdateAccepted("{\"id\":\"a\",\"name\":\"n\",\"arguments\":{},\"thoughtsignature\":\"s\"}");
+}
+
 test "a required member is the one thing case does not fold" {
     const tail = "\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{},\"stopReason\":\"stop\",\"timestamp\":1";
     try expectFinalMessage("{\"ROLE\":\"assistant\"," ++ tail ++ ",\"content\":[]}", "pi_invalid_message_end");
