@@ -7,7 +7,7 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 
-pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClosed, RunActive, NoRunToOverlap, OverlapWasAccepted };
+pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClosed, RunActive, NoRunToOverlap, OverlapWasAccepted, UnrepresentableArguments };
 
 pub const Counters = struct {
     ids: usize = 0,
@@ -410,7 +410,7 @@ fn emitStreamRecords(reducer: *Reducer, records: std.json.Value) !void {
 fn decodedArguments(reducer: *Reducer, carried: ?std.json.Value) !?std.json.Value {
     const value = carried orelse return null;
     if (value != .string) return value;
-    return std.json.parseFromSliceLeaky(std.json.Value, reducer.arena, value.string, .{}) catch null;
+    return std.json.parseFromSliceLeaky(std.json.Value, reducer.arena, value.string, .{}) catch Error.UnrepresentableArguments;
 }
 
 fn findTool(reducer: *Reducer, native_id: []const u8) ?*ToolState {
@@ -445,7 +445,11 @@ fn startTool(reducer: *Reducer, data: std.json.Value) !void {
         .native_id = call_id,
         .id = try reducer.counters.nextID(reducer.arena, "tool-call"),
         .name = textOf(data, "name"),
-        .args = try decodedArguments(reducer, memberOf(data, "arguments")),
+        .args = decodedArguments(reducer, memberOf(data, "arguments")) catch |err| {
+            if (err != Error.UnrepresentableArguments) return err;
+            try failRun(reducer, "deepseek_unrepresentable_arguments", "tool arguments cannot appear in a valid trace");
+            return;
+        },
     };
     try reducer.tools.append(reducer.arena, tool);
     const requested = try reducer.emitReplying("action.call.requested", try toolPayload(reducer, tool, true), false, "");
@@ -496,7 +500,8 @@ fn blocksContent(reducer: *Reducer, blocks: std.json.Value) !std.json.Value {
             if (std.mem.eql(u8, kind, "tool-call")) {
                 const tool = findTool(reducer, textOf(block, "id")) orelse return Error.InvalidFrame;
                 if (!std.mem.eql(u8, tool.name, textOf(block, "name"))) return Error.InvalidFrame;
-                const carried = try decodedArguments(reducer, memberOf(block, "arguments")) orelse return Error.InvalidFrame;
+                const parsed = decodedArguments(reducer, memberOf(block, "arguments")) catch return Error.InvalidFrame;
+                const carried = parsed orelse return Error.InvalidFrame;
                 const shape = try reducer.object();
                 try shape.put(reducer.arena, "type", Reducer.str("tool_call"));
                 try shape.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
@@ -1299,4 +1304,17 @@ test "a prompt reply without a message id retires the session" {
     try std.testing.expect(!reducer.reserved);
     try std.testing.expect(reducer.envelopes().len == 0);
     try std.testing.expectError(Error.SessionUnusable, submit(&reducer));
+}
+
+test "tool arguments that cannot appear in a valid trace fail the run" {
+    try expectRefusal(&.{
+        "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1,\\\"x\\\":2}\"}}",
+    }, "deepseek_unrepresentable_arguments");
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1}\"}}"));
+    try std.testing.expect(lastFailure(&reducer) == null);
 }
