@@ -1263,15 +1263,26 @@ above no longer tries to.
 The corpus cannot carry any of this: its `can_use_tool` frames are scripted,
 so they prove the reducer surfaces a gate it is given, never which calls the
 CLI raises one for. The assertions belong in the smoke gate, which is the
-only thing here that runs 2.1.263 — that an ask-gated command produces a
-`can_use_tool` before it settles, that a safe command does not, and that
-`AllowTools("Bash")` exempts an otherwise ask-gated `Bash`, and that a spawn
-carrying `--tools` without `Bash` cannot attempt `Bash` at all while the
-default spawn can. The last two are what settle the flag reading: the third
-tests only whether `--allowedTools` pre-approves, and the fourth is the only
-one that tests whether anything bounds the surface. Until those run, this adapter must
-be described as gating the calls that ask, and never as gating every tool
-call.
+only thing here that runs 2.1.263:
+
+1. an ask-gated command produces a `can_use_tool` before it settles;
+2. a safe command does not;
+3. `AllowTools("Bash")` exempts an otherwise ask-gated `Bash`;
+4. a spawn carrying `--tools` without `Bash` cannot attempt `Bash` at all,
+   while the default spawn can;
+5. `AllowTools("Read")` — a posture omitting `Bash` — still lets `Bash` be
+   attempted.
+
+The last three settle the flag reading between them, and none of them is
+redundant. Three tests only that naming a tool pre-approves it. Four tests
+only that `--tools` can bound the surface. Five is what separates the
+pre-approval reading from a hybrid: an implementation that both pre-approved
+named tools *and* hid omitted ones would satisfy three and four while making
+"a restricted posture still exposes every built-in" false. Only five asks
+whether `--allowedTools` bounds anything.
+
+Until those run, this adapter must be described as gating the calls that ask,
+and never as gating every tool call.
 
 Implementation discovery made executable by the smoke gate (fixed): the
 default factory originally ran the initialize exchange inside
