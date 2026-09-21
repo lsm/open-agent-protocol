@@ -24,6 +24,7 @@ pub const code_duplicate_model_id = "duplicate_model_id";
 pub const code_ambiguous_default_model = "ambiguous_default_model";
 pub const code_unannounced_catalog_change = "unannounced_catalog_change";
 pub const code_undisclosed_attach_modes = "undisclosed_attach_modes";
+pub const code_duplicate_tool_source = "duplicate_tool_source";
 
 pub const implemented = [_][]const u8{
     code_duplicate_envelope_id,
@@ -49,6 +50,7 @@ pub const implemented = [_][]const u8{
     code_ambiguous_default_model,
     code_unannounced_catalog_change,
     code_undisclosed_attach_modes,
+    code_duplicate_tool_source,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -185,6 +187,7 @@ const Unjudged = struct {
 const Session = struct {
     active: []const u8 = "",
     provided: std.ArrayList([]const u8) = .empty,
+    attached: std.StringArrayHashMapUnmanaged(void) = .empty,
     unjudged: std.ArrayList(Unjudged) = .empty,
     order: std.ArrayList([]const u8) = .empty,
     current_model: []const u8 = "",
@@ -244,6 +247,7 @@ const Pending = struct {
     subscribe: ?Expectation = null,
     fired: bool = false,
     provided: []const []const u8 = &.{},
+    attachments: ?std.json.Value = null,
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
     model_query: bool = false,
@@ -354,6 +358,7 @@ pub const Machine = struct {
     supports: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     catalog: std.ArrayList([]const u8) = .empty,
     declared_sources: std.StringArrayHashMapUnmanaged(void) = .empty,
+    duplicate_source: []const u8 = "",
     control_participant: []const u8 = "",
     catalog_known: bool = false,
     catalog_ambiguous: bool = false,
@@ -385,6 +390,7 @@ pub const Machine = struct {
         for (self.sessions.values()) |holder| {
             holder.order.deinit(self.allocator);
             holder.provided.deinit(self.allocator);
+            holder.attached.deinit(self.allocator);
             holder.unjudged.deinit(self.allocator);
         }
         self.sessions.deinit(self.allocator);
@@ -601,6 +607,9 @@ pub const Machine = struct {
         }
         if (std.mem.eql(u8, declared, "action.tools.list.response")) {
             try self.gatedResponse(index, envelope, .control);
+            if (duplicateSourceId(member(payload, "sources")).len != 0) {
+                try self.add(code_duplicate_tool_source, index);
+            }
             try self.duplicateNames(index, member(payload, "tools"));
             return;
         }
@@ -684,6 +693,8 @@ pub const Machine = struct {
         self.limits = readLimits(member(payload, "limits"));
         try self.checkQueueLimits(index);
         try self.checkAttachModes(index);
+        if (self.duplicate_source.len != 0) try self.add(code_duplicate_tool_source, index);
+        try self.checkAttachedCollision(index);
         try self.checkAdvertisement(index, outgoing);
         self.catalog_ambiguous = duplicateToolName(self.catalog.items) != null;
         if (self.catalog_ambiguous) try self.add(code_duplicate_tool_name, index);
@@ -811,6 +822,7 @@ pub const Machine = struct {
             for (tools.?.array.items, 0..) |tool, at| names[at] = memberString(tool, "name");
             pending.provided = names;
         }
+        if (attaching) pending.attachments = sources;
         if (member(payload, "message")) |message| {
             try self.submitControls(index, envelope, message, pending);
             try self.deliveryExpectation(index, envelope, message, pending);
@@ -865,7 +877,7 @@ pub const Machine = struct {
                     .reason = reason_unsatisfiable,
                     .detail_name = "source",
                     .detail_value = id,
-                    .diagnostic = unnamed_defect,
+                    .diagnostic = code_duplicate_tool_source,
                 });
             }
             try seen.append(self.allocator, id);
@@ -1200,19 +1212,63 @@ pub const Machine = struct {
         if (sources != .array) return;
         for (sources.array.items) |source| {
             const id = memberString(source, "id");
-            if (id.len != 0) try self.declared_sources.put(self.allocator, id, {});
+            if (id.len == 0) continue;
+            if (self.declared_sources.get(id) != null) {
+                if (self.duplicate_source.len == 0) self.duplicate_source = id;
+                continue;
+            }
+            try self.declared_sources.put(self.allocator, id, {});
         }
     }
 
     fn collectSources(self: *Machine, payload: std.json.Value) !void {
         self.declared_sources.clearRetainingCapacity();
+        self.duplicate_source = "";
         try self.absorbSources(member(payload, "sources"));
-        if (member(payload, "layers")) |layers| {
-            if (layers == .object) {
-                var layer = layers.object.iterator();
-                while (layer.next()) |entry| try self.absorbSources(member(entry.value_ptr.*, "sources"));
+        const layers = member(payload, "layers") orelse return;
+        if (layers != .object) return;
+        var names = std.ArrayList([]const u8).empty;
+        defer names.deinit(self.allocator);
+        var layer = layers.object.iterator();
+        while (layer.next()) |entry| try names.append(self.allocator, entry.key_ptr.*);
+        std.mem.sort([]const u8, names.items, {}, lessThanName);
+        for (names.items) |name| {
+            try self.absorbSources(member(layers.object.get(name).?, "sources"));
+        }
+    }
+
+    fn duplicateSourceId(sources: ?std.json.Value) []const u8 {
+        const listed = sources orelse return "";
+        if (listed != .array) return "";
+        for (listed.array.items, 0..) |source, at| {
+            const id = memberString(source, "id");
+            if (id.len == 0) continue;
+            for (listed.array.items[0..at]) |earlier| {
+                if (std.mem.eql(u8, memberString(earlier, "id"), id)) return id;
             }
         }
+        return "";
+    }
+
+    fn checkAttachedCollision(self: *Machine, index: usize) !void {
+        var ids = std.ArrayList([]const u8).empty;
+        defer ids.deinit(self.allocator);
+        try ids.appendSlice(self.allocator, self.sessions.keys());
+        std.mem.sort([]const u8, ids.items, {}, lessThanName);
+        for (ids.items) |id| {
+            const holder = self.sessions.get(id).?;
+            for (holder.attached.keys()) |attached| {
+                if (self.declared_sources.get(attached) != null) {
+                    try self.add(code_duplicate_tool_source, index);
+                }
+            }
+        }
+    }
+
+    fn checkPublishedUnion(self: *Machine, index: usize, session: []const u8, published: ?std.json.Value) !void {
+        const holder = self.sessions.get(session) orelse return;
+        if (holder.attached.count() == 0) return;
+        if (duplicateSourceId(published).len != 0) try self.add(code_duplicate_tool_source, index);
     }
 
     fn collectCatalog(self: *Machine, payload: std.json.Value) !void {
@@ -1961,6 +2017,14 @@ pub const Machine = struct {
                         if (listedIn(holder.provided.items, name)) continue;
                         try holder.provided.append(self.allocator, name);
                     }
+                    if (opened.attachments) |listed| {
+                        if (listed == .array) {
+                            for (listed.array.items) |attachment| {
+                                const id = memberString(attachment, "id");
+                                if (id.len != 0) try holder.attached.put(self.allocator, id, {});
+                            }
+                        }
+                    }
                 }
             }
             const reported = memberString(payload, "current_model_id");
@@ -1987,6 +2051,7 @@ pub const Machine = struct {
                 try self.bootstrapRecoveredRuns(index, session_id, payload);
             }
         }
+        try self.checkPublishedUnion(index, session_id, member(payload, "sources"));
         try self.compoundOpen(index, envelope, payload, session_id);
     }
 
@@ -3711,7 +3776,7 @@ test "a defect the port does not name still silences the bound beside it" {
     ++ refused, &.{"unavailable_capability"});
 }
 
-test "an attachment reusing an id the session already resolves silences the bound" {
+test "an attachment reusing an id the session already resolves outranks the bound" {
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
         \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"],"limits":{"max_sources":1}}},
@@ -3719,6 +3784,54 @@ test "an attachment reusing an id the session already resolves silences the boun
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tool_sources":[{"id":"already","kind":"process"},{"id":"fresh","kind":"process"}]}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
+    , &.{"duplicate_tool_source"});
+}
+
+test "a descriptor, a catalog and a snapshot each name their own duplicate source" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},
+        \\"sources":[{"id":"twice","kind":"process"},{"id":"twice","kind":"process"}]}}]
+    , &.{"duplicate_tool_source"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tools.list":{"level":"native"}},"sources":[{"id":"one","kind":"process"}]}},
+        \\{"type":"action.tools.list.request","id":"t1","capability_revision":"v1","payload":{}},
+        \\{"type":"action.tools.list.response","id":"t2","in_reply_to":"t1","capability_revision":"v1",
+        \\"payload":{"sources":[{"id":"twice","kind":"process"},{"id":"twice","kind":"process"}],"tools":[]}}]
+    , &.{"duplicate_tool_source"});
+
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},"sources":[]}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"files","kind":"process"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":
+        \\{"session_id":"s","sources":[{"id":"files","kind":"process"},{"id":"files","kind":"process"}]}}]
+    , &.{"duplicate_tool_source"});
+}
+
+test "a refreshed descriptor claiming an attached id is a collision, not a redeclaration" {
+    const opened =
+        \\[{"type":"capabilities.request","id":"c1","payload":{}},
+        \\{"type":"capabilities.response","id":"k1","in_reply_to":"c1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},"sources":[]}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"files","kind":"process"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":
+        \\{"session_id":"s","sources":[{"id":"files","kind":"process"}]}},
+        \\{"type":"capabilities.updated","id":"u1","capability_revision":"v2","payload":{"previous_revision":"v1"}},
+        \\{"type":"capabilities.request","id":"c2","payload":{}},
+        \\{"type":"capabilities.response","id":"k2","in_reply_to":"c2","capability_revision":"v2","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},"sources":
+    ;
+    try expectCodes(opened ++
+        \\[{"id":"files","kind":"process"}]}}]
+    , &.{"duplicate_tool_source"});
+
+    try expectCodes(opened ++
+        \\[{"id":"other","kind":"process"}]}}]
     , &.{});
 }
 
