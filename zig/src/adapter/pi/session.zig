@@ -299,12 +299,17 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
     return Error.InvalidFrame;
 }
 
-fn validateToolCallBlock(part: std.json.Value) !void {
+fn validateToolCallShape(part: std.json.Value) !void {
     if (part == .null) return;
     if (part != .object) return Error.InvalidFrame;
     try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
-    try requireMembers(part, &.{ "id", "name", "arguments" });
     try typedStrings(part, &.{ "type", "id", "name", "thoughtSignature", "namespace" });
+}
+
+fn validateToolCallBlock(part: std.json.Value) !void {
+    if (part != .object) return Error.InvalidFrame;
+    try validateToolCallShape(part);
+    try requireMembers(part, &.{ "id", "name", "arguments" });
 }
 
 pub fn validateWireContent(raw: std.json.Value, allow_image: bool) !void {
@@ -736,7 +741,7 @@ fn decodeProviderEvent(raw: std.json.Value) !?Part {
     if (std.mem.eql(u8, kind, "toolcall_end")) {
         try closedMembers(raw, &.{ "type", "contentIndex", "toolCall" });
         try requireMembers(raw, &.{"toolCall"});
-        try validateToolCallBlock(raw.object.get("toolCall").?);
+        try validateToolCallShape(raw.object.get("toolCall").?);
         try requireIndex(raw);
         return null;
     }
@@ -1730,14 +1735,43 @@ test "a resolution after settlement is refused rather than silently accepted" {
     try std.testing.expectError(Error.InteractionNotFound, resolveExtension(&reducer, "interaction-nonesuch", "yes"));
 }
 
-test "a null nested tool call is the zero struct the oracle decodes, not a defect" {
+fn expectUpdateAccepted(nested: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var reducer = try started(a);
-    try apply(&reducer, try parse(a, "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":null}}"));
+    const line = try std.fmt.allocPrint(a, "{{\"type\":\"message_update\",\"usage\":{{}},\"assistantMessageEvent\":{{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{s}}}}}", .{nested});
+    try apply(&reducer, try parse(a, line));
     try std.testing.expect(lastFailure(&reducer) == null);
+}
+
+test "a nested tool call carries whatever the harness sent, typed but not required" {
+    for ([_][]const u8{
+        "null",
+        "{}",
+        "{\"id\":\"c\"}",
+        "{\"id\":\"c\",\"name\":\"grep\"}",
+        "{\"arguments\":null}",
+    }) |nested| try expectUpdateAccepted(nested);
 
     try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":7}");
+    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":[]}");
+    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"bogus\":1}}");
     try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"type\":\"toolCall\",\"id\":7,\"name\":\"grep\",\"arguments\":{}}}");
+}
+
+test "a final message tool call block still requires the three members a nested one does not" {
+    for ([_][]const u8{
+        "[{\"type\":\"toolCall\",\"name\":\"grep\",\"arguments\":{}}]",
+        "[{\"type\":\"toolCall\",\"id\":\"t1\",\"arguments\":{}}]",
+        "[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"grep\"}]",
+    }) |content| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var reducer = try started(a);
+        const line = try std.fmt.allocPrint(a, "{{\"type\":\"message_end\",\"message\":{{\"role\":\"assistant\",\"api\":\"a\",\"provider\":\"p\",\"model\":\"m\",\"usage\":{{}},\"stopReason\":\"stop\",\"timestamp\":1,\"content\":{s}}}}}", .{content});
+        try apply(&reducer, try parse(a, line));
+        try std.testing.expectEqualStrings("pi_invalid_message_end", lastFailure(&reducer) orelse return error.NoRefusal);
+    }
 }
