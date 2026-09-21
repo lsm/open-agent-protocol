@@ -45,6 +45,7 @@ const Child = struct {
 const Tool = struct {
     native_id: []const u8,
     id: []const u8,
+    run_id: []const u8,
     name: []const u8,
     source: []const u8 = "",
     started_event: []const u8 = "",
@@ -191,10 +192,14 @@ pub const Reducer = struct {
     fn startTool(self: *Reducer, native_id: []const u8, name: []const u8, input: ?std.json.Value) !void {
         if (self.run == null) return;
         const run = &self.run.?;
-        if (self.findTool(native_id) != null) return;
+        if (self.findTool(native_id) != null) {
+            try self.failRun("claude_tool_lifecycle", "duplicate tool call");
+            return;
+        }
         const tool = Tool{
             .native_id = native_id,
             .id = try self.nextID("tool-call"),
+            .run_id = run.id,
             .name = name,
             .source = self.attributionFor(name),
         };
@@ -214,8 +219,15 @@ pub const Reducer = struct {
     fn endTool(self: *Reducer, native_id: []const u8, content: ?std.json.Value, is_error: bool) !void {
         if (self.run == null) return;
         const run = &self.run.?;
-        const tool = self.findTool(native_id) orelse return;
-        if (tool.terminal) return;
+        const tool = self.findTool(native_id) orelse {
+            try self.failRun("claude_tool_lifecycle", "unmatched tool completion");
+            return;
+        };
+        if (!std.mem.eql(u8, tool.run_id, run.id)) return;
+        if (tool.terminal) {
+            try self.failRun("claude_tool_lifecycle", "unmatched tool completion");
+            return;
+        }
         tool.terminal = true;
         var payload = try self.toolPayload(run, tool.*);
         if (is_error) {
@@ -477,7 +489,7 @@ pub const Reducer = struct {
         } else if (failed(frame)) {
             var failure = self.object();
             try self.put(&failure, "code", str(try self.failureCode(frame)));
-            try self.put(&failure, "message", str(errorResultText(frame)));
+            try self.put(&failure, "message", str(try self.errorResultText(frame)));
             try self.put(&payload, "error", .{ .object = failure });
             try self.closeTerminal(frame, &payload);
             _ = try self.emit(run, "run.failed", .{ .object = payload });
@@ -495,7 +507,15 @@ pub const Reducer = struct {
         self.run = null;
     }
 
+    fn failRun(self: *Reducer, code: []const u8, message: []const u8) !void {
+        return self.failRunSettled(code, message, "");
+    }
+
     pub fn transportFailed(self: *Reducer, detail: []const u8) !void {
+        return self.failRunSettled("claude_process_exit", detail, "inferred");
+    }
+
+    fn failRunSettled(self: *Reducer, code: []const u8, message: []const u8, settled_by: []const u8) !void {
         if (self.run == null) return;
         const run = &self.run.?;
         if (!run.started) {
@@ -503,13 +523,37 @@ pub const Reducer = struct {
             return;
         }
         var failure = self.object();
-        try self.put(&failure, "code", str("claude_process_exit"));
-        try self.put(&failure, "message", str(detail));
+        try self.put(&failure, "code", str(code));
+        try self.put(&failure, "message", str(message));
         var payload = try self.terminalPayload(run);
         try self.put(&payload, "error", .{ .object = failure });
-        try self.put(&payload, "settled_by", str("inferred"));
+        if (settled_by.len > 0) try self.put(&payload, "settled_by", str(settled_by));
         _ = try self.emit(run, "run.failed", .{ .object = payload });
         self.run = null;
+    }
+
+    fn errorResultText(self: *Reducer, frame: std.json.ObjectMap) ![]const u8 {
+        if (frame.get("errors")) |listed| {
+            if (listed == .array and listed.array.items.len > 0 and everyItemIsAString(listed.array)) {
+                var joined = std.ArrayList(u8).empty;
+                for (listed.array.items, 0..) |entry, index| {
+                    if (index > 0) try joined.appendSlice(self.allocator(), "; ");
+                    try joined.appendSlice(self.allocator(), entry.string);
+                }
+                return joined.items;
+            }
+        }
+        if (stringMember(frame, "result")) |result| {
+            const trimmed = std.mem.trim(u8, result, " \t\r\n");
+            if (trimmed.len > 0) return trimmed;
+        }
+        if (stringMember(frame, "subtype")) |subtype| {
+            if (!std.mem.eql(u8, subtype, "success")) return subtype;
+        }
+        if (integerMember(frame, "api_error_status")) |status| {
+            return std.fmt.allocPrint(self.allocator(), "API error (HTTP {d})", .{status});
+        }
+        return "unknown error";
     }
 
     fn failureCode(self: *Reducer, frame: std.json.ObjectMap) ![]const u8 {
@@ -527,7 +571,7 @@ pub const Reducer = struct {
     fn sweepRun(self: *Reducer) !void {
         const run = &self.run.?;
         for (self.tools.items) |*tool| {
-            if (tool.terminal) continue;
+            if (!std.mem.eql(u8, tool.run_id, run.id) or tool.terminal) continue;
             tool.terminal = true;
             const payload = try self.toolPayload(run, tool.*);
             _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
@@ -858,21 +902,11 @@ fn failed(frame: std.json.ObjectMap) bool {
     return !std.mem.eql(u8, subtype, "success");
 }
 
-fn errorResultText(frame: std.json.ObjectMap) []const u8 {
-    if (frame.get("errors")) |listed| {
-        if (listed == .array and listed.array.items.len == 1) {
-            const only = listed.array.items[0];
-            if (only == .string) return only.string;
-        }
+fn everyItemIsAString(listed: std.json.Array) bool {
+    for (listed.items) |entry| {
+        if (entry != .string) return false;
     }
-    if (stringMember(frame, "result")) |result| {
-        const trimmed = std.mem.trim(u8, result, " \t\r\n");
-        if (trimmed.len > 0) return trimmed;
-    }
-    if (stringMember(frame, "subtype")) |subtype| {
-        if (!std.mem.eql(u8, subtype, "success")) return subtype;
-    }
-    return "unknown error";
+    return true;
 }
 
 fn stopReason(frame: std.json.ObjectMap) []const u8 {
@@ -1362,6 +1396,136 @@ test "a catalog nobody has served attributes only what the endpoint owns" {
     try testing.expectEqualStrings("", sources[2]);
     try testing.expectEqualStrings(native_source, sources[3]);
     try testing.expectEqualStrings(native_source, sources[4]);
+}
+
+fn failureMessageOf(reducer: *Reducer) ?[]const u8 {
+    const payload = firstPayload(reducer, "run.failed") orelse return null;
+    return payload.get("error").?.object.get("message").?.string;
+}
+
+test "a tool lifecycle the oracle refuses fails the run here too" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var duplicated = Reducer.init(&arena, .{});
+    duplicated.open();
+    try startedRun(&duplicated, scratch, "turn-1");
+    try observeText(&duplicated, scratch,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try observeText(&duplicated, scratch,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a2"}
+    );
+    const after_duplicate = try emittedTypes(&duplicated, scratch);
+    try testing.expectEqual(@as(usize, 4), after_duplicate.len);
+    try testing.expectEqualStrings("run.failed", after_duplicate[3]);
+    try testing.expectEqualStrings("claude_tool_lifecycle", failureCodeOf(&duplicated).?);
+    try testing.expectEqualStrings("duplicate tool call", failureMessageOf(&duplicated).?);
+
+    var unmatched = Reducer.init(&arena, .{});
+    unmatched.open();
+    try startedRun(&unmatched, scratch, "turn-1");
+    try observeText(&unmatched, scratch,
+        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+    );
+    try testing.expectEqualStrings("unmatched tool completion", failureMessageOf(&unmatched).?);
+
+    var twice = Reducer.init(&arena, .{});
+    twice.open();
+    try startedRun(&twice, scratch, "turn-1");
+    try observeText(&twice, scratch,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try observeText(&twice, scratch,
+        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
+    );
+    try observeText(&twice, scratch,
+        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u2"}
+    );
+    try testing.expectEqualStrings("unmatched tool completion", failureMessageOf(&twice).?);
+}
+
+test "a completion for an earlier run's call is ignored, not refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"result","subtype":"success","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    const settled = reducer.envelopes.items.len;
+
+    try startedRun(&reducer, scratch, "turn-2");
+    try observeText(&reducer, scratch,
+        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"late"}]},"uuid":"u1"}
+    );
+    try testing.expectEqual(settled + 1, reducer.envelopes.items.len);
+    try testing.expectEqual(@as(?[]const u8, null), failureMessageOf(&reducer));
+}
+
+test "a failure message joins every error the harness reported" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var many = Reducer.init(&arena, .{});
+    many.open();
+    try startedRun(&many, scratch, "turn-1");
+    try observeText(&many, scratch,
+        \\{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["first","second"],"user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqualStrings("first; second", failureMessageOf(&many).?);
+
+    var status = Reducer.init(&arena, .{});
+    status.open();
+    try startedRun(&status, scratch, "turn-1");
+    try observeText(&status, scratch,
+        \\{"type":"result","subtype":"success","is_error":true,"api_error_status":503,"user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqualStrings("API error (HTTP 503)", failureMessageOf(&status).?);
+
+    var bare = Reducer.init(&arena, .{});
+    bare.open();
+    try startedRun(&bare, scratch, "turn-1");
+    try observeText(&bare, scratch,
+        \\{"type":"result","subtype":"success","is_error":true,"user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqualStrings("unknown error", failureMessageOf(&bare).?);
+}
+
+test "a call the failed run left open is not swept into the next run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+    );
+    try testing.expectEqualStrings("run.failed", reducer.envelopes.items[3].object.get("type").?.string);
+    const refused_at = reducer.envelopes.items.len;
+
+    try startedRun(&reducer, scratch, "turn-2");
+    try observeText(&reducer, scratch,
+        \\{"type":"result","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
+    );
+
+    const kinds = try emittedTypes(&reducer, scratch);
+    try testing.expectEqual(refused_at + 2, kinds.len);
+    try testing.expectEqualStrings("run.started", kinds[refused_at]);
+    try testing.expectEqualStrings("run.completed", kinds[refused_at + 1]);
 }
 
 test "an init outside a pending run is adopted when it arrives" {
