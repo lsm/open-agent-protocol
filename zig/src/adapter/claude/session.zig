@@ -38,6 +38,7 @@ pub const CatalogEntry = struct {
 
 const Child = struct {
     task_id: []const u8,
+    run_id: []const u8,
     task_type: []const u8,
     settled: bool = false,
 };
@@ -54,6 +55,7 @@ const Tool = struct {
 
 const Gate = struct {
     id: []const u8,
+    run_id: []const u8,
     request_id: []const u8 = "",
     requested_event: []const u8 = "",
     resolved: bool = false,
@@ -246,15 +248,17 @@ pub const Reducer = struct {
     }
 
     pub fn pendingInteraction(self: *Reducer) ?[]const u8 {
+        const run = self.run orelse return null;
         for (self.gates.items) |gate| {
-            if (!gate.resolved) return gate.id;
+            if (!gate.resolved and std.mem.eql(u8, gate.run_id, run.id)) return gate.id;
         }
         return null;
     }
 
     fn findGate(self: *Reducer, id: []const u8) ?*Gate {
+        const run = self.run orelse return null;
         for (self.gates.items) |*gate| {
-            if (std.mem.eql(u8, gate.id, id)) return gate;
+            if (std.mem.eql(u8, gate.id, id) and std.mem.eql(u8, gate.run_id, run.id)) return gate;
         }
         return null;
     }
@@ -280,10 +284,11 @@ pub const Reducer = struct {
     }
 
     fn cancelGate(self: *Reducer, request_id: []const u8) !void {
+        const owner = self.run orelse return;
         for (self.gates.items) |*gate| {
             if (gate.resolved or !std.mem.eql(u8, gate.request_id, request_id)) continue;
+            if (!std.mem.eql(u8, gate.run_id, owner.id)) continue;
             gate.resolved = true;
-            if (self.run == null) return;
             const run = &self.run.?;
             if (!run.started) return;
             var payload = self.object();
@@ -336,7 +341,7 @@ pub const Reducer = struct {
         try self.put(&payload, "allow_cancel", .{ .bool = true });
 
         const requested = try self.emitTurn(run, "user.input.requested", .{ .object = payload }, id, "");
-        try self.gates.append(self.allocator(), .{ .id = id, .request_id = message.request_id, .requested_event = requested });
+        try self.gates.append(self.allocator(), .{ .id = id, .run_id = run.id, .request_id = message.request_id, .requested_event = requested });
         _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "waiting_for_input", id));
     }
 
@@ -474,9 +479,10 @@ pub const Reducer = struct {
     }
 
     fn unsettledDeferringChildren(self: *Reducer) usize {
+        const run = self.run orelse return 0;
         var count: usize = 0;
         for (self.children.items) |child| {
-            if (child.settled) continue;
+            if (child.settled or !std.mem.eql(u8, child.run_id, run.id)) continue;
             if (defersTerminal(child.task_type)) count += 1;
         }
         return count;
@@ -484,17 +490,21 @@ pub const Reducer = struct {
 
     fn trackChild(self: *Reducer, frame: std.json.ObjectMap) !void {
         const task_id = stringMember(frame, "task_id") orelse return;
+        const run = self.run orelse return;
         try self.children.append(self.allocator(), .{
             .task_id = task_id,
+            .run_id = run.id,
             .task_type = stringMember(frame, "task_type") orelse "",
         });
     }
 
     fn settleChild(self: *Reducer, frame: std.json.ObjectMap) !void {
         const task_id = stringMember(frame, "task_id") orelse return;
+        const run = self.run orelse return;
         var found = false;
         for (self.children.items) |*child| {
             if (!std.mem.eql(u8, child.task_id, task_id) or child.settled) continue;
+            if (!std.mem.eql(u8, child.run_id, run.id)) continue;
             child.settled = true;
             found = true;
         }
@@ -612,9 +622,8 @@ pub const Reducer = struct {
             const payload = try self.toolPayload(run, tool.*);
             _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
         }
-        self.children.clearRetainingCapacity();
         for (self.gates.items) |*gate| {
-            if (gate.resolved) continue;
+            if (gate.resolved or !std.mem.eql(u8, gate.run_id, run.id)) continue;
             gate.resolved = true;
             var payload = self.object();
             try self.put(&payload, "interaction_id", str(gate.id));
@@ -642,8 +651,8 @@ pub const Reducer = struct {
             return;
         }
         if (message.kind != .observation) return;
-        if (self.unusable) return;
         if (self.run) |run| {
+            if (self.unusable) return;
             if (!run.started) {
                 if (self.echoMatches(message)) {
                     try self.startRun();
@@ -770,7 +779,7 @@ pub const Reducer = struct {
                 if (terminalTaskPatch(frame)) try self.settleChild(frame);
                 return;
             }
-            if (std.mem.eql(u8, message.subtype, "session_state")) {
+            if (std.mem.eql(u8, message.subtype, "session_state_changed")) {
                 if (stringMember(frame, "state")) |state| {
                     if (std.mem.eql(u8, state, "idle")) try self.publishDeferred();
                 }
@@ -989,7 +998,7 @@ test "ids are allocated from one counter across four kinds" {
 
     try reducer.submit("turn-1");
     try observeText(&reducer, arena.allocator(),
-        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
 
     try testing.expectEqualStrings("submission-1", reducer.run.?.submission_id);
@@ -1007,21 +1016,21 @@ test "a run reports the model captured at submit, not the one init later publish
 
     try reducer.submit("turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1"}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":[],"uuid":"i1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"result","subtype":"success","terminal_reason":"completed","result":"one","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","uuid":"r1"}
     );
 
     try reducer.submit("turn-2");
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"init","model":"model-b","uuid":"i2"}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-b","tools":[],"uuid":"i2"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e2","user_message_uuid":"turn-2"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e2","user_message_uuid":"turn-2"}
     );
 
     const models = try startedModels(&reducer, scratch);
@@ -1039,12 +1048,12 @@ test "a pending run's init is not adopted until the run starts" {
 
     try reducer.submit("turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1"}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":[],"uuid":"i1"}
     );
     try testing.expectEqualStrings("claude-test", reducer.current_model);
 
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
     try testing.expectEqualStrings("model-a", reducer.current_model);
 }
@@ -1070,13 +1079,13 @@ test "a call is attributed to the harness only when init advertised the tool" {
 
     try reducer.submit("turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"init","model":"model-a","tools":["Bash","mcp__files__read"],"mcp_servers":[{"name":"files"}],"uuid":"i1"}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":["Bash","mcp__files__read"],"mcp_servers":[{"name":"files"}],"uuid":"i1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"},{"type":"tool_use","id":"t2","name":"Read"},{"type":"tool_use","id":"t3","name":"mcp__files__read"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"},{"type":"tool_use","id":"t2","name":"Read"},{"type":"tool_use","id":"t3","name":"mcp__files__read"}]},"uuid":"a1"}
     );
 
     const sources = try toolSources(&reducer, scratch);
@@ -1103,13 +1112,13 @@ test "a user frame the harness did not attribute to a human settles nothing" {
 
     try reducer.submit("turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"user","origin":{},"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
+        \\{"type":"user","session_id":"s","origin":{},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
     );
 
     const kinds = try emittedTypes(&reducer, scratch);
@@ -1126,13 +1135,13 @@ test "a delta echoing another submission is not attributed to this run" {
 
     try reducer.submit("turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"mine"}},"uuid":"e2","user_message_uuid":"turn-1"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"mine"}},"uuid":"e2","user_message_uuid":"turn-1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"theirs"}},"uuid":"e3","user_message_uuid":"turn-9"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"theirs"}},"uuid":"e3","user_message_uuid":"turn-9"}
     );
 
     const kinds = try emittedTypes(&reducer, scratch);
@@ -1143,14 +1152,14 @@ test "a delta echoing another submission is not attributed to this run" {
 fn startedRun(reducer: *Reducer, arena: std.mem.Allocator, uuid: []const u8) !void {
     try reducer.submit(uuid);
     const text = try std.fmt.allocPrint(arena,
-        \\{{"type":"stream_event","event":{{"type":"message_start"}},"uuid":"e","user_message_uuid":"{s}"}}
+        \\{{"type":"stream_event","session_id":"s","event":{{"type":"message_start"}},"uuid":"e","user_message_uuid":"{s}"}}
     , .{uuid});
     try observeText(reducer, arena, text);
 }
 
 fn gateRequest(reducer: *Reducer, arena: std.mem.Allocator, extra: []const u8) !void {
     const text = try std.fmt.allocPrint(arena,
-        \\{{"type":"control_request","request_id":"ask-1","request":{{"subtype":"can_use_tool","tool_name":"Bash","input":{{"command":"ls"}}{s}}}}}
+        \\{{"type":"control_request","request_id":"ask-1","request":{{"subtype":"can_use_tool","tool_use_id":"t1","tool_name":"Bash","input":{{"command":"ls"}}{s}}}}}
     , .{extra});
     try observeText(reducer, arena, text);
 }
@@ -1242,7 +1251,7 @@ test "a failure names the terminal reason when the subtype says success" {
     reasoned.open();
     try startedRun(&reasoned, scratch, "turn-1");
     try observeText(&reasoned, scratch,
-        \\{"type":"result","subtype":"success","is_error":true,"terminal_reason":"aborted_budget","user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","is_error":true,"terminal_reason":"aborted_budget","user_message_uuid":"turn-1","uuid":"r1"}
     );
     try testing.expectEqualStrings("claude_aborted_budget", failureCodeOf(&reasoned).?);
 
@@ -1250,7 +1259,7 @@ test "a failure names the terminal reason when the subtype says success" {
     subtyped.open();
     try startedRun(&subtyped, scratch, "turn-1");
     try observeText(&subtyped, scratch,
-        \\{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_budget","user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_budget","user_message_uuid":"turn-1","uuid":"r1"}
     );
     try testing.expectEqualStrings("claude_error_during_execution", failureCodeOf(&subtyped).?);
 
@@ -1258,7 +1267,7 @@ test "a failure names the terminal reason when the subtype says success" {
     api.open();
     try startedRun(&api, scratch, "turn-1");
     try observeText(&api, scratch,
-        \\{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"error_during_execution","is_error":true,"api_error_status":429,"user_message_uuid":"turn-1","uuid":"r1"}
     );
     try testing.expectEqualStrings("claude_api_429", failureCodeOf(&api).?);
 }
@@ -1272,12 +1281,12 @@ test "a terminal naming another submission settles nothing" {
 
     try startedRun(&reducer, scratch, "turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"result","subtype":"success","result":"theirs","user_message_uuid":"turn-9","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","result":"theirs","user_message_uuid":"turn-9","uuid":"r1"}
     );
     try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "run.completed"));
 
     try observeText(&reducer, scratch,
-        \\{"type":"result","subtype":"success","result":"mine","user_message_uuid":"turn-1","uuid":"r2"}
+        \\{"type":"result","session_id":"s","subtype":"success","result":"mine","user_message_uuid":"turn-1","uuid":"r2"}
     );
     try testing.expectEqualStrings("mine", firstPayload(&reducer, "run.completed").?.get("final_response").?.object.get("content").?.string);
 }
@@ -1291,10 +1300,10 @@ test "a call still open when the run settles is cancelled before the terminal" {
 
     try startedRun(&reducer, scratch, "turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"result","subtype":"success","result":"done","user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","result":"done","user_message_uuid":"turn-1","uuid":"r1"}
     );
 
     const kinds = try emittedTypes(&reducer, scratch);
@@ -1324,11 +1333,11 @@ fn childRun(reducer: *Reducer, arena: std.mem.Allocator, task_type: []const u8) 
     reducer.open();
     try startedRun(reducer, arena, "turn-1");
     const started = try std.fmt.allocPrint(arena,
-        \\{{"type":"system","subtype":"task_started","task_id":"task-1","task_type":"{s}","uuid":"t1"}}
+        \\{{"type":"system","session_id":"s","subtype":"task_started","description":"a child","task_id":"task-1","task_type":"{s}","uuid":"t1"}}
     , .{task_type});
     try observeText(reducer, arena, started);
     try observeText(reducer, arena,
-        \\{"type":"result","subtype":"success","result":"spawned","user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","result":"spawned","user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
     );
 }
 
@@ -1342,7 +1351,7 @@ test "a local child holds the terminal until it settles" {
     try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
 
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","uuid":"t2"}
+        \\{"type":"system","session_id":"s","subtype":"task_notification","output_file":"/out","summary":"done","task_id":"task-1","status":"completed","uuid":"t2"}
     );
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
     try testing.expectEqualStrings("run.completed", reducer.envelopes.items[1].object.get("type").?.string);
@@ -1366,12 +1375,12 @@ test "a patch that is not terminal leaves the child running" {
 
     try childRun(&reducer, scratch, "local_workflow");
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"running"},"uuid":"t2"}
+        \\{"type":"system","session_id":"s","subtype":"task_updated","task_id":"task-1","patch":{"status":"running"},"uuid":"t2"}
     );
     try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
 
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"killed"},"uuid":"t3"}
+        \\{"type":"system","session_id":"s","subtype":"task_updated","task_id":"task-1","patch":{"status":"killed"},"uuid":"t3"}
     );
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
 }
@@ -1386,12 +1395,12 @@ test "an idle session publishes a terminal its children are still holding" {
     try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
 
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"session_state","state":"busy","uuid":"s1"}
+        \\{"type":"system","session_id":"s","subtype":"session_state_changed","state":"busy","uuid":"s1"}
     );
     try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
 
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"session_state","state":"idle","uuid":"s2"}
+        \\{"type":"system","session_id":"s","subtype":"session_state_changed","state":"idle","uuid":"s2"}
     );
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
     try testing.expectEqualStrings("run.completed", reducer.envelopes.items[1].object.get("type").?.string);
@@ -1400,14 +1409,14 @@ test "an idle session publishes a terminal its children are still holding" {
 fn advertise(reducer: *Reducer, arena: std.mem.Allocator) !void {
     reducer.open();
     try observeText(reducer, arena,
-        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1","mcp_servers":[{"name":"files__nested"},{"name":"files"}],"tools":["Bash","mcp__files__read","mcp__files__nested__read","mcp__filesXread","mcp__absent__ghost","Bash"]}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","uuid":"i1","mcp_servers":[{"name":"files__nested"},{"name":"files"}],"tools":["Bash","mcp__files__read","mcp__files__nested__read","mcp__filesXread","mcp__absent__ghost","Bash"]}
     );
 }
 
 fn callEachTool(reducer: *Reducer, arena: std.mem.Allocator) !void {
     try startedRun(reducer, arena, "turn-1");
     try observeText(reducer, arena,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"},{"type":"tool_use","id":"t2","name":"mcp__files__read"},{"type":"tool_use","id":"t3","name":"mcp__files__nested__read"},{"type":"tool_use","id":"t4","name":"mcp__filesXread"},{"type":"tool_use","id":"t5","name":"mcp__absent__ghost"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"},{"type":"tool_use","id":"t2","name":"mcp__files__read"},{"type":"tool_use","id":"t3","name":"mcp__files__nested__read"},{"type":"tool_use","id":"t4","name":"mcp__filesXread"},{"type":"tool_use","id":"t5","name":"mcp__absent__ghost"}]},"uuid":"a1"}
     );
 }
 
@@ -1441,7 +1450,7 @@ test "a catalog nobody has served attributes only what the endpoint owns" {
     try testing.expectEqual(@as(?[]const CatalogEntry, null), try reducer.listTools());
 
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1","mcp_servers":[{"name":"files__nested"},{"name":"files"}],"tools":["Bash","mcp__files__read","mcp__files__nested__read","mcp__filesXread","mcp__absent__ghost","Bash"]}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","uuid":"i1","mcp_servers":[{"name":"files__nested"},{"name":"files"}],"tools":["Bash","mcp__files__read","mcp__files__nested__read","mcp__filesXread","mcp__absent__ghost","Bash"]}
     );
     try callEachTool(&reducer, scratch);
 
@@ -1467,10 +1476,10 @@ test "a tool lifecycle the oracle refuses fails the run here too" {
     duplicated.open();
     try startedRun(&duplicated, scratch, "turn-1");
     try observeText(&duplicated, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
     );
     try observeText(&duplicated, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a2"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a2"}
     );
     const after_duplicate = try emittedTypes(&duplicated, scratch);
     try testing.expectEqual(@as(usize, 4), after_duplicate.len);
@@ -1482,7 +1491,7 @@ test "a tool lifecycle the oracle refuses fails the run here too" {
     unmatched.open();
     try startedRun(&unmatched, scratch, "turn-1");
     try observeText(&unmatched, scratch,
-        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
     );
     try testing.expectEqualStrings("unmatched tool completion", failureMessageOf(&unmatched).?);
 
@@ -1490,13 +1499,13 @@ test "a tool lifecycle the oracle refuses fails the run here too" {
     twice.open();
     try startedRun(&twice, scratch, "turn-1");
     try observeText(&twice, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
     );
     try observeText(&twice, scratch,
-        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
     );
     try observeText(&twice, scratch,
-        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u2"}
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u2"}
     );
     try testing.expectEqualStrings("unmatched tool completion", failureMessageOf(&twice).?);
 }
@@ -1510,16 +1519,16 @@ test "a completion for an earlier run's call is ignored, not refused" {
 
     try startedRun(&reducer, scratch, "turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"result","subtype":"success","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
     );
     const settled = reducer.envelopes.items.len;
 
     try startedRun(&reducer, scratch, "turn-2");
     try observeText(&reducer, scratch,
-        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"late"}]},"uuid":"u1"}
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"late"}]},"uuid":"u1"}
     );
     try testing.expectEqual(settled + 1, reducer.envelopes.items.len);
     try testing.expectEqual(@as(?[]const u8, null), failureMessageOf(&reducer));
@@ -1534,7 +1543,7 @@ test "a failure message joins every error the harness reported" {
     many.open();
     try startedRun(&many, scratch, "turn-1");
     try observeText(&many, scratch,
-        \\{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["first","second"],"user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"error_during_execution","is_error":true,"errors":["first","second"],"user_message_uuid":"turn-1","uuid":"r1"}
     );
     try testing.expectEqualStrings("first; second", failureMessageOf(&many).?);
 
@@ -1542,7 +1551,7 @@ test "a failure message joins every error the harness reported" {
     status.open();
     try startedRun(&status, scratch, "turn-1");
     try observeText(&status, scratch,
-        \\{"type":"result","subtype":"success","is_error":true,"api_error_status":503,"user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","is_error":true,"api_error_status":503,"user_message_uuid":"turn-1","uuid":"r1"}
     );
     try testing.expectEqualStrings("API error (HTTP 503)", failureMessageOf(&status).?);
 
@@ -1550,7 +1559,7 @@ test "a failure message joins every error the harness reported" {
     bare.open();
     try startedRun(&bare, scratch, "turn-1");
     try observeText(&bare, scratch,
-        \\{"type":"result","subtype":"success","is_error":true,"user_message_uuid":"turn-1","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","is_error":true,"user_message_uuid":"turn-1","uuid":"r1"}
     );
     try testing.expectEqualStrings("unknown error", failureMessageOf(&bare).?);
 }
@@ -1564,17 +1573,17 @@ test "a call the failed run left open is not swept into the next run" {
 
     try startedRun(&reducer, scratch, "turn-1");
     try observeText(&reducer, scratch,
-        \\{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
     );
     try testing.expectEqualStrings("run.failed", reducer.envelopes.items[3].object.get("type").?.string);
     const refused_at = reducer.envelopes.items.len;
 
     try startedRun(&reducer, scratch, "turn-2");
     try observeText(&reducer, scratch,
-        \\{"type":"result","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
     );
 
     const kinds = try emittedTypes(&reducer, scratch);
@@ -1595,16 +1604,16 @@ test "a session the harness broke admits nothing further" {
     const settled = reducer.envelopes.items.len;
 
     try observeText(&reducer, scratch,
-        \\{"type":"system","subtype":"init","model":"model-b","uuid":"i1"}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-b","tools":[],"uuid":"i1"}
     );
-    try testing.expectEqualStrings("claude-test", reducer.current_model);
+    try testing.expectEqualStrings("model-b", reducer.current_model);
 
     try reducer.submit("turn-2");
     try testing.expect(reducer.run == null);
 
     try startedRun(&reducer, scratch, "turn-2");
     try observeText(&reducer, scratch,
-        \\{"type":"result","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
     );
     try testing.expectEqual(settled, reducer.envelopes.items.len);
 }
@@ -1668,7 +1677,7 @@ test "a delta whose member is absent is still the oracle's empty part" {
     absent.open();
     try startedRun(&absent, scratch, "turn-1");
     try observeText(&absent, scratch,
-        \\{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta"}},"uuid":"e2"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"content_block_delta","delta":{"type":"text_delta"}},"uuid":"e2"}
     );
     try testing.expectEqualStrings("", firstPayload(&absent, "content.delta").?.get("part").?.object.get("text").?.string);
 
@@ -1676,9 +1685,70 @@ test "a delta whose member is absent is still the oracle's empty part" {
     wrong_type.open();
     try startedRun(&wrong_type, scratch, "turn-1");
     try observeText(&wrong_type, scratch,
-        \\{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":7}},"uuid":"e2"}
+        \\{"type":"stream_event","session_id":"s","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":7}},"uuid":"e2"}
     );
     try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&wrong_type, "content.delta"));
+}
+
+test "a failed run leaves neither its children nor its gate to the next one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var orphaned_child = Reducer.init(&arena, .{});
+    orphaned_child.open();
+    try startedRun(&orphaned_child, scratch, "turn-1");
+    try observeText(&orphaned_child, scratch,
+        \\{"type":"system","session_id":"s","subtype":"task_started","description":"a child","task_id":"task-1","task_type":"local_agent","uuid":"t1"}
+    );
+    try observeText(&orphaned_child, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+    );
+    try testing.expectEqualStrings("claude_tool_lifecycle", failureCodeOf(&orphaned_child).?);
+
+    try startedRun(&orphaned_child, scratch, "turn-2");
+    try observeText(&orphaned_child, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
+    );
+    const kinds = try emittedTypes(&orphaned_child, scratch);
+    try testing.expectEqualStrings("run.completed", kinds[kinds.len - 1]);
+
+    var orphaned_gate = Reducer.init(&arena, .{});
+    orphaned_gate.open();
+    try startedRun(&orphaned_gate, scratch, "turn-1");
+    try gateRequest(&orphaned_gate, scratch, "");
+    try observeText(&orphaned_gate, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+    );
+    try startedRun(&orphaned_gate, scratch, "turn-2");
+    try testing.expectEqual(@as(?[]const u8, null), orphaned_gate.pendingInteraction());
+
+    const before = orphaned_gate.envelopes.items.len;
+    try observeText(&orphaned_gate, scratch,
+        \\{"type":"control_cancel_request","request_id":"ask-1"}
+    );
+    try testing.expectEqual(before, orphaned_gate.envelopes.items.len);
+}
+
+test "a broken session still adopts what it is told while idle" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":[],"uuid":"i1"}
+    );
+    try reducer.transportFailed("the test closed the transport");
+    const settled = reducer.envelopes.items.len;
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-b","tools":[],"uuid":"i2"}
+    );
+    try testing.expectEqualStrings("model-b", reducer.current_model);
+    try testing.expectEqual(settled, reducer.envelopes.items.len);
 }
 
 test "an init outside a pending run is adopted when it arrives" {
@@ -1688,7 +1758,7 @@ test "an init outside a pending run is adopted when it arrives" {
     reducer.open();
 
     try observeText(&reducer, arena.allocator(),
-        \\{"type":"system","subtype":"init","model":"model-a","uuid":"i1"}
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","tools":[],"uuid":"i1"}
     );
     try testing.expectEqualStrings("model-a", reducer.current_model);
 }

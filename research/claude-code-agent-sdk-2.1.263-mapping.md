@@ -844,11 +844,13 @@ all green.
 ### What the corpus cannot see, and why that is structural
 
 Review of the Zig port found two divergences from the oracle that all thirteen
-cases pass over, and a sweep of every entry point for the same shape found four
-more. The class is specific: **any oracle branch reachable only from a frame the
+cases pass over, a sweep of every entry point for the same shape found four
+more, and a second review round found that the sweep had itself been incomplete:
+it walked the reducer's entry points and not the codec's, which is where the
+largest of them was. The class is specific: **any oracle branch reachable only from a frame the
 fixtures happen not to contain.** The corpus was assembled from observed
 sessions, so it holds the shapes a healthy harness produces and almost none of
-the shapes a misbehaving one does. Six divergences, none visible to a single
+the shapes a misbehaving one does. Seven divergences, none visible to a single
 case:
 
 - A repeated `tool_use` id and a `tool_result` naming no call in flight both
@@ -858,14 +860,35 @@ case:
 - A reverse control request that is not `can_use_tool` is **external activity**:
   it fails the run with `claude_external_activity` and marks the session
   unusable. The corpus's only observed control requests are `can_use_tool`.
-- That unusable mark is a latch, not a flag. After foreign activity or a
-  transport death the session drops every later observation and admits no
-  further submission. No case continues past its terminal.
+- That unusable mark is a latch, not a flag, and its scope is narrower than it
+  first looks: `applyObservation` consults it only when a run is current, so a
+  broken session still adopts an idle `system/init` while refusing to reduce
+  anything into a run and admitting no further submission. No case continues
+  past its terminal, so nothing could see either half.
 - A `control_cancel_request` withdraws the matching open gate, resolving it
   `cancelled` and returning the run to `running`. No case contains one.
 - A `text_delta` carrying no `text` member still emits an empty content part,
   because the oracle decodes into a struct whose zero value is the empty
   string. Every fixture's delta carries its text.
+- **The codec is fail-closed on shape, and that is the largest of the six.**
+  `native.DecodeObservation` and `DecodeControlRequest` enforce a required-member
+  table per frame type -- a `user` frame needs `message.role` and
+  `message.content`, an `assistant` frame needs `message.model` and an array
+  `message.content`, `system/init` needs `session_id`, `model` and `tools`, a
+  `task_notification` needs six members *and* a terminal `status`, a
+  `can_use_tool` needs `tool_name`, `tool_use_id` and `input` -- and a failure
+  is not a skipped frame but `client.closeWith`, which fails the run
+  `claude_process_exit` and makes the session unusable. Every fixture is
+  well-formed, so no case reaches any of it.
+
+The last one carries a lesson about the sweep itself. Porting it rejected
+thirty-three of this port's own unit-test frames, because they had been written
+minimal -- an `assistant` frame with content and no model, an `init` with a
+model and no tools. Those frames are ones the oracle refuses outright, so a
+suite built on them was asserting reducer behaviour on inputs that can never
+reach a reducer. Writing tests against the frame vocabulary rather than against
+the *decoded* vocabulary is a trap any port can fall into, and the codec's
+validation table is what makes it visible.
 
 The lesson generalises past this adapter, which is why it is recorded here
 rather than in a commit. A hermetic corpus of observed traffic proves a reducer

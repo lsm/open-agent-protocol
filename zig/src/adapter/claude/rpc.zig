@@ -19,6 +19,78 @@ pub const Diagnostic = struct {
     }
 };
 
+pub const Need = enum { present, text, array };
+
+pub const Member = struct {
+    path: []const []const u8,
+    need: Need = .text,
+};
+
+const terminal_task_statuses = [_][]const u8{ "completed", "failed", "stopped", "killed" };
+
+const user_members = [_]Member{
+    .{ .path = &.{ "message", "role" } },
+    .{ .path = &.{ "message", "content" }, .need = .present },
+};
+const assistant_members = [_]Member{
+    .{ .path = &.{ "message", "model" } },
+    .{ .path = &.{ "message", "content" }, .need = .array },
+};
+const result_members = [_]Member{
+    .{ .path = &.{"subtype"} },
+    .{ .path = &.{"session_id"} },
+};
+const stream_event_members = [_]Member{
+    .{ .path = &.{"event"}, .need = .present },
+    .{ .path = &.{"uuid"} },
+    .{ .path = &.{"session_id"} },
+};
+const tool_progress_members = [_]Member{
+    .{ .path = &.{"tool_use_id"} },
+    .{ .path = &.{"tool_name"} },
+    .{ .path = &.{"session_id"} },
+};
+const command_lifecycle_members = [_]Member{
+    .{ .path = &.{"command_uuid"} },
+    .{ .path = &.{"state"} },
+    .{ .path = &.{"session_id"} },
+};
+const conversation_reset_members = [_]Member{
+    .{ .path = &.{"new_conversation_id"} },
+    .{ .path = &.{"uuid"} },
+    .{ .path = &.{"session_id"} },
+};
+const init_members = [_]Member{
+    .{ .path = &.{"session_id"} },
+    .{ .path = &.{"model"} },
+    .{ .path = &.{"tools"}, .need = .array },
+};
+const session_state_members = [_]Member{
+    .{ .path = &.{"state"} },
+};
+const task_identity_members = [_]Member{
+    .{ .path = &.{"task_id"} },
+    .{ .path = &.{"description"} },
+    .{ .path = &.{"uuid"} },
+    .{ .path = &.{"session_id"} },
+};
+const task_notification_members = [_]Member{
+    .{ .path = &.{"task_id"} },
+    .{ .path = &.{"status"} },
+    .{ .path = &.{"output_file"} },
+    .{ .path = &.{"summary"} },
+    .{ .path = &.{"uuid"} },
+    .{ .path = &.{"session_id"} },
+};
+const task_updated_members = [_]Member{
+    .{ .path = &.{"task_id"} },
+};
+const can_use_tool_members = [_]Member{
+    .{ .path = &.{ "request", "tool_name" } },
+    .{ .path = &.{ "request", "tool_use_id" } },
+    .{ .path = &.{ "request", "input" }, .need = .present },
+};
+
 pub const Kind = enum {
     observation,
     control_request,
@@ -69,6 +141,56 @@ pub const FrameReader = struct {
     }
 };
 
+fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
+    var current = object;
+    for (path, 0..) |key, depth| {
+        const value = current.get(key) orelse return null;
+        if (depth + 1 == path.len) return value;
+        if (value != .object) return null;
+        current = value.object;
+    }
+    return null;
+}
+
+fn satisfies(object: std.json.ObjectMap, required: []const Member) bool {
+    for (required) |need| {
+        const value = member(object, need.path) orelse return false;
+        switch (need.need) {
+            .present => {},
+            .text => if (value != .string or value.string.len == 0) return false,
+            .array => if (value != .array) return false,
+        }
+    }
+    return true;
+}
+
+fn observationMembers(frame_type: []const u8, subtype: []const u8) []const Member {
+    if (std.mem.eql(u8, frame_type, "user")) return &user_members;
+    if (std.mem.eql(u8, frame_type, "assistant")) return &assistant_members;
+    if (std.mem.eql(u8, frame_type, "result")) return &result_members;
+    if (std.mem.eql(u8, frame_type, "stream_event")) return &stream_event_members;
+    if (std.mem.eql(u8, frame_type, "tool_progress")) return &tool_progress_members;
+    if (std.mem.eql(u8, frame_type, "command_lifecycle")) return &command_lifecycle_members;
+    if (std.mem.eql(u8, frame_type, "conversation_reset")) return &conversation_reset_members;
+    if (!std.mem.eql(u8, frame_type, "system")) return &.{};
+    if (std.mem.eql(u8, subtype, "init")) return &init_members;
+    if (std.mem.eql(u8, subtype, "session_state_changed")) return &session_state_members;
+    if (std.mem.eql(u8, subtype, "task_started")) return &task_identity_members;
+    if (std.mem.eql(u8, subtype, "task_progress")) return &task_identity_members;
+    if (std.mem.eql(u8, subtype, "task_notification")) return &task_notification_members;
+    if (std.mem.eql(u8, subtype, "task_updated")) return &task_updated_members;
+    return &.{};
+}
+
+fn taskStatusIsTerminal(object: std.json.ObjectMap) bool {
+    const status = member(object, &.{"status"}) orelse return false;
+    if (status != .string) return false;
+    for (terminal_task_statuses) |terminal| {
+        if (std.mem.eql(u8, status.string, terminal)) return true;
+    }
+    return false;
+}
+
 pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Diagnostic) !Message {
     var discard = Diagnostic{};
     const report = diagnostic orelse &discard;
@@ -105,6 +227,9 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         const subtype = request.object.get("subtype") orelse return Error.InvalidControl;
         if (subtype != .string or subtype.string.len == 0) return Error.InvalidControl;
         message.subtype = subtype.string;
+        if (std.mem.eql(u8, message.subtype, "can_use_tool") and !satisfies(object, &can_use_tool_members)) {
+            return report.invalid("can_use_tool requires tool_name, input, and tool_use_id");
+        }
         return message;
     }
     if (std.mem.eql(u8, message.type, type_control_response)) {
@@ -135,6 +260,12 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         if (id != .string or id.string.len == 0) return Error.InvalidControl;
         message.request_id = id.string;
         return message;
+    }
+    if (!satisfies(object, observationMembers(message.type, message.subtype))) {
+        return report.invalid("frame is missing a member its type requires");
+    }
+    if (std.mem.eql(u8, message.type, "system") and std.mem.eql(u8, message.subtype, "task_notification") and !taskStatusIsTerminal(object)) {
+        return report.invalid("task_notification status is not a terminal one");
     }
     return message;
 }
@@ -203,7 +334,7 @@ test "an unknown top-level type is an observation, not a defect" {
 test "a control request carries its inner subtype" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const message = try parseForTest("{\"type\":\"control_request\",\"request_id\":\"r1\",\"request\":{\"subtype\":\"can_use_tool\"}}", &arena);
+    const message = try parseForTest("{\"type\":\"control_request\",\"request_id\":\"r1\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"tool_use_id\":\"t1\",\"input\":{}}}", &arena);
     try testing.expectEqual(Kind.control_request, message.kind);
     try testing.expectEqualStrings("r1", message.request_id);
     try testing.expectEqualStrings("can_use_tool", message.subtype);
@@ -237,7 +368,7 @@ test "a decode failure names the reason the transport reports" {
     try testing.expectEqualStrings(invalid_message_prefix ++ ": frame is not decodable JSON", undecodable.message);
 
     var accepted = Diagnostic{};
-    _ = try parseMessage(arena.allocator(), "{\"type\":\"result\"}", &accepted);
+    _ = try parseMessage(arena.allocator(), "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s\"}", &accepted);
     try testing.expectEqualStrings("", accepted.message);
 }
 
@@ -248,4 +379,78 @@ test "a frame that is not exactly one object is refused" {
     try testing.expectError(Error.InvalidMessage, parseForTest("", &arena));
     try testing.expectError(Error.InvalidMessage, parseForTest("{\"type\":\"a\"} {\"type\":\"b\"}", &arena));
     try testing.expectError(Error.InvalidMessage, parseForTest("null", &arena));
+}
+
+fn refuses(arena: *std.heap.ArenaAllocator, text: []const u8) !void {
+    var diagnostic = Diagnostic{};
+    testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), text, &diagnostic)) catch |err| {
+        std.debug.print("\naccepted a frame the oracle refuses: {s}\n", .{text});
+        return err;
+    };
+}
+
+fn accepts(arena: *std.heap.ArenaAllocator, text: []const u8) !void {
+    _ = parseMessage(arena.allocator(), text, null) catch |err| {
+        std.debug.print("\nrefused a frame the oracle accepts: {s}\n", .{text});
+        return err;
+    };
+}
+
+test "a frame missing a member its own type requires is fatal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try refuses(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"content\":[]}}");
+    try refuses(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\"}}");
+    try accepts(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":\"interrupted\"}}");
+
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"content\":[]}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":\"text\"}}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[]}}");
+
+    try refuses(&arena, "{\"type\":\"result\",\"subtype\":\"success\"}");
+    try refuses(&arena, "{\"type\":\"result\",\"session_id\":\"s\"}");
+    try refuses(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"\"}");
+    try refuses(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":7}");
+    try refuses(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":\"hello\"}");
+
+    try refuses(&arena, "{\"type\":\"stream_event\",\"event\":{},\"uuid\":\"e1\"}");
+    try refuses(&arena, "{\"type\":\"stream_event\",\"session_id\":\"s\",\"uuid\":\"e1\"}");
+
+    try refuses(&arena, "{\"type\":\"tool_progress\",\"session_id\":\"s\",\"tool_use_id\":\"t\"}");
+    try refuses(&arena, "{\"type\":\"command_lifecycle\",\"session_id\":\"s\",\"state\":\"x\"}");
+    try refuses(&arena, "{\"type\":\"conversation_reset\",\"session_id\":\"s\",\"uuid\":\"u\"}");
+}
+
+test "a system frame is judged by its subtype, and an unknown one by nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\"}");
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"tools\":[]}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\",\"tools\":[]}");
+
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"session_state_changed\",\"session_id\":\"s\"}");
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"task_started\",\"session_id\":\"s\",\"task_id\":\"t\",\"uuid\":\"u\"}");
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"task_updated\",\"session_id\":\"s\"}");
+
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"task_notification\",\"session_id\":\"s\",\"task_id\":\"t\",\"status\":\"running\",\"output_file\":\"/o\",\"summary\":\"d\",\"uuid\":\"u\"}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"task_notification\",\"session_id\":\"s\",\"task_id\":\"t\",\"status\":\"killed\",\"output_file\":\"/o\",\"summary\":\"d\",\"uuid\":\"u\"}");
+
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"status\"}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"invented_later\"}");
+    try accepts(&arena, "{\"type\":\"keep_alive\"}");
+    try accepts(&arena, "{\"type\":\"invented_later\"}");
+}
+
+test "a permission ask missing what the endpoint must answer is fatal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const prefix = "{\"type\":\"control_request\",\"request_id\":\"r1\",\"request\":{\"subtype\":\"can_use_tool\",";
+
+    try refuses(&arena, prefix ++ "\"tool_use_id\":\"t\",\"input\":{}}}");
+    try refuses(&arena, prefix ++ "\"tool_name\":\"Bash\",\"input\":{}}}");
+    try refuses(&arena, prefix ++ "\"tool_name\":\"Bash\",\"tool_use_id\":\"t\"}}");
+    try accepts(&arena, prefix ++ "\"tool_name\":\"Bash\",\"tool_use_id\":\"t\",\"input\":{}}}");
+    try accepts(&arena, "{\"type\":\"control_request\",\"request_id\":\"r1\",\"request\":{\"subtype\":\"hook_callback\"}}");
 }
