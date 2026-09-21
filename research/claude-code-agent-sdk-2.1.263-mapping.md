@@ -1001,6 +1001,31 @@ divergent is which of two folding spellings a *reducer* reads when both carry
 usable values, since that is ordering inside a merge rather than an accept or a
 refuse.
 
+**The null rule has needed six statements, and an inventory is what stops a
+seventh.** Every one of them turned on the Go type behind the member rather than
+on anything visible in the JSON, and each was found separately, by review, after
+the previous one had been written down as if it settled the question. The
+inventory below is the form that actually settles it, because it enumerates
+rather than generalises.
+
+| Go type | null does | port reads with |
+| --- | --- | --- |
+| `string`, `int64`, `bool`, struct | nothing; the zero value or the earlier spelling stands | the resolving lookup, which skips nulls |
+| pointer, slice, map | sets it nil, so a later null clears an earlier value | the resolving lookup, whose absence is the same thing |
+| `json.RawMessage` | stores the four bytes of the literal, so the member is *present* and reads `null` | the raw lookup, which keeps nulls |
+
+Four raw members are reachable from the reducer, and only one of them needed the
+raw lookup: `can_use_tool`'s `input`, whose literal reaches the gate prompt, so
+the oracle prompts `Bash null`. The other three agree for reasons of their own
+and were checked rather than assumed -- a `tool_use` input defaults to null and
+is emitted as null, a `tool_result` content defaults to null and normalises to
+the empty string, and a null `event` fails the delta decode on both sides.
+`tool_use_result`, `modelUsage`, `permission_denials`, `permission_suggestions`
+and `updatedInput` are raw as well and are never read. `usage` is the trap in
+this list: it is a raw message on `AssistantFrame` and a typed struct on
+`ResultFrame`, and only the result one is read, through a terminal path whose
+three call sites all sit in `settle`.
+
 **Null means absence at four different levels, and the answer is not uniform.**
 It took three separate findings to state the rule at the member, the array item
 and the intermediate, so the fourth -- the required-member table -- was swept
