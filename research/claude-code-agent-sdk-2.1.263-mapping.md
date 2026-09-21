@@ -910,6 +910,15 @@ the items of `message.content` on a `user` or `assistant` frame, and a
 difference is the honest bound: a wrong-typed member of a frame neither
 implementation reads is fatal in Go and ignored here.
 
+A tool block the harness leaves nameless still opens its call. `ContentBlock`
+declares `name` as a plain string, so an absent one decodes to `""` and the
+oracle calls `startTool` with it; only an empty `id` skips the block. This port
+skipped a nameless block entirely, which is worse than it sounds -- the harness
+had executed the tool, so the matching `tool_result` then failed the run for an
+unmatched completion, turning a cosmetic gap into a terminal. The codec now
+refuses a *wrong-typed* name, as the oracle's decode does, and the reducer
+accepts an absent one.
+
 Two payload shapes came from the same review and are worth separating from the
 codec, because they are what a *schema* requires rather than what a decoder
 refuses. `arguments_json` is required on `action.call.requested`, and the oracle
@@ -939,6 +948,20 @@ the harness misbehaves, and that is exactly the half a second implementation is
 most likely to get wrong. Every port should sweep its oracle's entry points for
 branches no fixture reaches, and carry a named test for each, rather than
 trusting a green corpus.
+
+One of those removals was wrong, and the way it was wrong is the more useful
+record. The replay loop's "stop once the run is gone" guard was deleted as dead
+because the only settlement reachable from a buffered frame was `settle`, which
+needs an echo match a buffered frame cannot have. That was true when it was
+written and stopped being true two commits later, when `failRun` arrived for the
+tool lifecycle: a buffered `assistant` frame carrying a duplicate `tool_use`
+fails the run mid-replay, and without the guard the next buffered `system/init`
+still reaches `observeIdle` and overwrites the model and catalog the *following*
+run will report. **"Dead by construction" is a claim about the code at a moment,
+not a property of the guard**, and deleting on that basis needs re-checking
+whenever a new settlement path appears. The oracle's own loop returns on
+`run.terminal && run.deferred == nil`, which is the same rule with the deferred
+case spelled out.
 
 Three guards found during the same sweep were dead by construction rather than
 untested, and were removed rather than left: an empty cancel id cannot reach

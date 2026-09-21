@@ -413,6 +413,7 @@ pub const Reducer = struct {
         const replay = run.buffered;
         run.buffered = .empty;
         for (replay.items) |buffered| {
+            if (self.run == null) return;
             try self.applyRunObservation(buffered);
         }
     }
@@ -824,9 +825,9 @@ pub const Reducer = struct {
                 const kind = block.object.get("type") orelse continue;
                 if (kind != .string or !std.mem.eql(u8, kind.string, "tool_use")) continue;
                 const id = block.object.get("id") orelse continue;
-                const name = block.object.get("name") orelse continue;
-                if (id != .string or id.string.len == 0 or name != .string) continue;
-                try self.startTool(id.string, name.string, block.object.get("input"));
+                if (id != .string or id.string.len == 0) continue;
+                const named = block.object.get("name") orelse std.json.Value{ .string = "" };
+                try self.startTool(id.string, named.string, block.object.get("input"));
             }
             return;
         }
@@ -1811,6 +1812,49 @@ test "a terminal omits a duration the oracle would not have sent" {
         \\{"type":"result","session_id":"s","subtype":"success","result":"one","duration_ms":130,"user_message_uuid":"turn-1","uuid":"r1"}
     );
     try testing.expectEqual(@as(i64, 130), firstPayload(&measured, "run.completed").?.get("duration_ms").?.integer);
+}
+
+test "replay stops at the frame that failed the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-b","tools":[],"uuid":"i1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+
+    try testing.expectEqualStrings("claude_tool_lifecycle", failureCodeOf(&reducer).?);
+    try testing.expectEqualStrings("claude-test", reducer.current_model);
+}
+
+test "a tool block the harness left nameless still opens its call" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1"}]},"uuid":"a1"}
+    );
+    const requested = firstPayload(&reducer, "action.call.requested").?;
+    try testing.expectEqualStrings("", requested.get("name").?.string);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
+    );
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "run.failed"));
+    try testing.expect(firstPayload(&reducer, "action.call.completed") != null);
 }
 
 test "an init outside a pending run is adopted when it arrives" {
