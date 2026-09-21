@@ -105,6 +105,12 @@ pub const Reducer = struct {
         _ = self.now();
     }
 
+    fn active(self: *Reducer) ?*Run {
+        if (self.run == null) return null;
+        const run = &self.run.?;
+        return if (run.terminal) null else run;
+    }
+
     fn allocator(self: *Reducer) std.mem.Allocator {
         return self.arena.allocator();
     }
@@ -116,8 +122,7 @@ pub const Reducer = struct {
 
     fn nextID(self: *Reducer, kind: []const u8) ![]const u8 {
         self.ids += 1;
-        const letter: u8 = @intCast('a' + (self.ids - 1));
-        return std.fmt.allocPrint(self.allocator(), "{s}-{c}", .{ kind, letter });
+        return std.fmt.allocPrint(self.allocator(), "{s}-{u}", .{ kind, idScalar(self.ids - 1) });
     }
 
     fn newMessageID(self: *Reducer) ![]const u8 {
@@ -155,6 +160,7 @@ pub const Reducer = struct {
         _ = self.now();
 
         self.run = .{ .id = run_id, .message_id = message_id };
+        self.messages.clearRetainingCapacity();
         try self.messages.append(self.allocator(), .{ .native_id = "", .id = message_id });
 
         const run = &self.run.?;
@@ -173,7 +179,6 @@ pub const Reducer = struct {
     }
 
     fn emitEnvelope(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, in_reply_to: []const u8) ![]const u8 {
-        if (run.terminal) return "";
         const id = try self.nextID("event");
         run.sequence += 1;
         var envelope = self.object();
@@ -380,7 +385,7 @@ pub const Reducer = struct {
             try self.failActive("acp_invalid_update", "malformed session update");
             return;
         }
-        if (self.run == null) return;
+        if (self.active() == null) return;
 
         const kind = update.object.get("sessionUpdate") orelse std.json.Value{ .null = {} };
         if (kind != .string) {
@@ -418,7 +423,7 @@ pub const Reducer = struct {
 
     fn applyChunk(self: *Reducer, update: std.json.ObjectMap) !void {
         const content = update.get("content") orelse std.json.Value{ .null = {} };
-        if (content != .object) {
+        if (content != .object or !chunkDecodes(update, content.object)) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
@@ -427,8 +432,7 @@ pub const Reducer = struct {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
-        const text_value = content.object.get("text") orelse std.json.Value{ .null = {} };
-        const text = if (text_value == .string) text_value.string else "";
+        const text = stringMember(content.object, "text");
 
         const run = &self.run.?;
         var message_id = run.message_id;
@@ -636,7 +640,7 @@ pub const Reducer = struct {
         }
         const tool_call = params.object.get("toolCall").?.object;
         const options = params.object.get("options").?.array;
-        if (self.run == null) return;
+        if (self.active() == null) return;
 
         if (!try self.applyToolCall(tool_call)) return;
         const index = self.findTool(stringMember(tool_call, "toolCallId")).?;
@@ -723,6 +727,24 @@ pub const Reducer = struct {
         _ = try self.emitEnvelope(run, "action.permission.resolved", .{ .object = payload }, requested_event);
     }
 };
+
+fn idScalar(index: usize) u21 {
+    const replacement: u21 = 0xFFFD;
+    const raw = 'a' + index;
+    if (raw > 0x10FFFF) return replacement;
+    if (raw >= 0xD800 and raw <= 0xDFFF) return replacement;
+    return @intCast(raw);
+}
+
+const content_block_strings = [_][]const u8{ "type", "text", "data", "mimeType", "uri" };
+
+fn chunkDecodes(update: std.json.ObjectMap, content: std.json.ObjectMap) bool {
+    if (!typedString(update, "messageId")) return false;
+    for (content_block_strings) |key| {
+        if (!typedString(content, key)) return false;
+    }
+    return true;
+}
 
 fn correlatedType(kind: []const u8) bool {
     for (correlated_types) |known| {
@@ -1025,12 +1047,13 @@ test "cancelled and refusal settle differently and an unknown stop reason is quo
     try testing.expectEqualStrings("unsupported ACP stop reason \"end_of_days\"", messageAt(&unknown, 1));
 }
 
-test "a settled run absorbs every later frame without emitting" {
+test "a settled run absorbs every later frame without emitting or minting" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try openRun(&arena);
     try reducer.settlePrompt("end_turn");
+    const settled = reducer.ids;
 
     try feed(&reducer, scratch, wrap(
         \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late"}}
@@ -1038,11 +1061,97 @@ test "a settled run absorbs every later frame without emitting" {
     try feed(&reducer, scratch, wrap(
         \\{"sessionUpdate":"invented_later"}
     ));
+    try feed(&reducer, scratch, tool_call_frame);
+    try feed(&reducer, scratch, permission_frame);
     try reducer.settlePrompt("cancelled");
     try reducer.transportFailed("gone");
     try reducer.promptFailed(-32603, .{ .integer = 3 }, "gone");
 
     try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqual(settled, reducer.ids);
+    try testing.expectEqual(@as(usize, 0), reducer.tools.items.len);
+    try testing.expectEqual(@as(usize, 0), reducer.gates.items.len);
+}
+
+test "a tool id seen only after the run settled does not poison the next run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try reducer.settlePrompt("end_turn");
+    try feed(&reducer, scratch, tool_call_frame);
+    try reducer.submit(1);
+    try feed(&reducer, scratch, tool_call_frame);
+
+    try testing.expectEqualStrings("action.call.requested", typeAt(&reducer, 3));
+}
+
+test "the id letter is a code point, so a long run neither traps nor wraps" {
+    try testing.expectEqual(@as(u21, 'a'), idScalar(0));
+    try testing.expectEqual(@as(u21, 'z'), idScalar(25));
+    try testing.expectEqual(@as(u21, '{'), idScalar(26));
+    try testing.expectEqual(@as(u21, 0x100), idScalar(159));
+    try testing.expectEqual(@as(u21, 0xFFFD), idScalar(0xD800 - 'a'));
+    try testing.expectEqual(@as(u21, 0xFFFD), idScalar(0x10FFFF - 'a' + 1));
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    var chunk: usize = 0;
+    while (chunk < 155) : (chunk += 1) {
+        try feed(&reducer, scratch, wrap(
+            \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}
+        ));
+    }
+
+    try testing.expectEqualStrings("event-{", reducer.envelopes.items[22].object.get("id").?.string);
+    try testing.expectEqualStrings("event-\u{100}", reducer.envelopes.items[155].object.get("id").?.string);
+}
+
+test "a native message id is bound within its own run, never across two" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"one"}}
+    ));
+    try reducer.settlePrompt("end_turn");
+    const first = payloadAt(&reducer, 2).get("final_response").?.object;
+    try testing.expectEqualStrings("one", first.get("content").?.string);
+
+    try reducer.submit(1);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","messageId":"m1","content":{"type":"text","text":"two"}}
+    ));
+    try reducer.settlePrompt("end_turn");
+
+    const second = payloadAt(&reducer, 5).get("final_response").?.object;
+    try testing.expectEqualStrings("two", second.get("content").?.string);
+    try testing.expect(!std.mem.eql(u8, first.get("id").?.string, second.get("id").?.string));
+    try testing.expectEqualStrings(second.get("id").?.string, payloadAt(&reducer, 4).get("message_id").?.string);
+}
+
+test "a present chunk member of the wrong type fails the decode, while null does not" {
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":7}}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi","uri":[]}}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","messageId":7,"content":{"type":"text","text":"hi"}}
+    ), "acp_invalid_message_chunk", "unsupported assistant chunk");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, arena.allocator(), wrap(
+        \\{"sessionUpdate":"agent_message_chunk","messageId":null,"content":{"type":"text","text":null}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("", payloadAt(&reducer, 1).get("part").?.object.get("text").?.string);
 }
 
 test "a transport failure is inferred while every other refusal is not" {
