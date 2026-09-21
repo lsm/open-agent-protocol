@@ -66,6 +66,7 @@ var pinnedObservedOnlyEvents = map[string]bool{
 	"tool/ptc-dispatch":                      true,
 	"tool/ptc-dispatch-start":                true,
 	"web/deepseek-search-llm-request":        true,
+	"workspace/changes":                      true,
 }
 
 func ObservedOnly(eventType string) bool { return pinnedObservedOnlyEvents[eventType] }
@@ -103,6 +104,7 @@ type ContentBlock struct {
 	ToolCallID string          `json:"toolCallId,omitempty"`
 	Content    []ContentBlock  `json:"content,omitempty"`
 	IsError    *bool           `json:"isError,omitempty"`
+	Offloaded  json.RawMessage `json:"offloaded,omitempty"`
 }
 
 type SessionEventNotification struct {
@@ -286,9 +288,37 @@ type ToolResult struct {
 	Meta    json.RawMessage `json:"meta,omitempty"`
 }
 type ToolError struct {
-	Name string `json:"name"`
-	Code string `json:"code"`
+	Name   string          `json:"name"`
+	Code   string          `json:"code"`
+	Reason json.RawMessage `json:"reason,omitempty"`
 }
+
+func (e *ToolError) ReasonText() (string, bool) {
+	trimmed := bytes.TrimSpace(e.Reason)
+	if len(trimmed) == 0 {
+		return "", true
+	}
+	if trimmed[0] != '"' {
+		return "", false
+	}
+	var text string
+	if json.Unmarshal(trimmed, &text) != nil {
+		return "", false
+	}
+	return text, true
+}
+
+func validToolError(e *ToolError) bool {
+	if e == nil {
+		return true
+	}
+	if e.Name == "" || e.Code == "" {
+		return false
+	}
+	_, ok := e.ReasonText()
+	return ok
+}
+
 type TodoWrite struct {
 	Todos []Todo `json:"todos"`
 }
@@ -546,7 +576,7 @@ func (event Event) Validate() error {
 		}
 
 		singleMatchingBlock := len(data.Message.Content) == 1 && data.Message.Content[0].Type == "tool-result" && data.Message.Content[0].ToolCallID == data.Message.Source.CallID
-		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !singleMatchingBlock || (data.Error != nil && (data.Error.Name == "" || data.Error.Code == "")) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
+		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !singleMatchingBlock || !validToolError(data.Error) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
 			return fmt.Errorf("%w: invalid tool/result", ErrInvalid)
 		}
 	case *TodoWrite:
@@ -625,16 +655,24 @@ func validBlockRaw(element json.RawMessage) bool {
 	}
 }
 
+func offloadedAbsent(raw json.RawMessage) bool {
+	return len(bytes.TrimSpace(raw)) == 0
+}
+
+func offloadedRidesImage(raw json.RawMessage) bool {
+	return offloadedAbsent(raw) || bytes.Equal(bytes.TrimSpace(raw), []byte("true"))
+}
+
 func validBlock(block ContentBlock) bool {
 	switch block.Type {
 	case "text", "reasoning":
-		return block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil
+		return block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedAbsent(block.Offloaded)
 	case "image":
-		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil
+		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedRidesImage(block.Offloaded)
 	case "tool-call":
-		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
+		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedAbsent(block.Offloaded) && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
 	case "tool-result":
-		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && validBlocks(block.Content)
+		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && offloadedAbsent(block.Offloaded) && validBlocks(block.Content)
 	default:
 		return false
 	}
