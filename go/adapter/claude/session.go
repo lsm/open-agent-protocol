@@ -1123,6 +1123,7 @@ func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: %s", ErrNativeProtocol, msg))
 		return
 	}
+	s.sweepRun(run)
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}, SettledBy: settledBy}, true)
 }
 

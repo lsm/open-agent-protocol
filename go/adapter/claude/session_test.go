@@ -1604,3 +1604,22 @@ func TestNegativeDurationIsNotReported(t *testing.T) {
 		}
 	}
 }
+
+func TestAFailedRunSweepsToolsStartedBeforeTheFailure(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"toolu_nameless","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-mixed","user_message_uuid":"` + uuid + `"}`)
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.admission, events)
+
+	var kinds []protocol.EnvelopeType
+	for _, e := range events {
+		kinds = append(kinds, e.Type)
+	}
+	if len(kinds) != 5 || kinds[3] != protocol.TypeActionCallCancelled || kinds[4] != protocol.TypeRunFailed {
+		t.Fatalf("trace = %v, want the started call cancelled before the terminal", kinds)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
