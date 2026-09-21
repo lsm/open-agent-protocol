@@ -234,6 +234,19 @@ test "an error object tolerates an empty message and an unknown member" {
     try std.testing.expectEqual(Kind.failure, foreign.kind);
 }
 
+test "parseMessage refuses a frame carrying a second object, called directly" {
+    var holder: ?std.heap.ArenaAllocator = null;
+    defer if (holder) |*a| a.deinit();
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"method\":\"x\"}{\"jsonrpc\":\"2.0\",\"method\":\"y\"}"));
+}
+
+test "parseMessage refuses invalid UTF-8 in a string and in a key, called directly" {
+    var holder: ?std.heap.ArenaAllocator = null;
+    defer if (holder) |*a| a.deinit();
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"method\":\"\xff\"}"));
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"\xff\":1,\"method\":\"x\"}"));
+}
+
 test "a duplicate key is refused at every nesting level" {
     var holder: ?std.heap.ArenaAllocator = null;
     defer if (holder) |*a| a.deinit();
