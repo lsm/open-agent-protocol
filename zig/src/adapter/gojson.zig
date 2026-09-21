@@ -147,6 +147,86 @@ test "a lone surrogate escape is rewritten and a valid pair is left alone" {
     try expectRewritten("{\"\\ufffd\":1}", "{\"\\ud800\":1}");
 }
 
+fn foldNext(text: []const u8, index: *usize) ?u21 {
+    if (index.* >= text.len) return null;
+    const byte = text[index.*];
+    if (byte < 0x80) {
+        index.* += 1;
+        return std.ascii.toLower(byte);
+    }
+    const width = std.unicode.utf8ByteSequenceLength(byte) catch {
+        index.* += 1;
+        return byte;
+    };
+    if (index.* + width > text.len) {
+        index.* += 1;
+        return byte;
+    }
+    const code = std.unicode.utf8Decode(text[index.* .. index.* + width]) catch {
+        index.* += 1;
+        return byte;
+    };
+    index.* += width;
+    return switch (code) {
+        0x17f => 's',
+        0x212a => 'k',
+        else => code,
+    };
+}
+
+pub fn foldEql(left: []const u8, right: []const u8) bool {
+    var at_left: usize = 0;
+    var at_right: usize = 0;
+    while (true) {
+        const a = foldNext(left, &at_left);
+        const b = foldNext(right, &at_right);
+        if (a == null and b == null) return true;
+        if (a == null or b == null) return false;
+        if (a.? != b.?) return false;
+    }
+}
+
+pub fn foldedSet(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
+    var found: ?std.json.Value = null;
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (!foldEql(entry.key_ptr.*, path[0])) continue;
+        if (path.len == 1) {
+            if (entry.value_ptr.* == .null) continue;
+            found = entry.value_ptr.*;
+            continue;
+        }
+        if (entry.value_ptr.* != .object) continue;
+        if (foldedSet(entry.value_ptr.object, path[1..])) |nested| found = nested;
+    }
+    return found;
+}
+
+pub fn foldedLast(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
+    var found: ?std.json.Value = null;
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (!foldEql(entry.key_ptr.*, path[0])) continue;
+        if (path.len == 1) {
+            found = entry.value_ptr.*;
+            continue;
+        }
+        if (entry.value_ptr.* != .object) continue;
+        if (foldedLast(entry.value_ptr.object, path[1..])) |nested| found = nested;
+    }
+    return found;
+}
+
+pub fn foldedWrongType(object: std.json.ObjectMap, key: []const u8, want: std.meta.Tag(std.json.Value)) bool {
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (!foldEql(entry.key_ptr.*, key)) continue;
+        if (entry.value_ptr.* == .null) continue;
+        if (entry.value_ptr.* != want) return true;
+    }
+    return false;
+}
+
 pub const nesting_limit: usize = 10000;
 
 const WalkFrame = struct {
