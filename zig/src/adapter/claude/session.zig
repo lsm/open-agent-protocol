@@ -54,6 +54,7 @@ const Tool = struct {
 
 const Gate = struct {
     id: []const u8,
+    request_id: []const u8 = "",
     requested_event: []const u8 = "",
     resolved: bool = false,
 };
@@ -71,6 +72,7 @@ pub const Reducer = struct {
     served: ?std.StringHashMapUnmanaged([]const u8) = null,
     attribution: std.StringHashMapUnmanaged([]const u8) = .empty,
     gates: std.ArrayList(Gate) = .empty,
+    unusable: bool = false,
     children: std.ArrayList(Child) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
 
@@ -97,6 +99,7 @@ pub const Reducer = struct {
     }
 
     pub fn submit(self: *Reducer, submission_uuid: []const u8) !void {
+        if (self.unusable) return;
         const submission_id = try self.nextID("submission");
         const message_id = try self.nextID("message");
         self.run = Run{
@@ -266,10 +269,42 @@ pub const Reducer = struct {
         return .{ .object = payload };
     }
 
-    fn openGate(self: *Reducer, message: rpc.Message) !void {
+    fn foreignActivity(self: *Reducer, what: []const u8) !void {
+        self.unusable = true;
         if (self.run == null) return;
+        if (!self.run.?.started) {
+            self.run = null;
+            return;
+        }
+        try self.failRun("claude_external_activity", what);
+    }
+
+    fn cancelGate(self: *Reducer, request_id: []const u8) !void {
+        for (self.gates.items) |*gate| {
+            if (gate.resolved or !std.mem.eql(u8, gate.request_id, request_id)) continue;
+            gate.resolved = true;
+            if (self.run == null) return;
+            const run = &self.run.?;
+            if (!run.started) return;
+            var payload = self.object();
+            try self.put(&payload, "interaction_id", str(gate.id));
+            try self.put(&payload, "requested_by", str(endpoint_id));
+            try self.put(&payload, "responded_by", str(self.options.responder));
+            try self.put(&payload, "session_id", str(self.options.session_id));
+            try self.put(&payload, "run_id", str(run.id));
+            try self.put(&payload, "status", str("cancelled"));
+            _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event);
+            _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "running", ""));
+            return;
+        }
+    }
+
+    fn openGate(self: *Reducer, message: rpc.Message) !void {
+        if (self.run == null or !self.run.?.started) {
+            try self.foreignActivity("can_use_tool outside an owned run");
+            return;
+        }
         const run = &self.run.?;
-        if (!run.started) return;
         const request = message.object.object.get("request") orelse return;
         if (request != .object) return;
         const ask = request.object;
@@ -301,7 +336,7 @@ pub const Reducer = struct {
         try self.put(&payload, "allow_cancel", .{ .bool = true });
 
         const requested = try self.emitTurn(run, "user.input.requested", .{ .object = payload }, id, "");
-        try self.gates.append(self.allocator(), .{ .id = id, .requested_event = requested });
+        try self.gates.append(self.allocator(), .{ .id = id, .request_id = message.request_id, .requested_event = requested });
         _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "waiting_for_input", id));
     }
 
@@ -512,6 +547,7 @@ pub const Reducer = struct {
     }
 
     pub fn transportFailed(self: *Reducer, detail: []const u8) !void {
+        self.unusable = true;
         return self.failRunSettled("claude_process_exit", detail, "inferred");
     }
 
@@ -592,11 +628,21 @@ pub const Reducer = struct {
     }
 
     pub fn observe(self: *Reducer, message: rpc.Message) !void {
+        if (message.kind == .control_cancel) {
+            try self.cancelGate(message.request_id);
+            return;
+        }
         if (message.kind == .control_request) {
-            if (std.mem.eql(u8, message.subtype, "can_use_tool")) try self.openGate(message);
+            if (std.mem.eql(u8, message.subtype, "can_use_tool")) {
+                try self.openGate(message);
+                return;
+            }
+            const what = try std.fmt.allocPrint(self.allocator(), "reverse control request \"{s}\"", .{message.subtype});
+            try self.foreignActivity(what);
             return;
         }
         if (message.kind != .observation) return;
+        if (self.unusable) return;
         if (self.run) |run| {
             if (!run.started) {
                 if (self.echoMatches(message)) {
@@ -748,11 +794,9 @@ pub const Reducer = struct {
                 const delta_type = delta.object.get("type") orelse return;
                 if (delta_type != .string) return;
                 if (std.mem.eql(u8, delta_type.string, "text_delta")) {
-                    const text = delta.object.get("text") orelse return;
-                    if (text == .string) try self.emitDelta("text", text.string);
+                    try self.emitDelta("text", deltaText(delta.object, "text") orelse return);
                 } else if (std.mem.eql(u8, delta_type.string, "thinking_delta")) {
-                    const text = delta.object.get("thinking") orelse return;
-                    if (text == .string) try self.emitDelta("thinking", text.string);
+                    try self.emitDelta("thinking", deltaText(delta.object, "thinking") orelse return);
                 }
             }
             return;
@@ -900,6 +944,11 @@ fn failed(frame: std.json.ObjectMap) bool {
     }
     const subtype = stringMember(frame, "subtype") orelse return true;
     return !std.mem.eql(u8, subtype, "success");
+}
+
+fn deltaText(delta: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = delta.get(key) orelse return "";
+    return if (value == .string) value.string else null;
 }
 
 fn everyItemIsAString(listed: std.json.Array) bool {
@@ -1125,11 +1174,16 @@ test "a permission ask outside an owned run opens no gate" {
     try gateRequest(&reducer, scratch, "");
     try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
     try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
+    try testing.expect(reducer.unusable);
 
-    try reducer.submit("turn-1");
-    try gateRequest(&reducer, scratch, "");
-    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
-    try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
+    var pending = Reducer.init(&arena, .{});
+    pending.open();
+    try pending.submit("turn-1");
+    try gateRequest(&pending, scratch, "");
+    try testing.expectEqual(@as(usize, 0), pending.envelopes.items.len);
+    try testing.expectEqual(@as(?[]const u8, null), pending.pendingInteraction());
+    try testing.expect(pending.unusable);
+    try testing.expect(pending.run == null);
 }
 
 test "the harness names the gate when it can, and the reducer names it when it cannot" {
@@ -1252,17 +1306,18 @@ test "a call still open when the run settles is cancelled before the terminal" {
 test "a transport that dies before the run starts settles nothing" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = Reducer.init(&arena, .{});
-    reducer.open();
 
-    try reducer.submit("turn-1");
-    try reducer.transportFailed("the test closed the transport");
-    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    var pending = Reducer.init(&arena, .{});
+    pending.open();
+    try pending.submit("turn-1");
+    try pending.transportFailed("the test closed the transport");
+    try testing.expectEqual(@as(usize, 0), pending.envelopes.items.len);
 
-    try reducer.submit("turn-2");
-    try startedRun(&reducer, arena.allocator(), "turn-3");
-    try reducer.transportFailed("the test closed the transport");
-    try testing.expectEqualStrings("run.failed", reducer.envelopes.items[1].object.get("type").?.string);
+    var running = Reducer.init(&arena, .{});
+    running.open();
+    try startedRun(&running, arena.allocator(), "turn-1");
+    try running.transportFailed("the test closed the transport");
+    try testing.expectEqualStrings("run.failed", running.envelopes.items[1].object.get("type").?.string);
 }
 
 fn childRun(reducer: *Reducer, arena: std.mem.Allocator, task_type: []const u8) !void {
@@ -1526,6 +1581,104 @@ test "a call the failed run left open is not swept into the next run" {
     try testing.expectEqual(refused_at + 2, kinds.len);
     try testing.expectEqualStrings("run.started", kinds[refused_at]);
     try testing.expectEqualStrings("run.completed", kinds[refused_at + 1]);
+}
+
+test "a session the harness broke admits nothing further" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try startedRun(&reducer, scratch, "turn-1");
+    try reducer.transportFailed("the test closed the transport");
+    const settled = reducer.envelopes.items.len;
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","model":"model-b","uuid":"i1"}
+    );
+    try testing.expectEqualStrings("claude-test", reducer.current_model);
+
+    try reducer.submit("turn-2");
+    try testing.expect(reducer.run == null);
+
+    try startedRun(&reducer, scratch, "turn-2");
+    try observeText(&reducer, scratch,
+        \\{"type":"result","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
+    );
+    try testing.expectEqual(settled, reducer.envelopes.items.len);
+}
+
+test "a reverse control request the adapter does not own is external activity" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var running = Reducer.init(&arena, .{});
+    running.open();
+    try startedRun(&running, scratch, "turn-1");
+    try observeText(&running, scratch,
+        \\{"type":"control_request","request_id":"c1","request":{"subtype":"hook_callback"}}
+    );
+    try testing.expectEqualStrings("claude_external_activity", failureCodeOf(&running).?);
+    try testing.expectEqualStrings("reverse control request \"hook_callback\"", failureMessageOf(&running).?);
+
+    var idle = Reducer.init(&arena, .{});
+    idle.open();
+    try observeText(&idle, scratch,
+        \\{"type":"control_request","request_id":"c1","request":{"subtype":"hook_callback"}}
+    );
+    try testing.expectEqual(@as(usize, 0), idle.envelopes.items.len);
+    try testing.expect(idle.unusable);
+}
+
+test "a gate the CLI withdraws resolves as cancelled and releases the run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try gateRequest(&reducer, scratch, "");
+    const opened = reducer.envelopes.items.len;
+
+    try observeText(&reducer, scratch,
+        \\{"type":"control_cancel_request","request_id":"other"}
+    );
+    try testing.expectEqual(opened, reducer.envelopes.items.len);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"control_cancel_request","request_id":"ask-1"}
+    );
+    const kinds = try emittedTypes(&reducer, scratch);
+    try testing.expectEqual(opened + 2, kinds.len);
+    try testing.expectEqualStrings("user.input.resolved", kinds[opened]);
+    try testing.expectEqualStrings("run.status.updated", kinds[opened + 1]);
+    try testing.expectEqualStrings("cancelled", reducer.envelopes.items[opened].object.get("payload").?.object.get("status").?.string);
+    try testing.expectEqual(@as(?[]const u8, null), reducer.pendingInteraction());
+}
+
+test "a delta whose member is absent is still the oracle's empty part" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var absent = Reducer.init(&arena, .{});
+    absent.open();
+    try startedRun(&absent, scratch, "turn-1");
+    try observeText(&absent, scratch,
+        \\{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta"}},"uuid":"e2"}
+    );
+    try testing.expectEqualStrings("", firstPayload(&absent, "content.delta").?.get("part").?.object.get("text").?.string);
+
+    var wrong_type = Reducer.init(&arena, .{});
+    wrong_type.open();
+    try startedRun(&wrong_type, scratch, "turn-1");
+    try observeText(&wrong_type, scratch,
+        \\{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":7}},"uuid":"e2"}
+    );
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&wrong_type, "content.delta"));
 }
 
 test "an init outside a pending run is adopted when it arrives" {

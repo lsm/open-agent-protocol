@@ -841,6 +841,45 @@ Both gates were executed against the pinned linux-x64 binary
 (sha256 `26d02035…d5ba`) with the digest bound, five consecutive times each,
 all green.
 
+### What the corpus cannot see, and why that is structural
+
+Review of the Zig port found two divergences from the oracle that all thirteen
+cases pass over, and a sweep of every entry point for the same shape found four
+more. The class is specific: **any oracle branch reachable only from a frame the
+fixtures happen not to contain.** The corpus was assembled from observed
+sessions, so it holds the shapes a healthy harness produces and almost none of
+the shapes a misbehaving one does. Six divergences, none visible to a single
+case:
+
+- A repeated `tool_use` id and a `tool_result` naming no call in flight both
+  fail the run with `claude_tool_lifecycle`. Every fixture pairs its calls.
+- A failure message joins several `errors` with `"; "` and falls back to
+  `API error (HTTP N)`. Every fixture's error list has exactly one entry.
+- A reverse control request that is not `can_use_tool` is **external activity**:
+  it fails the run with `claude_external_activity` and marks the session
+  unusable. The corpus's only observed control requests are `can_use_tool`.
+- That unusable mark is a latch, not a flag. After foreign activity or a
+  transport death the session drops every later observation and admits no
+  further submission. No case continues past its terminal.
+- A `control_cancel_request` withdraws the matching open gate, resolving it
+  `cancelled` and returning the run to `running`. No case contains one.
+- A `text_delta` carrying no `text` member still emits an empty content part,
+  because the oracle decodes into a struct whose zero value is the empty
+  string. Every fixture's delta carries its text.
+
+The lesson generalises past this adapter, which is why it is recorded here
+rather than in a commit. A hermetic corpus of observed traffic proves a reducer
+handles what a harness *does*; it says nothing about what the reducer does when
+the harness misbehaves, and that is exactly the half a second implementation is
+most likely to get wrong. Every port should sweep its oracle's entry points for
+branches no fixture reaches, and carry a named test for each, rather than
+trusting a green corpus.
+
+Three guards found during the same sweep were dead by construction rather than
+untested, and were removed rather than left: an empty cancel id cannot reach
+`cancelGate` because the codec refuses one, and two guards in the tool paths
+could not fire. What survived removal has a test.
+
 ### Open question: is the permission gate the tool boundary, or only most of it?
 
 The child is spawned with `--permission-prompt-tool stdio` and
