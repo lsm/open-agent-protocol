@@ -146,7 +146,11 @@ Three changes reach the wire this adapter decodes.
   marking a block whose bytes were replaced by placeholder text after an
   offload decision. `ContentBlock` accepts it on an image block only, and only
   as literal `true` — the upstream type admits no `false`, so a `false` is a
-  frame this adapter refuses rather than tolerates.
+  frame this adapter refuses rather than tolerates. The member is carried as a
+  `json.RawMessage` rather than a `*bool` so that an explicit `null` is
+  distinguishable from an absent member: `encoding/json` decodes `null` into a
+  pointer by leaving it nil, which would have made `"offloaded": null` read as
+  absence and slip past the marker's restriction on every block type.
 - **Two event types join the known vocabulary**
   (`session/src/known-event-types.ts`): `workspace/changes` and
   `image/offload`. They are classified differently and the difference is the

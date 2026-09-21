@@ -104,7 +104,7 @@ type ContentBlock struct {
 	ToolCallID string          `json:"toolCallId,omitempty"`
 	Content    []ContentBlock  `json:"content,omitempty"`
 	IsError    *bool           `json:"isError,omitempty"`
-	Offloaded  *bool           `json:"offloaded,omitempty"`
+	Offloaded  json.RawMessage `json:"offloaded,omitempty"`
 }
 
 type SessionEventNotification struct {
@@ -628,16 +628,24 @@ func validBlockRaw(element json.RawMessage) bool {
 	}
 }
 
+func offloadedAbsent(raw json.RawMessage) bool {
+	return len(bytes.TrimSpace(raw)) == 0
+}
+
+func offloadedRidesImage(raw json.RawMessage) bool {
+	return offloadedAbsent(raw) || bytes.Equal(bytes.TrimSpace(raw), []byte("true"))
+}
+
 func validBlock(block ContentBlock) bool {
 	switch block.Type {
 	case "text", "reasoning":
-		return block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && block.Offloaded == nil
+		return block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedAbsent(block.Offloaded)
 	case "image":
-		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && (block.Offloaded == nil || *block.Offloaded)
+		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedRidesImage(block.Offloaded)
 	case "tool-call":
-		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && block.Offloaded == nil && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
+		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedAbsent(block.Offloaded) && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
 	case "tool-result":
-		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && block.Offloaded == nil && validBlocks(block.Content)
+		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && offloadedAbsent(block.Offloaded) && validBlocks(block.Content)
 	default:
 		return false
 	}

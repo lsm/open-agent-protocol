@@ -222,6 +222,10 @@ func TestOffloadedMarkerRidesOnlyAnImageBlock(t *testing.T) {
 	refused := []string{
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":{"attachmentId":"a","mediaType":"image/png"},"offloaded":false}],"source":{"kind":"user"}}}}`,
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x","offloaded":true}],"source":{"kind":"user"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":{"attachmentId":"a","mediaType":"image/png"},"offloaded":null}],"source":{"kind":"user"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x","offloaded":null}],"source":{"kind":"user"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"assistant","content":[{"type":"tool-call","id":"c","name":"n","arguments":"{}","offloaded":null}],"source":{"kind":"assistant"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x","offloaded":null}]}],"source":{"kind":"tool","callId":"c"}}}}`,
 	}
 	for _, data := range refused {
 		if _, err := DecodeNotification(NotifySessionEvent, []byte(data)); !errors.Is(err, ErrInvalid) {
