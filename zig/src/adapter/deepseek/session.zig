@@ -15,8 +15,9 @@ pub const Counters = struct {
 
     pub fn nextID(self: *Counters, arena: std.mem.Allocator, kind: []const u8) ![]const u8 {
         self.ids += 1;
-        const letter: u8 = @intCast('a' + self.ids - 1);
-        return std.fmt.allocPrint(arena, "{s}-{c}", .{ kind, letter });
+        const scalar = 'a' + self.ids - 1;
+        const point: u21 = if (scalar > 0x10FFFF) 0xFFFD else @intCast(scalar);
+        return std.fmt.allocPrint(arena, "{s}-{u}", .{ kind, point });
     }
 
     pub fn nextTick(self: *Counters) i64 {
@@ -786,4 +787,33 @@ test "a refusal before the run is admitted emits nothing" {
     try transportFailed(&reducer, "gone");
     try std.testing.expect(reducer.emitted.items.len == 0);
     try std.testing.expect(reducer.terminal);
+}
+
+test "an id letter is a code point, as the oracle mints it, not a byte" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const cases = [_]struct { n: usize, want: []const u8 }{
+        .{ .n = 1, .want = "kind-a" },
+        .{ .n = 26, .want = "kind-z" },
+        .{ .n = 27, .want = "kind-{" },
+        .{ .n = 31, .want = "kind-\x7f" },
+        .{ .n = 32, .want = "kind-\u{80}" },
+        .{ .n = 100, .want = "kind-\u{c4}" },
+        .{ .n = 160, .want = "kind-\u{100}" },
+        .{ .n = 55199, .want = "kind-\u{d7ff}" },
+        .{ .n = 55200, .want = "kind-\u{fffd}" },
+        .{ .n = 57247, .want = "kind-\u{fffd}" },
+        .{ .n = 57248, .want = "kind-\u{e000}" },
+        .{ .n = 1114015, .want = "kind-\u{10ffff}" },
+        .{ .n = 1114016, .want = "kind-\u{fffd}" },
+        .{ .n = 2097056, .want = "kind-\u{fffd}" },
+    };
+
+    for (cases) |case| {
+        var counters = Counters{ .ids = case.n - 1 };
+        const got = try counters.nextID(arena.allocator(), "kind");
+        try std.testing.expectEqualStrings(case.want, got);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(got));
+    }
 }
