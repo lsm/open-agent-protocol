@@ -14,7 +14,7 @@ pub const invalid_message_prefix = "claude rpc: invalid stream-json message";
 pub const invalid_control_prefix = "claude rpc: invalid control-plane message";
 pub const invalid_frame_prefix = "claude native: invalid frame for a known type";
 pub const frame_too_large_message = "claude rpc: frame exceeds configured limit";
-pub const max_nesting_depth = 10000;
+pub const max_nesting_depth = gojson.nesting_limit;
 
 fn frameDetail(comptime detail: []const u8) []const u8 {
     return invalid_frame_prefix ++ ": " ++ detail;
@@ -204,56 +204,6 @@ pub const FrameReader = struct {
         return frame;
     }
 };
-
-const Frame = struct {
-    is_object: bool,
-    expect_key: bool = false,
-    seen: std.StringHashMapUnmanaged(void) = .empty,
-};
-
-const Walk = union(enum) { ok, duplicate: []const u8, trailing, too_deep };
-
-fn walkFrame(arena: std.mem.Allocator, data: []const u8) !Walk {
-    var scanner = std.json.Scanner.initCompleteInput(arena, data);
-    defer scanner.deinit();
-    var stack = std.ArrayList(Frame).empty;
-    var settled = false;
-    while (true) {
-        const token = scanner.nextAlloc(arena, .alloc_always) catch return if (settled) Walk.trailing else Walk.ok;
-        if (settled) {
-            if (token == .end_of_document) break;
-            return .trailing;
-        }
-        var closed = false;
-        switch (token) {
-            .object_begin, .array_begin => {
-                if (stack.items.len >= max_nesting_depth) return .too_deep;
-                try stack.append(arena, .{ .is_object = token == .object_begin, .expect_key = token == .object_begin });
-            },
-            .object_end, .array_end => {
-                _ = stack.pop();
-                if (stack.items.len == 0) settled = true;
-                closed = true;
-            },
-            .end_of_document => break,
-            .allocated_string => |text| {
-                const top = &stack.items[stack.items.len - 1];
-                if (top.is_object and top.expect_key) {
-                    if (top.seen.contains(text)) return Walk{ .duplicate = text };
-                    try top.seen.put(arena, text, {});
-                    top.expect_key = false;
-                    continue;
-                }
-                closed = true;
-            },
-            else => closed = true,
-        }
-        if (!closed or stack.items.len == 0) continue;
-        const top = &stack.items[stack.items.len - 1];
-        if (top.is_object) top.expect_key = true;
-    }
-    return .ok;
-}
 
 fn foldNext(text: []const u8, index: *usize) ?u21 {
     if (index.* >= text.len) return null;
@@ -633,7 +583,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         return report.invalid("frame must be exactly one JSON object");
     }
     const scan = gojson.replaceLoneSurrogates(arena, data);
-    switch (walkFrame(arena, scan) catch Walk.ok) {
+    switch (gojson.walkFrame(arena, scan) catch gojson.Walk.ok) {
         .duplicate => |key| return report.duplicateKey(arena, key),
         .trailing => return report.invalid("trailing JSON value"),
         .too_deep => return report.invalid("exceeded max depth"),

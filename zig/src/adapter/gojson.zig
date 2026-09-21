@@ -149,6 +149,56 @@ test "a lone surrogate escape is rewritten and a valid pair is left alone" {
 
 pub const nesting_limit: usize = 10000;
 
+const WalkFrame = struct {
+    is_object: bool,
+    expect_key: bool = false,
+    seen: std.StringHashMapUnmanaged(void) = .empty,
+};
+
+pub const Walk = union(enum) { ok, duplicate: []const u8, trailing, too_deep };
+
+pub fn walkFrame(arena: std.mem.Allocator, data: []const u8) !Walk {
+    var scanner = std.json.Scanner.initCompleteInput(arena, data);
+    defer scanner.deinit();
+    var stack = std.ArrayList(WalkFrame).empty;
+    var settled = false;
+    while (true) {
+        const token = scanner.nextAlloc(arena, .alloc_always) catch return if (settled) Walk.trailing else Walk.ok;
+        if (settled) {
+            if (token == .end_of_document) break;
+            return .trailing;
+        }
+        var closed = false;
+        switch (token) {
+            .object_begin, .array_begin => {
+                if (stack.items.len >= nesting_limit) return .too_deep;
+                try stack.append(arena, .{ .is_object = token == .object_begin, .expect_key = token == .object_begin });
+            },
+            .object_end, .array_end => {
+                _ = stack.pop();
+                if (stack.items.len == 0) settled = true;
+                closed = true;
+            },
+            .end_of_document => break,
+            .allocated_string => |text| {
+                const top = &stack.items[stack.items.len - 1];
+                if (top.is_object and top.expect_key) {
+                    if (top.seen.contains(text)) return Walk{ .duplicate = text };
+                    try top.seen.put(arena, text, {});
+                    top.expect_key = false;
+                    continue;
+                }
+                closed = true;
+            },
+            else => closed = true,
+        }
+        if (!closed or stack.items.len == 0) continue;
+        const top = &stack.items[stack.items.len - 1];
+        if (top.is_object) top.expect_key = true;
+    }
+    return .ok;
+}
+
 pub fn withinNestingLimit(data: []const u8) bool {
     var depth: usize = 0;
     var index: usize = 0;
@@ -196,4 +246,27 @@ test "nesting is bounded where the oracle bounds it, and braces in strings do no
     try testing.expect(withinNestingLimit(try std.mem.concat(scratch, u8, &.{ "{\"a\":\"\\\"", brackets, "\"}" })));
     try testing.expect(withinNestingLimit("[]"));
     try testing.expect(withinNestingLimit("]]]]["));
+}
+
+fn nestedArrays(allocator: std.mem.Allocator, containers: usize) ![]const u8 {
+    var body = std.ArrayList(u8).empty;
+    try body.appendSlice(allocator, "{\"a\":");
+    try body.appendNTimes(allocator, '[', containers - 1);
+    try body.appendNTimes(allocator, ']', containers - 1);
+    try body.appendSlice(allocator, "}");
+    return body.items;
+}
+
+test "the cheap depth scan and the walking one put the limit in the same place" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const at_cap = try nestedArrays(allocator, nesting_limit);
+    try testing.expect(withinNestingLimit(at_cap));
+    try testing.expectEqual(Walk.ok, try walkFrame(allocator, at_cap));
+
+    const past_cap = try nestedArrays(allocator, nesting_limit + 1);
+    try testing.expect(!withinNestingLimit(past_cap));
+    try testing.expectEqual(Walk.too_deep, try walkFrame(allocator, past_cap));
 }
