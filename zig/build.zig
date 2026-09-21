@@ -189,13 +189,19 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const claude_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const claude_rpc_test = b.addTest(.{ .root_module = claude_rpc_mod });
+
     const pi_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/pi/rpc.zig"),
         .target = target,
         .optimize = optimize,
     });
     const pi_rpc_test = b.addTest(.{ .root_module = pi_rpc_mod });
-
 
     const oap_endpoint_client_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/oap/endpoint_client.zig"),
@@ -2076,7 +2082,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
