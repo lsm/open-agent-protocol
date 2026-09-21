@@ -417,6 +417,100 @@ pub fn validateCommand(value: std.json.Value) !void {
     }
 }
 
+const canonical_order = [_][]const u8{
+    "id",                "type",               "message",            "images",
+    "streamingBehavior", "parentSession",      "provider",           "modelId",
+    "level",             "mode",               "customInstructions", "enabled",
+    "command",           "excludeFromContext", "outputPath",         "sessionPath",
+    "entryId",           "since",              "name",
+};
+
+fn canonicalImages(arena: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    var items = std.ArrayList(std.json.Value).empty;
+    for (value.array.items) |entry| {
+        const shape = try arena.create(std.json.ObjectMap);
+        shape.* = .{};
+        for (image_members) |name| {
+            const carried = if (entry == .object) entry.object.get(name) else null;
+            var text: []const u8 = "";
+            if (carried) |held| {
+                if (held == .string) text = held.string;
+            }
+            try shape.put(arena, name, .{ .string = text });
+        }
+        try items.append(arena, .{ .object = shape.* });
+    }
+    return .{ .array = std.json.Array.fromOwnedSlice(arena, try items.toOwnedSlice(arena)) };
+}
+
+pub fn canonicalCommand(arena: std.mem.Allocator, value: std.json.Value) ![]const u8 {
+    try validateCommand(value);
+    const shape = try arena.create(std.json.ObjectMap);
+    shape.* = .{};
+    for (canonical_order) |name| {
+        const carried = value.object.get(name) orelse continue;
+        if (std.mem.eql(u8, name, "type")) {
+            try shape.put(arena, name, carried);
+            continue;
+        }
+        const member = declaredMember(&command_members, name) orelse continue;
+        if (omittedByMarshal(carried, member)) continue;
+        if (std.mem.eql(u8, name, "images")) {
+            try shape.put(arena, name, try canonicalImages(arena, carried));
+            continue;
+        }
+        try shape.put(arena, name, carried);
+    }
+    return std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = shape.* }, .{});
+}
+
+fn expectCanonical(text: []const u8, want: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, text, .{});
+    try std.testing.expectEqualStrings(want, try canonicalCommand(scratch, parsed));
+}
+
+test "a canonical command carries its members in the order the struct declares" {
+    try expectCanonical("{\"type\":\"steer\",\"message\":\"adjust\"}", "{\"type\":\"steer\",\"message\":\"adjust\"}");
+    try expectCanonical("{\"message\":\"adjust\",\"type\":\"steer\"}", "{\"type\":\"steer\",\"message\":\"adjust\"}");
+    try expectCanonical("{\"type\":\"abort\",\"id\":\"r1\"}", "{\"id\":\"r1\",\"type\":\"abort\"}");
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"images\":[],\"message\":\"hi\",\"streamingBehavior\":\"steer\"}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"streamingBehavior\":\"steer\"}",
+    );
+}
+
+test "a canonical command drops every member omitempty would not write" {
+    try expectCanonical("{\"type\":\"abort\",\"message\":null}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"enabled\":null}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"images\":[]}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"images\":null}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"level\":\"\"}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"id\":\"\"}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"bash\",\"command\":\"ls\",\"excludeFromContext\":false}", "{\"type\":\"bash\",\"command\":\"ls\",\"excludeFromContext\":false}");
+}
+
+test "a canonical command image is three strings even where the frame wrote none" {
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{}]}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"type\":\"\",\"data\":\"\",\"mimeType\":\"\"}]}",
+    );
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"mimeType\":\"image/png\",\"data\":\"d\",\"type\":\"image\"}]}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"type\":\"image\",\"data\":\"d\",\"mimeType\":\"image/png\"}]}",
+    );
+}
+
+test "a command the vocabulary refuses has no canonical form to compare" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"type\":\"steer\"}", .{});
+    try std.testing.expectError(Error.InvalidFrame, canonicalCommand(scratch, parsed));
+}
+
 fn expectCommand(text: []const u8, want: anyerror!void) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
