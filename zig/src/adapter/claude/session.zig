@@ -765,7 +765,7 @@ pub const Reducer = struct {
         }
         self.served = served;
         try self.publishAttribution();
-        return self.catalog.items;
+        return try self.allocator().dupe(CatalogEntry, self.catalog.items);
     }
 
     fn attributionFor(self: *Reducer, name: []const u8) []const u8 {
@@ -1952,6 +1952,32 @@ test "a null tool input reaches the prompt as the literal the oracle keeps" {
     );
     const shaped = firstPayload(&absent, "user.input.requested").?;
     try testing.expectEqualStrings("Bash {\"a\":1}", shaped.get("questions").?.array.items[0].object.get("prompt").?.string);
+}
+
+test "a served catalog outlives the init that replaces it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","session_id":"s","model":"model-a","tools":["Bash","Read"],"uuid":"i1"}
+    );
+    const served = (try reducer.listTools()).?;
+    try testing.expectEqual(@as(usize, 2), served.len);
+    try testing.expectEqualStrings("Bash", served[0].name);
+    try testing.expectEqualStrings("Read", served[1].name);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"init","session_id":"s","model":"model-a","tools":["Grep","Edit"],"uuid":"i2"}
+    );
+    try testing.expectEqualStrings("Bash", served[0].name);
+    try testing.expectEqualStrings("Read", served[1].name);
+
+    const reserved = (try reducer.listTools()).?;
+    try testing.expectEqualStrings("Grep", reserved[0].name);
 }
 
 test "a negative duration is omitted rather than emitted past the schema floor" {
