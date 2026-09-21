@@ -88,8 +88,10 @@ pub fn parseMessage(arena: std.mem.Allocator, line: []const u8) !Message {
     }
     if (failure) |value| {
         if (value != .object) return Error.InvalidMessage;
-        if (value.object.get("code") == null) return Error.InvalidMessage;
-        if (value.object.get("message") == null) return Error.InvalidMessage;
+        const code = value.object.get("code") orelse return Error.InvalidMessage;
+        if (code != .integer and code != .null) return Error.InvalidMessage;
+        const detail = value.object.get("message") orelse return Error.InvalidMessage;
+        if (detail != .string and detail != .null) return Error.InvalidMessage;
     }
     return .{ .kind = kind, .method = named, .raw = line };
 }
@@ -205,6 +207,31 @@ test "an error object carries both a code and a message" {
     try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-1}}"));
     try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"no\"}}"));
     try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":\"no\"}"));
+}
+
+test "an error object's code is an integer and its message a string" {
+    var holder: ?std.heap.ArenaAllocator = null;
+    defer if (holder) |*a| a.deinit();
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":\"x\",\"message\":\"bad\"}}"));
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1.5,\"message\":\"bad\"}}"));
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":99999999999999999999,\"message\":\"bad\"}}"));
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":7}}"));
+}
+
+test "an error object member holding null decodes as a no-op, not as a type defect" {
+    var holder: ?std.heap.ArenaAllocator = null;
+    defer if (holder) |*a| a.deinit();
+    const nulled = try parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":null,\"message\":null}}");
+    try std.testing.expectEqual(Kind.failure, nulled.kind);
+}
+
+test "an error object tolerates an empty message and an unknown member" {
+    var holder: ?std.heap.ArenaAllocator = null;
+    defer if (holder) |*a| a.deinit();
+    const empty = try parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"\"}}");
+    try std.testing.expectEqual(Kind.failure, empty.kind);
+    const foreign = try parseMessage(scratch(&holder), "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"bad\",\"other\":1}}");
+    try std.testing.expectEqual(Kind.failure, foreign.kind);
 }
 
 test "a duplicate key is refused at every nesting level" {
