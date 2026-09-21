@@ -1623,3 +1623,34 @@ func TestAFailedRunSweepsToolsStartedBeforeTheFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestABlockAfterATerminalizingOneIsNotStarted(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_nameless","input":{}},{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-rev","user_message_uuid":"` + uuid + `"}`)
+	assertValidTrace(t, outcome.admission, adaptertest.Drain(t, outcome.stream, 5*time.Second))
+
+	impl := session.(*Session)
+	impl.mu.Lock()
+	leftover := len(impl.tools)
+	impl.mu.Unlock()
+	if leftover != 0 {
+		t.Fatalf("tools left behind by a terminalized frame = %d, want 0", leftover)
+	}
+
+	uuid2, outcome2 := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"m2","model":"claude-test","content":[{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-rev2","user_message_uuid":"` + uuid2 + `"}`)
+	peer.send(resultFrame(uuid2, "success", false, "completed", "done", 0))
+	second := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
+	assertValidTrace(t, outcome2.admission, second)
+	var kinds []protocol.EnvelopeType
+	for _, e := range second {
+		kinds = append(kinds, e.Type)
+	}
+	if len(kinds) < 2 || kinds[1] != protocol.TypeActionCallRequested {
+		t.Fatalf("the next run reusing that tool id produced %v", kinds)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

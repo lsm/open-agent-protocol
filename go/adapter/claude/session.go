@@ -534,9 +534,16 @@ func (s *Session) applyRunObservation(run *runState, observation *rpc.Observatio
 		}
 		for i := range frame.Message.Content {
 			block := frame.Message.Content[i]
-			if block.Type == "tool_use" && block.ID != "" {
-				s.startTool(run, block.ID, block.Name, block.Input)
+			if block.Type != "tool_use" || block.ID == "" {
+				continue
 			}
+			s.mu.Lock()
+			settled := run.terminal
+			s.mu.Unlock()
+			if settled {
+				return
+			}
+			s.startTool(run, block.ID, block.Name, block.Input)
 		}
 	case *native.UserFrame:
 		if frame.ParentToolUseID != nil {
