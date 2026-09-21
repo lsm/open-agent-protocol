@@ -219,6 +219,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const pi_rpc_test = b.addTest(.{ .root_module = pi_rpc_mod });
+    const adapter_goquote_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/goquote.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const adapter_goquote_test = b.addTest(.{ .root_module = adapter_goquote_mod });
+
     const acp_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/acp/rpc.zig"),
         .target = target,
@@ -226,12 +233,21 @@ pub fn build(b: *std.Build) void {
     });
     const acp_rpc_test = b.addTest(.{ .root_module = acp_rpc_mod });
 
+    const acp_session_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/acp/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    acp_session_mod.addImport("rpc", acp_rpc_mod);
+    acp_session_mod.addImport("goquote", adapter_goquote_mod);
+    const acp_session_test = b.addTest(.{ .root_module = acp_session_mod });
 
     const claude_session_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/claude/session.zig"),
         .target = target,
         .optimize = optimize,
     });
+    claude_rpc_mod.addImport("goquote", adapter_goquote_mod);
     claude_session_mod.addImport("rpc", claude_rpc_mod);
     const claude_session_test = b.addTest(.{ .root_module = claude_session_mod });
 
@@ -242,6 +258,16 @@ pub fn build(b: *std.Build) void {
     });
     oap_endpoint_client_mod.addImport("compat", compat_mod);
     const oap_endpoint_client_test = b.addTest(.{ .root_module = oap_endpoint_client_mod });
+
+    const acp_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/acp/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    acp_corpus_mod.addImport("rpc", acp_rpc_mod);
+    acp_corpus_mod.addImport("session", acp_session_mod);
+    acp_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
+    const acp_corpus_test = b.addTest(.{ .root_module = acp_corpus_mod });
 
     const claude_corpus_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/claude/corpus.zig"),
@@ -2128,6 +2154,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
+    test_step.dependOn(&b.addRunArtifact(acp_session_test).step);
+    test_step.dependOn(&b.addRunArtifact(acp_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_session_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
