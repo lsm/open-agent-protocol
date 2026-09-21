@@ -7,7 +7,7 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 
-pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClosed };
+pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClosed, RunActive, NoRunToOverlap, OverlapWasAccepted };
 
 pub const Counters = struct {
     ids: usize = 0,
@@ -178,6 +178,7 @@ pub fn close(reducer: *Reducer) void {
 pub fn submit(reducer: *Reducer) !void {
     if (reducer.closed) return Error.SessionClosed;
     if (reducer.unusable) return Error.SessionUnusable;
+    if (reducer.reserved and !reducer.terminal) return Error.RunActive;
     reducer.reserved = true;
     _ = try reducer.counters.nextID(reducer.arena, "message");
     reducer.message_id = try reducer.counters.nextID(reducer.arena, "message");
@@ -199,6 +200,10 @@ pub fn submit(reducer: *Reducer) !void {
 }
 
 pub fn rejectedSubmit(reducer: *Reducer) !void {
+    if (!reducer.reserved or reducer.terminal) return Error.NoRunToOverlap;
+    if (submit(reducer)) |_| return Error.OverlapWasAccepted else |err| {
+        if (err != Error.RunActive) return err;
+    }
     _ = try reducer.counters.nextID(reducer.arena, "message");
 }
 
@@ -588,6 +593,11 @@ fn directUser(source: std.json.Value) bool {
 }
 
 pub fn receipt(reducer: *Reducer, message_id: []const u8) !void {
+    if (message_id.len == 0) {
+        reducer.unusable = true;
+        abortSubmission(reducer);
+        return;
+    }
     reducer.receipt = message_id;
     try evaluateAdmission(reducer);
 }
@@ -1161,6 +1171,10 @@ test "a child of an earlier run does not decide a later one" {
     var reducer = try admittedRun(a);
     try notify(&reducer, a, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
     try notify(&reducer, a, "subagent.finished", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"error\"}");
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+    try std.testing.expectEqualStrings("deepseek_child_failed", lastFailure(&reducer).?);
 
     try submit(&reducer);
     try observe(&reducer, try parse(a, "{\"type\":\"agent/inbox/spliced\",\"data\":{\"inserted\":[{\"id\":\"m-2\",\"source\":{\"kind\":\"user\"}}]}}"));
@@ -1250,4 +1264,39 @@ test "activity before the first submission retires the session too" {
     openSession(&child);
     try notify(&child, c, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
     try std.testing.expect(child.unusable);
+}
+
+test "a submission while a run is reserved is refused, and the corpus path proves it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    try submit(&reducer);
+    try std.testing.expectError(Error.RunActive, submit(&reducer));
+
+    const before = reducer.counters.ids;
+    try rejectedSubmit(&reducer);
+    try std.testing.expectEqual(before + 1, reducer.counters.ids);
+
+    var fresh = Reducer.init(a);
+    openSession(&fresh);
+    try std.testing.expectError(Error.NoRunToOverlap, rejectedSubmit(&fresh));
+}
+
+test "a prompt reply without a message id retires the session" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    try submit(&reducer);
+    try receipt(&reducer, "");
+
+    try std.testing.expect(reducer.unusable);
+    try std.testing.expect(reducer.terminal);
+    try std.testing.expect(!reducer.reserved);
+    try std.testing.expect(reducer.envelopes().len == 0);
+    try std.testing.expectError(Error.SessionUnusable, submit(&reducer));
 }
