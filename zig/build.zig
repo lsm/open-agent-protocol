@@ -110,6 +110,15 @@ pub fn build(b: *std.Build) void {
     });
     adapter_corpus_mod.addOptions("build_options", gate_options);
     const adapter_corpus_test = b.addTest(.{ .root_module = adapter_corpus_mod });
+    const pi_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/pi/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    pi_corpus_mod.addImport("corpus", adapter_corpus_mod);
+    pi_corpus_mod.addOptions("build_options", gate_options);
+    const pi_corpus_test = b.addTest(.{ .root_module = pi_corpus_mod });
+
     const deepseek_session_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/corpus.zig"),
         .target = target,
@@ -121,6 +130,7 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_adapter_step = b.step("test-unit-adapter", "Run the shared adapter corpus harness tests");
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_session_test).step);
     const tolerate_test = b.addTest(.{ .root_module = tolerate_mod });
     const fixture_gate_test = b.addTest(.{ .root_module = fixture_gate_mod });
@@ -2065,6 +2075,7 @@ pub fn build(b: *std.Build) void {
     const bench_compare_test = b.addTest(.{ .root_module = bench_compare_mod });
 
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_session_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);

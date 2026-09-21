@@ -139,7 +139,7 @@ const commands = [_][]const u8{
     "set_session_name",              "get_messages",        "get_commands",
 };
 
-const MemberType = enum { text, flag, number, text_list, any };
+const MemberType = enum { text, flag, number, text_list, image_list, any };
 
 const Omission = enum { on_null, on_zero };
 
@@ -200,7 +200,21 @@ fn memberTypeHolds(value: std.json.Value, kind: MemberType) bool {
         .text_list => blk: {
             if (value != .array) break :blk false;
             for (value.array.items) |entry| {
-                if (entry != .string) break :blk false;
+                if (entry != .string and entry != .null) break :blk false;
+            }
+            break :blk true;
+        },
+        .image_list => blk: {
+            if (value != .array) break :blk false;
+            for (value.array.items) |entry| {
+                if (entry == .null) continue;
+                if (entry != .object) break :blk false;
+                var fields = entry.object.iterator();
+                while (fields.next()) |field| {
+                    if (!foldedIn(&image_members, field.key_ptr.*)) break :blk false;
+                    const carried = field.value_ptr.*;
+                    if (carried != .string and carried != .null) break :blk false;
+                }
             }
             break :blk true;
         },
@@ -236,31 +250,37 @@ fn methodShape(name: []const u8) ?MethodShape {
 }
 
 fn nonEmptyString(object: std.json.ObjectMap, name: []const u8) bool {
-    const value = object.get(name) orelse return false;
+    const value = foldedMember(object, name) orelse return false;
     return value == .string and value.string.len != 0;
 }
 
 fn presentAndNotNull(object: std.json.ObjectMap, name: []const u8) bool {
-    const value = object.get(name) orelse return false;
+    const value = foldedMember(object, name) orelse return false;
     return value != .null;
 }
 
+fn foldedDiscriminator(object: std.json.ObjectMap, declared: []const u8) bool {
+    const found = foldedMember(object, "type") orelse return false;
+    return found == .string and std.mem.eql(u8, found.string, declared);
+}
+
 fn validateResponse(object: std.json.ObjectMap) !void {
-    const command = object.get("command") orelse return Error.InvalidFrame;
+    if (!foldedDiscriminator(object, "response")) return Error.InvalidFrame;
+    const command = foldedMember(object, "command") orelse return Error.InvalidFrame;
     if (command != .string or !namedIn(&commands, command.string)) return Error.InvalidFrame;
 
     var it = object.iterator();
     while (it.next()) |entry| {
-        const member = declaredMember(&response_members, entry.key_ptr.*) orelse return Error.InvalidFrame;
+        const member = foldedDeclared(&response_members, entry.key_ptr.*) orelse return Error.InvalidFrame;
         if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
     }
 
     var succeeded = false;
-    if (object.get("success")) |value| {
+    if (foldedMember(object, "success")) |value| {
         if (value == .bool) succeeded = value.bool;
     }
     var reported = false;
-    if (object.get("error")) |value| {
+    if (foldedMember(object, "error")) |value| {
         reported = value == .string and value.string.len != 0;
     }
     if (succeeded and reported) return Error.InvalidFrame;
@@ -268,8 +288,9 @@ fn validateResponse(object: std.json.ObjectMap) !void {
 }
 
 fn validateExtensionRequest(object: std.json.ObjectMap) !void {
+    if (!foldedDiscriminator(object, "extension_ui_request")) return Error.InvalidFrame;
     if (!nonEmptyString(object, "id")) return Error.InvalidFrame;
-    const method = object.get("method") orelse return Error.InvalidFrame;
+    const method = foldedMember(object, "method") orelse return Error.InvalidFrame;
     if (method != .string) return Error.InvalidFrame;
     const shape = methodShape(method.string) orelse return Error.InvalidFrame;
 
@@ -280,7 +301,7 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
         if (!presentAndNotNull(object, name)) return Error.InvalidFrame;
     }
     if (shape.constrained.len != 0) {
-        if (object.get(shape.constrained)) |value| {
+        if (foldedMember(object, shape.constrained)) |value| {
             if (value != .null) {
                 if (value != .string) return Error.InvalidFrame;
                 if (value.string.len != 0 and !namedIn(shape.permitted, value.string)) return Error.InvalidFrame;
@@ -290,12 +311,12 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
     var it = object.iterator();
     while (it.next()) |entry| {
         const name = entry.key_ptr.*;
-        const member = declaredMember(&extension_members, name) orelse return Error.InvalidFrame;
+        const member = foldedDeclared(&extension_members, name) orelse return Error.InvalidFrame;
         if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
-        if (std.mem.eql(u8, name, "type") or std.mem.eql(u8, name, "id") or std.mem.eql(u8, name, "method")) continue;
-        if (namedIn(shape.required_text, name)) continue;
-        if (namedIn(shape.required_any, name)) continue;
-        if (namedIn(shape.optional, name)) continue;
+        if (foldedIn(&.{ "type", "id", "method" }, name)) continue;
+        if (foldedIn(shape.required_text, name)) continue;
+        if (foldedIn(shape.required_any, name)) continue;
+        if (foldedIn(shape.optional, name)) continue;
         if (omittedByMarshal(entry.value_ptr.*, member)) continue;
         return Error.InvalidFrame;
     }
@@ -307,6 +328,409 @@ fn admitsExtension(line: []const u8) !void {
 
 fn refusesExtension(line: []const u8) !void {
     try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, line));
+}
+
+const image_members = [_][]const u8{ "type", "data", "mimeType" };
+
+const command_members = [_]Member{
+    .{ .name = "type", .kind = .text },
+    .{ .name = "id", .kind = .text },
+    .{ .name = "message", .kind = .text, .omits = .on_null },
+    .{ .name = "images", .kind = .image_list },
+    .{ .name = "streamingBehavior", .kind = .text },
+    .{ .name = "parentSession", .kind = .text, .omits = .on_null },
+    .{ .name = "provider", .kind = .text, .omits = .on_null },
+    .{ .name = "modelId", .kind = .text, .omits = .on_null },
+    .{ .name = "level", .kind = .text },
+    .{ .name = "mode", .kind = .text },
+    .{ .name = "customInstructions", .kind = .text, .omits = .on_null },
+    .{ .name = "enabled", .kind = .flag, .omits = .on_null },
+    .{ .name = "command", .kind = .text, .omits = .on_null },
+    .{ .name = "excludeFromContext", .kind = .flag, .omits = .on_null },
+    .{ .name = "outputPath", .kind = .text, .omits = .on_null },
+    .{ .name = "sessionPath", .kind = .text, .omits = .on_null },
+    .{ .name = "entryId", .kind = .text, .omits = .on_null },
+    .{ .name = "since", .kind = .text, .omits = .on_null },
+    .{ .name = "name", .kind = .text, .omits = .on_null },
+};
+
+const thinking_levels = [_][]const u8{ "off", "minimal", "low", "medium", "high", "xhigh", "max" };
+
+const queue_modes = [_][]const u8{ "all", "one-at-a-time" };
+
+const CommandShape = struct {
+    name: []const u8,
+    allowed: []const []const u8 = &.{},
+    required: []const []const u8 = &.{},
+    constrained: []const u8 = "",
+    permitted: []const []const u8 = &.{},
+};
+
+const command_shapes = [_]CommandShape{
+    .{ .name = "prompt", .allowed = &.{ "message", "images", "streamingBehavior" }, .required = &.{"message"} },
+    .{ .name = "steer", .allowed = &.{ "message", "images" }, .required = &.{"message"} },
+    .{ .name = "follow_up", .allowed = &.{ "message", "images" }, .required = &.{"message"} },
+    .{ .name = "new_session", .allowed = &.{"parentSession"} },
+    .{ .name = "set_model", .allowed = &.{ "provider", "modelId" }, .required = &.{ "provider", "modelId" } },
+    .{ .name = "set_thinking_level", .allowed = &.{"level"}, .constrained = "level", .permitted = &thinking_levels },
+    .{ .name = "set_steering_mode", .allowed = &.{"mode"}, .constrained = "mode", .permitted = &queue_modes },
+    .{ .name = "set_follow_up_mode", .allowed = &.{"mode"}, .constrained = "mode", .permitted = &queue_modes },
+    .{ .name = "compact", .allowed = &.{"customInstructions"} },
+    .{ .name = "set_auto_compaction", .allowed = &.{"enabled"}, .required = &.{"enabled"} },
+    .{ .name = "set_auto_retry", .allowed = &.{"enabled"}, .required = &.{"enabled"} },
+    .{ .name = "bash", .allowed = &.{ "command", "excludeFromContext" }, .required = &.{"command"} },
+    .{ .name = "export_html", .allowed = &.{"outputPath"} },
+    .{ .name = "switch_session", .allowed = &.{"sessionPath"}, .required = &.{"sessionPath"} },
+    .{ .name = "fork", .allowed = &.{"entryId"}, .required = &.{"entryId"} },
+    .{ .name = "get_entries", .allowed = &.{"since"} },
+    .{ .name = "set_session_name", .allowed = &.{"name"}, .required = &.{"name"} },
+};
+
+fn foldedMember(object: std.json.ObjectMap, name: []const u8) ?std.json.Value {
+    var surviving: ?std.json.Value = null;
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, name)) surviving = entry.value_ptr.*;
+    }
+    return surviving;
+}
+
+fn foldedIn(names: []const []const u8, name: []const u8) bool {
+    for (names) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry, name)) return true;
+    }
+    return false;
+}
+
+fn foldedDeclared(table: []const Member, name: []const u8) ?Member {
+    for (table) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.name, name)) return entry;
+    }
+    return null;
+}
+
+fn commandShape(name: []const u8) CommandShape {
+    for (command_shapes) |shape| {
+        if (std.mem.eql(u8, shape.name, name)) return shape;
+    }
+    return .{ .name = name };
+}
+
+pub fn validateCommand(value: std.json.Value) !void {
+    if (value != .object) return Error.InvalidFrame;
+    const object = value.object;
+
+    const declared = foldedMember(object, "type") orelse return Error.InvalidFrame;
+    if (declared != .string or !namedIn(&commands, declared.string)) return Error.InvalidFrame;
+    const shape = commandShape(declared.string);
+
+    var it = object.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        const member = foldedDeclared(&command_members, name) orelse return Error.InvalidFrame;
+        if (!memberTypeHolds(entry.value_ptr.*, member.kind)) return Error.InvalidFrame;
+        if (std.ascii.eqlIgnoreCase(name, "type") or std.ascii.eqlIgnoreCase(name, "id")) continue;
+        if (foldedIn(shape.allowed, name)) continue;
+        if (omittedByMarshal(entry.value_ptr.*, member)) continue;
+        return Error.InvalidFrame;
+    }
+
+    for (shape.required) |name| {
+        const carried = foldedMember(object, name) orelse return Error.InvalidFrame;
+        if (carried == .null) return Error.InvalidFrame;
+    }
+
+    if (shape.constrained.len != 0) {
+        const carried = foldedMember(object, shape.constrained) orelse std.json.Value{ .null = {} };
+        const text: []const u8 = if (carried == .string) carried.string else "";
+        if (!namedIn(shape.permitted, text)) return Error.InvalidFrame;
+    }
+}
+
+const canonical_order = [_][]const u8{
+    "id",                "type",               "message",            "images",
+    "streamingBehavior", "parentSession",      "provider",           "modelId",
+    "level",             "mode",               "customInstructions", "enabled",
+    "command",           "excludeFromContext", "outputPath",         "sessionPath",
+    "entryId",           "since",              "name",
+};
+
+fn writeGoString(out: *std.ArrayList(u8), arena: std.mem.Allocator, text: []const u8) !void {
+    try out.append(arena, '"');
+    var at: usize = 0;
+    while (at < text.len) {
+        const byte = text[at];
+        if (byte == 0xE2 and at + 3 <= text.len and text[at + 1] == 0x80 and (text[at + 2] == 0xA8 or text[at + 2] == 0xA9)) {
+            try out.appendSlice(arena, if (text[at + 2] == 0xA8) "\\u2028" else "\\u2029");
+            at += 3;
+            continue;
+        }
+        at += 1;
+        switch (byte) {
+            '"' => try out.appendSlice(arena, "\\\""),
+            '\\' => try out.appendSlice(arena, "\\\\"),
+            '\n' => try out.appendSlice(arena, "\\n"),
+            '\r' => try out.appendSlice(arena, "\\r"),
+            '\t' => try out.appendSlice(arena, "\\t"),
+            0x08 => try out.appendSlice(arena, "\\b"),
+            0x0c => try out.appendSlice(arena, "\\f"),
+            '<' => try out.appendSlice(arena, "\\u003c"),
+            '>' => try out.appendSlice(arena, "\\u003e"),
+            '&' => try out.appendSlice(arena, "\\u0026"),
+            else => {
+                if (byte < 0x20) {
+                    try out.appendSlice(arena, try std.fmt.allocPrint(arena, "\\u{x:0>4}", .{byte}));
+                } else {
+                    try out.append(arena, byte);
+                }
+            },
+        }
+    }
+    try out.append(arena, '"');
+}
+
+fn writeImages(out: *std.ArrayList(u8), arena: std.mem.Allocator, value: std.json.Value) !void {
+    try out.append(arena, '[');
+    for (value.array.items, 0..) |entry, at| {
+        if (at != 0) try out.append(arena, ',');
+        try out.append(arena, '{');
+        for (image_members, 0..) |name, index| {
+            if (index != 0) try out.append(arena, ',');
+            try writeGoString(out, arena, name);
+            try out.append(arena, ':');
+            var text: []const u8 = "";
+            if (entry == .object) {
+                if (foldedMember(entry.object, name)) |held| {
+                    if (held == .string) text = held.string;
+                }
+            }
+            try writeGoString(out, arena, text);
+        }
+        try out.append(arena, '}');
+    }
+    try out.append(arena, ']');
+}
+
+pub fn canonicalCommand(arena: std.mem.Allocator, value: std.json.Value) ![]const u8 {
+    try validateCommand(value);
+    var out = std.ArrayList(u8).empty;
+    try out.append(arena, '{');
+    var written: usize = 0;
+    for (canonical_order) |name| {
+        const carried = foldedMember(value.object, name) orelse continue;
+        const member = foldedDeclared(&command_members, name) orelse continue;
+        const always = std.mem.eql(u8, name, "type");
+        if (!always and omittedByMarshal(carried, member)) continue;
+        if (written != 0) try out.append(arena, ',');
+        written += 1;
+        try writeGoString(&out, arena, name);
+        try out.append(arena, ':');
+        if (std.mem.eql(u8, name, "images")) {
+            try writeImages(&out, arena, carried);
+        } else if (member.kind == .flag) {
+            try out.appendSlice(arena, if (carried == .bool and carried.bool) "true" else "false");
+        } else {
+            try writeGoString(&out, arena, if (carried == .string) carried.string else "");
+        }
+    }
+    try out.append(arena, '}');
+    return out.toOwnedSlice(arena);
+}
+
+fn expectCanonical(text: []const u8, want: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, text, .{});
+    try std.testing.expectEqualStrings(want, try canonicalCommand(scratch, parsed));
+}
+
+test "a canonical command escapes a string the way json.Marshal does" {
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u003eb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u003eb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u0026b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u0026b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\\"b\"}", "{\"type\":\"prompt\",\"message\":\"a\\\"b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\\\b\"}", "{\"type\":\"prompt\",\"message\":\"a\\\\b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\nb\"}", "{\"type\":\"prompt\",\"message\":\"a\\nb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\rb\"}", "{\"type\":\"prompt\",\"message\":\"a\\rb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\tb\"}", "{\"type\":\"prompt\",\"message\":\"a\\tb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\bb\"}", "{\"type\":\"prompt\",\"message\":\"a\\bb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\fb\"}", "{\"type\":\"prompt\",\"message\":\"a\\fb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u000bb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u000bb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u0000b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u0000b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u001fb\"}", "{\"type\":\"prompt\",\"message\":\"a\\u001fb\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u2028b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u2028b\"}");
+    try expectCanonical("{\"type\":\"prompt\",\"message\":\"a\\u2029b\"}", "{\"type\":\"prompt\",\"message\":\"a\\u2029b\"}");
+}
+
+test "a canonical command leaves every other code point as itself" {
+    for ([_][]const u8{ "caf\u{e9}", "\u{65e5}\u{672c}", "emoji\u{1F600}", "a\u{a0}b", "a\u{200b}b", "a\u{feff}b", "a\u{7f}b", "a/b", "a'b" }) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const scratch = arena.allocator();
+        const line = try std.fmt.allocPrint(scratch, "{{\"type\":\"prompt\",\"message\":\"{s}\"}}", .{text});
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
+        try std.testing.expectEqualStrings(line, try canonicalCommand(scratch, parsed));
+    }
+}
+
+test "a literal character the encoder would escape makes the frame noncanonical" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"type\":\"prompt\",\"message\":\"a<b\"}", .{});
+    try std.testing.expectEqualStrings("{\"type\":\"prompt\",\"message\":\"a\\u003cb\"}", try canonicalCommand(scratch, parsed));
+}
+
+test "a canonical command carries its members in the order the struct declares" {
+    try expectCanonical("{\"type\":\"steer\",\"message\":\"adjust\"}", "{\"type\":\"steer\",\"message\":\"adjust\"}");
+    try expectCanonical("{\"message\":\"adjust\",\"type\":\"steer\"}", "{\"type\":\"steer\",\"message\":\"adjust\"}");
+    try expectCanonical("{\"type\":\"abort\",\"id\":\"r1\"}", "{\"id\":\"r1\",\"type\":\"abort\"}");
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"images\":[],\"message\":\"hi\",\"streamingBehavior\":\"steer\"}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"streamingBehavior\":\"steer\"}",
+    );
+}
+
+test "a canonical command drops every member omitempty would not write" {
+    try expectCanonical("{\"type\":\"abort\",\"message\":null}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"enabled\":null}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"images\":[]}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"images\":null}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"level\":\"\"}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"abort\",\"id\":\"\"}", "{\"type\":\"abort\"}");
+    try expectCanonical("{\"type\":\"bash\",\"command\":\"ls\",\"excludeFromContext\":false}", "{\"type\":\"bash\",\"command\":\"ls\",\"excludeFromContext\":false}");
+}
+
+test "a canonical command image is three strings even where the frame wrote none" {
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{}]}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"type\":\"\",\"data\":\"\",\"mimeType\":\"\"}]}",
+    );
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"mimeType\":\"image/png\",\"data\":\"d\",\"type\":\"image\"}]}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"type\":\"image\",\"data\":\"d\",\"mimeType\":\"image/png\"}]}",
+    );
+}
+
+test "a command the vocabulary refuses has no canonical form to compare" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"type\":\"steer\"}", .{});
+    try std.testing.expectError(Error.InvalidFrame, canonicalCommand(scratch, parsed));
+}
+
+fn expectCommand(text: []const u8, want: anyerror!void) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), text, .{}) catch {
+        return error.ProbeTextIsNotJson;
+    };
+    const got = validateCommand(parsed);
+    if (want) |_| {
+        try got;
+    } else |expected| {
+        try std.testing.expectError(expected, got);
+    }
+}
+
+test "a command member is matched the way encoding/json matches its tag" {
+    try expectCommand("{\"type\":\"prompt\",\"Message\":\"hi\"}", {});
+    try expectCommand("{\"type\":\"prompt\",\"MESSAGE\":\"hi\"}", {});
+    try expectCommand("{\"TYPE\":\"prompt\",\"message\":\"hi\"}", {});
+    try expectCommand("{\"type\":\"set_thinking_level\",\"LEVEL\":\"high\"}", {});
+    try expectCommand("{\"type\":\"bash\",\"COMMAND\":\"ls\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"Message\":\"hi\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"Message\":7}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"message_\":\"hi\"}", Error.InvalidFrame);
+}
+
+test "a folded command canonicalises to the spelling its tag declares" {
+    try expectCanonical("{\"type\":\"prompt\",\"Message\":\"hi\"}", "{\"type\":\"prompt\",\"message\":\"hi\"}");
+    try expectCanonical("{\"TYPE\":\"prompt\",\"message\":\"hi\"}", "{\"type\":\"prompt\",\"message\":\"hi\"}");
+    try expectCanonical(
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"TYPE\":\"image\",\"Data\":\"d\",\"mimetype\":\"image/png\"}]}",
+        "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":[{\"type\":\"image\",\"data\":\"d\",\"mimeType\":\"image/png\"}]}",
+    );
+}
+
+test "a command names a type this pin declares, and is an object" {
+    try expectCommand("{\"type\":\"abort\"}", {});
+    try expectCommand("{\"type\":\"nonesuch\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":7}", Error.InvalidFrame);
+    try expectCommand("{}", Error.InvalidFrame);
+    try expectCommand("[]", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"bogus\":1}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"bogus\":\"x\"}", Error.InvalidFrame);
+}
+
+test "a command requires the members its own type names, and a null is not one" {
+    try expectCommand("{\"type\":\"prompt\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"message\":null}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"prompt\",\"message\":\"\"}", {});
+    try expectCommand("{\"type\":\"prompt\",\"message\":\"hi\"}", {});
+    try expectCommand("{\"type\":\"set_model\",\"provider\":\"p\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_model\",\"provider\":\"p\",\"modelId\":\"m\"}", {});
+    try expectCommand("{\"type\":\"bash\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"bash\",\"command\":\"ls\",\"excludeFromContext\":true}", {});
+    try expectCommand("{\"type\":\"switch_session\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"fork\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_session_name\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_auto_retry\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_auto_retry\",\"enabled\":null}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_auto_retry\",\"enabled\":false}", {});
+}
+
+test "a constrained command member is read as its zero value when absent" {
+    try expectCommand("{\"type\":\"set_thinking_level\",\"level\":\"high\"}", {});
+    try expectCommand("{\"type\":\"set_thinking_level\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_thinking_level\",\"level\":\"\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_thinking_level\",\"level\":\"nonesuch\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"set_steering_mode\",\"mode\":\"all\"}", {});
+    try expectCommand("{\"type\":\"set_follow_up_mode\",\"mode\":\"one-at-a-time\"}", {});
+    try expectCommand("{\"type\":\"set_steering_mode\"}", Error.InvalidFrame);
+}
+
+test "a member foreign to a command escapes the check only where omitempty would drop it" {
+    try expectCommand("{\"type\":\"abort\",\"message\":\"x\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"message\":\"\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"message\":null}", {});
+    try expectCommand("{\"type\":\"abort\",\"enabled\":false}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"enabled\":null}", {});
+    try expectCommand("{\"type\":\"abort\",\"level\":\"high\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"level\":\"\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"streamingBehavior\":\"steer\"}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"streamingBehavior\":\"\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"images\":[]}", {});
+    try expectCommand("{\"type\":\"abort\",\"images\":null}", {});
+    try expectCommand("{\"type\":\"abort\",\"images\":[null]}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"id\":\"r1\"}", {});
+    try expectCommand("{\"type\":\"abort\",\"id\":\"\"}", {});
+}
+
+test "a command image is an object of three strings, or a null standing for one" {
+    const prefix = "{\"type\":\"prompt\",\"message\":\"hi\",\"images\":";
+    try expectCommand(prefix ++ "[{\"type\":\"image\",\"data\":\"d\",\"mimeType\":\"image/png\"}]}", {});
+    try expectCommand(prefix ++ "[{}]}", {});
+    try expectCommand(prefix ++ "[null]}", {});
+    try expectCommand(prefix ++ "[{\"type\":null,\"data\":null,\"mimeType\":null}]}", {});
+    try expectCommand(prefix ++ "[{\"type\":7}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[{\"bogus\":1}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[{\"bogus\":\"x\"}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[{\"type\":\"image\",\"bogus\":\"x\"}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[7]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[\"x\"]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "{}}", Error.InvalidFrame);
+}
+
+test "a null entry in a decoded string slice is that slice's zero value, not a defect" {
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[null]}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[\"a\",null]}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"setWidget\",\"widgetKey\":\"k\",\"widgetLines\":[null]}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[7]}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":[[]]}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"select\",\"title\":\"t\",\"options\":null}");
 }
 
 test "a constrained member holding null is absent, and an empty one is unconstrained" {
@@ -410,6 +834,46 @@ test "an absent success member is false rather than missing" {
 
 test "a response carrying a member the struct does not declare is refused" {
     try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"success\":true,\"surprise\":1}"));
+}
+
+test "a second type spelling decides the discriminator, as the pinned struct decode does" {
+    const same = try classify(std.testing.allocator, "{\"type\":\"response\",\"TYPE\":\"response\",\"command\":\"get_state\",\"success\":true}");
+    try std.testing.expectEqual(Kind.response, same.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"TYPE\":\"x\",\"command\":\"get_state\",\"success\":true}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"TYPE\":\"x\",\"id\":\"u1\",\"method\":\"confirm\",\"title\":\"t\",\"message\":\"m\"}"));
+}
+
+test "the frame is routed by the exact type, because the pinned header reads a map" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"TYPE\":\"response\",\"command\":\"get_state\",\"success\":true}"));
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"agent_start\",\"TYPE\":\"x\"}"));
+}
+
+test "a response matches its member names the way encoding/json matches a tag" {
+    const upper = try classify(std.testing.allocator, "{\"type\":\"response\",\"COMMAND\":\"get_state\",\"SUCCESS\":true}");
+    try std.testing.expectEqual(Kind.response, upper.kind);
+    const mixed = try classify(std.testing.allocator, "{\"type\":\"response\",\"Command\":\"get_state\",\"Error\":\"boom\"}");
+    try std.testing.expectEqual(Kind.response, mixed.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"COMMAND\":\"invented\",\"success\":true}"));
+}
+
+test "a response command names a value, and a value does not fold" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"GET_STATE\",\"success\":true}"));
+}
+
+test "the last spelling of a folded response member is the one that decides" {
+    const later = try classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"invented\",\"COMMAND\":\"get_state\",\"success\":true}");
+    try std.testing.expectEqual(Kind.response, later.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"response\",\"command\":\"get_state\",\"COMMAND\":\"invented\",\"success\":true}"));
+}
+
+test "an extension request matches its member names the way encoding/json matches a tag" {
+    const upper = try classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"ID\":\"u1\",\"METHOD\":\"confirm\",\"TITLE\":\"t\",\"MESSAGE\":\"m\"}");
+    try std.testing.expectEqual(Kind.extension_ui_request, upper.kind);
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"ID\":\"u1\",\"METHOD\":\"confirm\",\"TITLE\":\"t\"}"));
+}
+
+test "an extension method names a value, and a value does not fold" {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"CONFIRM\",\"title\":\"t\",\"message\":\"m\"}"));
 }
 
 test "an extension request names a method the pinned union declares" {
