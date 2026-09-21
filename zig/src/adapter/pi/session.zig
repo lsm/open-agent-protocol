@@ -54,6 +54,7 @@ pub const Reducer = struct {
     reasoning: std.ArrayList(u8) = .empty,
     pending: std.ArrayList(std.json.Value) = .empty,
     tools: std.ArrayList(*ToolState) = .empty,
+    interaction_id: []const u8 = "",
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -347,6 +348,15 @@ fn settleRun(reducer: *Reducer) !void {
             error_message = "";
         }
     }
+    const aborted = final != null and std.mem.eql(u8, stop_reason, "aborted");
+    if (reducer.cancel_intent and (!reducer.candidate_present or aborted)) {
+        const payload = try reducer.object();
+        try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+        try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+        try payload.put(reducer.arena, "reason", Reducer.str("Pi settled after abort intent"));
+        try reducer.emit("run.cancelled", .{ .object = payload.* }, true);
+        return;
+    }
     if (!reducer.candidate_present) {
         try failRun(reducer, "pi_missing_agent_end", "agent_settled arrived without terminal agent_end");
         return;
@@ -573,4 +583,127 @@ fn applyMessageUpdate(reducer: *Reducer, event: std.json.Value) !void {
     try payload.put(reducer.arena, "message_id", Reducer.str(reducer.message_id));
     try payload.put(reducer.arena, "part", .{ .object = shape.* });
     try reducer.emit("content.delta", .{ .object = payload.* }, false);
+}
+
+pub const participant = "user";
+
+fn statusUpdate(reducer: *Reducer, status: []const u8, pending_input: []const u8) !void {
+    const updated_at = reducer.counters.nextTick();
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "status", Reducer.str(status));
+    if (pending_input.len != 0) try payload.put(reducer.arena, "pending_user_input_id", Reducer.str(pending_input));
+    try payload.put(reducer.arena, "updated_at_ms", .{ .integer = updated_at });
+    try reducer.emit("run.status.updated", .{ .object = payload.* }, false);
+}
+
+pub fn cancel(reducer: *Reducer) !void {
+    if (reducer.terminal or reducer.cancel_intent) return;
+    reducer.cancel_intent = true;
+    if (!reducer.started) return;
+    try statusUpdate(reducer, "cancelling", "");
+}
+
+pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
+    if (reducer.terminal or !reducer.started) return;
+    const err = try reducer.object();
+    try err.put(reducer.arena, "code", Reducer.str("pi_process_exit"));
+    try err.put(reducer.arena, "message", Reducer.str(message));
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "error", .{ .object = err.* });
+    try payload.put(reducer.arena, "settled_by", Reducer.str("inferred"));
+    try reducer.emit("run.failed", .{ .object = payload.* }, true);
+}
+
+const interactive_methods = [_][]const u8{ "select", "input", "editor", "confirm" };
+
+pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
+    if (!reducer.started or reducer.terminal) return;
+    const method = textOf(request, "method");
+    if (!listed(&interactive_methods, method)) return;
+    const title = textOf(request, "title");
+    const message = textOf(request, "message");
+    const question = try reducer.object();
+    try question.put(reducer.arena, "id", Reducer.str("value"));
+    if (std.mem.eql(u8, method, "select")) {
+        const options = memberOf(request, "options") orelse std.json.Value{ .null = {} };
+        if (options != .array or options.array.items.len == 0) {
+            try failRun(reducer, "pi_invalid_extension", "select extension offered no options");
+            return;
+        }
+        var listed_options = std.ArrayList(std.json.Value).empty;
+        for (options.array.items, 0..) |option, at| {
+            const label: []const u8 = switch (option) {
+                .string => |s| s,
+                else => "",
+            };
+            if (label.len == 0) {
+                try failRun(reducer, "pi_invalid_extension", "select extension offered an empty option label");
+                return;
+            }
+            const shape = try reducer.object();
+            try shape.put(reducer.arena, "id", Reducer.str(try std.fmt.allocPrint(reducer.arena, "option-{d}", .{at + 1})));
+            try shape.put(reducer.arena, "label", Reducer.str(label));
+            try listed_options.append(reducer.arena, .{ .object = shape.* });
+        }
+        try question.put(reducer.arena, "prompt", Reducer.str(title));
+        try question.put(reducer.arena, "kind", Reducer.str("single_choice"));
+        try question.put(reducer.arena, "required", .{ .bool = true });
+        try question.put(reducer.arena, "options", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try listed_options.toOwnedSlice(reducer.arena)) });
+    } else if (std.mem.eql(u8, method, "confirm")) {
+        var listed_options = std.ArrayList(std.json.Value).empty;
+        for ([_][2][]const u8{ .{ "yes", "Yes" }, .{ "no", "No" } }) |pair| {
+            const shape = try reducer.object();
+            try shape.put(reducer.arena, "id", Reducer.str(pair[0]));
+            try shape.put(reducer.arena, "label", Reducer.str(pair[1]));
+            try listed_options.append(reducer.arena, .{ .object = shape.* });
+        }
+        try question.put(reducer.arena, "prompt", Reducer.str(message));
+        try question.put(reducer.arena, "kind", Reducer.str("single_choice"));
+        try question.put(reducer.arena, "required", .{ .bool = true });
+        try question.put(reducer.arena, "options", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try listed_options.toOwnedSlice(reducer.arena)) });
+    } else {
+        try question.put(reducer.arena, "prompt", Reducer.str(title));
+        try question.put(reducer.arena, "kind", Reducer.str("text"));
+        try question.put(reducer.arena, "required", .{ .bool = true });
+    }
+    reducer.interaction_id = try reducer.counters.nextID(reducer.arena, "interaction");
+    var questions = std.ArrayList(std.json.Value).empty;
+    try questions.append(reducer.arena, .{ .object = question.* });
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "interaction_id", Reducer.str(reducer.interaction_id));
+    try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
+    try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "title", Reducer.str(title));
+    try payload.put(reducer.arena, "description", Reducer.str(message));
+    try payload.put(reducer.arena, "questions", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try questions.toOwnedSlice(reducer.arena)) });
+    try payload.put(reducer.arena, "allow_cancel", .{ .bool = true });
+    try reducer.emit("user.input.requested", .{ .object = payload.* }, false);
+    try statusUpdate(reducer, "waiting_for_input", reducer.interaction_id);
+}
+
+pub fn resolveExtension(reducer: *Reducer, option_id: []const u8) !void {
+    if (reducer.terminal or reducer.interaction_id.len == 0) return;
+    const selected = try reducer.object();
+    var ids = std.ArrayList(std.json.Value).empty;
+    try ids.append(reducer.arena, Reducer.str(option_id));
+    try selected.put(reducer.arena, "question_id", Reducer.str("value"));
+    try selected.put(reducer.arena, "selected_option_ids", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try ids.toOwnedSlice(reducer.arena)) });
+    var answers = std.ArrayList(std.json.Value).empty;
+    try answers.append(reducer.arena, .{ .object = selected.* });
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "interaction_id", Reducer.str(reducer.interaction_id));
+    try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
+    try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "status", Reducer.str("submitted"));
+    try payload.put(reducer.arena, "answers", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try answers.toOwnedSlice(reducer.arena)) });
+    try reducer.emit("user.input.resolved", .{ .object = payload.* }, false);
+    try statusUpdate(reducer, "running", "");
 }
