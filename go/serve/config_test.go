@@ -86,7 +86,7 @@ func TestDefaultRegistry(t *testing.T) {
 func TestLoadRegistryProcessAdapters(t *testing.T) {
 	path := writeConfig(t, `{
 		"adapters": {
-			"claude": {"type": "claude", "executable": "/bin/claude", "args": ["--flag"], "environment": ["HOME", "LITERAL=directory=v"], "working_directory": "/tmp", "model": "sonnet-5"},
+			"claude": {"type": "claude", "executable": "/bin/claude", "args": ["--flag"], "environment": ["HOME", "LITERAL=directory=v"], "working_directory": "/tmp", "model": "sonnet-5", "allowed_tools": ["Read", "Grep"]},
 			"codex": {"type": "codex", "executable": "/bin/codex", "working_directory": "/tmp", "approval_policy": "never", "sandbox": "danger-full-access"},
 			"hermes": {"type": "hermes", "executable": "/bin/python", "working_directory": "/tmp", "model": "glm-5.3"},
 			"pi": {"type": "pi", "executable": "/bin/pi", "working_directory": "/tmp"},
@@ -112,6 +112,10 @@ func TestLoadRegistryConstructorErrors(t *testing.T) {
 		wanted []string
 	}{
 		{"claude without executable", `"claude": {"type": "claude"}`, []string{"claude", "executable"}},
+		{"claude without a tool posture", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp"}`, []string{"claude", "allowed_tools", "unrestricted_tools"}},
+		{"claude naming an empty tool", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "allowed_tools": [""]}`, []string{"claude", "allowed_tools", "empty tool"}},
+		{"claude allowing nothing", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "allowed_tools": []}`, []string{"claude", "allowed_tools", "names no tool"}},
+		{"claude stating both postures", `"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "allowed_tools": ["Read"], "unrestricted_tools": true}`, []string{"claude", "not both"}},
 		{"acp relative directory", `"acp": {"type": "acp", "executable": "/bin/x", "working_directory": "relative"}`, []string{"acp", "absolute working directory"}},
 		{"deepseek without provider", `"deepseek": {"type": "deepseek", "executable": "/bin/x", "working_directory": "/tmp", "model": "m"}`, []string{"deepseek", "provider"}},
 		{"opencode without endpoint", `"opencode": {"type": "opencode"}`, []string{"opencode", "endpoint"}},
@@ -272,7 +276,7 @@ func TestLoadRegistryToolSourceNeedsEveryNameItLists(t *testing.T) {
 		t.Fatalf("resolved environment: %v", source.Environment)
 	}
 
-	path = writeConfig(t, `{"adapters": {"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "environment": ["NEVER_EXPORTED"]}}}`)
+	path = writeConfig(t, `{"adapters": {"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "environment": ["NEVER_EXPORTED"], "unrestricted_tools": true}}}`)
 	if _, err := LoadRegistry(path, staticEnviron(nil)); err != nil {
 		t.Fatalf("an adapter naming an unexported variable failed to load: %v", err)
 	}
@@ -350,7 +354,7 @@ func TestRegisterToolSourceJudgesTheEntryTheLoaderWouldHaveJudged(t *testing.T) 
 func TestEveryAdapterRefusesUnadvertisedToolSources(t *testing.T) {
 	path := writeConfig(t, `{
 		"adapters": {
-			"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp"},
+			"claude": {"type": "claude", "executable": "/bin/claude", "working_directory": "/tmp", "unrestricted_tools": true},
 			"codex": {"type": "codex", "executable": "/bin/codex", "working_directory": "/tmp"},
 			"hermes": {"type": "hermes", "executable": "/bin/python", "working_directory": "/tmp", "model": "glm-5.3"},
 			"pi": {"type": "pi", "executable": "/bin/pi", "working_directory": "/tmp"},

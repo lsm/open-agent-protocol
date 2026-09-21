@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1267,7 +1268,7 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 				t.Fatalf("the served catalog encodes tools as null: %s", encoded)
 			}
 
-			implementation, err := New(Config{Executable: "/bin/claude", WorkingDirectory: "/tmp"})
+			implementation, err := New(Config{Executable: "/bin/claude", WorkingDirectory: "/tmp", Tools: UnrestrictedTools()})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1457,5 +1458,94 @@ func TestCallCarriesTheCatalogSource(t *testing.T) {
 		if tool.Name == "mcp__files__read_file" && tool.Source != mcpSourcePrefix+"files" {
 			t.Fatalf("the catalog lost the attribution the call gave up: %+v", tool)
 		}
+	}
+}
+
+func spawnArgv(t *testing.T, config Config) []string {
+	t.Helper()
+	var captured []string
+	config.Executable = "/bin/claude"
+	config.ProcessFactory = ProcessFactoryFunc(func(_ context.Context, c rpc.ProcessConfig) (ProcessBridge, error) {
+		captured = append([]string(nil), c.Args...)
+		return nil, errors.New("not spawning in this test")
+	})
+	implementation, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}})
+	return captured
+}
+
+func TestToolPostureMustBeStated(t *testing.T) {
+	_, err := New(Config{Executable: "/bin/claude"})
+	if !errors.Is(err, ErrToolPostureUnstated) {
+		t.Fatalf("constructing without a posture returned %v, want ErrToolPostureUnstated", err)
+	}
+
+	if _, err := New(Config{Executable: "/bin/claude", Tools: AllowTools()}); err == nil {
+		t.Fatal("an allowlist naming no tool was accepted")
+	}
+	if _, err := New(Config{Executable: "/bin/claude", Tools: AllowTools("Read", "")}); err == nil {
+		t.Fatal("an allowlist naming an empty tool was accepted")
+	}
+}
+
+func TestToolPostureIsNotRequiredOfACallerSuppliedFactory(t *testing.T) {
+	peer := newWirePeer(t)
+	if _, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return peer.client, nil })}); err != nil {
+		t.Fatalf("a caller-supplied factory spawns its own process and was refused: %v", err)
+	}
+}
+
+func TestToolPostureReachesTheSpawn(t *testing.T) {
+	restricted := spawnArgv(t, Config{Tools: AllowTools("Read", "Grep", "Glob")})
+	joined := strings.Join(restricted, " ")
+	if !strings.Contains(joined, "--allowedTools Read Grep Glob") {
+		t.Fatalf("the allowlist did not reach the spawn: %v", restricted)
+	}
+
+	unrestricted := spawnArgv(t, Config{Tools: UnrestrictedTools()})
+	if strings.Contains(strings.Join(unrestricted, " "), "--allowedTools") {
+		t.Fatalf("an unrestricted posture still restricted the spawn: %v", unrestricted)
+	}
+
+	trailing := spawnArgv(t, Config{Tools: AllowTools("Read"), Args: []string{"--append-system-prompt", "x"}})
+	allowAt := slices.Index(trailing, "--allowedTools")
+	argsAt := slices.Index(trailing, "--append-system-prompt")
+	if allowAt < 0 || argsAt < 0 || allowAt > argsAt {
+		t.Fatalf("Config.Args must stay last so a caller can still override: %v", trailing)
+	}
+}
+
+func TestToolSelectionIsUnadvertisedBecauseItsProjectionFailsValidation(t *testing.T) {
+	descriptor := testDescriptor(t)
+	if support, ok := descriptor.Capabilities.Features[protocol.FeatureToolSelection]; ok && support.Level != protocol.SupportUnavailable {
+		t.Fatalf("%s is advertised as %s", protocol.FeatureToolSelection, support.Level)
+	}
+
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"toolu_09","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a9"}`)
+	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_09","type":"tool_result","content":"ok","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u9"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+
+	assertValidTrace(t, outcome.admission, events)
+
+	excluded := protocol.MessageSubmitRequest{
+		SessionID:  "session",
+		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+		Delivery:   protocol.DeliveryAuto,
+		ToolChoice: json.RawMessage(`{"disallowed":["Bash"]}`),
+	}
+	adaptertest.AssertProtocolInvalidWithSubmit(t, excluded, outcome.admission, descriptor, events, "unavailable_capability")
+
+	advertising := testDescriptor(t)
+	advertising.Capabilities.Features[protocol.FeatureToolSelection] = protocol.FeatureSupport{Level: protocol.SupportEmulated}
+	adaptertest.AssertProtocolInvalidWithSubmit(t, excluded, outcome.admission, advertising, events, "unapplied_control")
+
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }

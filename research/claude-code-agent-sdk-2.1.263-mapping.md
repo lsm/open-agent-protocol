@@ -561,11 +561,31 @@ compensated.
 - spawn argv (frozen): `<cli> --output-format stream-json --verbose
   --input-format stream-json --system-prompt "" [--model <m>]
   --include-partial-messages --permission-prompt-tool stdio
-  --setting-sources=` — the last two always on: partial messages make text
-  streaming native, and routing every permission ask to the control channel
-  is the only headless-correct prompt surface (without it, asks fail closed
-  to deny). The child environment is fully replaced (no ambient inheritance,
-  no ambient credentials)
+  --setting-sources= [--allowedTools <names...>] [<caller args>]` — the
+  partial-messages and permission-prompt flags always on: partial messages
+  make text streaming native, and routing every permission ask to the control
+  channel is the only headless-correct prompt surface (without it, asks fail
+  closed to deny). The child environment is fully replaced (no ambient
+  inheritance, no ambient credentials)
+- tool posture: the caller states one and there is no default. `--allowedTools`
+  is present when the posture names tools and absent when it states the
+  harness default, and `Config.Tools` is refused when it states neither, so
+  the surface the child receives is always a decision somebody made rather
+  than one nobody did. The flag form is taken from a working invocation
+  against this pin in one-shot mode and is **unverified in stream-json mode**;
+  the smoke gate is where that closes. Caller args follow the posture, so a
+  caller can still add or override flags
+- tool gating versus tool surface: these are two mechanisms and the ledger
+  states only the second. `--permission-prompt-tool stdio` routes every call
+  that consults the permission system to the control channel, and
+  `--setting-sources=` stops a settings file pre-approving one behind the
+  control layer's back. That is a per-call gate, not an allowlist: it decides
+  what runs this time, while the posture decides what the child can attempt at
+  all, and an excluded tool never enters the prompt. **Whether every tool
+  consults the permission system is not established** — a spike observed a
+  Bash call starting with no gate arriving, which the argv above says should
+  not happen. Until the smoke gate asserts it, this adapter must not be
+  described as gating every call
 - initialize / capability revision: `emulated` (initialize exchange at open;
   per-turn `system/init` refresh recorded)
 - session association (process + initialize + first-turn init frame): `emulated`

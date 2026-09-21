@@ -61,6 +61,44 @@ func (f ProcessFactoryFunc) Start(ctx context.Context, c rpc.ProcessConfig) (Pro
 	return f(ctx, c)
 }
 
+type ToolPosture struct {
+	stated       bool
+	unrestricted bool
+	allowed      []string
+}
+
+func AllowTools(names ...string) ToolPosture {
+	return ToolPosture{stated: true, allowed: append([]string(nil), names...)}
+}
+
+func UnrestrictedTools() ToolPosture {
+	return ToolPosture{stated: true, unrestricted: true}
+}
+
+var ErrToolPostureUnstated = errors.New("claude: Config.Tools must state a posture: claude.AllowTools(names...) or claude.UnrestrictedTools()")
+
+func (p ToolPosture) validate() error {
+	if !p.stated {
+		return ErrToolPostureUnstated
+	}
+	if !p.unrestricted && len(p.allowed) == 0 {
+		return errors.New("claude: claude.AllowTools names no tool; name at least one, or state claude.UnrestrictedTools()")
+	}
+	for _, name := range p.allowed {
+		if name == "" {
+			return errors.New("claude: claude.AllowTools names an empty tool")
+		}
+	}
+	return nil
+}
+
+func (p ToolPosture) argv() []string {
+	if p.unrestricted {
+		return nil
+	}
+	return append([]string{"--allowedTools"}, p.allowed...)
+}
+
 type Config struct {
 	Factory          ClientFactory
 	ProcessFactory   ProcessFactory
@@ -69,6 +107,7 @@ type Config struct {
 	Environment      []string
 	WorkingDirectory string
 	Model            string
+	Tools            ToolPosture
 	Clock            base.Clock
 	IDs              base.IDGenerator
 	JournalCapacity  int
@@ -114,6 +153,9 @@ func New(config Config) (*Adapter, error) {
 		if env == nil {
 			env = []string{}
 		}
+		if err := config.Tools.validate(); err != nil {
+			return nil, err
+		}
 		argv := []string{
 			"--output-format", "stream-json",
 			"--verbose",
@@ -126,6 +168,7 @@ func New(config Config) (*Adapter, error) {
 		if config.Model != "" {
 			argv = append(argv, "--model", config.Model)
 		}
+		argv = append(argv, config.Tools.argv()...)
 		argv = append(argv, config.Args...)
 		pc := rpc.ProcessConfig{Path: config.Executable, Args: argv, Dir: config.WorkingDirectory, Env: env, FrameLimit: config.FrameLimit, QueueCapacity: config.QueueCapacity, ExitTimeout: config.ExitTimeout}
 		initializeAtOpen = true
@@ -162,11 +205,8 @@ func (p *sessionClient) Close() error {
 	return p.bridge.Close(ctx)
 }
 
-func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
-	if err := ctx.Err(); err != nil {
-		return base.Descriptor{}, err
-	}
-	features := map[string]protocol.FeatureSupport{
+func advertisedFeatures() map[string]protocol.FeatureSupport {
+	return map[string]protocol.FeatureSupport{
 		"protocol.initialize":            {Level: protocol.SupportEmulated, Reason: "initialize control exchange at open; no capability negotiation"},
 		"capabilities":                   {Level: protocol.SupportEmulated, Reason: "conservative descriptor; per-turn system/init refresh recorded as evidence"},
 		"session.open":                   {Level: protocol.SupportEmulated, Reason: "process spawn + initialize; CLI session UUID observed on frames"},
@@ -188,6 +228,13 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
 		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
 	}
+}
+
+func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	if err := ctx.Err(); err != nil {
+		return base.Descriptor{}, err
+	}
+	features := advertisedFeatures()
 	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
 }
 

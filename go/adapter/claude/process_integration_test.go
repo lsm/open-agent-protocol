@@ -71,6 +71,7 @@ func newPinnedClaude(t *testing.T, environment []string, workDir string) *Adapte
 		Environment:      environment,
 		WorkingDirectory: workDir,
 		Model:            claudeLoopbackModel,
+		Tools:            UnrestrictedTools(),
 		ExitTimeout:      15 * time.Second,
 	})
 	if err != nil {
