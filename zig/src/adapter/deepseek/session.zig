@@ -35,6 +35,17 @@ pub const ToolState = struct {
     started_event: []const u8 = "",
 };
 
+pub const Notification = struct {
+    method: []const u8,
+    params: std.json.Value,
+};
+
+pub const ChildState = struct {
+    id: []const u8,
+    terminal: bool = false,
+    failed: bool = false,
+};
+
 pub const Reducer = struct {
     arena: std.mem.Allocator,
     counters: Counters = .{},
@@ -54,6 +65,10 @@ pub const Reducer = struct {
     receipt: []const u8 = "",
     pending: std.ArrayList(std.json.Value) = .empty,
     tools: std.ArrayList(*ToolState) = .empty,
+    children: std.ArrayList(*ChildState) = .empty,
+    buffered: std.ArrayList(Notification) = .empty,
+    last_seq: i64 = 0,
+    seq_seen: bool = false,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -247,9 +262,12 @@ const ignored_events = [_][]const u8{
     "request/header", "request/context",     "session/end-seed",
 };
 
-fn sameStep(reducer: *Reducer, data: std.json.Value) bool {
-    if (reducer.turn_ended) return false;
-    return numberOf(data, "turn") == reducer.turn and numberOf(data, "step") == reducer.step;
+fn sameStep(reducer: *Reducer, data: std.json.Value) !bool {
+    if (reducer.turn_ended or numberOf(data, "turn") != reducer.turn or numberOf(data, "step") != reducer.step) {
+        try failRun(reducer, "deepseek_invalid_grammar", "event outside open owned step");
+        return false;
+    }
+    return true;
 }
 
 pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
@@ -279,18 +297,18 @@ pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
     }
     if (std.mem.eql(u8, kind, "assistant/attempt")) return;
     if (std.mem.eql(u8, kind, "assistant/message")) {
-        if (!sameStep(reducer, data)) return;
+        if (!try sameStep(reducer, data)) return;
         if (memberOf(data, "stream")) |records| try emitStreamRecords(reducer, records);
         reducer.final = data;
         return;
     }
     if (std.mem.eql(u8, kind, "tool/call")) {
-        if (!sameStep(reducer, data)) return;
+        if (!try sameStep(reducer, data)) return;
         try startTool(reducer, data);
         return;
     }
     if (std.mem.eql(u8, kind, "tool/result")) {
-        if (!sameStep(reducer, data)) return;
+        if (!try sameStep(reducer, data)) return;
         try endTool(reducer, data);
         return;
     }
@@ -314,6 +332,7 @@ pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
 }
 
 pub fn observeStatus(reducer: *Reducer, status: []const u8) !void {
+    if (!reducer.started or !reducer.turn_ended) return;
     if (!std.mem.eql(u8, status, "idle")) return;
     reducer.idle_after_end = true;
     try trySettle(reducer);
@@ -466,6 +485,15 @@ fn blocksContent(reducer: *Reducer, blocks: std.json.Value) !std.json.Value {
 
 fn trySettle(reducer: *Reducer) !void {
     if (!reducer.turn_ended or !reducer.idle_after_end or reducer.terminal) return;
+    var failed_child = false;
+    for (reducer.children.items) |child| {
+        if (!child.terminal) return;
+        failed_child = failed_child or child.failed;
+    }
+    if (failed_child) {
+        try failRun(reducer, "deepseek_child_failed", "subagent failed");
+        return;
+    }
     if (!std.mem.eql(u8, reducer.end_kind, "completed")) {
         const code = try std.fmt.allocPrint(reducer.arena, "deepseek_{s}", .{reducer.end_kind});
         const message = try std.fmt.allocPrint(reducer.arena, "native turn ended: {s}", .{reducer.end_kind});
@@ -543,6 +571,119 @@ pub fn observe(reducer: *Reducer, event: std.json.Value) !void {
     }
     try reducer.pending.append(reducer.arena, event);
     try evaluateAdmission(reducer);
+}
+
+fn findChild(reducer: *Reducer, id: []const u8) ?*ChildState {
+    for (reducer.children.items) |child| {
+        if (std.mem.eql(u8, child.id, id)) return child;
+    }
+    return null;
+}
+
+fn openChild(reducer: *Reducer, id: []const u8) !void {
+    const child = try reducer.arena.create(ChildState);
+    child.* = .{ .id = id };
+    try reducer.children.append(reducer.arena, child);
+}
+
+pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.json.Value) !void {
+    if (reducer.terminal) return;
+    if (std.mem.eql(u8, method, "session.event")) {
+        if (!std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id)) {
+            try failRun(reducer, "deepseek_session_mismatch", "session.event for foreign session");
+            return;
+        }
+        const event = memberOf(params, "event") orelse std.json.Value{ .null = {} };
+        const seq = numberOf(event, "seq");
+        if (reducer.seq_seen and seq <= reducer.last_seq) {
+            try failRun(reducer, "deepseek_invalid_sequence", "non-monotonic native event sequence");
+            return;
+        }
+        reducer.seq_seen = true;
+        reducer.last_seq = seq;
+        try observe(reducer, event);
+        return;
+    }
+
+    if (!reducer.started) try reducer.buffered.append(reducer.arena, .{ .method = method, .params = params });
+
+    if (std.mem.eql(u8, method, "session.status")) {
+        if (!std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id)) {
+            try failRun(reducer, "deepseek_session_mismatch", "session.status for foreign session");
+            return;
+        }
+        try observeStatus(reducer, textOf(params, "status"));
+        return;
+    }
+    if (std.mem.eql(u8, method, "subagent.started")) {
+        const child_id = textOf(params, "childSessionId");
+        if (!std.mem.eql(u8, textOf(params, "parentSessionId"), reducer.session_id) or std.mem.eql(u8, child_id, reducer.session_id)) {
+            try failRun(reducer, "deepseek_external_activity", "foreign or recursive subagent");
+            return;
+        }
+        if (!reducer.started) return;
+        if (findChild(reducer, child_id) != null) {
+            try failRun(reducer, "deepseek_child_lifecycle", "duplicate child start");
+            return;
+        }
+        try openChild(reducer, child_id);
+        return;
+    }
+    if (std.mem.eql(u8, method, "subagent.finished")) {
+        if (!std.mem.eql(u8, textOf(params, "parentSessionId"), reducer.session_id)) {
+            try failRun(reducer, "deepseek_external_activity", "foreign child finish");
+            return;
+        }
+        if (!reducer.started) return;
+        const child = findChild(reducer, textOf(params, "childSessionId"));
+        if (child == null or child.?.terminal) {
+            try failRun(reducer, "deepseek_child_lifecycle", "unmatched child finish");
+            return;
+        }
+        child.?.terminal = true;
+        child.?.failed = !std.mem.eql(u8, textOf(params, "status"), "ok") or std.mem.eql(u8, textOf(params, "stopReason"), "max-tokens");
+        try trySettle(reducer);
+        return;
+    }
+    try failRun(reducer, "deepseek_unknown_notification", "unknown notification");
+}
+
+fn drainBuffered(reducer: *Reducer) !void {
+    const replayed = try reducer.arena.dupe(Notification, reducer.buffered.items);
+    reducer.buffered.clearRetainingCapacity();
+    for (replayed) |notification| {
+        if (reducer.terminal) break;
+        const params = notification.params;
+        const parent_matches = std.mem.eql(u8, textOf(params, "parentSessionId"), reducer.session_id);
+        if (std.mem.eql(u8, notification.method, "session.status")) {
+            if (!std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id)) {
+                try failRun(reducer, "deepseek_session_mismatch", "session.status for foreign session");
+            } else if (reducer.turn_ended and std.mem.eql(u8, textOf(params, "status"), "idle")) {
+                reducer.idle_after_end = true;
+            }
+            continue;
+        }
+        const child_id = textOf(params, "childSessionId");
+        if (std.mem.eql(u8, notification.method, "subagent.started")) {
+            if (!parent_matches or std.mem.eql(u8, child_id, reducer.session_id) or findChild(reducer, child_id) != null) {
+                try failRun(reducer, "deepseek_child_lifecycle", "invalid buffered child start");
+            } else {
+                try openChild(reducer, child_id);
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, notification.method, "subagent.finished")) {
+            const child = findChild(reducer, child_id);
+            if (!parent_matches or child == null or child.?.terminal) {
+                try failRun(reducer, "deepseek_child_lifecycle", "invalid buffered child finish");
+            } else {
+                child.?.terminal = true;
+                child.?.failed = !std.mem.eql(u8, textOf(params, "status"), "ok") or std.mem.eql(u8, textOf(params, "stopReason"), "max-tokens");
+            }
+            continue;
+        }
+    }
+    try trySettle(reducer);
 }
 
 fn evaluateAdmission(reducer: *Reducer) !void {
@@ -645,6 +786,7 @@ fn evaluateAdmission(reducer: *Reducer) !void {
         if (std.mem.eql(u8, kind, "turn/start") or std.mem.eql(u8, kind, "step/start") or std.mem.eql(u8, kind, "user/message")) continue;
         try applyEvent(reducer, event);
     }
+    try drainBuffered(reducer);
 }
 
 fn parse(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
@@ -862,4 +1004,111 @@ test "a final tool call carries the arguments of the final block, not those of t
     try std.testing.expect(content.array.items.len == 1);
     const carried = memberOf(content.array.items[0], "arguments_json") orelse return error.NoArguments;
     try std.testing.expectEqualStrings("final", textOf(carried, "q"));
+}
+
+fn notify(reducer: *Reducer, arena: std.mem.Allocator, method: []const u8, params_text: []const u8) !void {
+    try observeNotification(reducer, method, try parse(arena, params_text));
+}
+
+test "a notification naming another session is a mismatch, on events and on status alike" {
+    var first = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer first.deinit();
+    var reducer = try admittedRun(first.allocator());
+    try notify(&reducer, first.allocator(), "session.event", "{\"sessionId\":\"elsewhere\",\"event\":{\"type\":\"turn/end\",\"seq\":99,\"data\":{\"turn\":1}}}");
+    try std.testing.expectEqualStrings("deepseek_session_mismatch", lastFailure(&reducer).?);
+
+    var second = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer second.deinit();
+    var other = try admittedRun(second.allocator());
+    try notify(&other, second.allocator(), "session.status", "{\"sessionId\":\"elsewhere\",\"status\":\"idle\"}");
+    try std.testing.expectEqualStrings("deepseek_session_mismatch", lastFailure(&other).?);
+}
+
+test "a native sequence that repeats or goes backwards is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try notify(&reducer, a, "session.event", "{\"sessionId\":\"session\",\"event\":{\"type\":\"step/end\",\"seq\":7,\"data\":{\"turn\":1,\"step\":1}}}");
+    try std.testing.expect(lastFailure(&reducer) == null);
+    try notify(&reducer, a, "session.event", "{\"sessionId\":\"session\",\"event\":{\"type\":\"step/end\",\"seq\":7,\"data\":{\"turn\":1,\"step\":1}}}");
+    try std.testing.expectEqualStrings("deepseek_invalid_sequence", lastFailure(&reducer).?);
+}
+
+test "an event outside the open owned step is a grammar defect, not a frame to drop" {
+    try expectRefusal(&.{
+        "{\"type\":\"assistant/message\",\"data\":{\"turn\":2,\"step\":1,\"message\":{\"content\":[]}}}",
+    }, "deepseek_invalid_grammar");
+    try expectRefusal(&.{
+        "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}",
+        "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c\",\"name\":\"n\",\"arguments\":\"{}\"}}",
+    }, "deepseek_invalid_grammar");
+}
+
+test "idle arms settlement only once the owned turn has ended" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try observeStatus(&reducer, "idle");
+    try std.testing.expect(!reducer.idle_after_end);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try std.testing.expect(!reducer.terminal);
+    try observeStatus(&reducer, "idle");
+    try std.testing.expect(reducer.terminal);
+}
+
+test "a subagent that is foreign, recursive or repeated is refused" {
+    var first = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer first.deinit();
+    var reducer = try admittedRun(first.allocator());
+    try notify(&reducer, first.allocator(), "subagent.started", "{\"parentSessionId\":\"elsewhere\",\"childSessionId\":\"c-1\"}");
+    try std.testing.expectEqualStrings("deepseek_external_activity", lastFailure(&reducer).?);
+
+    var second = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer second.deinit();
+    var recursive = try admittedRun(second.allocator());
+    try notify(&recursive, second.allocator(), "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"session\"}");
+    try std.testing.expectEqualStrings("deepseek_external_activity", lastFailure(&recursive).?);
+
+    var third = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer third.deinit();
+    var repeated = try admittedRun(third.allocator());
+    try notify(&repeated, third.allocator(), "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
+    try notify(&repeated, third.allocator(), "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
+    try std.testing.expectEqualStrings("deepseek_child_lifecycle", lastFailure(&repeated).?);
+}
+
+test "a running child holds the terminal, and a failed one decides it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try notify(&reducer, a, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+    try std.testing.expect(!reducer.terminal);
+    try notify(&reducer, a, "subagent.finished", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"error\"}");
+    try std.testing.expectEqualStrings("deepseek_child_failed", lastFailure(&reducer).?);
+
+    var second = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer second.deinit();
+    const b = second.allocator();
+    var capped = try admittedRun(b);
+    try notify(&capped, b, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
+    try applyEvent(&capped, try parse(b, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&capped, try parse(b, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&capped, "idle");
+    try notify(&capped, b, "subagent.finished", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"ok\",\"stopReason\":\"max-tokens\"}");
+    try std.testing.expectEqualStrings("deepseek_child_failed", lastFailure(&capped).?);
+}
+
+test "a notification this port does not know is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try notify(&reducer, arena.allocator(), "future.unheard-of", "{\"sessionId\":\"session\"}");
+    try std.testing.expectEqualStrings("deepseek_unknown_notification", lastFailure(&reducer).?);
 }

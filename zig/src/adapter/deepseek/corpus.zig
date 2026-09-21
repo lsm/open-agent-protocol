@@ -135,15 +135,7 @@ const Driver = struct {
             }
             const method = corpus.stringMember(item.raw.object, "method") orelse return .handled;
             const params = item.raw.object.get("params") orelse return .handled;
-            if (std.mem.eql(u8, method, "session.event")) {
-                const event = params.object.get("event") orelse return .handled;
-                try session.observe(reducer, event);
-                return .handled;
-            }
-            if (std.mem.eql(u8, method, "session.status")) {
-                try session.observeStatus(reducer, corpus.stringMember(params.object, "status") orelse "");
-                return .handled;
-            }
+            try session.observeNotification(reducer, method, params);
             return .handled;
         }
         return .unhandled;
