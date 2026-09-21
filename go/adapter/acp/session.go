@@ -798,7 +798,7 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID)
 	}
 	for _, t := range tools {
-		if !t.started {
+		if !t.started && !cancel {
 			t.started = true
 			started := s.toolPayload(t)
 			started.Progress = nil

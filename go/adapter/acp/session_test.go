@@ -1334,13 +1334,13 @@ func TestARequestWithNoUsableOptionIsRefused(t *testing.T) {
 	}
 }
 
-func TestAToolThatNeverStartedIsStartedBeforeItSettles(t *testing.T) {
+func TestAToolThatNeverStartedIsStartedOnlyWhereTheValidatorNeedsIt(t *testing.T) {
 	for _, settlement := range []struct {
 		stop string
-		want protocol.EnvelopeType
+		want []protocol.EnvelopeType
 	}{
-		{"end_turn", protocol.TypeActionCallFailed},
-		{"cancelled", protocol.TypeActionCallCancelled},
+		{"end_turn", []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallFailed, protocol.TypeRunCompleted}},
+		{"cancelled", []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeActionCallRequested, protocol.TypeActionCallCancelled, protocol.TypeRunCancelled}},
 	} {
 		s, f := openTest(t, 64)
 		admission, stream := submit(t, s)
@@ -1359,8 +1359,13 @@ func TestAToolThatNeverStartedIsStartedBeforeItSettles(t *testing.T) {
 		for _, e := range events {
 			kinds = append(kinds, e.Type)
 		}
-		if len(kinds) != 5 || kinds[1] != protocol.TypeActionCallRequested || kinds[2] != protocol.TypeActionCallStarted || kinds[3] != settlement.want {
-			t.Fatalf("%s produced %v", settlement.stop, kinds)
+		if len(kinds) != len(settlement.want) {
+			t.Fatalf("%s produced %v, want %v", settlement.stop, kinds, settlement.want)
+		}
+		for i, want := range settlement.want {
+			if kinds[i] != want {
+				t.Fatalf("%s produced %v, want %v", settlement.stop, kinds, settlement.want)
+			}
 		}
 	}
 }

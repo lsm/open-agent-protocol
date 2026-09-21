@@ -741,9 +741,15 @@ and a fifth made it misreport one. All were raised as #142 and are fixed on
 both sides now; the table is kept because it is the record of what the class
 looks like, not a list of open divergences.
 
-The last row was found while fixing the other four, and is the most reachable
-of them: an agent that announces a tool and ends the turn before running it is
-ordinary, not exotic. It is also the one no corpus case could have caught for a
+The last two rows were found while fixing the other four, and the first of them
+is the most reachable: an agent that announces a tool and ends the turn before
+running it is ordinary, not exotic. The split between them is the validator's
+own: `requested -> cancelled` is legal because `tool()` admits any
+non-terminal current state for a cancellation, while `requested -> failed`
+falls to the default arm and demands `started`. Synthesizing a start on the
+cancellation path as well --- which the first fix did --- publishes an
+execution event the harness never reported, so the rule is narrower than
+"always start before settling". It is also the one no corpus case could have caught for a
 structural reason worth naming — no ACP case emits `action.call.failed` or
 `action.call.cancelled` at all, so the entire settle-children path was
 corpus-invisible in both implementations.
@@ -753,7 +759,8 @@ corpus-invisible in both implementations.
 | `tool_call_update` carrying `title: ""` | assigns it, and `omitempty` then drops the required `name` | retains the admitted title; a patch renames a call but cannot un-name it |
 | a permission option with an empty `name` | publishes `label: ""`, which `permissionChoice` refuses with minLength | does not offer the option |
 | a permission option whose `kind` is outside ACP v1 | classifies it as rejecting, so a `granted:false` resolution is accepted and reported as a denial | does not offer the option; a request with no usable option raises the existing empty-options refusal |
-| a tool requested but never started, settled by its run | emits `action.call.failed` or `action.call.cancelled` straight after `action.call.requested`, which the validator refuses as an illegal transition | synthesizes the start first, as `applyToolStatus` already does for a terminal status arriving without one |
+| a tool requested but never started, failed by its run | emits `action.call.failed` straight after `action.call.requested`, which the validator refuses as an illegal transition | synthesizes the start first, as `applyToolStatus` already does for a terminal status arriving without one |
+| a tool requested but never started, cancelled by its run | emits `action.call.cancelled`, which the validator accepts | emits the same, and does **not** synthesize a start |
 
 The third was a decision rather than a patch, and it was settled by dropping
 the unusable option in both implementations: that is loud at a pinned version
