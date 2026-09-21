@@ -1,4 +1,5 @@
 const std = @import("std");
+const goquote = @import("goquote");
 
 pub const default_frame_limit = 8 << 20;
 
@@ -16,59 +17,6 @@ pub const max_nesting_depth = 10000;
 
 fn frameDetail(comptime detail: []const u8) []const u8 {
     return invalid_frame_prefix ++ ": " ++ detail;
-}
-
-fn unprintableRune(code: u21) bool {
-    return code <= 0x9f or code == 0xa0 or code == 0xad;
-}
-
-fn quoteGo(arena: std.mem.Allocator, value: []const u8) []const u8 {
-    var out = std.ArrayList(u8).empty;
-    out.append(arena, '"') catch return value;
-    var index: usize = 0;
-    while (index < value.len) {
-        const byte = value[index];
-        if (byte < 0x80) {
-            index += 1;
-            switch (byte) {
-                '"' => out.appendSlice(arena, "\\\"") catch return value,
-                '\\' => out.appendSlice(arena, "\\\\") catch return value,
-                '\n' => out.appendSlice(arena, "\\n") catch return value,
-                '\r' => out.appendSlice(arena, "\\r") catch return value,
-                '\t' => out.appendSlice(arena, "\\t") catch return value,
-                0x07 => out.appendSlice(arena, "\\a") catch return value,
-                0x08 => out.appendSlice(arena, "\\b") catch return value,
-                0x0b => out.appendSlice(arena, "\\v") catch return value,
-                0x0c => out.appendSlice(arena, "\\f") catch return value,
-                0x00...0x06, 0x0e...0x1f, 0x7f => {
-                    const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
-                    out.appendSlice(arena, hex) catch return value;
-                },
-                else => out.append(arena, byte) catch return value,
-            }
-            continue;
-        }
-        const width = std.unicode.utf8ByteSequenceLength(byte) catch {
-            index += 1;
-            const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
-            out.appendSlice(arena, hex) catch return value;
-            continue;
-        };
-        const decoded = if (index + width <= value.len) std.unicode.utf8Decode(value[index .. index + width]) catch null else null;
-        if (decoded) |code| {
-            index += width;
-            if (unprintableRune(code)) {
-                const hex = std.fmt.allocPrint(arena, "\\u{x:0>4}", .{code}) catch return value;
-                out.appendSlice(arena, hex) catch return value;
-            } else out.appendSlice(arena, value[index - width .. index]) catch return value;
-            continue;
-        }
-        index += 1;
-        const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
-        out.appendSlice(arena, hex) catch return value;
-    }
-    out.append(arena, '"') catch return value;
-    return out.items;
 }
 
 pub const Diagnostic = struct {
@@ -95,7 +43,7 @@ pub const Diagnostic = struct {
     }
 
     fn duplicateKey(self: *Diagnostic, arena: std.mem.Allocator, key: []const u8) Error {
-        self.message = std.fmt.allocPrint(arena, "{s}: duplicate object key {s}", .{ invalid_message_prefix, quoteGo(arena, key) }) catch invalid_message_prefix;
+        self.message = std.fmt.allocPrint(arena, "{s}: duplicate object key {s}", .{ invalid_message_prefix, goquote.quote(arena, key) }) catch invalid_message_prefix;
         return Error.InvalidMessage;
     }
 
@@ -106,7 +54,7 @@ pub const Diagnostic = struct {
 
     fn refuseQuoted(self: *Diagnostic, arena: std.mem.Allocator, kind: Error, comptime shape: []const u8, value: []const u8) Error {
         const prefix: []const u8 = if (kind == Error.InvalidControl) invalid_control_prefix else invalid_frame_prefix;
-        self.message = std.fmt.allocPrint(arena, "{s}: " ++ shape, .{ prefix, quoteGo(arena, value) }) catch prefix;
+        self.message = std.fmt.allocPrint(arena, "{s}: " ++ shape, .{ prefix, goquote.quote(arena, value) }) catch prefix;
         return kind;
     }
 };
@@ -1157,34 +1105,6 @@ test "a refusal quotes the value the oracle quotes" {
     try testing.expectEqualStrings(invalid_control_prefix ++ ": control_cancel_request requires a non-empty request_id", cancel.message);
 }
 
-test "a quoted value is escaped the way %q escapes it" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const scratch = arena.allocator();
-
-    try testing.expectEqualStrings("\"plain\"", quoteGo(scratch, "plain"));
-    try testing.expectEqualStrings("\"we\\\"ird\"", quoteGo(scratch, "we\"ird"));
-    try testing.expectEqualStrings("\"back\\\\slash\"", quoteGo(scratch, "back\\slash"));
-    try testing.expectEqualStrings("\"a\\nb\"", quoteGo(scratch, "a\nb"));
-    try testing.expectEqualStrings("\"a\\x00b\"", quoteGo(scratch, "a\x00b"));
-    try testing.expectEqualStrings("\"\\a\\b\\v\\f\"", quoteGo(scratch, "\x07\x08\x0b\x0c"));
-    try testing.expectEqualStrings("\"\\r\\t\\x1f\"", quoteGo(scratch, "\r\t\x1f"));
-    try testing.expectEqualStrings("\"\\u0080\\u009f\"", quoteGo(scratch, "\u{80}\u{9f}"));
-    try testing.expectEqualStrings("\"\\u00a0\\u00ad\"", quoteGo(scratch, "\u{a0}\u{ad}"));
-    try testing.expectEqualStrings("\"\u{b0}\u{bf}\u{ab}\u{a9}\"", quoteGo(scratch, "\u{b0}\u{bf}\u{ab}\u{a9}"));
-    try testing.expectEqualStrings("\"\\xc2A\"", quoteGo(scratch, "\xc2A"));
-    try testing.expectEqualStrings("\"a\\xc2b\"", quoteGo(scratch, "a\xc2b"));
-    try testing.expectEqualStrings("\"\\xff\"", quoteGo(scratch, "\xff"));
-    try testing.expectEqualStrings("\"\\xc2\"", quoteGo(scratch, "\xc2"));
-    try testing.expectEqualStrings("\"\\xe2\\x80\"", quoteGo(scratch, "\xe2\x80"));
-    try testing.expectEqualStrings("\"\u{1f600}\"", quoteGo(scratch, "\u{1f600}"));
-    try testing.expectEqualStrings("\"caf\u{e9} na\u{ef}ve\"", quoteGo(scratch, "caf\u{e9} na\u{ef}ve"));
-
-    var quoted = Diagnostic{};
-    try testing.expectError(Error.InvalidControl, parseMessage(scratch, "{\"type\":\"control_response\",\"response\":{\"subtype\":\"we\\\"ird\",\"request_id\":\"r\"}}", &quoted));
-    try testing.expectEqualStrings(invalid_control_prefix ++ ": control response subtype \"we\\\"ird\" is not success or error", quoted.message);
-}
-
 test "an oversized unterminated tail is too large, not malformed" {
     var short = FrameReader{ .source = "{\"type\":\"result\"}", .limit = 4 };
     try testing.expectError(Error.FrameTooLarge, short.next(null));
@@ -1639,4 +1559,14 @@ test "an assistant content block is typed the way the oracle types it" {
     try accepts(&arena, assistant ++ "{\"type\":\"tool_use\",\"id\":\"t1\"}]}}");
     try accepts(&arena, assistant ++ "{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"is_error\":true}]}}");
     try accepts(&arena, assistant ++ "{\"type\":\"text\",\"text\":\"hi\"}]}}");
+}
+
+test "a diagnostic quotes the value the way strconv.Quote quotes it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var quoted = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(scratch, "{\"type\":\"control_response\",\"response\":{\"subtype\":\"we\\\"ird\",\"request_id\":\"r\"}}", &quoted));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": control response subtype \"we\\\"ird\" is not success or error", quoted.message);
 }

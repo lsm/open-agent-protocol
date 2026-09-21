@@ -1,5 +1,6 @@
 const std = @import("std");
 const rpc = @import("rpc");
+const goquote = @import("goquote");
 
 pub const capability_revision = "acp-v1.7.0-schema-v1.21.0-oap-v3";
 pub const protocol_name = "open-agent-protocol";
@@ -259,9 +260,9 @@ pub const Reducer = struct {
             return;
         }
         const named = switch (request) {
-            .string => |text| text,
+            .string => |text| goquote.quote(self.allocator(), text),
             .integer => |value| try std.fmt.allocPrint(self.allocator(), "{d}", .{value}),
-            else => "",
+            else => "<unset>",
         };
         const detail = try std.fmt.allocPrint(self.allocator(), "acp rpc error {d} for request {s}: {s}", .{ code, named, message });
         try self.settleChildren(run, true);
@@ -389,7 +390,11 @@ pub const Reducer = struct {
 
         const kind = update.object.get("sessionUpdate") orelse std.json.Value{ .null = {} };
         if (kind != .string) {
-            try self.failActive("acp_unknown_update", "unknown stable ACP session update");
+            if (kind == .null) {
+                try self.failActive("acp_unknown_update", "unknown stable ACP session update");
+            } else {
+                try self.failActive("acp_invalid_update", "malformed session update");
+            }
             return;
         }
         try self.applyUpdate(update.object, kind.string);
@@ -652,6 +657,7 @@ pub const Reducer = struct {
         var kept = std.ArrayList(Choice).empty;
         var choices = std.json.Array.init(self.allocator());
         for (options.items) |entry| {
+            if (entry != .object) continue;
             const option_id = stringMember(entry.object, "optionId");
             if (option_id.len == 0) continue;
             const name = stringMember(entry.object, "name");
@@ -802,6 +808,7 @@ fn permissionDecodes(params: std.json.Value, native_id: []const u8) bool {
     const options = params.object.get("options") orelse return false;
     if (options != .array or options.array.items.len == 0) return false;
     for (options.array.items) |entry| {
+        if (entry == .null) continue;
         if (entry != .object) return false;
         for (permission_option_strings) |key| {
             if (!typedString(entry.object, key)) return false;
@@ -927,16 +934,29 @@ test "an update member that is absent or not an object is a separate refusal fro
     , "acp_invalid_update", "malformed session update");
 }
 
-test "an update naming no string kind is refused as an unknown update" {
-    try expectRefusal(wrap(
-        \\{"sessionUpdate":7}
-    ), "acp_unknown_update", "unknown stable ACP session update");
+test "a discriminator that is absent or null is unknown, and one of the wrong type is malformed" {
     try expectRefusal(wrap(
         \\{"kind":"read"}
     ), "acp_unknown_update", "unknown stable ACP session update");
     try expectRefusal(wrap(
+        \\{"sessionUpdate":null}
+    ), "acp_unknown_update", "unknown stable ACP session update");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":""}
+    ), "acp_unknown_update", "unknown stable ACP session update");
+    try expectRefusal(wrap(
         \\{"sessionUpdate":"invented_later"}
     ), "acp_unknown_update", "unknown stable ACP session update");
+
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":7}
+    ), "acp_invalid_update", "malformed session update");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":true}
+    ), "acp_invalid_update", "malformed session update");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":{}}
+    ), "acp_invalid_update", "malformed session update");
 }
 
 test "the ten ignored updates and any underscore-prefixed kind emit nothing" {
@@ -1203,7 +1223,19 @@ test "a prompt error quotes the code and the request id that carried it" {
 
     var named = try openRun(&arena);
     try named.promptFailed(-32000, .{ .string = "req-7" }, "boom");
-    try testing.expectEqualStrings("acp rpc error -32000 for request req-7: boom", messageAt(&named, 1));
+    try testing.expectEqualStrings("acp rpc error -32000 for request \"req-7\": boom", messageAt(&named, 1));
+
+    var awkward = try openRun(&arena);
+    try awkward.promptFailed(-32000, .{ .string = "we\"ird" }, "boom");
+    try testing.expectEqualStrings("acp rpc error -32000 for request \"we\\\"ird\": boom", messageAt(&awkward, 1));
+
+    var spaced = try openRun(&arena);
+    try spaced.promptFailed(-32000, .{ .string = "with space" }, "boom");
+    try testing.expectEqualStrings("acp rpc error -32000 for request \"with space\": boom", messageAt(&spaced, 1));
+
+    var unset = try openRun(&arena);
+    try unset.promptFailed(-32000, .{ .null = {} }, "boom");
+    try testing.expectEqualStrings("acp rpc error -32000 for request <unset>: boom", messageAt(&unset, 1));
 }
 
 test "a prompt cancellation is confirmed only when cancel was requested first" {
@@ -1609,6 +1641,32 @@ test "an option is offered only with an id, a label and a kind ACP v1 defines" {
     try testing.expectError(Error.InvalidResolution, reducer.resolve(reducer.pendingInteraction().?, "run-b", "user", "future", true));
     try reducer.resolve(reducer.pendingInteraction().?, "run-b", "user", "no", false);
     try testing.expectEqualStrings("rejected", payloadAt(&reducer, 3).get("outcome").?.string);
+}
+
+test "a null option is skipped the way a zero-valued one is, not refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[null,{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}
+    );
+
+    const choices = payloadAt(&reducer, 2).get("choices").?.array.items;
+    try testing.expectEqual(@as(usize, 1), choices.len);
+    try testing.expectEqualStrings("allow", choices[0].object.get("id").?.string);
+
+    var only = try openRun(&arena);
+    try feed(&only, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[null]}}
+    );
+    try testing.expectEqualStrings("empty permission options", messageAt(&only, 3));
+
+    var typed = try openRun(&arena);
+    try feed(&typed, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[7]}}
+    );
+    try testing.expectEqualStrings("malformed permission request", messageAt(&typed, 1));
 }
 
 test "a request whose every option is unusable raises the empty-options refusal" {
