@@ -27,6 +27,10 @@ pub const Counters = struct {
     }
 };
 
+pub const Identity = struct {
+    run_id: []const u8 = "",
+};
+
 pub const ToolState = struct {
     native_id: []const u8,
     id: []const u8,
@@ -52,6 +56,9 @@ pub const Reducer = struct {
     counters: Counters = .{},
     session_id: []const u8 = "session",
     model: []const u8 = "deepseek-chat",
+    endpoint: []const u8 = endpoint_id,
+    revision: []const u8 = capability_revision,
+    identity: Identity = .{},
     initialized: bool = false,
     run_id: []const u8 = "",
     message_id: []const u8 = "",
@@ -114,7 +121,7 @@ pub const Reducer = struct {
         try map.put(self.arena, "timestamp_ms", .{ .integer = now });
         try map.put(self.arena, "session_id", str(self.session_id));
         try map.put(self.arena, "run_id", str(self.run_id));
-        try map.put(self.arena, "capability_revision", str(capability_revision));
+        try map.put(self.arena, "capability_revision", str(self.revision));
         if (reply.len != 0) try map.put(self.arena, "in_reply_to", str(reply));
         if (std.mem.startsWith(u8, kind, "action.call.")) {
             if (payload.object.get("tool_call_id")) |carried| try map.put(self.arena, "tool_call_id", carried);
@@ -183,12 +190,17 @@ pub fn close(reducer: *Reducer) !void {
 }
 
 pub fn submit(reducer: *Reducer) !void {
+    return submitAs(reducer, .{});
+}
+
+pub fn submitAs(reducer: *Reducer, identity: Identity) !void {
     if (reducer.closed) return Error.SessionClosed;
     if (reducer.unusable) return Error.SessionUnusable;
     if (reducer.reserved and !reducer.terminal) return Error.RunActive;
     reducer.reserved = true;
     _ = try reducer.counters.nextID(reducer.arena, "message");
     reducer.message_id = try reducer.counters.nextID(reducer.arena, "message");
+    reducer.identity = identity;
     reducer.run_id = "";
     reducer.sequence = 1;
     reducer.started = false;
@@ -216,7 +228,8 @@ pub fn rejectedSubmit(reducer: *Reducer) !void {
 
 pub fn start(reducer: *Reducer) !void {
     if (reducer.started) return;
-    reducer.run_id = try reducer.counters.nextID(reducer.arena, "run");
+    const minted_run = try reducer.counters.nextID(reducer.arena, "run");
+    reducer.run_id = if (reducer.identity.run_id.len > 0) reducer.identity.run_id else minted_run;
     reducer.started = true;
     const started_at = reducer.counters.nextTick();
     const payload = try reducer.object();
@@ -433,7 +446,7 @@ fn toolPayload(reducer: *Reducer, tool: *ToolState, carry_arguments: bool) !std.
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
-    try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
+    try payload.put(reducer.arena, "requested_by", Reducer.str(reducer.endpoint));
     try payload.put(reducer.arena, "execution_owner", Reducer.str(execution_owner));
     try payload.put(reducer.arena, "name", Reducer.str(tool.name));
     if (carry_arguments) {
@@ -1558,4 +1571,63 @@ test "any present sections or replayState disqualifies the ownership proof" {
     }) |source| {
         try std.testing.expect(!try admitsWithSource(a, source));
     }
+}
+
+fn admittedAs(arena: std.mem.Allocator, identity: Identity, reducer: *Reducer) !void {
+    reducer.* = Reducer.init(arena);
+    openSession(reducer);
+    try submitAs(reducer, identity);
+    try observe(reducer, try parse(arena, "{\"type\":\"agent/inbox/spliced\",\"data\":{\"inserted\":[{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}]}}"));
+    try receipt(reducer, "m-1");
+    try observe(reducer, try parse(arena, "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}"));
+    try observe(reducer, try parse(arena, "{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":1}}"));
+    try observe(reducer, try parse(arena, "{\"type\":\"user/message\",\"data\":{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}}"));
+}
+
+fn emittedIDs(reducer: *Reducer, arena: std.mem.Allocator) ![]const []const u8 {
+    var ids = std.ArrayList([]const u8).empty;
+    for (reducer.emitted.items) |envelope| {
+        try ids.append(arena, envelope.object.get("id").?.string);
+    }
+    return ids.items;
+}
+
+test "an injected run id takes the place of the minted one without taking its letter" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var minted: Reducer = undefined;
+    try admittedAs(scratch, .{}, &minted);
+    const minted_ids = try emittedIDs(&minted, scratch);
+
+    var injected: Reducer = undefined;
+    try admittedAs(scratch, .{ .run_id = "01JB0RUN" }, &injected);
+    const injected_ids = try emittedIDs(&injected, scratch);
+
+    try std.testing.expectEqualStrings("run-c", minted.run_id);
+    try std.testing.expectEqualStrings("01JB0RUN", injected.run_id);
+    try std.testing.expectEqual(minted_ids.len, injected_ids.len);
+    for (minted_ids, injected_ids) |mint, inject| {
+        try std.testing.expectEqualStrings(mint, inject);
+    }
+    try std.testing.expectEqual(minted.counters.ids, injected.counters.ids);
+}
+
+test "the endpoint and the revision an envelope cites are the ones the caller supplied" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var stock: Reducer = undefined;
+    try admittedAs(scratch, .{}, &stock);
+    try std.testing.expectEqualStrings(capability_revision, stock.emitted.items[0].object.get("capability_revision").?.string);
+
+    var supplied: Reducer = undefined;
+    try admittedAs(scratch, .{}, &supplied);
+    supplied.revision = "makai-oap-core-v1";
+    supplied.endpoint = "makai.agent-control";
+    try observe(&supplied, try parse(scratch, "{\"type\":\"assistant/message/delta\",\"data\":{\"turn\":1,\"step\":1,\"text\":\"hi\"}}"));
+    const last = supplied.emitted.items[supplied.emitted.items.len - 1];
+    try std.testing.expectEqualStrings("makai-oap-core-v1", last.object.get("capability_revision").?.string);
 }
