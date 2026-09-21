@@ -11,6 +11,7 @@ pub const Step = struct {
     action: []const u8,
     raw: std.json.Value,
     encoded: []const u8,
+    script: std.json.Value,
 };
 
 pub const Handled = enum { handled, unhandled };
@@ -128,6 +129,7 @@ pub fn Harness(comptime Driver: type) type {
                     .action = action,
                     .raw = raw,
                     .encoded = try std.json.Stringify.valueAlloc(scratch, raw, .{}),
+                    .script = script,
                 };
                 if (try Driver.step(reducer, scratch, step, case) == .unhandled) {
                     return error.UnhandledScriptAction;
