@@ -385,12 +385,43 @@ fn walkFrame(arena: std.mem.Allocator, data: []const u8) !Walk {
     return .ok;
 }
 
-fn foldEql(left: []const u8, right: []const u8) bool {
-    if (left.len != right.len) return false;
-    for (left, right) |a, b| {
-        if (std.ascii.toLower(a) != std.ascii.toLower(b)) return false;
+fn foldNext(text: []const u8, index: *usize) ?u21 {
+    if (index.* >= text.len) return null;
+    const byte = text[index.*];
+    if (byte < 0x80) {
+        index.* += 1;
+        return std.ascii.toLower(byte);
     }
-    return true;
+    const width = std.unicode.utf8ByteSequenceLength(byte) catch {
+        index.* += 1;
+        return byte;
+    };
+    if (index.* + width > text.len) {
+        index.* += 1;
+        return byte;
+    }
+    const code = std.unicode.utf8Decode(text[index.* .. index.* + width]) catch {
+        index.* += 1;
+        return byte;
+    };
+    index.* += width;
+    return switch (code) {
+        0x17f => 's',
+        0x212a => 'k',
+        else => code,
+    };
+}
+
+fn foldEql(left: []const u8, right: []const u8) bool {
+    var at_left: usize = 0;
+    var at_right: usize = 0;
+    while (true) {
+        const a = foldNext(left, &at_left);
+        const b = foldNext(right, &at_right);
+        if (a == null and b == null) return true;
+        if (a == null or b == null) return false;
+        if (a.? != b.?) return false;
+    }
 }
 
 pub fn lookup(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
@@ -497,13 +528,11 @@ pub fn wrongBlocks(content: std.json.Value) bool {
         if (item == .null) continue;
         if (item != .object) return true;
         for (block_text_members) |key| {
-            const value = lookup(item.object, key) orelse continue;
-            if (value == .null) continue;
-            if (value != .string) return true;
+            const path = [_][]const u8{key};
+            if (anyWrong(item.object, &path, .{ .path = &path, .need = .text })) return true;
         }
-        if (lookup(item.object, "is_error")) |flag| {
-            if (flag != .null and flag != .bool) return true;
-        }
+        const flagged = [_][]const u8{"is_error"};
+        if (anyWrong(item.object, &flagged, .{ .path = &flagged, .need = .boolean })) return true;
     }
     return false;
 }
@@ -1314,6 +1343,38 @@ test "a nested control member that is not an object names the cause the oracle n
     var missing = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\"}", &missing));
     try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
+}
+
+test "a content block member is typed at every spelling, not just the last" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const head = "{\"type\":\"assistant\",\"message\":{\"model\":\"m\",\"content\":[";
+    try refuses(&arena, head ++ "{\"TEXT\":7,\"text\":\"hi\"}]}}");
+    try refuses(&arena, head ++ "{\"text\":\"hi\",\"TEXT\":7}]}}");
+    try refuses(&arena, head ++ "{\"IS_ERROR\":\"yes\",\"is_error\":true}]}}");
+    try refuses(&arena, head ++ "{\"is_error\":true,\"IS_ERROR\":\"yes\"}]}}");
+    try accepts(&arena, head ++ "{\"text\":\"hi\",\"TEXT\":null}]}}");
+    try accepts(&arena, head ++ "{\"is_error\":true,\"IS_ERROR\":false}]}}");
+}
+
+test "folding follows the two runes that fold to an ASCII letter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try testing.expect(foldEql("session_id", "\u{17f}ession_id"));
+    try testing.expect(foldEql("kind", "\u{212a}ind"));
+    try testing.expect(foldEql("task_id", "tas\u{212a}_id"));
+    try testing.expect(foldEql("SESSION_ID", "\u{17f}ession_id"));
+    try testing.expect(!foldEql("session_id", "\u{17f}ession_idx"));
+    try testing.expect(!foldEql("kind", "\u{e9}ind"));
+    try testing.expect(!foldEql("kind", "kin"));
+    try testing.expect(!foldEql("kin", "kind"));
+
+    try refuses(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s\",\"\u{17f}ession_id\":7}");
+    try accepts(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"\u{17f}ESSION_ID\":\"s\"}");
+    try refuses(&arena, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[]},\"origin\":{\"\u{212a}ind\":7}}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"task_updated\",\"tas\u{212a}_id\":\"t\"}");
 }
 
 test "a number is accepted exactly where the oracle's Go type accepts it" {
