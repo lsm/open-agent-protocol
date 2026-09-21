@@ -2171,6 +2171,7 @@ pub const Machine = struct {
             holder.current_model = reported;
             holder.current_known = true;
         }
+        try self.checkPublishedUnion(index, session_id, member(payload, "sources"));
         const recovery = self.recoveries.get(session_id) orelse return;
         if (recovery.state_checked) return;
         recovery.state_checked = true;
@@ -3810,6 +3811,26 @@ test "a descriptor, a catalog and a snapshot each name their own duplicate sourc
         \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":
         \\{"session_id":"s","sources":[{"id":"files","kind":"process"},{"id":"files","kind":"process"}]}}]
     , &.{"duplicate_tool_source"});
+}
+
+test "a state snapshot declaring one source twice is a collision the open did not make" {
+    const opened =
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},"sources":[]}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"files","kind":"process"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":
+        \\{"session_id":"s","sources":[{"id":"files","kind":"process"}]}},
+        \\{"type":"session.state.request","id":"q1","session_id":"s","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"q2","in_reply_to":"q1","session_id":"s","payload":
+        \\{"session_id":"s","status":"idle","updated_at_ms":1,"sources":
+    ;
+    try expectCodes(opened ++
+        \\[{"id":"files","kind":"process"},{"id":"files","kind":"process"}]}}]
+    , &.{"duplicate_tool_source"});
+    try expectCodes(opened ++
+        \\[{"id":"files","kind":"process"}]}}]
+    , &.{});
 }
 
 test "a refreshed descriptor claiming an attached id is a collision, not a redeclaration" {
