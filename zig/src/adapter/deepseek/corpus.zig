@@ -277,3 +277,19 @@ test "a control assertion that does not hold fails the case at the call site" {
         Harness.steps(scratch, unknown_op, &unavailable, inline_case),
     );
 }
+
+test "a status observed before any prompt admits nothing and writes nothing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = session.Reducer.init(scratch);
+    session.openSession(&reducer);
+    const script =
+        "{\"action\":\"open\",\"raw\":{\"id\":1,\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"model\":\"fixture-model\"}}}\n" ++
+        "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"sessionId\":\"session\",\"status\":\"running\"}}}\n";
+    try Harness.steps(scratch, script, &reducer, .{ .id = "inline", .path = "inline" });
+
+    try std.testing.expect(!reducer.started);
+    try std.testing.expect(reducer.envelopes().len == 0);
+}

@@ -7,7 +7,7 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 
-pub const Error = error{ InvalidFrame, OutOfMemory };
+pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable };
 
 pub const Counters = struct {
     ids: usize = 0,
@@ -69,6 +69,7 @@ pub const Reducer = struct {
     buffered: std.ArrayList(Notification) = .empty,
     last_seq: i64 = 0,
     seq_seen: bool = false,
+    unusable: bool = false,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -157,6 +158,7 @@ pub fn initialize(reducer: *Reducer, model: []const u8) void {
 }
 
 pub fn submit(reducer: *Reducer) !void {
+    if (reducer.unusable) return Error.SessionUnusable;
     _ = try reducer.counters.nextID(reducer.arena, "message");
     reducer.message_id = try reducer.counters.nextID(reducer.arena, "message");
     reducer.run_id = "";
@@ -172,6 +174,8 @@ pub fn submit(reducer: *Reducer) !void {
     reducer.receipt = "";
     reducer.pending.clearRetainingCapacity();
     reducer.tools.clearRetainingCapacity();
+    reducer.children.clearRetainingCapacity();
+    reducer.buffered.clearRetainingCapacity();
 }
 
 pub fn rejectedSubmit(reducer: *Reducer) !void {
@@ -295,7 +299,10 @@ pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
         }
         return;
     }
-    if (std.mem.eql(u8, kind, "assistant/attempt")) return;
+    if (std.mem.eql(u8, kind, "assistant/attempt")) {
+        _ = try sameStep(reducer, data);
+        return;
+    }
     if (std.mem.eql(u8, kind, "assistant/message")) {
         if (!try sameStep(reducer, data)) return;
         if (memberOf(data, "stream")) |records| try emitStreamRecords(reducer, records);
@@ -538,6 +545,7 @@ pub fn invalidObservation(reducer: *Reducer, event_type: []const u8) !void {
 }
 
 pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
+    reducer.unusable = true;
     if (reducer.terminal or !reducer.started) {
         reducer.terminal = true;
         return;
@@ -1111,4 +1119,42 @@ test "a notification this port does not know is refused" {
     var reducer = try admittedRun(arena.allocator());
     try notify(&reducer, arena.allocator(), "future.unheard-of", "{\"sessionId\":\"session\"}");
     try std.testing.expectEqualStrings("deepseek_unknown_notification", lastFailure(&reducer).?);
+}
+
+test "an attempt outside the open owned step is a grammar defect like any other event" {
+    try expectRefusal(&.{
+        "{\"type\":\"assistant/attempt\",\"data\":{\"turn\":2,\"step\":1}}",
+    }, "deepseek_invalid_grammar");
+}
+
+test "a child of an earlier run does not decide a later one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var reducer = try admittedRun(a);
+    try notify(&reducer, a, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
+    try notify(&reducer, a, "subagent.finished", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"error\"}");
+
+    try submit(&reducer);
+    try observe(&reducer, try parse(a, "{\"type\":\"agent/inbox/spliced\",\"data\":{\"inserted\":[{\"id\":\"m-2\",\"source\":{\"kind\":\"user\"}}]}}"));
+    try receipt(&reducer, "m-2");
+    try observe(&reducer, try parse(a, "{\"type\":\"turn/start\",\"data\":{\"turn\":2}}"));
+    try observe(&reducer, try parse(a, "{\"type\":\"step/start\",\"data\":{\"turn\":2,\"step\":1}}"));
+    try observe(&reducer, try parse(a, "{\"type\":\"user/message\",\"data\":{\"id\":\"m-2\",\"source\":{\"kind\":\"user\"}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":2,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":2,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+
+    try std.testing.expect(lastFailure(&reducer) == null);
+    try std.testing.expect(reducer.terminal);
+}
+
+test "a session whose transport died refuses a later submission" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try transportFailed(&reducer, "gone");
+    try std.testing.expectError(Error.SessionUnusable, submit(&reducer));
 }
