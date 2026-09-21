@@ -565,13 +565,13 @@ fn endTool(reducer: *Reducer, event: std.json.Value) !void {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "tool end without matching active start");
         return;
     }
-    tool.result = memberOf(event, "result");
-    tool.terminal = true;
     const carried = memberOf(event, "isError") orelse std.json.Value{ .null = {} };
     if (carried != .bool and carried != .null) {
         try failRun(reducer, "pi_invalid_event", "tool end carried a non-boolean isError");
         return;
     }
+    tool.result = memberOf(event, "result");
+    tool.terminal = true;
     const failed = carried == .bool and carried.bool;
     if (failed) {
         var payload = try toolPayload(reducer, tool, false, false, false);
@@ -703,8 +703,12 @@ pub fn cancel(reducer: *Reducer) !void {
 }
 
 pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
-    if (reducer.terminal or !reducer.started) return;
-    try settleChildren(reducer, false);
+    if (reducer.terminal) return;
+    if (!reducer.started) {
+        reducer.terminal = true;
+        return;
+    }
+    try settleChildren(reducer, true);
     const err = try reducer.object();
     try err.put(reducer.arena, "code", Reducer.str("pi_process_exit"));
     try err.put(reducer.arena, "message", Reducer.str(message));
@@ -1268,7 +1272,29 @@ test "a process exit with an open tool settles it before the failure" {
     const kinds = typesOf(&reducer, &buffer);
     try std.testing.expectEqualStrings("run.failed", kinds[kinds.len - 1]);
     try std.testing.expectEqualStrings("user.input.resolved", kinds[kinds.len - 2]);
-    try std.testing.expectEqualStrings("action.call.failed", kinds[kinds.len - 3]);
+    try std.testing.expectEqualStrings("action.call.cancelled", kinds[kinds.len - 3]);
+}
+
+test "a process exit before the start settles the run without emitting" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(arena.allocator());
+    try transportFailed(&reducer, "gone");
+    try std.testing.expect(reducer.terminal);
+    try std.testing.expect(reducer.emitted.items.len == 0);
+}
+
+test "a tool end whose isError will not decode leaves the tool open for settlement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}"));
+    try apply(&reducer, try parse(a, "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":\"r\",\"isError\":\"true\"}"));
+    var buffer: [16][]const u8 = undefined;
+    const kinds = typesOf(&reducer, &buffer);
+    try std.testing.expectEqualStrings("run.failed", kinds[kinds.len - 1]);
+    try std.testing.expectEqualStrings("action.call.cancelled", kinds[kinds.len - 2]);
 }
 
 test "an extension request before the start is replayed, not dropped" {
