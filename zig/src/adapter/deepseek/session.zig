@@ -71,6 +71,7 @@ pub const Reducer = struct {
     seq_seen: bool = false,
     unusable: bool = false,
     closed: bool = false,
+    reserved: bool = false,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -165,6 +166,7 @@ pub fn close(reducer: *Reducer) void {
 pub fn submit(reducer: *Reducer) !void {
     if (reducer.closed) return Error.SessionClosed;
     if (reducer.unusable) return Error.SessionUnusable;
+    reducer.reserved = true;
     _ = try reducer.counters.nextID(reducer.arena, "message");
     reducer.message_id = try reducer.counters.nextID(reducer.arena, "message");
     reducer.run_id = "";
@@ -602,7 +604,7 @@ fn openChild(reducer: *Reducer, id: []const u8) !void {
 
 pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.json.Value) !void {
     if (reducer.closed) return Error.SessionClosed;
-    if (reducer.terminal) {
+    if (!reducer.reserved or reducer.terminal) {
         const own_status = std.mem.eql(u8, method, "session.status") and
             std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id);
         if (!own_status) reducer.unusable = true;
@@ -1206,4 +1208,34 @@ test "a shut-down session takes no further submission or notification" {
     close(&reducer);
     try std.testing.expectError(Error.SessionClosed, submit(&reducer));
     try std.testing.expectError(Error.SessionClosed, notify(&reducer, a, "session.status", "{\"sessionId\":\"session\",\"status\":\"idle\"}"));
+}
+
+test "activity before the first submission retires the session too" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    try notify(&reducer, a, "session.status", "{\"sessionId\":\"session\",\"status\":\"running\"}");
+    try std.testing.expect(!reducer.unusable);
+    try submit(&reducer);
+
+    var second = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer second.deinit();
+    const b = second.allocator();
+    var early = Reducer.init(b);
+    openSession(&early);
+    try notify(&early, b, "session.event", "{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/start\",\"seq\":1,\"data\":{\"turn\":1}}}");
+    try std.testing.expect(early.unusable);
+    try std.testing.expect(early.pending.items.len == 0);
+    try std.testing.expectError(Error.SessionUnusable, submit(&early));
+
+    var third = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer third.deinit();
+    const c = third.allocator();
+    var child = Reducer.init(c);
+    openSession(&child);
+    try notify(&child, c, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
+    try std.testing.expect(child.unusable);
 }
