@@ -205,3 +205,22 @@ test "a harness control line carries no frame, and an unrouted action is refused
     try expectWire("wait-submit", "{\"op\":\"wait-submit\"}", {});
     try expectWire("nonesuch", notification, error.UnroutedScriptAction);
 }
+
+test "a script line the production codec refuses fails the case at the call site" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = session.Reducer.init(scratch);
+    session.openSession(&reducer);
+    const refused_line = "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"1.0\",\"method\":\"session.status\"}}\n";
+    try std.testing.expectError(
+        error.ProductionCodecRefusedCorpusFrame,
+        Harness.steps(scratch, refused_line, &reducer, .{ .id = "inline", .path = "inline" }),
+    );
+
+    var accepted_reducer = session.Reducer.init(scratch);
+    session.openSession(&accepted_reducer);
+    const accepted = "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.status\",\"params\":{\"status\":\"idle\"}}}\n";
+    try Harness.steps(scratch, accepted, &accepted_reducer, .{ .id = "inline", .path = "inline" });
+}
