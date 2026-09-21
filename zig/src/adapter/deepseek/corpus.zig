@@ -119,7 +119,8 @@ const Driver = struct {
         }
         if (std.mem.eql(u8, action, "shutdown")) {
             if (reducer.closed) return error.SessionShutDownTwice;
-            session.close(reducer);
+            session.abortSubmission(reducer);
+            try session.close(reducer);
             return .handled;
         }
 

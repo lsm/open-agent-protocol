@@ -171,7 +171,9 @@ pub fn abortSubmission(reducer: *Reducer) void {
     reducer.reserved = false;
 }
 
-pub fn close(reducer: *Reducer) void {
+pub fn close(reducer: *Reducer) !void {
+    if (reducer.closed) return;
+    if (reducer.reserved and !reducer.terminal) return Error.RunActive;
     reducer.closed = true;
 }
 
@@ -1236,7 +1238,8 @@ test "a shut-down session takes no further submission or notification" {
     const a = arena.allocator();
     var reducer = Reducer.init(a);
     openSession(&reducer);
-    close(&reducer);
+    try close(&reducer);
+    try close(&reducer);
     try std.testing.expectError(Error.SessionClosed, submit(&reducer));
     try std.testing.expectError(Error.SessionClosed, notify(&reducer, a, "session.status", "{\"sessionId\":\"session\",\"status\":\"idle\"}"));
 }
@@ -1317,4 +1320,20 @@ test "tool arguments that cannot appear in a valid trace fail the run" {
     var reducer = try admittedRun(a);
     try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1}\"}}"));
     try std.testing.expect(lastFailure(&reducer) == null);
+}
+
+test "closing over a reserved run is refused, and closing twice is not" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var reserved = Reducer.init(a);
+    openSession(&reserved);
+    try submit(&reserved);
+    try std.testing.expectError(Error.RunActive, close(&reserved));
+    try std.testing.expect(!reserved.closed);
+
+    abortSubmission(&reserved);
+    try close(&reserved);
+    try std.testing.expect(reserved.closed);
 }
