@@ -445,17 +445,19 @@ fn blocksContent(reducer: *Reducer, blocks: std.json.Value) !std.json.Value {
             if (std.mem.eql(u8, kind, "tool-call")) {
                 const tool = findTool(reducer, textOf(block, "id")) orelse return Error.InvalidFrame;
                 if (!std.mem.eql(u8, tool.name, textOf(block, "name"))) return Error.InvalidFrame;
+                const carried = try decodedArguments(reducer, memberOf(block, "arguments")) orelse return Error.InvalidFrame;
                 const shape = try reducer.object();
                 try shape.put(reducer.arena, "type", Reducer.str("tool_call"));
                 try shape.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
                 try shape.put(reducer.arena, "name", Reducer.str(tool.name));
-                if (tool.args) |args| try shape.put(reducer.arena, "arguments_json", args);
+                try shape.put(reducer.arena, "arguments_json", carried);
                 try parts.append(reducer.arena, .{ .object = shape.* });
                 continue;
             }
             return Error.InvalidFrame;
         }
     }
+    if (parts.items.len == 0) return Reducer.str("");
     if (parts.items.len == 1 and std.mem.eql(u8, textOf(parts.items[0], "type"), "text")) {
         return Reducer.str(textOf(parts.items[0], "text"));
     }
@@ -816,4 +818,48 @@ test "an id letter is a code point, as the oracle mints it, not a byte" {
         try std.testing.expectEqualStrings(case.want, got);
         try std.testing.expect(std.unicode.utf8ValidateSlice(got));
     }
+}
+
+fn finalContent(reducer: *Reducer) ?std.json.Value {
+    var index = reducer.emitted.items.len;
+    while (index > 0) {
+        index -= 1;
+        const envelope = reducer.emitted.items[index];
+        if (!std.mem.eql(u8, textOf(envelope, "type"), "run.completed")) continue;
+        const payload = memberOf(envelope, "payload") orelse return null;
+        const response = memberOf(payload, "final_response") orelse return null;
+        return memberOf(response, "content");
+    }
+    return null;
+}
+
+test "a final message carrying no content block completes with empty text, never an empty array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+
+    const content = finalContent(&reducer) orelse return error.RunDidNotComplete;
+    try std.testing.expect(content == .string);
+    try std.testing.expectEqualStrings("", content.string);
+}
+
+test "a final tool call carries the arguments of the final block, not those of the call event" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"grep\",\"arguments\":\"{\\\"q\\\":\\\"first\\\"}\"}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"tool-call\",\"id\":\"c-1\",\"name\":\"grep\",\"arguments\":\"{\\\"q\\\":\\\"final\\\"}\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+
+    const content = finalContent(&reducer) orelse return error.RunDidNotComplete;
+    try std.testing.expect(content == .array);
+    try std.testing.expect(content.array.items.len == 1);
+    const carried = memberOf(content.array.items[0], "arguments_json") orelse return error.NoArguments;
+    try std.testing.expectEqualStrings("final", textOf(carried, "q"));
 }
