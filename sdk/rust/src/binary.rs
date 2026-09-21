@@ -62,7 +62,11 @@ fn binary_names() -> &'static [&'static str] {
 
 /// The preferred name of the runtime executable on this platform.
 fn binary_name() -> &'static str {
-    binary_names()[0]
+    if cfg!(windows) {
+        "oapx.exe"
+    } else {
+        "oapx"
+    }
 }
 
 fn env_var(key: &str) -> Option<String> {

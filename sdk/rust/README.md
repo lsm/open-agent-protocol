@@ -15,7 +15,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = "0.3"
 ```
 
-You also need the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/makai` or `zig/zig-out/bin/makai`, then falls back to `makai` on `PATH`. See [Configuration](#configuration) for explicit options.
+You also need the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit options.
 
 ```bash
 zig build install --prefix /tmp/makai
@@ -249,9 +249,12 @@ Mirroring the TypeScript resolver, in order:
 1. `MAKAI_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
 2. `MAKAI_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`MAKAI_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
 3. *(TypeScript only)* the `@makai/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
-4. `./zig-out/bin/makai`;
-5. `./zig/zig-out/bin/makai`;
-6. `makai` on `PATH`.
+4. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`;
+5. the same pair under `./zig/zig-out/bin/`;
+6. `oapx` on `PATH`, then `makai`.
+
+`oapx` is tried before `makai` at every step, on Windows with `.exe` on each,
+so an install predating the rename keeps resolving.
 
 The environment variable outranks the builder option, as in TypeScript, so an operator can redirect an application that hardcoded a path. `ClientBuilder::command(path)` bypasses resolution entirely when that override is not wanted.
 

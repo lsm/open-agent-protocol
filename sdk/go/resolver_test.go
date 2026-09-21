@@ -345,6 +345,7 @@ func resolvedPath(t *testing.T, path string) string {
 }
 
 func TestOapxWinsOverMakaiInTheSameDirectory(t *testing.T) {
+	isolateResolverEnv(t)
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "zig-out", "bin")
 	writeFakeBinary(t, binDir, "makai", "#!/bin/sh\n")
@@ -360,6 +361,7 @@ func TestOapxWinsOverMakaiInTheSameDirectory(t *testing.T) {
 }
 
 func TestAnInstallPredatingTheRenameStillResolves(t *testing.T) {
+	isolateResolverEnv(t)
 	dir := t.TempDir()
 	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(dir, "zig-out", "bin"), "makai", "#!/bin/sh\n"))
 	chdir(t, dir)

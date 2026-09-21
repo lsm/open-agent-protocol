@@ -14,7 +14,7 @@ pip install ./python
 
 Once it is published, `pip install makai` will do the same.
 
-You also need access to the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/makai` or `zig/zig-out/bin/makai`, then falls back to `makai` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -314,9 +314,12 @@ The checksum is mandatory and re-verified against the cache on every resolve. En
 
 1. `resolver.binary_path`, or `MAKAI_BINARY_PATH` (the environment wins)
 2. `resolver.binary_url` / `MAKAI_BINARY_URL`, which requires a SHA-256 checksum
-3. `./zig-out/bin/makai`
-4. `./zig/zig-out/bin/makai`
-5. `makai` on `PATH`
+3. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`
+4. the same pair under `./zig/zig-out/bin/`
+5. `oapx` on `PATH`, then `makai`
+
+`oapx` is tried before `makai` at every step, on Windows with `.exe` on each,
+so an install predating the rename keeps resolving.
 
 The TypeScript SDK has one extra step between 2 and 3: an optional `@makai/cli-<platform>-<arch>` npm package. That step is **deliberately omitted** here — npm installs those automatically through optional dependencies, Python's equivalent would be platform-specific wheels, and none are published for makai. Set `MAKAI_BINARY_PATH` when you need to pin a specific binary.
 

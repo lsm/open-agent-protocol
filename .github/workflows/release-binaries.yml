@@ -323,8 +323,17 @@ jobs:
           set -euo pipefail
           WITHHELD=""
           case "$GITHUB_REF_NAME" in
-            *-*) WITHHELD="darwin-arm64,darwin-x64" ;;
+            *-*)
+              for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64 win32-arm64; do
+                if [ ! -f "dist/bin/oapx-$target" ]; then
+                  WITHHELD="${WITHHELD:+$WITHHELD,}$target"
+                fi
+              done
+              ;;
           esac
+          if [ -n "$WITHHELD" ]; then
+            echo "::warning::the build withheld $WITHHELD; their npm platform packages are skipped"
+          fi
           npx tsx scripts/package-npm.ts --version "${GITHUB_REF_NAME#v}" --withhold "$WITHHELD"
 
       - name: Upload npm packages

@@ -31,8 +31,8 @@ zig/zig-pkg/
 *.dll
 *.exe
 
-# Rust build artifacts (rust/ SDK)
-rust/target/
+# Rust build artifacts
+sdk/rust/target/
 
 # Temporary files
 tmp/
@@ -60,5 +60,3 @@ venv/
 python/build/
 python/dist/
 
-# Rust build cache
-rust/target/
