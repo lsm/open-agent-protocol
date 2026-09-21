@@ -53,6 +53,7 @@ pub const Reducer = struct {
     text: std.ArrayList(u8) = .empty,
     reasoning: std.ArrayList(u8) = .empty,
     pending: std.ArrayList(std.json.Value) = .empty,
+    tools: std.ArrayList(*ToolState) = .empty,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -74,7 +75,11 @@ pub const Reducer = struct {
     }
 
     fn emit(self: *Reducer, kind: []const u8, payload: std.json.Value, terminal: bool) !void {
-        if (self.terminal) return;
+        _ = try self.emitReplying(kind, payload, terminal, "");
+    }
+
+    fn emitReplying(self: *Reducer, kind: []const u8, payload: std.json.Value, terminal: bool, reply: []const u8) ![]const u8 {
+        if (self.terminal) return "";
         const id = try self.counters.nextID(self.arena, "event");
         const now = self.counters.nextTick();
         const map = try self.object();
@@ -89,9 +94,14 @@ pub const Reducer = struct {
         try map.put(self.arena, "session_id", str(self.session_id));
         try map.put(self.arena, "run_id", str(self.run_id));
         try map.put(self.arena, "capability_revision", str(capability_revision));
+        if (reply.len != 0) try map.put(self.arena, "in_reply_to", str(reply));
+        if (std.mem.startsWith(u8, kind, "action.call.")) {
+            if (payload.object.get("tool_call_id")) |carried| try map.put(self.arena, "tool_call_id", carried);
+        }
         self.sequence += 1;
         try self.emitted.append(self.arena, .{ .object = map.* });
         if (terminal) self.terminal = true;
+        return id;
     }
 };
 
@@ -289,6 +299,22 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         try settleRun(reducer);
         return;
     }
+    if (std.mem.eql(u8, kind, "message_update")) {
+        try applyMessageUpdate(reducer, event);
+        return;
+    }
+    if (std.mem.eql(u8, kind, "tool_execution_start")) {
+        try startTool(reducer, event);
+        return;
+    }
+    if (std.mem.eql(u8, kind, "tool_execution_update")) {
+        try updateTool(reducer, event);
+        return;
+    }
+    if (std.mem.eql(u8, kind, "tool_execution_end")) {
+        try endTool(reducer, event);
+        return;
+    }
     if (listed(&ignored_events, kind)) return;
     try failRun(reducer, "pi_unknown_event", "unknown event");
 }
@@ -360,4 +386,191 @@ fn failWith(reducer: *Reducer, code: []const u8, message: []const u8) !void {
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "error", .{ .object = err.* });
     try reducer.emit("run.failed", .{ .object = payload.* }, true);
+}
+
+pub const endpoint_id = "pi.rpc";
+
+pub const ToolState = struct {
+    native_id: []const u8,
+    id: []const u8,
+    name: []const u8,
+    args: std.json.Value,
+    progress: ?std.json.Value = null,
+    result: ?std.json.Value = null,
+    terminal: bool = false,
+    started_event: []const u8 = "",
+};
+
+fn findTool(reducer: *Reducer, native_id: []const u8) ?*ToolState {
+    for (reducer.tools.items) |tool| {
+        if (std.mem.eql(u8, tool.native_id, native_id)) return tool;
+    }
+    return null;
+}
+
+fn toolPayload(reducer: *Reducer, tool: *ToolState, carry_arguments: bool, carry_progress: bool, carry_result: bool) !std.json.Value {
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
+    try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
+    try payload.put(reducer.arena, "execution_owner", Reducer.str("pi"));
+    try payload.put(reducer.arena, "name", Reducer.str(tool.name));
+    if (carry_arguments) try payload.put(reducer.arena, "arguments_json", tool.args);
+    if (carry_progress) {
+        if (tool.progress) |progress| try payload.put(reducer.arena, "progress", progress);
+    }
+    if (carry_result) {
+        if (tool.result) |result| try payload.put(reducer.arena, "result", result);
+    }
+    return .{ .object = payload.* };
+}
+
+fn startTool(reducer: *Reducer, event: std.json.Value) !void {
+    const native_id = textOf(event, "toolCallId");
+    const name = textOf(event, "toolName");
+    const args = memberOf(event, "args") orelse std.json.Value{ .null = {} };
+    if (native_id.len == 0 or name.len == 0) {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "invalid tool start");
+        return;
+    }
+    if (findTool(reducer, native_id) != null) {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "duplicate tool start");
+        return;
+    }
+    const tool = try reducer.arena.create(ToolState);
+    tool.* = .{
+        .native_id = native_id,
+        .id = try reducer.counters.nextID(reducer.arena, "tool-call"),
+        .name = name,
+        .args = args,
+    };
+    try reducer.tools.append(reducer.arena, tool);
+    const requested = try reducer.emitReplying("action.call.requested", try toolPayload(reducer, tool, true, false, false), false, "");
+    tool.started_event = try reducer.emitReplying("action.call.started", try toolPayload(reducer, tool, false, false, false), false, requested);
+}
+
+fn updateTool(reducer: *Reducer, event: std.json.Value) !void {
+    const native_id = textOf(event, "toolCallId");
+    const tool = findTool(reducer, native_id) orelse {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "tool update without matching active start");
+        return;
+    };
+    if (tool.terminal or !std.mem.eql(u8, tool.name, textOf(event, "toolName"))) {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "tool update without matching active start");
+        return;
+    }
+    tool.progress = memberOf(event, "partialResult");
+    _ = try reducer.emitReplying("action.call.progress", try toolPayload(reducer, tool, false, true, false), false, tool.started_event);
+}
+
+fn endTool(reducer: *Reducer, event: std.json.Value) !void {
+    const native_id = textOf(event, "toolCallId");
+    const tool = findTool(reducer, native_id) orelse {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "tool end without matching active start");
+        return;
+    };
+    if (tool.terminal or !std.mem.eql(u8, tool.name, textOf(event, "toolName"))) {
+        try failRun(reducer, "pi_invalid_tool_lifecycle", "tool end without matching active start");
+        return;
+    }
+    tool.result = memberOf(event, "result");
+    tool.terminal = true;
+    const failed = if (memberOf(event, "isError")) |flag| flag == .bool and flag.bool else false;
+    if (failed) {
+        var payload = try toolPayload(reducer, tool, false, false, false);
+        const err = try reducer.object();
+        try err.put(reducer.arena, "code", Reducer.str("pi_tool_failed"));
+        try err.put(reducer.arena, "message", Reducer.str("Pi tool execution failed"));
+        try payload.object.put(reducer.arena, "error", .{ .object = err.* });
+        _ = try reducer.emitReplying("action.call.failed", payload, false, tool.started_event);
+        return;
+    }
+    _ = try reducer.emitReplying("action.call.completed", try toolPayload(reducer, tool, false, false, true), false, tool.started_event);
+}
+
+const message_update_members = [_][]const u8{ "type", "usage", "assistantMessageEvent" };
+
+const Part = struct { kind: []const u8, text: []const u8 };
+
+fn integerMember(value: std.json.Value, name: []const u8) ?i64 {
+    const found = memberOf(value, name) orelse return null;
+    return switch (found) {
+        .integer => |n| n,
+        .null => 0,
+        else => null,
+    };
+}
+
+fn decodeProviderEvent(raw: std.json.Value) !?Part {
+    if (raw != .object) return Error.InvalidFrame;
+    const kind_value = raw.object.get("type") orelse return Error.InvalidFrame;
+    const kind: []const u8 = switch (kind_value) {
+        .string => |s| s,
+        else => return Error.InvalidFrame,
+    };
+    if (kind.len == 0) return Error.InvalidFrame;
+    if (std.mem.eql(u8, kind, "text_delta") or std.mem.eql(u8, kind, "thinking_delta")) {
+        try closedMembers(raw, &.{ "type", "contentIndex", "delta" });
+        const delta_value = raw.object.get("delta") orelse return Error.InvalidFrame;
+        const delta: []const u8 = switch (delta_value) {
+            .string => |s| s,
+            .null => "",
+            else => return Error.InvalidFrame,
+        };
+        const index = integerMember(raw, "contentIndex") orelse return Error.InvalidFrame;
+        if (index < 0) return Error.InvalidFrame;
+        if (std.mem.eql(u8, kind, "text_delta")) return .{ .kind = "text", .text = delta };
+        return .{ .kind = "reasoning", .text = delta };
+    }
+    if (std.mem.eql(u8, kind, "start")) {
+        try closedMembers(raw, &.{"type"});
+        return null;
+    }
+    if (std.mem.eql(u8, kind, "text_start") or std.mem.eql(u8, kind, "thinking_start")) {
+        try closedMembers(raw, &.{ "type", "contentIndex" });
+        if (raw.object.get("contentIndex") == null) return Error.InvalidFrame;
+        return null;
+    }
+    if (std.mem.eql(u8, kind, "text_end") or std.mem.eql(u8, kind, "thinking_end")) {
+        try closedMembers(raw, &.{ "type", "contentIndex", "content" });
+        if (raw.object.get("contentIndex") == null) return Error.InvalidFrame;
+        return null;
+    }
+    if (std.mem.eql(u8, kind, "toolcall_start") or std.mem.eql(u8, kind, "toolcall_end") or std.mem.eql(u8, kind, "toolcall_delta")) {
+        return null;
+    }
+    if (std.mem.eql(u8, kind, "done") or std.mem.eql(u8, kind, "error")) {
+        return null;
+    }
+    return Error.InvalidFrame;
+}
+
+fn applyMessageUpdate(reducer: *Reducer, event: std.json.Value) !void {
+    for (event.object.keys()) |name| {
+        if (!listed(&message_update_members, name)) {
+            try failRun(reducer, "pi_invalid_message_update", "message_update carried an unknown member");
+            return;
+        }
+    }
+    const carried = event.object.get("assistantMessageEvent") orelse {
+        try failRun(reducer, "pi_invalid_message_update", "message_update carried no assistant event");
+        return;
+    };
+    const part = decodeProviderEvent(carried) catch {
+        try failRun(reducer, "pi_invalid_message_update", "message_update carried an undecodable assistant event");
+        return;
+    };
+    const decoded = part orelse return;
+    if (std.mem.eql(u8, decoded.kind, "text")) try reducer.text.appendSlice(reducer.arena, decoded.text);
+    if (std.mem.eql(u8, decoded.kind, "reasoning")) try reducer.reasoning.appendSlice(reducer.arena, decoded.text);
+    const shape = try reducer.object();
+    try shape.put(reducer.arena, "type", Reducer.str(decoded.kind));
+    try shape.put(reducer.arena, decoded.kind, Reducer.str(decoded.text));
+    const payload = try reducer.object();
+    try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
+    try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
+    try payload.put(reducer.arena, "message_id", Reducer.str(reducer.message_id));
+    try payload.put(reducer.arena, "part", .{ .object = shape.* });
+    try reducer.emit("content.delta", .{ .object = payload.* }, false);
 }

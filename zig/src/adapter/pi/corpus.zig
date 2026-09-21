@@ -35,8 +35,11 @@ const Driver = struct {
 
 pub const Harness = corpus.Harness(Driver);
 
-test "pi completed-text replays to the recorded envelopes" {
+test "every pi corpus case replays to the recorded envelopes" {
     try Harness.expectEveryCase(std.testing.allocator, &.{
         .{ .id = "completed-text", .path = "completed-text" },
+        .{ .id = "retry-compaction", .path = "retry-compaction" },
+        .{ .id = "streaming-deltas", .path = "streaming-deltas" },
+        .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
     });
 }
