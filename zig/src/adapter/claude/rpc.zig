@@ -639,6 +639,7 @@ const can_use_tool_declared = [_]Declared{
 };
 
 const notice_declared = [_]Declared{
+    .{ .path = &.{"subtype"}, .need = .text },
     .{ .path = &.{"session_id"}, .need = .text },
     .{ .path = &.{"uuid"}, .need = .text },
 };
@@ -835,7 +836,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         return report.refuseFrame(detail);
     }
     if (std.mem.eql(u8, message.type, "system") and std.mem.eql(u8, message.subtype, "task_notification") and !taskStatusIsTerminal(object)) {
-        const status = member(object, &.{"status"}) orelse std.json.Value{ .string = "" };
+        const status = memberSet(object, &.{"status"}) orelse std.json.Value{ .string = "" };
         const shown = if (status == .string) status.string else "";
         return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status {s} is not completed, failed, or stopped", shown);
     }
@@ -1343,6 +1344,29 @@ test "a nested control member that is not an object names the cause the oracle n
     var missing = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\"}", &missing));
     try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
+}
+
+test "an unknown system subtype carries the one member its notice declares" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try refuses(&arena, "{\"type\":\"system\",\"SUBTYPE\":7}");
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"SUBTYPE\":7}");
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"SUBTYPE\":null}");
+    try accepts(&arena, "{\"type\":\"system\"}");
+    try accepts(&arena, "{\"type\":\"system\",\"SUBTYPE\":\"x\"}");
+
+    try accepts(&arena, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\",\"tools\":[],\"SUBTYPE\":7}");
+}
+
+test "a task notification names the status the oracle names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const notice = "{\"type\":\"system\",\"subtype\":\"task_notification\",\"task_id\":\"t\",\"output_file\":\"f\",\"summary\":\"s\",\"uuid\":\"u\",\"session_id\":\"s\",";
+    var report = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), notice ++ "\"status\":\"running\",\"STATUS\":null}", &report));
+    try testing.expectEqualStrings(invalid_frame_prefix ++ ": task_notification status \"running\" is not completed, failed, or stopped", report.message);
 }
 
 test "a content block member is typed at every spelling, not just the last" {
