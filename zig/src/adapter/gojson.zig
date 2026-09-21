@@ -217,12 +217,32 @@ pub fn foldedLast(object: std.json.ObjectMap, path: []const []const u8) ?std.jso
     return found;
 }
 
-pub fn foldedWrongType(object: std.json.ObjectMap, key: []const u8, want: std.meta.Tag(std.json.Value)) bool {
+pub fn foldedMerge(arena: std.mem.Allocator, object: std.json.ObjectMap, key: []const u8) !?std.json.ObjectMap {
+    var merged: ?std.json.ObjectMap = null;
     var entries = object.iterator();
     while (entries.next()) |entry| {
         if (!foldEql(entry.key_ptr.*, key)) continue;
+        if (entry.value_ptr.* != .object) continue;
+        if (merged == null) merged = .empty;
+        var leaves = entry.value_ptr.object.iterator();
+        while (leaves.next()) |leaf| {
+            try merged.?.put(arena, leaf.key_ptr.*, leaf.value_ptr.*);
+        }
+    }
+    return merged;
+}
+
+pub fn foldedWrongType(object: std.json.ObjectMap, path: []const []const u8, want: std.meta.Tag(std.json.Value)) bool {
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (!foldEql(entry.key_ptr.*, path[0])) continue;
         if (entry.value_ptr.* == .null) continue;
-        if (entry.value_ptr.* != want) return true;
+        if (path.len == 1) {
+            if (entry.value_ptr.* != want) return true;
+            continue;
+        }
+        if (entry.value_ptr.* != .object) continue;
+        if (foldedWrongType(entry.value_ptr.object, path[1..], want)) return true;
     }
     return false;
 }

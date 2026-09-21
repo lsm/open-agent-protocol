@@ -394,7 +394,7 @@ pub const Reducer = struct {
             return;
         }
         const native_session = gojson.foldedSet(params.object, &.{"sessionId"}) orelse std.json.Value{ .null = {} };
-        if (gojson.foldedWrongType(params.object, "sessionId", .string) or native_session != .string or !std.mem.eql(u8, native_session.string, self.options.native_id)) {
+        if (gojson.foldedWrongType(params.object, &.{"sessionId"}, .string) or native_session != .string or !std.mem.eql(u8, native_session.string, self.options.native_id)) {
             try self.failActive("acp_invalid_update", "malformed or foreign session/update");
             return;
         }
@@ -412,7 +412,7 @@ pub const Reducer = struct {
             return;
         }
 
-        if (gojson.foldedWrongType(update.object, "sessionUpdate", .string)) {
+        if (gojson.foldedWrongType(update.object, &.{"sessionUpdate"}, .string)) {
             try self.failActive("acp_invalid_update", "malformed session update");
             return;
         }
@@ -455,17 +455,18 @@ pub const Reducer = struct {
     }
 
     fn applyChunk(self: *Reducer, update: std.json.ObjectMap) !void {
-        const content = gojson.foldedSet(update, &.{"content"}) orelse std.json.Value{ .null = {} };
-        if (gojson.foldedWrongType(update, "content", .object) or content != .object or !chunkDecodes(update, content.object)) {
+        const merged = try gojson.foldedMerge(self.allocator(), update, "content");
+        if (gojson.foldedWrongType(update, &.{"content"}, .object) or merged == null or !chunkDecodes(update)) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
-        const content_type = gojson.foldedSet(content.object, &.{"type"}) orelse std.json.Value{ .null = {} };
+        const content = merged.?;
+        const content_type = gojson.foldedSet(content, &.{"type"}) orelse std.json.Value{ .null = {} };
         if (content_type != .string or !std.mem.eql(u8, content_type.string, "text")) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
-        const text = stringMember(content.object, "text");
+        const text = stringMember(content, "text");
 
         const run = &self.run.?;
         var message_id = run.message_id;
@@ -673,7 +674,7 @@ pub const Reducer = struct {
             try self.failActive("acp_invalid_permission", "malformed permission request");
             return;
         }
-        const tool_call = gojson.foldedSet(params.object, &.{"toolCall"}).?.object;
+        const tool_call = (try gojson.foldedMerge(self.allocator(), params.object, "toolCall")).?;
         const options = gojson.foldedSet(params.object, &.{"options"}).?.array;
         if (self.active() == null) return;
 
@@ -772,10 +773,10 @@ fn idScalar(index: usize) u21 {
 
 const content_block_strings = [_][]const u8{ "type", "text", "data", "mimeType", "uri" };
 
-fn chunkDecodes(update: std.json.ObjectMap, content: std.json.ObjectMap) bool {
+fn chunkDecodes(update: std.json.ObjectMap) bool {
     if (!typedString(update, "messageId")) return false;
     for (content_block_strings) |key| {
-        if (!typedString(content, key)) return false;
+        if (gojson.foldedWrongType(update, &.{ "content", key }, .string)) return false;
     }
     return true;
 }
@@ -798,7 +799,7 @@ fn presentString(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 }
 
 fn typedString(map: std.json.ObjectMap, key: []const u8) bool {
-    return !gojson.foldedWrongType(map, key, .string);
+    return !gojson.foldedWrongType(map, &.{key}, .string);
 }
 
 const tool_call_strings = [_][]const u8{ "sessionUpdate", "toolCallId", "title", "kind", "status" };
@@ -806,6 +807,13 @@ const tool_call_strings = [_][]const u8{ "sessionUpdate", "toolCallId", "title",
 fn toolCallDecodes(update: std.json.ObjectMap) bool {
     for (tool_call_strings) |key| {
         if (!typedString(update, key)) return false;
+    }
+    return true;
+}
+
+fn nestedToolCallDecodes(params: std.json.ObjectMap) bool {
+    for (tool_call_strings) |key| {
+        if (gojson.foldedWrongType(params, &.{ "toolCall", key }, .string)) return false;
     }
     return true;
 }
@@ -829,12 +837,12 @@ fn permissionDecodes(params: std.json.Value, native_id: []const u8) bool {
     if (params != .object) return false;
     const session = gojson.foldedSet(params.object, &.{"sessionId"}) orelse return false;
     if (session != .string or !std.mem.eql(u8, session.string, native_id)) return false;
-    if (gojson.foldedWrongType(params.object, "sessionId", .string)) return false;
+    if (gojson.foldedWrongType(params.object, &.{"sessionId"}, .string)) return false;
     const tool_call = gojson.foldedSet(params.object, &.{"toolCall"}) orelse return false;
-    if (gojson.foldedWrongType(params.object, "toolCall", .object)) return false;
-    if (tool_call != .object or !toolCallDecodes(tool_call.object)) return false;
-    if (stringMember(tool_call.object, "toolCallId").len == 0) return false;
-    if (gojson.foldedWrongType(params.object, "options", .array)) return false;
+    if (gojson.foldedWrongType(params.object, &.{"toolCall"}, .object)) return false;
+    if (tool_call != .object or !nestedToolCallDecodes(params.object)) return false;
+    if (gojson.foldedSet(params.object, &.{ "toolCall", "toolCallId" }) == null) return false;
+    if (gojson.foldedWrongType(params.object, &.{"options"}, .array)) return false;
     const options = gojson.foldedLast(params.object, &.{"options"}) orelse return false;
     if (options != .array or options.array.items.len == 0) return false;
     for (options.array.items) |entry| {
@@ -2165,4 +2173,47 @@ test "a mistyped spelling refuses whatever it names, whichever order it arrives 
     ));
     try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
     try testing.expectEqualStrings("acp_invalid_message_chunk", codeAt(&reducer, 1));
+}
+
+test "two spellings of a struct member merge leaf by leaf, they do not replace each other" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var split = try openRun(&arena);
+    try feed(&split, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"text":"b"}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&split, 1));
+    try testing.expectEqualStrings("b", payloadAt(&split, 1).get("part").?.object.get("text").?.string);
+
+    var reversed = try openRun(&arena);
+    try feed(&reversed, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","CONTENT":{"text":"b"},"content":{"type":"text","text":"a"}}
+    ));
+    try testing.expectEqualStrings("a", payloadAt(&reversed, 1).get("part").?.object.get("text").?.string);
+
+    var typed = try openRun(&arena);
+    try feed(&typed, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"type":"image"}}
+    ));
+    try testing.expectEqualStrings("run.failed", typeAt(&typed, 1));
+    try testing.expectEqualStrings("acp_invalid_message_chunk", codeAt(&typed, 1));
+}
+
+test "a split toolCall spelling opens the gate the merged one describes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t"},"TOOLCALL":{"title":"y"},"options":[{"optionId":"o","name":"n","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, last));
 }
