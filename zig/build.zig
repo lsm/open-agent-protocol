@@ -216,6 +216,21 @@ pub fn build(b: *std.Build) void {
     });
     const adapter_goquote_test = b.addTest(.{ .root_module = adapter_goquote_mod });
 
+    const adapter_gojson_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/gojson.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const adapter_gojson_test = b.addTest(.{ .root_module = adapter_gojson_mod });
+
+    const hermes_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/hermes/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    hermes_rpc_mod.addImport("gojson", adapter_gojson_mod);
+    const hermes_rpc_test = b.addTest(.{ .root_module = hermes_rpc_mod });
+
     const acp_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/acp/rpc.zig"),
         .target = target,
@@ -238,6 +253,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     claude_rpc_mod.addImport("goquote", adapter_goquote_mod);
+    claude_rpc_mod.addImport("gojson", adapter_gojson_mod);
     claude_session_mod.addImport("rpc", claude_rpc_mod);
     const claude_session_test = b.addTest(.{ .root_module = claude_session_mod });
 
@@ -2143,6 +2159,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
+    test_step.dependOn(&b.addRunArtifact(hermes_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(hermes_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_session_test).step);
