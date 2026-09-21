@@ -956,6 +956,43 @@ is now rewritten before the walk and the parse, with the oracle's pairing rule, 
 `\ud83d\ud83d\ude00` is a replacement character followed by an emoji rather than
 two emoji, and a backslash that is itself escaped starts no escape.
 
+**A frame member is not found by its name but by `encoding/json`'s field
+matching**, and getting that wrong was worth five findings on its own. The
+decoder matches a struct tag exactly first and case-insensitively otherwise, so
+`SESSION_ID` reaches `SessionID` and the oracle accepts a frame this port refused.
+It also assigns *every* key that folds to a field, in document order, so both
+spellings are type checked and the last assignment is the value that survives:
+`{"session_id":"s","SESSION_ID":""}` leaves the field empty and fails the
+required check, which makes this refusal parity and not merely value selection --
+a distinction this ledger got wrong once before it was probed. Folded containers
+merge, because the second key decodes into the struct the first produced, so
+`message:{model}` beside `MESSAGE:{content}` satisfies both required members
+while `message:{model:"a"}` beside `MESSAGE:{model:""}` is fatal and the reverse
+order is not. An intermediate that is present and is not an object fails the
+decode outright. Resolution here is one ordered walk keeping the last match at
+every level; the typed pass is a second walk refusing if any occurrence at any
+spelling is wrong-typed, which is what Go does by failing on the assignment
+rather than on the final value.
+
+The fold stops at the frame tables. `ParseMessage` reads `type`, `subtype`,
+`request_id`, `request` and `response` out of a `map[string]json.RawMessage`,
+which is a plain map read, so `TYPE` is not a type in either implementation.
+Both layers were probed rather than assumed to share one rule. What is left
+divergent is which of two folding spellings a *reducer* reads when both carry
+usable values, since that is ordering inside a merge rather than an accept or a
+refuse.
+
+**Null means absence at four different levels, and the answer is not uniform.**
+It took three separate findings to state the rule at the member, the array item
+and the intermediate, so the fourth -- the required-member table -- was swept
+deliberately rather than waited for. A null required string refuses, because the
+oracle checks the decoded value and null decodes to the empty string. A null
+required array refuses, because the check is against nil and null leaves the
+slice nil. A null required raw message accepts, because the field holds the four
+bytes of the literal and the check is on its length. One JSON value, three
+answers, decided entirely by the Go type behind it -- which is why each level
+had to be probed rather than reasoned about from the level above.
+
 The quoting bound is the one place review asked for more and the answer was no.
 `quoteGo` matches `%q` through U+00FF, including invalid UTF-8, which it escapes
 byte by byte as `\xNN`. Above that it passes unprintable runes through. Matching
