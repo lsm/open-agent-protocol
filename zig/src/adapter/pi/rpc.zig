@@ -438,6 +438,7 @@ test "a command names a type this pin declares, and is an object" {
     try expectCommand("{}", Error.InvalidFrame);
     try expectCommand("[]", Error.InvalidFrame);
     try expectCommand("{\"type\":\"abort\",\"bogus\":1}", Error.InvalidFrame);
+    try expectCommand("{\"type\":\"abort\",\"bogus\":\"x\"}", Error.InvalidFrame);
 }
 
 test "a command requires the members its own type names, and a null is not one" {
@@ -492,6 +493,8 @@ test "a command image is an object of three strings, or a null standing for one"
     try expectCommand(prefix ++ "[{\"type\":null,\"data\":null,\"mimeType\":null}]}", {});
     try expectCommand(prefix ++ "[{\"type\":7}]}", Error.InvalidFrame);
     try expectCommand(prefix ++ "[{\"bogus\":1}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[{\"bogus\":\"x\"}]}", Error.InvalidFrame);
+    try expectCommand(prefix ++ "[{\"type\":\"image\",\"bogus\":\"x\"}]}", Error.InvalidFrame);
     try expectCommand(prefix ++ "[7]}", Error.InvalidFrame);
     try expectCommand(prefix ++ "[\"x\"]}", Error.InvalidFrame);
     try expectCommand(prefix ++ "{}}", Error.InvalidFrame);
