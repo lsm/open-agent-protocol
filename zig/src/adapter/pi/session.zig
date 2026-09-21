@@ -300,6 +300,7 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
 }
 
 fn validateToolCallBlock(part: std.json.Value) !void {
+    if (part == .null) return;
     if (part != .object) return Error.InvalidFrame;
     try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
     try requireMembers(part, &.{ "id", "name", "arguments" });
@@ -1716,4 +1717,16 @@ test "a resolution after settlement is refused rather than silently accepted" {
 
     try std.testing.expectError(Error.InteractionResolved, resolveExtension(&reducer, id, "yes"));
     try std.testing.expectError(Error.InteractionNotFound, resolveExtension(&reducer, "interaction-nonesuch", "yes"));
+}
+
+test "a null nested tool call is the zero struct the oracle decodes, not a defect" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try apply(&reducer, try parse(a, "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":null}}"));
+    try std.testing.expect(lastFailure(&reducer) == null);
+
+    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":7}");
+    try expectUpdateRefusal("{\"type\":\"toolcall_end\",\"contentIndex\":0,\"toolCall\":{\"type\":\"toolCall\",\"id\":7,\"name\":\"grep\",\"arguments\":{}}}");
 }
