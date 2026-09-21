@@ -143,3 +143,21 @@ test "host commands and harness control carry no frame this port decodes" {
 test "an action outside the routing table is refused" {
     try expectWire("nonesuch", "{\"type\":\"turn_start\"}", error.UnroutedScriptAction);
 }
+
+test "a script line the production codec refuses fails the case at the call site" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+
+    var reducer = session.Reducer.init(scratch);
+    const refused_line = "{\"action\":\"observe\",\"raw\":{\"type\":\"turn_end\"}}\n";
+    try std.testing.expectError(
+        error.ProductionCodecRefusedCorpusFrame,
+        Harness.steps(scratch, refused_line, &reducer, inline_case),
+    );
+
+    var accepted_reducer = session.Reducer.init(scratch);
+    const accepted = "{\"action\":\"observe\",\"raw\":{\"type\":\"turn_start\"}}\n";
+    try Harness.steps(scratch, accepted, &accepted_reducer, inline_case);
+}
