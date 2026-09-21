@@ -1225,11 +1225,13 @@ posture that adds no exemptions under either reading of the flag.
 
 The corpus cannot carry any of this: its `can_use_tool` frames are scripted,
 so they prove the reducer surfaces a gate it is given, never which calls the
-CLI raises one for. The assertions belong in the smoke gate — that an
-ask-gated command produces a `can_use_tool` before it settles, that a safe
-command does not, and that `AllowTools("Bash")` exempts an otherwise
-ask-gated `Bash`. Until those run, this adapter must be described as gating
-the calls that ask, and never as gating every tool call.
+CLI raises one for. The assertions belong in the smoke gate, which is the
+only thing here that runs 2.1.263 — that an ask-gated command produces a
+`can_use_tool` before it settles, that a safe command does not, and that
+`AllowTools("Bash")` exempts an otherwise ask-gated `Bash`. The third is what
+would settle the flag reading at the pin. Until those run, this adapter must
+be described as gating the calls that ask, and never as gating every tool
+call.
 
 Implementation discovery made executable by the smoke gate (fixed): the
 default factory originally ran the initialize exchange inside
