@@ -210,6 +210,14 @@ pub fn build(b: *std.Build) void {
     const acp_rpc_test = b.addTest(.{ .root_module = acp_rpc_mod });
 
 
+    const claude_session_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    claude_session_mod.addImport("rpc", claude_rpc_mod);
+    const claude_session_test = b.addTest(.{ .root_module = claude_session_mod });
+
     const oap_endpoint_client_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/oap/endpoint_client.zig"),
         .target = target,
@@ -2090,6 +2098,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_session_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
