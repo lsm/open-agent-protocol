@@ -312,6 +312,10 @@ const block_text_members = [_][]const u8{ "type", "text", "thinking", "id", "nam
 
 fn wrongContentBlock(object: std.json.ObjectMap) bool {
     const content = member(object, &.{ "message", "content" }) orelse return false;
+    return wrongBlocks(content);
+}
+
+pub fn wrongBlocks(content: std.json.Value) bool {
     if (content != .array) return false;
     for (content.array.items) |item| {
         if (item != .object) return true;
