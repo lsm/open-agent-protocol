@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1027,5 +1028,216 @@ func TestStateStrictReconciliationAndDeliveryRejection(t *testing.T) {
 	client.mu.Unlock()
 	if _, err := s.State(context.Background()); !errors.Is(err, ErrNativeProtocol) {
 		t.Fatalf("foreign state err=%v", err)
+	}
+}
+
+func assertRunFailedWith(t *testing.T, events []protocol.Envelope, code, message string) {
+	t.Helper()
+	for _, e := range events {
+		if e.Type != protocol.TypeRunFailed {
+			continue
+		}
+		var p protocol.RunFailedPayload
+		if err := e.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Error.Code != code {
+			t.Fatalf("code=%q want %q (message %q)", p.Error.Code, code, p.Error.Message)
+		}
+		if message != "" && !strings.Contains(p.Error.Message, message) {
+			t.Fatalf("message=%q want it to contain %q", p.Error.Message, message)
+		}
+		return
+	}
+	t.Fatalf("no run.failed among %v", eventTypes(events))
+}
+
+func failingRun(t *testing.T, emit func(client *fakeClient)) []protocol.Envelope {
+	t.Helper()
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	emit(client)
+	return adaptertest.Drain(t, stream, time.Second)
+}
+
+func TestSecondAgentStartRefusedAsDuplicate(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "agent_start"})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_lifecycle", "duplicate agent_start")
+}
+
+func TestEventCarryingAnUndeclaredFieldIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "message_end", "message": assistant("hi", "stop"), "invented": 1})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_event", "")
+}
+
+func TestUnknownEventTypeIsRefusedByName(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "invented_later"})
+	})
+	assertRunFailedWith(t, events, "pi_unknown_event", `unknown event "invented_later"`)
+}
+
+func TestUnknownAssistantMessageEventIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "message_update", "usage": map[string]any{}, "assistantMessageEvent": map[string]any{"type": "invented_later"}})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_message_update", "unknown assistant message event")
+}
+
+func TestMalformedTerminalMessageIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "message_end", "message": "not-a-message"})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_message_end", "")
+}
+
+func TestToolStartMissingItsIdentityIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "", "toolName": "read", "args": map[string]any{}})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_tool_lifecycle", "invalid tool start")
+}
+
+func TestRepeatedToolStartIsRefusedAsDuplicate(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "a", "toolName": "read", "args": map[string]any{}})
+		client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "a", "toolName": "read", "args": map[string]any{}})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_tool_lifecycle", "duplicate tool start")
+}
+
+func TestToolProgressWithoutItsStartIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "tool_execution_update", "toolCallId": "nobody", "toolName": "read", "args": map[string]any{}, "partialResult": map[string]any{}})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_tool_lifecycle", "tool update without matching active start")
+}
+
+func TestToolEndWithoutItsStartIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "tool_execution_end", "toolCallId": "nobody", "toolName": "read", "result": map[string]any{}, "isError": false})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_tool_lifecycle", "tool end without matching active start")
+}
+
+func TestToolProgressNamingAnotherToolIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "a", "toolName": "read", "args": map[string]any{}})
+		client.emit(t, map[string]any{"type": "tool_execution_update", "toolCallId": "a", "toolName": "write", "args": map[string]any{}, "partialResult": map[string]any{}})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_tool_lifecycle", "tool update without matching active start")
+}
+
+func TestSettlementWithoutAgentEndIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "agent_settled"})
+	})
+	assertRunFailedWith(t, events, "pi_missing_agent_end", "agent_settled arrived without terminal agent_end")
+}
+
+func TestMalformedCandidateMessageIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "agent_end", "messages": []any{"not-a-message"}, "willRetry": false})
+		client.emit(t, map[string]any{"type": "agent_settled"})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_final_message", "")
+}
+
+func TestSelectExtensionWithAnEmptyLabelIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "ui-9", Method: native.ExtensionSelect, Title: "pick", Options: []string{"one", ""}})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_extension", "select extension offered an empty option label")
+}
+
+func TestFinalMessageNamingAnUnknownToolIsRefused(t *testing.T) {
+	message := assistant("ignored", "stop")
+	message["content"] = []any{map[string]any{"type": "toolCall", "id": "nobody", "name": "read", "arguments": map[string]any{}}}
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "agent_end", "messages": []any{message}, "willRetry": false})
+		client.emit(t, map[string]any{"type": "agent_settled"})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_final_message", `final message references unknown tool "nobody"`)
+}
+
+func TestCandidateMessageOfAnUnknownRoleIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "agent_end", "messages": []any{map[string]any{"role": "invented"}}, "willRetry": false})
+		client.emit(t, map[string]any{"type": "agent_settled"})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_final_message", `unknown message role "invented"`)
+}
+
+func TestInteractionAnswerTheHarnessRefusesFailsTheRun(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	_ = adaptertest.Next(t, stream, time.Second)
+	client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: "ui-8", Method: native.ExtensionConfirm, Title: "Proceed?", Message: "Continue"})
+	requested := adaptertest.Next(t, stream, time.Second)
+	_ = adaptertest.Next(t, stream, time.Second)
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+
+	refusal := errors.New("pi refused the response")
+	client.mu.Lock()
+	client.err = refusal
+	client.mu.Unlock()
+
+	err := s.Resolve(context.Background(), base.InteractionResolution{RunID: response.RunID, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session", RunID: response.RunID, Answers: []protocol.InputAnswer{{QuestionID: "value", SelectedOptionIDs: []string{"yes"}}}}})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("Resolve err=%v, want the harness refusal", err)
+	}
+	assertRunFailedWith(t, adaptertest.Drain(t, stream, time.Second), "pi_interaction_response_failed", "pi refused the response")
+}
+
+func abortRefusedBy(t *testing.T, refusal error) protocol.RunFailedPayload {
+	t.Helper()
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	_ = adaptertest.Next(t, stream, time.Second)
+
+	client.mu.Lock()
+	client.err = refusal
+	client.mu.Unlock()
+
+	if _, err := s.Cancel(context.Background(), response.RunID); !errors.Is(err, refusal) {
+		t.Fatalf("Cancel err=%v, want the harness refusal", err)
+	}
+	events := adaptertest.Drain(t, stream, time.Second)
+	for _, e := range events {
+		if e.Type != protocol.TypeRunFailed {
+			continue
+		}
+		var p protocol.RunFailedPayload
+		if err := e.DecodePayload(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Error.Code != "pi_abort_failed" {
+			t.Fatalf("code=%q want pi_abort_failed", p.Error.Code)
+		}
+		return p
+	}
+	t.Fatalf("no run.failed among %v", eventTypes(events))
+	return protocol.RunFailedPayload{}
+}
+
+func TestAbortTheHarnessRefusesFailsTheRunAndSaysWhoSettledIt(t *testing.T) {
+	silent := abortRefusedBy(t, errors.New("transport gave up"))
+	if silent.SettledBy != protocol.SettledByInferred {
+		t.Fatalf("settled_by=%q want %q when the harness never answered", silent.SettledBy, protocol.SettledByInferred)
+	}
+
+	answered := abortRefusedBy(t, &rpc.RemoteError{ID: "1", Command: native.CommandAbort, Message: "cannot abort"})
+	if answered.SettledBy != "" {
+		t.Fatalf("settled_by=%q want it unset when the harness answered with a refusal", answered.SettledBy)
 	}
 }
