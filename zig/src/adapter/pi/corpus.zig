@@ -3,42 +3,59 @@ const corpus = @import("corpus");
 const session = @import("session.zig");
 const rpc = @import("rpc.zig");
 
-const Routing = enum { agent_frame, host_command, harness_control, either_direction };
+const Direction = enum { pi_to_host, host_to_pi, harness_control };
 
-const Route = struct { action: []const u8, routing: Routing };
+const Route = struct { name: []const u8, direction: Direction };
 
 const routes = [_]Route{
-    .{ .action = "", .routing = .agent_frame },
-    .{ .action = "observe", .routing = .agent_frame },
-    .{ .action = "observe-extension", .routing = .agent_frame },
-    .{ .action = "resolve-extension", .routing = .agent_frame },
-    .{ .action = "cancel", .routing = .agent_frame },
-    .{ .action = "state", .routing = .host_command },
-    .{ .action = "prompt-failure", .routing = .host_command },
-    .{ .action = "decode-error", .routing = .host_command },
-    .{ .action = "process-exit", .routing = .harness_control },
-    .{ .action = "outbound-only", .routing = .either_direction },
+    .{ .name = "pi-to-host", .direction = .pi_to_host },
+    .{ .name = "host-to-pi", .direction = .host_to_pi },
+    .{ .name = "harness-control", .direction = .harness_control },
 };
 
-fn routingOf(action: []const u8) ?Routing {
+fn directionOf(script: std.json.Value) ?Direction {
+    if (script != .object) return null;
+    const named = corpus.stringMember(script.object, "direction") orelse return null;
     for (routes) |entry| {
-        if (std.mem.eql(u8, entry.action, action)) return entry.routing;
+        if (std.mem.eql(u8, entry.name, named)) return entry.direction;
     }
     return null;
 }
 
-fn decodeWire(scratch: std.mem.Allocator, action: []const u8, wire: []const u8) !void {
-    const routing = routingOf(action) orelse return error.UnroutedScriptAction;
-    if (routing != .agent_frame) return;
+fn actionOf(script: std.json.Value) []const u8 {
+    if (script != .object) return "";
+    return corpus.stringMember(script.object, "action") orelse "";
+}
+
+fn decodeWire(scratch: std.mem.Allocator, script: std.json.Value, wire: []const u8) !void {
+    const direction = directionOf(script) orelse return error.UnroutedScriptDirection;
+    if (direction != .pi_to_host) return;
+    const refuses = std.mem.eql(u8, actionOf(script), "decode-error");
 
     const source = try std.mem.concat(scratch, u8, &.{ wire, "\n" });
     var decoder = rpc.Decoder{ .source = source };
-    const decoded = decoder.next(scratch) catch return error.ProductionCodecRefusedCorpusFrame;
+    const decoded = decoder.next(scratch) catch {
+        if (refuses) return;
+        return error.ProductionCodecRefusedCorpusFrame;
+    };
+    if (refuses) return error.ProductionCodecAcceptedInvalidFrame;
     _ = decoded orelse return error.ProductionCodecYieldedNoFrame;
 }
 
+fn checkControl(script: std.json.Value, raw: std.json.Value) !void {
+    const direction = directionOf(script) orelse return error.UnroutedScriptDirection;
+    if (direction != .harness_control) return;
+    if (!std.mem.eql(u8, actionOf(script), "process-exit")) return error.UnroutedHarnessControlAction;
+    if (raw != .object) return error.InvalidHarnessControl;
+    const kind = corpus.stringMember(raw.object, "type") orelse "";
+    const reported = corpus.stringMember(raw.object, "error") orelse "";
+    if (!std.mem.eql(u8, kind, "process_exit")) return error.InvalidHarnessControl;
+    if (reported.len == 0) return error.InvalidHarnessControl;
+}
+
 fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !void {
-    return decodeWire(scratch, item.action, item.encoded);
+    try checkControl(item.script, item.raw);
+    return decodeWire(scratch, item.script, item.encoded);
 }
 
 pub const CorpusCase = struct {
@@ -115,10 +132,12 @@ test "every pi corpus case replays to the recorded envelopes" {
     });
 }
 
-fn expectWire(action: []const u8, wire: []const u8, want: anyerror!void) !void {
+fn expectWire(script_line: []const u8, wire: []const u8, want: anyerror!void) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const got = decodeWire(arena.allocator(), action, wire);
+    const scratch = arena.allocator();
+    const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, script_line, .{});
+    const got = decodeWire(scratch, script, wire);
     if (want) |_| {
         try got;
     } else |expected| {
@@ -126,23 +145,81 @@ fn expectWire(action: []const u8, wire: []const u8, want: anyerror!void) !void {
     }
 }
 
-test "an agent frame the production codec refuses is a corpus defect" {
-    for ([_][]const u8{ "", "observe", "observe-extension", "resolve-extension", "cancel" }) |action| {
-        try expectWire(action, "{\"type\":\"turn_start\"}", {});
-        try expectWire(action, "{\"type\":\"turn_end\"}", error.ProductionCodecRefusedCorpusFrame);
-        try expectWire(action, "{\"type\":\"prompt\",\"message\":\"hi\"}", error.ProductionCodecRefusedCorpusFrame);
+fn expectInbound(wire: []const u8, want: anyerror!void) !void {
+    try expectWire("{\"direction\":\"pi-to-host\"}", wire, want);
+}
+
+test "an inbound frame the production codec refuses is a corpus defect" {
+    try expectInbound("{\"type\":\"turn_start\"}", {});
+    try expectInbound("{\"type\":\"turn_end\"}", error.ProductionCodecRefusedCorpusFrame);
+    try expectInbound("{\"type\":\"prompt\",\"message\":\"hi\"}", error.ProductionCodecRefusedCorpusFrame);
+}
+
+test "an inbound command response is decoded, not waved through as outbound" {
+    try expectInbound("{\"type\":\"response\",\"command\":\"steer\",\"success\":true}", {});
+    try expectInbound(
+        "{\"type\":\"response\",\"command\":\"nonesuch\",\"success\":true}",
+        error.ProductionCodecRefusedCorpusFrame,
+    );
+    try expectInbound(
+        "{\"type\":\"response\",\"command\":\"steer\",\"success\":true,\"error\":\"boom\"}",
+        error.ProductionCodecRefusedCorpusFrame,
+    );
+}
+
+test "an outbound command and harness control carry no frame this port decodes" {
+    for ([_][]const u8{ "{\"direction\":\"host-to-pi\"}", "{\"direction\":\"harness-control\"}" }) |script| {
+        try expectWire(script, "{\"type\":\"prompt\"}", {});
+        try expectWire(script, "{\"type\":\"get_state\"}", {});
+        try expectWire(script, "{\"type\":\"steer\",\"message\":\"adjust\"}", {});
+        try expectWire(script, "{\"type\":\"process_exit\"}", {});
     }
 }
 
-test "host commands and harness control carry no frame this port decodes" {
-    try expectWire("decode-error", "{\"type\":\"prompt\"}", {});
-    try expectWire("state", "{\"type\":\"get_state\"}", {});
-    try expectWire("outbound-only", "{\"type\":\"steer\",\"message\":\"adjust\"}", {});
-    try expectWire("process-exit", "{\"type\":\"process_exit\"}", {});
+test "a script line whose direction this harness does not know is refused" {
+    try expectWire("{\"direction\":\"nonesuch\"}", "{\"type\":\"turn_start\"}", error.UnroutedScriptDirection);
+    try expectWire("{}", "{\"type\":\"turn_start\"}", error.UnroutedScriptDirection);
+    try expectWire("{\"direction\":7}", "{\"type\":\"turn_start\"}", error.UnroutedScriptDirection);
+    try expectWire("[]", "{\"type\":\"turn_start\"}", error.UnroutedScriptDirection);
 }
 
-test "an action outside the routing table is refused" {
-    try expectWire("nonesuch", "{\"type\":\"turn_start\"}", error.UnroutedScriptAction);
+fn expectControl(script_line: []const u8, raw_line: []const u8, want: anyerror!void) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const script = try std.json.parseFromSliceLeaky(std.json.Value, scratch, script_line, .{});
+    const raw = try std.json.parseFromSliceLeaky(std.json.Value, scratch, raw_line, .{});
+    const got = checkControl(script, raw);
+    if (want) |_| {
+        try got;
+    } else |expected| {
+        try std.testing.expectError(expected, got);
+    }
+}
+
+test "a harness control frame must be a process exit reporting why" {
+    const exit_script = "{\"direction\":\"harness-control\",\"action\":\"process-exit\"}";
+    try expectControl(exit_script, "{\"type\":\"process_exit\",\"error\":\"boom\"}", {});
+    try expectControl(exit_script, "{\"type\":\"process_exit\",\"error\":\"\"}", error.InvalidHarnessControl);
+    try expectControl(exit_script, "{\"type\":\"process_exit\"}", error.InvalidHarnessControl);
+    try expectControl(exit_script, "{\"type\":\"turn_start\",\"error\":\"boom\"}", error.InvalidHarnessControl);
+    try expectControl(exit_script, "[]", error.InvalidHarnessControl);
+    try expectControl(
+        "{\"direction\":\"harness-control\",\"action\":\"observe\"}",
+        "{\"type\":\"process_exit\",\"error\":\"boom\"}",
+        error.UnroutedHarnessControlAction,
+    );
+}
+
+test "a control frame check ignores the directions that carry a wire frame" {
+    try expectControl("{\"direction\":\"pi-to-host\",\"action\":\"observe\"}", "{\"type\":\"turn_start\"}", {});
+    try expectControl("{\"direction\":\"host-to-pi\",\"action\":\"state\"}", "{\"type\":\"get_state\"}", {});
+}
+
+test "an inbound frame recorded as a decode error must be refused, not accepted" {
+    const refusing = "{\"direction\":\"pi-to-host\",\"action\":\"decode-error\"}";
+    try expectWire(refusing, "{\"type\":\"turn_end\"}", {});
+    try expectWire(refusing, "{\"type\":\"turn_start\"}", error.ProductionCodecAcceptedInvalidFrame);
 }
 
 test "a script line the production codec refuses fails the case at the call site" {
@@ -152,13 +229,24 @@ test "a script line the production codec refuses fails the case at the call site
     const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
 
     var reducer = session.Reducer.init(scratch);
-    const refused_line = "{\"action\":\"observe\",\"raw\":{\"type\":\"turn_end\"}}\n";
+    const refused_line = "{\"direction\":\"pi-to-host\",\"action\":\"observe\",\"raw\":{\"type\":\"turn_end\"}}\n";
     try std.testing.expectError(
         error.ProductionCodecRefusedCorpusFrame,
         Harness.steps(scratch, refused_line, &reducer, inline_case),
     );
 
     var accepted_reducer = session.Reducer.init(scratch);
-    const accepted = "{\"action\":\"observe\",\"raw\":{\"type\":\"turn_start\"}}\n";
+    const accepted = "{\"direction\":\"pi-to-host\",\"action\":\"observe\",\"raw\":{\"type\":\"turn_start\"}}\n";
     try Harness.steps(scratch, accepted, &accepted_reducer, inline_case);
+}
+
+test "an outbound script line still reaches the reducer with its frame undecoded" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+
+    var reducer = session.Reducer.init(scratch);
+    const outbound = "{\"direction\":\"host-to-pi\",\"action\":\"outbound-only\",\"raw\":{\"type\":\"steer\",\"message\":\"adjust\"}}\n";
+    try Harness.steps(scratch, outbound, &reducer, inline_case);
 }
