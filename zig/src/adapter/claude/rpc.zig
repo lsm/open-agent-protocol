@@ -394,7 +394,23 @@ fn foldEql(left: []const u8, right: []const u8) bool {
 }
 
 pub fn lookup(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
-    return member(object, &.{key});
+    return memberSet(object, &.{key});
+}
+
+fn memberSet(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
+    var found: ?std.json.Value = null;
+    var entries = object.iterator();
+    while (entries.next()) |entry| {
+        if (!foldEql(entry.key_ptr.*, path[0])) continue;
+        if (path.len == 1) {
+            if (entry.value_ptr.* == .null) continue;
+            found = entry.value_ptr.*;
+            continue;
+        }
+        if (entry.value_ptr.* != .object) continue;
+        if (memberSet(entry.value_ptr.object, path[1..])) |nested| found = nested;
+    }
+    return found;
 }
 
 fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
@@ -429,7 +445,10 @@ fn anyWrong(object: std.json.ObjectMap, path: []const []const u8, need: Declared
 
 fn unsatisfied(object: std.json.ObjectMap, required: []const Member) ?[]const u8 {
     for (required) |need| {
-        const value = member(object, need.path) orelse return need.detail;
+        const value = switch (need.need) {
+            .text => memberSet(object, need.path),
+            else => member(object, need.path),
+        } orelse return need.detail;
         switch (need.need) {
             .text => if (value != .string or value.string.len == 0) return need.detail,
             .array => if (value != .array) return need.detail,
@@ -695,7 +714,7 @@ fn observationMembers(frame_type: []const u8, subtype: []const u8) []const Membe
 }
 
 fn taskStatusIsTerminal(object: std.json.ObjectMap) bool {
-    const status = member(object, &.{"status"}) orelse return false;
+    const status = memberSet(object, &.{"status"}) orelse return false;
     if (status != .string) return false;
     for (terminal_task_statuses) |terminal| {
         if (std.mem.eql(u8, status.string, terminal)) return true;
@@ -1295,6 +1314,30 @@ test "a nested control member that is not an object names the cause the oracle n
     var missing = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\"}", &missing));
     try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
+}
+
+test "a folded null overwrites only the fields the oracle nils" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const result = "{\"type\":\"result\",\"subtype\":\"success\",";
+    try accepts(&arena, result ++ "\"session_id\":\"s\",\"SESSION_ID\":null}");
+    try accepts(&arena, result ++ "\"session_id\":null,\"SESSION_ID\":\"s\"}");
+    try refuses(&arena, result ++ "\"SESSION_ID\":null}");
+    try accepts(&arena, result ++ "\"session_id\":\"s\",\"is_error\":true,\"IS_ERROR\":null}");
+
+    const init = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\",";
+    try refuses(&arena, init ++ "\"tools\":[\"a\"],\"TOOLS\":null}");
+    try accepts(&arena, init ++ "\"TOOLS\":null,\"tools\":[\"a\"]}");
+
+    try refuses(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"m\",\"content\":[],\"CONTENT\":null}}");
+    try accepts(&arena, "{\"type\":\"stream_event\",\"event\":{\"a\":1},\"EVENT\":null,\"uuid\":\"e\",\"session_id\":\"s\"}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"m\",\"content\":[]},\"MESSAGE\":{\"model\":null}}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"MESSAGE\":{\"model\":null},\"message\":{\"model\":\"m\",\"content\":[]}}");
+
+    const notice = "{\"type\":\"system\",\"subtype\":\"task_notification\",\"task_id\":\"t\",\"output_file\":\"f\",\"summary\":\"s\",\"uuid\":\"u\",\"session_id\":\"s\",";
+    try accepts(&arena, notice ++ "\"status\":\"completed\",\"STATUS\":null}");
+    try accepts(&arena, notice ++ "\"STATUS\":null,\"status\":\"completed\"}");
 }
 
 test "null means absence at every level the decode walks" {
