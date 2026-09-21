@@ -1,5 +1,6 @@
 const std = @import("std");
 const rpc = @import("rpc");
+const goquote = @import("goquote");
 
 pub const capability_revision = "hermes-v2026.8.31-oap-v1";
 pub const protocol_name = "open-agent-protocol";
@@ -7,7 +8,7 @@ pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";
 pub const endpoint_id = "hermes.gateway";
 
-pub const Error = error{ RunActive, InteractionNotFound, InvalidResolution };
+pub const Error = error{ RunActive, SessionUnusable, InteractionNotFound, InvalidResolution };
 
 pub const Options = struct {
     session_id: []const u8 = "session",
@@ -71,6 +72,8 @@ pub const Reducer = struct {
     clock: i64 = 0,
     run: ?Run = null,
     tools: std.ArrayList(Tool) = .empty,
+    last_seq: i64 = 0,
+    unusable: bool = false,
     interactions: std.ArrayList(Interaction) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
 
@@ -120,6 +123,7 @@ pub const Reducer = struct {
     }
 
     pub fn submit(self: *Reducer) !void {
+        if (self.unusable) return Error.SessionUnusable;
         if (self.run) |run| {
             if (!run.terminal) return Error.RunActive;
         }
@@ -185,6 +189,19 @@ pub const Reducer = struct {
         if (params != .object) return;
         const kind = params.object.get("type") orelse return;
         if (kind != .string) return;
+        const native_id = stringMember(params.object, "session_id");
+        if (native_id.len == 0) return;
+        if (!std.mem.eql(u8, native_id, self.options.native_id)) {
+            try self.disown(try std.fmt.allocPrint(self.allocator(), "event for foreign session {s}", .{goquote.quote(self.allocator(), native_id)}));
+            return;
+        }
+        const seq = integerMember(params.object, "seq");
+        if (seq != self.last_seq + 1) {
+            try self.disown(try std.fmt.allocPrint(self.allocator(), "non-contiguous seq {d} after {d}", .{ seq, self.last_seq }));
+            return;
+        }
+        self.last_seq = seq;
+        if (self.unusable) return;
         const payload = params.object.get("payload") orelse std.json.Value{ .null = {} };
         try self.applyEvent(kind.string, payload);
     }
@@ -579,11 +596,9 @@ pub const Reducer = struct {
             try self.failRun("hermes_invalid_event", "gate without request_id");
             return;
         }
-        for (questions.items) |question| {
-            if (!answerable(question)) {
-                try self.failRun("hermes_invalid_event", "gate with a question nobody can answer");
-                return;
-            }
+        if (!answerableSet(questions.items)) {
+            try self.failRun("hermes_invalid_event", "gate with a question nobody can answer");
+            return;
         }
         binding.questions = questions.items;
         try self.interactions.append(self.allocator(), binding);
@@ -628,6 +643,7 @@ pub const Reducer = struct {
     }
 
     pub fn resolve(self: *Reducer, interaction_id: []const u8, answers: []const Answer) !void {
+        if (self.unusable) return Error.SessionUnusable;
         const at = self.findInteraction(interaction_id) orelse return Error.InteractionNotFound;
         if (self.interactions.items[at].resolved) return Error.InteractionNotFound;
         const run = self.active() orelse return Error.InteractionNotFound;
@@ -645,6 +661,11 @@ pub const Reducer = struct {
         const body = try self.resolvedPayload(binding, run, "submitted", answers);
         _ = try self.emitEnvelope(run, "user.input.resolved", body, binding.requested);
         try self.emitStatus(run, "running", "");
+    }
+
+    fn disown(self: *Reducer, what: []const u8) !void {
+        self.unusable = true;
+        try self.failRun("hermes_external_activity", what);
     }
 
     fn failRun(self: *Reducer, code: []const u8, message: []const u8) !void {
@@ -722,8 +743,21 @@ fn boolMember(map: std.json.ObjectMap, key: []const u8) bool {
     return if (value == .bool) value.bool else false;
 }
 
+fn answerableSet(questions: []const Question) bool {
+    for (questions, 0..) |question, index| {
+        if (!answerable(question)) return false;
+        for (questions[0..index]) |earlier| {
+            if (std.mem.eql(u8, earlier.id, question.id)) return false;
+        }
+    }
+    return true;
+}
+
 fn answerable(question: Question) bool {
     if (question.id.len == 0 or question.prompt.len == 0) return false;
+    for (question.options) |option| {
+        if (option.id.len == 0 or option.label.len == 0) return false;
+    }
     if (std.mem.eql(u8, question.kind, "text")) return true;
     return question.options.len > 0;
 }
@@ -783,25 +817,33 @@ fn feed(reducer: *Reducer, scratch: std.mem.Allocator, line: []const u8) !void {
     try reducer.observe(message, parsed);
 }
 
-fn event(scratch: std.mem.Allocator, kind: []const u8, payload: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(scratch, "{{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{{\"type\":\"{s}\",\"session_id\":\"sess0001\",\"payload\":{s}}}}}", .{ kind, payload });
+fn event(scratch: std.mem.Allocator, seq: i64, kind: []const u8, payload: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(scratch, "{{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{{\"type\":\"{s}\",\"session_id\":\"sess0001\",\"seq\":{d},\"payload\":{s}}}}}", .{ kind, seq, payload });
 }
 
-fn bare(scratch: std.mem.Allocator, kind: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(scratch, "{{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{{\"type\":\"{s}\",\"session_id\":\"sess0001\"}}}}", .{kind});
+fn bare(scratch: std.mem.Allocator, seq: i64, kind: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(scratch, "{{\"jsonrpc\":\"2.0\",\"method\":\"event\",\"params\":{{\"type\":\"{s}\",\"session_id\":\"sess0001\",\"seq\":{d}}}}}", .{ kind, seq });
+}
+
+fn feedEvent(reducer: *Reducer, scratch: std.mem.Allocator, kind: []const u8, payload: []const u8) !void {
+    try feed(reducer, scratch, try event(scratch, reducer.last_seq + 1, kind, payload));
+}
+
+fn feedBare(reducer: *Reducer, scratch: std.mem.Allocator, kind: []const u8) !void {
+    try feed(reducer, scratch, try bare(scratch, reducer.last_seq + 1, kind));
 }
 
 fn openRun(arena: *std.heap.ArenaAllocator) !Reducer {
     var reducer = Reducer.init(arena, .{});
     reducer.open();
     try reducer.submit();
-    try feed(&reducer, arena.allocator(), try bare(arena.allocator(), "message.start"));
+    try feedBare(&reducer, arena.allocator(), "message.start");
     return reducer;
 }
 
 fn gate(arena: *std.heap.ArenaAllocator, kind: []const u8, payload: []const u8) !Reducer {
     var reducer = try openRun(arena);
-    try feed(&reducer, arena.allocator(), try event(arena.allocator(), kind, payload));
+    try feedEvent(&reducer, arena.allocator(), kind, payload);
     return reducer;
 }
 
@@ -1026,9 +1068,9 @@ test "a gate that arrives before the run started emits nothing and mints nothing
     var reducer = Reducer.init(&arena, .{});
     reducer.open();
     try reducer.submit();
-    try feed(&reducer, arena.allocator(), try event(arena.allocator(), "approval.request",
+    try feedEvent(&reducer, arena.allocator(), "approval.request",
         \\{"command":"ls","choices":["once"]}
-    ));
+    );
 
     try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
     try testing.expectEqual(@as(usize, 0), reducer.interactions.items.len);
@@ -1042,12 +1084,12 @@ test "an expire settles the gate carrying its request id and leaves every other 
     var reducer = try gate(&arena, "clarify.request",
         \\{"request_id":"dddd4444","question":"which?","choices":["a","b"]}
     );
-    try feed(&reducer, scratch, try event(scratch, "secret.request",
+    try feedEvent(&reducer, scratch, "secret.request",
         \\{"request_id":"eeee5555","prompt":"CI token","env_var":"CI_TOKEN"}
-    ));
-    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+    );
+    try feedEvent(&reducer, scratch, "clarify.expire",
         \\{"request_id":"dddd4444"}
-    ));
+    );
 
     try testing.expectEqual(@as(usize, 7), reducer.envelopes.items.len);
     try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 5));
@@ -1061,9 +1103,9 @@ test "an expire settles the gate carrying its request id and leaves every other 
     try testing.expect(payloadAt(&reducer, 6).get("pending_user_input_id") == null);
     try testing.expect(!reducer.interactions.items[1].resolved);
 
-    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+    try feedEvent(&reducer, scratch, "clarify.expire",
         \\{"request_id":"dddd4444"}
-    ));
+    );
     try testing.expectEqual(@as(usize, 7), reducer.envelopes.items.len);
 }
 
@@ -1074,14 +1116,14 @@ test "an expire naming no open gate is silent, and a malformed one fails the run
     var reducer = try gate(&arena, "clarify.request",
         \\{"request_id":"dddd4444","question":"which?","choices":["a"]}
     );
-    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+    try feedEvent(&reducer, scratch, "clarify.expire",
         \\{"request_id":"ffff6666"}
-    ));
+    );
     try testing.expectEqual(@as(usize, 3), reducer.envelopes.items.len);
 
-    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+    try feedEvent(&reducer, scratch, "clarify.expire",
         \\{"request_id":"dddd4444","unknown":1}
-    ));
+    );
     try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
     try testing.expectEqualStrings("run.failed", typeAt(&reducer, 3));
     try testing.expectEqualStrings("invalid expire", payloadAt(&reducer, 3).get("error").?.object.get("message").?.string);
@@ -1166,9 +1208,9 @@ test "a gate resolves once, and an expired one is already spoken for" {
     try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
     try testing.expectError(Error.InteractionNotFound, reducer.resolve("interaction-z", &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
 
-    try feed(&reducer, scratch, try event(scratch, "clarify.expire",
+    try feedEvent(&reducer, scratch, "clarify.expire",
         \\{"request_id":"aaaa1111"}
-    ));
+    );
     try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
 }
 
@@ -1180,9 +1222,9 @@ test "a settled run refuses a resolution instead of emitting past its terminal" 
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
-    try feed(&reducer, scratch, try event(scratch, "message.complete",
+    try feedEvent(&reducer, scratch, "message.complete",
         \\{"status":"complete","text":"done"}
-    ));
+    );
 
     try testing.expectEqualStrings("run.completed", typeAt(&reducer, 3));
     try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
@@ -1196,9 +1238,9 @@ test "the pending gate a driver looks up is the open one of that kind" {
     var reducer = try gate(&arena, "clarify.request",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
-    try feed(&reducer, scratch, try event(scratch, "sudo.request",
+    try feedEvent(&reducer, scratch, "sudo.request",
         \\{"request_id":"bbbb2222"}
-    ));
+    );
 
     try testing.expect(reducer.pendingInteraction("secret") == null);
     try testing.expectEqualStrings("sudo", reducer.pendingInteraction("sudo").?.kind);
@@ -1215,11 +1257,11 @@ test "a gate left open by one run is not answerable from the next" {
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const stranded = payloadAt(&reducer, 1).get("interaction_id").?.string;
-    try feed(&reducer, scratch, try event(scratch, "message.complete",
+    try feedEvent(&reducer, scratch, "message.complete",
         \\{"status":"complete","text":"done"}
-    ));
+    );
     try reducer.submit();
-    try feed(&reducer, scratch, try bare(scratch, "message.start"));
+    try feedBare(&reducer, scratch, "message.start");
 
     try testing.expectEqualStrings("run.started", typeAt(&reducer, 4));
     try testing.expectError(Error.InteractionNotFound, reducer.resolve(stranded, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
@@ -1271,16 +1313,16 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const stranded = reducer.pendingInteraction("clarify").?.id;
-    try feed(&reducer, scratch, try event(scratch, "message.complete",
+    try feedEvent(&reducer, scratch, "message.complete",
         \\{"status":"complete","text":"done"}
-    ));
+    );
     try testing.expect(reducer.pendingInteraction("clarify") == null);
 
     try reducer.submit();
-    try feed(&reducer, scratch, try bare(scratch, "message.start"));
-    try feed(&reducer, scratch, try event(scratch, "clarify.request",
+    try feedBare(&reducer, scratch, "message.start");
+    try feedEvent(&reducer, scratch, "clarify.request",
         \\{"request_id":"bbbb2222","question":"again?","choices":["b"]}
-    ));
+    );
 
     const fresh = reducer.pendingInteraction("clarify").?;
     try testing.expect(!std.mem.eql(u8, stranded, fresh.id));
@@ -1329,10 +1371,87 @@ test "an expire that names no request cancels nothing, least of all an approval"
     var reducer = try gate(&arena, "approval.request",
         \\{"command":"ls","choices":["once"]}
     );
-    try feed(&reducer, scratch, try event(scratch, "clarify.expire", "{}"));
+    try feedEvent(&reducer, scratch, "clarify.expire", "{}");
 
     try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
     try testing.expectEqualStrings("run.failed", typeAt(&reducer, 3));
     try testing.expectEqualStrings("expire without request_id", payloadAt(&reducer, 3).get("error").?.object.get("message").?.string);
     try testing.expect(!reducer.interactions.items[0].resolved);
+}
+
+test "an event for another gateway session is not this session's to reduce" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"other","seq":2,"payload":{"status":"complete","text":"done"}}}
+    );
+
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+    const failure = payloadAt(&reducer, 1).get("error").?.object;
+    try testing.expectEqualStrings("hermes_external_activity", failure.get("code").?.string);
+    try testing.expectEqualStrings("event for foreign session \"other\"", failure.get("message").?.string);
+}
+
+test "an event that skips a place in the gateway's own sequence is not trusted" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, try event(scratch, 5, "message.delta",
+        \\{"text":"hi"}
+    ));
+
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+    const failure = payloadAt(&reducer, 1).get("error").?.object;
+    try testing.expectEqualStrings("hermes_external_activity", failure.get("code").?.string);
+    try testing.expectEqualStrings("non-contiguous seq 5 after 1", failure.get("message").?.string);
+}
+
+test "an event carrying no session at all is dropped rather than disowned" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{}}}
+    );
+
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+    try testing.expect(!reducer.unusable);
+    try testing.expectEqual(@as(i64, 1), reducer.last_seq);
+}
+
+test "a session that has seen someone else's traffic takes no further instruction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"other","seq":3,"payload":{"text":"hi"}}}
+    );
+
+    try testing.expect(reducer.unusable);
+    try testing.expectError(Error.SessionUnusable, reducer.submit());
+    try testing.expectError(Error.SessionUnusable, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
+}
+
+test "a choice that is the empty string is no choice at all" {
+    try expectGateRefused("clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":[""]}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+    try expectGateRefused("approval.request",
+        \\{"command":"ls","choices":["once",""]}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+}
+
+test "a batch that asks the same question twice can never be answered, so it is refused" {
+    try expectGateRefused("clarify.request",
+        \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"one","question":"second?","choices":["b"]}]}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
 }

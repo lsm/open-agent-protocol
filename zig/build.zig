@@ -236,6 +236,7 @@ pub fn build(b: *std.Build) void {
     });
     const hermes_session_test = b.addTest(.{ .root_module = hermes_session_mod });
     hermes_session_mod.addImport("rpc", hermes_rpc_mod);
+    hermes_session_mod.addImport("goquote", adapter_goquote_mod);
     const hermes_rpc_test = b.addTest(.{ .root_module = hermes_rpc_mod });
 
     const acp_rpc_mod = b.createModule(.{
