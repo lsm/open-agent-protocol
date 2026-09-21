@@ -2251,15 +2251,53 @@ test "an injected run id takes the place of the minted one without taking its le
     }
 }
 
-test "the endpoint and the revision an envelope cites are the ones the caller supplied" {
+fn callingRun(arena: *std.heap.ArenaAllocator, options: Options) !Reducer {
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(arena, options);
+    reducer.open();
+    try reducer.submit("turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","message":{"id":"msg_1","model":"claude-sonnet-4-5","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"touch /tmp/x"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"s","uuid":"a1","user_message_uuid":"turn-1"}
+    );
+    return reducer;
+}
+
+fn citedBy(reducer: *Reducer, kind: []const u8, member: []const u8) ?[]const u8 {
+    for (reducer.envelopes.items) |envelope| {
+        if (!std.mem.eql(u8, envelope.object.get("type").?.string, kind)) continue;
+        const cited = envelope.object.get("payload").?.object.get(member) orelse continue;
+        return cited.string;
+    }
+    return null;
+}
+
+test "the endpoint an action call names as its requester is the one the caller supplied" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const stock = try playIdentity(&arena, .{}, .{});
-    try testing.expectEqualStrings(capability_revision, stock.envelopes.items[0].object.get("capability_revision").?.string);
+    var stock = try callingRun(&arena, .{});
+    try testing.expectEqualStrings(endpoint_id, citedBy(&stock, "action.call.requested", "requested_by") orelse return error.NoActionCall);
 
-    const supplied = try playIdentity(&arena, .{}, .{ .endpoint = "makai.agent-control", .revision = "makai-oap-core-v1" });
+    var supplied = try callingRun(&arena, .{ .endpoint = "makai.agent-control" });
+    try testing.expectEqualStrings("makai.agent-control", citedBy(&supplied, "action.call.requested", "requested_by") orelse return error.NoActionCall);
+}
+
+test "the revision every envelope cites is the one the caller supplied" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const stock = try callingRun(&arena, .{});
+    for (stock.envelopes.items) |envelope| {
+        try testing.expectEqualStrings(capability_revision, envelope.object.get("capability_revision").?.string);
+    }
+
+    var supplied = try callingRun(&arena, .{ .revision = "makai-oap-core-v1" });
+    try testing.expect(supplied.envelopes.items.len > 1);
     for (supplied.envelopes.items) |envelope| {
         try testing.expectEqualStrings("makai-oap-core-v1", envelope.object.get("capability_revision").?.string);
     }
+    try testing.expect(citedBy(&supplied, "run.failed", "error") == null);
 }
