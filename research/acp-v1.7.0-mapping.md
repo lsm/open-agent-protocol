@@ -736,12 +736,15 @@ No corpus case reaches any of this, so it is those twelve byte sequences and a
 
 ### Where the port and the oracle disagreed on purpose
 
-Four inputs made the Go adapter emit a payload the shared validator refuses,
-and a fifth made it misreport one. All were raised as #142 and are fixed on
-both sides now; the table is kept because it is the record of what the class
-looks like, not a list of open divergences.
+Three inputs made the Go adapter emit a payload the shared validator refuses
+and a fourth made it misreport one; all were raised as #142 and are fixed on
+both sides now. The table keeps them because it is the record of what the
+class looks like, not a list of open divergences. Its fifth row is not a
+defect at all --- both implementations emit the same accepted envelope there
+--- and it is kept because the two never-started rows only make sense read
+together.
 
-The last two rows were found while fixing the other four, and the first of them
+The last two rows were found while fixing the other three, and the first of them
 is the most reachable: an agent that announces a tool and ends the turn before
 running it is ordinary, not exotic. The split between them is the validator's
 own: `requested -> cancelled` is legal because `tool()` admits any
@@ -768,7 +771,7 @@ boundary, matching what the adapter already does with a session-update
 discriminator outside the defined set, and refusing the whole request would be
 louder still. Either beats reporting an unclassifiable option as a denial.
 
-None of the five is reachable from the eleven corpus cases.
+None of the four is reachable from the eleven corpus cases.
 
 ### Where the oracle's Go runtime shows through
 
