@@ -15,6 +15,13 @@ pub const Options = struct {
     session_id: []const u8 = "session",
     model: []const u8 = "claude-test",
     responder: []const u8 = "user",
+    endpoint: []const u8 = endpoint_id,
+    revision: []const u8 = capability_revision,
+};
+
+pub const Identity = struct {
+    run_id: []const u8 = "",
+    submission_id: []const u8 = "",
 };
 
 pub const Decision = enum { allow, deny };
@@ -65,6 +72,7 @@ pub const Reducer = struct {
     arena: *std.heap.ArenaAllocator,
     options: Options,
     ids: usize = 0,
+    identity: Identity = .{},
     clock: i64 = 0,
     current_model: []const u8,
     run: ?Run = null,
@@ -101,9 +109,15 @@ pub const Reducer = struct {
     }
 
     pub fn submit(self: *Reducer, submission_uuid: []const u8) !void {
+        return self.submitAs(submission_uuid, .{});
+    }
+
+    pub fn submitAs(self: *Reducer, submission_uuid: []const u8, identity: Identity) !void {
         if (self.unusable) return error.SessionClosed;
         if (self.run != null) return error.RunActive;
-        const submission_id = try self.nextID("submission");
+        const minted_submission = try self.nextID("submission");
+        const submission_id = if (identity.submission_id.len > 0) identity.submission_id else minted_submission;
+        self.identity = identity;
         const message_id = try self.nextID("message");
         self.run = Run{
             .submission_id = submission_id,
@@ -171,7 +185,7 @@ pub const Reducer = struct {
         try self.put(&envelope, "run_id", str(run.id));
         if (tool_call_id.len > 0) try self.put(&envelope, "tool_call_id", str(tool_call_id));
         if (correlation.turn_id.len > 0) try self.put(&envelope, "turn_id", str(correlation.turn_id));
-        try self.put(&envelope, "capability_revision", str(capability_revision));
+        try self.put(&envelope, "capability_revision", str(self.options.revision));
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
         return id;
     }
@@ -181,7 +195,7 @@ pub const Reducer = struct {
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
         try self.put(&payload, "tool_call_id", str(tool.id));
-        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "execution_owner", str(harness_owner));
         if (tool.source.len > 0) try self.put(&payload, "source", str(tool.source));
         try self.put(&payload, "name", str(tool.name));
@@ -299,7 +313,7 @@ pub const Reducer = struct {
             if (!run.started) return;
             var payload = self.object();
             try self.put(&payload, "interaction_id", str(gate.id));
-            try self.put(&payload, "requested_by", str(endpoint_id));
+            try self.put(&payload, "requested_by", str(self.options.endpoint));
             try self.put(&payload, "responded_by", str(self.options.responder));
             try self.put(&payload, "session_id", str(self.options.session_id));
             try self.put(&payload, "run_id", str(run.id));
@@ -337,7 +351,7 @@ pub const Reducer = struct {
 
         var payload = self.object();
         try self.put(&payload, "interaction_id", str(id));
-        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "responded_by", str(self.options.responder));
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
@@ -391,7 +405,7 @@ pub const Reducer = struct {
 
         var payload = self.object();
         try self.put(&payload, "interaction_id", str(gate.id));
-        try self.put(&payload, "requested_by", str(endpoint_id));
+        try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "responded_by", str(self.options.responder));
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
@@ -406,7 +420,8 @@ pub const Reducer = struct {
         if (self.run == null) return;
         const run = &self.run.?;
         run.started = true;
-        run.id = try self.nextID("run");
+        const minted_run = try self.nextID("run");
+        run.id = if (self.identity.run_id.len > 0) self.identity.run_id else minted_run;
         var payload = self.object();
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
@@ -646,7 +661,7 @@ pub const Reducer = struct {
             gate.resolved = true;
             var payload = self.object();
             try self.put(&payload, "interaction_id", str(gate.id));
-            try self.put(&payload, "requested_by", str(endpoint_id));
+            try self.put(&payload, "requested_by", str(self.options.endpoint));
             try self.put(&payload, "responded_by", str(self.options.responder));
             try self.put(&payload, "session_id", str(self.options.session_id));
             try self.put(&payload, "run_id", str(run.id));
@@ -2188,4 +2203,63 @@ test "a run that starts before any init frame, with no configured model, names n
         \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
     try testing.expectEqualStrings("model-a", named.envelopes.items[0].object.get("payload").?.object.get("model_id").?.string);
+}
+
+fn playIdentity(arena: *std.heap.ArenaAllocator, identity: Identity, options: Options) !Reducer {
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(arena, options);
+    reducer.open();
+    try reducer.submitAs("turn-1", identity);
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    return reducer;
+}
+
+fn envelopeIDs(reducer: *Reducer, scratch: std.mem.Allocator) ![]const []const u8 {
+    var ids = std.ArrayList([]const u8).empty;
+    for (reducer.envelopes.items) |envelope| {
+        try ids.append(scratch, envelope.object.get("id").?.string);
+    }
+    return ids.items;
+}
+
+test "an injected run id takes the place of the minted one without taking its letter" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var minted = try playIdentity(&arena, .{}, .{});
+    const minted_ids = try envelopeIDs(&minted, scratch);
+
+    var injected = try playIdentity(&arena, .{ .run_id = "01JB0RUN", .submission_id = "01JB0SUB" }, .{});
+    const injected_ids = try envelopeIDs(&injected, scratch);
+
+    try testing.expectEqualStrings("run.started", minted.envelopes.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("run-3", minted.envelopes.items[0].object.get("run_id").?.string);
+    try testing.expectEqualStrings("01JB0RUN", injected.envelopes.items[0].object.get("run_id").?.string);
+
+    try testing.expectEqual(minted_ids.len, injected_ids.len);
+    for (minted_ids, injected_ids) |mint, inject| {
+        try testing.expectEqualStrings(mint, inject);
+    }
+    for (injected.envelopes.items) |envelope| {
+        try testing.expectEqualStrings("01JB0RUN", envelope.object.get("run_id").?.string);
+    }
+}
+
+test "the endpoint and the revision an envelope cites are the ones the caller supplied" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const stock = try playIdentity(&arena, .{}, .{});
+    try testing.expectEqualStrings(capability_revision, stock.envelopes.items[0].object.get("capability_revision").?.string);
+
+    const supplied = try playIdentity(&arena, .{}, .{ .endpoint = "makai.agent-control", .revision = "makai-oap-core-v1" });
+    for (supplied.envelopes.items) |envelope| {
+        try testing.expectEqualStrings("makai-oap-core-v1", envelope.object.get("capability_revision").?.string);
+    }
 }
