@@ -578,8 +578,9 @@ compensated.
   from a working invocation against this pin in one-shot mode and is
   **unverified in stream-json mode**; the smoke gate is where that closes.
   Caller args follow the posture, so a caller can still add or override flags
-- tool gating versus tool surface: these are two mechanisms and this adapter
-  operates only the first. `--permission-prompt-tool stdio` routes every call
+- tool gating versus tool surface: these are two mechanisms, and which of
+  them this adapter operates is **settled only for the gate**.
+  `--permission-prompt-tool stdio` routes every call
   that consults the permission system to the control channel, and
   `--setting-sources=` stops a settings file pre-approving one behind the
   control layer's back. Whether `--allowedTools` is the second mechanism is
