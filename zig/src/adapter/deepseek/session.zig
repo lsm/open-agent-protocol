@@ -1054,6 +1054,22 @@ fn expectFinalRefusal(content: []const u8, want: []const u8) !void {
     try std.testing.expectEqualStrings(want, failureMessage(&reducer) orelse return error.NoRefusal);
 }
 
+test "a final tool call the port cannot hold settles as the assistant event's refusal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"tool-call\",\"id\":\"c1\",\"name\":\"read\",\"arguments\":\"not json\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+    try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&reducer) orelse return error.NoRefusal);
+    try std.testing.expectEqualStrings(
+        "deepseek native: invalid pinned message: invalid assistant/message",
+        failureMessage(&reducer) orelse return error.NoRefusal,
+    );
+}
+
 test "an unmappable final block reports which block and why, the way the oracle does" {
     try expectFinalRefusal(
         "[{\"type\":\"invented\"}]",
