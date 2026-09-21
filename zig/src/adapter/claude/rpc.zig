@@ -9,6 +9,12 @@ pub const Error = error{
 };
 
 pub const invalid_message_prefix = "claude rpc: invalid stream-json message";
+pub const invalid_control_prefix = "claude rpc: invalid control-plane message";
+pub const invalid_frame_prefix = "claude native: invalid frame for a known type";
+
+fn frameDetail(comptime detail: []const u8) []const u8 {
+    return invalid_frame_prefix ++ ": " ++ detail;
+}
 
 pub const Diagnostic = struct {
     message: []const u8 = "",
@@ -17,78 +23,109 @@ pub const Diagnostic = struct {
         self.message = invalid_message_prefix ++ ": " ++ detail;
         return Error.InvalidMessage;
     }
+
+    fn invalidControl(self: *Diagnostic, comptime detail: []const u8) Error {
+        self.message = invalid_control_prefix ++ ": " ++ detail;
+        return Error.InvalidControl;
+    }
+
+    fn refuseFrame(self: *Diagnostic, message: []const u8) Error {
+        self.message = message;
+        return Error.InvalidMessage;
+    }
 };
 
-pub const Need = enum { present, text, array };
+pub const Need = enum { present, text, array, number, boolean, text_array };
 
 pub const Member = struct {
     path: []const []const u8,
     need: Need = .text,
+    detail: []const u8,
 };
 
 const terminal_task_statuses = [_][]const u8{ "completed", "failed", "stopped", "killed" };
 
+const user_detail = frameDetail("user frame requires message.role and message.content");
+const assistant_detail = frameDetail("assistant frame requires message.model and message.content");
+const stream_event_detail = frameDetail("stream_event requires event, uuid, and session_id");
+const tool_progress_detail = frameDetail("tool_progress requires tool_use_id, tool_name, and session_id");
+const command_lifecycle_detail = frameDetail("command_lifecycle requires command_uuid, state, and session_id");
+const conversation_reset_detail = frameDetail("conversation_reset requires new_conversation_id, uuid, and session_id");
+const init_detail = frameDetail("init frame requires session_id, model, and tools");
+const session_state_detail = frameDetail("session_state_changed requires state");
+const task_started_detail = frameDetail("task_started requires task_id, description, uuid, and session_id");
+const task_progress_detail = frameDetail("task_progress requires task_id, description, uuid, and session_id");
+const task_notification_detail = frameDetail("task_notification requires task_id, status, output_file, summary, uuid, and session_id");
+const task_status_detail = frameDetail("task_notification status is not completed, failed, or stopped");
+const task_updated_detail = frameDetail("task_updated requires task_id");
+
 const user_members = [_]Member{
-    .{ .path = &.{ "message", "role" } },
-    .{ .path = &.{ "message", "content" }, .need = .present },
+    .{ .path = &.{ "message", "role" }, .detail = user_detail },
+    .{ .path = &.{ "message", "content" }, .need = .present, .detail = user_detail },
 };
 const assistant_members = [_]Member{
-    .{ .path = &.{ "message", "model" } },
-    .{ .path = &.{ "message", "content" }, .need = .array },
+    .{ .path = &.{ "message", "model" }, .detail = assistant_detail },
+    .{ .path = &.{ "message", "content" }, .need = .array, .detail = assistant_detail },
 };
 const result_members = [_]Member{
-    .{ .path = &.{"subtype"} },
-    .{ .path = &.{"session_id"} },
+    .{ .path = &.{"subtype"}, .detail = frameDetail("result frame requires subtype") },
+    .{ .path = &.{"session_id"}, .detail = frameDetail("result frame requires session_id") },
 };
 const stream_event_members = [_]Member{
-    .{ .path = &.{"event"}, .need = .present },
-    .{ .path = &.{"uuid"} },
-    .{ .path = &.{"session_id"} },
+    .{ .path = &.{"event"}, .need = .present, .detail = stream_event_detail },
+    .{ .path = &.{"uuid"}, .detail = stream_event_detail },
+    .{ .path = &.{"session_id"}, .detail = stream_event_detail },
 };
 const tool_progress_members = [_]Member{
-    .{ .path = &.{"tool_use_id"} },
-    .{ .path = &.{"tool_name"} },
-    .{ .path = &.{"session_id"} },
+    .{ .path = &.{"tool_use_id"}, .detail = tool_progress_detail },
+    .{ .path = &.{"tool_name"}, .detail = tool_progress_detail },
+    .{ .path = &.{"session_id"}, .detail = tool_progress_detail },
 };
 const command_lifecycle_members = [_]Member{
-    .{ .path = &.{"command_uuid"} },
-    .{ .path = &.{"state"} },
-    .{ .path = &.{"session_id"} },
+    .{ .path = &.{"command_uuid"}, .detail = command_lifecycle_detail },
+    .{ .path = &.{"state"}, .detail = command_lifecycle_detail },
+    .{ .path = &.{"session_id"}, .detail = command_lifecycle_detail },
 };
 const conversation_reset_members = [_]Member{
-    .{ .path = &.{"new_conversation_id"} },
-    .{ .path = &.{"uuid"} },
-    .{ .path = &.{"session_id"} },
+    .{ .path = &.{"new_conversation_id"}, .detail = conversation_reset_detail },
+    .{ .path = &.{"uuid"}, .detail = conversation_reset_detail },
+    .{ .path = &.{"session_id"}, .detail = conversation_reset_detail },
 };
 const init_members = [_]Member{
-    .{ .path = &.{"session_id"} },
-    .{ .path = &.{"model"} },
-    .{ .path = &.{"tools"}, .need = .array },
+    .{ .path = &.{"session_id"}, .detail = init_detail },
+    .{ .path = &.{"model"}, .detail = init_detail },
+    .{ .path = &.{"tools"}, .need = .array, .detail = init_detail },
 };
 const session_state_members = [_]Member{
-    .{ .path = &.{"state"} },
+    .{ .path = &.{"state"}, .detail = session_state_detail },
 };
-const task_identity_members = [_]Member{
-    .{ .path = &.{"task_id"} },
-    .{ .path = &.{"description"} },
-    .{ .path = &.{"uuid"} },
-    .{ .path = &.{"session_id"} },
+const task_started_members = [_]Member{
+    .{ .path = &.{"task_id"}, .detail = task_started_detail },
+    .{ .path = &.{"description"}, .detail = task_started_detail },
+    .{ .path = &.{"uuid"}, .detail = task_started_detail },
+    .{ .path = &.{"session_id"}, .detail = task_started_detail },
+};
+const task_progress_members = [_]Member{
+    .{ .path = &.{"task_id"}, .detail = task_progress_detail },
+    .{ .path = &.{"description"}, .detail = task_progress_detail },
+    .{ .path = &.{"uuid"}, .detail = task_progress_detail },
+    .{ .path = &.{"session_id"}, .detail = task_progress_detail },
 };
 const task_notification_members = [_]Member{
-    .{ .path = &.{"task_id"} },
-    .{ .path = &.{"status"} },
-    .{ .path = &.{"output_file"} },
-    .{ .path = &.{"summary"} },
-    .{ .path = &.{"uuid"} },
-    .{ .path = &.{"session_id"} },
+    .{ .path = &.{"task_id"}, .detail = task_notification_detail },
+    .{ .path = &.{"status"}, .detail = task_notification_detail },
+    .{ .path = &.{"output_file"}, .detail = task_notification_detail },
+    .{ .path = &.{"summary"}, .detail = task_notification_detail },
+    .{ .path = &.{"uuid"}, .detail = task_notification_detail },
+    .{ .path = &.{"session_id"}, .detail = task_notification_detail },
 };
 const task_updated_members = [_]Member{
-    .{ .path = &.{"task_id"} },
+    .{ .path = &.{"task_id"}, .detail = task_updated_detail },
 };
 const can_use_tool_members = [_]Member{
-    .{ .path = &.{ "request", "tool_name" } },
-    .{ .path = &.{ "request", "tool_use_id" } },
-    .{ .path = &.{ "request", "input" }, .need = .present },
+    .{ .path = &.{ "request", "tool_name" }, .detail = frameDetail("can_use_tool requires tool_name, input, and tool_use_id") },
+    .{ .path = &.{ "request", "tool_use_id" }, .detail = frameDetail("can_use_tool requires tool_name, input, and tool_use_id") },
+    .{ .path = &.{ "request", "input" }, .need = .present, .detail = frameDetail("can_use_tool requires tool_name, input, and tool_use_id") },
 };
 
 pub const Kind = enum {
@@ -152,16 +189,83 @@ fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value 
     return null;
 }
 
-fn satisfies(object: std.json.ObjectMap, required: []const Member) bool {
+fn unsatisfied(object: std.json.ObjectMap, required: []const Member) ?[]const u8 {
     for (required) |need| {
-        const value = member(object, need.path) orelse return false;
+        const value = member(object, need.path) orelse return need.detail;
         switch (need.need) {
-            .present => {},
-            .text => if (value != .string or value.string.len == 0) return false,
-            .array => if (value != .array) return false,
+            .text => if (value != .string or value.string.len == 0) return need.detail,
+            .array => if (value != .array) return need.detail,
+            else => {},
         }
     }
-    return true;
+    return null;
+}
+
+const Declared = struct {
+    key: []const u8,
+    need: Need,
+};
+
+const result_declared = [_]Declared{
+    .{ .key = "duration_ms", .need = .number },
+    .{ .key = "duration_api_ms", .need = .number },
+    .{ .key = "is_error", .need = .boolean },
+    .{ .key = "num_turns", .need = .number },
+    .{ .key = "queued_turn_count", .need = .number },
+    .{ .key = "api_error_status", .need = .number },
+    .{ .key = "total_cost_usd", .need = .number },
+    .{ .key = "errors", .need = .text_array },
+    .{ .key = "user_message_uuid", .need = .text },
+    .{ .key = "user_message_uuids", .need = .text_array },
+    .{ .key = "terminal_reason", .need = .text },
+    .{ .key = "result", .need = .text },
+    .{ .key = "stop_reason", .need = .text },
+    .{ .key = "uuid", .need = .text },
+};
+const stream_event_declared = [_]Declared{
+    .{ .key = "user_message_uuid", .need = .text },
+    .{ .key = "user_message_uuids", .need = .text_array },
+};
+const assistant_declared = [_]Declared{
+    .{ .key = "user_message_uuid", .need = .text },
+    .{ .key = "user_message_uuids", .need = .text_array },
+    .{ .key = "is_api_error_message", .need = .boolean },
+    .{ .key = "error", .need = .text },
+};
+const task_updated_declared = [_]Declared{
+    .{ .key = "uuid", .need = .text },
+    .{ .key = "session_id", .need = .text },
+};
+
+fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared {
+    if (std.mem.eql(u8, frame_type, "result")) return &result_declared;
+    if (std.mem.eql(u8, frame_type, "stream_event")) return &stream_event_declared;
+    if (std.mem.eql(u8, frame_type, "assistant")) return &assistant_declared;
+    if (std.mem.eql(u8, frame_type, "system") and std.mem.eql(u8, subtype, "task_updated")) return &task_updated_declared;
+    return &.{};
+}
+
+fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
+    for (declared) |need| {
+        const value = object.get(need.key) orelse continue;
+        if (value == .null) continue;
+        const ok = switch (need.need) {
+            .present => true,
+            .text => value == .string,
+            .array => value == .array,
+            .number => value == .integer or value == .float,
+            .boolean => value == .bool,
+            .text_array => blk: {
+                if (value != .array) break :blk false;
+                for (value.array.items) |item| {
+                    if (item != .string) break :blk false;
+                }
+                break :blk true;
+            },
+        };
+        if (!ok) return true;
+    }
+    return false;
 }
 
 fn observationMembers(frame_type: []const u8, subtype: []const u8) []const Member {
@@ -175,8 +279,8 @@ fn observationMembers(frame_type: []const u8, subtype: []const u8) []const Membe
     if (!std.mem.eql(u8, frame_type, "system")) return &.{};
     if (std.mem.eql(u8, subtype, "init")) return &init_members;
     if (std.mem.eql(u8, subtype, "session_state_changed")) return &session_state_members;
-    if (std.mem.eql(u8, subtype, "task_started")) return &task_identity_members;
-    if (std.mem.eql(u8, subtype, "task_progress")) return &task_identity_members;
+    if (std.mem.eql(u8, subtype, "task_started")) return &task_started_members;
+    if (std.mem.eql(u8, subtype, "task_progress")) return &task_progress_members;
     if (std.mem.eql(u8, subtype, "task_notification")) return &task_notification_members;
     if (std.mem.eql(u8, subtype, "task_updated")) return &task_updated_members;
     return &.{};
@@ -203,8 +307,8 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     if (parsed != .object) return report.invalid("frame must be exactly one JSON object");
     const object = parsed.object;
 
-    const type_value = object.get("type") orelse return Error.InvalidMessage;
-    if (type_value != .string or type_value.string.len == 0) return Error.InvalidMessage;
+    const type_value = object.get("type") orelse return report.invalid("frame requires type");
+    if (type_value != .string or type_value.string.len == 0) return report.invalid("frame requires type");
 
     var message = Message{
         .kind = .observation,
@@ -213,33 +317,33 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         .object = parsed,
     };
     if (object.get("subtype")) |subtype| {
-        if (subtype != .string or subtype.string.len == 0) return Error.InvalidMessage;
+        if (subtype != .string or subtype.string.len == 0) return report.invalid("frame subtype must not be empty");
         message.subtype = subtype.string;
     }
 
     if (std.mem.eql(u8, message.type, type_control_request)) {
         message.kind = .control_request;
-        const id = object.get("request_id") orelse return Error.InvalidControl;
-        if (id != .string or id.string.len == 0) return Error.InvalidControl;
+        const id = object.get("request_id") orelse return report.invalidControl("control request requires request_id");
+        if (id != .string or id.string.len == 0) return report.invalidControl("control request requires request_id");
         message.request_id = id.string;
-        const request = object.get("request") orelse return Error.InvalidControl;
-        if (request != .object) return Error.InvalidControl;
-        const subtype = request.object.get("subtype") orelse return Error.InvalidControl;
-        if (subtype != .string or subtype.string.len == 0) return Error.InvalidControl;
+        const request = object.get("request") orelse return report.invalidControl("control request requires request");
+        if (request != .object) return report.invalidControl("control request requires request");
+        const subtype = request.object.get("subtype") orelse return report.invalidControl("control request requires request.subtype");
+        if (subtype != .string or subtype.string.len == 0) return report.invalidControl("control request requires request.subtype");
         message.subtype = subtype.string;
-        if (std.mem.eql(u8, message.subtype, "can_use_tool") and !satisfies(object, &can_use_tool_members)) {
-            return report.invalid("can_use_tool requires tool_name, input, and tool_use_id");
+        if (std.mem.eql(u8, message.subtype, "can_use_tool")) {
+            if (unsatisfied(object, &can_use_tool_members)) |detail| return report.refuseFrame(detail);
         }
         return message;
     }
     if (std.mem.eql(u8, message.type, type_control_response)) {
         message.kind = .control_response;
-        const response = object.get("response") orelse return Error.InvalidControl;
-        if (response != .object) return Error.InvalidControl;
-        const state = response.object.get("subtype") orelse return Error.InvalidControl;
-        if (state != .string or state.string.len == 0) return Error.InvalidControl;
-        const id = response.object.get("request_id") orelse return Error.InvalidControl;
-        if (id != .string or id.string.len == 0) return Error.InvalidControl;
+        const response = object.get("response") orelse return report.invalidControl("control response requires response");
+        if (response != .object) return report.invalidControl("control response requires response");
+        const state = response.object.get("subtype") orelse return report.invalidControl("control response requires response.subtype");
+        if (state != .string or state.string.len == 0) return report.invalidControl("control response requires response.subtype");
+        const id = response.object.get("request_id") orelse return report.invalidControl("control response requires response.request_id");
+        if (id != .string or id.string.len == 0) return report.invalidControl("control response requires response.request_id");
         var envelope = ControlResponse{ .request_id = id.string };
         if (std.mem.eql(u8, state.string, "success")) {
             envelope.success = true;
@@ -247,25 +351,28 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
                 if (payload != .null) envelope.response = payload;
             }
         } else if (std.mem.eql(u8, state.string, "error")) {
-            const detail = response.object.get("error") orelse return Error.InvalidControl;
-            if (detail != .string or detail.string.len == 0) return Error.InvalidControl;
+            const detail = response.object.get("error") orelse return report.invalidControl("an error control response requires error");
+            if (detail != .string or detail.string.len == 0) return report.invalidControl("an error control response requires error");
             envelope.err = detail.string;
-        } else return Error.InvalidControl;
+        } else return report.invalidControl("control response subtype is neither success nor error");
         message.response = envelope;
         return message;
     }
     if (std.mem.eql(u8, message.type, type_control_cancel)) {
         message.kind = .control_cancel;
-        const id = object.get("request_id") orelse return Error.InvalidControl;
-        if (id != .string or id.string.len == 0) return Error.InvalidControl;
+        const id = object.get("request_id") orelse return report.invalidControl("control cancel requires request_id");
+        if (id != .string or id.string.len == 0) return report.invalidControl("control cancel requires request_id");
         message.request_id = id.string;
         return message;
     }
-    if (!satisfies(object, observationMembers(message.type, message.subtype))) {
-        return report.invalid("frame is missing a member its type requires");
+    if (unsatisfied(object, observationMembers(message.type, message.subtype))) |detail| {
+        return report.refuseFrame(detail);
     }
     if (std.mem.eql(u8, message.type, "system") and std.mem.eql(u8, message.subtype, "task_notification") and !taskStatusIsTerminal(object)) {
-        return report.invalid("task_notification status is not a terminal one");
+        return report.refuseFrame(task_status_detail);
+    }
+    if (wrongType(object, declaredMembers(message.type, message.subtype))) {
+        return report.refuseFrame(frameDetail("frame declares a member of the wrong type"));
     }
     return message;
 }
@@ -453,4 +560,50 @@ test "a permission ask missing what the endpoint must answer is fatal" {
     try refuses(&arena, prefix ++ "\"tool_name\":\"Bash\",\"tool_use_id\":\"t\"}}");
     try accepts(&arena, prefix ++ "\"tool_name\":\"Bash\",\"tool_use_id\":\"t\",\"input\":{}}}");
     try accepts(&arena, "{\"type\":\"control_request\",\"request_id\":\"r1\",\"request\":{\"subtype\":\"hook_callback\"}}");
+}
+
+test "a refusal names itself the way the oracle does" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var control = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request\":{\"subtype\":\"can_use_tool\"}}", &control));
+    try testing.expect(std.mem.startsWith(u8, control.message, invalid_control_prefix ++ ": "));
+
+    var cancel = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_cancel_request\"}", &cancel));
+    try testing.expect(std.mem.startsWith(u8, cancel.message, invalid_control_prefix ++ ": "));
+
+    var response = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_response\",\"response\":{\"subtype\":\"other\",\"request_id\":\"r\"}}", &response));
+    try testing.expect(std.mem.startsWith(u8, response.message, invalid_control_prefix ++ ": "));
+
+    var typeless = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"subtype\":\"init\"}", &typeless));
+    try testing.expect(std.mem.startsWith(u8, typeless.message, invalid_message_prefix ++ ": "));
+
+    var frame = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\"}", &frame));
+    try testing.expectEqualStrings(invalid_frame_prefix ++ ": init frame requires session_id, model, and tools", frame.message);
+
+    var gate = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{}}}", &gate));
+    try testing.expectEqualStrings(invalid_frame_prefix ++ ": can_use_tool requires tool_name, input, and tool_use_id", gate.message);
+}
+
+test "a declared member of the wrong type is fatal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const result = "{\"type\":\"result\",\"session_id\":\"s\",\"subtype\":\"success\",";
+
+    try refuses(&arena, result ++ "\"is_error\":\"yes\"}");
+    try refuses(&arena, result ++ "\"queued_turn_count\":\"2\"}");
+    try refuses(&arena, result ++ "\"duration_ms\":\"130\"}");
+    try refuses(&arena, result ++ "\"errors\":[7]}");
+    try refuses(&arena, result ++ "\"user_message_uuids\":\"turn-1\"}");
+    try refuses(&arena, result ++ "\"terminal_reason\":7}");
+
+    try accepts(&arena, result ++ "\"is_error\":true,\"queued_turn_count\":2,\"duration_ms\":130,\"errors\":[\"a\"],\"user_message_uuids\":[\"turn-1\"]}");
+    try accepts(&arena, result ++ "\"is_error\":false,\"queued_turn_count\":null,\"stop_reason\":null}");
+    try accepts(&arena, result ++ "\"total_cost_usd\":0.5}");
 }

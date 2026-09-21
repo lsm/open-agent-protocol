@@ -881,6 +881,24 @@ case:
   `claude_process_exit` and makes the session unusable. Every fixture is
   well-formed, so no case reaches any of it.
 
+Three refinements came out of review of the port, and each is a bound worth
+stating rather than a detail. **A refusal must name itself**: the oracle wraps
+every one in a named error -- `claude rpc: invalid stream-json message`,
+`claude rpc: invalid control-plane message`, `claude native: invalid frame for
+a known type` -- and the run it fails carries that text as its message, so a
+port that refuses the right frames with an empty diagnostic still diverges
+where anyone would look first. **The typed decode refuses more than missing
+members**: `is_error: "yes"` or `queued_turn_count: "2"` on an otherwise
+complete result frame kills the Go transport, because the members are declared
+`bool` and `*int`. The Zig port now carries a second table for that, covering
+the declared members of `result`, `stream_event`, `assistant` and
+`system/task_updated` -- the frames whose members the reducer reads. It is not
+every declared field of every frame, and the difference is the honest bound: a
+wrong-typed member of a frame neither implementation reads is fatal in Go and
+ignored here. **And a submission arriving under a live run is refused**, with
+`ErrRunActive` in the oracle, rather than replacing it; silently substituting
+orphans the first run's tools and gates and restarts its sequence.
+
 The last one carries a lesson about the sweep itself. Porting it rejected
 thirty-three of this port's own unit-test frames, because they had been written
 minimal -- an `assistant` frame with content and no model, an `init` with a

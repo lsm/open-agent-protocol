@@ -101,7 +101,8 @@ pub const Reducer = struct {
     }
 
     pub fn submit(self: *Reducer, submission_uuid: []const u8) !void {
-        if (self.unusable) return;
+        if (self.unusable) return error.SessionClosed;
+        if (self.run != null) return error.RunActive;
         const submission_id = try self.nextID("submission");
         const message_id = try self.nextID("message");
         self.run = Run{
@@ -1022,7 +1023,7 @@ test "a run reports the model captured at submit, not the one init later publish
         \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
     try observeText(&reducer, scratch,
-        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","uuid":"r1"}
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
     );
 
     try reducer.submit("turn-2");
@@ -1608,10 +1609,9 @@ test "a session the harness broke admits nothing further" {
     );
     try testing.expectEqualStrings("model-b", reducer.current_model);
 
-    try reducer.submit("turn-2");
+    try testing.expectError(error.SessionClosed, reducer.submit("turn-2"));
     try testing.expect(reducer.run == null);
 
-    try startedRun(&reducer, scratch, "turn-2");
     try observeText(&reducer, scratch,
         \\{"type":"result","session_id":"s","subtype":"success","result":"two","user_message_uuid":"turn-2","uuid":"r1"}
     );
@@ -1749,6 +1749,30 @@ test "a broken session still adopts what it is told while idle" {
     );
     try testing.expectEqualStrings("model-b", reducer.current_model);
     try testing.expectEqual(settled, reducer.envelopes.items.len);
+}
+
+test "a submission arriving under a live run is refused, not substituted" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try testing.expectError(error.RunActive, reducer.submit("turn-2"));
+    try testing.expectEqualStrings("turn-1", reducer.run.?.submission_uuid);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
+    );
+    try testing.expectError(error.RunActive, reducer.submit("turn-2"));
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try reducer.submit("turn-2");
+    try testing.expectEqualStrings("turn-2", reducer.run.?.submission_uuid);
 }
 
 test "an init outside a pending run is adopted when it arrives" {
