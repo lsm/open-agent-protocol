@@ -244,6 +244,7 @@ const user_nested = [_]Nested{
 const assistant_nested = [_]Nested{
     .{ .path = &.{ "message", "content" }, .need = .object_array },
 };
+
 const task_updated_nested = [_]Nested{
     .{ .path = &.{"patch"}, .need = .object },
 };
@@ -253,6 +254,25 @@ fn nestedMembers(frame_type: []const u8, subtype: []const u8) []const Nested {
     if (std.mem.eql(u8, frame_type, "assistant")) return &assistant_nested;
     if (std.mem.eql(u8, frame_type, "system") and std.mem.eql(u8, subtype, "task_updated")) return &task_updated_nested;
     return &.{};
+}
+
+const block_text_members = [_][]const u8{ "type", "text", "thinking", "id", "name", "tool_use_id" };
+
+fn wrongContentBlock(object: std.json.ObjectMap) bool {
+    const content = member(object, &.{ "message", "content" }) orelse return false;
+    if (content != .array) return false;
+    for (content.array.items) |item| {
+        if (item != .object) return true;
+        for (block_text_members) |key| {
+            const value = item.object.get(key) orelse continue;
+            if (value == .null) continue;
+            if (value != .string) return true;
+        }
+        if (item.object.get("is_error")) |flag| {
+            if (flag != .null and flag != .bool) return true;
+        }
+    }
+    return false;
 }
 
 fn wrongNestedType(object: std.json.ObjectMap, nested: []const Nested) bool {
@@ -459,7 +479,8 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status {s} is not completed, failed, or stopped", shown);
     }
     if (wrongType(object, declaredMembers(message.type, message.subtype)) or
-        wrongNestedType(object, nestedMembers(message.type, message.subtype)))
+        wrongNestedType(object, nestedMembers(message.type, message.subtype)) or
+        (std.mem.eql(u8, message.type, "assistant") and wrongContentBlock(object)))
     {
         return report.refuseFrame(frameDetail("frame declares a member of the wrong type"));
     }
@@ -800,4 +821,21 @@ test "the typed table covers the members the reducer gates on" {
     const updated = "{\"type\":\"system\",\"subtype\":\"task_updated\",\"session_id\":\"s\",\"task_id\":\"t\",";
     try refuses(&arena, updated ++ "\"patch\":{\"status\":7}}");
     try accepts(&arena, updated ++ "\"patch\":{\"status\":\"killed\"}}");
+}
+
+test "an assistant content block is typed the way the oracle types it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const assistant = "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[";
+
+    try refuses(&arena, assistant ++ "{\"type\":7}]}}");
+    try refuses(&arena, assistant ++ "{\"type\":\"tool_use\",\"id\":7,\"name\":\"Bash\"}]}}");
+    try refuses(&arena, assistant ++ "{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":7}]}}");
+    try refuses(&arena, assistant ++ "{\"type\":\"tool_result\",\"tool_use_id\":7}]}}");
+    try refuses(&arena, assistant ++ "{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"is_error\":\"yes\"}]}}");
+
+    try accepts(&arena, assistant ++ "{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{}}]}}");
+    try accepts(&arena, assistant ++ "{\"type\":\"tool_use\",\"id\":\"t1\"}]}}");
+    try accepts(&arena, assistant ++ "{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"is_error\":true}]}}");
+    try accepts(&arena, assistant ++ "{\"type\":\"text\",\"text\":\"hi\"}]}}");
 }
