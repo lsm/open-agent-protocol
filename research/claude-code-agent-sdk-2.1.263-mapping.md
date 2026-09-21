@@ -585,8 +585,8 @@ compensated.
   tool names "to allow" and documents a separate `--tools` as the list of
   available built-ins, which would make the posture a pre-approval list and
   not a boundary. Six patch releases separate that help text from the pinned
-  binary, so the section under "the control layer does not see every tool
-  call" carries the reasoning and neither reading is asserted here.
+  binary, so the section under "Settled for an unrestricted session" carries
+  the reasoning and neither reading is asserted here.
   **What holds either way, for an unrestricted session**: the default
   permission mode auto-approves safe commands without asking anyone, as probe
   6 records against the pinned binary, so a control layer sees the calls that
