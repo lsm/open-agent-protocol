@@ -394,8 +394,10 @@ pub const Reducer = struct {
     }
 
     pub fn pendingInteraction(self: *Reducer, kind: []const u8) ?*const Interaction {
+        const run = self.active() orelse return null;
         for (self.interactions.items) |*binding| {
             if (binding.resolved) continue;
+            if (!std.mem.eql(u8, binding.run_id, run.id)) continue;
             if (!std.mem.eql(u8, binding.kind, kind)) continue;
             return binding;
         }
@@ -622,8 +624,12 @@ pub const Reducer = struct {
         const binding = self.interactions.items[at];
         if (!std.mem.eql(u8, binding.run_id, run.id)) return Error.InteractionNotFound;
         if (answers.len != binding.questions.len) return Error.InvalidResolution;
-        for (binding.questions, answers) |question, answer| {
+        for (answers, 0..) |answer, index| {
+            const question = questionNamed(binding.questions, answer.question_id) orelse return Error.InvalidResolution;
             if (!validAnswer(question, answer)) return Error.InvalidResolution;
+            for (answers[0..index]) |earlier| {
+                if (std.mem.eql(u8, earlier.question_id, answer.question_id)) return Error.InvalidResolution;
+            }
         }
         self.interactions.items[at].resolved = true;
         const body = try self.resolvedPayload(binding, run, "submitted", answers);
@@ -713,8 +719,14 @@ fn offers(question: Question, id: []const u8) bool {
     return false;
 }
 
+fn questionNamed(questions: []const Question, id: []const u8) ?Question {
+    for (questions) |question| {
+        if (std.mem.eql(u8, question.id, id)) return question;
+    }
+    return null;
+}
+
 fn validAnswer(question: Question, answer: Answer) bool {
-    if (!std.mem.eql(u8, question.id, answer.question_id)) return false;
     const has_text = answer.text.len > 0;
     if (has_text and answer.selected_option_ids.len > 0) return false;
     if (std.mem.eql(u8, question.kind, "text")) {
@@ -1196,4 +1208,65 @@ test "a gate left open by one run is not answerable from the next" {
     try testing.expectEqualStrings("run.started", typeAt(&reducer, 4));
     try testing.expectError(Error.InteractionNotFound, reducer.resolve(stranded, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
     try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
+}
+
+test "a batch resolution matches each answer to the question it names, in any order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"two","question":"second?","choices":["b"]}]}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+    try reducer.resolve(interaction, &[_]Answer{
+        .{ .question_id = "two", .selected_option_ids = &[_][]const u8{"b"} },
+        .{ .question_id = "one", .selected_option_ids = &[_][]const u8{"a"} },
+    });
+
+    const answered = payloadAt(&reducer, 3).get("answers").?.array;
+    try testing.expectEqual(@as(usize, 2), answered.items.len);
+    try testing.expectEqualStrings("two", answered.items[0].object.get("question_id").?.string);
+    try testing.expectEqualStrings("one", answered.items[1].object.get("question_id").?.string);
+}
+
+test "a batch resolution answering one question twice leaves the other unanswered and is refused" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"two","question":"second?","choices":["b"]}]}
+    );
+    const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
+
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{
+        .{ .question_id = "one", .selected_option_ids = &[_][]const u8{"a"} },
+        .{ .question_id = "one", .selected_option_ids = &[_][]const u8{"a"} },
+    }));
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(interaction, &[_]Answer{
+        .{ .question_id = "one", .selected_option_ids = &[_][]const u8{"a"} },
+        .{ .question_id = "three", .selected_option_ids = &[_][]const u8{"b"} },
+    }));
+    try testing.expectEqual(@as(usize, 3), reducer.envelopes.items.len);
+}
+
+test "a gate stranded by a settled run is not offered in place of the new run's own" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
+    );
+    const stranded = reducer.pendingInteraction("clarify").?.id;
+    try feed(&reducer, scratch, try event(scratch, "message.complete",
+        \\{"status":"complete","text":"done"}
+    ));
+    try testing.expect(reducer.pendingInteraction("clarify") == null);
+
+    try reducer.submit();
+    try feed(&reducer, scratch, try bare(scratch, "message.start"));
+    try feed(&reducer, scratch, try event(scratch, "clarify.request",
+        \\{"request_id":"bbbb2222","question":"again?","choices":["b"]}
+    ));
+
+    const fresh = reducer.pendingInteraction("clarify").?;
+    try testing.expect(!std.mem.eql(u8, stranded, fresh.id));
+    try testing.expectEqualStrings("bbbb2222", fresh.request_id);
 }
