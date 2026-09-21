@@ -1924,15 +1924,32 @@ test "a permission tool call decoded by value splits the same way the oracle spl
     try expectPermissionRefusal("{\"toolCallId\":\"t\",\"title\":null}", "acp_invalid_tool_call", "tool id and title are required");
 }
 
-test "a raw member of a permission tool call takes any JSON the oracle takes" {
+const raw_tool_members = [_][]const u8{ "rawInput", "rawOutput", "content", "locations" };
+
+test "every raw member of a permission tool call takes any JSON, because a RawMessage cannot fail" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try openRun(&arena);
-    try feed(&reducer, arena.allocator(),
+    const scratch = arena.allocator();
+
+    for (raw_tool_members) |member| {
+        for ([_][]const u8{ "7", "\"x\"", "null", "[]", "{}", "true" }) |value| {
+            var reducer = try openRun(&arena);
+            const text = try std.mem.concat(scratch, u8, &.{
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"native-session\",\"toolCall\":{\"toolCallId\":\"t\",\"title\":\"T\",\"",
+                member,
+                "\":",
+                value,
+                "},\"options\":[{\"optionId\":\"a\",\"name\":\"A\",\"kind\":\"allow_once\"}]}}",
+            });
+            try feed(&reducer, scratch, text);
+            try testing.expectEqualStrings("action.call.requested", typeAt(&reducer, 1));
+            try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, 2));
+        }
+    }
+
+    var carried = try openRun(&arena);
+    try feed(&carried, scratch,
         \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T","rawInput":7},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
     );
-
-    try testing.expectEqualStrings("action.call.requested", typeAt(&reducer, 1));
-    try testing.expectEqual(@as(i64, 7), payloadAt(&reducer, 1).get("arguments_json").?.integer);
-    try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, 2));
+    try testing.expectEqual(@as(i64, 7), payloadAt(&carried, 1).get("arguments_json").?.integer);
 }
