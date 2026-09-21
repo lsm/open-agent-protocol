@@ -218,7 +218,7 @@ fn typedStringArray(raw: std.json.Value, name: []const u8) !void {
     if (value == .null) return;
     if (value != .array) return Error.InvalidFrame;
     for (value.array.items) |entry| {
-        if (entry != .string) return Error.InvalidFrame;
+        if (entry != .string and entry != .null) return Error.InvalidFrame;
     }
 }
 
@@ -588,7 +588,16 @@ fn toolPayload(reducer: *Reducer, tool: *ToolState, carry_arguments: bool, carry
     return .{ .object = payload.* };
 }
 
+fn toolIdentifiers(reducer: *Reducer, event: std.json.Value) !bool {
+    typedStrings(event, &.{ "toolCallId", "toolName" }) catch {
+        try failRun(reducer, "pi_invalid_event", "tool event carried an identifier that is not a string");
+        return false;
+    };
+    return true;
+}
+
 fn startTool(reducer: *Reducer, event: std.json.Value) !void {
+    if (!try toolIdentifiers(reducer, event)) return;
     const native_id = textOf(event, "toolCallId");
     const name = textOf(event, "toolName");
     const args = memberOf(event, "args") orelse {
@@ -616,6 +625,7 @@ fn startTool(reducer: *Reducer, event: std.json.Value) !void {
 }
 
 fn updateTool(reducer: *Reducer, event: std.json.Value) !void {
+    if (!try toolIdentifiers(reducer, event)) return;
     const native_id = textOf(event, "toolCallId");
     const tool = findTool(reducer, native_id) orelse {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "tool update without matching active start");
@@ -634,6 +644,7 @@ fn updateTool(reducer: *Reducer, event: std.json.Value) !void {
 }
 
 fn endTool(reducer: *Reducer, event: std.json.Value) !void {
+    if (!try toolIdentifiers(reducer, event)) return;
     const native_id = textOf(event, "toolCallId");
     const tool = findTool(reducer, native_id) orelse {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "tool end without matching active start");
@@ -908,9 +919,8 @@ fn offers(interaction: *Interaction, id: []const u8) bool {
 }
 
 pub fn resolveExtension(reducer: *Reducer, interaction_id: []const u8, answer: []const u8) !void {
-    if (reducer.terminal) return;
     const interaction = findInteraction(reducer, interaction_id) orelse return Error.InteractionNotFound;
-    if (interaction.resolved) return Error.InteractionResolved;
+    if (interaction.resolved or reducer.terminal) return Error.InteractionResolved;
     const selected = try reducer.object();
     try selected.put(reducer.arena, "question_id", Reducer.str("value"));
     if (interaction.text) {
@@ -1669,4 +1679,41 @@ test "an empty answer to a text interaction is refused, not silently dropped" {
     try std.testing.expect(!reducer.interactions.items[0].resolved);
     try resolveExtension(&reducer, reducer.interactions.items[0].id, "Ada");
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
+}
+
+test "a null entry in addedToolNames is the empty string, as the oracle decodes it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const head = "{\"role\":\"toolResult\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"content\":\"ok\",\"isError\":false,\"timestamp\":1";
+    try std.testing.expect(try decodeWireMessage(try parse(a, head ++ ",\"addedToolNames\":[null]}")) == null);
+    try std.testing.expect(try decodeWireMessage(try parse(a, head ++ ",\"addedToolNames\":[\"a\",null]}")) == null);
+    try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, head ++ ",\"addedToolNames\":[7]}")));
+}
+
+test "a tool event identifier that is not a string is an event defect, not a lifecycle one" {
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":7,\"args\":{}}",
+    }, "pi_invalid_event");
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":7,\"toolName\":\"grep\",\"args\":{}}",
+    }, "pi_invalid_event");
+    try expectRefusal(&.{
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+        "{\"type\":\"tool_execution_end\",\"toolCallId\":7,\"toolName\":\"grep\",\"result\":\"r\",\"isError\":false}",
+    }, "pi_invalid_event");
+}
+
+test "a resolution after settlement is refused rather than silently accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    const id = reducer.interactions.items[0].id;
+    try apply(&reducer, try parse(a, agentEndWith("\"done\"")));
+    try apply(&reducer, try parse(a, settled_text));
+
+    try std.testing.expectError(Error.InteractionResolved, resolveExtension(&reducer, id, "yes"));
+    try std.testing.expectError(Error.InteractionNotFound, resolveExtension(&reducer, "interaction-nonesuch", "yes"));
 }
