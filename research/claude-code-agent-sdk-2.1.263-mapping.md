@@ -580,20 +580,18 @@ compensated.
   operates only the first. `--permission-prompt-tool stdio` routes every call
   that consults the permission system to the control channel, and
   `--setting-sources=` stops a settings file pre-approving one behind the
-  control layer's back. `--allowedTools` is not the second mechanism. The CLI
-  documents it as a list of tool names "to allow", and documents a separate
-  `--tools` as the list of available built-ins — `--restricted` removes the
-  code-running tools "unless `--tools` names them". This adapter never passes
-  `--tools` itself, so unless a caller adds one through `Config.Args`, the
-  child's surface is the full built-in set whatever the posture says. Naming a tool therefore does not keep the others out of
-  the prompt; it exempts the named one from asking, which removes it from the
-  gate's coverage rather than adding to it. `UnrestrictedTools()` passes no
-  tool flag at all and is the posture that adds no exemptions of its own.
-  **Neither mechanism is a complete boundary**: the default permission mode
-  auto-approves safe commands without asking anyone, as probe 6 records, so a
-  control layer sees the calls that ask and not the ones the CLI settles by
-  itself. This adapter gates the calls that ask, and must never be described
-  as gating every call
+  control layer's back. Whether `--allowedTools` is the second mechanism is
+  **not settled at this pin**. `--help` on 2.1.269 documents it as a list of
+  tool names "to allow" and documents a separate `--tools` as the list of
+  available built-ins, which would make the posture a pre-approval list and
+  not a boundary. Six patch releases separate that help text from the pinned
+  binary, so the section under "the control layer does not see every tool
+  call" carries the reasoning and neither reading is asserted here.
+  **What holds either way**: the default permission mode auto-approves safe
+  commands without asking anyone, as probe 6 records against the pinned
+  binary, so a control layer sees the calls that ask and not the ones the CLI
+  settles by itself. This adapter gates the calls that ask, and must never be
+  described as gating every call
 - initialize / capability revision: `emulated` (initialize exchange at open;
   per-turn `system/init` refresh recorded)
 - session association (process + initialize + first-turn init frame): `emulated`
@@ -1183,11 +1181,25 @@ and the control layer is never told about the ones it decides for.
 
 So a control layer on this adapter at this pin can inspect and deny an
 ask-gated call and cannot inspect an auto-approved one. That is the property
-to design against. `UnrestrictedTools()` with the gate answered by the control
-layer is still the posture to prefer, because it is the one that adds no
-further exemptions — but it buys coverage of the asking calls, not of all of
-them. `AllowTools(...)` reads like the conservative choice and is not: each
-name it carries is one more tool the control layer will not be asked about.
+to design against.
+
+Which posture is safer **cannot be stated here**, because the two readings of
+`--allowedTools` below give opposite answers and only one of them can be
+right. Read as a pre-approval list, `AllowTools(...)` is the dangerous choice:
+each name is one more tool the control layer is never asked about, and
+`UnrestrictedTools()` adds no exemptions. Read as a surface allowlist,
+`AllowTools(...)` is the safer one: the omitted tools cannot be attempted at
+all, where `UnrestrictedTools()` leaves every built-in exposed to the
+auto-approval probe 6 recorded. An earlier revision of this section
+recommended `UnrestrictedTools()` outright. That was advice resting on the
+half of the evidence that is not verified, and it is withdrawn.
+
+What holds under both readings is narrower and is the thing to design
+against: neither posture makes the control layer the boundary, because the
+CLI settles some calls without asking anyone. A caller who needs a real
+boundary has to establish which flag bounds the surface on its own pinned
+binary and pass it through `Config.Args`, rather than inferring it from the
+posture.
 
 What remains genuinely open is narrower, and it is a lever this adapter does
 not currently pull. `--permission-mode` selects the mode the auto-approval
@@ -1219,17 +1231,20 @@ and "the default spawn exposes every built-in" as the best available reading
 rather than as established, and do not build a security boundary on either
 until the smoke gate runs them against 2.1.263.
 
-Nothing in the conservative advice depends on the unverified half. Probe 6
-alone is enough to say the gate is partial, and `UnrestrictedTools()` is the
-posture that adds no exemptions under either reading of the flag.
+Probe 6 alone is enough for the claim that the gate is partial, which is why
+that one stands. It is not enough to rank the two postures, and the paragraph
+above no longer tries to.
 
 The corpus cannot carry any of this: its `can_use_tool` frames are scripted,
 so they prove the reducer surfaces a gate it is given, never which calls the
 CLI raises one for. The assertions belong in the smoke gate, which is the
 only thing here that runs 2.1.263 — that an ask-gated command produces a
 `can_use_tool` before it settles, that a safe command does not, and that
-`AllowTools("Bash")` exempts an otherwise ask-gated `Bash`. The third is what
-would settle the flag reading at the pin. Until those run, this adapter must
+`AllowTools("Bash")` exempts an otherwise ask-gated `Bash`, and that a spawn
+carrying `--tools` without `Bash` cannot attempt `Bash` at all while the
+default spawn can. The last two are what settle the flag reading: the third
+tests only whether `--allowedTools` pre-approves, and the fourth is the only
+one that tests whether anything bounds the surface. Until those run, this adapter must
 be described as gating the calls that ask, and never as gating every tool
 call.
 
