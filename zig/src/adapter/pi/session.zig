@@ -900,7 +900,7 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "title", Reducer.str(title));
-    try payload.put(reducer.arena, "description", Reducer.str(message));
+    if (message.len != 0) try payload.put(reducer.arena, "description", Reducer.str(message));
     try payload.put(reducer.arena, "questions", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try questions.toOwnedSlice(reducer.arena)) });
     try payload.put(reducer.arena, "allow_cancel", .{ .bool = true });
     try reducer.emit("user.input.requested", .{ .object = payload.* }, false);
@@ -1089,6 +1089,34 @@ test "a message_update carrying no assistant event is refused" {
 
 test "a message_update whose assistant event will not decode is refused" {
     try expectRefusal(&.{"{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":-1,\"delta\":\"x\"}}"}, "pi_invalid_message_update");
+}
+
+fn requestedPayload(reducer: *Reducer) ?std.json.Value {
+    for (reducer.emitted.items) |envelope| {
+        if (std.mem.eql(u8, textOf(envelope, "type"), "user.input.requested")) return memberOf(envelope, "payload");
+    }
+    return null;
+}
+
+fn expectDescription(request: []const u8, want: ?[]const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    try applyExtension(&reducer, try parse(arena.allocator(), request));
+    const payload = requestedPayload(&reducer) orelse return error.NoInteraction;
+    const carried = memberOf(payload, "description");
+    if (want) |text| {
+        try std.testing.expectEqualStrings(text, (carried orelse return error.NoDescription).string);
+    } else {
+        try std.testing.expect(carried == null);
+    }
+}
+
+test "a dialog with nothing to describe carries no description at all" {
+    try expectDescription("{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[\"a\",\"b\"]}", null);
+    try expectDescription("{\"type\":\"extension_ui_request\",\"id\":\"u2\",\"method\":\"input\",\"title\":\"Name\"}", null);
+    try expectDescription("{\"type\":\"extension_ui_request\",\"id\":\"u3\",\"method\":\"editor\",\"title\":\"Edit\"}", null);
+    try expectDescription("{\"type\":\"extension_ui_request\",\"id\":\"u4\",\"method\":\"confirm\",\"title\":\"Sure\",\"message\":\"really?\"}", "really?");
 }
 
 fn expectExtensionRefusal(request: []const u8, code: []const u8) !void {
