@@ -132,10 +132,34 @@ fn listed(names: []const []const u8, name: []const u8) bool {
     return false;
 }
 
-pub fn open(reducer: *Reducer) !void {
+pub fn openSession(reducer: *Reducer) void {
+    _ = reducer.counters.nextTick();
+}
+
+pub fn initialize(reducer: *Reducer, model: []const u8) void {
+    if (model.len != 0) reducer.model = model;
+}
+
+pub fn submit(reducer: *Reducer) !void {
     _ = try reducer.counters.nextID(reducer.arena, "message");
     reducer.message_id = try reducer.counters.nextID(reducer.arena, "message");
-    _ = reducer.counters.nextTick();
+    reducer.run_id = "";
+    reducer.sequence = 1;
+    reducer.started = false;
+    reducer.terminal = false;
+    reducer.turn = 0;
+    reducer.step = 0;
+    reducer.turn_ended = false;
+    reducer.idle_after_end = false;
+    reducer.end_kind = "";
+    reducer.final = null;
+    reducer.receipt = "";
+    reducer.pending.clearRetainingCapacity();
+    reducer.tools.clearRetainingCapacity();
+}
+
+pub fn rejectedSubmit(reducer: *Reducer) !void {
+    _ = try reducer.counters.nextID(reducer.arena, "message");
 }
 
 pub fn start(reducer: *Reducer) !void {
@@ -153,6 +177,10 @@ pub fn start(reducer: *Reducer) !void {
 }
 
 fn failRun(reducer: *Reducer, code: []const u8, message: []const u8) !void {
+    try failSettled(reducer, code, message, "");
+}
+
+fn failSettled(reducer: *Reducer, code: []const u8, message: []const u8, settled_by: []const u8) !void {
     if (!reducer.started) {
         reducer.terminal = true;
         return;
@@ -164,8 +192,54 @@ fn failRun(reducer: *Reducer, code: []const u8, message: []const u8) !void {
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "error", .{ .object = err.* });
+    if (settled_by.len != 0) try payload.put(reducer.arena, "settled_by", Reducer.str(settled_by));
     try reducer.emit("run.failed", .{ .object = payload.* }, true);
 }
+
+const observed_only_events = [_][]const u8{
+    "agent-preset/selected",
+    "approval/asked",
+    "approval/decided",
+    "approval/policy",
+    "command/done",
+    "command/run",
+    "compaction/end",
+    "compaction/prune",
+    "compaction/start",
+    "compaction/summary",
+    "deliverables/presented",
+    "feedback/message-delete",
+    "feedback/message-put",
+    "feedback/record",
+    "goal/change",
+    "hook/invoked",
+    "hook/result",
+    "llm/retry",
+    "llm/retry-started",
+    "model/selection",
+    "permission/preset",
+    "plan/mode",
+    "sandbox/mode",
+    "schedule/change",
+    "session-log-deepseek/delivery-accepted",
+    "session/title",
+    "session/title-llm-request",
+    "subagent/catalog",
+    "subagent/descriptor",
+    "subagent/model-selection-policy",
+    "system/message",
+    "team/member",
+    "team/message/delivered",
+    "team/message/queued",
+    "team/task",
+    "tool-workflow/agent-end",
+    "tool-workflow/agent-start",
+    "tool-workflow/run-end",
+    "tool-workflow/run-start",
+    "tool/ptc-dispatch",
+    "tool/ptc-dispatch-start",
+    "web/deepseek-search-llm-request",
+};
 
 const ignored_events = [_][]const u8{
     "user/message",   "agent/inbox/spliced", "todo/write",
@@ -231,6 +305,10 @@ pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
         return;
     }
     if (listed(&ignored_events, kind)) return;
+    if (listed(&observed_only_events, kind)) return;
+    if (memberOf(event, "ignorable")) |flag| {
+        if (flag == .bool and flag.bool) return;
+    }
     try failRun(reducer, "deepseek_unknown_event", "unknown required event");
 }
 
@@ -277,6 +355,12 @@ fn emitStreamRecords(reducer: *Reducer, records: std.json.Value) !void {
     }
 }
 
+fn decodedArguments(reducer: *Reducer, carried: ?std.json.Value) !?std.json.Value {
+    const value = carried orelse return null;
+    if (value != .string) return value;
+    return std.json.parseFromSliceLeaky(std.json.Value, reducer.arena, value.string, .{}) catch null;
+}
+
 fn findTool(reducer: *Reducer, native_id: []const u8) ?*ToolState {
     for (reducer.tools.items) |tool| {
         if (std.mem.eql(u8, tool.native_id, native_id)) return tool;
@@ -309,7 +393,7 @@ fn startTool(reducer: *Reducer, data: std.json.Value) !void {
         .native_id = call_id,
         .id = try reducer.counters.nextID(reducer.arena, "tool-call"),
         .name = textOf(data, "name"),
-        .args = memberOf(data, "arguments"),
+        .args = try decodedArguments(reducer, memberOf(data, "arguments")),
     };
     try reducer.tools.append(reducer.arena, tool);
     const requested = try reducer.emitReplying("action.call.requested", try toolPayload(reducer, tool, true), false, "");
@@ -417,12 +501,17 @@ fn trySettle(reducer: *Reducer) !void {
     try reducer.emit("run.completed", .{ .object = payload.* }, true);
 }
 
-pub fn transportFailed(reducer: *Reducer) !void {
+pub fn invalidObservation(reducer: *Reducer, event_type: []const u8) !void {
+    const message = try std.fmt.allocPrint(reducer.arena, "deepseek native: invalid pinned message: unknown required event \"{s}\"", .{event_type});
+    try transportFailed(reducer, message);
+}
+
+pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
     if (reducer.terminal or !reducer.started) {
         reducer.terminal = true;
         return;
     }
-    try failRun(reducer, "deepseek_transport_failed", "the harness transport closed");
+    try failSettled(reducer, "deepseek_process_exit", message, "inferred");
 }
 
 fn directUser(source: std.json.Value) bool {
@@ -553,4 +642,148 @@ fn evaluateAdmission(reducer: *Reducer) !void {
         if (std.mem.eql(u8, kind, "turn/start") or std.mem.eql(u8, kind, "step/start") or std.mem.eql(u8, kind, "user/message")) continue;
         try applyEvent(reducer, event);
     }
+}
+
+fn parse(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
+}
+
+fn admittedRun(arena: std.mem.Allocator) !Reducer {
+    var reducer = Reducer.init(arena);
+    openSession(&reducer);
+    try submit(&reducer);
+    try observe(&reducer, try parse(arena, "{\"type\":\"agent/inbox/spliced\",\"data\":{\"inserted\":[{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}]}}"));
+    try receipt(&reducer, "m-1");
+    try observe(&reducer, try parse(arena, "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}"));
+    try observe(&reducer, try parse(arena, "{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":1}}"));
+    try observe(&reducer, try parse(arena, "{\"type\":\"user/message\",\"data\":{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}}"));
+    return reducer;
+}
+
+fn lastFailure(reducer: *Reducer) ?[]const u8 {
+    if (reducer.emitted.items.len == 0) return null;
+    const last = reducer.emitted.items[reducer.emitted.items.len - 1];
+    if (!std.mem.eql(u8, textOf(last, "type"), "run.failed")) return null;
+    const payload = memberOf(last, "payload") orelse return null;
+    const err = memberOf(payload, "error") orelse return null;
+    return textOf(err, "code");
+}
+
+fn expectRefusal(script: []const []const u8, code: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    for (script) |line| try applyEvent(&reducer, try parse(arena.allocator(), line));
+    const raised = lastFailure(&reducer) orelse return error.NoRefusal;
+    try std.testing.expectEqualStrings(code, raised);
+}
+
+test "an observed-only event is not a required one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"approval/asked\",\"data\":{}}"));
+    try std.testing.expect(!reducer.terminal);
+    try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"future/unheard-of\",\"data\":{}}"));
+    try std.testing.expectEqualStrings("deepseek_unknown_event", lastFailure(&reducer).?);
+}
+
+test "a user message whose source is not the user kind does not admit the run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    try submit(&reducer);
+    try observe(&reducer, try parse(a, "{\"type\":\"agent/inbox/spliced\",\"data\":{\"inserted\":[{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}]}}"));
+    try receipt(&reducer, "m-1");
+    try observe(&reducer, try parse(a, "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}"));
+    try observe(&reducer, try parse(a, "{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":1}}"));
+    try observe(&reducer, try parse(a, "{\"type\":\"user/message\",\"data\":{\"id\":\"m-1\",\"source\":{\"kind\":\"agent\"}}}"));
+    try std.testing.expect(!reducer.started);
+    try std.testing.expect(reducer.emitted.items.len == 0);
+}
+
+test "a user message claiming the receipt from anything but a direct user does not admit the run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    try submit(&reducer);
+    try observe(&reducer, try parse(a, "{\"type\":\"agent/inbox/spliced\",\"data\":{\"inserted\":[{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}]}}"));
+    try receipt(&reducer, "m-1");
+    try observe(&reducer, try parse(a, "{\"type\":\"turn/start\",\"data\":{\"turn\":1}}"));
+    try observe(&reducer, try parse(a, "{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":1}}"));
+    try observe(&reducer, try parse(a, "{\"type\":\"user/message\",\"data\":{\"id\":\"m-1\",\"source\":{\"kind\":\"user\",\"plugin\":\"forwarder\"}}}"));
+    try std.testing.expect(!reducer.started);
+    try std.testing.expect(reducer.emitted.items.len == 0);
+}
+
+test "a turn that ends settles nothing until the session reports idle" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try std.testing.expect(!reducer.terminal);
+    try observeStatus(&reducer, "idle");
+    try std.testing.expect(reducer.terminal);
+}
+
+test "a foreign turn, an out-of-order step and a repeated turn end are grammar defects" {
+    try expectRefusal(&.{"{\"type\":\"turn/start\",\"data\":{\"turn\":2}}"}, "deepseek_invalid_grammar");
+    try expectRefusal(&.{"{\"type\":\"step/start\",\"data\":{\"turn\":1,\"step\":1}}"}, "deepseek_invalid_grammar");
+    try expectRefusal(&.{"{\"type\":\"step/end\",\"data\":{\"turn\":1,\"step\":2}}"}, "deepseek_invalid_grammar");
+    try expectRefusal(&.{
+        "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}",
+        "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}",
+    }, "deepseek_invalid_grammar");
+}
+
+test "an unknown required event is refused" {
+    try expectRefusal(&.{"{\"type\":\"future/required-control\",\"data\":{}}"}, "deepseek_unknown_event");
+}
+
+test "a duplicate tool call and an unmatched tool result are lifecycle defects" {
+    try expectRefusal(&.{
+        "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"read\",\"arguments\":\"{}\"}}",
+        "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"read\",\"arguments\":\"{}\"}}",
+    }, "deepseek_tool_lifecycle");
+    try expectRefusal(&.{
+        "{\"type\":\"tool/result\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"source\":{\"callId\":\"nope\"}}}}",
+    }, "deepseek_tool_lifecycle");
+    try expectRefusal(&.{
+        "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c1\",\"name\":\"read\",\"arguments\":\"{}\"}}",
+        "{\"type\":\"tool/result\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"source\":{\"callId\":\"c1\"},\"content\":[]}}}",
+        "{\"type\":\"tool/result\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"source\":{\"callId\":\"c1\"},\"content\":[]}}}",
+    }, "deepseek_tool_lifecycle");
+}
+
+test "a completed turn with no assistant message and one with unmappable content are refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try applyEvent(&reducer, try parse(arena.allocator(), "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+    try std.testing.expectEqualStrings("deepseek_missing_final_message", lastFailure(&reducer).?);
+
+    var second = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer second.deinit();
+    var other = try admittedRun(second.allocator());
+    try applyEvent(&other, try parse(second.allocator(), "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"invented\"}]}}}"));
+    try applyEvent(&other, try parse(second.allocator(), "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&other, "idle");
+    try std.testing.expectEqualStrings("deepseek_invalid_final_message", lastFailure(&other).?);
+}
+
+test "a refusal before the run is admitted emits nothing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(arena.allocator());
+    openSession(&reducer);
+    try submit(&reducer);
+    try transportFailed(&reducer, "gone");
+    try std.testing.expect(reducer.emitted.items.len == 0);
+    try std.testing.expect(reducer.terminal);
 }

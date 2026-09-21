@@ -13,7 +13,7 @@ const Driver = struct {
     pub fn open(arena: *std.heap.ArenaAllocator, case: CorpusCase) Reducer {
         _ = case;
         var reducer = session.Reducer.init(arena.allocator());
-        session.open(&reducer) catch {};
+        session.openSession(&reducer);
         return reducer;
     }
 
@@ -21,18 +21,35 @@ const Driver = struct {
         _ = scratch;
         _ = case;
         const action = item.action;
-        if (std.mem.eql(u8, action, "submit")) return .handled;
+        if (std.mem.eql(u8, action, "submit")) {
+            try session.submit(reducer);
+            return .handled;
+        }
         if (std.mem.eql(u8, action, "wait-submit")) return .handled;
         if (std.mem.eql(u8, action, "oap-control")) return .handled;
-        if (std.mem.eql(u8, action, "open")) return .handled;
+        if (std.mem.eql(u8, action, "open")) {
+            const params = item.raw.object.get("params") orelse return .handled;
+            const model = if (params == .object) corpus.stringMember(params.object, "model") orelse "" else "";
+            session.initialize(reducer, model);
+            return .handled;
+        }
         if (std.mem.eql(u8, action, "shutdown")) return .handled;
 
         if (std.mem.eql(u8, action, "decode-error")) return .handled;
         if (std.mem.eql(u8, action, "decode-error-unterminated")) return .handled;
-        if (std.mem.eql(u8, action, "overlap-submit")) return .handled;
+        if (std.mem.eql(u8, action, "overlap-submit")) {
+            try session.rejectedSubmit(reducer);
+            return .handled;
+        }
         if (std.mem.eql(u8, action, "reply-error")) return .handled;
-        if (std.mem.eql(u8, action, "process-exit") or std.mem.eql(u8, action, "observe-invalid")) {
-            try session.transportFailed(reducer);
+        if (std.mem.eql(u8, action, "process-exit")) {
+            try session.transportFailed(reducer, corpus.stringMember(item.raw.object, "error") orelse "");
+            return .handled;
+        }
+        if (std.mem.eql(u8, action, "observe-invalid")) {
+            const params = item.raw.object.get("params") orelse return .handled;
+            const event = params.object.get("event") orelse return .handled;
+            try session.invalidObservation(reducer, corpus.stringMember(event.object, "type") orelse "");
             return .handled;
         }
         if (std.mem.eql(u8, action, "reply")) {
@@ -68,15 +85,21 @@ const Driver = struct {
 
 pub const Harness = corpus.Harness(Driver);
 
-test "the deepseek corpus cases the reducer carries replay to the recorded envelopes" {
+test "every deepseek corpus case replays to the recorded envelopes" {
     try Harness.expectEveryCase(std.testing.allocator, &.{
         .{ .id = "framing-strictness", .path = "framing-strictness" },
+        .{ .id = "initialize-lifecycle", .path = "initialize-lifecycle" },
         .{ .id = "initialize-pre-observe", .path = "initialize-pre-observe" },
         .{ .id = "injected-origin", .path = "injected-origin" },
         .{ .id = "no-run-paths", .path = "no-run-paths" },
+        .{ .id = "overlap-rejected", .path = "overlap-rejected" },
         .{ .id = "owned-start-completed", .path = "owned-start-completed" },
+        .{ .id = "process-loss", .path = "process-loss" },
         .{ .id = "streaming-chunks", .path = "streaming-chunks" },
         .{ .id = "subagent-settlement", .path = "subagent-settlement" },
+        .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
+        .{ .id = "turn-end-reasons", .path = "turn-end-reasons" },
+        .{ .id = "unknown-events", .path = "unknown-events" },
         .{ .id = "unsupported-controls", .path = "unsupported-controls" },
     });
 }
