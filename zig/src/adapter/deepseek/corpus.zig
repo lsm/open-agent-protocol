@@ -107,7 +107,11 @@ const Driver = struct {
             session.initialize(reducer, model);
             return .handled;
         }
-        if (std.mem.eql(u8, action, "shutdown")) return .handled;
+        if (std.mem.eql(u8, action, "shutdown")) {
+            if (reducer.closed) return error.SessionShutDownTwice;
+            session.close(reducer);
+            return .handled;
+        }
 
         if (std.mem.eql(u8, action, "decode-error")) return .handled;
         if (std.mem.eql(u8, action, "decode-error-unterminated")) return .handled;
@@ -292,4 +296,24 @@ test "a status observed before any prompt admits nothing and writes nothing" {
 
     try std.testing.expect(!reducer.started);
     try std.testing.expect(reducer.envelopes().len == 0);
+}
+
+test "a shutdown closes the session, and a second one is a script defect" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+    const shutdown = "{\"action\":\"shutdown\",\"raw\":{\"id\":4,\"jsonrpc\":\"2.0\",\"method\":\"shutdown\"}}\n";
+
+    var once = session.Reducer.init(scratch);
+    session.openSession(&once);
+    try Harness.steps(scratch, shutdown, &once, inline_case);
+    try std.testing.expect(once.closed);
+
+    var twice = session.Reducer.init(scratch);
+    session.openSession(&twice);
+    try std.testing.expectError(
+        error.SessionShutDownTwice,
+        Harness.steps(scratch, shutdown ++ shutdown, &twice, inline_case),
+    );
 }

@@ -7,7 +7,7 @@ const protocol_name = "open-agent-protocol";
 const protocol_version = "0.1";
 const profile = "open-agent-protocol.agent-control-core";
 
-pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable };
+pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClosed };
 
 pub const Counters = struct {
     ids: usize = 0,
@@ -70,6 +70,7 @@ pub const Reducer = struct {
     last_seq: i64 = 0,
     seq_seen: bool = false,
     unusable: bool = false,
+    closed: bool = false,
     emitted: std.ArrayList(std.json.Value) = .empty,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
@@ -157,7 +158,12 @@ pub fn initialize(reducer: *Reducer, model: []const u8) void {
     if (model.len != 0) reducer.model = model;
 }
 
+pub fn close(reducer: *Reducer) void {
+    reducer.closed = true;
+}
+
 pub fn submit(reducer: *Reducer) !void {
+    if (reducer.closed) return Error.SessionClosed;
     if (reducer.unusable) return Error.SessionUnusable;
     _ = try reducer.counters.nextID(reducer.arena, "message");
     reducer.message_id = try reducer.counters.nextID(reducer.arena, "message");
@@ -595,7 +601,13 @@ fn openChild(reducer: *Reducer, id: []const u8) !void {
 }
 
 pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.json.Value) !void {
-    if (reducer.terminal) return;
+    if (reducer.closed) return Error.SessionClosed;
+    if (reducer.terminal) {
+        const own_status = std.mem.eql(u8, method, "session.status") and
+            std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id);
+        if (!own_status) reducer.unusable = true;
+        return;
+    }
     if (std.mem.eql(u8, method, "session.event")) {
         if (!std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id)) {
             try failRun(reducer, "deepseek_session_mismatch", "session.event for foreign session");
@@ -1157,4 +1169,41 @@ test "a session whose transport died refuses a later submission" {
     var reducer = try admittedRun(a);
     try transportFailed(&reducer, "gone");
     try std.testing.expectError(Error.SessionUnusable, submit(&reducer));
+}
+
+test "activity between runs retires the session, except its own status" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+    try std.testing.expect(reducer.terminal);
+
+    try notify(&reducer, a, "session.status", "{\"sessionId\":\"session\",\"status\":\"idle\"}");
+    try std.testing.expect(!reducer.unusable);
+    try submit(&reducer);
+
+    var second = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer second.deinit();
+    const b = second.allocator();
+    var other = try admittedRun(b);
+    try applyEvent(&other, try parse(b, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&other, try parse(b, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&other, "idle");
+    try notify(&other, b, "session.event", "{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/start\",\"seq\":99,\"data\":{\"turn\":9}}}");
+    try std.testing.expect(other.unusable);
+    try std.testing.expectError(Error.SessionUnusable, submit(&other));
+}
+
+test "a shut-down session takes no further submission or notification" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    close(&reducer);
+    try std.testing.expectError(Error.SessionClosed, submit(&reducer));
+    try std.testing.expectError(Error.SessionClosed, notify(&reducer, a, "session.status", "{\"sessionId\":\"session\",\"status\":\"idle\"}"));
 }
