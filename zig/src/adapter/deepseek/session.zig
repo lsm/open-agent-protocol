@@ -62,6 +62,7 @@ pub const Reducer = struct {
     turn_ended: bool = false,
     idle_after_end: bool = false,
     end_kind: []const u8 = "",
+    refusal: []const u8 = "",
     final: ?std.json.Value = null,
     receipt: []const u8 = "",
     pending: std.ArrayList(std.json.Value) = .empty,
@@ -451,7 +452,7 @@ fn startTool(reducer: *Reducer, data: std.json.Value) !void {
         .name = textOf(data, "name"),
         .args = decodedArguments(reducer, memberOf(data, "arguments")) catch |err| {
             if (err != Error.UnrepresentableArguments) return err;
-            try failRun(reducer, "deepseek_unrepresentable_arguments", "tool arguments cannot appear in a valid trace");
+            try invalidEvent(reducer, "tool/call");
             return;
         },
     };
@@ -489,6 +490,11 @@ fn endTool(reducer: *Reducer, data: std.json.Value) !void {
     _ = try reducer.emitReplying("action.call.completed", payload, false, tool.started_event);
 }
 
+fn unknownTool(reducer: *Reducer, named: []const u8) Error {
+    reducer.refusal = std.fmt.allocPrint(reducer.arena, "final message references unknown tool {s}", .{goquote.quote(reducer.arena, named)}) catch return Error.OutOfMemory;
+    return Error.InvalidFrame;
+}
+
 fn blocksContent(reducer: *Reducer, blocks: std.json.Value) !std.json.Value {
     var parts = std.ArrayList(std.json.Value).empty;
     if (blocks == .array) {
@@ -502,10 +508,11 @@ fn blocksContent(reducer: *Reducer, blocks: std.json.Value) !std.json.Value {
                 continue;
             }
             if (std.mem.eql(u8, kind, "tool-call")) {
-                const tool = findTool(reducer, textOf(block, "id")) orelse return Error.InvalidFrame;
-                if (!std.mem.eql(u8, tool.name, textOf(block, "name"))) return Error.InvalidFrame;
-                const parsed = decodedArguments(reducer, memberOf(block, "arguments")) catch return Error.InvalidFrame;
-                const carried = parsed orelse return Error.InvalidFrame;
+                const named = textOf(block, "id");
+                const tool = findTool(reducer, named) orelse return unknownTool(reducer, named);
+                if (!std.mem.eql(u8, tool.name, textOf(block, "name"))) return unknownTool(reducer, named);
+                const parsed = try decodedArguments(reducer, memberOf(block, "arguments"));
+                const carried = parsed orelse return Error.UnrepresentableArguments;
                 const shape = try reducer.object();
                 try shape.put(reducer.arena, "type", Reducer.str("tool_call"));
                 try shape.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
@@ -514,6 +521,11 @@ fn blocksContent(reducer: *Reducer, blocks: std.json.Value) !std.json.Value {
                 try parts.append(reducer.arena, .{ .object = shape.* });
                 continue;
             }
+            if (std.mem.eql(u8, kind, "tool-result") or std.mem.eql(u8, kind, "image")) {
+                reducer.refusal = try std.fmt.allocPrint(reducer.arena, "assistant message contains invalid {s} block", .{kind});
+                return Error.InvalidFrame;
+            }
+            reducer.refusal = try std.fmt.allocPrint(reducer.arena, "unknown assistant content block {s}", .{goquote.quote(reducer.arena, kind)});
             return Error.InvalidFrame;
         }
     }
@@ -553,8 +565,12 @@ fn trySettle(reducer: *Reducer) !void {
         return;
     };
     const message = memberOf(final, "message") orelse std.json.Value{ .null = {} };
-    const content = blocksContent(reducer, memberOf(message, "content") orelse std.json.Value{ .null = {} }) catch {
-        try failRun(reducer, "deepseek_invalid_final_message", "final message carried content the reducer cannot map");
+    const content = blocksContent(reducer, memberOf(message, "content") orelse std.json.Value{ .null = {} }) catch |err| {
+        if (err == Error.UnrepresentableArguments) {
+            try invalidEvent(reducer, "assistant/message");
+            return;
+        }
+        try failRun(reducer, "deepseek_invalid_final_message", reducer.refusal);
         return;
     };
     const response = try reducer.object();
@@ -578,6 +594,11 @@ fn trySettle(reducer: *Reducer) !void {
         }
     }
     try reducer.emit("run.completed", .{ .object = payload.* }, true);
+}
+
+fn invalidEvent(reducer: *Reducer, kind: []const u8) !void {
+    const message = try std.fmt.allocPrint(reducer.arena, "deepseek native: invalid pinned message: invalid {s}", .{kind});
+    try transportFailed(reducer, message);
 }
 
 pub fn invalidObservation(reducer: *Reducer, event_type: []const u8) !void {
@@ -1020,6 +1041,42 @@ test "a completed turn with no assistant message and one with unmappable content
     try std.testing.expectEqualStrings("deepseek_invalid_final_message", lastFailure(&other).?);
 }
 
+fn expectFinalRefusal(content: []const u8, want: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    const line = try std.fmt.allocPrint(a, "{{\"type\":\"assistant/message\",\"data\":{{\"turn\":1,\"step\":1,\"message\":{{\"content\":{s}}}}}}}", .{content});
+    try applyEvent(&reducer, try parse(a, line));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+    try std.testing.expectEqualStrings("deepseek_invalid_final_message", lastFailure(&reducer) orelse return error.NoRefusal);
+    try std.testing.expectEqualStrings(want, failureMessage(&reducer) orelse return error.NoRefusal);
+}
+
+test "an unmappable final block reports which block and why, the way the oracle does" {
+    try expectFinalRefusal(
+        "[{\"type\":\"invented\"}]",
+        "unknown assistant content block \"invented\"",
+    );
+    try expectFinalRefusal(
+        "[{\"type\":\"say \\\"hi\\\"\"}]",
+        "unknown assistant content block \"say \\\"hi\\\"\"",
+    );
+    try expectFinalRefusal(
+        "[{\"type\":\"tool-result\"}]",
+        "assistant message contains invalid tool-result block",
+    );
+    try expectFinalRefusal(
+        "[{\"type\":\"image\"}]",
+        "assistant message contains invalid image block",
+    );
+    try expectFinalRefusal(
+        "[{\"type\":\"tool-call\",\"id\":\"nope\",\"name\":\"read\",\"arguments\":\"{}\"}]",
+        "final message references unknown tool \"nope\"",
+    );
+}
+
 test "a refusal before the run is admitted emits nothing" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1356,17 +1413,39 @@ test "a prompt reply without a message id retires the session" {
     try std.testing.expectError(Error.SessionUnusable, submit(&reducer));
 }
 
-test "tool arguments that cannot appear in a valid trace fail the run" {
-    try expectRefusal(&.{
-        "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1,\\\"x\\\":2}\"}}",
-    }, "deepseek_unrepresentable_arguments");
+fn settledBy(reducer: *Reducer) ?[]const u8 {
+    if (reducer.emitted.items.len == 0) return null;
+    const last = reducer.emitted.items[reducer.emitted.items.len - 1];
+    const payload = memberOf(last, "payload") orelse return null;
+    return textOf(payload, "settled_by");
+}
 
+test "tool arguments the port cannot hold settle the way the native refusal does" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var refused = try admittedRun(a);
+    try applyEvent(&refused, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"not json\"}}"));
+    try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&refused) orelse return error.NoRefusal);
+    try std.testing.expectEqualStrings(
+        "deepseek native: invalid pinned message: invalid tool/call",
+        failureMessage(&refused) orelse return error.NoRefusal,
+    );
+    try std.testing.expectEqualStrings("inferred", settledBy(&refused) orelse return error.NoRefusal);
+
+    var accepted = try admittedRun(a);
+    try applyEvent(&accepted, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1}\"}}"));
+    try std.testing.expect(lastFailure(&accepted) == null);
+}
+
+test "duplicate keys in tool arguments are the one refusal the oracle does not make" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var reducer = try admittedRun(a);
-    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1}\"}}"));
-    try std.testing.expect(lastFailure(&reducer) == null);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1,\\\"x\\\":2}\"}}"));
+    try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&reducer) orelse return error.NoRefusal);
 }
 
 test "closing over a reserved run is refused, and closing twice is not" {
