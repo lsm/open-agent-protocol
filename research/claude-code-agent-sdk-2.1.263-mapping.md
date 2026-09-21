@@ -974,6 +974,25 @@ every level; the typed pass is a second walk refusing if any occurrence at any
 spelling is wrong-typed, which is what Go does by failing on the assignment
 rather than on the final value.
 
+The fold is Unicode, not ASCII, and the port implements it completely rather
+than taking a bound. Every name in these tables is ASCII, and exactly two
+non-ASCII runes fold to an ASCII letter -- U+017F LATIN SMALL LETTER LONG S to
+`s` and U+212A KELVIN SIGN to `k` -- so handling those two is the whole of the
+rule here. That is the difference from the printability table this port declined
+to ship: a partial predicate there leaves the claim false, while here the pair is
+exhaustive.
+
+The evidence, against go1.27.0 and `DecodeObservation`, because review reasonably
+doubted it from a commit message that had lost the characters: a frame carrying
+`session_id: "s"` beside `ſession_id: 7` is refused, one carrying only
+`ſESSION_ID: "s"` is accepted, and a `task_notification` whose summary is spelled
+`ſummary` is accepted. That last case has no `k` in the field name or anywhere in
+the frame, which matters because `encoding/json` used to gate its rune-aware fold
+on names containing `k`, `K`, `ſ` or `K`. `foldFunc` and that gating were removed
+in Go 1.20; the decoder now builds a folded name for every field with
+`appendFoldedName` and matches uniformly. A port pinned to an older Go would need
+the gate back.
+
 The fold stops at the frame tables. `ParseMessage` reads `type`, `subtype`,
 `request_id`, `request` and `response` out of a `map[string]json.RawMessage`,
 which is a plain map read, so `TYPE` is not a type in either implementation.
