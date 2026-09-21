@@ -938,6 +938,18 @@ well-formed sibling completed a call the oracle never completes. The codec's
 block typing is now reachable from the reducer for user frames as well, and the
 frame is skipped rather than filtered.
 
+Three members a harness may write as JSON `null` each needed the oracle's decode
+rather than a type test. Go reaches all three through `encoding/json`, where
+unmarshalling `null` into a non-pointer is a documented no-op: `name: null` on a
+`tool_use` block leaves `ContentBlock.Name` as `""` and takes the nameless path
+above, `origin: null` leaves `UserFrame.Origin` nil so the frame is reduced
+rather than skipped as foreign, and `content: null` on a `tool_result` leaves the
+string empty so `normalizedToolResult` emits `""`. This port read `.string` off
+the raw value for the first, which is an inactive-union-field access and a panic;
+treated the second as a foreign origin and dropped every `tool_result` in the
+frame, leaving calls open that the oracle completes; and passed the third through
+as `null`. All three verdicts were read off the oracle with a probe.
+
 Two numeric conversions were illegal behavior rather than a divergence. Go's
 declared integers are `int64` and its decode refuses a fractional or oversized
 number outright, so the typed table is what keeps a float away from

@@ -248,7 +248,8 @@ pub const Reducer = struct {
             _ = try self.emitCorrelated(run, "action.call.failed", .{ .object = payload }, tool.id, tool.started_event);
             return;
         }
-        try self.put(&payload, "result", content orelse str(""));
+        const settled = content orelse std.json.Value.null;
+        try self.put(&payload, "result", if (settled == .null) str("") else settled);
         _ = try self.emitCorrelated(run, "action.call.completed", .{ .object = payload }, tool.id, tool.started_event);
     }
 
@@ -844,8 +845,8 @@ pub const Reducer = struct {
                 if (kind != .string or !std.mem.eql(u8, kind.string, "tool_use")) continue;
                 const id = block.object.get("id") orelse continue;
                 if (id != .string or id.string.len == 0) continue;
-                const named = block.object.get("name") orelse std.json.Value{ .string = "" };
-                try self.startTool(id.string, named.string, block.object.get("input"));
+                const named = block.object.get("name") orelse std.json.Value.null;
+                try self.startTool(id.string, if (named == .string) named.string else "", block.object.get("input"));
             }
             return;
         }
@@ -854,9 +855,10 @@ pub const Reducer = struct {
                 if (parent != .null) return;
             }
             if (frame.get("origin")) |origin| {
-                if (origin != .object) return;
-                const kind = origin.object.get("kind") orelse return;
-                if (kind != .string or !std.mem.eql(u8, kind.string, "human")) return;
+                if (origin == .object) {
+                    const kind = origin.object.get("kind") orelse return;
+                    if (kind != .string or !std.mem.eql(u8, kind.string, "human")) return;
+                }
             }
             const native_message = frame.get("message") orelse return;
             if (native_message != .object) return;
@@ -1934,6 +1936,33 @@ test "a token count that overflows the total wraps the way the oracle wraps" {
     const usage = firstPayload(&reducer, "run.completed").?.get("usage").?.object;
     try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("input_tokens").?.integer);
     try testing.expectEqual(@as(i64, std.math.minInt(i64)), usage.get("total_tokens").?.integer);
+}
+
+test "the three shapes a harness writes as null follow what the oracle decodes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t0","name":null}]},"uuid":"a0"}
+    );
+    const settlement = firstPayload(&reducer, "run.failed").?;
+    try testing.expectEqualStrings("claude_tool_lifecycle", settlement.get("error").?.object.get("code").?.string);
+
+    var second = Reducer.init(&arena, .{});
+    second.open();
+    try startedRun(&second, scratch, "turn-2");
+    try observeText(&second, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try observeText(&second, scratch,
+        \\{"type":"user","session_id":"s","origin":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":null}]},"uuid":"u1"}
+    );
+    const completed = firstPayload(&second, "action.call.completed").?;
+    try testing.expectEqualStrings("", completed.get("result").?.string);
 }
 
 test "a settled run leaves neither its gates nor its children behind" {
