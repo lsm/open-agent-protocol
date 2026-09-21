@@ -571,8 +571,10 @@ compensated.
   is present when the posture names tools and absent when it states the
   harness default, and `Config.Tools` is refused when it states neither, so
   what the child receives is always a decision somebody made rather than one
-  nobody did. What it decides is which tools skip the prompt, not which tools
-  exist — see the gating-versus-surface entry below. The flag form is taken
+  nobody did. **What that decision controls is not settled at this pin** —
+  whether the flag names the tools that skip the prompt or the tools that
+  exist is the question the gating-versus-surface entry below carries. The
+  flag form is taken
   from a working invocation against this pin in one-shot mode and is
   **unverified in stream-json mode**; the smoke gate is where that closes.
   Caller args follow the posture, so a caller can still add or override flags
@@ -1170,11 +1172,18 @@ partial where `Bash` is admitted.
 Neither mechanism this adapter operates is a complete boundary **in such a
 session**.
 
-The posture is not one. `--allowedTools` names the tools that may run
-*without* asking, and the flag that bounds the surface, `--tools`, is one this
-adapter never passes. The child has the full built-in set, so naming a tool
-subtracts from the gate's coverage instead of adding a boundary in front of
-it.
+The posture is not one, and in an unrestricted session that needs no reading
+of the flags at all: `UnrestrictedTools()` passes no tool flag, so nothing
+about the posture restricts anything.
+
+What the posture does in a *restricted* session is where the unverified
+reading enters, and this paragraph is that reading rather than a fact. On
+2.1.269 `--help`, `--allowedTools` names the tools that may run *without*
+asking and `--tools` names the available built-ins; this adapter passes only
+the first. If that holds at the pin, naming a tool subtracts from the gate's
+coverage instead of adding a boundary in front of it, and the child always has
+the full built-in set. None of that is established for 2.1.263 — see the
+evidence split below, which is the authority for how far to trust it.
 
 The gate is not one either. `--permission-prompt-tool stdio` routes to the
 control channel every call *that consults the permission system*, and the
