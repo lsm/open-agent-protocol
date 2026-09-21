@@ -1,6 +1,6 @@
 # Makai TypeScript SDK
 
-TypeScript SDK for Makai's stdio protocol. The SDK starts or connects to a `makai --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
+TypeScript SDK for Makai's stdio protocol. The SDK starts or connects to a `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
 
 ## Installation
 
@@ -16,7 +16,7 @@ If you are consuming a scoped release, install the scope published by your regis
 npm install @anthropic/makai
 ```
 
-You also need access to the Makai runtime binary. By default the SDK prefers the installed `@makai/cli-<platform>-<arch>` optional dependency, then a local build under `zig-out/bin/makai` or `zig/zig-out/bin/makai`, then `makai` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the Makai runtime binary. By default the SDK prefers the installed `@makai/cli-<platform>-<arch>` optional dependency, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `makai` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -340,8 +340,8 @@ Environment variable equivalents are `MAKAI_BINARY_URL` and `MAKAI_BINARY_SHA256
 With no resolver options, Makai checks, in order:
 
 1. The `@makai/cli-<platform>-<arch>` optional dependency, when it is installed
-2. `./zig-out/bin/makai` (or `makai.exe` on Windows)
-3. `./zig/zig-out/bin/makai`
+2. `./zig-out/bin/oapx` (or `makai.exe` on Windows)
+3. `./zig/zig-out/bin/oapx`
 4. `makai` on `PATH`
 
 Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. Set `MAKAI_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.

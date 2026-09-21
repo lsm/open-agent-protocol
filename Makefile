@@ -17,11 +17,11 @@ help:
 build:
 	$(ZIG) build --build-file zig/build.zig
 ifneq ($(MAKAI_CODESIGN_IDENTITY),)
-	codesign --force --identifier ai.hyperneo.oap --sign "$(MAKAI_CODESIGN_IDENTITY)" zig/zig-out/bin/makai
+	codesign --force --identifier ai.hyperneo.oap --sign "$(MAKAI_CODESIGN_IDENTITY)" zig/zig-out/bin/oapx
 endif
 
 tui: build
-	./zig/zig-out/bin/makai --tui $(ARGS)
+	./zig/zig-out/bin/oapx --tui $(ARGS)
 
 test:
 	$(ZIG) build --build-file zig/build.zig test

@@ -43,8 +43,10 @@ const ENV_BINARY_PATH = "MAKAI_BINARY_PATH";
 const ENV_BINARY_URL = "MAKAI_BINARY_URL";
 const ENV_BINARY_SHA256 = "MAKAI_BINARY_SHA256";
 
-function binaryNameForPlatform(platform = process.platform): string {
-  return platform === "win32" ? "makai.exe" : "makai";
+const BINARY_NAMES = ["oapx", "makai"];
+
+function binaryNamesForPlatform(platform = process.platform): string[] {
+  return BINARY_NAMES.map((name) => (platform === "win32" ? `${name}.exe` : name));
 }
 
 async function ensureFileExists(filePath: string): Promise<void> {
@@ -125,7 +127,7 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
   const checksumSha256 = process.env[ENV_BINARY_SHA256] ?? options.checksumSha256;
   if (binaryUrl) {
     const requiredChecksumSha256 = requireChecksumForUrl(binaryUrl, checksumSha256);
-    const binaryName = binaryNameForPlatform();
+    const binaryName = binaryNamesForPlatform()[0];
     const cacheDir = options.cacheDir ?? path.join(os.homedir(), ".cache", "makai", "bin");
     const urlPathName = new URL(binaryUrl).pathname;
     const fileName = path.basename(urlPathName) || binaryName;
@@ -157,14 +159,22 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
     return cachePath;
   }
 
-  const binaryName = binaryNameForPlatform();
+  const binaryNames = binaryNamesForPlatform();
 
   const platformKey = `${process.platform}-${process.arch}`;
   const bundledPackage = `@makai/cli-${platformKey}`;
   const resolveModule = options.resolveModule ?? ((specifier: string) => require.resolve(specifier));
   try {
-    const bundledBinaryName = process.platform === "win32" ? "makai.exe" : "makai";
-    const bundledPath = resolveModule(`${bundledPackage}/bin/${bundledBinaryName}`);
+    let bundledPath: string | undefined;
+    for (const name of binaryNames) {
+      try {
+        bundledPath = resolveModule(`${bundledPackage}/bin/${name}`);
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (bundledPath === undefined) throw new Error("no bundled binary");
     logger.debug("binary: resolved from bundled package", { path: bundledPath, package: bundledPackage });
     return bundledPath;
   } catch {
@@ -172,10 +182,10 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
   }
 
   const cwd = options.cwd ?? process.cwd();
-  const localCandidates = [
-    path.resolve(cwd, "zig-out", "bin", binaryName),
-    path.resolve(cwd, "zig", "zig-out", "bin", binaryName),
-  ];
+  const localCandidates = binaryNames.flatMap((name) => [
+    path.resolve(cwd, "zig-out", "bin", name),
+    path.resolve(cwd, "zig", "zig-out", "bin", name),
+  ]);
   for (const candidate of localCandidates) {
     logger.debug("binary: checking local candidate", { path: candidate });
     if (await fileExists(candidate)) {
@@ -184,6 +194,6 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
     }
   }
 
-  logger.debug("binary: falling back to PATH lookup", { binary: binaryName });
-  return "makai";
+  logger.debug("binary: falling back to PATH lookup", { binary: binaryNames[0] });
+  return "oapx";
 }

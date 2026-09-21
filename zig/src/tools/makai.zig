@@ -27,6 +27,7 @@ const model_catalog = @import("model_catalog");
 const provider_base_url = @import("provider_base_url");
 const oap_server = @import("oap_server");
 const pre_transform = @import("pre_transform");
+const semantic = @import("semantic");
 const oap_provider_types = @import("oap_provider_types");
 const oap_provider_server = @import("oap_provider_server");
 const oap_provider_catalog = @import("oap_provider_catalog");
@@ -2296,34 +2297,149 @@ fn runStdioMode(allocator: std.mem.Allocator, stdin: std.Io.File, stdout: std.Io
     }
 }
 
+fn runServe(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !void {
+    if (args.len == 0) return error.InvalidArgument;
+    const role = serveRole(args[0]) orelse {
+        var buf: [256]u8 = undefined;
+        const msg = try std.fmt.bufPrint(&buf, "serve takes a role, agent or provider: {s}\n\n", .{args[0]});
+        try compat.stdio.writeAll(stderr, msg);
+        return error.InvalidArgument;
+    };
+    return switch (role) {
+        .agent => runOapMode(allocator, args[1..], stdin, stdout, stderr),
+        .provider => runServeProvider(allocator, args[1..], stdin, stdout, stderr),
+    };
+}
+
+const ServeRole = enum { agent, provider };
+
+fn serveRole(name: []const u8) ?ServeRole {
+    if (std.mem.eql(u8, name, "agent")) return .agent;
+    if (std.mem.eql(u8, name, "provider")) return .provider;
+    return null;
+}
+
+fn runServeProvider(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !void {
+    var answers_specimens = false;
+    if (args.len != 0) {
+        if (args.len == 1 and std.mem.eql(u8, args[0], "--specimens")) {
+            answers_specimens = true;
+        } else {
+            var buf: [256]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&buf, "serve provider takes only --specimens: {s}\n\n", .{args[0]});
+            try compat.stdio.writeAll(stderr, msg);
+            return error.InvalidArgument;
+        }
+    }
+    return runOapProviderMode(allocator, stdin, stdout, stderr, answers_specimens);
+}
+
+const validate_read_limit = 64 * 1024 * 1024;
+
+fn validateTrace(allocator: std.mem.Allocator, source: []const u8, out: *std.ArrayList(semantic.Diagnostic)) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, source, .{});
+    defer parsed.deinit();
+    if (parsed.value != .array) return error.TraceIsNotAnArray;
+
+    var machine = semantic.Machine.init(allocator);
+    defer machine.deinit();
+    for (parsed.value.array.items, 0..) |envelope, index| try machine.apply(index, envelope);
+    try machine.close();
+    for (machine.diagnostics.items) |diagnostic| {
+        try out.append(allocator, .{ .code = try allocator.dupe(u8, diagnostic.code), .index = diagnostic.index });
+    }
+}
+
+fn runValidate(
+    allocator: std.mem.Allocator,
+    paths: []const []const u8,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !bool {
+    if (paths.len == 0) return error.InvalidArgument;
+    var any_rejected = false;
+    for (paths) |path| {
+        const source = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, validate_read_limit) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&buf, "{s}: unreadable: {s}\n", .{ path, @errorName(err) });
+            try compat.stdio.writeAll(stderr, msg);
+            any_rejected = true;
+            continue;
+        };
+        defer allocator.free(source);
+
+        var found = std.ArrayList(semantic.Diagnostic).empty;
+        defer {
+            for (found.items) |diagnostic| allocator.free(diagnostic.code);
+            found.deinit(allocator);
+        }
+        validateTrace(allocator, source, &found) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&buf, "{s}: undecodable: {s}\n", .{ path, @errorName(err) });
+            try compat.stdio.writeAll(stderr, msg);
+            any_rejected = true;
+            continue;
+        };
+
+        if (found.items.len == 0) {
+            var buf: [512]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&buf, "PASS {s}\n", .{path});
+            try compat.stdio.writeAll(stdout, msg);
+            continue;
+        }
+        any_rejected = true;
+        for (found.items) |diagnostic| {
+            var buf: [512]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&buf, "FAIL {s}: {s} at {d}\n", .{ path, diagnostic.code, diagnostic.index });
+            try compat.stdio.writeAll(stdout, msg);
+        }
+    }
+    return any_rejected;
+}
+
 fn printUsage(file: std.Io.File) !void {
     try compat.stdio.writeAll(file,
         \\Usage:
-        \\  makai --version
-        \\  makai --stdio
-        \\  makai --oap [--model <model-ref>]
-        \\  makai --oap-provider [--specimens]
-        \\  makai --tui
-        \\  makai -p [--agent] [--storage] [--model <id>] "<prompt>"
-        \\  makai auth providers [--json]
-        \\  makai auth login --provider <id> [--json]
+        \\  oapx                                              Start the terminal UI
+        \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
+        \\  oapx serve agent [--model <model-ref>]
+        \\  oapx serve provider [--specimens]
+        \\  oapx validate <trace.json>...
+        \\  oapx auth providers [--json]
+        \\  oapx auth login --provider <id> [--json]
+        \\  oapx --version
+        \\  oapx --stdio
         \\
         \\Commands:
-        \\  --version        Print binary version
-        \\  --stdio          Start stdio mode
-        \\  --oap            Start native Open Agent Protocol mode, agent control (JSONL over stdio)
-        \\  --oap-provider   Start native Open Agent Protocol mode, model provider (JSONL over stdio)
-        \\  --tui            Start terminal UI shell
-        \\  -p               Non-interactive print mode: stream a prompt using
+        \\  run              Non-interactive print mode: stream a prompt using
         \\                   stored credentials and print every event to stdout.
-        \\                   Useful for debugging provider streaming.
         \\                   Options may appear before or after the prompt.
         \\                   Use --agent to run through the full agent loop.
         \\                   Use --storage to resolve credentials like the TUI.
         \\                   Use --model <id> to pick the model
         \\                   (default kimi-k2.7-code).
+        \\  serve agent      Serve agent-control-core over stdio, one envelope per line
+        \\  serve provider   Serve model-provider-core over stdio, one envelope per line
+        \\                   Use --specimens to print one of every envelope it emits.
+        \\  validate         Run the semantic validator over one or more traces
         \\  auth providers   List oauth-capable providers
         \\  auth login       Run OAuth flow and persist credentials
+        \\  --version        Print binary version
+        \\  --stdio          Start stdio mode, the transport the SDKs drive
+        \\
+        \\Superseded flags, still accepted: --tui, -p, --oap, --oap-provider
         \\
     );
 }
@@ -6327,12 +6443,40 @@ pub fn main(init: std.process.Init) !void {
     defer allocator.free(args);
 
     if (args.len <= 1) {
+        try runTui(allocator, init.io);
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "--help") or std.mem.eql(u8, args[1], "-h")) {
         try printUsage(stdout);
         return;
     }
 
     if (std.mem.eql(u8, args[1], "--version")) {
         try compat.stdio.writeAll(stdout, VERSION ++ "\n");
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "serve")) {
+        runServe(allocator, args[2..], stdin, stdout, stderr) catch |err| {
+            if (err == error.InvalidArgument) try printUsage(stderr);
+            if (err == error.MalformedLine or err == error.UnaddressableEnvelope) std.process.exit(1);
+            return err;
+        };
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "validate")) {
+        const failed = runValidate(allocator, args[2..], stdout, stderr) catch |err| {
+            if (err == error.InvalidArgument) try printUsage(stderr);
+            return err;
+        };
+        if (failed) std.process.exit(1);
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "run")) {
+        try runPrintMode(allocator, args[2..]);
         return;
     }
 
@@ -8435,4 +8579,71 @@ test "the oap descriptors state compatibility facts only where makai asserts the
 
     const unasserted_anthropic = oapProviderCompatibility("anthropic", .{ .openai_proxy = true });
     try std.testing.expect(unasserted_anthropic.isEmpty());
+}
+
+test "serve names a role, and the role is a noun rather than a flag" {
+    try std.testing.expectEqual(ServeRole.agent, serveRole("agent").?);
+    try std.testing.expectEqual(ServeRole.provider, serveRole("provider").?);
+    try std.testing.expect(serveRole("--agent") == null);
+    try std.testing.expect(serveRole("Agent") == null);
+    try std.testing.expect(serveRole("endpoint") == null);
+    try std.testing.expect(serveRole("") == null);
+}
+
+fn diagnosedCodes(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList([]const u8)) !void {
+    var found = std.ArrayList(semantic.Diagnostic).empty;
+    defer {
+        for (found.items) |diagnostic| allocator.free(diagnostic.code);
+        found.deinit(allocator);
+    }
+    try validateTrace(allocator, trace, &found);
+    for (found.items) |diagnostic| try out.append(allocator, try allocator.dupe(u8, diagnostic.code));
+}
+
+test "validate accepts a trace the validator judges clean" {
+    const allocator = std.testing.allocator;
+    const trace =
+        \\[
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"capq","payload":{}}
+        \\]
+    ;
+    var codes = std.ArrayList([]const u8).empty;
+    defer {
+        for (codes.items) |code| allocator.free(code);
+        codes.deinit(allocator);
+    }
+    try diagnosedCodes(allocator, trace, &codes);
+    try std.testing.expectEqual(@as(usize, 0), codes.items.len);
+}
+
+test "validate reports the code a run event before its start earns" {
+    const allocator = std.testing.allocator;
+    const trace =
+        \\[
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"submit","session_id":"s1","payload":{"session_id":"s1","messages":[{"role":"user","content":"go"}],"delivery":"auto"}},
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.response","id":"admit","in_reply_to":"submit","session_id":"s1","payload":{"session_id":"s1","accepted":true,"submission_id":"sub1","requested_delivery":"auto","effective_delivery":"queue","admission":"queued","run_id":"r1","status":"queued"}},
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"content.delta","id":"delta","session_id":"s1","run_id":"r1","sequence":1,"payload":{"session_id":"s1","run_id":"r1","message_id":"m1","part":{"type":"text","text":"pre"}}}
+        \\]
+    ;
+    var codes = std.ArrayList([]const u8).empty;
+    defer {
+        for (codes.items) |code| allocator.free(code);
+        codes.deinit(allocator);
+    }
+    try diagnosedCodes(allocator, trace, &codes);
+    var named_missing_start = false;
+    var named_missing_terminal = false;
+    for (codes.items) |code| {
+        if (std.mem.eql(u8, code, semantic.code_missing_run_started)) named_missing_start = true;
+        if (std.mem.eql(u8, code, semantic.code_missing_run_terminal)) named_missing_terminal = true;
+    }
+    try std.testing.expect(named_missing_start);
+    try std.testing.expect(named_missing_terminal);
+}
+
+test "validate refuses a trace that is not an array of envelopes" {
+    const allocator = std.testing.allocator;
+    var codes = std.ArrayList([]const u8).empty;
+    defer codes.deinit(allocator);
+    try std.testing.expectError(error.TraceIsNotAnArray, diagnosedCodes(allocator, "{}", &codes));
 }

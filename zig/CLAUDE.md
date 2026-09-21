@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Makai is a Zig-first streaming AI runtime plus SDKs for TypeScript, Python, Go and Rust. The Zig core (`zig/src/`) provides a unified multi-provider streaming abstraction (Anthropic, OpenAI Completions/Responses, Azure OpenAI, Google Generative AI, OpenAI Codex, Gemini CLI, Ollama; a Vertex implementation exists but is not registered, see Providers), four distributed wire protocols (auth, provider, agent, tool) plus two native Open Agent Protocol endpoints (`protocol/oap/` for agent control, `protocol/oap/provider/` for model providers), an agent loop with local tool execution, OAuth flows with credential storage, pluggable transports, and a `makai` binary that runs as a stdio protocol host, a native OAP host, a terminal UI, or a one-shot CLI. Each SDK (`sdk/typescript/`, `sdk/python/`, `sdk/go/`, `sdk/rust/`) spawns `makai --stdio` and exposes the same `auth`/`models`/`provider`/`agent` namespaces over newline-delimited JSON frames; none of them is wired into the Zig build.
+Makai is a Zig-first streaming AI runtime plus SDKs for TypeScript, Python, Go and Rust. The Zig core (`zig/src/`) provides a unified multi-provider streaming abstraction (Anthropic, OpenAI Completions/Responses, Azure OpenAI, Google Generative AI, OpenAI Codex, Gemini CLI, Ollama; a Vertex implementation exists but is not registered, see Providers), four distributed wire protocols (auth, provider, agent, tool) plus two native Open Agent Protocol endpoints (`protocol/oap/` for agent control, `protocol/oap/provider/` for model providers), an agent loop with local tool execution, OAuth flows with credential storage, pluggable transports, and an `oapx` binary (the executable `makai` was renamed to, per decision 0019) that runs as a stdio protocol host, a native OAP host, a terminal UI, or a one-shot CLI. Each SDK (`sdk/typescript/`, `sdk/python/`, `sdk/go/`, `sdk/rust/`) spawns `oapx --stdio` and exposes the same `auth`/`models`/`provider`/`agent` namespaces over newline-delimited JSON frames; none of them is wired into the Zig build.
 
 `DESIGN.md` is the authoritative design reference (layers, protocol boundaries, sequencing, ownership, transport posture, test strategy). `docs/v1-sdk-agent-provider-spec.md` is the normative SDK + protocol spec. Read those before changing protocol or SDK behavior.
 
@@ -17,8 +17,8 @@ benchmark scripts all run from the root. Requires Zig 0.16.0 (`mlugg/setup-zig`
 in CI). Node 22 for the TypeScript SDK and scripts.
 
 ```bash
-zig build --build-file zig/build.zig                         # Build + install zig/zig-out/bin/makai
-zig build --build-file zig/build.zig run -- --version        # Run the makai CLI (args after --)
+zig build --build-file zig/build.zig                         # Build + install zig/zig-out/bin/oapx
+zig build --build-file zig/build.zig run -- --version        # Run the oapx CLI (args after --)
 zig build --build-file zig/build.zig run-tui                 # Run the terminal UI
 zig build --build-file zig/build.zig test                    # Run every unit test module
 zig build --build-file zig/build.zig -Doptimize=ReleaseFast  # Optimized binary (what the PTY harness uses)
@@ -26,7 +26,7 @@ zig build --build-file zig/build.zig -Doptimize=ReleaseSafe  # What the tagged r
 ```
 
 A root `Makefile` wraps the everyday commands: `make build`, `make tui` (build, then start
-`makai --tui`), `make test`, `make test-tui`, `make check` (guardrail scripts), `make clean`
+`oapx --tui`), `make test`, `make test-tui`, `make check` (guardrail scripts), `make clean`
 (project `zig/.zig-cache` + `zig/zig-out`) and `make clean-all` (also the global zig cache).
 
 ### macOS: the Keychain, non-interactive runs, and test isolation
@@ -50,7 +50,7 @@ lists bind to the **code hash**, so every unsigned rebuild is a new identity and
 a signed build escapes it, because the access list then binds to the signing certificate rather than
 the hash. Released macOS binaries are signed with Developer ID, hardened-runtime enabled and
 notarized in `release-binaries.yml`; a tag build fails rather than publishing unsigned macOS
-artifacts. Locally, `make build MAKAI_CODESIGN_IDENTITY=<sha1>` signs `zig/zig-out/bin/makai` under the
+artifacts. Locally, `make build MAKAI_CODESIGN_IDENTITY=<sha1>` signs `zig/zig-out/bin/oapx` under the
 stable identifier `ai.hyperneo.oap` — a self-signed code-signing certificate is enough for the access
 list, no Apple account needed — and a bad identity fails the build instead of silently leaving it
 unsigned. Pass the certificate's SHA-1 hash from `security find-identity -v -p codesigning` rather
@@ -66,7 +66,7 @@ rename falls back to `auth.json` or a fresh login. Delete it manually when you n
 access list still names the previous one. Bound any invocation that may persist
 credentials with an external timeout so a hang is visible rather than silent.
 
-Reads blocked the same way before #315, which is why older notes describe `makai auth providers
+Reads blocked the same way before #315, which is why older notes describe `oapx auth providers
 --json` printing `ready` and then going silent on the first credential-touching request. That
 symptom is gone. A machine with no `ai.hyperneo.oap` item never reproduced it either —
 `SecKeychainFindGenericPassword` returns `errSecItemNotFound` and the load falls back to the file —
@@ -87,7 +87,7 @@ Four limits:
    `loadDefault` falls back to that file, so a supposedly isolated run can still consume real
    tokens. Redirect `HOME` as well if it may hold live credentials.
 2. **It does not isolate the Codex CLI import**, which reads the fixed `Codex Auth` service. That
-   import runs on `loadDefault` paths — `makai auth providers` among them — and reads a service the
+   import runs on `loadDefault` paths — `oapx auth providers` among them — and reads a service the
    override does not cover. It does **not** run on `loadDefaultStoredOnly`, which passes
    `import_codex = false` and serves provider credential resolution, TUI login-status refreshes and
    stored Kimi lookup.
@@ -110,7 +110,7 @@ them to a file.
 ### Print Mode CLI
 
 ```bash
-makai -p [--agent] [--storage] [--model <id>] "<prompt>"
+oapx run [--agent] [--storage] [--model <id>] "<prompt>"
 ```
 
 `--agent`, `--storage`, and `--model <id>` are accepted in any position — before or after the prompt. An unrecognized `--flag` or a second positional argument fails with an error instead of being ignored.
@@ -201,7 +201,7 @@ npm run check:declarations        # verifies the packed tarball ships .d.ts and 
 npm run demo:start                # builds then runs dist/demo/server.js
 ```
 
-`resolveMakaiBinary` picks the binary in this order: `MAKAI_BINARY_PATH` or an explicit `binaryPath`; `MAKAI_BINARY_URL`/`binaryUrl` (checksum required); the platform package `@makai/cli-<platform>-<arch>`; `./zig-out/bin/makai`; `./zig/zig-out/bin/makai`; then `PATH`. **The platform package outranks both local build paths**, so if an optional `@makai/cli-*` package is installed, `zig build` alone does not make the SDK tests exercise your fresh binary. Set `MAKAI_BINARY_PATH` to be sure which one runs (CI builds with `zig build install --prefix /tmp/makai-smoke` and points `MAKAI_BINARY_PATH` at it).
+`resolveMakaiBinary` picks the binary in this order: `MAKAI_BINARY_PATH` or an explicit `binaryPath`; `MAKAI_BINARY_URL`/`binaryUrl` (checksum required); the platform package `@makai/cli-<platform>-<arch>`; `./zig-out/bin/oapx`; `./zig/zig-out/bin/oapx`; then `PATH`. **The platform package outranks both local build paths**, so if an optional `@makai/cli-*` package is installed, `zig build` alone does not make the SDK tests exercise your fresh binary. Set `MAKAI_BINARY_PATH` to be sure which one runs (CI builds with `zig build install --prefix /tmp/makai-smoke` and points `MAKAI_BINARY_PATH` at it).
 
 That variable is also what gates real-binary coverage. Every test in `sdk/typescript/test/makai_binary_smoke.test.ts` calls `t.skip("MAKAI_BINARY_PATH is not set")` when it is unset, so `npm run test:sdk` passes green with **zero** end-to-end binary coverage, and a binary found through `zig-out` or the platform package does not switch those tests on. Export `MAKAI_BINARY_PATH` explicitly when you mean to exercise the real runtime.
 
@@ -233,7 +233,7 @@ The PTY driver is deterministic: `MAKAI_TUI_FIXTURE` selects a canned reply (see
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Hosts: zig/src/tools/makai.zig (CLI: --stdio, --tui, -p,    │
+│  Hosts: zig/src/tools/makai.zig (oapx: serve agent|provider, │
 │         auth), zig/src/tui/ (zigzag TUI), sdk/typescript/ (SDK)  │
 ├──────────────────────────────────────────────────────────────┤
 │  Agent Layer (agent/): agent.zig, agent_loop.zig, types.zig, │
@@ -281,15 +281,15 @@ Ownership and auth boundary (non-negotiable):
 - **Agent layer is auth-agnostic**: no API keys or OAuth handling in agent logic.
 - **Auth protocol/runtime owns interactive OAuth flows and credential persistence**; **providers own request-time credential consumption/refresh** (`utils/auth_resolver.zig`, `utils/oauth/storage.zig`).
 - **Tool auth/permissions live at the tool protocol / tool runtime boundary** (`tools/permission.zig`, `protocol/tool/local_runtime.zig`).
-- SDKs never see raw tokens and must not spawn `makai auth ...` subprocesses as their auth path.
+- SDKs never see raw tokens and must not spawn `oapx auth ...` subprocesses as their auth path.
 
-### How the `makai --stdio` host is wired
+### How the `oapx --stdio` host is wired
 
-`runStdioMode` in `zig/src/tools/makai.zig` hosts all three protocol servers (auth, provider, agent) in one process, each behind its own `in_process.SerializedPipe`, and routes inbound stdin frames by envelope type. The agent server drives `agent_loop` through `agent/provider_protocol_bridge.zig` (`InProcessProviderProtocolBridge`), so even in-process the agent talks to providers through the provider protocol. Distributed tools are executed by the SDK client: the host publishes `tool_execute`, waits for a correlated `tool_result` (`in_reply_to` must match the request `message_id`), and cancels parked waits on stdin EOF. `MAKAI_AGENT_SESSION_IDLE_TTL_MS` tunes server-side idle-session eviction (default 30 min, `0` disables). `MAKAI_OAP_PROVIDER_STREAM_IDLE_TTL_MS` does the same for `makai --oap-provider`: it cancels a provider stream that has produced **no event** for that long (default 2 min, `0` disables). It measures silence rather than total duration on purpose — an extended-thinking generation legitimately runs for minutes and would be aborted by a wall-clock cap, while a wedged connection produces nothing at all.
+`runStdioMode` in `zig/src/tools/makai.zig` hosts all three protocol servers (auth, provider, agent) in one process, each behind its own `in_process.SerializedPipe`, and routes inbound stdin frames by envelope type. The agent server drives `agent_loop` through `agent/provider_protocol_bridge.zig` (`InProcessProviderProtocolBridge`), so even in-process the agent talks to providers through the provider protocol. Distributed tools are executed by the SDK client: the host publishes `tool_execute`, waits for a correlated `tool_result` (`in_reply_to` must match the request `message_id`), and cancels parked waits on stdin EOF. `MAKAI_AGENT_SESSION_IDLE_TTL_MS` tunes server-side idle-session eviction (default 30 min, `0` disables). `MAKAI_OAP_PROVIDER_STREAM_IDLE_TTL_MS` does the same for `oapx serve provider`: it cancels a provider stream that has produced **no event** for that long (default 2 min, `0` disables). It measures silence rather than total duration on purpose — an extended-thinking generation legitimately runs for minutes and would be aborted by a wall-clock cap, while a wedged connection produces nothing at all.
 
 ### The two OAP profiles are separate endpoints, not one endpoint with a switch
 
-`makai --oap` serves `open-agent-protocol.agent-control-core` and `makai --oap-provider` serves
+`oapx serve agent` serves `open-agent-protocol.agent-control-core` and `oapx serve provider` serves
 `open-agent-protocol.model-provider-core`. Each **refuses the other's profile** at decode, so a
 client cannot reach the provider vocabulary through the agent-control mode or the reverse, and the
 refusal names which profile the endpoint serves. They share the base envelope and the shared
@@ -330,7 +330,7 @@ attempt reveals them. An inference exists if and only if it was accepted; a refu
 A missing credential splits across that line and the rule decides which side by its own test rather
 than by the word "credential". When the endpoint does **not** resolve its own credentials, a request
 that had to name one and did not is decidable from the descriptor and the request, and refuses at
-create. When the endpoint **does** resolve its own — which is what `makai --oap-provider` advertises,
+create. When the endpoint **does** resolve its own — which is what `oapx serve provider` advertises,
 `resolves_own_credentials = true` — whether a usable credential exists is keychain state at the
 moment of the attempt, which is neither the descriptor nor the request, so it is an `inference.failed`
 terminal carrying `credential_missing`. Callers must expect the terminal from this host: the
@@ -359,7 +359,7 @@ than left pending, because the arrival deadline runs from the channel envelope a
 grant would have no deadline at all.
 
 The profile can be **conformance-tested** and cannot yet be **compatibility-tested**, and the two
-words must not be used interchangeably about it. A harness can spawn `makai --oap-provider`, drive
+words must not be used interchangeably about it. A harness can spawn `oapx serve provider`, drive
 discovery, run an inference against a local anonymous provider with no credentials, and assemble a
 trace — that covers every envelope. None of the twelve compatibility facts has been checked against
 the vendor it describes.
@@ -405,18 +405,26 @@ A stream ends via `complete(result)` / `completeWithError(msg)`. Never gate on a
 
 Passing an explicit `std.mem.Allocator` is the convention, not a guarantee the codebase currently meets everywhere: `transports/stdio.zig` builds its compatibility framer on `std.heap.page_allocator` and `utils/oauth/storage.zig` parses JWT expiry through it, so neither shows up in a test allocator's leak accounting. Tests use `std.testing.allocator` for leak detection. The ring buffer's 1024 slots are preallocated and streaming never grows them, but streaming is not allocation-free: on an owned-event stream with `clone_event_fn` set, every `push` deep-copies the event.
 
-## The `makai` Binary
+## The `oapx` Binary
 
 ```
-makai --version
-makai --stdio                                   # protocol host for the TS SDK (NDJSON frames on stdin/stdout)
-makai --oap [--model <model-ref>]               # native Open Agent Protocol host, agent-control-core profile
-makai --oap-provider                            # native Open Agent Protocol host, model-provider-core profile
-makai --tui                                     # local-only terminal UI
-makai -p [--agent] [--storage] [--model <id>] "<prompt>"   # print mode: stream one prompt, dump every event
-makai auth providers [--json]                   # thin wrappers over the auth protocol runtime
-makai auth login --provider <id> [--json]
+oapx                                           # the terminal UI, which a bare invocation now starts
+oapx --help                                    # the usage a bare invocation used to print
+oapx --version
+oapx run [--agent] [--storage] [--model <id>] "<prompt>"   # stream one prompt, dump every event
+oapx serve agent [--model <model-ref>]         # native OAP host, agent-control-core profile
+oapx serve provider [--specimens]              # native OAP host, model-provider-core profile
+oapx validate <trace.json>...                  # the semantic validator, nonzero exit on any diagnostic
+oapx auth providers [--json]                   # thin wrappers over the auth protocol runtime
+oapx auth login --provider <id> [--json]
+oapx --stdio                                   # protocol host for the SDKs (NDJSON on stdin/stdout)
 ```
+
+A role is a noun, so `serve` takes `agent` or `provider` as an argument rather
+than a flag ([decision 0019](../decisions/0019-one-binary.md)). The superseded
+flags `--tui`, `-p`, `--oap` and `--oap-provider` still work. Not yet built:
+`serve agent provider` in one process, `--backend <name>` for a third-party
+harness, `check`, `conformance` and `specimens` as a top-level command.
 
 Print-mode options are position-independent as of #287 (see Print Mode CLI above): `--agent`, `--storage`, and `--model <id>` parse before or after the prompt, an unknown `--flag` or a second positional argument is a hard error rather than being ignored, and `--tui-runtime` must still precede the prompt.
 
@@ -436,7 +444,7 @@ Notes: OpenAI Responses (`openai-responses`) and Completions (`openai-completion
 
 `zig/src/tui/` is built on the vendored `zigzag` framework: `app.zig` (entry, approval waiter, fixture runtime), `runtime.zig` (`TuiRuntime` over the agent loop with local tools and a `PermissionMode` of ask/bypass), `session.zig`/`session_store.zig` (JSONL persistence; a session file may reach `load_max_bytes` = 64 MiB, each record is capped at `max_jsonl_line_bytes` = 8 MiB, and metadata loads read a 1 MiB tail), `state.zig`, `commands.zig` (10 ratified `CommandKind`s — help, model, login, provider, status, resume, permissions, clear, abort, quit — exposed as 12 accepted names, since `/sessions` aliases `/resume` and `/perm` aliases `/permissions`), `views/` (transcript, composer, status_bar, approval, session_picker, menu_picker), `render.zig`, `text.zig`, `theme.zig`. The TUI is local-only (no remote backend). Deterministic tests use `fixture_provider.zig` and `tests/mock_transport.zig`; the PTY harness covers the real terminal path.
 
-`makai --tui` is an inline (non-alt-screen) terminal UI on the vendored `zigzag` framework. The renderer contract — cursor-relative live region, `Context.printAbove` for persistent transcript rows, `Context.requestClearScreen`, the app's `inline_history_flushed` cursor and active-entry rules, the visual language, and the key map — is documented in `docs/tui-rendering-model.md`; read it before touching `app.zig` `view`/`update`, the views, or `zig/vendor/zigzag/src/core/program.zig`. Tests that drive `TuiModel.update` must pass a real `zz.Context` (`TestContext` in `app.zig`), and the e2e driver runs in `.inline_history` mode. The TUI owns the terminal: never print to stdout/stderr from TUI code paths (stderr is redirected to `~/.makai/tui-stderr.log` while it runs); append a transcript row instead. Credential storage (`zig/src/utils/oauth/storage.zig`) is keychain-first on macOS: reads fail fast and fall back to `auth.json`, writes still prompt, and `MAKAI_KEYCHAIN_SERVICE` isolates items in local runs — see the macOS Keychain section above for the mechanism and the four limits of that override. Never move credentials to a plain file. The PTY harness (`scripts/tui-pty-driver.py`, Linux only) plus `docs/tui-performance-baseline.md` cover the real binary.
+`oapx --tui` is an inline (non-alt-screen) terminal UI on the vendored `zigzag` framework. The renderer contract — cursor-relative live region, `Context.printAbove` for persistent transcript rows, `Context.requestClearScreen`, the app's `inline_history_flushed` cursor and active-entry rules, the visual language, and the key map — is documented in `docs/tui-rendering-model.md`; read it before touching `app.zig` `view`/`update`, the views, or `zig/vendor/zigzag/src/core/program.zig`. Tests that drive `TuiModel.update` must pass a real `zz.Context` (`TestContext` in `app.zig`), and the e2e driver runs in `.inline_history` mode. The TUI owns the terminal: never print to stdout/stderr from TUI code paths (stderr is redirected to `~/.makai/tui-stderr.log` while it runs); append a transcript row instead. Credential storage (`zig/src/utils/oauth/storage.zig`) is keychain-first on macOS: reads fail fast and fall back to `auth.json`, writes still prompt, and `MAKAI_KEYCHAIN_SERVICE` isolates items in local runs — see the macOS Keychain section above for the mechanism and the four limits of that override. Never move credentials to a plain file. The PTY harness (`scripts/tui-pty-driver.py`, Linux only) plus `docs/tui-performance-baseline.md` cover the real binary.
 
 ## Zig Conventions
 

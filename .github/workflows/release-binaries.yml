@@ -22,42 +22,42 @@ jobs:
             os_name: macos
             arch_name: arm64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: darwin-arm64
           - runner: macos-latest
             target: x86_64-macos
             os_name: macos
             arch_name: x64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: darwin-x64
           - runner: ubuntu-latest
             target: aarch64-linux
             os_name: linux
             arch_name: arm64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: linux-arm64
           - runner: ubuntu-latest
             target: x86_64-linux
             os_name: linux
             arch_name: x64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: linux-x64
           - runner: windows-latest
             target: x86_64-windows
             os_name: windows
             arch_name: x64
             archive: zip
-            binary_name: makai.exe
+            binary_name: oapx.exe
             npm_target: win32-x64
           - runner: windows-latest
             target: aarch64-windows
             os_name: windows
             arch_name: arm64
             archive: zip
-            binary_name: makai.exe
+            binary_name: oapx.exe
             npm_target: win32-arm64
 
     steps:
@@ -176,7 +176,7 @@ jobs:
           if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
             VERSION="$(node -p "require('./package.json').version")"
           fi
-          ARTIFACT="makai-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz"
+          ARTIFACT="oapx-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz"
           BIN_DIR="$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
           mkdir -p "$GITHUB_WORKSPACE/dist"
           tar -C "$BIN_DIR" -czf "$GITHUB_WORKSPACE/dist/$ARTIFACT" "${{ matrix.binary_name }}"
@@ -190,7 +190,7 @@ jobs:
           } else {
             (Get-Content package.json | ConvertFrom-Json).version
           }
-          $artifact = "makai-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}.zip"
+          $artifact = "oapx-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}.zip"
           $binDir = "$env:GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/dist" | Out-Null
           Compress-Archive -Path "$binDir/${{ matrix.binary_name }}" -DestinationPath "$env:GITHUB_WORKSPACE/dist/$artifact" -Force
@@ -198,7 +198,7 @@ jobs:
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: makai-${{ matrix.os_name }}-${{ matrix.arch_name }}
+          name: oapx-${{ matrix.os_name }}-${{ matrix.arch_name }}
           path: dist/*
           if-no-files-found: error
 
@@ -208,13 +208,13 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/dist-npm-upload"
           cp "$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin/${{ matrix.binary_name }}" \
-             "$GITHUB_WORKSPACE/dist-npm-upload/makai-${{ matrix.npm_target }}"
+             "$GITHUB_WORKSPACE/dist-npm-upload/oapx-${{ matrix.npm_target }}"
 
       - name: Upload binary for npm packaging
         uses: actions/upload-artifact@v4
         with:
           name: npm-binary-${{ matrix.npm_target }}
-          path: dist-npm-upload/makai-${{ matrix.npm_target }}
+          path: dist-npm-upload/oapx-${{ matrix.npm_target }}
           if-no-files-found: error
 
   checksums:
@@ -232,12 +232,12 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum makai-*.tar.gz makai-*.zip > SHA256SUMS.txt
+          sha256sum oapx-*.tar.gz oapx-*.zip > SHA256SUMS.txt
 
       - name: Upload checksums
         uses: actions/upload-artifact@v4
         with:
-          name: makai-checksums
+          name: oapx-checksums
           path: dist/SHA256SUMS.txt
 
   release:
@@ -256,8 +256,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/makai-*.tar.gz
-            dist/makai-*.zip
+            dist/oapx-*.tar.gz
+            dist/oapx-*.zip
             dist/SHA256SUMS.txt
 
   package-npm:

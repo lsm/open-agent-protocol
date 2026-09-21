@@ -7,9 +7,9 @@ Resolution order mirrors ``typescript/src/binary_resolver.ts``:
 2. ``binary_url`` / ``MAKAI_BINARY_URL``, which **requires** a SHA-256 checksum
    (``checksum_sha256`` / ``MAKAI_BINARY_SHA256``). The download is cached and
    re-verified on every resolve.
-3. ``./zig-out/bin/makai`` relative to the current working directory.
-4. ``./zig/zig-out/bin/makai``.
-5. ``makai`` on ``PATH``.
+3. ``./zig-out/bin/oapx`` relative to the current working directory.
+4. ``./zig/zig-out/bin/oapx``.
+5. ``oapx`` on ``PATH``.
 
 The TypeScript SDK has one extra step between 2 and 3: an optional
 ``@makai/cli-<platform>-<arch>`` npm package. **That step is deliberately
@@ -64,7 +64,7 @@ class BinaryResolverOptions:
 
 
 def _binary_name() -> str:
-    return "makai.exe" if os.name == "nt" else "makai"
+    return "oapx.exe" if os.name == "nt" else "oapx"
 
 
 def _sha256(content: bytes) -> str:

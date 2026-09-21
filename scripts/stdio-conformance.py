@@ -50,6 +50,9 @@ ULID_LEAD = "01234567"
 
 DEFAULT_BINARY_CANDIDATES = (
     os.environ.get("MAKAI_BINARY_PATH", ""),
+    "zig-out/bin/oapx",
+    "zig/zig-out/bin/oapx",
+    "/tmp/makai-stdio-test/bin/oapx",
     "zig-out/bin/makai",
     "zig/zig-out/bin/makai",
     "/tmp/makai-stdio-test/bin/makai",

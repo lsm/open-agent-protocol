@@ -145,7 +145,7 @@ jobs:
 
       - name: Run TS SDK unit + E2E tests
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-smoke/bin/makai
+          MAKAI_BINARY_PATH: /tmp/makai-smoke/bin/oapx
         run: npm run test:sdk
 
       - name: Verify npm package ships TypeScript declarations
