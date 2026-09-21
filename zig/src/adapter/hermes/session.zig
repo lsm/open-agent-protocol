@@ -579,6 +579,12 @@ pub const Reducer = struct {
             try self.failRun("hermes_invalid_event", "gate without request_id");
             return;
         }
+        for (questions.items) |question| {
+            if (!answerable(question)) {
+                try self.failRun("hermes_invalid_event", "gate with a question nobody can answer");
+                return;
+            }
+        }
         binding.questions = questions.items;
         try self.interactions.append(self.allocator(), binding);
         const at = self.interactions.items.len - 1;
@@ -605,6 +611,10 @@ pub const Reducer = struct {
             return;
         };
         const request_id = stringMember(fields, "request_id");
+        if (request_id.len == 0) {
+            try self.failRun("hermes_invalid_event", "expire without request_id");
+            return;
+        }
         for (self.interactions.items, 0..) |binding, at| {
             if (binding.resolved) continue;
             if (!std.mem.eql(u8, binding.run_id, run.id)) continue;
@@ -710,6 +720,12 @@ fn requestIDProbe(payload: std.json.Value) []const u8 {
 fn boolMember(map: std.json.ObjectMap, key: []const u8) bool {
     const value = map.get(key) orelse return false;
     return if (value == .bool) value.bool else false;
+}
+
+fn answerable(question: Question) bool {
+    if (question.id.len == 0 or question.prompt.len == 0) return false;
+    if (std.mem.eql(u8, question.kind, "text")) return true;
+    return question.options.len > 0;
 }
 
 fn offers(question: Question, id: []const u8) bool {
@@ -1269,4 +1285,54 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
     const fresh = reducer.pendingInteraction("clarify").?;
     try testing.expect(!std.mem.eql(u8, stranded, fresh.id));
     try testing.expectEqualStrings("bbbb2222", fresh.request_id);
+}
+
+test "a gate whose question carries no id, no prompt or no choice is refused, not emitted" {
+    try expectGateRefused("approval.request",
+        \\{"command":"ls"}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+    try expectGateRefused("approval.request",
+        \\{"command":"ls","choices":[]}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+    try expectGateRefused("approval.request",
+        \\{"command":"","choices":["once"]}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+    try expectGateRefused("clarify.request",
+        \\{"request_id":"aaaa1111","question":""}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+    try expectGateRefused("clarify.request",
+        \\{"request_id":"aaaa1111","questions":[{"qid":"","question":"first?","choices":["a"]}]}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+    try expectGateRefused("clarify.request",
+        \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"","choices":["a"]}]}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+    try expectGateRefused("secret.request",
+        \\{"request_id":"cccc3333","prompt":"","env_var":"CI_TOKEN"}
+    , "hermes_invalid_event", "gate with a question nobody can answer");
+}
+
+test "a clarify gate with an empty choice list is free text, not a choice with nothing to choose" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "clarify.request",
+        \\{"request_id":"aaaa1111","question":"which?","choices":[]}
+    );
+
+    try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("text", questionsAt(&reducer, 1).items[0].object.get("kind").?.string);
+}
+
+test "an expire that names no request cancels nothing, least of all an approval" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once"]}
+    );
+    try feed(&reducer, scratch, try event(scratch, "clarify.expire", "{}"));
+
+    try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("expire without request_id", payloadAt(&reducer, 3).get("error").?.object.get("message").?.string);
+    try testing.expect(!reducer.interactions.items[0].resolved);
 }
