@@ -788,9 +788,13 @@ fn correlatedType(kind: []const u8) bool {
     return false;
 }
 
-fn stringMember(map: std.json.ObjectMap, key: []const u8) []const u8 {
-    const value = gojson.foldedSet(map, &.{key}) orelse return "";
+fn stringAt(map: std.json.ObjectMap, path: []const []const u8) []const u8 {
+    const value = gojson.foldedSet(map, path) orelse return "";
     return if (value == .string) value.string else "";
+}
+
+fn stringMember(map: std.json.ObjectMap, key: []const u8) []const u8 {
+    return stringAt(map, &.{key});
 }
 
 fn presentString(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -841,7 +845,7 @@ fn permissionDecodes(params: std.json.Value, native_id: []const u8) bool {
     const tool_call = gojson.foldedSet(params.object, &.{"toolCall"}) orelse return false;
     if (gojson.foldedWrongType(params.object, &.{"toolCall"}, .object)) return false;
     if (tool_call != .object or !nestedToolCallDecodes(params.object)) return false;
-    if (gojson.foldedSet(params.object, &.{ "toolCall", "toolCallId" }) == null) return false;
+    if (stringAt(params.object, &.{ "toolCall", "toolCallId" }).len == 0) return false;
     if (gojson.foldedWrongType(params.object, &.{"options"}, .array)) return false;
     const options = gojson.foldedLast(params.object, &.{"options"}) orelse return false;
     if (options != .array or options.array.items.len == 0) return false;
@@ -2212,6 +2216,32 @@ test "a split toolCall spelling opens the gate the merged one describes" {
     ));
     try feed(&reducer, scratch,
         \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t"},"TOOLCALL":{"title":"y"},"options":[{"optionId":"o","name":"n","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, last));
+}
+
+test "an empty toolCallId is refused by the permission gate, not by the tool gate below it" {
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"","title":"T"},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
+    , "acp_invalid_permission", "malformed permission request");
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"TOOLCALL":{"toolCallId":""},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
+    , "acp_invalid_permission", "malformed permission request");
+}
+
+test "a later spelling that names the toolCallId rescues an empty earlier one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"","title":"T"},"TOOLCALL":{"toolCallId":"t"},"options":[{"optionId":"o","name":"n","kind":"allow_once"}]}}
     );
 
     const last = reducer.envelopes.items.len - 1;
