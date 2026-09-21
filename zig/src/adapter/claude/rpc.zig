@@ -12,31 +12,60 @@ pub const invalid_message_prefix = "claude rpc: invalid stream-json message";
 pub const invalid_control_prefix = "claude rpc: invalid control-plane message";
 pub const invalid_frame_prefix = "claude native: invalid frame for a known type";
 pub const frame_too_large_message = "claude rpc: frame exceeds configured limit";
+pub const max_nesting_depth = 10000;
 
 fn frameDetail(comptime detail: []const u8) []const u8 {
     return invalid_frame_prefix ++ ": " ++ detail;
 }
 
+fn unprintableRune(code: u21) bool {
+    return code <= 0x9f or code == 0xa0 or code == 0xad;
+}
+
 fn quoteGo(arena: std.mem.Allocator, value: []const u8) []const u8 {
     var out = std.ArrayList(u8).empty;
     out.append(arena, '"') catch return value;
-    for (value) |byte| {
-        switch (byte) {
-            '"' => out.appendSlice(arena, "\\\"") catch return value,
-            '\\' => out.appendSlice(arena, "\\\\") catch return value,
-            '\n' => out.appendSlice(arena, "\\n") catch return value,
-            '\r' => out.appendSlice(arena, "\\r") catch return value,
-            '\t' => out.appendSlice(arena, "\\t") catch return value,
-            0x07 => out.appendSlice(arena, "\\a") catch return value,
-            0x08 => out.appendSlice(arena, "\\b") catch return value,
-            0x0b => out.appendSlice(arena, "\\v") catch return value,
-            0x0c => out.appendSlice(arena, "\\f") catch return value,
-            0x00...0x06, 0x0e...0x1f, 0x7f => {
-                const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
-                out.appendSlice(arena, hex) catch return value;
-            },
-            else => out.append(arena, byte) catch return value,
+    var index: usize = 0;
+    while (index < value.len) {
+        const byte = value[index];
+        if (byte < 0x80) {
+            index += 1;
+            switch (byte) {
+                '"' => out.appendSlice(arena, "\\\"") catch return value,
+                '\\' => out.appendSlice(arena, "\\\\") catch return value,
+                '\n' => out.appendSlice(arena, "\\n") catch return value,
+                '\r' => out.appendSlice(arena, "\\r") catch return value,
+                '\t' => out.appendSlice(arena, "\\t") catch return value,
+                0x07 => out.appendSlice(arena, "\\a") catch return value,
+                0x08 => out.appendSlice(arena, "\\b") catch return value,
+                0x0b => out.appendSlice(arena, "\\v") catch return value,
+                0x0c => out.appendSlice(arena, "\\f") catch return value,
+                0x00...0x06, 0x0e...0x1f, 0x7f => {
+                    const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
+                    out.appendSlice(arena, hex) catch return value;
+                },
+                else => out.append(arena, byte) catch return value,
+            }
+            continue;
         }
+        const width = std.unicode.utf8ByteSequenceLength(byte) catch {
+            index += 1;
+            const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
+            out.appendSlice(arena, hex) catch return value;
+            continue;
+        };
+        const decoded = if (index + width <= value.len) std.unicode.utf8Decode(value[index .. index + width]) catch null else null;
+        if (decoded) |code| {
+            index += width;
+            if (unprintableRune(code)) {
+                const hex = std.fmt.allocPrint(arena, "\\u{x:0>4}", .{code}) catch return value;
+                out.appendSlice(arena, hex) catch return value;
+            } else out.appendSlice(arena, value[index - width .. index]) catch return value;
+            continue;
+        }
+        index += 1;
+        const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
+        out.appendSlice(arena, hex) catch return value;
     }
     out.append(arena, '"') catch return value;
     return out.items;
@@ -233,7 +262,7 @@ const Frame = struct {
     seen: std.StringHashMapUnmanaged(void) = .empty,
 };
 
-const Walk = union(enum) { ok, duplicate: []const u8, trailing };
+const Walk = union(enum) { ok, duplicate: []const u8, trailing, too_deep };
 
 fn walkFrame(arena: std.mem.Allocator, data: []const u8) !Walk {
     var scanner = std.json.Scanner.initCompleteInput(arena, data);
@@ -248,8 +277,10 @@ fn walkFrame(arena: std.mem.Allocator, data: []const u8) !Walk {
         }
         var closed = false;
         switch (token) {
-            .object_begin => try stack.append(arena, .{ .is_object = true, .expect_key = true }),
-            .array_begin => try stack.append(arena, .{ .is_object = false }),
+            .object_begin, .array_begin => {
+                if (stack.items.len >= max_nesting_depth) return .too_deep;
+                try stack.append(arena, .{ .is_object = token == .object_begin, .expect_key = token == .object_begin });
+            },
             .object_end, .array_end => {
                 _ = stack.pop();
                 if (stack.items.len == 0) settled = true;
@@ -552,6 +583,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     switch (walkFrame(arena, data) catch Walk.ok) {
         .duplicate => |key| return report.duplicateKey(arena, key),
         .trailing => return report.invalid("trailing JSON value"),
+        .too_deep => return report.invalid("exceeded max depth"),
         .ok => {},
     }
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch {
@@ -953,6 +985,16 @@ test "a quoted value is escaped the way %q escapes it" {
     try testing.expectEqualStrings("\"a\\x00b\"", quoteGo(scratch, "a\x00b"));
     try testing.expectEqualStrings("\"\\a\\b\\v\\f\"", quoteGo(scratch, "\x07\x08\x0b\x0c"));
     try testing.expectEqualStrings("\"\\r\\t\\x1f\"", quoteGo(scratch, "\r\t\x1f"));
+    try testing.expectEqualStrings("\"\\u0080\\u009f\"", quoteGo(scratch, "\u{80}\u{9f}"));
+    try testing.expectEqualStrings("\"\\u00a0\\u00ad\"", quoteGo(scratch, "\u{a0}\u{ad}"));
+    try testing.expectEqualStrings("\"\u{b0}\u{bf}\u{ab}\u{a9}\"", quoteGo(scratch, "\u{b0}\u{bf}\u{ab}\u{a9}"));
+    try testing.expectEqualStrings("\"\\xc2A\"", quoteGo(scratch, "\xc2A"));
+    try testing.expectEqualStrings("\"a\\xc2b\"", quoteGo(scratch, "a\xc2b"));
+    try testing.expectEqualStrings("\"\\xff\"", quoteGo(scratch, "\xff"));
+    try testing.expectEqualStrings("\"\\xc2\"", quoteGo(scratch, "\xc2"));
+    try testing.expectEqualStrings("\"\\xe2\\x80\"", quoteGo(scratch, "\xe2\x80"));
+    try testing.expectEqualStrings("\"\u{1f600}\"", quoteGo(scratch, "\u{1f600}"));
+    try testing.expectEqualStrings("\"caf\u{e9} na\u{ef}ve\"", quoteGo(scratch, "caf\u{e9} na\u{ef}ve"));
 
     var quoted = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(scratch, "{\"type\":\"control_response\",\"response\":{\"subtype\":\"we\\\"ird\",\"request_id\":\"r\"}}", &quoted));
@@ -968,6 +1010,45 @@ test "an oversized unterminated tail is too large, not malformed" {
 
     var terminated = FrameReader{ .source = "{\"type\":\"result\"}\n", .limit = 4 };
     try testing.expectError(Error.FrameTooLarge, terminated.next(null));
+}
+
+test "nesting past the cap the oracle enforces is refused here too" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    const at_cap = try nestedFrame(scratch, max_nesting_depth - 1);
+    var accepted = Diagnostic{};
+    _ = try parseMessage(scratch, at_cap, &accepted);
+
+    const past_cap = try nestedFrame(scratch, max_nesting_depth);
+    var refused = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(scratch, past_cap, &refused));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": exceeded max depth", refused.message);
+
+    const objects = try nestedObjectFrame(scratch, max_nesting_depth);
+    var objects_refused = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(scratch, objects, &objects_refused));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": exceeded max depth", objects_refused.message);
+}
+
+fn nestedFrame(arena: std.mem.Allocator, depth: usize) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    try out.appendSlice(arena, "{\"type\":\"a\",\"m\":");
+    try out.appendNTimes(arena, '[', depth);
+    try out.appendNTimes(arena, ']', depth);
+    try out.appendSlice(arena, "}");
+    return out.items;
+}
+
+fn nestedObjectFrame(arena: std.mem.Allocator, depth: usize) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    try out.appendSlice(arena, "{\"type\":\"a\",\"m\":");
+    for (0..depth) |_| try out.appendSlice(arena, "{\"k\":");
+    try out.appendSlice(arena, "1");
+    try out.appendNTimes(arena, '}', depth);
+    try out.appendSlice(arena, "}");
+    return out.items;
 }
 
 test "a duplicate key is classified as one, not as undecodable JSON" {
