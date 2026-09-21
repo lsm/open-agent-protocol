@@ -911,22 +911,35 @@ to the depth Go declares them, with an integer need that refuses a float and an
 item list for object and object-array members.
 
 **The diagnostics the port reproduces are the ones `message.go` composes, not
-the ones it borrows.** Three of that file's refusals interpolate an
-`encoding/json` scanner error with `%v`, and those strings belong to Go's
-scanner rather than to the adapter: `{"type":}` reports `missing value after
-object key`, `{"type":"a"} {"type":"b"}` reports `trailing JSON value`,
-`{"a":tru}` reports `invalid character '}' in literal true (expecting 'e')`.
-Fourteen malformed frames put through the oracle produced twelve distinct
-strings, all of them Go's. Reproducing that vocabulary would bind this port to
-the wording of a parser it does not use and would rot silently on a Go upgrade,
-with no test on either side that could notice. So the port substitutes one
-string, `frame is not decodable JSON`, at the single site those three collapse
-into, and reproduces every other diagnostic verbatim. The classification is
-identical either way -- both sides refuse with the invalid-message error, which
-is what the reducer acts on -- and only the text a human reads differs. The
-nested-cause chain in `requireObject` is reproduced verbatim rather than
-substituted, because a member that reached it came out of a successful decode,
-so its only possible failure is the bookend check whose text the adapter owns.
+the ones it borrows**, and separating those two took a probe rather than a read.
+`parseObject` reports whatever `rejectDuplicateKeys` and its decode return, and
+that is a mix. Fourteen malformed frames put through the oracle produced twelve
+distinct strings: `{"type":}` reports `missing value after object key`,
+`{"a":tru}` reports `invalid character '}' in literal true (expecting 'e')`,
+`{3:1}` reports `object member name must be a string`. Those are
+`encoding/json`'s scanner vocabulary, and reproducing it would bind this port to
+the wording of a parser it does not use and rot silently on a Go upgrade with no
+test on either side able to notice, so the port substitutes one string, `frame
+is not decodable JSON`, for all of them. The classification is identical either
+way -- both sides refuse with the invalid-message error, which is what the
+reducer acts on -- and only the text a human reads differs.
+
+`rejectDuplicateKeys` also composes three strings of its own, and exactly one of
+them is reachable. `trailing JSON value` fires for a frame carrying a second
+object, and the port now reproduces it from its own token walk: the walk already
+tracks container depth for the duplicate check, so a value arriving after the
+top-level container closes is a fact it can state. `object key is not a string`
+and `unexpected closing delimiter` are dead, because Go's scanner errors before
+the adapter's own check is reached -- a non-string key in any of the three
+nesting positions reports `object member name must be a string`, and every input
+that would reach the closing-delimiter branch reports a scanner error first. That
+is the same "dead by construction" claim the replay guard taught us to distrust,
+so it is recorded as a probe result against a pinned commit rather than as a
+property, and the two strings are named here so a future reader can retest them.
+
+The nested-cause chain in `requireObject` is reproduced verbatim rather than
+substituted, because a member that reached it came out of a successful decode, so
+its only possible failure is the bookend check whose text the adapter owns.
 
 A tool block the harness leaves nameless has no correct handling in the oracle,
 and this is the one place the port deliberately does something else. `ContentBlock`

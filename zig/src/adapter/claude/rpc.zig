@@ -225,25 +225,33 @@ const Frame = struct {
     seen: std.StringHashMapUnmanaged(void) = .empty,
 };
 
-fn duplicateKey(arena: std.mem.Allocator, data: []const u8) !?[]const u8 {
+const Walk = union(enum) { ok, duplicate: []const u8, trailing };
+
+fn walkFrame(arena: std.mem.Allocator, data: []const u8) !Walk {
     var scanner = std.json.Scanner.initCompleteInput(arena, data);
     defer scanner.deinit();
     var stack = std.ArrayList(Frame).empty;
+    var settled = false;
     while (true) {
-        const token = scanner.nextAlloc(arena, .alloc_always) catch return null;
+        const token = scanner.nextAlloc(arena, .alloc_always) catch return if (settled) Walk.trailing else Walk.ok;
+        if (settled) {
+            if (token == .end_of_document) break;
+            return .trailing;
+        }
         var closed = false;
         switch (token) {
             .object_begin => try stack.append(arena, .{ .is_object = true, .expect_key = true }),
             .array_begin => try stack.append(arena, .{ .is_object = false }),
             .object_end, .array_end => {
                 _ = stack.pop();
+                if (stack.items.len == 0) settled = true;
                 closed = true;
             },
             .end_of_document => break,
             .allocated_string => |text| {
                 const top = &stack.items[stack.items.len - 1];
                 if (top.is_object and top.expect_key) {
-                    if (top.seen.contains(text)) return text;
+                    if (top.seen.contains(text)) return Walk{ .duplicate = text };
                     try top.seen.put(arena, text, {});
                     top.expect_key = false;
                     continue;
@@ -256,7 +264,7 @@ fn duplicateKey(arena: std.mem.Allocator, data: []const u8) !?[]const u8 {
         const top = &stack.items[stack.items.len - 1];
         if (top.is_object) top.expect_key = true;
     }
-    return null;
+    return .ok;
 }
 
 fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
@@ -524,7 +532,11 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     if (data.len == 0 or data[0] != '{' or data[data.len - 1] != '}') {
         return report.invalid("frame must be exactly one JSON object");
     }
-    if (duplicateKey(arena, data) catch null) |key| return report.duplicateKey(arena, key);
+    switch (walkFrame(arena, data) catch Walk.ok) {
+        .duplicate => |key| return report.duplicateKey(arena, key),
+        .trailing => return report.invalid("trailing JSON value"),
+        .ok => {},
+    }
     const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch {
         return report.invalid("frame is not decodable JSON");
     };
@@ -925,6 +937,19 @@ test "a duplicate key is classified as one, not as undecodable JSON" {
     var quoted = Diagnostic{};
     try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\",\"a\\tb\":1,\"a\\tb\":2}", &quoted));
     try testing.expectEqualStrings(invalid_message_prefix ++ ": duplicate object key \"a\\tb\"", quoted.message);
+
+    var trailing = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\"}{\"type\":\"b\"}", &trailing));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": trailing JSON value", trailing.message);
+
+    var spaced = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\"} {\"type\":\"b\"}", &spaced));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": trailing JSON value", spaced.message);
+
+    var nested_only = Diagnostic{};
+    _ = parseMessage(arena.allocator(), "{\"type\":\"a\",\"m\":{\"x\":1},\"n\":[{\"y\":2}]}", &nested_only) catch |err| {
+        try testing.expect(err != Error.InvalidMessage);
+    };
 
     var garbage = Diagnostic{};
     try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":}", &garbage));
