@@ -1203,9 +1203,25 @@ the caller's to override — but it makes these properties of the default spawn
 rather than invariants of the adapter. A control layer that relies on them has
 to own the caller args too.
 
-The reading of the two tool flags comes from the CLI's own `--help`, read on
-2.1.269 against a pin of 2.1.263. The auto-approval behaviour comes from the
-live probe against the pinned binary and needs no re-confirmation.
+The two halves of this rest on different evidence, and only one of them is
+verified at the pin.
+
+The auto-approval behaviour is. Probe 6 ran against the pinned 2.1.263
+binary, so "the control layer does not see every tool call" is established
+for the adapter being mapped.
+
+The reading of the two tool flags is **not**. It comes from `--help` on
+2.1.269, six patch releases past the pin, and this ledger's own rule is that
+behaviour not exercisable through the SDK sources is unverified. Six releases
+is enough for a flag's meaning to move, and the flag form is separately
+unverified in stream-json mode. So treat "`AllowTools` removes gate coverage"
+and "the default spawn exposes every built-in" as the best available reading
+rather than as established, and do not build a security boundary on either
+until the smoke gate runs them against 2.1.263.
+
+Nothing in the conservative advice depends on the unverified half. Probe 6
+alone is enough to say the gate is partial, and `UnrestrictedTools()` is the
+posture that adds no exemptions under either reading of the flag.
 
 The corpus cannot carry any of this: its `can_use_tool` frames are scripted,
 so they prove the reducer surfaces a gate it is given, never which calls the
