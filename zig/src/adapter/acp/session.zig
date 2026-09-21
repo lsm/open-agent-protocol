@@ -537,7 +537,9 @@ pub const Reducer = struct {
             return;
         }
         const tool = &self.tools.items[index];
-        if (presentString(update, "title")) |value| tool.title = value;
+        if (presentString(update, "title")) |value| {
+            if (value.len > 0) tool.title = value;
+        }
         if (presentString(update, "kind")) |value| tool.kind = value;
         if (update.get("rawInput")) |value| tool.raw_input = value;
         if (update.get("rawOutput")) |value| tool.raw_output = value;
@@ -653,12 +655,14 @@ pub const Reducer = struct {
             const option_id = stringMember(entry.object, "optionId");
             if (option_id.len == 0) continue;
             const name = stringMember(entry.object, "name");
+            if (name.len == 0) continue;
             const kind = stringMember(entry.object, "kind");
+            if (!definedOptionKind(kind)) continue;
             try kept.append(self.allocator(), .{ .id = option_id, .name = name, .kind = kind });
             var choice = self.object();
             try self.put(&choice, "id", str(option_id));
             try self.put(&choice, "label", str(name));
-            if (kind.len > 0) try self.put(&choice, "description", str(kind));
+            try self.put(&choice, "description", str(kind));
             try choices.append(.{ .object = choice });
         }
         if (kept.items.len == 0) {
@@ -782,6 +786,15 @@ fn toolUpdateDecodes(update: std.json.ObjectMap) bool {
 }
 
 const permission_option_strings = [_][]const u8{ "optionId", "name", "kind" };
+
+const permission_option_kinds = [_][]const u8{ "allow_once", "allow_always", "reject_once", "reject_always" };
+
+fn definedOptionKind(kind: []const u8) bool {
+    for (permission_option_kinds) |known| {
+        if (std.mem.eql(u8, known, kind)) return true;
+    }
+    return false;
+}
 
 fn permissionDecodes(params: std.json.Value, native_id: []const u8) bool {
     if (params != .object) return false;
@@ -1540,6 +1553,61 @@ test "resolving a gate answers the request that opened it" {
     try testing.expectEqualStrings("allow", payload.get("choice_id").?.string);
     try testing.expect(payload.get("granted").?.bool);
     try testing.expect(reducer.pendingInteraction() == null);
+}
+
+test "a patch cannot erase the title the call was admitted with" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, tool_call_frame);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","title":"","status":"completed"}
+    ));
+
+    try testing.expectEqualStrings("action.call.started", typeAt(&reducer, 2));
+    try testing.expectEqualStrings("Read file", payloadAt(&reducer, 2).get("name").?.string);
+    try testing.expectEqualStrings("Read file", payloadAt(&reducer, 3).get("name").?.string);
+
+    var renamed = try openRun(&arena);
+    try feed(&renamed, scratch, tool_call_frame);
+    try feed(&renamed, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","title":"Renamed","status":"completed"}
+    ));
+    try testing.expectEqualStrings("Renamed", payloadAt(&renamed, 3).get("name").?.string);
+}
+
+test "an option is offered only with an id, a label and a kind ACP v1 defines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[{"optionId":"","name":"Nameless","kind":"allow_once"},{"optionId":"blank","name":"","kind":"allow_once"},{"optionId":"future","name":"Future","kind":"allow_for_this_repository"},{"optionId":"no","name":"Reject","kind":"reject_always"}]}}
+    );
+
+    const choices = payloadAt(&reducer, 2).get("choices").?.array.items;
+    try testing.expectEqual(@as(usize, 1), choices.len);
+    try testing.expectEqualStrings("no", choices[0].object.get("id").?.string);
+    try testing.expectEqualStrings("Reject", choices[0].object.get("label").?.string);
+    try testing.expectEqualStrings("reject_always", choices[0].object.get("description").?.string);
+
+    try testing.expectError(Error.InvalidResolution, reducer.resolve(reducer.pendingInteraction().?, "run-b", "user", "future", true));
+    try reducer.resolve(reducer.pendingInteraction().?, "run-b", "user", "no", false);
+    try testing.expectEqualStrings("rejected", payloadAt(&reducer, 3).get("outcome").?.string);
+}
+
+test "a request whose every option is unusable raises the empty-options refusal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"options":[{"optionId":"future","name":"Future","kind":"allow_for_this_repository"}]}}
+    );
+
+    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, 3));
+    try testing.expectEqualStrings("empty permission options", messageAt(&reducer, 3));
 }
 
 test "a standing grant is a grant and a prompt error outside cancellation stays a failure" {
