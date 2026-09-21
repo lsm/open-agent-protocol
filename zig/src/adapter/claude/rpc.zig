@@ -264,7 +264,7 @@ const Frame = struct {
 
 fn hexEscapeAt(data: []const u8, index: usize) ?u21 {
     if (index + 6 > data.len) return null;
-    if (data[index] != '\\' or (data[index + 1] != 'u' and data[index + 1] != 'U')) return null;
+    if (data[index] != '\\' or data[index + 1] != 'u') return null;
     return std.fmt.parseInt(u21, data[index + 2 .. index + 6], 16) catch null;
 }
 
@@ -434,6 +434,7 @@ fn wrongContentBlock(object: std.json.ObjectMap) bool {
 pub fn wrongBlocks(content: std.json.Value) bool {
     if (content != .array) return false;
     for (content.array.items) |item| {
+        if (item == .null) continue;
         if (item != .object) return true;
         for (block_text_members) |key| {
             const value = item.object.get(key) orelse continue;
@@ -596,6 +597,7 @@ fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
             .text_array => blk: {
                 if (value != .array) break :blk false;
                 for (value.array.items) |item| {
+                    if (item == .null) continue;
                     if (item != .string) break :blk false;
                 }
                 break :blk true;
@@ -603,6 +605,7 @@ fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
             .object_array => blk: {
                 if (value != .array) break :blk false;
                 for (value.array.items) |item| {
+                    if (item == .null) continue;
                     if (item != .object) break :blk false;
                     if (wrongType(item.object, need.items)) break :blk false;
                 }
@@ -1144,6 +1147,10 @@ test "an unpaired surrogate escape becomes the replacement character the oracle 
     const trailing_text = try parseMessage(scratch, "{\"type\":\"\\ud800a\"}", null);
     try testing.expectEqualStrings("\u{fffd}a", trailing_text.type);
 
+    var upper = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(scratch, "{\"type\":\"\\Ud800\"}", &upper));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": frame is not decodable JSON", upper.message);
+
     const other_escapes = try parseMessage(scratch, "{\"type\":\"\\u0041\\u00e9\\ud800\"}", null);
     try testing.expectEqualStrings("A\u{e9}\u{fffd}", other_escapes.type);
 
@@ -1208,6 +1215,25 @@ test "a nested control member that is not an object names the cause the oracle n
     var missing = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\"}", &missing));
     try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
+}
+
+test "a null array item is skipped where the oracle unmarshals it as a no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try accepts(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[null]}}");
+    try accepts(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[null,{\"type\":\"text\",\"text\":\"x\"}]}}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[7]}}");
+
+    const result = "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s\",";
+    try accepts(&arena, result ++ "\"errors\":[null]}");
+    try accepts(&arena, result ++ "\"user_message_uuids\":[null]}");
+    try refuses(&arena, result ++ "\"errors\":[7]}");
+
+    const init = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\",\"tools\":";
+    try accepts(&arena, init ++ "[null]}");
+    try accepts(&arena, init ++ "[],\"mcp_servers\":[null]}");
+    try refuses(&arena, init ++ "[],\"mcp_servers\":[{\"name\":7}]}");
 }
 
 test "a can_use_tool request is typed past its three required members" {
