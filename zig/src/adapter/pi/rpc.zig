@@ -141,7 +141,9 @@ const commands = [_][]const u8{
 
 const MemberType = enum { text, flag, number, text_list, any };
 
-const Member = struct { name: []const u8, kind: MemberType };
+const Omission = enum { on_null, on_zero };
+
+const Member = struct { name: []const u8, kind: MemberType, omits: Omission = .on_zero };
 
 const response_members = [_]Member{
     .{ .name = "id", .kind = .text },
@@ -164,12 +166,22 @@ const extension_members = [_]Member{
     .{ .name = "prefill", .kind = .text },
     .{ .name = "notifyType", .kind = .text },
     .{ .name = "statusKey", .kind = .text },
-    .{ .name = "statusText", .kind = .text },
+    .{ .name = "statusText", .kind = .text, .omits = .on_null },
     .{ .name = "widgetKey", .kind = .text },
     .{ .name = "widgetLines", .kind = .text_list },
     .{ .name = "widgetPlacement", .kind = .text },
     .{ .name = "text", .kind = .text },
 };
+
+fn omittedByMarshal(value: std.json.Value, member: Member) bool {
+    if (value == .null) return true;
+    if (member.omits == .on_null) return false;
+    return switch (value) {
+        .string => |text| text.len == 0,
+        .array => |items| items.items.len == 0,
+        else => false,
+    };
+}
 
 fn declaredMember(table: []const Member, name: []const u8) ?Member {
     for (table) |entry| {
@@ -269,8 +281,10 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
     }
     if (shape.constrained.len != 0) {
         if (object.get(shape.constrained)) |value| {
-            if (value != .string) return Error.InvalidFrame;
-            if (value.string.len != 0 and !namedIn(shape.permitted, value.string)) return Error.InvalidFrame;
+            if (value != .null) {
+                if (value != .string) return Error.InvalidFrame;
+                if (value.string.len != 0 and !namedIn(shape.permitted, value.string)) return Error.InvalidFrame;
+            }
         }
     }
     var it = object.iterator();
@@ -282,8 +296,40 @@ fn validateExtensionRequest(object: std.json.ObjectMap) !void {
         if (namedIn(shape.required_text, name)) continue;
         if (namedIn(shape.required_any, name)) continue;
         if (namedIn(shape.optional, name)) continue;
+        if (omittedByMarshal(entry.value_ptr.*, member)) continue;
         return Error.InvalidFrame;
     }
+}
+
+fn admitsExtension(line: []const u8) !void {
+    _ = try classify(std.testing.allocator, line);
+}
+
+fn refusesExtension(line: []const u8) !void {
+    try std.testing.expectError(Error.InvalidFrame, classify(std.testing.allocator, line));
+}
+
+test "a constrained member holding null is absent, and an empty one is unconstrained" {
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"notify\",\"message\":\"m\",\"notifyType\":null}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"notify\",\"message\":\"m\",\"notifyType\":\"\"}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"setWidget\",\"widgetKey\":\"k\",\"widgetPlacement\":null}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"notify\",\"message\":\"m\",\"notifyType\":\"nope\"}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"notify\",\"message\":\"m\",\"notifyType\":7}");
+}
+
+test "a member foreign to the method escapes the check when omitempty would drop it" {
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"title\":\"\"}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"title\":null}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"widgetLines\":[]}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"title\":\"x\"}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"widgetLines\":[\"a\"]}");
+}
+
+test "a pointer-carried member is dropped only by null, never by its zero value" {
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"statusText\":null}");
+    try admitsExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"timeout\":null}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"statusText\":\"\"}");
+    try refusesExtension("{\"type\":\"extension_ui_request\",\"id\":\"1\",\"method\":\"set_editor_text\",\"text\":\"t\",\"timeout\":0}");
 }
 
 test "a frame is one LF-terminated line and the terminator is required" {
