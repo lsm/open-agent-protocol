@@ -584,8 +584,8 @@ compensated.
   documents it as a list of tool names "to allow", and documents a separate
   `--tools` as the list of available built-ins — `--restricted` removes the
   code-running tools "unless `--tools` names them". This adapter never passes
-  `--tools`, so the child's surface is always the full built-in set whatever
-  the posture says. Naming a tool therefore does not keep the others out of
+  `--tools` itself, so unless a caller adds one through `Config.Args`, the
+  child's surface is the full built-in set whatever the posture says. Naming a tool therefore does not keep the others out of
   the prompt; it exempts the named one from asking, which removes it from the
   gate's coverage rather than adding to it. `UnrestrictedTools()` passes no
   tool flag at all and is the posture that adds no exemptions of its own.
@@ -1170,9 +1170,9 @@ Neither mechanism this adapter operates is a complete boundary.
 
 The posture is not one. `--allowedTools` names the tools that may run
 *without* asking, and the flag that bounds the surface, `--tools`, is one this
-adapter never passes. The child always has the full built-in set, so naming a
-tool subtracts from the gate's coverage instead of adding a boundary in front
-of it.
+adapter never passes. The child has the full built-in set, so naming a tool
+subtracts from the gate's coverage instead of adding a boundary in front of
+it.
 
 The gate is not one either. `--permission-prompt-tool stdio` routes to the
 control channel every call *that consults the permission system*, and the
@@ -1191,10 +1191,17 @@ name it carries is one more tool the control layer will not be asked about.
 
 What remains genuinely open is narrower, and it is a lever this adapter does
 not currently pull. `--permission-mode` selects the mode the auto-approval
-runs under, and the spawn argv passes none, so every session runs in the
-default. Whether a non-default mode routes the calls the default one settles
-by itself is untested here, and it is the only thing that could turn the gate
-into a complete boundary.
+runs under, and the spawn argv passes none, so a session runs in the default
+unless the caller supplies one. Whether a non-default mode routes the calls
+the default one settles by itself is untested here, and it is the only thing
+that could turn the gate into a complete boundary.
+
+All of this describes the argv this adapter builds. `Config.Args` is appended
+after the posture, so a caller can pass `--tools`, `--restricted` or
+`--permission-mode` and change any of it. That is deliberate — the flags are
+the caller's to override — but it makes these properties of the default spawn
+rather than invariants of the adapter. A control layer that relies on them has
+to own the caller args too.
 
 The reading of the two tool flags comes from the CLI's own `--help`, read on
 2.1.269 against a pin of 2.1.263. The auto-approval behaviour comes from the
