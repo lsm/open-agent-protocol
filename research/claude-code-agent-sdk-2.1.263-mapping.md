@@ -1275,8 +1275,8 @@ only thing here that runs 2.1.263:
    attempted.
 
 The last three settle the flag reading between them, and none of them is
-redundant. Three tests only that naming a tool pre-approves it. Four tests
-only that `--tools` can bound the surface. Five is what separates the
+redundant. Three tests only whether naming a tool pre-approves it. Four
+tests only whether `--tools` bounds the surface. Five is what separates the
 pre-approval reading from a hybrid: an implementation that both pre-approved
 named tools *and* hid omitted ones would satisfy three and four while making
 "a restricted posture still exposes every built-in" false. Only five asks
