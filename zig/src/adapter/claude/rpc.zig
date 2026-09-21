@@ -431,6 +431,15 @@ const task_notification_declared = [_]Declared{
     .{ .path = &.{"usage"}, .need = .object, .items = &task_usage_declared },
 };
 
+const can_use_tool_declared = [_]Declared{
+    .{ .path = &.{ "request", "blocked_path" }, .need = .text },
+    .{ .path = &.{ "request", "decision_reason" }, .need = .text },
+    .{ .path = &.{ "request", "title" }, .need = .text },
+    .{ .path = &.{ "request", "display_name" }, .need = .text },
+    .{ .path = &.{ "request", "description" }, .need = .text },
+    .{ .path = &.{ "request", "agent_id" }, .need = .text },
+};
+
 const notice_declared = [_]Declared{
     .{ .path = &.{"session_id"}, .need = .text },
     .{ .path = &.{"uuid"}, .need = .text },
@@ -569,6 +578,9 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         message.subtype = subtype.string;
         if (std.mem.eql(u8, message.subtype, "can_use_tool")) {
             if (unsatisfied(object, &can_use_tool_members)) |detail| return report.refuseFrame(detail);
+            if (wrongType(object, &can_use_tool_declared)) {
+                return report.refuseFrame(frameDetail("frame declares a member of the wrong type"));
+            }
         }
         return message;
     }
@@ -946,10 +958,7 @@ test "a duplicate key is classified as one, not as undecodable JSON" {
     try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\"} {\"type\":\"b\"}", &spaced));
     try testing.expectEqualStrings(invalid_message_prefix ++ ": trailing JSON value", spaced.message);
 
-    var nested_only = Diagnostic{};
-    _ = parseMessage(arena.allocator(), "{\"type\":\"a\",\"m\":{\"x\":1},\"n\":[{\"y\":2}]}", &nested_only) catch |err| {
-        try testing.expect(err != Error.InvalidMessage);
-    };
+    try accepts(&arena, "{\"type\":\"a\",\"m\":{\"x\":1},\"n\":[{\"y\":2}]}");
 
     var garbage = Diagnostic{};
     try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":}", &garbage));
@@ -971,6 +980,23 @@ test "a nested control member that is not an object names the cause the oracle n
     var missing = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_request\",\"request_id\":\"r\"}", &missing));
     try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
+}
+
+test "a can_use_tool request is typed past its three required members" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const base = "{\"type\":\"control_request\",\"request_id\":\"r\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"tool_use_id\":\"t1\",\"input\":{}";
+    try accepts(&arena, base ++ "}}");
+    try refuses(&arena, base ++ ",\"title\":7}}");
+    try refuses(&arena, base ++ ",\"blocked_path\":7}}");
+    try refuses(&arena, base ++ ",\"decision_reason\":7}}");
+    try refuses(&arena, base ++ ",\"display_name\":7}}");
+    try refuses(&arena, base ++ ",\"description\":7}}");
+    try refuses(&arena, base ++ ",\"agent_id\":7}}");
+    try accepts(&arena, base ++ ",\"title\":null}}");
+    try accepts(&arena, base ++ ",\"permission_suggestions\":7}}");
+    try accepts(&arena, base ++ ",\"title\":\"ok\",\"agent_id\":\"a\"}}");
 }
 
 test "the typed pass covers every declared member of a typed frame" {
