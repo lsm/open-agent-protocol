@@ -7,6 +7,8 @@ pub const profile = "open-agent-protocol.agent-control-core";
 
 pub const Error = error{
     InvalidResolution,
+    InteractionNotFound,
+    InteractionResolved,
     InvalidFrame,
     OutOfMemory,
 };
@@ -230,9 +232,16 @@ fn typedInteger(raw: std.json.Value, name: []const u8) !void {
     if (value != .integer and value != .null) return Error.InvalidFrame;
 }
 
-fn pendingInteraction(reducer: *Reducer) ?*Interaction {
+fn findInteraction(reducer: *Reducer, id: []const u8) ?*Interaction {
     for (reducer.interactions.items) |interaction| {
-        if (!interaction.resolved) return interaction;
+        if (std.mem.eql(u8, interaction.id, id)) return interaction;
+    }
+    return null;
+}
+
+pub fn pendingInteractionID(reducer: *Reducer) ?[]const u8 {
+    for (reducer.interactions.items) |interaction| {
+        if (!interaction.resolved) return interaction.id;
     }
     return null;
 }
@@ -898,9 +907,10 @@ fn offers(interaction: *Interaction, id: []const u8) bool {
     return false;
 }
 
-pub fn resolveExtension(reducer: *Reducer, answer: []const u8) !void {
+pub fn resolveExtension(reducer: *Reducer, interaction_id: []const u8, answer: []const u8) !void {
     if (reducer.terminal) return;
-    const interaction = pendingInteraction(reducer) orelse return;
+    const interaction = findInteraction(reducer, interaction_id) orelse return Error.InteractionNotFound;
+    if (interaction.resolved) return Error.InteractionResolved;
     const selected = try reducer.object();
     try selected.put(reducer.arena, "question_id", Reducer.str("value"));
     if (interaction.text) {
@@ -1433,7 +1443,7 @@ test "a text interaction is answered with text, never with an option id" {
     const a = arena.allocator();
     var reducer = try started(a);
     try applyExtension(&reducer, try parse(a, text_request));
-    try resolveExtension(&reducer, "Ada");
+    try resolveExtension(&reducer, reducer.interactions.items[0].id, "Ada");
 
     const payload = payloadOf(&reducer, "user.input.resolved") orelse return error.NoResolution;
     const answers = memberOf(payload, "answers") orelse return error.NoAnswers;
@@ -1449,10 +1459,11 @@ test "a second interaction is not born resolved, and a resolved one is not resol
     const a = arena.allocator();
     var reducer = try started(a);
     try applyExtension(&reducer, try parse(a, confirm_request));
-    try resolveExtension(&reducer, "yes");
+    const first = reducer.interactions.items[0].id;
+    try resolveExtension(&reducer, first, "yes");
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
 
-    try resolveExtension(&reducer, "yes");
+    try std.testing.expectError(Error.InteractionResolved, resolveExtension(&reducer, first, "yes"));
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
 
     try applyExtension(&reducer, try parse(a, confirm_request));
@@ -1475,19 +1486,21 @@ test "a second pending interaction is not lost by the first" {
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 2);
 }
 
-test "a resolution answers the oldest outstanding interaction" {
+test "a resolution answers the interaction the caller named, not the oldest" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
     var reducer = try started(a);
     try applyExtension(&reducer, try parse(a, confirm_request));
     try applyExtension(&reducer, try parse(a, text_request));
-    try resolveExtension(&reducer, "yes");
+    try resolveExtension(&reducer, reducer.interactions.items[1].id, "typed");
 
     const payload = payloadOf(&reducer, "user.input.resolved") orelse return error.NoResolution;
-    try std.testing.expectEqualStrings(reducer.interactions.items[0].id, textOf(payload, "interaction_id"));
-    try std.testing.expect(reducer.interactions.items[0].resolved);
-    try std.testing.expect(!reducer.interactions.items[1].resolved);
+    try std.testing.expectEqualStrings(reducer.interactions.items[1].id, textOf(payload, "interaction_id"));
+    try std.testing.expect(!reducer.interactions.items[0].resolved);
+    try std.testing.expect(reducer.interactions.items[1].resolved);
+
+    try std.testing.expectError(Error.InteractionNotFound, resolveExtension(&reducer, "interaction-nonesuch", "yes"));
 }
 
 test "a stop reason that is not a string is refused" {
@@ -1619,16 +1632,16 @@ test "a choice answer outside the advertised options is refused" {
 
     var confirm = try started(a);
     try applyExtension(&confirm, try parse(a, confirm_request));
-    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&confirm, "maybe"));
+    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&confirm, confirm.interactions.items[0].id, "maybe"));
     try std.testing.expect(countOf(&confirm, "user.input.resolved") == 0);
     try std.testing.expect(!confirm.interactions.items[0].resolved);
-    try resolveExtension(&confirm, "no");
+    try resolveExtension(&confirm, confirm.interactions.items[0].id, "no");
     try std.testing.expect(countOf(&confirm, "user.input.resolved") == 1);
 
     var choice = try started(a);
     try applyExtension(&choice, try parse(a, select_request));
-    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&choice, "option-99"));
-    try resolveExtension(&choice, "option-2");
+    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&choice, choice.interactions.items[0].id, "option-99"));
+    try resolveExtension(&choice, choice.interactions.items[0].id, "option-2");
     const payload = payloadOf(&choice, "user.input.resolved") orelse return error.NoResolution;
     const answers = memberOf(payload, "answers") orelse return error.NoAnswers;
     const ids = memberOf(answers.array.items[0], "selected_option_ids") orelse return error.NoIds;
@@ -1641,7 +1654,7 @@ test "a text interaction still takes any answer" {
     const a = arena.allocator();
     var reducer = try started(a);
     try applyExtension(&reducer, try parse(a, text_request));
-    try resolveExtension(&reducer, "anything at all");
+    try resolveExtension(&reducer, reducer.interactions.items[0].id, "anything at all");
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
 }
 
@@ -1651,9 +1664,9 @@ test "an empty answer to a text interaction is refused, not silently dropped" {
     const a = arena.allocator();
     var reducer = try started(a);
     try applyExtension(&reducer, try parse(a, text_request));
-    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&reducer, ""));
+    try std.testing.expectError(Error.InvalidResolution, resolveExtension(&reducer, reducer.interactions.items[0].id, ""));
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 0);
     try std.testing.expect(!reducer.interactions.items[0].resolved);
-    try resolveExtension(&reducer, "Ada");
+    try resolveExtension(&reducer, reducer.interactions.items[0].id, "Ada");
     try std.testing.expect(countOf(&reducer, "user.input.resolved") == 1);
 }

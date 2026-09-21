@@ -81,7 +81,8 @@ const Driver = struct {
             return .handled;
         }
         if (std.mem.eql(u8, item.action, "resolve-extension")) {
-            try session.resolveExtension(reducer, "yes");
+            const pending = session.pendingInteractionID(reducer) orelse return error.NoInteractionToResolve;
+            try session.resolveExtension(reducer, pending, "yes");
             try session.apply(reducer, item.raw);
             return .handled;
         }
