@@ -733,11 +733,7 @@ pub const Reducer = struct {
 };
 
 fn idScalar(index: usize) u21 {
-    const replacement: u21 = 0xFFFD;
-    const raw = 'a' + index;
-    if (raw > 0x10FFFF) return replacement;
-    if (raw >= 0xD800 and raw <= 0xDFFF) return replacement;
-    return @intCast(raw);
+    return std.math.cast(u21, 'a' + index) orelse 0xFFFD;
 }
 
 const content_block_strings = [_][]const u8{ "type", "text", "data", "mimeType", "uri" };
@@ -1099,14 +1095,28 @@ test "a tool id seen only after the run settled does not poison the next run" {
     try testing.expectEqualStrings("action.call.requested", typeAt(&reducer, 3));
 }
 
-test "the id letter is a code point, so a long run neither traps nor wraps" {
-    try testing.expectEqual(@as(u21, 'a'), idScalar(0));
-    try testing.expectEqual(@as(u21, 'z'), idScalar(25));
-    try testing.expectEqual(@as(u21, '{'), idScalar(26));
-    try testing.expectEqual(@as(u21, 0x100), idScalar(159));
-    try testing.expectEqual(@as(u21, 0xFFFD), idScalar(0xD800 - 'a'));
-    try testing.expectEqual(@as(u21, 0xFFFD), idScalar(0x10FFFF - 'a' + 1));
+fn expectLetterBytes(index: usize, want: []const u8) !void {
+    const text = try std.fmt.allocPrint(testing.allocator, "{u}", .{idScalar(index)});
+    defer testing.allocator.free(text);
+    try testing.expectEqualSlices(u8, want, text);
+}
 
+test "the id letter is the byte sequence the oracle rune conversion produces" {
+    try expectLetterBytes(0, "\x61");
+    try expectLetterBytes(25, "\x7a");
+    try expectLetterBytes(26, "\x7b");
+    try expectLetterBytes(30, "\x7f");
+    try expectLetterBytes(31, "\xc2\x80");
+    try expectLetterBytes(159, "\xc4\x80");
+    try expectLetterBytes(0xD800 - 'a', "\xef\xbf\xbd");
+    try expectLetterBytes(0xDFFF - 'a', "\xef\xbf\xbd");
+    try expectLetterBytes(0xE000 - 'a', "\xee\x80\x80");
+    try expectLetterBytes(0x10FFFF - 'a', "\xf4\x8f\xbf\xbf");
+    try expectLetterBytes(0x110000 - 'a', "\xef\xbf\xbd");
+    try expectLetterBytes(0x200000 - 'a', "\xef\xbf\xbd");
+}
+
+test "an ordinary run crosses the one-byte boundary long before it reaches 160" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1119,7 +1129,11 @@ test "the id letter is a code point, so a long run neither traps nor wraps" {
     }
 
     try testing.expectEqualStrings("event-{", reducer.envelopes.items[22].object.get("id").?.string);
+    try testing.expectEqualStrings("event-\u{80}", reducer.envelopes.items[27].object.get("id").?.string);
     try testing.expectEqualStrings("event-\u{100}", reducer.envelopes.items[155].object.get("id").?.string);
+    for (reducer.envelopes.items) |envelope| {
+        try testing.expect(std.unicode.utf8ValidateSlice(envelope.object.get("id").?.string));
+    }
 }
 
 test "a native message id is bound within its own run, never across two" {
