@@ -1297,6 +1297,22 @@ test "a nested control member that is not an object names the cause the oracle n
     try testing.expectEqualStrings(invalid_control_prefix ++ ": request is required", missing.message);
 }
 
+test "null means absence at every level the decode walks" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try accepts(&arena, "{\"type\":\"stream_event\",\"event\":null,\"uuid\":\"e\",\"session_id\":\"s\"}");
+    try refuses(&arena, "{\"type\":\"stream_event\",\"uuid\":\"e\",\"session_id\":\"s\"}");
+
+    try accepts(&arena, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":null}}");
+    try refuses(&arena, "{\"type\":\"user\",\"message\":{\"role\":\"user\"}}");
+
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"model\":\"m\",\"tools\":null}");
+    try refuses(&arena, "{\"type\":\"assistant\",\"message\":{\"model\":\"m\",\"content\":null}}");
+    try refuses(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":null}");
+    try refuses(&arena, "{\"type\":\"system\",\"subtype\":\"task_notification\",\"task_id\":\"t\",\"status\":null,\"output_file\":\"f\",\"summary\":\"s\",\"uuid\":\"u\",\"session_id\":\"s\"}");
+}
+
 test "a null array item is skipped where the oracle unmarshals it as a no-op" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
