@@ -198,6 +198,10 @@ pub const Reducer = struct {
     fn startTool(self: *Reducer, native_id: []const u8, name: []const u8, input: ?std.json.Value) !void {
         if (self.run == null) return;
         const run = &self.run.?;
+        if (name.len == 0) {
+            try self.failRun("claude_tool_lifecycle", "tool call without a name");
+            return;
+        }
         if (self.findTool(native_id) != null) {
             try self.failRun("claude_tool_lifecycle", "duplicate tool call");
             return;
@@ -447,9 +451,10 @@ pub const Reducer = struct {
                 output = integerMember(usage.object, "output_tokens") orelse 0;
             }
         }
+        const total = input +% output;
         if (input != 0) try self.put(&totals, "input_tokens", int(input));
         if (output != 0) try self.put(&totals, "output_tokens", int(output));
-        if (input + output != 0) try self.put(&totals, "total_tokens", int(input + output));
+        if (total != 0) try self.put(&totals, "total_tokens", int(total));
         return .{ .object = totals };
     }
 
@@ -624,8 +629,13 @@ pub const Reducer = struct {
             const payload = try self.toolPayload(run, tool.*);
             _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
         }
+        var kept_gates = std.ArrayList(Gate).empty;
         for (self.gates.items) |*gate| {
-            if (gate.resolved or !std.mem.eql(u8, gate.run_id, run.id)) continue;
+            if (!std.mem.eql(u8, gate.run_id, run.id)) {
+                try kept_gates.append(self.allocator(), gate.*);
+                continue;
+            }
+            if (gate.resolved) continue;
             gate.resolved = true;
             var payload = self.object();
             try self.put(&payload, "interaction_id", str(gate.id));
@@ -636,6 +646,14 @@ pub const Reducer = struct {
             try self.put(&payload, "status", str("cancelled"));
             _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event);
         }
+        self.gates = kept_gates;
+
+        var kept_children = std.ArrayList(Child).empty;
+        for (self.children.items) |child| {
+            if (std.mem.eql(u8, child.run_id, run.id)) continue;
+            try kept_children.append(self.allocator(), child);
+        }
+        self.children = kept_children;
     }
 
     pub fn observe(self: *Reducer, message: rpc.Message) !void {
@@ -844,6 +862,7 @@ pub const Reducer = struct {
             if (native_message != .object) return;
             const content = native_message.object.get("content") orelse return;
             if (content != .array) return;
+            if (rpc.wrongBlocks(content)) return;
             for (content.array.items) |block| {
                 if (block != .object) continue;
                 const kind = block.object.get("type") orelse continue;
@@ -907,7 +926,7 @@ fn integerMember(map: std.json.ObjectMap, key: []const u8) ?i64 {
     const value = map.get(key) orelse return null;
     return switch (value) {
         .integer => |number| number,
-        .float => |number| @intFromFloat(number),
+        .float => |number| if (number >= -9223372036854775808.0 and number < 9223372036854775808.0) @intFromFloat(number) else null,
         else => null,
     };
 }
@@ -1836,7 +1855,7 @@ test "replay stops at the frame that failed the run" {
     try testing.expectEqualStrings("claude-test", reducer.current_model);
 }
 
-test "a tool block the harness left nameless still opens its call" {
+test "a tool block the harness left nameless fails the run rather than emitting a name the schema forbids" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
@@ -1847,14 +1866,96 @@ test "a tool block the harness left nameless still opens its call" {
     try observeText(&reducer, scratch,
         \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1"}]},"uuid":"a1"}
     );
-    const requested = firstPayload(&reducer, "action.call.requested").?;
-    try testing.expectEqualStrings("", requested.get("name").?.string);
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "action.call.requested"));
+    const settlement = firstPayload(&reducer, "run.failed").?;
+    try testing.expectEqualStrings("claude_tool_lifecycle", settlement.get("error").?.object.get("code").?.string);
+}
+
+test "a user frame whose content is not a block list is skipped whole" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try testing.expect(firstPayload(&reducer, "action.call.requested") != null);
 
     try observeText(&reducer, scratch,
-        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[7,{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u1"}
     );
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "action.call.completed"));
     try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "run.failed"));
+
+    try observeText(&reducer, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out","is_error":"yes"}]},"uuid":"u2"}
+    );
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&reducer, "action.call.completed"));
+
+    try observeText(&reducer, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]},"uuid":"u3"}
+    );
     try testing.expect(firstPayload(&reducer, "action.call.completed") != null);
+}
+
+test "a number outside i64 is dropped rather than converted" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var map: std.json.ObjectMap = .empty;
+    try map.put(scratch, "huge", .{ .float = 1e300 });
+    try map.put(scratch, "tiny", .{ .float = -1e300 });
+    try map.put(scratch, "nan", .{ .float = std.math.nan(f64) });
+    try map.put(scratch, "fits", .{ .float = 12.5 });
+    try map.put(scratch, "exact", .{ .integer = std.math.maxInt(i64) });
+
+    try testing.expectEqual(@as(?i64, null), integerMember(map, "huge"));
+    try testing.expectEqual(@as(?i64, null), integerMember(map, "tiny"));
+    try testing.expectEqual(@as(?i64, null), integerMember(map, "nan"));
+    try testing.expectEqual(@as(?i64, 12), integerMember(map, "fits"));
+    try testing.expectEqual(@as(?i64, std.math.maxInt(i64)), integerMember(map, "exact"));
+}
+
+test "a token count that overflows the total wraps the way the oracle wraps" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-1","uuid":"r1","usage":{"input_tokens":9223372036854775807,"output_tokens":1}}
+    );
+    const usage = firstPayload(&reducer, "run.completed").?.get("usage").?.object;
+    try testing.expectEqual(@as(i64, std.math.maxInt(i64)), usage.get("input_tokens").?.integer);
+    try testing.expectEqual(@as(i64, std.math.minInt(i64)), usage.get("total_tokens").?.integer);
+}
+
+test "a settled run leaves neither its gates nor its children behind" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"system","subtype":"task_started","task_id":"k1","description":"d","uuid":"t1","session_id":"s"}
+    );
+    try gateRequest(&reducer, scratch, "");
+    try testing.expect(reducer.children.items.len > 0);
+    try testing.expect(reducer.gates.items.len > 0);
+
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","terminal_reason":"completed","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expectEqual(@as(usize, 0), reducer.children.items.len);
+    try testing.expectEqual(@as(usize, 0), reducer.gates.items.len);
 }
 
 test "an init outside a pending run is adopted when it arrives" {

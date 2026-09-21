@@ -910,14 +910,43 @@ the items of `message.content` on a `user` or `assistant` frame, and a
 difference is the honest bound: a wrong-typed member of a frame neither
 implementation reads is fatal in Go and ignored here.
 
-A tool block the harness leaves nameless still opens its call. `ContentBlock`
+A tool block the harness leaves nameless has no correct handling in the oracle,
+and this is the one place the port deliberately does something else. `ContentBlock`
 declares `name` as a plain string, so an absent one decodes to `""` and the
-oracle calls `startTool` with it; only an empty `id` skips the block. This port
-skipped a nameless block entirely, which is worse than it sounds -- the harness
-had executed the tool, so the matching `tool_result` then failed the run for an
-unmatched completion, turning a cosmetic gap into a terminal. The codec now
-refuses a *wrong-typed* name, as the oracle's decode does, and the reducer
-accepts an absent one.
+oracle calls `startTool` with it; only an empty `id` skips the block. The payload
+struct then carries `json:"name,omitempty"`, so the member is dropped, and
+`action.schema.json` makes `name` **required** on `callRequested` and
+`callStarted` and types it `nonEmptyString`. Feeding that frame to the Go adapter
+and handing the trace to the shared validator returns
+`schema_invalid: missing property 'name'` twice. Emitting `""` instead, which is
+what this port did first, fails the same validator on `minLength`. There is no
+shape a nameless block can take that the schema accepts, so the reducer fails the
+run with `claude_tool_lifecycle` rather than emitting either one: a failed run is
+a valid trace, and the invariant every adapter exists to hold is that the
+validator accepts what it emits. Filed upstream against the Go adapter.
+
+The codec refuses a *wrong-typed* id or name, which is what the oracle's decode
+does.
+
+A user frame whose content is not a list of content blocks is skipped whole.
+`UserFrame.Message.Content` is a `json.RawMessage` and `Blocks()` decodes it
+lazily into `[]ContentBlock`, so one malformed item makes the whole decode fail
+and the oracle's `if !ok { return }` drops every block in that frame, leaving any
+open call to be cancelled at settle. This port iterated the array and skipped
+only the offending item, so a `tool_result` carrying `"is_error":"yes"` beside a
+well-formed sibling completed a call the oracle never completes. The codec's
+block typing is now reachable from the reducer for user frames as well, and the
+frame is skipped rather than filtered.
+
+Two numeric conversions were illegal behavior rather than a divergence. Go's
+declared integers are `int64` and its decode refuses a fractional or oversized
+number outright, so the typed table is what keeps a float away from
+`integerMember`; a gap there would have reached `@intFromFloat` and panicked in
+Debug and ReleaseSafe and been undefined in ReleaseFast. The conversion is now
+range-checked at the site, because a table that is correct today is not the same
+thing as a conversion that cannot trap. The usage total is computed with `+%`:
+Go's `InputTokens + OutputTokens` is int64 arithmetic that wraps silently, and
+matching the oracle means wrapping, not trapping.
 
 Two payload shapes came from the same review and are worth separating from the
 codec, because they are what a *schema* requires rather than what a decoder
@@ -962,6 +991,12 @@ not a property of the guard**, and deleting on that basis needs re-checking
 whenever a new settlement path appears. The oracle's own loop returns on
 `run.terminal && run.deferred == nil`, which is the same rule with the deferred
 case spelled out.
+
+`sweepRun` now prunes what the oracle prunes. Go deletes the settled run's gates
+from `s.interactions` and its children from `s.children`; it does **not** delete
+from `s.tools`, which is keyed by native id and lives as long as the session, so
+the port keeps its tool list too and only the two collections Go deletes from are
+pruned here.
 
 Three guards found during the same sweep were dead by construction rather than
 untested, and were removed rather than left: an empty cancel id cannot reach
