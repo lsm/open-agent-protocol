@@ -2009,6 +2009,10 @@ pub const Machine = struct {
     fn openResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         const session_id = memberString(payload, "session_id");
         try self.gatedResponse(index, envelope, .open);
+        const attachment_refused = if (self.submits.get(field(envelope, "in_reply_to"))) |opened|
+            opened.attachment != null
+        else
+            false;
         {
             const holder = try self.sessionFor(session_id);
             if (self.submits.get(field(envelope, "in_reply_to"))) |opened| {
@@ -2051,7 +2055,7 @@ pub const Machine = struct {
                 try self.bootstrapRecoveredRuns(index, session_id, payload);
             }
         }
-        try self.checkPublishedUnion(index, session_id, member(payload, "sources"));
+        if (!attachment_refused) try self.checkPublishedUnion(index, session_id, member(payload, "sources"));
         try self.compoundOpen(index, envelope, payload, session_id);
     }
 
@@ -3809,6 +3813,21 @@ test "a descriptor, a catalog and a snapshot each name their own duplicate sourc
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tool_sources":[{"id":"files","kind":"process"}]}},
         \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":
+        \\{"session_id":"s","sources":[{"id":"files","kind":"process"},{"id":"files","kind":"process"}]}}]
+    , &.{"duplicate_tool_source"});
+}
+
+test "an open the endpoint refused publishes nothing the union check should judge" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"action.tool_sources.attach":{"level":"native","modes":["session_open"]}},"sources":[]}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"files","kind":"process"}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":
+        \\{"session_id":"s","sources":[{"id":"files","kind":"process"}]}},
+        \\{"type":"session.open.request","id":"o3","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tool_sources":[{"id":"dup","kind":"process"},{"id":"dup","kind":"process"}]}},
+        \\{"type":"session.open.response","id":"o4","in_reply_to":"o3","capability_revision":"v1","payload":
         \\{"session_id":"s","sources":[{"id":"files","kind":"process"},{"id":"files","kind":"process"}]}}]
     , &.{"duplicate_tool_source"});
 }
