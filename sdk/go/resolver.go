@@ -35,9 +35,12 @@ const (
 //  2. MAKAI_BINARY_URL (else [Options].BinaryURL), which requires a SHA-256
 //     checksum from MAKAI_BINARY_SHA256 or [Options].ChecksumSHA256. The
 //     binary is cached and its checksum verified on every use.
-//  3. ./zig-out/bin/makai
-//  4. ./zig/zig-out/bin/makai
-//  5. makai on PATH.
+//  3. ./zig-out/bin/oapx, then ./zig/zig-out/bin/oapx
+//  4. ./zig-out/bin/makai, then ./zig/zig-out/bin/makai
+//  5. oapx on PATH, then makai.
+//
+// oapx is tried in every location before makai is tried in any, so a nested
+// oapx outranks a top-level makai. On Windows each name carries .exe.
 //
 // The TypeScript SDK has one more step between 2 and 3: an optional
 // @makai/cli-<platform>-<arch> npm package. That step is npm-specific and has

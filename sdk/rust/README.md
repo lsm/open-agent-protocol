@@ -249,12 +249,12 @@ Mirroring the TypeScript resolver, in order:
 1. `MAKAI_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
 2. `MAKAI_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`MAKAI_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
 3. *(TypeScript only)* the `@makai/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
-4. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`;
-5. the same pair under `./zig/zig-out/bin/`;
+4. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
+5. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`;
 6. `oapx` on `PATH`, then `makai`.
 
-`oapx` is tried before `makai` at every step, on Windows with `.exe` on each,
-so an install predating the rename keeps resolving.
+`oapx` is tried in every location before `makai` is tried in any, so a nested
+`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
 The environment variable outranks the builder option, as in TypeScript, so an operator can redirect an application that hardcoded a path. `ClientBuilder::command(path)` bypasses resolution entirely when that override is not wanted.
 

@@ -276,12 +276,12 @@ The checksum is required; a download without one is refused with `ErrChecksumReq
 
 With no resolver options, the SDK checks:
 
-1. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`
-2. the same pair under `./zig/zig-out/bin/`
+1. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
+2. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
 3. `oapx` on `PATH`, then `makai`
 
-`oapx` is tried before `makai` at every step, on Windows with `.exe` on each,
-so an install predating the rename keeps resolving.
+`oapx` is tried in every location before `makai` is tried in any, so a nested
+`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
 The TypeScript resolver has one more step, an optional `@makai/cli-<platform>-<arch>` npm package, between the URL step and the local builds. That step is npm-specific and has no Go equivalent, so it is deliberately absent here. The practical difference: where npm would prefer a packaged binary, Go picks up your local `./zig-out` build.
 

@@ -314,12 +314,12 @@ The checksum is mandatory and re-verified against the cache on every resolve. En
 
 1. `resolver.binary_path`, or `MAKAI_BINARY_PATH` (the environment wins)
 2. `resolver.binary_url` / `MAKAI_BINARY_URL`, which requires a SHA-256 checksum
-3. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`
-4. the same pair under `./zig/zig-out/bin/`
+3. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
+4. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
 5. `oapx` on `PATH`, then `makai`
 
-`oapx` is tried before `makai` at every step, on Windows with `.exe` on each,
-so an install predating the rename keeps resolving.
+`oapx` is tried in every location before `makai` is tried in any, so a nested
+`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
 The TypeScript SDK has one extra step between 2 and 3: an optional `@makai/cli-<platform>-<arch>` npm package. That step is **deliberately omitted** here — npm installs those automatically through optional dependencies, Python's equivalent would be platform-specific wheels, and none are published for makai. Set `MAKAI_BINARY_PATH` when you need to pin a specific binary.
 

@@ -28,6 +28,7 @@ const provider_base_url = @import("provider_base_url");
 const oap_server = @import("oap_server");
 const pre_transform = @import("pre_transform");
 const semantic = @import("semantic");
+const provider_semantic = @import("provider_semantic");
 const oap_provider_types = @import("oap_provider_types");
 const oap_provider_server = @import("oap_provider_server");
 const oap_provider_catalog = @import("oap_provider_catalog");
@@ -2351,14 +2352,37 @@ fn runServeProvider(
 
 const validate_read_limit = 64 * 1024 * 1024;
 
+const provider_profile = "open-agent-protocol.model-provider-core";
+
+fn namesProviderProfile(trace: []std.json.Value) bool {
+    for (trace) |envelope| {
+        if (envelope != .object) continue;
+        const declared = envelope.object.get("profile") orelse continue;
+        if (declared == .string and std.mem.eql(u8, declared.string, provider_profile)) return true;
+    }
+    return false;
+}
+
 fn validateTrace(allocator: std.mem.Allocator, source: []const u8, out: *std.ArrayList(semantic.Diagnostic)) !void {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, source, .{});
     defer parsed.deinit();
     if (parsed.value != .array) return error.TraceIsNotAnArray;
+    const trace = parsed.value.array.items;
+
+    if (namesProviderProfile(trace)) {
+        var machine = provider_semantic.Machine.init(allocator);
+        defer machine.deinit();
+        for (trace, 0..) |envelope, index| try machine.apply(index, envelope);
+        try machine.close();
+        for (machine.diagnostics.items) |diagnostic| {
+            try out.append(allocator, .{ .code = try allocator.dupe(u8, diagnostic.code), .index = diagnostic.index });
+        }
+        return;
+    }
 
     var machine = semantic.Machine.init(allocator);
     defer machine.deinit();
-    for (parsed.value.array.items, 0..) |envelope, index| try machine.apply(index, envelope);
+    for (trace, 0..) |envelope, index| try machine.apply(index, envelope);
     try machine.close();
     for (machine.diagnostics.items) |diagnostic| {
         try out.append(allocator, .{ .code = try allocator.dupe(u8, diagnostic.code), .index = diagnostic.index });
@@ -8652,4 +8676,23 @@ test "validate refuses a trace that is not an array of envelopes" {
     var codes = std.ArrayList([]const u8).empty;
     defer codes.deinit(allocator);
     try std.testing.expectError(error.TraceIsNotAnArray, diagnosedCodes(allocator, "{}", &codes));
+}
+
+test "validate judges a provider trace with the provider machine, not the agent one" {
+    const allocator = std.testing.allocator;
+    const trace =
+        \\[
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.started","id":"e1","inference_id":"i1","sequence":1,"payload":{"model_ref":"anthropic/anthropic-messages@claude","started_at_ms":1}},
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.ended","id":"n0","inference_id":"i1","sequence":2,"payload":{"part_index":0,"part_kind":"text","text":"hello"}},
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.completed","id":"t1","inference_id":"i1","sequence":3,"payload":{"stop_reason":"stop","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]},"usage":{"input_tokens":7,"output_tokens":3}}},
+        \\  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.part.delta","id":"late","inference_id":"i1","sequence":4,"payload":{"part_index":0,"delta":"more"}}
+        \\]
+    ;
+    var codes = std.ArrayList([]const u8).empty;
+    defer {
+        for (codes.items) |code| allocator.free(code);
+        codes.deinit(allocator);
+    }
+    try diagnosedCodes(allocator, trace, &codes);
+    try std.testing.expect(codes.items.len != 0);
 }

@@ -1984,6 +1984,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_provider_runtime", .module = protocol_oap_provider_runtime_mod },
             .{ .name = "oap_types", .module = protocol_oap_types_mod },
             .{ .name = "semantic", .module = semantic_mod },
+            .{ .name = "provider_semantic", .module = provider_semantic_mod },
             .{ .name = "packs", .module = packs_mod },
         },
     });

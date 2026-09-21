@@ -340,12 +340,12 @@ Environment variable equivalents are `MAKAI_BINARY_URL` and `MAKAI_BINARY_SHA256
 With no resolver options, Makai checks, in order:
 
 1. The `@makai/cli-<platform>-<arch>` optional dependency, when it is installed
-2. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`
-3. the same pair under `./zig/zig-out/bin/`
+2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
+3. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
 4. `oapx` on `PATH`, then `makai`
 
-On Windows each name carries `.exe`. `makai` trails `oapx` at every step so an
-install predating the rename keeps resolving.
+`oapx` is tried in every location before `makai` is tried in any, so a nested
+`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
 Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. Set `MAKAI_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
 
