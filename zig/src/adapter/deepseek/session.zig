@@ -159,6 +159,18 @@ pub fn initialize(reducer: *Reducer, model: []const u8) void {
     if (model.len != 0) reducer.model = model;
 }
 
+pub fn externalActivity(reducer: *Reducer, what: []const u8) !void {
+    reducer.unusable = true;
+    if (!reducer.reserved or reducer.terminal) return;
+    try failRun(reducer, "deepseek_external_activity", what);
+}
+
+pub fn abortSubmission(reducer: *Reducer) void {
+    if (reducer.terminal) return;
+    reducer.terminal = true;
+    reducer.reserved = false;
+}
+
 pub fn close(reducer: *Reducer) void {
     reducer.closed = true;
 }
@@ -607,7 +619,7 @@ pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.js
     if (!reducer.reserved or reducer.terminal) {
         const own_status = std.mem.eql(u8, method, "session.status") and
             std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id);
-        if (!own_status) reducer.unusable = true;
+        if (!own_status) try externalActivity(reducer, "notification without reserved run");
         return;
     }
     if (std.mem.eql(u8, method, "session.event")) {

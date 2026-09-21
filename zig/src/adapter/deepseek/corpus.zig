@@ -44,32 +44,36 @@ fn wireBytes(item: corpus.Step) []const u8 {
     return if (item.raw == .string) item.raw.string else item.encoded;
 }
 
-fn decodes(scratch: std.mem.Allocator, source: []const u8) bool {
+fn decoded(scratch: std.mem.Allocator, source: []const u8) ?rpc.Message {
     var decoder = rpc.Decoder{ .source = source };
-    const decoded = decoder.next(scratch) catch return false;
-    return decoded != null;
+    return decoder.next(scratch) catch null orelse null;
 }
 
-fn decodeWire(scratch: std.mem.Allocator, action: []const u8, wire: []const u8) !void {
+fn decodes(scratch: std.mem.Allocator, source: []const u8) bool {
+    return decoded(scratch, source) != null;
+}
+
+fn decodeWire(scratch: std.mem.Allocator, action: []const u8, wire: []const u8) !?rpc.Kind {
     const direction = directionOf(action) orelse return error.UnroutedScriptAction;
-    if (direction == .harness_control) return;
+    if (direction == .harness_control) return null;
 
     if (std.mem.eql(u8, action, "decode-error-unterminated")) {
         if (decodes(scratch, wire)) return error.UnterminatedFrameDecoded;
         if (!decodes(scratch, try std.mem.concat(scratch, u8, &.{ wire, "\n" }))) {
             return error.UnterminatedFrameRefusedForSomethingElse;
         }
-        return;
+        return null;
     }
 
-    if (decodes(scratch, try std.mem.concat(scratch, u8, &.{ wire, "\n" }))) {
+    if (decoded(scratch, try std.mem.concat(scratch, u8, &.{ wire, "\n" }))) |message| {
         if (refusesDecode(action)) return error.ProductionCodecAcceptedInvalidFrame;
-        return;
+        return message.kind;
     }
     if (!refusesDecode(action)) return error.ProductionCodecRefusedCorpusFrame;
+    return null;
 }
 
-fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !void {
+fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !?rpc.Kind {
     return decodeWire(scratch, item.action, wireBytes(item));
 }
 
@@ -90,8 +94,14 @@ const Driver = struct {
 
     pub fn step(reducer: *Reducer, scratch: std.mem.Allocator, item: corpus.Step, case: CorpusCase) !corpus.Handled {
         _ = case;
-        try decodeFrame(scratch, item);
+        const kind = try decodeFrame(scratch, item);
         const action = item.action;
+        if (directionOf(action)) |direction| {
+            if (direction == .dsh_to_host and kind != null and kind.? == .request) {
+                try session.externalActivity(reducer, "reverse request");
+                return .handled;
+            }
+        }
         if (std.mem.eql(u8, action, "submit")) {
             try session.submit(reducer);
             return .handled;
@@ -119,7 +129,10 @@ const Driver = struct {
             try session.rejectedSubmit(reducer);
             return .handled;
         }
-        if (std.mem.eql(u8, action, "reply-error")) return .handled;
+        if (std.mem.eql(u8, action, "reply-error")) {
+            session.abortSubmission(reducer);
+            return .handled;
+        }
         if (std.mem.eql(u8, action, "process-exit")) {
             try session.transportFailed(reducer, corpus.stringMember(item.raw.object, "error") orelse "");
             return .handled;
@@ -211,7 +224,7 @@ fn expectWire(action: []const u8, wire: []const u8, want: anyerror!void) !void {
     defer arena.deinit();
     const got = decodeWire(arena.allocator(), action, wire);
     if (want) |_| {
-        try got;
+        _ = try got;
     } else |expected| {
         try std.testing.expectError(expected, got);
     }
@@ -316,4 +329,45 @@ test "a shutdown closes the session, and a second one is a script defect" {
         error.SessionShutDownTwice,
         Harness.steps(scratch, shutdown ++ shutdown, &twice, inline_case),
     );
+}
+
+test "a reverse request retires the session instead of reducing as a notification" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+
+    var reducer = session.Reducer.init(scratch);
+    session.openSession(&reducer);
+    try session.submit(&reducer);
+    const reverse = "{\"action\":\"observe\",\"raw\":{\"id\":9,\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/start\",\"seq\":1,\"data\":{\"turn\":1}}}}}\n";
+    try Harness.steps(scratch, reverse, &reducer, inline_case);
+    try std.testing.expect(reducer.unusable);
+    try std.testing.expect(reducer.pending.items.len == 0);
+
+    var notified = session.Reducer.init(scratch);
+    session.openSession(&notified);
+    try session.submit(&notified);
+    const plain = "{\"action\":\"observe\",\"raw\":{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/start\",\"seq\":1,\"data\":{\"turn\":1}}}}}\n";
+    try Harness.steps(scratch, plain, &notified, inline_case);
+    try std.testing.expect(!notified.unusable);
+    try std.testing.expect(notified.pending.items.len == 1);
+}
+
+test "a prompt reply that is an error settles the submission it was reserved for" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+
+    var reducer = session.Reducer.init(scratch);
+    session.openSession(&reducer);
+    try session.submit(&reducer);
+    const failure = "{\"action\":\"reply-error\",\"raw\":{\"id\":1,\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32000,\"message\":\"refused\"}}}\n";
+    try Harness.steps(scratch, failure, &reducer, inline_case);
+
+    try std.testing.expect(reducer.terminal);
+    try std.testing.expect(!reducer.reserved);
+    try std.testing.expect(reducer.envelopes().len == 0);
+    try session.submit(&reducer);
 }
