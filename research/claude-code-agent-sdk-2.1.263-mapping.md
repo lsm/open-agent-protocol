@@ -1153,30 +1153,42 @@ untested, and were removed rather than left: an empty cancel id cannot reach
 `cancelGate` because the codec refuses one, and two guards in the tool paths
 could not fire. What survived removal has a test.
 
-### Open question: is the permission gate the tool boundary, or only most of it?
+### Open question: does the permission gate cover every call the posture admits?
 
-The child is spawned with `--permission-prompt-tool stdio` and
-`--setting-sources=` and no `--allowedTools` (`adapter/claude/adapter.go`). Read
-together those say the boundary is the gate: every tool call arrives as a
-`can_use_tool` control request that the control layer answers, and no settings
-file can pre-approve anything behind it. If that reading is right, the absence
-of an allowlist is not a gap, because nothing runs unanswered.
+There are two boundaries, and only one of them is established. The posture
+bounds what the child can attempt: `--allowedTools` is passed whenever the
+caller names tools, and an excluded tool never enters the prompt. The gate
+bounds what runs on a given turn: `--permission-prompt-tool stdio` routes
+every call that consults the permission system to the control channel, and
+`--setting-sources=` stops a settings file pre-approving one behind the
+control layer's back. The posture holds by construction. The gate's coverage
+does not.
 
-It is not established. A spike reported a `Bash` call completing with no gate
-observed. Both cannot be true. Either some tools do not consult the permission
-system at that pin, in which case an allowlist is the only thing that stops
-them and the posture is materially weaker than the flags suggest; or the
+A spike observed a `Bash` call starting with no gate arriving, which the argv
+says should not happen. Either some tools do not consult the permission system
+at this pin, in which case the gate is not the boundary and the posture is the
+only thing standing between a caller and a tool it did not name; or the
 spike's auto-allowing harness answered a gate without recording that it had,
-in which case the boundary held and the report was an artifact of the
-instrument.
+in which case the gate held and the report was an artifact of the instrument.
+Both cannot be true, and which one is true decides whether a caller may rely
+on the gate alone.
+
+Until it is decided, the operative advice is the conservative reading of both:
+state a posture that names only the tools the run needs, and treat the gate as
+defence in depth rather than as the boundary. A posture of
+`UnrestrictedTools()` is a decision to rely on the gate, and that reliance is
+the thing not yet established.
 
 Nothing in the tree settles it, and the corpus cannot: its `can_use_tool`
 frames are scripted, so they prove the reducer surfaces a gate it is given,
 never that the CLI raises one for every tool. The decidable form is a
 real-process assertion, and it belongs in the smoke gate rather than in prose
 here: provoke a `Bash` call against the pinned binary and fail if the call
-settles without a `can_use_tool` arriving first. Until that runs, an adapter
-must not be described as gating every tool call.
+settles without a `can_use_tool` arriving first. The gate already spawns with
+`UnrestrictedTools()`, which is the posture that test needs — an allowlist
+excluding `Bash` would make it pass for the wrong reason — so what is missing
+is the assertion, not the setup. Until it runs, this adapter must not be
+described as gating every tool call.
 
 Implementation discovery made executable by the smoke gate (fixed): the
 default factory originally ran the initialize exchange inside
