@@ -116,7 +116,7 @@ pub fn parseMessage(arena: std.mem.Allocator, line: []const u8) !Message {
             if (!listed(&failure_members, name)) return Error.InvalidMessage;
         }
         const code = value.object.get("code") orelse return Error.InvalidMessage;
-        if (code != .integer) return Error.InvalidMessage;
+        if (code != .integer and code != .null) return Error.InvalidMessage;
         const detail = value.object.get("message") orelse return Error.InvalidMessage;
         if (detail != .string or detail.string.len == 0) return Error.InvalidMessage;
     }
@@ -242,6 +242,13 @@ test "a method is a non-empty string and its params are an object or an array" {
 test "a present member holding null is present, not absent" {
     try admits("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}", .response, "");
     try refuses("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":null}");
+}
+
+test "a null error code decodes to zero and is accepted; a null message is not" {
+    try admits("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":null,\"message\":\"x\"}}", .failure, "");
+    try admits("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":null,\"message\":\"x\",\"data\":null}}", .failure, "");
+    try refuses("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":null}}");
+    try refuses("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":null,\"message\":null}}");
 }
 
 test "an error object carries an integer code and a non-empty message, and nothing else" {
