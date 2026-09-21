@@ -16,6 +16,27 @@ fn frameDetail(comptime detail: []const u8) []const u8 {
     return invalid_frame_prefix ++ ": " ++ detail;
 }
 
+fn quoteGo(arena: std.mem.Allocator, value: []const u8) []const u8 {
+    var out = std.ArrayList(u8).empty;
+    out.append(arena, '"') catch return value;
+    for (value) |byte| {
+        switch (byte) {
+            '"' => out.appendSlice(arena, "\\\"") catch return value,
+            '\\' => out.appendSlice(arena, "\\\\") catch return value,
+            '\n' => out.appendSlice(arena, "\\n") catch return value,
+            '\r' => out.appendSlice(arena, "\\r") catch return value,
+            '\t' => out.appendSlice(arena, "\\t") catch return value,
+            0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f, 0x7f => {
+                const hex = std.fmt.allocPrint(arena, "\\x{x:0>2}", .{byte}) catch return value;
+                out.appendSlice(arena, hex) catch return value;
+            },
+            else => out.append(arena, byte) catch return value,
+        }
+    }
+    out.append(arena, '"') catch return value;
+    return out.items;
+}
+
 pub const Diagnostic = struct {
     message: []const u8 = "",
 
@@ -36,7 +57,7 @@ pub const Diagnostic = struct {
 
     fn refuseQuoted(self: *Diagnostic, arena: std.mem.Allocator, kind: Error, comptime shape: []const u8, value: []const u8) Error {
         const prefix: []const u8 = if (kind == Error.InvalidControl) invalid_control_prefix else invalid_frame_prefix;
-        self.message = std.fmt.allocPrint(arena, "{s}: " ++ shape, .{ prefix, value }) catch prefix;
+        self.message = std.fmt.allocPrint(arena, "{s}: " ++ shape, .{ prefix, quoteGo(arena, value) }) catch prefix;
         return kind;
     }
 };
@@ -171,6 +192,7 @@ pub const FrameReader = struct {
         const rest = self.source[self.cursor..];
         const newline = std.mem.indexOfScalar(u8, rest, '\n') orelse {
             self.cursor = self.source.len;
+            if (rest.len > self.limit + 1) return Error.FrameTooLarge;
             return Error.InvalidMessage;
         };
         if (newline > self.limit) return Error.FrameTooLarge;
@@ -218,7 +240,6 @@ const Nested = struct {
 
 const user_nested = [_]Nested{
     .{ .path = &.{"origin"}, .need = .object },
-    .{ .path = &.{ "message", "content" }, .need = .object_array },
 };
 const assistant_nested = [_]Nested{
     .{ .path = &.{ "message", "content" }, .need = .object_array },
@@ -255,6 +276,8 @@ fn wrongNestedType(object: std.json.ObjectMap, nested: []const Nested) bool {
 }
 
 const result_declared = [_]Declared{
+    .{ .path = &.{"usage"}, .need = .object },
+    .{ .path = &.{"origin"}, .need = .object },
     .{ .path = &.{"duration_ms"}, .need = .number },
     .{ .path = &.{"duration_api_ms"}, .need = .number },
     .{ .path = &.{"is_error"}, .need = .boolean },
@@ -273,8 +296,12 @@ const result_declared = [_]Declared{
 const stream_event_declared = [_]Declared{
     .{ .path = &.{"user_message_uuid"}, .need = .text },
     .{ .path = &.{"user_message_uuids"}, .need = .text_array },
+    .{ .path = &.{"parent_tool_use_id"}, .need = .text },
 };
 const assistant_declared = [_]Declared{
+    .{ .path = &.{"parent_tool_use_id"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+    .{ .path = &.{"session_id"}, .need = .text },
     .{ .path = &.{"user_message_uuid"}, .need = .text },
     .{ .path = &.{"user_message_uuids"}, .need = .text_array },
     .{ .path = &.{"is_api_error_message"}, .need = .boolean },
@@ -283,12 +310,20 @@ const assistant_declared = [_]Declared{
 const task_updated_declared = [_]Declared{
     .{ .path = &.{"uuid"}, .need = .text },
     .{ .path = &.{"session_id"}, .need = .text },
+    .{ .path = &.{ "patch", "status" }, .need = .text },
+};
+
+const user_declared = [_]Declared{
+    .{ .path = &.{"parent_tool_use_id"}, .need = .text },
+    .{ .path = &.{"uuid"}, .need = .text },
+    .{ .path = &.{"session_id"}, .need = .text },
 };
 
 fn declaredMembers(frame_type: []const u8, subtype: []const u8) []const Declared {
     if (std.mem.eql(u8, frame_type, "result")) return &result_declared;
     if (std.mem.eql(u8, frame_type, "stream_event")) return &stream_event_declared;
     if (std.mem.eql(u8, frame_type, "assistant")) return &assistant_declared;
+    if (std.mem.eql(u8, frame_type, "user")) return &user_declared;
     if (std.mem.eql(u8, frame_type, "system") and std.mem.eql(u8, subtype, "task_updated")) return &task_updated_declared;
     return &.{};
 }
@@ -300,6 +335,7 @@ fn wrongType(object: std.json.ObjectMap, declared: []const Declared) bool {
         const ok = switch (need.need) {
             .text => value == .string,
             .array => value == .array,
+            .object => value == .object,
             .number => value == .integer or value == .float,
             .boolean => value == .bool,
             .text_array => blk: {
@@ -349,7 +385,8 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     if (data.len == 0 or data[0] != '{' or data[data.len - 1] != '}') {
         return report.invalid("frame must be exactly one JSON object");
     }
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{}) catch |err| {
+        if (err == error.DuplicateField) return report.invalid("duplicate object key");
         return report.invalid("frame is not decodable JSON");
     };
     if (parsed != .object) return report.invalid("frame must be exactly one JSON object");
@@ -402,7 +439,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
             const detail = response.object.get("error") orelse return report.invalidControl("error control response requires a non-empty error");
             if (detail != .string or detail.string.len == 0) return report.invalidControl("error control response requires a non-empty error");
             envelope.err = detail.string;
-        } else return report.refuseQuoted(arena, Error.InvalidControl, "control response subtype \"{s}\" is not success or error", state.string);
+        } else return report.refuseQuoted(arena, Error.InvalidControl, "control response subtype {s} is not success or error", state.string);
         message.response = envelope;
         return message;
     }
@@ -419,7 +456,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
     if (std.mem.eql(u8, message.type, "system") and std.mem.eql(u8, message.subtype, "task_notification") and !taskStatusIsTerminal(object)) {
         const status = member(object, &.{"status"}) orelse std.json.Value{ .string = "" };
         const shown = if (status == .string) status.string else "";
-        return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status \"{s}\" is not completed, failed, or stopped", shown);
+        return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status {s} is not completed, failed, or stopped", shown);
     }
     if (wrongType(object, declaredMembers(message.type, message.subtype)) or
         wrongNestedType(object, nestedMembers(message.type, message.subtype)))
@@ -668,7 +705,7 @@ test "a nested member of the wrong type is fatal" {
     try accepts(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[]},\"origin\":{\"kind\":\"human\"}}");
     try accepts(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[]},\"origin\":null}");
 
-    try refuses(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[7]}}");
+    try accepts(&arena, "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[7]}}");
     try refuses(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[\"text\"]}}");
     try accepts(&arena, "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[{\"type\":\"text\"}]}}");
 
@@ -699,4 +736,68 @@ test "a refusal quotes the value the oracle quotes" {
     var cancel = Diagnostic{};
     try testing.expectError(Error.InvalidControl, parseMessage(arena.allocator(), "{\"type\":\"control_cancel_request\"}", &cancel));
     try testing.expectEqualStrings(invalid_control_prefix ++ ": control_cancel_request requires a non-empty request_id", cancel.message);
+}
+
+test "a quoted value is escaped the way %q escapes it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    try testing.expectEqualStrings("\"plain\"", quoteGo(scratch, "plain"));
+    try testing.expectEqualStrings("\"we\\\"ird\"", quoteGo(scratch, "we\"ird"));
+    try testing.expectEqualStrings("\"back\\\\slash\"", quoteGo(scratch, "back\\slash"));
+    try testing.expectEqualStrings("\"a\\nb\"", quoteGo(scratch, "a\nb"));
+    try testing.expectEqualStrings("\"a\\x00b\"", quoteGo(scratch, "a\x00b"));
+
+    var quoted = Diagnostic{};
+    try testing.expectError(Error.InvalidControl, parseMessage(scratch, "{\"type\":\"control_response\",\"response\":{\"subtype\":\"we\\\"ird\",\"request_id\":\"r\"}}", &quoted));
+    try testing.expectEqualStrings(invalid_control_prefix ++ ": control response subtype \"we\\\"ird\" is not success or error", quoted.message);
+}
+
+test "an oversized unterminated tail is too large, not malformed" {
+    var short = FrameReader{ .source = "{\"type\":\"result\"}", .limit = 4 };
+    try testing.expectError(Error.FrameTooLarge, short.next());
+
+    var within = FrameReader{ .source = "{}", .limit = 64 };
+    try testing.expectError(Error.InvalidMessage, within.next());
+
+    var terminated = FrameReader{ .source = "{\"type\":\"result\"}\n", .limit = 4 };
+    try testing.expectError(Error.FrameTooLarge, terminated.next());
+}
+
+test "a duplicate key is classified as one, not as undecodable JSON" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var duplicate = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":\"a\",\"type\":\"b\"}", &duplicate));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": duplicate object key", duplicate.message);
+
+    var garbage = Diagnostic{};
+    try testing.expectError(Error.InvalidMessage, parseMessage(arena.allocator(), "{\"type\":}", &garbage));
+    try testing.expectEqualStrings(invalid_message_prefix ++ ": frame is not decodable JSON", garbage.message);
+}
+
+test "the typed table covers the members the reducer gates on" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    try refuses(&arena, "{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{},\"uuid\":\"e\",\"parent_tool_use_id\":7}");
+    try accepts(&arena, "{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{},\"uuid\":\"e\",\"parent_tool_use_id\":null}");
+    try accepts(&arena, "{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{},\"uuid\":\"e\",\"parent_tool_use_id\":\"t1\"}");
+
+    const assistant = "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"model\":\"m\",\"content\":[]},";
+    try refuses(&arena, assistant ++ "\"parent_tool_use_id\":7}");
+    try refuses(&arena, assistant ++ "\"uuid\":7}");
+
+    const user = "{\"type\":\"user\",\"session_id\":\"s\",\"message\":{\"role\":\"user\",\"content\":[]},";
+    try refuses(&arena, user ++ "\"parent_tool_use_id\":7}");
+
+    const result = "{\"type\":\"result\",\"session_id\":\"s\",\"subtype\":\"success\",";
+    try refuses(&arena, result ++ "\"usage\":7}");
+    try refuses(&arena, result ++ "\"origin\":7}");
+
+    const updated = "{\"type\":\"system\",\"subtype\":\"task_updated\",\"session_id\":\"s\",\"task_id\":\"t\",";
+    try refuses(&arena, updated ++ "\"patch\":{\"status\":7}}");
+    try accepts(&arena, updated ++ "\"patch\":{\"status\":\"killed\"}}");
 }
