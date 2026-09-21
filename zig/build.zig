@@ -152,6 +152,13 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_gate_test).step);
 
+    const deepseek_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/deepseek/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const deepseek_rpc_test = b.addTest(.{ .root_module = deepseek_rpc_mod });
+
     const ai_types_mod = b.createModule(.{
         .root_source_file = b.path("src/ai_types.zig"),
         .target = target,
@@ -222,6 +229,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const pi_rpc_test = b.addTest(.{ .root_module = pi_rpc_mod });
+    const acp_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/acp/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const acp_rpc_test = b.addTest(.{ .root_module = acp_rpc_mod });
 
 
     const oap_endpoint_client_mod = b.createModule(.{
@@ -1990,6 +2003,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_session_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
+    test_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
@@ -2104,6 +2119,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);

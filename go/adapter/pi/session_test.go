@@ -1241,3 +1241,35 @@ func TestAbortTheHarnessRefusesFailsTheRunAndSaysWhoSettledIt(t *testing.T) {
 		t.Fatalf("settled_by=%q want it unset when the harness answered with a refusal", answered.SettledBy)
 	}
 }
+
+func TestSettlementBeforeAnyStartAbortsTheAdmission(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	client.mu.Lock()
+	client.onCall = func(c native.Command) {
+		if c.Type == native.CommandPrompt {
+			client.emit(t, map[string]any{"type": "agent_settled"})
+		}
+	}
+	client.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _, err := s.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("Submit hung: a settlement before any start was neither admitted nor refused")
+	}
+	if !errors.Is(err, ErrNativeProtocol) {
+		t.Fatalf("Submit err=%v, want the native protocol refusal", err)
+	}
+	if !strings.Contains(err.Error(), "agent_settled arrived without agent_start") {
+		t.Fatalf("Submit err=%v, want it to name the missing start", err)
+	}
+}
+
+func TestSettlementWithAnEmptyCandidateIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "agent_end", "messages": []any{}, "willRetry": false})
+		client.emit(t, map[string]any{"type": "agent_settled"})
+	})
+	assertRunFailedWith(t, events, "pi_missing_final_message", "agent settlement omitted assistant message")
+}
