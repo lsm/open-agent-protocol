@@ -588,11 +588,18 @@ func TestWriterNeverClosesTheLineChannel(t *testing.T) {
 }
 
 type probeAdapter struct {
-	delay time.Duration
-	hang  chan struct{}
+	delay   time.Duration
+	hang    chan struct{}
+	entered chan struct{}
 }
 
 func (a *probeAdapter) Probe(context.Context) (base.Descriptor, error) {
+	if a.entered != nil {
+		select {
+		case a.entered <- struct{}{}:
+		default:
+		}
+	}
 	if a.delay > 0 {
 		time.Sleep(a.delay)
 	} else {
@@ -1081,7 +1088,8 @@ func TestAbandonedTeardownStillReportsTheWriteFailure(t *testing.T) {
 	registry := serve.NewRegistry()
 	hang := make(chan struct{})
 	t.Cleanup(func() { close(hang) })
-	if err := registry.Register("hang", &probeAdapter{hang: hang}); err != nil {
+	entered := make(chan struct{}, 1)
+	if err := registry.Register("hang", &probeAdapter{hang: hang, entered: entered}); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.Register("memory", base.NewMemory(base.Config{Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})); err != nil {
@@ -1096,10 +1104,15 @@ func TestAbandonedTeardownStillReportsTheWriteFailure(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- server.Run(context.Background(), stdinReader, failWriter{}) }()
 
-	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"capabilities","adapter":"memory"}` + "\n")); err != nil {
+	if _, err := stdinWriter.Write([]byte(`{"id":1,"op":"capabilities","adapter":"hang"}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stdinWriter.Write([]byte(`{"id":2,"op":"capabilities","adapter":"hang"}` + "\n")); err != nil {
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalling probe never started")
+	}
+	if _, err := stdinWriter.Write([]byte(`{"id":2,"op":"capabilities","adapter":"memory"}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
 	select {
