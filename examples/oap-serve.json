@@ -11,7 +11,12 @@
         "ANTHROPIC_API_KEY"
       ],
       "working_directory": "/absolute/project/path",
-      "model": "sonnet-5"
+      "model": "sonnet-5",
+      "allowed_tools": [
+        "Read",
+        "Grep",
+        "Glob"
+      ]
     },
     "codex": {
       "type": "codex",

@@ -45,6 +45,9 @@ type adapterEntry struct {
 	Model            string   `json:"model"`
 	JournalCapacity  int      `json:"journal_capacity"`
 
+	AllowedTools      []string `json:"allowed_tools"`
+	UnrestrictedTools bool     `json:"unrestricted_tools"`
+
 	ApprovalPolicy string `json:"approval_policy"`
 	Sandbox        string `json:"sandbox"`
 
@@ -215,11 +218,16 @@ func buildAdapter(name string, entry adapterEntry, environ func(string) (string,
 	case "memory":
 		return base.NewMemory(base.Config{JournalCapacity: entry.JournalCapacity}), nil
 	case "claude":
+		posture, err := claudeToolPosture(name, entry)
+		if err != nil {
+			return nil, err
+		}
 		implementation, err := claude.New(claude.Config{
 			Executable: entry.Executable, Args: entry.Args, Environment: environment,
 			WorkingDirectory: entry.WorkingDirectory, Model: entry.Model, JournalCapacity: entry.JournalCapacity,
+			Tools: posture,
 		})
-		return implementation, wrapBuild(name, err)
+		return implementation, statePostureInConfig(name, wrapBuild(name, err))
 	case "codex":
 		implementation, err := appserver.New(appserver.Config{
 			Executable: entry.Executable, Args: entry.Args, Environment: environment,
@@ -260,6 +268,32 @@ func buildAdapter(name string, entry adapterEntry, environ func(string) (string,
 	default:
 		return nil, fmt.Errorf("serve: adapter %q: unknown type %q", name, kind)
 	}
+}
+
+func claudeToolPosture(name string, entry adapterEntry) (claude.ToolPosture, error) {
+	switch {
+	case entry.UnrestrictedTools && len(entry.AllowedTools) > 0:
+		return claude.ToolPosture{}, fmt.Errorf("serve: adapter %q: set either \"allowed_tools\" or \"unrestricted_tools\", not both", name)
+	case entry.UnrestrictedTools:
+		return claude.UnrestrictedTools(), nil
+	case len(entry.AllowedTools) > 0:
+		for _, tool := range entry.AllowedTools {
+			if tool == "" {
+				return claude.ToolPosture{}, fmt.Errorf("serve: adapter %q: \"allowed_tools\" names an empty tool", name)
+			}
+		}
+		return claude.AllowTools(entry.AllowedTools...), nil
+	case entry.AllowedTools != nil:
+		return claude.ToolPosture{}, fmt.Errorf("serve: adapter %q: \"allowed_tools\" names no tool; name at least one, or set \"unrestricted_tools\": true to give it the harness default", name)
+	}
+	return claude.ToolPosture{}, nil
+}
+
+func statePostureInConfig(name string, err error) error {
+	if !errors.Is(err, claude.ErrToolPostureUnstated) {
+		return err
+	}
+	return fmt.Errorf("serve: adapter %q: state its tool posture: set \"allowed_tools\" to the tools the child may use, or \"unrestricted_tools\": true to give it the harness default", name)
 }
 
 func wrapBuild(name string, err error) error {
