@@ -258,6 +258,41 @@ func TestClientRejectsMisroutedPostResponses(t *testing.T) {
 			`resolves interaction "i-other", want "i-1"`,
 		},
 		{
+			"submit payload names another run",
+			cannedResponse(t, protocol.TypeSessionMessageSubmitResponse, "submit-run", "s-1", protocol.MessageSubmitResponse{
+				SessionID: "s-1", RunID: "r-other", Accepted: true, SubmissionID: "sub-1", Status: protocol.RunRunning,
+			}, "r-1"),
+			func(s *Session) error {
+				_, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{
+					Delivery: protocol.DeliveryAuto,
+					Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hi")}},
+				})
+				return err
+			},
+			`payload names run "r-other", envelope "r-1"`,
+		},
+		{
+			"cancel payload names another run",
+			cannedResponse(t, protocol.TypeRunCancelResponse, "cancel-run", "s-1", protocol.RunCancelResponse{
+				SessionID: "s-1", RunID: "r-other", Accepted: true,
+			}, "r-1"),
+			func(s *Session) error { _, err := s.Cancel(context.Background(), "r-1"); return err },
+			`payload names run "r-other", envelope "r-1"`,
+		},
+		{
+			"resolution payload names another run",
+			cannedResponse(t, protocol.TypeUserInputResolveResponse, "input-run", "s-1", protocol.UserInputResolveResponse{
+				InteractionID: "i-1", SessionID: "s-1", RunID: "r-other", Accepted: true,
+			}, "r-1"),
+			func(s *Session) error {
+				return s.ResolveInput(context.Background(), protocol.UserInputResolveRequest{
+					InteractionID: "i-1", RunID: "r-1", RequestedBy: "agent", RespondedBy: "control",
+					Answers: []protocol.InputAnswer{{QuestionID: "q", SelectedOptionIDs: []string{"yes"}}},
+				})
+			},
+			`payload names run "r-other", envelope "r-1"`,
+		},
+		{
 			"input resolution is scoped to another session",
 			cannedResponse(t, protocol.TypeUserInputResolveResponse, "input-elsewhere", "s-1", protocol.UserInputResolveResponse{
 				InteractionID: "i-1", SessionID: "s-other", RunID: "r-1", Accepted: true,
@@ -375,4 +410,31 @@ func eventEnvelope(t *testing.T, payload any) protocol.Envelope {
 	}
 	envelope.SessionID = "wire"
 	return envelope
+}
+
+func TestClientRejectsAnOpenResponseWhoseEnvelopeNamesNoSession(t *testing.T) {
+	opened, err := protocol.NewEnvelope(protocol.TypeSessionOpenResponse, protocol.EnvelopeID("open-response"), protocol.SessionOpenResponse{
+		SessionID: "s-1", Status: protocol.SessionIdle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		var request protocol.Envelope
+		data, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(data, &request)
+		reply := opened
+		reply.InReplyTo = request.ID
+		encoded, _ := json.Marshal(reply)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(encoded)
+	})
+	_, err = c.Open(context.Background(), "memory", "")
+	if err == nil {
+		t.Fatal("an open response whose envelope named no session was accepted, and its payload adopted")
+	}
+	if !strings.Contains(err.Error(), `payload names session "s-1", envelope ""`) {
+		t.Fatalf("error %q does not report the scope defect", err)
+	}
 }

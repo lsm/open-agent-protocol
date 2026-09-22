@@ -40,6 +40,9 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	if err := s.bindResponse(s.path("/submit"), response, admission.SessionID, true); err != nil {
 		return protocol.MessageSubmitResponse{}, err
 	}
+	if err := s.bindRun(s.path("/submit"), response, admission.RunID); err != nil {
+		return protocol.MessageSubmitResponse{}, err
+	}
 	return admission, nil
 }
 
@@ -110,7 +113,7 @@ func (s *Session) ResolvePermission(ctx context.Context, request protocol.Permis
 	if err := response.DecodePayload(&resolved); err != nil {
 		return err
 	}
-	return s.bindResolution(response, resolved.SessionID, resolved.InteractionID, request.InteractionID)
+	return s.bindResolution(response, resolved.SessionID, resolved.RunID, resolved.InteractionID, request.InteractionID)
 }
 
 func (s *Session) ResolveInput(ctx context.Context, request protocol.UserInputResolveRequest) error {
@@ -133,7 +136,7 @@ func (s *Session) ResolveInput(ctx context.Context, request protocol.UserInputRe
 	if err := response.DecodePayload(&resolved); err != nil {
 		return err
 	}
-	return s.bindResolution(response, resolved.SessionID, resolved.InteractionID, request.InteractionID)
+	return s.bindResolution(response, resolved.SessionID, resolved.RunID, resolved.InteractionID, request.InteractionID)
 }
 
 func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
@@ -151,6 +154,9 @@ func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.Ru
 		return ack, err
 	}
 	if err := s.bindResponse(s.path("/cancel"), response, ack.SessionID, true); err != nil {
+		return protocol.RunCancelResponse{}, err
+	}
+	if err := s.bindRun(s.path("/cancel"), response, ack.RunID); err != nil {
 		return protocol.RunCancelResponse{}, err
 	}
 	return ack, nil
@@ -173,8 +179,11 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	return state, nil
 }
 
-func (s *Session) bindResolution(response protocol.Envelope, payloadScope protocol.SessionID, answered, asked protocol.InteractionID) error {
+func (s *Session) bindResolution(response protocol.Envelope, payloadScope protocol.SessionID, payloadRun protocol.RunID, answered, asked protocol.InteractionID) error {
 	if err := s.bindResponse(s.path("/resolve"), response, payloadScope, true); err != nil {
+		return err
+	}
+	if err := s.bindRun(s.path("/resolve"), response, payloadRun); err != nil {
 		return err
 	}
 	if answered != asked {
@@ -192,6 +201,16 @@ func (s *Session) bindResponse(path string, response protocol.Envelope, payloadS
 	}
 	if payloadScope != response.SessionID {
 		return fmt.Errorf("client: %s payload names session %q, envelope %q", path, payloadScope, response.SessionID)
+	}
+	return nil
+}
+
+func (s *Session) bindRun(path string, response protocol.Envelope, payloadRun protocol.RunID) error {
+	if payloadRun == "" {
+		return nil
+	}
+	if payloadRun != response.RunID {
+		return fmt.Errorf("client: %s payload names run %q, envelope %q", path, payloadRun, response.RunID)
 	}
 	return nil
 }
