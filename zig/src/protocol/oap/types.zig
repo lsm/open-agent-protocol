@@ -99,29 +99,35 @@ pub const DetailEntry = struct {
     value: []const u8,
 };
 
-pub const ProtocolError = struct {
-    code: []const u8,
-    message: []const u8,
-    retriable: ?bool = null,
-    details: []const DetailEntry = &.{},
+pub fn ProtocolErrorOf(comptime Code: type) type {
+    return struct {
+        const Self = @This();
 
-    pub fn detail(self: *const ProtocolError, key: []const u8) ?[]const u8 {
-        for (self.details) |entry| {
-            if (std.mem.eql(u8, entry.key, key)) return entry.value;
-        }
-        return null;
-    }
+        code: Code,
+        message: []const u8,
+        retriable: ?bool = null,
+        details: []const DetailEntry = &.{},
 
-    pub fn deinit(self: *ProtocolError, allocator: std.mem.Allocator) void {
-        allocator.free(self.code);
-        allocator.free(self.message);
-        for (self.details) |entry| {
-            allocator.free(entry.key);
-            allocator.free(entry.value);
+        pub fn detail(self: *const Self, key: []const u8) ?[]const u8 {
+            for (self.details) |entry| {
+                if (std.mem.eql(u8, entry.key, key)) return entry.value;
+            }
+            return null;
         }
-        allocator.free(self.details);
-    }
-};
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            if (Code == []const u8) allocator.free(self.code);
+            allocator.free(self.message);
+            for (self.details) |entry| {
+                allocator.free(entry.key);
+                allocator.free(entry.value);
+            }
+            allocator.free(self.details);
+        }
+    };
+}
+
+pub const ProtocolError = ProtocolErrorOf([]const u8);
 
 pub const ReasoningPart = struct {
     text: []const u8,
