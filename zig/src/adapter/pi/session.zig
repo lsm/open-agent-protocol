@@ -1,4 +1,5 @@
 const std = @import("std");
+const rpc = @import("rpc.zig");
 
 pub const capability_revision = "pi-v0.85.1-oap-v1";
 pub const protocol_name = "open-agent-protocol";
@@ -2057,4 +2058,26 @@ test "a null passes every typed member, the way encoding/json leaves the zero va
 test "a member the shape carries without a type passes whatever it carries" {
     try expectShapeAccepts(&.{"{\"type\":\"message_update\",\"usage\":7,\"assistantMessageEvent\":\"x\"}"});
     try expectShapeAccepts(&.{"{\"type\":\"tool_execution_end\",\"toolCallId\":\"c\",\"toolName\":\"n\",\"result\":7,\"isError\":false}"});
+}
+
+test "every member the reducer types is one the codec admits for that event" {
+    for (event_shapes) |shape| {
+        const admitted = rpc.eventShape(shape.name) orelse {
+            std.debug.print("\nthe codec does not know {s}\n", .{shape.name});
+            return error.EventUnknownToTheCodec;
+        };
+        for (shape.members) |member| {
+            if (std.mem.eql(u8, member.name, "type")) continue;
+            var found = false;
+            for (admitted.required) |name| {
+                if (std.mem.eql(u8, name, member.name)) found = true;
+            }
+            for (admitted.optional) |name| {
+                if (std.mem.eql(u8, name, member.name)) found = true;
+            }
+            if (found) continue;
+            std.debug.print("\n{s} types {s}, which the codec does not admit\n", .{ shape.name, member.name });
+            return error.MemberTheCodecRefuses;
+        }
+    }
 }

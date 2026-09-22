@@ -15,13 +15,13 @@ pub const Frame = struct {
     raw: []const u8,
 };
 
-const EventShape = struct {
+pub const EventShape = struct {
     name: []const u8,
     required: []const []const u8 = &.{},
     optional: []const []const u8 = &.{},
 };
 
-const event_shapes = [_]EventShape{
+pub const event_shapes = [_]EventShape{
     .{ .name = "agent_start" },
     .{ .name = "agent_end", .required = &.{ "messages", "willRetry" } },
     .{ .name = "agent_settled" },
@@ -48,7 +48,7 @@ const event_shapes = [_]EventShape{
     .{ .name = "extension_error", .required = &.{ "extensionPath", "event", "error" } },
 };
 
-fn eventShape(name: []const u8) ?EventShape {
+pub fn eventShape(name: []const u8) ?EventShape {
     for (event_shapes) |shape| {
         if (std.mem.eql(u8, shape.name, name)) return shape;
     }
