@@ -34,8 +34,10 @@ check it reports `skipped` is an obligation the endpoint does not carry, not one
 it failed.
 
 Zig 0.16.0, with `build.zig` in `zig/`. A root `Makefile` wraps the everyday
-ones (`make build|tui|test|test-tui|check|clean|clean-all`) and is the only
-place macOS codesigning is configured.
+ones (`make build|tui|test|test-tui|check|clean|clean-all`) and configures local
+macOS codesigning. Release signing and notarization are configured separately,
+in `.github/workflows/release-binaries.yml`, so a change to one is not a change
+to the other.
 
 ```sh
 zig build --build-file zig/build.zig             # -> zig/zig-out/bin/oapx
