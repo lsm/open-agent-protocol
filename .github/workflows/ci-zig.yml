@@ -296,6 +296,9 @@ jobs:
         working-directory: sdk/python
         run: python -m mypy
 
+      - name: Type check the README samples
+        run: python scripts/check_readme_samples.py
+
       - name: Build the oapx binary for Python SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-py
 
