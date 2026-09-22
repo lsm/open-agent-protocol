@@ -152,6 +152,27 @@ a non-interactive shell never surfaces the prompt and the write **blocks**
 rather than failing: bound any invocation that may persist credentials with an
 external timeout, so a hang is visible instead of silent.
 
+`OAPX_KEYCHAIN_SERVICE` redirects the whole store — every read and write, not
+one item — so a local run can use a throwaway service. Use a genuinely unique
+name per run (`makai-test-$(uuidgen)`; `$(date +%s)-$$` collides between
+subshells). It is not isolation on its own, and the four gaps are why:
+
+1. It does not cover `~/.oapx/auth.json`. With no item under the overridden
+   service, `loadDefault` falls back to the file, so a supposedly isolated run
+   can still consume real tokens. Redirect `HOME` too.
+2. It does not cover the Codex CLI import, which reads the fixed `Codex Auth`
+   service on `loadDefault` paths. `loadDefaultStoredOnly` passes
+   `import_codex = false` and is not affected.
+3. A unique service accumulates items. Anything persisting a credential writes
+   one — including an ordinary request that refreshes an expired token — and
+   nothing deletes them. Clean up on every exit path with
+   `security delete-generic-password -s "$OAPX_KEYCHAIN_SERVICE"`.
+4. The real-binary SDK tests cannot pass on macOS as written: `loadDefault`
+   attaches the Keychain save callback when the service has no item, so login
+   writes miss the temporary `HOME` and the assertions fail on `ENOENT`.
+   `shouldUseKeychain()` is hardcoded to macOS non-test builds, so there is no
+   switch. Run those on Linux.
+
 Rules the source will not tell you:
 
 - `build.zig` declares a module per **root** with explicit `.imports`, a test per
@@ -161,11 +182,28 @@ Rules the source will not tell you:
   CI job. A module with no `addTest` is invisible to this rule.
 - A relative `@import` does not mean a file has no module. Decide from
   `build.zig` and the importers, never from the import syntax.
+- Four files are compiled by nothing: `zig/src/utils/` `streaming_json.zig`
+  (a different, larger file than the live top-level one), `message_transform.zig`,
+  `tool_utils.zig` and `tokens.zig` have no module, no importer and no build
+  step, so nothing type-checks them and they rot silently. Do not copy their
+  wiring as a pattern, and note that `tool_utils.zig` still holds a declared
+  entry in `check-zig-patterns.sh`'s `expected_ordinary_entropy_sites` — a
+  security exemption for code that never runs, which cannot be removed while the
+  file stays, and deleting the file without the entry fails the guardrail.
 - `EventStream.owns_events` is an **ownership** flag, not a cloning switch:
   `push` deep-copies only when `clone_event_fn` is also set, and setting
   `owns_events` without cloning before push is a use-after-free. A stream ends
   via `complete`/`completeWithError`, never a `.done` event. Full contract:
   `docs/zig-stream-memory-ownership.md`.
+- **`AgentEvent` has no error variant, and failure does not arrive through one
+  channel.** When `runLoop` returns an error the thread calls
+  `completeWithError` *instead of* pushing `agent_end`, so no terminal event
+  ever arrives and a consumer waiting for `agent_end` hangs. Check
+  `stream.getError()` first, then `final_message.stop_reason == .@"error"` — a
+  provider failure still produces a normal `agent_end` — and treat
+  `AgentEndPayload.termination` as evidence of nothing: it encodes only
+  `max_turns` or `cancelled`, and is null both on a clean finish and on that
+  provider failure.
 - A struct literal must not allocate more than once: a later failing `dupe`
   leaks every field already built, and an `errdefer` cannot live inside a
   literal. Build fields into locals first. `check-zig-patterns.sh` catches this
