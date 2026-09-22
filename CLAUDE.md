@@ -12,9 +12,13 @@ by later decisions; `drafts/` holds the prose profiles, and
 `drafts/conformance.md` defines profiles and `+unit` claims;
 `research/protocol-feedback-2026-09.md` adjudicates every mismatch found
 adapting eight harnesses; `research/<harness>-<pin>-mapping.md` is the spec for
-one adapter. Read the decisions before changing protocol behavior. A `research/`
-ledger records an upstream project's vocabulary — never rename its identifiers
-to ours.
+one adapter. Read the decisions before changing protocol behavior.
+
+A `research/` ledger and a `fixtures/adapters/` corpus both record an upstream
+project's vocabulary rather than ours, so never rename an identifier inside
+either. A sweep that renamed a native member in a corpus would rename it in the
+expectation beside it, leaving every test green while the corpus quietly stopped
+reproducing the wire it is pinned to.
 
 ## Commands
 
