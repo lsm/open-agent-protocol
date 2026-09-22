@@ -62,7 +62,10 @@ def bound_names(source: str) -> set[str]:
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        tree = ast.parse(f"async def _outer() -> None:\n" + "\n".join(f"    {l}" for l in source.split("\n")))
+        try:
+            tree = ast.parse("async def _outer() -> None:\n" + "\n".join(f"    {l}" for l in source.split("\n")))
+        except SyntaxError:
+            return set()
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
@@ -106,7 +109,7 @@ def needs_wrapping(source: str) -> bool:
         return False
 
 
-def prepare(body: list[str]) -> str:
+def prepare(body: list[str]) -> tuple[str, int]:
     """Give a fragment the context the prose gives a reader.
 
     This README documents in fragments: a block shows the lines that matter and
@@ -116,13 +119,20 @@ def prepare(body: list[str]) -> str:
     real types, so every attribute reached through them is checked against the
     SDK rather than against `Any`. A block that already stands alone is checked
     as written.
+
+    Returns the sample text and the number of lines standing above the block's
+    first line, which varies with how many established names the block binds
+    for itself and with whether it had to be wrapped. The caller subtracts it
+    to report an error at the README line rather than that many lines past it.
     """
     source = "\n".join(body) + "\n"
     preamble = preamble_for(source)
     if not needs_wrapping(source):
-        return preamble + "\n" + source
+        prefix = preamble + "\n"
+        return prefix + source, prefix.count("\n")
     indented = "\n".join(f"    {line}" if line.strip() else line for line in body)
-    return f"{preamble}\n\nasync def _sample() -> None:\n{indented}\n"
+    prefix = f"{preamble}\n\nasync def _sample() -> None:\n"
+    return prefix + indented + "\n", prefix.count("\n")
 
 
 def main() -> int:
@@ -132,8 +142,11 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="oap-readme-samples-") as work:
         samples = Path(work)
+        above: dict[int, int] = {}
         for start, body in blocks:
-            (samples / f"sample_{start}.py").write_text(prepare(body))
+            text, offset = prepare(body)
+            (samples / f"sample_{start}.py").write_text(text)
+            above[start] = offset
 
         print(f"type-checking {len(blocks)} README samples against the installed oap_sdk...")
         result = subprocess.run(
@@ -155,7 +168,7 @@ def main() -> int:
         output = (result.stdout or "") + (result.stderr or "")
         located = re.sub(
             r"\S*sample_(\d+)\.py:(\d+)",
-            lambda m: f"sdk/python/README.md:{int(m.group(1)) + int(m.group(2)) - 1} (sample at line {m.group(1)})",
+            lambda m: f"sdk/python/README.md:{int(m.group(1)) + int(m.group(2)) - 1 - above.get(int(m.group(1)), 0)} (sample at line {m.group(1)})",
             output,
         )
         print(located.strip(), file=sys.stderr)

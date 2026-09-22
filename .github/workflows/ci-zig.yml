@@ -148,6 +148,9 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-smoke/bin/oapx
         run: npm run test:sdk
 
+      - name: Type-check the TypeScript README samples
+        run: npm run check:readme
+
       - name: Verify npm package ships TypeScript declarations
         run: npm run check:declarations
 
