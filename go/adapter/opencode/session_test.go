@@ -1645,6 +1645,10 @@ func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
 func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
+	gate := make(chan struct{})
+	client.mu.Lock()
+	client.idleGate = gate
+	client.mu.Unlock()
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
@@ -1653,6 +1657,7 @@ func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
 	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 5, native.TypeStepEnded, native.StepEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop", Cost: 0.75})
+	close(gate)
 	events := adaptertest.Drain(t, stream, time.Second)
 
 	terminal := events[len(events)-1]
@@ -1677,6 +1682,10 @@ func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
 func TestAFailedTerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	client := newFakeClient()
 	client.promoted = true
+	gate := make(chan struct{})
+	client.mu.Lock()
+	client.idleGate = gate
+	client.mu.Unlock()
 	session, _ := openTest(t, client, 32)
 	response, stream := submitTest(t, session)
 	messageID := native.MessageID(response.MessageIDs[0])
@@ -1685,6 +1694,7 @@ func TestAFailedTerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
 	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
 	client.emit(t, 5, native.TypeStepFailed, native.StepFailedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", Error: native.UnknownErrorBlock{Type: "ProviderError", Message: "upstream refused"}})
+	close(gate)
 	events := adaptertest.Drain(t, stream, time.Second)
 
 	terminal := events[len(events)-1]

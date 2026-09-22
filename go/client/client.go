@@ -254,8 +254,13 @@ func (c *Client) exchange(ctx context.Context, method, path string, request *pro
 	if err := c.failureError(response, raw); err != nil {
 
 		var serverErr *ServerError
-		if errors.As(err, &serverErr) && serverErr.Envelope.Type == protocol.TypeErrorResponse && request != nil && serverErr.Envelope.InReplyTo != request.ID {
-			return protocol.Envelope{}, fmt.Errorf("client: %s error response cites correlation %q, want the request id %q", path, serverErr.Envelope.InReplyTo, request.ID)
+		if errors.As(err, &serverErr) && serverErr.Envelope.Type == protocol.TypeErrorResponse && request != nil {
+			if serverErr.Envelope.InReplyTo != request.ID {
+				return protocol.Envelope{}, fmt.Errorf("client: %s error response cites correlation %q, want the request id %q", path, serverErr.Envelope.InReplyTo, request.ID)
+			}
+			if scopeErr := errorResponseScopeDefect(path, serverErr.Envelope, *request); scopeErr != nil {
+				return protocol.Envelope{}, scopeErr
+			}
 		}
 		return protocol.Envelope{}, err
 	}
