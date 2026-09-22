@@ -2,11 +2,8 @@ package deepseek
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,39 +168,7 @@ func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 
 func verifiedDeepSeekBinary(t *testing.T) string {
 	t.Helper()
-	binary := os.Getenv("OAP_DEEPSEEK_HARNESS_BIN")
-	if binary == "" || !filepath.IsAbs(binary) {
-		t.Fatal("OAP_DEEPSEEK_HARNESS_BIN must be an absolute path to the pinned dsh-jsonrpc-agent runtime executable")
-	}
-	info, err := os.Stat(binary)
-	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-		t.Fatalf("OAP_DEEPSEEK_HARNESS_BIN is not an executable file: %v", err)
-	}
-	if expected := os.Getenv("OAP_DEEPSEEK_HARNESS_SHA256"); expected != "" {
-		if len(expected) != sha256.Size*2 {
-			t.Fatal("OAP_DEEPSEEK_HARNESS_SHA256 must be exactly 64 hexadecimal characters")
-		}
-		expectedDigest, err := hex.DecodeString(expected)
-		if err != nil {
-			t.Fatal("OAP_DEEPSEEK_HARNESS_SHA256 must be exactly 64 hexadecimal characters")
-		}
-		file, err := os.Open(binary)
-		if err != nil {
-			t.Fatalf("open OAP_DEEPSEEK_HARNESS_BIN for digest verification: %v", err)
-		}
-		hash := sha256.New()
-		_, copyErr := io.Copy(hash, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			t.Fatalf("hash OAP_DEEPSEEK_HARNESS_BIN: %v", copyErr)
-		}
-		if closeErr != nil {
-			t.Fatalf("close OAP_DEEPSEEK_HARNESS_BIN after hashing: %v", closeErr)
-		}
-		if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), hex.EncodeToString(expectedDigest)) {
-			t.Fatal("OAP_DEEPSEEK_HARNESS_BIN SHA-256 does not match OAP_DEEPSEEK_HARNESS_SHA256")
-		}
-	}
+	binary := adaptertest.VerifiedBinary(t, "OAP_DEEPSEEK_HARNESS_BIN", "OAP_DEEPSEEK_HARNESS_SHA256", "the pinned dsh-jsonrpc-agent runtime executable")
 	return binary
 }
 

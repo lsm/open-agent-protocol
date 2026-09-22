@@ -743,8 +743,8 @@ download anything.
 
 | Adapter | Gate variables | CI |
 | --- | --- | --- |
-| Codex app-server | `OAP_CODEX_INTEGRATION`, `_BIN`, `_COMMIT` | skipped |
-| OpenCode | `OAP_OPENCODE_INTEGRATION`, `_BIN` | skipped |
+| Codex app-server | `OAP_CODEX_INTEGRATION`, `_BIN`, `_COMMIT`, `_SHA256` | skipped |
+| OpenCode | `OAP_OPENCODE_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 | pi | `OAP_PI_SMOKE` / `OAP_PI_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 | DeepSeek Harness | `OAP_DEEPSEEK_HARNESS_SMOKE` / `_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 | Hermes | `OAP_HERMES_SMOKE` / `OAP_HERMES_INTEGRATION`, `_BIN`, `_ROOT`, `_SHA256` | skipped |

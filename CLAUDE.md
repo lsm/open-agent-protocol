@@ -285,7 +285,12 @@ blank expectation, and how much of the codec is exercised differ per adapter.
 The README gate table and each `corpus_test.go` are the record.
 
 Real-process gates are skipped unless `OAP_<HARNESS>_SMOKE=1` or
-`OAP_<HARNESS>_INTEGRATION=1` is set with an absolute `OAP_<HARNESS>_BIN`. They
+`OAP_<HARNESS>_INTEGRATION=1` is set with an absolute `OAP_<HARNESS>_BIN`, and
+every gate additionally accepts an optional `OAP_<HARNESS>_SHA256` binding the
+exact artifact digest. Both rules live in `adaptertest.VerifiedBinary`, which is
+the only implementation — a new gate gets them by calling it, and must, because
+a gate that resolves its own binary is how two adapters came to ignore a digest
+variable that looked like it worked. They
 never run in CI, never download anything, and never pass ambient credentials to
 a child. Credential presence alone must never enable network traffic.
 

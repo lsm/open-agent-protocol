@@ -2,10 +2,7 @@ package acp
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -173,39 +170,7 @@ func TestACPProcessAgainstChatCompletionsMock(t *testing.T) {
 
 func verifiedACPServerBinary(t *testing.T) string {
 	t.Helper()
-	binary := os.Getenv("OAP_ACP_BIN")
-	if binary == "" || !filepath.IsAbs(binary) {
-		t.Fatal("OAP_ACP_BIN must be an absolute path to the pinned ACP agent server executable")
-	}
-	info, err := os.Stat(binary)
-	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-		t.Fatalf("OAP_ACP_BIN is not an executable file: %v", err)
-	}
-	if expected := os.Getenv("OAP_ACP_SHA256"); expected != "" {
-		if len(expected) != sha256.Size*2 {
-			t.Fatal("OAP_ACP_SHA256 must be exactly 64 hexadecimal characters")
-		}
-		expectedDigest, err := hex.DecodeString(expected)
-		if err != nil {
-			t.Fatal("OAP_ACP_SHA256 must be exactly 64 hexadecimal characters")
-		}
-		file, err := os.Open(binary)
-		if err != nil {
-			t.Fatalf("open OAP_ACP_BIN for digest verification: %v", err)
-		}
-		hash := sha256.New()
-		_, copyErr := io.Copy(hash, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			t.Fatalf("hash OAP_ACP_BIN: %v", copyErr)
-		}
-		if closeErr != nil {
-			t.Fatalf("close OAP_ACP_BIN after hashing: %v", closeErr)
-		}
-		if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), hex.EncodeToString(expectedDigest)) {
-			t.Fatal("OAP_ACP_BIN SHA-256 does not match OAP_ACP_SHA256")
-		}
-	}
+	binary := adaptertest.VerifiedBinary(t, "OAP_ACP_BIN", "OAP_ACP_SHA256", "the pinned ACP agent server executable")
 	return binary
 }
 

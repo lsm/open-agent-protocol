@@ -2,10 +2,7 @@ package hermes
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,39 +25,7 @@ const (
 
 func verifiedHermesPython(t *testing.T) string {
 	t.Helper()
-	binary := os.Getenv("OAP_HERMES_BIN")
-	if binary == "" || !filepath.IsAbs(binary) {
-		t.Fatal("OAP_HERMES_BIN must be an absolute path to the python interpreter that runs the pinned hermes-agent checkout")
-	}
-	info, err := os.Stat(binary)
-	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-		t.Fatalf("OAP_HERMES_BIN is not an executable file: %v", err)
-	}
-	if expected := os.Getenv("OAP_HERMES_SHA256"); expected != "" {
-		if len(expected) != sha256.Size*2 {
-			t.Fatal("OAP_HERMES_SHA256 must be exactly 64 hexadecimal characters")
-		}
-		expectedDigest, err := hex.DecodeString(expected)
-		if err != nil {
-			t.Fatal("OAP_HERMES_SHA256 must be exactly 64 hexadecimal characters")
-		}
-		file, err := os.Open(binary)
-		if err != nil {
-			t.Fatalf("open OAP_HERMES_BIN for digest verification: %v", err)
-		}
-		hash := sha256.New()
-		_, copyErr := io.Copy(hash, file)
-		closeErr := file.Close()
-		if copyErr != nil {
-			t.Fatalf("hash OAP_HERMES_BIN: %v", copyErr)
-		}
-		if closeErr != nil {
-			t.Fatalf("close OAP_HERMES_BIN after hashing: %v", closeErr)
-		}
-		if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), hex.EncodeToString(expectedDigest)) {
-			t.Fatal("OAP_HERMES_BIN SHA-256 does not match OAP_HERMES_SHA256")
-		}
-	}
+	binary := adaptertest.VerifiedBinary(t, "OAP_HERMES_BIN", "OAP_HERMES_SHA256", "the python interpreter that runs the pinned hermes-agent checkout")
 	return binary
 }
 
