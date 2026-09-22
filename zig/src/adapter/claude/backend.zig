@@ -116,7 +116,11 @@ pub const Backend = struct {
     pub fn submit(self: *Backend, uuid: []const u8, text: []const u8, identity: session.Identity) !void {
         const frame = try userTurn(self.arena.allocator(), uuid, text);
         try self.reducer.submitAs(uuid, identity);
-        try self.transport.write(frame);
+        self.transport.write(frame) catch |err| {
+            self.settled = true;
+            try self.reducer.transportFailed(@errorName(err));
+            return err;
+        };
     }
 
     pub fn pump(self: *Backend) !bool {
@@ -145,14 +149,8 @@ pub const Backend = struct {
     fn settle(self: *Backend, err: ?anyerror) !void {
         self.settled = true;
         self.reap();
-        const failure = self.transport.departed();
-        if (err) |raised| {
-            if (failure.departure == .running) {
-                try self.reducer.transportFailed(@errorName(raised));
-                return;
-            }
-        }
-        try self.reducer.transportFailed(failure.text(self.arena.allocator()));
+        if (err) |raised| return self.reducer.transportFailed(@errorName(raised));
+        try self.reducer.transportFailed(self.transport.departed().text(self.arena.allocator()));
     }
 
     fn reap(self: *Backend) void {
@@ -171,7 +169,7 @@ pub const Backend = struct {
     }
 };
 
-test "the argv is the fixed nine the pinned CLI needs, in the pinned order" {
+test "the argv is exactly the fixed set the pinned CLI needs, in the pinned order" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const spawn = try spawnFor(arena.allocator(), .{ .executable = "/bin/claude", .tools = .unrestricted });
@@ -362,6 +360,62 @@ test "what the reducer keeps from a frame outlives the next frame" {
     const held = backend.reducer.run.?.buffered.items[0];
     try std.testing.expectEqualStrings("system", held.type);
     try std.testing.expectEqualStrings(init_frame, held.raw);
+}
+
+fn boundedBackend(arena: *std.heap.ArenaAllocator, comptime script: []const u8, limit: usize) !Backend {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    return Backend.openWith(arena, .{
+        .executable = "/bin/sh",
+        .args = &.{ "-c", "head -n 1 >/dev/null; " ++ script },
+        .frame_limit = limit,
+    }, .{}) catch return error.SkipZigTest;
+}
+
+fn failureMessage(backend: *Backend) ?[]const u8 {
+    for (backend.envelopes()) |envelope| {
+        if (envelope != .object) continue;
+        const kind = envelope.object.get("type") orelse continue;
+        if (kind != .string or !std.mem.eql(u8, kind.string, "run.failed")) continue;
+        const payload = envelope.object.get("payload") orelse continue;
+        if (payload != .object) continue;
+        const failure = payload.object.get("error") orelse continue;
+        if (failure != .object) continue;
+        const message = failure.object.get("message") orelse continue;
+        if (message != .string) continue;
+        return message.string;
+    }
+    return null;
+}
+
+const echo_frame = "{\"type\":\"system\",\"user_message_uuid\":\"turn-1\"}";
+
+test "a reader error names itself, not the status the child happened to exit on" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try boundedBackend(&arena, "printf '%s\\n' '" ++ echo_frame ++ "' '" ++ ("A" ** 400) ++ "'", 200);
+    defer backend.close();
+    try backend.submit("turn-1", "go", .{ .run_id = "run-1", .submission_id = "sub-1" });
+
+    try std.testing.expect(try backend.pump());
+    try std.testing.expect(!try backend.pump());
+    try std.testing.expectEqual(process.Departure.exited, backend.transport.departed().departure);
+    try std.testing.expectEqual(@as(u32, 0), backend.transport.departed().status);
+    try std.testing.expectEqualStrings("FrameTooLarge", failureMessage(&backend) orelse return error.NoFailureEmitted);
+}
+
+test "a turn the transport refuses to write settles the run rather than leaving it open" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try boundedBackend(&arena, "cat >/dev/null", 64);
+    defer backend.close();
+
+    try std.testing.expectError(
+        error.FrameTooLarge,
+        backend.submit("turn-1", "go", .{ .run_id = "run-1", .submission_id = "sub-1" }),
+    );
+    try std.testing.expect(backend.reducer.unusable);
+    try std.testing.expect(backend.reducer.run == null);
+    try std.testing.expect(!try backend.pump());
 }
 
 test "the turn the seam writes is the turn the child reads" {
