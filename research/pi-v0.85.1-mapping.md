@@ -100,6 +100,15 @@ proves there.
   when an extension callback fails. Production native types explicitly accept
   this observed runtime variant rather than mistaking it for an ordinary
   agent event.
+- **Every admitted event kind carries a closed shape, including the ignored
+  ones:** `ValidateEvent` gives all 24 `AgentSessionEvent` spellings a required
+  member list and an allowed member set, and the sixteen the reducer draws
+  nothing from are no exception. `turn_start` and `summarization_retry_finished`
+  reach no case of the switch, which leaves `type` their only allowed member, so
+  either one carrying a payload is refused. Ignoring an event is a statement
+  about what it means, not a licence to accept any object under its name, so a
+  port that dispatches those sixteen to a no-op still owes the shape check
+  before it discards the frame.
 
 There are no sequence numbers and no capability negotiation. The first
 exchanged frame is whatever the host sends; readiness is implicit. The
