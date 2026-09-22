@@ -1,6 +1,12 @@
 # Decision 0017: Provider Provisioning
 
-Status: proposed
+Status: proposed, held — see
+[PF-12](../research/protocol-feedback-2026-09.md). No pinned harness has a
+provider-introduction operation, so Decision 0003's native-evidence step has
+nothing to execute. The design stands and is not withdrawn; it becomes
+graduable when a harness gains the operation. Do not begin the schema,
+validator or adapter work on the strength of the composition table alone,
+which is what this note exists to stop
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -10,8 +16,10 @@ admission rules this reuses unchanged, and
 [Decision 0014](0014-provider-descriptors.md), which defines the read direction
 this writes into. Amends neither
 Depends on: [Decision 0014](0014-provider-descriptors.md), which is proposed.
-`ProviderDescriptor` does not exist in `protocol/` or `schema/v0.1/` today, so
-this record cannot graduate before that one
+That dependency is satisfied: `providerDescriptor` is in
+`schema/v0.1/capabilities.schema.json` and `ProviderDescriptor` is in
+`go/protocol/control.go`, so the read direction this writes into exists. The
+note this replaces said it did not, and was true when written
 Related: [Decision 0016](0016-model-provider-profile.md) defines the provider
 boundary as its own profile. This record is not that profile. It is the
 agent-control envelope by which a client asks an agent loop to use a provider,
