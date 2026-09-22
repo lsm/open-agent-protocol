@@ -43,6 +43,7 @@ pub const ToolState = struct {
 pub const Notification = struct {
     method: []const u8,
     params: std.json.Value,
+    after_seq: i64 = 0,
 };
 
 pub const ChildState = struct {
@@ -703,7 +704,7 @@ pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.js
         return;
     }
 
-    if (!reducer.started) try reducer.buffered.append(reducer.arena, .{ .method = method, .params = params });
+    if (!reducer.started) try reducer.buffered.append(reducer.arena, .{ .method = method, .params = params, .after_seq = reducer.last_seq });
 
     if (std.mem.eql(u8, method, "session.status")) {
         if (!std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id)) {
@@ -746,7 +747,7 @@ pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.js
     try failRun(reducer, "deepseek_unknown_notification", "unknown notification");
 }
 
-fn drainBuffered(reducer: *Reducer) !void {
+fn drainBuffered(reducer: *Reducer, turn_end_seq: i64) !void {
     const replayed = try reducer.arena.dupe(Notification, reducer.buffered.items);
     reducer.buffered.clearRetainingCapacity();
     for (replayed) |notification| {
@@ -756,8 +757,8 @@ fn drainBuffered(reducer: *Reducer) !void {
         if (std.mem.eql(u8, notification.method, "session.status")) {
             if (!std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id)) {
                 try failRun(reducer, "deepseek_session_mismatch", "session.status for foreign session");
-            } else if (reducer.turn_ended and std.mem.eql(u8, textOf(params, "status"), "idle")) {
-                reducer.idle_after_end = true;
+            } else if (reducer.turn_ended and notification.after_seq >= turn_end_seq) {
+                reducer.idle_after_end = std.mem.eql(u8, textOf(params, "status"), "idle");
             }
             continue;
         }
@@ -878,13 +879,15 @@ fn evaluateAdmission(reducer: *Reducer) !void {
     const replayed = try reducer.arena.dupe(std.json.Value, admitted.items);
     reducer.pending.clearRetainingCapacity();
     try start(reducer);
+    var turn_end_seq: i64 = 0;
     for (replayed) |event| {
         if (reducer.terminal) break;
         const kind = textOf(event, "type");
+        if (std.mem.eql(u8, kind, "turn/end")) turn_end_seq = numberOf(event, "seq");
         if (std.mem.eql(u8, kind, "turn/start") or std.mem.eql(u8, kind, "step/start") or std.mem.eql(u8, kind, "user/message")) continue;
         try applyEvent(reducer, event);
     }
-    try drainBuffered(reducer);
+    try drainBuffered(reducer, turn_end_seq);
 }
 
 fn parse(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
@@ -1266,6 +1269,51 @@ test "idle arms settlement only once the owned turn has ended" {
     try std.testing.expect(!reducer.terminal);
     try observeStatus(&reducer, "idle");
     try std.testing.expect(reducer.terminal);
+}
+
+fn preAdmissionRun(arena: std.mem.Allocator, tail: []const []const u8) !Reducer {
+    var reducer = Reducer.init(arena);
+    openSession(&reducer);
+    try submit(&reducer);
+    const head = [_][]const u8{
+        "{\"sessionId\":\"session\",\"event\":{\"type\":\"agent/inbox/spliced\",\"seq\":1,\"data\":{\"inserted\":[{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}]}}}",
+        "{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/start\",\"seq\":2,\"data\":{\"turn\":1}}}",
+        "{\"sessionId\":\"session\",\"event\":{\"type\":\"step/start\",\"seq\":3,\"data\":{\"turn\":1,\"step\":1}}}",
+        "{\"sessionId\":\"session\",\"event\":{\"type\":\"user/message\",\"seq\":4,\"data\":{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}}}",
+        "{\"sessionId\":\"session\",\"event\":{\"type\":\"assistant/message\",\"seq\":5,\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}}}",
+    };
+    for (head) |line| try notify(&reducer, arena, "session.event", line);
+    for (tail) |line| {
+        const method = if (std.mem.indexOf(u8, line, "\"event\"") != null) "session.event" else "session.status";
+        try notify(&reducer, arena, method, line);
+    }
+    try receipt(&reducer, "m-1");
+    return reducer;
+}
+
+const status_idle = "{\"sessionId\":\"session\",\"status\":\"idle\"}";
+const status_running = "{\"sessionId\":\"session\",\"status\":\"running\"}";
+const step_end_6 = "{\"sessionId\":\"session\",\"event\":{\"type\":\"step/end\",\"seq\":6,\"data\":{\"turn\":1,\"step\":1}}}";
+const turn_end_7 = "{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/end\",\"seq\":7,\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}}";
+
+test "a buffered idle arms settlement only if it arrived after the turn ended" {
+    var early = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer early.deinit();
+    const before_end = try preAdmissionRun(early.allocator(), &.{ status_idle, step_end_6, turn_end_7 });
+    try std.testing.expect(!before_end.idle_after_end);
+    try std.testing.expect(!before_end.terminal);
+
+    var late = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer late.deinit();
+    const after_end = try preAdmissionRun(late.allocator(), &.{ step_end_6, turn_end_7, status_idle });
+    try std.testing.expect(after_end.idle_after_end);
+    try std.testing.expect(after_end.terminal);
+
+    var resumed = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer resumed.deinit();
+    const back_to_running = try preAdmissionRun(resumed.allocator(), &.{ step_end_6, turn_end_7, status_idle, status_running });
+    try std.testing.expect(!back_to_running.idle_after_end);
+    try std.testing.expect(!back_to_running.terminal);
 }
 
 test "a subagent that is foreign, recursive or repeated is refused" {
