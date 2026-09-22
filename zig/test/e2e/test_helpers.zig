@@ -131,16 +131,6 @@ pub fn skipGoogleTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
     return error.SkipZigTest;
 }
 
-pub fn skipGoogleVertexTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
-    if (!shouldSkipProvider(allocator, "google_vertex")) {
-        if (compat.getEnvVarOwned(allocator, "GOOGLE_VERTEX_PROJECT_ID")) |_| {
-            return;
-        } else |_| {}
-    }
-    std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for 'google_vertex' - no credentials available (set GOOGLE_VERTEX_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS)\n", .{});
-    return error.SkipZigTest;
-}
-
 pub fn skipBedrockTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
     if (compat.getEnvVarOwned(allocator, "AWS_ACCESS_KEY_ID")) |_| {
         return;
