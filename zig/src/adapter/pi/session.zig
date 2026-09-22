@@ -993,7 +993,18 @@ pub fn resolveExtension(reducer: *Reducer, interaction_id: []const u8, answer: [
     try payload.put(reducer.arena, "answers", .{ .array = std.json.Array.fromOwnedSlice(reducer.arena, try answers.toOwnedSlice(reducer.arena)) });
     interaction.resolved = true;
     try reducer.emit("user.input.resolved", .{ .object = payload.* }, false);
-    try statusUpdate(reducer, "running", "");
+    if (oldestPendingInteraction(reducer)) |next| {
+        try statusUpdate(reducer, "waiting_for_input", next.id);
+    } else {
+        try statusUpdate(reducer, "running", "");
+    }
+}
+
+fn oldestPendingInteraction(reducer: *Reducer) ?*Interaction {
+    for (reducer.interactions.items) |candidate| {
+        if (!candidate.resolved) return candidate;
+    }
+    return null;
 }
 
 fn parse(arena: std.mem.Allocator, text: []const u8) !std.json.Value {
@@ -1747,6 +1758,39 @@ test "a resolution answers the interaction the caller named, not the oldest" {
     try std.testing.expect(reducer.interactions.items[1].resolved);
 
     try std.testing.expectError(Error.InteractionNotFound, resolveExtension(&reducer, "interaction-nonesuch", "yes"));
+}
+
+test "a resolved interaction reports the oldest still open, not running" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try started(a);
+    try applyExtension(&reducer, try parse(a, confirm_request));
+    try applyExtension(&reducer, try parse(a, text_request));
+    try applyExtension(&reducer, try parse(a, select_request));
+
+    try resolveExtension(&reducer, reducer.interactions.items[1].id, "typed");
+    const parked = lastPayloadOf(&reducer, "run.status.updated") orelse return error.NoStatus;
+    try std.testing.expectEqualStrings("waiting_for_input", textOf(parked, "status"));
+    try std.testing.expectEqualStrings(reducer.interactions.items[0].id, textOf(parked, "pending_user_input_id"));
+
+    try resolveExtension(&reducer, reducer.interactions.items[0].id, "yes");
+    const still = lastPayloadOf(&reducer, "run.status.updated") orelse return error.NoStatus;
+    try std.testing.expectEqualStrings("waiting_for_input", textOf(still, "status"));
+    try std.testing.expectEqualStrings(reducer.interactions.items[2].id, textOf(still, "pending_user_input_id"));
+
+    try resolveExtension(&reducer, reducer.interactions.items[2].id, "option-1");
+    const freed = lastPayloadOf(&reducer, "run.status.updated") orelse return error.NoStatus;
+    try std.testing.expectEqualStrings("running", textOf(freed, "status"));
+    try std.testing.expect(freed.object.get("pending_user_input_id") == null);
+}
+
+fn lastPayloadOf(reducer: *Reducer, kind: []const u8) ?std.json.Value {
+    var found: ?std.json.Value = null;
+    for (reducer.emitted.items) |envelope| {
+        if (std.mem.eql(u8, textOf(envelope, "type"), kind)) found = memberOf(envelope, "payload");
+    }
+    return found;
 }
 
 test "a stop reason that is not a string is refused" {
