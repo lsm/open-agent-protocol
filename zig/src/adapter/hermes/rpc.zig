@@ -240,6 +240,7 @@ const oracle = [_]Expectation{
     .{ .frame = "{}", .verdict = "refused" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"method\":\"\\u00e9\"}", .verdict = "notification", .method = "é" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":{\"n\":1e400}}", .verdict = "refused" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"method\":\"x\",\"params\":{\"n\":1e308}}", .verdict = "notification", .method = "x" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"a\":\"\\ud800\"}}", .verdict = "response", .method = "" },
 };
 
@@ -390,7 +391,7 @@ const substitutes = [_]Refusal{
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"method\":\"m\"} x}", .message = "hermes rpc: invalid JSON-RPC message: trailing JSON value" },
 };
 
-test "three refusals quote Go's own decoder and are named here rather than reproduced" {
+test "a refusal that quotes Go's own decoder is named here rather than reproduced" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     for (substitutes) |expectation| {
