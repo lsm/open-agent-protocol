@@ -339,9 +339,15 @@ connection made to an already-closed session is refused with
 stream rather than ending it: `event: oap-subscribed` is written first when the
 subscription joins a session whose run has already emitted, and `joined_after`
 names the last sequence it missed, so a host that subscribed separately can see
-it did not start at the beginning and resubscribe with a cursor. A subscription
-that missed nothing gets no such line, which is why a compound open never
-carries one — its subscription begins before the session has a run. Sequence numbers are per-run: a
+it did not start at the beginning and resubscribe with a cursor. The signal
+reports a position inside the run the subscription is attached to, and nothing
+about earlier runs: a subscription that begins at the start of its run gets no
+such line, whether that is a compound open's, whose subscription begins before
+the session has a run, or one that arrives between runs, after a second run is
+admitted and before it emits. In that last case the subscriber did miss the
+run before, and is not told so here — those events are another run's sequence
+space, and a signal naming a run the stream is not carrying would be worse than
+silence. Sequence numbers are per-run: a
 connection that happens to span an immediate resubmit (a second run admitted
 inside the settle window of the first) continues into the new run, and
 clients keying on the envelope `run_id` see each run's own sequence space.
@@ -427,7 +433,7 @@ written before the first envelope.
 
 | line | means |
 | --- | --- |
-| `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence it missed |
+| `"event":"oap-subscribed"` | the subscription joined its run already in progress; `joined_after` is the last sequence of that run it missed |
 | `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
 | `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available`/`latest_available` bound what is |

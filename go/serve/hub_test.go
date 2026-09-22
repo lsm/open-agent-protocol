@@ -1110,3 +1110,61 @@ func TestHubConcurrentSessions(t *testing.T) {
 		t.Fatalf("listing has %d entries, want %d", got, sessions)
 	}
 }
+
+func TestSubscribingBetweenRunsReportsNoJoinPoint(t *testing.T) {
+	manual := &manualAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	session, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "between"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "between", Delivery: protocol.DeliveryAuto}); err != nil {
+		t.Fatal(err)
+	}
+	watcher, err := hub.Subscribe(ctx, "between")
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := manual.active(t)
+	native.emit(t, 1)
+	native.emit(t, 2)
+	for i := 0; i < 2; i++ {
+		if _, err := watcher.Next(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	midRun, err := hub.Subscribe(ctx, "between")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, joined, reported := midRun.JoinedAt()
+	if !reported || joined != 2 {
+		t.Fatalf("a subscription joining mid-run reports %s after %d (reported %v), want the run's second sequence", run, joined, reported)
+	}
+	midRun.Close()
+	watcher.Close()
+	native.endRun()
+
+	second, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "between", Delivery: protocol.DeliveryAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	late, err := hub.Subscribe(ctx, "between")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer late.Close()
+	run, joined, reported = late.JoinedAt()
+	if reported {
+		t.Fatalf("a subscription arriving between runs reported joining %s after %d; it begins at the start of %s and the run before it is another sequence space", run, joined, second.RunID)
+	}
+	manual.active(t).endRun()
+}
