@@ -644,6 +644,45 @@ right here and the oracle was not: Zig's parser keeps such a literal as
 asserts the direction the first could not see, that the walk refuses well-formed
 JSON only for a duplicate key.
 
+**The port now refuses the notification params the oracle refuses, leaving the
+event payload itself.** `observeNotification` read members loosely and let the
+reducer's own checks decide, so a `session.status` with no `sessionId`, a
+`subagent.finished` with no `provider`, `agentId` or `stopReason`, and an
+unknown method all reached logic the oracle's codec never lets them reach. The
+shape rules and their texts were taken by running `DecodeNotification` over
+each frame rather than by reading it, and the port asserts the oracle's message
+verbatim.
+
+Two classes needed naming rather than assuming. `DecodeStrict` sets
+`DisallowUnknownFields`, so a param object carrying any member outside its
+pinned struct kills the transport — `{"sessionId":"s","status":"idle","extra":1}`
+is refused, not mapped — and each of the four methods is now closed over its own
+member set, reporting Go's own `json: unknown field "extra"`. A `session.event`
+carrying no `event` member is likewise a codec refusal rather than an unknown
+event downstream, and now reports the oracle's `invalid event envelope`.
+
+What the params gate still does not reach is the event payload's *contents*.
+`Event.Validate` decides the event vocabulary and its per-kind shape, which is
+the same body of rules `validBlocksRaw` needs and is deferred with it below. So
+a `session.event` whose `event` is present but malformed is refused here by the
+reducer, with the reducer's code, rather than by the codec with the oracle's.
+
+Three of this port's own tests were sending `subagent.finished` frames without
+`provider`, `agentId` or `stopReason` — frames the oracle's codec refuses, so
+they were exercising a shape that cannot arrive. They carry complete frames now.
+One more claimed an unknown notification is refused and asserted
+`deepseek_unknown_notification`; the oracle kills the transport instead, because
+its refusal is in the codec and not in the reducer, so that test now asserts
+`deepseek_process_exit` and the method-naming text.
+
+What is not ported: `lastAssistantMessage`. The oracle runs it through
+`validBlocksRaw`, which decides per block kind on a member-exclusivity matrix
+whose Go semantics turn on the difference between an absent member and a null
+one, and that difference is per target type — `json.RawMessage` takes a null as
+four bytes while a slice takes it as nil. `[{"type":"bogus"}]` is admitted here
+and refused there, confirmed by running both. Porting it means porting that
+matrix, not the kind list, and it wants its own change.
+
 The direction of the gap is worth recording because it is the opposite of the
 pi port's. pi carries a hand-written member validator, so its defects have been
 over-strictness: it refused a `toolcall_end` whose nested `toolCall` was `null`,

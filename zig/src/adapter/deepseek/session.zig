@@ -694,8 +694,83 @@ fn openChild(reducer: *Reducer, id: []const u8) !void {
     try reducer.children.append(reducer.arena, child);
 }
 
+fn invalidNotification(reducer: *Reducer, what: []const u8) !void {
+    const message = try std.fmt.allocPrint(reducer.arena, "deepseek native: invalid pinned message: {s}", .{what});
+    try transportFailed(reducer, message);
+}
+
+fn oneOf(allowed: []const []const u8, value: []const u8) bool {
+    for (allowed) |candidate| {
+        if (std.mem.eql(u8, candidate, value)) return true;
+    }
+    return false;
+}
+
+fn carriesText(value: std.json.Value, member: []const u8) bool {
+    return textOf(value, member).len != 0;
+}
+
+fn unknownMember(params: std.json.Value, allowed: []const []const u8) ?[]const u8 {
+    if (params != .object) return null;
+    for (params.object.keys()) |name| {
+        if (!oneOf(allowed, name)) return name;
+    }
+    return null;
+}
+
+const Refusal = union(enum) {
+    said: []const u8,
+    member: []const u8,
+    unknown_method,
+};
+
+fn notificationRefusal(method: []const u8, params: std.json.Value) ?Refusal {
+    if (std.mem.eql(u8, method, "session.event")) {
+        if (unknownMember(params, &.{ "sessionId", "event" })) |name| return .{ .member = name };
+        if (!carriesText(params, "sessionId")) return .{ .said = "session.event sessionId is required" };
+        if (memberOf(params, "event") == null) return .{ .said = "invalid event envelope" };
+        return null;
+    }
+    if (std.mem.eql(u8, method, "session.status")) {
+        if (unknownMember(params, &.{ "sessionId", "status" })) |name| return .{ .member = name };
+        if (!carriesText(params, "sessionId") or !oneOf(&.{ "idle", "running" }, textOf(params, "status"))) return .{ .said = "invalid session.status" };
+        return null;
+    }
+    if (std.mem.eql(u8, method, "subagent.started")) {
+        if (unknownMember(params, &.{ "parentSessionId", "childSessionId" })) |name| return .{ .member = name };
+        if (!carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) return .{ .said = "invalid subagent.started" };
+        return null;
+    }
+    if (std.mem.eql(u8, method, "subagent.finished")) {
+        if (unknownMember(params, &.{ "provider", "agentId", "parentSessionId", "childSessionId", "status", "stopReason", "lastAssistantMessage" })) |name| {
+            return .{ .member = name };
+        }
+        if (!carriesText(params, "provider") or !carriesText(params, "agentId") or !carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) {
+            return .{ .said = "invalid subagent.finished identity" };
+        }
+        if (!oneOf(&.{ "ok", "error" }, textOf(params, "status"))) return .{ .said = "invalid subagent status" };
+        if (!oneOf(&.{ "completed", "aborted", "error", "max-tokens", "refusal" }, textOf(params, "stopReason"))) return .{ .said = "invalid subagent stopReason" };
+        return null;
+    }
+    return .unknown_method;
+}
+
 pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.json.Value) !void {
     if (reducer.closed) return Error.SessionClosed;
+    if (notificationRefusal(method, params)) |refusal| {
+        switch (refusal) {
+            .said => |what| try invalidNotification(reducer, what),
+            .member => |name| {
+                const said = try std.fmt.allocPrint(reducer.arena, "json: unknown field {s}", .{goquote.quote(reducer.arena, name)});
+                try invalidNotification(reducer, said);
+            },
+            .unknown_method => {
+                const quoted = try std.fmt.allocPrint(reducer.arena, "unknown notification {s}", .{goquote.quote(reducer.arena, method)});
+                try invalidNotification(reducer, quoted);
+            },
+        }
+        return;
+    }
     if (!reducer.reserved or reducer.terminal) {
         const own_status = std.mem.eql(u8, method, "session.status") and
             std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id);
@@ -1432,7 +1507,7 @@ test "a running child holds the terminal, and a failed one decides it" {
     try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
     try observeStatus(&reducer, "idle");
     try std.testing.expect(!reducer.terminal);
-    try notify(&reducer, a, "subagent.finished", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"error\"}");
+    try notify(&reducer, a, "subagent.finished", "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"error\",\"stopReason\":\"error\"}");
     try std.testing.expectEqualStrings("deepseek_child_failed", lastFailure(&reducer).?);
 
     var second = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1443,16 +1518,102 @@ test "a running child holds the terminal, and a failed one decides it" {
     try applyEvent(&capped, try parse(b, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
     try applyEvent(&capped, try parse(b, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
     try observeStatus(&capped, "idle");
-    try notify(&capped, b, "subagent.finished", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"ok\",\"stopReason\":\"max-tokens\"}");
+    try notify(&capped, b, "subagent.finished", "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"ok\",\"stopReason\":\"max-tokens\"}");
     try std.testing.expectEqualStrings("deepseek_child_failed", lastFailure(&capped).?);
 }
 
-test "a notification this port does not know is refused" {
+test "every notification shape the oracle refuses is refused here, with its text" {
+    const cases = [_]struct { method: []const u8, params: []const u8, said: []const u8 }{
+        .{
+            .method = "session.event",
+            .params = "{\"sessionId\":\"\",\"event\":{\"type\":\"turn/start\",\"seq\":9,\"data\":{\"turn\":1}}}",
+            .said = "session.event sessionId is required",
+        },
+        .{ .method = "session.status", .params = "{\"sessionId\":\"\",\"status\":\"idle\"}", .said = "invalid session.status" },
+        .{ .method = "session.status", .params = "{\"sessionId\":\"session\",\"status\":\"thinking\"}", .said = "invalid session.status" },
+        .{ .method = "subagent.started", .params = "{\"parentSessionId\":\"\",\"childSessionId\":\"c\"}", .said = "invalid subagent.started" },
+        .{ .method = "subagent.started", .params = "{\"parentSessionId\":\"session\",\"childSessionId\":\"\"}", .said = "invalid subagent.started" },
+        .{
+            .method = "subagent.finished",
+            .params = "{\"provider\":\"\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\"}",
+            .said = "invalid subagent.finished identity",
+        },
+        .{
+            .method = "subagent.finished",
+            .params = "{\"provider\":\"p\",\"agentId\":\"\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\"}",
+            .said = "invalid subagent.finished identity",
+        },
+        .{
+            .method = "subagent.finished",
+            .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"maybe\",\"stopReason\":\"completed\"}",
+            .said = "invalid subagent status",
+        },
+        .{
+            .method = "subagent.finished",
+            .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"invented\"}",
+            .said = "invalid subagent stopReason",
+        },
+        .{
+            .method = "session.event",
+            .params = "{\"sessionId\":\"session\"}",
+            .said = "invalid event envelope",
+        },
+        .{
+            .method = "session.status",
+            .params = "{\"sessionId\":\"session\",\"status\":\"idle\",\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
+        },
+        .{
+            .method = "session.event",
+            .params = "{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/start\",\"seq\":9,\"data\":{\"turn\":1}},\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
+        },
+        .{
+            .method = "subagent.started",
+            .params = "{\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
+        },
+        .{
+            .method = "subagent.finished",
+            .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
+        },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var reducer = try admittedRun(arena.allocator());
+        try notify(&reducer, arena.allocator(), case.method, case.params);
+        try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&reducer) orelse return error.NoRefusal);
+        const expected = try std.fmt.allocPrint(arena.allocator(), "deepseek native: invalid pinned message: {s}", .{case.said});
+        try std.testing.expectEqualStrings(expected, failureMessage(&reducer) orelse return error.NoRefusal);
+    }
+}
+
+test "the notification shapes the oracle admits are admitted here" {
+    const cases = [_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = "session.status", .params = "{\"sessionId\":\"session\",\"status\":\"running\"}" },
+        .{ .method = "subagent.started", .params = "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-9\"}" },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var reducer = try admittedRun(arena.allocator());
+        try notify(&reducer, arena.allocator(), case.method, case.params);
+        try std.testing.expect(lastFailure(&reducer) == null);
+    }
+}
+
+test "a notification this port does not know kills the transport, naming the method" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var reducer = try admittedRun(arena.allocator());
     try notify(&reducer, arena.allocator(), "future.unheard-of", "{\"sessionId\":\"session\"}");
-    try std.testing.expectEqualStrings("deepseek_unknown_notification", lastFailure(&reducer).?);
+    try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&reducer).?);
+    try std.testing.expectEqualStrings(
+        "deepseek native: invalid pinned message: unknown notification \"future.unheard-of\"",
+        failureMessage(&reducer).?,
+    );
 }
 
 test "an attempt outside the open owned step is a grammar defect like any other event" {
@@ -1468,7 +1629,7 @@ test "a child of an earlier run does not decide a later one" {
 
     var reducer = try admittedRun(a);
     try notify(&reducer, a, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\"}");
-    try notify(&reducer, a, "subagent.finished", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"error\"}");
+    try notify(&reducer, a, "subagent.finished", "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c-1\",\"status\":\"error\",\"stopReason\":\"error\"}");
     try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
     try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
     try observeStatus(&reducer, "idle");
