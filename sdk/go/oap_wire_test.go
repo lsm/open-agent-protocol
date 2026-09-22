@@ -148,7 +148,6 @@ func runOAPHost() {
 		case "auth.login.cancel.request":
 			fakeEmit(oapFakeReply(request, "auth.login.cancel.response", map[string]any{"flow_id": "flow-1", "accepted": true}))
 		case "run.cancel.request", "inference.cancel.request":
-			// Cancellation is best effort.
 		default:
 			fakeEmit(oapFakeReply(request, "error.response", map[string]any{"error": map[string]any{"code": "unsupported_feature", "message": request.Type}}))
 		}

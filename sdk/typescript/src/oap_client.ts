@@ -1,4 +1,3 @@
-/** The combined OAP stdio binding used by the SDK's default client. */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { ulid } from "ulid";
@@ -29,7 +28,6 @@ export type OapEnvelope = {
   capability_revision?: string;
 };
 
-/** A capability is absent from the connected OAP endpoint, not silently sent on Makai's wire. */
 export class OapUnsupportedFeatureError extends Error {
   readonly code = "unsupported_feature";
   constructor(readonly feature: string) {
@@ -92,7 +90,6 @@ export class OapStdioTransport {
     this.child = spawn(this.command, this.args, { cwd: this.options.cwd, env: this.options.env, stdio: "pipe" });
     this.child.on("error", (error) => this.fail(error));
     this.child.on("exit", (code, signal) => this.fail(new Error(`OAP process exited (code=${code}, signal=${signal})`)));
-    // Consume diagnostics so a chatty child cannot block on a full stderr pipe.
     this.child.stderr.resume();
     this.reader = createInterface({ input: this.child.stdout });
     this.reader.on("line", (line) => this.receive(line));
@@ -241,7 +238,6 @@ function toOapMessages(messages: ChatMessage[]): Array<{ role: ChatMessage["role
     });
     if (message.role === "tool") {
       if (!message.tool_call_id) throw new MakaiProtocolError("tool message requires tool_call_id on OAP", "invalid_request");
-      // OAP places the correlation id on a content part, never on the message.
       if (Array.isArray(content) && content.length === 1 && content[0]?.type === "tool_result") {
         if (content[0].tool_call_id !== message.tool_call_id) throw new MakaiProtocolError("tool result id disagrees with message tool_call_id", "invalid_request");
         return { role: "tool", content };
@@ -393,7 +389,7 @@ class OapProviderApi implements MakaiProviderApi {
     } finally {
       this.transport.unsubscribe(OAP_PROVIDER_PROFILE, "inference", inferenceId);
       if (!settled) {
-        try { this.transport.send(OAP_PROVIDER_PROFILE, "inference.cancel.request", { reason: "client stopped" }, { inference_id: inferenceId }); } catch { /* transport may already be closed */ }
+        try { this.transport.send(OAP_PROVIDER_PROFILE, "inference.cancel.request", { reason: "client stopped" }, { inference_id: inferenceId }); } catch {}
       }
     }
   }
@@ -445,8 +441,6 @@ class OapAuthApi implements MakaiAuthApi {
   async login(providerId: string, handlers?: AuthFlowHandlers, options?: { signal?: AbortSignal }): Promise<{ status: "success" }> {
     const signal = options?.signal;
     if (signal?.aborted) throw new MakaiAuthError("auth login aborted", { kind: "cancelled" });
-    // Always receive the flow id before honoring an abort, so the new flow can
-    // be cancelled even if the signal fired while start was in flight.
     const started = await this.transport.request(OAP_AGENT_PROFILE, "auth.login.start.request", { provider_id: providerId });
     if (started.type !== "auth.login.start.response" || !str(started.payload.flow_id)) {
       throw new MakaiProtocolError("invalid auth.login.start.response", "malformed_response");
@@ -524,7 +518,7 @@ class OapAuthApi implements MakaiAuthApi {
     } finally {
       this.transport.unsubscribe(OAP_AGENT_PROFILE, "flow", flowId);
       if (!settled) {
-        try { this.transport.send(OAP_AGENT_PROFILE, "auth.login.cancel.request", { flow_id: flowId }); } catch { /* transport may already be closed */ }
+        try { this.transport.send(OAP_AGENT_PROFILE, "auth.login.cancel.request", { flow_id: flowId }); } catch {}
       }
     }
   }
@@ -631,12 +625,11 @@ class OapAgentApi {
     } finally {
       this.transport.unsubscribe(OAP_AGENT_PROFILE, "session", sessionId);
       if (runId && !settled) {
-        try { this.transport.send(OAP_AGENT_PROFILE, "run.cancel.request", { session_id: sessionId, run_id: runId }, { session_id: sessionId, run_id: runId }); } catch { /* transport may already be closed */ }
+        try { this.transport.send(OAP_AGENT_PROFILE, "run.cancel.request", { session_id: sessionId, run_id: runId }, { session_id: sessionId, run_id: runId }); } catch {}
       }
     }
   }
 
-  /** Core mid-session model switch; the session remains open and its next run uses the new model. */
   async switchModel(sessionId: string, modelId: string): Promise<void> {
     const response = await this.transport.request(OAP_AGENT_PROFILE, "session.model.switch.request", { session_id: sessionId, model_id: modelId }, { session_id: sessionId });
     if (response.type !== "session.model.switch.response") throw new MakaiProtocolError(`unexpected ${response.type}`, "malformed_response");

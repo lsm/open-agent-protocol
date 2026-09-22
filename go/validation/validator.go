@@ -151,8 +151,6 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 }
 
 func containsAuthReply(raw []byte) bool {
-	// The raw check also covers syntactically malformed JSON, while decoding the
-	// type catches valid envelopes that spell part of it with JSON escapes.
 	return bytes.Contains(raw, []byte("auth.login.reply.request")) ||
 		declaredType(raw) == string(protocol.TypeAuthLoginReplyRequest)
 }

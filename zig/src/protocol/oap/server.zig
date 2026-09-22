@@ -369,9 +369,6 @@ pub const Server = struct {
             return;
         }
 
-        // Attachment is an optional unit. This endpoint has no configured
-        // external provider-service registry yet, so refuse it at the feature
-        // gate rather than mistaking the request for an unknown core frame.
         if (parsed.value.object.get("type")) |declared_type| {
             if (declared_type == .string and
                 std.mem.eql(u8, declared_type.string, "session.provider.attach.request"))

@@ -59,6 +59,8 @@ interface PayloadSample {
   def: string;
   /** When set, the def under comparison is this property of the named def (the error.response payload is inline). */
   property?: string;
+  /** The oneOf branch to compare against, for union payloads. */
+  variant?: number;
 }
 
 /** Registers a sample whose object literal is compile-time checked against the interface T. */
@@ -68,8 +70,9 @@ function sample<T extends object>(
   defName: string,
   value: T,
   property?: string,
+  variant?: number,
 ): PayloadSample {
-  return { name, sample: value as Record<string, unknown>, file, def: defName, property };
+  return { name, sample: value as Record<string, unknown>, file, def: defName, property, variant };
 }
 
 const samples: PayloadSample[] = [
@@ -160,7 +163,10 @@ const samples: PayloadSample[] = [
   sample<protocol.ModelEventPosition>('ModelEventPosition', 'capabilities.schema.json', 'modelEventPosition', {
     run_id: 'r-1',
     sequence: 2,
-  }),
+  }, undefined, 0),
+  sample<protocol.ModelEventPosition>('ModelEventPosition switch', 'capabilities.schema.json', 'modelEventPosition', {
+    switch_request_id: 'switch-1',
+  }, undefined, 1),
   sample<protocol.ModelsResponse>('ModelsResponse', 'capabilities.schema.json', 'modelsResponse', {
     session_id: 's-1',
     current_model_id: 'provider/model-a',
@@ -604,7 +610,7 @@ const samples: PayloadSample[] = [
 ];
 
 test('every payload interface mirrors its schema def', () => {
-  for (const { name, sample: value, file, def: defName, property } of samples) {
+  for (const { name, sample: value, file, def: defName, property, variant } of samples) {
     const definition = def(file, defName);
     // openResponse/stateResponse/stateUpdated/cancelResponse $ref directly to their target.
     let resolved =
@@ -613,6 +619,11 @@ test('every payload interface mirrors its schema def', () => {
       const properties = resolved.properties as Record<string, unknown>;
       assert.ok(properties, `${file} ${defName} has no properties`);
       resolved = resolveProperty(file, properties[property]);
+    }
+    if (variant !== undefined) {
+      const branches = resolved.oneOf as Record<string, unknown>[] | undefined;
+      assert.ok(branches?.[variant], `${file} ${defName} has no oneOf branch ${variant}`);
+      resolved = branches[variant];
     }
     const required = (resolved.required as string[] | undefined) ?? [];
     const properties = (resolved.properties as Record<string, unknown> | undefined) ?? {};

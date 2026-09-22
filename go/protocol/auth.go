@@ -1,7 +1,5 @@
 package protocol
 
-// Auth flow IDs are independent of session and run IDs. Prompt answers are
-// sensitive and must not be included in trace diagnostics or error messages.
 type AuthFlowID string
 type AuthPromptID string
 

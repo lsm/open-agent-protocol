@@ -65,7 +65,6 @@ func (s *state) authReplyRequest(i, line int, e protocol.Envelope) {
 	if flow.prompt == "" || flow.prompt != p.PromptID {
 		s.addExpected(CodeAuthPromptMismatch, i, line, e, "/payload/prompt_id", "auth reply does not answer the pending prompt", string(flow.prompt), string(p.PromptID))
 	}
-	// Deliberately never include p.Answer in diagnostics.
 }
 
 func (s *state) authReplyResponse(i, line int, e protocol.Envelope) {
@@ -135,7 +134,7 @@ func (s *state) authFlowFor(i, line int, e protocol.Envelope, id protocol.AuthFl
 
 func (s *state) authSequence(i, line int, e protocol.Envelope, flow *authFlow) {
 	if e.Sequence == nil {
-		return // JSON Schema reports the missing sequence.
+		return
 	}
 	if *e.Sequence < flow.next {
 		s.addExpected(CodeSequenceRegression, i, line, e, "/sequence", "auth flow sequence regressed", uintString(flow.next), uintString(*e.Sequence))

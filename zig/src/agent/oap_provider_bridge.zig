@@ -8,9 +8,6 @@ const provider_types = @import("oap_provider_types");
 const provider_envelope = @import("oap_provider_envelope");
 const provider_catalog = @import("oap_provider_catalog");
 
-/// Each inference gets its own transport. The host owns the transport context and
-/// may use the trusted `api_key` argument to arrange an out-of-band credential;
-/// this bridge never places it in an OAP envelope or a log.
 pub const TransportFactory = struct {
     ctx: ?*anyopaque = null,
     open_fn: *const fn (?*anyopaque, std.mem.Allocator, ai_types.Model, ?[]const u8) anyerror!Transport,
@@ -20,8 +17,6 @@ pub const Transport = struct {
     ctx: ?*anyopaque,
     send_line_fn: *const fn (?*anyopaque, []const u8) anyerror!void,
     pump_fn: *const fn (?*anyopaque) anyerror!void,
-    /// Returns one line allocated with the supplied allocator, or null when
-    /// there is no outbound line yet. The bridge frees non-null results.
     recv_line_fn: *const fn (?*anyopaque, std.mem.Allocator) anyerror!?[]u8,
     close_fn: *const fn (?*anyopaque) void,
 
@@ -246,6 +241,41 @@ fn mapStopReason(reason: provider_types.StopReason) ai_types.StopReason {
     };
 }
 
+fn dupeOwnedOrEmpty(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    return if (value.len == 0) "" else try allocator.dupe(u8, value);
+}
+
+fn appendTextContent(allocator: std.mem.Allocator, blocks: *std.ArrayList(ai_types.AssistantContent), value: []const u8) !void {
+    const body = try dupeOwnedOrEmpty(allocator, value);
+    errdefer if (body.len > 0) allocator.free(body);
+    try blocks.append(allocator, .{ .text = .{ .text = body } });
+}
+
+fn appendReasoningContent(allocator: std.mem.Allocator, blocks: *std.ArrayList(ai_types.AssistantContent), value: oap_types.ReasoningPart) !void {
+    const body = try dupeOwnedOrEmpty(allocator, value.text);
+    errdefer if (body.len > 0) allocator.free(body);
+    const carry = if (value.carry) |signature| try allocator.dupe(u8, signature) else null;
+    errdefer if (carry) |signature| allocator.free(signature);
+    try blocks.append(allocator, .{ .thinking = .{ .thinking = body, .thinking_signature = carry } });
+}
+
+fn appendToolCallContent(allocator: std.mem.Allocator, blocks: *std.ArrayList(ai_types.AssistantContent), value: oap_types.ToolCallPart) !void {
+    const id = try allocator.dupe(u8, value.tool_call_id);
+    errdefer allocator.free(id);
+    const name = try allocator.dupe(u8, value.name);
+    errdefer allocator.free(name);
+    const arguments_json = try dupeOwnedOrEmpty(allocator, value.arguments_json);
+    errdefer if (arguments_json.len > 0) allocator.free(arguments_json);
+    const carry = if (value.carry) |signature| try allocator.dupe(u8, signature) else null;
+    errdefer if (carry) |signature| allocator.free(signature);
+    try blocks.append(allocator, .{ .tool_call = .{
+        .id = id,
+        .name = name,
+        .arguments_json = arguments_json,
+        .thought_signature = carry,
+    } });
+}
+
 fn assistantMessage(allocator: std.mem.Allocator, model: ai_types.Model, source: oap_types.Message, reason: ai_types.StopReason, usage: ?oap_types.Usage) !ai_types.AssistantMessage {
     if (source.role != .assistant) return error.UnexpectedTerminalRole;
     var blocks = std.ArrayList(ai_types.AssistantContent).empty;
@@ -254,19 +284,11 @@ fn assistantMessage(allocator: std.mem.Allocator, model: ai_types.Model, source:
         blocks.deinit(allocator);
     }
     switch (source.content) {
-        .text => |value| try blocks.append(allocator, .{ .text = .{ .text = try allocator.dupe(u8, value) } }),
+        .text => |value| try appendTextContent(allocator, &blocks, value),
         .parts => |parts| for (parts) |part| switch (part) {
-            .text => |value| try blocks.append(allocator, .{ .text = .{ .text = try allocator.dupe(u8, value) } }),
-            .reasoning => |value| try blocks.append(allocator, .{ .thinking = .{
-                .thinking = try allocator.dupe(u8, value.text),
-                .thinking_signature = if (value.carry) |carry| try allocator.dupe(u8, carry) else null,
-            } }),
-            .tool_call => |value| try blocks.append(allocator, .{ .tool_call = .{
-                .id = try allocator.dupe(u8, value.tool_call_id),
-                .name = try allocator.dupe(u8, value.name),
-                .arguments_json = try allocator.dupe(u8, value.arguments_json),
-                .thought_signature = if (value.carry) |carry| try allocator.dupe(u8, carry) else null,
-            } }),
+            .text => |value| try appendTextContent(allocator, &blocks, value),
+            .reasoning => |value| try appendReasoningContent(allocator, &blocks, value),
+            .tool_call => |value| try appendToolCallContent(allocator, &blocks, value),
             .tool_result => return error.UnexpectedTerminalContent,
         },
     }
@@ -327,6 +349,18 @@ const StreamState = struct {
         return value;
     }
 
+    fn appendStartedPart(self: *StreamState, value: provider_types.PartStarted) !void {
+        const tool_call_id = if (value.tool_call_id) |id| try self.arena.dupe(u8, id) else null;
+        errdefer if (tool_call_id) |id| self.arena.free(id);
+        const name = if (value.name) |text| try self.arena.dupe(u8, text) else null;
+        errdefer if (name) |text| self.arena.free(text);
+        try self.parts.append(self.arena, .{
+            .kind = value.part_kind,
+            .tool_call_id = tool_call_id,
+            .name = name,
+        });
+    }
+
     fn process(self: *StreamState, env: provider_types.Envelope) !void {
         switch (env.payload) {
             .inference_create_response => |response| {
@@ -360,11 +394,7 @@ const StreamState = struct {
             .inference_started => try push(self.stream, .{ .start = .{ .partial = emptyPartial(self.model) } }),
             .inference_part_started => |value| {
                 if (value.part_index != self.parts.items.len) return error.InvalidPartIndex;
-                try self.parts.append(self.arena, .{
-                    .kind = value.part_kind,
-                    .tool_call_id = if (value.tool_call_id) |id| try self.arena.dupe(u8, id) else null,
-                    .name = if (value.name) |name| try self.arena.dupe(u8, name) else null,
-                });
+                try self.appendStartedPart(value);
                 const partial_message = try self.partial();
                 switch (value.part_kind) {
                     .text => try push(self.stream, .{ .text_start = .{ .content_index = value.part_index, .partial = partial_message } }),
@@ -459,8 +489,6 @@ fn runThreadFallible(ctx: *ThreadContext) !void {
     var cancel_sent = false;
     var last_progress_ms = compat.time.nowMillis();
     while (!state.terminal) {
-        // EventStream.deinit() marks completion before waiting for the detached
-        // producer. Closing the per-inference transport lets its host cancel.
         if (ctx.stream.completed.load(.acquire)) return;
         try transport.pump_fn(transport.ctx);
         var had_line = false;
@@ -692,4 +720,59 @@ test "bridge preserves typed inference admission refusal" {
     try state.process(refused);
     try std.testing.expect(state.terminal);
     try std.testing.expectEqualStrings("credential_expired: sign in again", stream.getError().?);
+}
+
+test "terminal message conversion unwinds every allocation failure" {
+    const model: ai_types.Model = .{
+        .id = "test-model",
+        .name = "test",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "",
+        .reasoning = true,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 128,
+    };
+    const parts = [_]oap_types.ContentPart{
+        .{ .text = "hello" },
+        .{ .reasoning = .{ .text = "thinking", .carry = "reasoning-signature" } },
+        .{ .tool_call = .{
+            .tool_call_id = "call-1",
+            .name = "shell_execute",
+            .arguments_json = "{\"command\":\"ls\"}",
+            .carry = "tool-signature",
+        } },
+    };
+    const message: oap_types.Message = .{ .role = .assistant, .content = .{ .parts = @constCast(&parts) } };
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator, source_model: ai_types.Model, source_message: oap_types.Message) !void {
+            var completed = try assistantMessage(allocator, source_model, source_message, .tool_use, null);
+            defer completed.deinit(allocator);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{ model, message });
+}
+
+test "part-start metadata unwinds every allocation failure" {
+    const Probe = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            var state = StreamState{ .arena = allocator, .model = undefined, .stream = undefined };
+            defer {
+                for (state.parts.items) |part| {
+                    if (part.tool_call_id) |id| allocator.free(id);
+                    if (part.name) |name| allocator.free(name);
+                }
+                state.parts.deinit(allocator);
+            }
+            try state.appendStartedPart(.{
+                .part_index = 0,
+                .part_kind = .tool_call,
+                .tool_call_id = "call-1",
+                .name = "shell_execute",
+            });
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Probe.run, .{});
 }

@@ -1,7 +1,5 @@
 package makai
 
-// OAP 0.1 wire projections for the existing Go convenience services.
-
 import (
 	"context"
 	"encoding/json"
@@ -464,8 +462,6 @@ type oapAgentState struct {
 	settled   bool
 }
 
-// OpenSession creates or reopens an OAP agent-control session. An empty id
-// asks the endpoint to allocate one.
 func (s *AgentService) OpenSession(ctx context.Context, sessionID string) (string, error) {
 	if s.transport == nil || s.transport.legacyWire {
 		return "", &ProtocolError{Code: "unsupported_feature", Message: "session.open requires the OAP agent profile"}
@@ -494,7 +490,6 @@ func (s *AgentService) OpenSession(ctx context.Context, sessionID string) (strin
 	return id, nil
 }
 
-// SessionModel is one model available to an OAP agent session.
 type SessionModel struct {
 	ID          string
 	DisplayName string
@@ -502,8 +497,6 @@ type SessionModel struct {
 	Default     bool
 }
 
-// ListSessionModels returns the agent's session catalog, which may differ
-// from the direct provider catalog exposed by Client.Models.
 func (s *AgentService) ListSessionModels(ctx context.Context, sessionID string) ([]SessionModel, string, error) {
 	if s.transport == nil || s.transport.legacyWire {
 		return nil, "", &ProtocolError{Code: "unsupported_feature", Message: "agent model discovery requires the OAP agent profile"}
@@ -536,23 +529,18 @@ func (s *AgentService) ListSessionModels(ctx context.Context, sessionID string) 
 	return models, p.str("current_model_id"), nil
 }
 
-// ModelSwitchResult reports the persistent default selected for a session.
 type ModelSwitchResult struct {
 	SessionID       string
 	ModelID         string
 	PreviousModelID string
 }
 
-// ProviderAttachment identifies an OAP provider binding without carrying
-// credentials or vendor protocol configuration.
 type ProviderAttachment struct {
 	ID         string
 	ProviderID string
 	ServiceID  string
 }
 
-// AttachProvider makes a provider service available to one live session.
-// The optional OAP extension may return unsupported_feature on this host.
 func (s *AgentService) AttachProvider(ctx context.Context, sessionID string, provider ProviderAttachment) (string, error) {
 	if s.transport == nil || s.transport.legacyWire {
 		return "", &ProtocolError{Code: "unsupported_feature", Message: "provider attachment requires the OAP agent profile"}
@@ -578,8 +566,6 @@ func (s *AgentService) AttachProvider(ctx context.Context, sessionID string, pro
 	return response.payload().str("provider_id"), nil
 }
 
-// SwitchModel changes a session's default for future runs. An already running
-// run keeps the model it was admitted with.
 func (s *AgentService) SwitchModel(ctx context.Context, sessionID, modelRef string) (*ModelSwitchResult, error) {
 	if s.transport == nil || s.transport.legacyWire {
 		return nil, &ProtocolError{Code: "unsupported_feature", Message: "mid-session model switching requires the OAP agent profile"}
@@ -619,7 +605,6 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 	}
 	sessionID := newNanoID()
 	if req.Options != nil && req.Options.SessionID != "" {
-		// OAP session IDs are opaque non-empty strings, not Makai V1 NanoIDs.
 		sessionID = req.Options.SessionID
 	}
 	messages, err := oapMessages(req.Messages)

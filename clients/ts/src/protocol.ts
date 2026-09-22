@@ -21,11 +21,25 @@ export const EnvelopeType = {
   CapabilitiesUpdated: 'capabilities.updated',
   ModelsRequest: 'models.request',
   ModelsResponse: 'models.response',
+  AuthProvidersRequest: 'auth.providers.request',
+  AuthProvidersResponse: 'auth.providers.response',
+  AuthLoginStartRequest: 'auth.login.start.request',
+  AuthLoginStartResponse: 'auth.login.start.response',
+  AuthLoginEvent: 'auth.login.event',
+  AuthLoginReplyRequest: 'auth.login.reply.request',
+  AuthLoginReplyResponse: 'auth.login.reply.response',
+  AuthLoginCancelRequest: 'auth.login.cancel.request',
+  AuthLoginCancelResponse: 'auth.login.cancel.response',
+  AuthLoginCompleted: 'auth.login.completed',
   SessionOpenRequest: 'session.open.request',
   SessionOpenResponse: 'session.open.response',
   SessionStateRequest: 'session.state.request',
   SessionStateResponse: 'session.state.response',
   SessionStateUpdated: 'session.state.updated',
+  SessionModelSwitchRequest: 'session.model.switch.request',
+  SessionModelSwitchResponse: 'session.model.switch.response',
+  SessionProviderAttachRequest: 'session.provider.attach.request',
+  SessionProviderAttachResponse: 'session.provider.attach.response',
   SessionMessageSubmitRequest: 'session.message.submit.request',
   SessionMessageSubmitResponse: 'session.message.submit.response',
   RunCancelRequest: 'run.cancel.request',
@@ -395,13 +409,14 @@ export interface ProviderDescriptor {
   kind?: 'direct' | 'gateway';
   /** The destination the endpoint reaches, so a client can tell a direct provider from a gateway. */
   endpoint?: string;
+  service_id?: string;
+  upstream_provider_id?: string;
 }
 
-/** One run-scoped event, named by its run and sequence because sequences restart per run. */
-export interface ModelEventPosition {
-  run_id: string;
-  sequence: number;
-}
+/** A model-affecting run event or a session model switch. */
+export type ModelEventPosition =
+  | { run_id: string; sequence: number; switch_request_id?: never }
+  | { switch_request_id: string; run_id?: never; sequence?: never };
 
 /** The effective catalog for one session. */
 export interface ModelsResponse {

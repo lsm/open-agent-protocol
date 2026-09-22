@@ -1142,10 +1142,6 @@ fn modelFromCanonicalRef(allocator: std.mem.Allocator, ref: []const u8) !ai_type
     var parsed = model_ref.parseModelRef(allocator, ref) catch return error.InvalidModelRef;
     errdefer parsed.deinit(allocator);
 
-    // The legacy agent host stores an API name in this slot, while OAP model
-    // references name the provider wire. Resolve the latter at the boundary so
-    // the agent still runs against its local model metadata, then sends the
-    // original OAP wire back down through model-provider-core.
     if (oap_provider_types.parseModelRef(ref)) |oap_ref| {
         if (builtInForProvider(oap_ref.provider_id)) |builtin| {
             const mapping = oap_provider_catalog.mapApiToWire(builtin.api) orelse return error.InvalidModelRef;
@@ -7144,9 +7140,6 @@ fn resolveOapStoredCredential(
     return resolved;
 }
 
-/// The agent's provider client speaks exactly the model-provider-core wire.
-/// A transport owns one in-process provider endpoint per inference; the same
-/// adapter can later be replaced with a remote stdio/HTTP transport.
 const AgentOapProviderTransport = struct {
     allocator: std.mem.Allocator,
     registry: api_registry.ApiRegistry,
@@ -8115,8 +8108,6 @@ fn runOapMode(
         if (try writeOapAuthOutbound(stdout, allocator, &auth_adapter)) did_work = true;
         if (serve_provider and try drainOapProviderOutbound(stdout, allocator, &provider_server)) did_work = true;
 
-        // The reader may mark EOF after enqueueing its final line. Drain that
-        // line before leaving, even when this iteration did no other work.
         if (oapInputDrained(stdin_stream) and !did_work and running_inferences.items.len == 0 and !stdio_loop.hasActiveProviderStreams() and
             !stdio_loop.hasActiveAgentRuns() and !stdio_loop.hasActiveAuthFlows() and oap_auth_server.activeFlowCount() == 0)
         {

@@ -17,9 +17,6 @@ const Flow = struct {
     }
 };
 
-/// A local-only adapter for Decision 0029. It deliberately does not serialize
-/// the legacy auth wire: prompt answers are passed directly to the trusted
-/// in-process authentication manager and never enter this adapter's outbox.
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     server: *auth_server.AuthProtocolServer,
@@ -52,14 +49,10 @@ pub const Adapter = struct {
         self.* = undefined;
     }
 
-    /// The revision is borrowed from the owning OAP server descriptor, whose
-    /// lifetime must cover this adapter. A missing request pin is permitted.
     pub fn setCapabilityRevision(self: *Self, revision: []const u8) void {
         self.expected_capability_revision = revision;
     }
 
-    /// Returns true for an auth request addressed to agent-control-core. A
-    /// non-auth frame is left untouched for the regular OAP profile router.
     pub fn handleLine(self: *Self, line: []const u8) !bool {
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch return false;
         defer parsed.deinit();
@@ -105,12 +98,9 @@ pub const Adapter = struct {
             return true;
         }
 
-        // Reconcile a flow that may have completed between a prompt being
-        // delivered and a late reply/cancel arriving from the caller.
         _ = try self.pump();
         self.dispatch(type_value.string, request_id, payload_value.object) catch |err| {
             if (err == error.OutOfMemory) return err;
-            // Never echo a request, parser diagnostic, or prompt answer.
             const code = if (err == error.UnknownAuthFlow) "flow_not_found" else "invalid_request";
             try self.emitError(request_id, code, "authentication request was rejected");
         };
@@ -127,9 +117,6 @@ pub const Adapter = struct {
         return self.outbox.items.len - before;
     }
 
-    /// An EOF closes the trusted answer channel. Cancel every unresolved
-    /// native flow so a worker cannot wait forever for an unanswerable prompt.
-    /// A second call only drains any terminal events still in flight.
     pub fn cancelAllOnDisconnect(self: *Self) !void {
         _ = try self.pump();
         if (self.disconnected) return;
@@ -159,8 +146,6 @@ pub const Adapter = struct {
         _ = try self.pump();
     }
 
-    /// The caller owns the returned OAP line and frees it with this adapter's
-    /// allocator after writing it to the chosen stdio binding.
     pub fn popOutbound(self: *Self) ?[]u8 {
         if (self.outbox.items.len == 0) return null;
         return self.outbox.orderedRemove(0);
@@ -239,7 +224,6 @@ pub const Adapter = struct {
         try self.flows.put(flow_id, .{});
         const flow_text = try auth_types.ulidToString(flow_id, self.allocator);
         defer self.allocator.free(flow_text);
-        // This must be enqueued before any worker-produced event is drained.
         try self.emit("auth.login.start.response", request_id, null, .{ .flow_id = flow_text });
         _ = try self.pump();
     }

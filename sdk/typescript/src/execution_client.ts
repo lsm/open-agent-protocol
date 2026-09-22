@@ -87,7 +87,6 @@ export interface MakaiClient {
 }
 
 export type CreateMakaiClientOptions = CreateMakaiStdioClientOptions & MakaiClientOptions & {
-  /** Explicit compatibility opt-in. OAP is the default and never falls back automatically. */
   wireProtocol?: "oap" | "legacy";
 };
 
