@@ -1,4 +1,4 @@
-"""A configurable fake ``makai --stdio`` host.
+"""A configurable fake ``oapx --stdio`` host.
 
 Plays the role of ``typescript/test/fixtures/*.js``: one script driven by a
 JSON config so the matrix of scenarios does not need a file each.

@@ -95,7 +95,10 @@ async fn the_environment_variable_outranks_the_explicit_option() {
     let from_env = write_fake_binary(temp.path(), &["env", "makai"]);
     let from_option = write_fake_binary(temp.path(), &["option", "makai"]);
     let mut env = clear_env();
-    env[0] = ("OAP_SDK_BINARY_PATH", Some(from_env.to_str().expect("utf8")));
+    env[0] = (
+        "OAP_SDK_BINARY_PATH",
+        Some(from_env.to_str().expect("utf8")),
+    );
     // Leak the path so it can live in the 'static tuple the guard takes.
     let leaked: &'static str = Box::leak(from_env.to_string_lossy().into_owned().into_boxed_str());
     env[0] = ("OAP_SDK_BINARY_PATH", Some(leaked));

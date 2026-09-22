@@ -4,7 +4,7 @@ The ``fake`` fixture spawns ``fixtures/fake_server.py`` with a JSON config, so
 transport, framing, routing, sequencing, error mapping, and cancellation are
 all exercised without a runtime binary or any credentials.
 
-``real_binary`` points at a locally built ``makai`` and skips when
+``real_binary`` points at a locally built ``oapx`` and skips when
 ``OAP_SDK_BINARY_PATH`` is unset, so the suite is green without one but never
 silently claims real-runtime coverage.
 """
@@ -99,7 +99,7 @@ class FakeServerFactory:
 
 @pytest.fixture
 async def fake() -> AsyncIterator[FakeServerFactory]:
-    with tempfile.TemporaryDirectory(prefix="makai-py-tests-") as directory:
+    with tempfile.TemporaryDirectory(prefix="oap-sdk-py-tests-") as directory:
         factory = FakeServerFactory(Path(directory))
         try:
             yield factory
@@ -109,7 +109,7 @@ async def fake() -> AsyncIterator[FakeServerFactory]:
 
 @pytest.fixture(scope="session")
 def real_binary() -> str:
-    """Path to a locally built ``makai``, or skip the test."""
+    """Path to a locally built ``oapx``, or skip the test."""
     path = os.environ.get("OAP_SDK_BINARY_PATH")
     if not path:
         pytest.skip("OAP_SDK_BINARY_PATH is not set; build with `zig build install --prefix ...`")

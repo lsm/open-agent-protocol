@@ -1,4 +1,4 @@
-"""Locating the ``makai`` runtime binary.
+"""Locating the ``oapx`` runtime binary.
 
 Resolution order mirrors ``typescript/src/binary_resolver.ts``:
 
@@ -15,8 +15,8 @@ The TypeScript SDK has one extra step between 2 and 3: an optional
 ``@oap-sdk/cli-<platform>-<arch>`` npm package. **That step is deliberately
 omitted here.** npm's optional-dependency mechanism installs a per-platform
 package automatically; Python's closest equivalent would be publishing
-platform-specific wheels, and no such distribution exists for makai today.
-Inventing a ``makai-cli-<platform>`` import probe would be dead code that also
+platform-specific wheels, and no such distribution exists for oapx today.
+Inventing a ``oap-sdk-cli-<platform>`` import probe would be dead code that also
 silently outranks a local ``zig build`` -- the exact footgun CLAUDE.md warns
 about for the TypeScript resolver. If platform wheels are published later, this
 is the place to add the step; until then, set ``OAP_SDK_BINARY_PATH`` when you

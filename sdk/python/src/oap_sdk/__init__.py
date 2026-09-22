@@ -1,6 +1,6 @@
 """Makai Python SDK.
 
-Starts a ``makai --stdio`` runtime and exposes four namespaces over its
+Starts a ``oapx --stdio`` runtime and exposes four namespaces over its
 newline-delimited JSON protocol:
 
 ``client.auth``
@@ -13,7 +13,7 @@ newline-delimited JSON protocol:
     Direct provider completions (``complete``) and streaming (``stream``).
 ``client.agent``
     The runtime's agent loop (``run`` / ``stream``), with tools executed in
-    your process through :class:`~makai.types.ToolDefinition` callbacks.
+    your process through :class:`~oap_sdk.types.ToolDefinition` callbacks.
 
 Quick start::
 
@@ -21,7 +21,7 @@ Quick start::
     import oap_sdk
 
     async def main() -> None:
-        async with makai.connect() as client:
+        async with oap_sdk.connect() as client:
             model = await client.models.resolve(
                 provider_id="anthropic",
                 api="anthropic-messages",
@@ -30,7 +30,7 @@ Quick start::
             response = await client.provider.complete(
                 model_ref=model.model_ref,
                 messages=[{"role": "user", "content": "Write a haiku about streams."}],
-                options=makai.RunOptions(max_tokens=128),
+                options=oap_sdk.RunOptions(max_tokens=128),
             )
             print(response.text)
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Verifies the `makai` npm tarball ships usable TypeScript declarations (#184).
+ * Verifies the `oap-sdk` npm tarball ships usable TypeScript declarations (#184).
  *
  * Rebuilds the SDK from a clean `dist/` (see the `check:declarations` npm
  * script), then:
@@ -9,7 +9,7 @@
  *      including the `dist/src/index.d.ts` entrypoint declaration.
  *   2. A fresh-install consumer project that installs the packed tarball must
  *      type-check cleanly under strict TS with `skipLibCheck` disabled, and
- *      must be able to `require("makai")` at runtime.
+ *      must be able to `require("oap-sdk")` at runtime.
  *
  * Exits non-zero on the first failed expectation.
  */
@@ -89,7 +89,7 @@ console.log(`tarball ships ${declarationFiles.length} declaration files under di
 // ---------------------------------------------------------------------------
 
 const rootPackage = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-const workDir = mkdtempSync(join(tmpdir(), "makai-declaration-check-"));
+const workDir = mkdtempSync(join(tmpdir(), "oap-sdk-declaration-check-"));
 
 try {
   const packResult = JSON.parse(
@@ -99,7 +99,7 @@ try {
 
   writeFileSync(
     join(workDir, "package.json"),
-    JSON.stringify({ name: "makai-declaration-smoke", version: "0.0.0", private: true }, null, 2)
+    JSON.stringify({ name: "oap-sdk-declaration-smoke", version: "0.0.0", private: true }, null, 2)
   );
 
   console.log("installing packed tarball into fresh consumer project...");
@@ -112,7 +112,7 @@ try {
 
   // Strict TS with skipLibCheck disabled so the shipped .d.ts files themselves
   // are type-checked, not just the consumer code. The @ts-expect-error line
-  // fails the build if `makai` ever resolves to `any` instead of real types.
+  // fails the build if `oap-sdk` ever resolves to `any` instead of real types.
   writeFileSync(
     join(workDir, "tsconfig.json"),
     JSON.stringify(
@@ -149,7 +149,7 @@ try {
   type ProviderStreamEvent,
   type MakaiClient,
   type StdioFrame,
-} from "makai";
+} from "oap-sdk";
 
 const messages: ChatMessage[] = [{ role: "user", content: "hello" }];
 const usage: UsageSummary = { input: 1, output: 2 };
@@ -201,7 +201,7 @@ export {};
   console.log("requiring installed package at runtime...");
   run(
     process.execPath,
-    ["-e", "const makai = require('makai'); if (typeof makai.createMakaiClient !== 'function') { throw new Error('createMakaiClient is not a function'); }"],
+    ["-e", "const makai = require('oap-sdk'); if (typeof makai.createMakaiClient !== 'function') { throw new Error('createMakaiClient is not a function'); }"],
     { cwd: workDir, stdio: "inherit" }
   );
 } finally {

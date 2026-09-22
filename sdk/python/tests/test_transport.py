@@ -282,7 +282,7 @@ async def test_an_oversized_frame_tears_the_transport_down(
     open reports ``connected`` while every later route waits for frames that
     can no longer arrive, with the child still running behind it.
     """
-    monkeypatch.setattr("makai.transport._MAX_LINE_BYTES", 4096)
+    monkeypatch.setattr("oap_sdk.transport._MAX_LINE_BYTES", 4096)
     transport = await fake.transport(
         {"ack": False, "handlers": {"probe": [{"raw": "x" * 16384}]}}
     )

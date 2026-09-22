@@ -176,7 +176,10 @@ async fn concurrent_calls_multiplex_over_one_transport() {
 async fn closing_the_client_reaps_the_child() {
     let pid_file = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("OAP_SDK_FAKE_PID_FILE", pid_file.path().display().to_string())
+        .env(
+            "OAP_SDK_FAKE_PID_FILE",
+            pid_file.path().display().to_string(),
+        )
         .connect()
         .await
         .expect("connects");
@@ -196,7 +199,10 @@ async fn dropping_the_client_terminates_the_child() {
     let pid_file = tempfile::NamedTempFile::new().expect("temp file");
     let pid = {
         let _client = common::fake_builder("ok")
-            .env("OAP_SDK_FAKE_PID_FILE", pid_file.path().display().to_string())
+            .env(
+                "OAP_SDK_FAKE_PID_FILE",
+                pid_file.path().display().to_string(),
+            )
             .connect()
             .await
             .expect("connects");
@@ -221,7 +227,10 @@ async fn dropping_a_client_mid_stream_terminates_the_child() {
     let pid_file = tempfile::NamedTempFile::new().expect("temp file");
     let pid = {
         let client = common::fake_builder("provider_slow")
-            .env("OAP_SDK_FAKE_PID_FILE", pid_file.path().display().to_string())
+            .env(
+                "OAP_SDK_FAKE_PID_FILE",
+                pid_file.path().display().to_string(),
+            )
             .connect()
             .await
             .expect("connects");

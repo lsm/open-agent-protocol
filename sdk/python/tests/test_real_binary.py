@@ -1,4 +1,4 @@
-"""End-to-end coverage against a real ``makai --stdio`` host.
+"""End-to-end coverage against a real ``oapx --stdio`` host.
 
 Every test here needs ``OAP_SDK_BINARY_PATH`` and skips without it, so a green
 ``pytest`` with the variable unset means **zero** real-runtime coverage. Build

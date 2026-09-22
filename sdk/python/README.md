@@ -27,7 +27,7 @@ import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         model = await client.models.resolve(
             provider_id="anthropic",
             api="anthropic-messages",
@@ -46,7 +46,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`async with makai.connect()` closes the client for you. If you would rather hold the client yourself, `client = await makai.connect()` works too — then you own `await client.close()`.
+`async with oap_sdk.connect()` closes the client for you. If you would rather hold the client yourself, `client = await makai.connect()` works too — then you own `await client.close()`.
 
 ## Streaming completions
 
@@ -60,7 +60,7 @@ import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         model = await client.models.resolve(
             provider_id="anthropic",
             api="anthropic-messages",
@@ -141,7 +141,7 @@ tools = [
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         model = await client.models.resolve(
             provider_id="anthropic",
             api="anthropic-messages",
@@ -187,7 +187,7 @@ import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         providers = await client.auth.list_providers()
         anthropic = next((p for p in providers if p.id == "anthropic"), None)
 
@@ -238,7 +238,7 @@ import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         result = await client.models.list(provider_id="anthropic", include_login_required=True)
 
         fetched = datetime.datetime.fromtimestamp(result.fetched_at_ms / 1000, datetime.UTC)
@@ -268,7 +268,7 @@ For scripts and REPLs, `makai.connect_sync()` runs the async client on a private
 ```python
 import oap_sdk
 
-with makai.connect_sync() as client:
+with oap_sdk.connect_sync() as client:
     model = client.models.resolve(provider_id="anthropic", model_id="claude-sonnet-4-5")
     for event in client.provider.stream(
         model_ref=model.model_ref,
