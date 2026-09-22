@@ -562,7 +562,7 @@ func (event Event) Validate() error {
 			return fmt.Errorf("%w: invalid assistant/message", ErrInvalid)
 		}
 	case *ToolCall:
-		if data.Turn <= 0 || data.Step <= 0 || data.CallID == "" || data.Name == "" || !json.Valid([]byte(data.Arguments)) {
+		if data.Turn <= 0 || data.Step <= 0 || data.CallID == "" || data.Name == "" || !carriesIntoATrace(data.Arguments) {
 			return fmt.Errorf("%w: invalid tool/call", ErrInvalid)
 		}
 	case *ToolResult:
@@ -670,7 +670,7 @@ func validBlock(block ContentBlock) bool {
 	case "image":
 		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedRidesImage(block.Offloaded)
 	case "tool-call":
-		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedAbsent(block.Offloaded) && block.ID != "" && block.Name != "" && json.Valid([]byte(block.Arguments))
+		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedAbsent(block.Offloaded) && block.ID != "" && block.Name != "" && carriesIntoATrace(block.Arguments)
 	case "tool-result":
 		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && offloadedAbsent(block.Offloaded) && validBlocks(block.Content)
 	default:
@@ -908,6 +908,9 @@ func DecodeStrict(data []byte, dst any) error {
 		return err
 	}
 	return nil
+}
+func carriesIntoATrace(raw string) bool {
+	return rejectDuplicateKeys([]byte(raw)) == nil
 }
 func rejectDuplicateKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
