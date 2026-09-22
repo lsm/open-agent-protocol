@@ -90,6 +90,7 @@ type runState struct {
 	nativeMessageID native.MessageID
 	parts           []protocol.ContentPart
 	usage           protocol.Usage
+	cost            float64
 	lastFinish      string
 	failure         *native.UnknownErrorBlock
 	openSteps       int
@@ -448,6 +449,7 @@ func (s *session) handleEventLocked(event native.Event) {
 		}
 		run.openSteps--
 		run.lastFinish = data.Finish
+		run.cost += data.Cost
 		run.usage.InputTokens += uint64(data.Tokens.Input)
 		run.usage.OutputTokens += uint64(data.Tokens.Output)
 		run.usage.TotalTokens += uint64(data.Tokens.Input) + uint64(data.Tokens.Output)
@@ -720,10 +722,11 @@ func (s *session) settleRunLocked(run *runState) {
 	finish := run.lastFinish
 	parts := append([]protocol.ContentPart(nil), run.parts...)
 	usage := run.usage
+	reported := reportedCost(run.cost)
 	s.mu.Unlock()
 	s.settleTools(run, cancelRequested)
 	if cancelRequested {
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "OpenCode interrupt confirmed idle"}, true)
+		_ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "OpenCode interrupt confirmed idle"}, true, reported)
 		return
 	}
 	if failure != nil {
@@ -734,13 +737,23 @@ func (s *session) settleRunLocked(run *runState) {
 	if len(parts) > 0 {
 		content = protocol.PartsContent(parts)
 	}
-	_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{
+	_ = s.emitWith(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{
 		SessionID:     s.state.SessionID,
 		RunID:         run.id,
 		FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: content},
 		StopReason:    finish,
 		Usage:         &usage,
-	}, true)
+	}, true, reported)
+}
+
+const costExtension = "io.github.anomalyco.opencode.cost"
+
+func reportedCost(total float64) map[string]json.RawMessage {
+	value, err := json.Marshal(map[string]float64{"total_cost_usd": total})
+	if err != nil {
+		return nil
+	}
+	return map[string]json.RawMessage{costExtension: value}
 }
 
 func (s *session) settleContext() context.Context {
@@ -968,7 +981,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	if reservation {
 
 		<-run.admitted
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion", SettledBy: protocol.SettledByInferred}, true)
+		_ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion", SettledBy: protocol.SettledByInferred}, true, s.reportedRunCost(run))
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
 	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
@@ -1103,7 +1116,13 @@ func (s *session) failRun(run *runState, code, message string) {
 
 func (s *session) failRunSettled(run *runState, code, message, settledBy string) {
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
+	_ = s.emitWith(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true, s.reportedRunCost(run))
+}
+
+func (s *session) reportedRunCost(run *runState) map[string]json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return reportedCost(run.cost)
 }
 
 func (s *session) transportFailed() {
@@ -1199,7 +1218,11 @@ func (s *session) promoteReserved() {
 }
 
 func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, terminal bool) error {
-	_, err := s.emitEnvelope(run, typ, payload, terminal, "")
+	return s.emitWith(run, typ, payload, terminal, nil)
+}
+
+func (s *session) emitWith(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, extensions map[string]json.RawMessage) error {
+	_, err := s.emitEnvelopeWith(run, typ, payload, terminal, "", extensions)
 	if err != nil {
 		return err
 	}
@@ -1211,6 +1234,10 @@ func (s *session) emit(run *runState, typ protocol.EnvelopeType, payload any, te
 }
 
 func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID) (protocol.Envelope, error) {
+	return s.emitEnvelopeWith(run, typ, payload, terminal, inReplyTo, nil)
+}
+
+func (s *session) emitEnvelopeWith(run *runState, typ protocol.EnvelopeType, payload any, terminal bool, inReplyTo protocol.EnvelopeID, extensions map[string]json.RawMessage) (protocol.Envelope, error) {
 	s.emitMu.Lock()
 	defer s.emitMu.Unlock()
 	s.mu.Lock()
@@ -1230,6 +1257,7 @@ func (s *session) emitEnvelope(run *runState, typ protocol.EnvelopeType, payload
 	event.SessionID = s.state.SessionID
 	event.RunID = run.id
 	event.CapabilityRevision = CapabilityRevision
+	event.Extensions = extensions
 	event.InReplyTo = inReplyTo
 	switch typ {
 	case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallProgress,
