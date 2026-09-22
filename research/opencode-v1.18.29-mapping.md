@@ -42,6 +42,24 @@ auth (`opencode` / daemon password). Routes are generated from an effect
 wire contract is machine-checkable at this pin. The TUI, desktop app, SDK
 packages, and plugin runtime are out of scope.
 
+**Two members carry a cost and the reducer read neither.** `SessionInfo.Cost`
+is cumulative across the whole session and spans runs, so it is the wrong figure
+for a run terminal. `StepEndedData.Cost` is the step's own, and the run's cost is
+their sum — which is not a guess: the tokens three lines below accumulate the
+same way, across the same steps, into the same `runState`.
+
+It travels under `extensions` as `io.github.anomalyco.opencode.cost`, on the
+completed and cancelled terminals alike, matching what the Claude adapter does
+with `total_cost_usd`. The prefix is derived from the pinned repository rather
+than from a vendor domain, because the repository is what the provenance record
+establishes and `anomalyco`'s domain is not something this tree knows.
+
+Every `step.ended` in the pinned corpus carries `cost`, and every one carries
+zero, so all thirteen cases now report `"total_cost_usd": 0`. That is the
+harness's own statement and not an absence: unlike Claude's `*float64`, this
+member is always present on the wire, so there is no case where the adapter has
+nothing to say.
+
 ## Wire protocol
 
 REST over HTTP with JSON, plus two SSE streams:
