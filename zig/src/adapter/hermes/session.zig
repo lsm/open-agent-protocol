@@ -877,7 +877,7 @@ fn integerMember(map: std.json.ObjectMap, key: []const u8) i64 {
 const testing = std.testing;
 
 fn feed(reducer: *Reducer, scratch: std.mem.Allocator, line: []const u8) !void {
-    const message = try rpc.parseMessage(scratch, line);
+    const message = try rpc.parseMessage(scratch, line, null);
     const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, line, .{});
     try reducer.observe(message, parsed);
 }
