@@ -1369,3 +1369,63 @@ func TestAToolThatNeverStartedIsStartedOnlyWhereTheValidatorNeedsIt(t *testing.T
 		}
 	}
 }
+
+func TestSettlingChildrenOfATerminalRunClaimsNothing(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: "call-1", Title: "Read", Status: "pending"})
+	waitCursor(t, s, "2")
+	acpPermission(t, s, f, admission, stream, `[{"optionId":"allow","name":"Allow","kind":"allow_once"}]`)
+
+	sess := s.(*session)
+	sess.mu.Lock()
+	run := sess.active
+	sess.mu.Unlock()
+
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	adaptertest.Drain(t, stream, 2*time.Second)
+
+	sess.mu.Lock()
+	if !run.terminal {
+		sess.mu.Unlock()
+		t.Fatal("the run did not terminate")
+	}
+	for _, tool := range sess.tools {
+		if tool.run == run {
+			tool.terminal = false
+		}
+	}
+	gates := 0
+	for _, gate := range sess.interactions {
+		if gate.run == run {
+			gate.resolved = false
+			gates++
+		}
+	}
+	sess.mu.Unlock()
+	if gates == 0 {
+		t.Fatal("the run carried no permission gate to settle")
+	}
+
+	sess.settleChildren(run, true)
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	for _, tool := range sess.tools {
+		if tool.run != run {
+			continue
+		}
+		if tool.terminal {
+			t.Fatal("a tool was marked settled by a settlement nothing emitted")
+		}
+	}
+	for _, gate := range sess.interactions {
+		if gate.run != run {
+			continue
+		}
+		if gate.resolved {
+			t.Fatal("a gate was marked resolved by a settlement nothing emitted")
+		}
+	}
+}
