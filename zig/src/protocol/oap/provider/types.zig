@@ -183,27 +183,7 @@ pub const ErrorAction = enum {
     accept,
 };
 
-pub const ProtocolError = struct {
-    code: ErrorCode,
-    message: []const u8,
-    details: []const DetailEntry = &.{},
-
-    pub fn detail(self: *const ProtocolError, key: []const u8) ?[]const u8 {
-        for (self.details) |entry| {
-            if (std.mem.eql(u8, entry.key, key)) return entry.value;
-        }
-        return null;
-    }
-
-    pub fn deinit(self: *ProtocolError, allocator: std.mem.Allocator) void {
-        allocator.free(self.message);
-        for (self.details) |entry| {
-            allocator.free(entry.key);
-            allocator.free(entry.value);
-        }
-        allocator.free(self.details);
-    }
-};
+pub const ProtocolError = oap_types.ProtocolErrorOf(ErrorCode);
 
 pub const MaxTokensField = enum {
     max_tokens,

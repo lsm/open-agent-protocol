@@ -124,6 +124,7 @@ fn writeProtocolError(w: *json_writer.JsonWriter, err: types.ProtocolError) !voi
     try w.beginObject();
     try w.writeStringField("code", @tagName(err.code));
     try w.writeStringField("message", err.message);
+    if (err.retriable) |retriable| try w.writeBoolField("retriable", retriable);
     if (err.details.len > 0) {
         try w.writeKey("details");
         try w.beginObject();
@@ -623,9 +624,12 @@ fn deserializeProtocolError(value: std.json.Value, allocator: std.mem.Allocator)
     if (value != .object) return DecodeError.InvalidField;
     const obj = value.object;
 
+    try rejectUnknownMembers(obj, &.{ "code", "message", "retriable", "details" });
+
     const code = try oap_envelope.requiredEnum(types.ErrorCode, obj, "code");
     const message = try oap_envelope.requiredOwnedString(obj, "message", allocator);
     errdefer allocator.free(message);
+    const retriable = try oap_envelope.optionalBool(obj, "retriable");
 
     var details = std.ArrayList(oap_types.DetailEntry).empty;
     errdefer {
@@ -652,6 +656,7 @@ fn deserializeProtocolError(value: std.json.Value, allocator: std.mem.Allocator)
     return types.ProtocolError{
         .code = code,
         .message = message,
+        .retriable = retriable,
         .details = try details.toOwnedSlice(allocator),
     };
 }
@@ -1199,6 +1204,34 @@ fn expectRoundTrip(allocator: std.mem.Allocator, env: types.Envelope) !types.Env
     const line = try serializeEnvelope(env, allocator);
     defer allocator.free(line);
     return try deserializeEnvelope(line, allocator);
+}
+
+test "a provider error carries retriable in both directions, as the shared shape does" {
+    const allocator = std.testing.allocator;
+
+    const line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ types.PROFILE ++
+        "\",\"type\":\"provider.credential.grant.response\",\"id\":\"g4\",\"payload\":{\"accepted\":false," ++
+        "\"error\":{\"code\":\"credential_rejected\",\"message\":\"no\",\"retriable\":true}}}";
+
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+
+    const failure = decoded.payload.provider_credential_grant_response.err orelse return error.NoErrorDecoded;
+    try std.testing.expectEqual(@as(?bool, true), failure.retriable);
+
+    const encoded = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"retriable\":true") != null);
+}
+
+test "a member the provider error does not declare is refused rather than dropped" {
+    const allocator = std.testing.allocator;
+
+    const line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ types.PROFILE ++
+        "\",\"type\":\"provider.credential.grant.response\",\"id\":\"g5\",\"payload\":{\"accepted\":false," ++
+        "\"error\":{\"code\":\"credential_rejected\",\"message\":\"no\",\"retryable\":true}}}";
+
+    try std.testing.expectError(DecodeError.UnknownField, deserializeEnvelope(line, allocator));
 }
 
 test "a grant response cannot grant and refuse at the same time" {
