@@ -302,6 +302,10 @@ func (es *EventStream) deliver(envelope protocol.Envelope, f frame) error {
 		return &MalformedFrameError{Detail: fmt.Sprintf("envelope for session %q on the %q stream", envelope.SessionID, es.session.id)}
 	}
 
+	if err := payloadScopeDefect(envelope); err != nil {
+		return err
+	}
+
 	if envelope.Sequence == nil || *envelope.Sequence == 0 {
 		return &MalformedFrameError{Detail: "event envelope carries no sequence"}
 	}

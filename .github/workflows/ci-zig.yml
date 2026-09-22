@@ -148,6 +148,9 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-smoke/bin/oapx
         run: npm run test:sdk
 
+      - name: Type-check the TypeScript README samples
+        run: npm run check:readme
+
       - name: Verify npm package ships TypeScript declarations
         run: npm run check:declarations
 
@@ -295,6 +298,9 @@ jobs:
       - name: Type check (mypy --strict)
         working-directory: sdk/python
         run: python -m mypy
+
+      - name: Type check the README samples
+        run: python scripts/check_readme_samples.py
 
       - name: Build the oapx binary for Python SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-py

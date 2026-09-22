@@ -83,7 +83,7 @@ const Driver = struct {
             const message = try rpc.parseMessage(scratch, wire, null);
             const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, wire, .{});
             if (admissionAnswer(parsed)) |admitted| {
-                if (!admitted) reducer.refuseSubmission();
+                if (admitted) try reducer.admit() else reducer.refuseSubmission();
                 return .handled;
             }
             try reducer.observe(message, parsed);

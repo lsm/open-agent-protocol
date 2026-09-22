@@ -162,9 +162,20 @@ For agent streaming, iterate over `client.agent.stream(request)` and handle `age
 `client.agent.models` is a separate `MakaiModelsApi` instance that delegates to the same underlying model-discovery API over the shared transport as `client.models`. The two instances produce the same results but are not the same object (`client.agent.models !== client.models`).
 
 ```ts
-// Both call the same underlying API and return the same results:
-const { models } = await client.models.list();
-const { models: agentModels } = await client.agent.models.list();
+import { createMakaiClient } from "oap-sdk";
+
+async function main(): Promise<void> {
+  const client = await createMakaiClient();
+
+  // Both call the same underlying API and return the same results:
+  const { models } = await client.models.list();
+  const { models: agentModels } = await client.agent.models.list();
+
+  void models;
+  void agentModels;
+}
+
+void main;
 ```
 
 Prefer `client.models` when you only need model discovery. Use `client.agent.models` when chaining discovery with an agent call on the same namespace.
@@ -385,20 +396,31 @@ Pass an `AbortSignal` as `options.signal` to cancel a `provider` or `agent` call
 ```ts
 import { createMakaiClient, isAbortError } from "oap-sdk";
 
-const controller = new AbortController();
-setTimeout(() => controller.abort(), 5_000);
+async function main(): Promise<void> {
+  const client = await createMakaiClient();
+  const { model } = await client.models.resolve({
+    provider_id: "anthropic",
+    api: "anthropic-messages",
+    model_id: "claude-sonnet-4-5",
+  });
 
-try {
-  for await (const event of client.provider.stream({
-    model_ref: model.model_ref,
-    messages: [{ role: "user", content: "Explain lock-free queues." }],
-    options: { signal: controller.signal },
-  })) {
-    if (event.type === "text_delta") process.stdout.write(event.delta);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 5_000);
+
+  try {
+    for await (const event of client.provider.stream({
+      model_ref: model.model_ref,
+      messages: [{ role: "user", content: "Explain lock-free queues." }],
+      options: { signal: controller.signal },
+    })) {
+      if (event.type === "text_delta") process.stdout.write(event.delta);
+    }
+  } catch (error: unknown) {
+    if (!isAbortError(error)) throw error;
   }
-} catch (error: unknown) {
-  if (!isAbortError(error)) throw error;
 }
+
+void main;
 ```
 
 Leaving the loop early (a `break`, a `return`, or a thrown error inside the body) also cancels the run: the SDK sends a best-effort `abort_request` for `provider.stream` and an `agent_stop` for `agent.stream` when the iterator is disposed before a terminal event.
@@ -494,6 +516,8 @@ import type {
 Most requests share this shape:
 
 ```ts
+import type { ContentPart, TextContentPart } from "oap-sdk";
+
 type ChatMessage = {
   role: "system" | "developer" | "user" | "assistant" | "tool";
   content: string | ContentPart[];
@@ -532,6 +556,13 @@ type RunOptions = {
 Core namespaces:
 
 ```ts
+import type {
+  MakaiAuthApi,
+  MakaiModelsApi,
+  MakaiAgentModelsApi,
+  MakaiProviderApi,
+} from "oap-sdk";
+
 type MakaiClient = {
   auth: MakaiAuthApi;
   models: MakaiModelsApi;

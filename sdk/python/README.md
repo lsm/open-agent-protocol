@@ -101,7 +101,7 @@ If you `break` out of the loop, close the generator so the abort is sent promptl
 ```python
 from contextlib import aclosing
 
-async with aclosing(client.provider.stream(model_ref=..., messages=[...])) as stream:
+async with aclosing(client.provider.stream(model_ref=model_ref, messages=messages)) as stream:
     async for event in stream:
         if isinstance(event, oap_sdk.TextDelta) and "stop" in event.delta:
             break
@@ -387,8 +387,15 @@ from oap_sdk import (
 ```
 
 ```python
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal, NotRequired, TypedDict
+
+from oap_sdk import ContentPart, Role, ToolExecutor
+
+
 class ChatMessage(TypedDict):
-    role: Literal["system", "developer", "user", "assistant", "tool"]
+    role: Role
     content: str | list[ContentPart]
     name: NotRequired[str]
     tool_call_id: NotRequired[str]
