@@ -44,11 +44,23 @@ without a credential, **obliging** a human to do something about it, and
 **completing** the exchange — redeeming a code, receiving a token, storing it,
 refreshing it.
 
-OAP carries the first two. It never carries the third. Completion happens
-between the endpoint and its identity provider over a channel this protocol
-does not describe and cannot observe, which is what makes the credential rule
-enforceable rather than aspirational: there is no OAP envelope a token could
-travel in, because no envelope has a member that would hold one.
+This unit carries the first two and never the third. Completion happens between
+the endpoint and its identity provider over a channel this protocol does not
+describe, and for `+auth` the rule is structural rather than policed: the
+agent-control-core envelope set has no member that would hold a credential, so
+there is nowhere in it for one to travel.
+
+That is a scope claim about this unit, not about the protocol, and the
+difference is worth stating because the protocol has already priced the other
+answer. `model-provider-core` does admit a caller-held credential, and what it
+costs is visible in the schema: two tiers with the strong one mandatory
+wherever it is achievable, a `value` member on
+`provider.credential.grant.request` used only by the `on_envelope` fallback, a
+nonce, an arrival deadline, a per-grant channel for the strong tier, and a
+`credential_in_trace` diagnostic that refuses any trace carrying the value.
+Authentication needs none of it, because a login has something a provider call
+does not: a human, who can finish the exchange somewhere this protocol cannot
+see.
 
 ### A login is an interaction, not a new request pair
 
@@ -176,6 +188,16 @@ Verified against this tree at `68168956`:
 - [Decision 0017](0017-provider-provisioning.md)'s two-stage allowlist was
   verified against `906b2a1` when that record was written; the behaviour this
   record extends is the one recorded there, not a fresh claim.
+- The draft of this record claimed no OAP envelope has a member that could hold
+  a credential. That is false of the profile the record itself edits:
+  `provider.schema.json` declares an optional `value` on
+  `provider.credential.grant.request`, `credentialGrantTier` includes
+  `on_envelope`, and `drafts/model-provider-core.md` says the request carries
+  the value "only in the fallback tier". Enforcement there is
+  `CodeCredentialInTrace` (`go/validation/provider.go:15`), exercised by
+  `go/validation/provider_test.go:147`, which refuses a trace carrying
+  `"value":"sk-abc"`. Caught in review; both statements are now scoped to the
+  agent-control-core envelope set.
 
 ## Consequences
 
@@ -196,8 +218,12 @@ provider corpus moves in the same commit.
 
 ## What this unit does not admit
 
-No token, code, secret or assertion travels in an OAP envelope, including in
-`extensions`. A namespaced extension is still the OAP wire.
+No token, code, secret or assertion travels in an auth envelope, including in
+`extensions` — a namespaced extension is still the OAP wire. That is a rule
+about `+auth` and not a property of OAP: `model-provider-core`'s `on_envelope`
+grant tier deliberately carries a credential value, under the tier discipline
+and the `credential_in_trace` diagnostic above. This unit declines that tier
+rather than reinventing it.
 
 No credential storage vocabulary. Where a token lives, how it is encrypted and
 when it is evicted are endpoint concerns, and an endpoint that exposed them
