@@ -78,34 +78,6 @@ pub fn testStep(comptime format: []const u8, args: anytype) void {
     std.debug.print("  \x1b[2m" ++ format ++ "\x1b[0m\n", args);
 }
 
-pub fn skipTest(allocator: std.mem.Allocator, provider_name: []const u8) error{SkipZigTest}!void {
-    const should_skip: bool = if (std.ascii.eqlIgnoreCase(provider_name, "anthropic"))
-        shouldSkipAnthropic(allocator)
-    else if (std.ascii.eqlIgnoreCase(provider_name, "github_copilot"))
-        shouldSkipGitHubCopilot(allocator)
-    else
-        shouldSkipProvider(allocator, provider_name);
-
-    if (!should_skip) return;
-
-    if (std.ascii.eqlIgnoreCase(provider_name, "openai")) {
-        std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for '{s}' - no credentials available (set OPENAI_API_KEY)\n", .{provider_name});
-    } else if (std.ascii.eqlIgnoreCase(provider_name, "google")) {
-        std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for '{s}' - no credentials available (set GOOGLE_API_KEY)\n", .{provider_name});
-    } else if (std.ascii.eqlIgnoreCase(provider_name, "anthropic")) {
-        std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for '{s}' - no credentials available (set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY)\n", .{provider_name});
-    } else {
-        std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for '{s}' - no credentials available\n", .{provider_name});
-    }
-    return error.SkipZigTest;
-}
-
-pub fn skipAnthropicTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
-    if (!shouldSkipAnthropic(allocator)) return;
-    std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for 'anthropic' - no credentials available (set ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY)\n", .{});
-    return error.SkipZigTest;
-}
-
 pub fn skipGitHubCopilotTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
     if (!shouldSkipGitHubCopilot(allocator)) return;
     std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for 'github_copilot' - no credentials available (set GH_COPILOT_REFRESH/GH_COPILOT_ACCESS or COPILOT_TOKEN)\n", .{});
@@ -128,14 +100,6 @@ pub fn skipAzureTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
 pub fn skipGoogleTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
     if (!shouldSkipProvider(allocator, "google")) return;
     std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for 'google' - no credentials available (set GOOGLE_API_KEY)\n", .{});
-    return error.SkipZigTest;
-}
-
-pub fn skipBedrockTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
-    if (compat.getEnvVarOwned(allocator, "AWS_ACCESS_KEY_ID")) |_| {
-        return;
-    } else |_| {}
-    std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for 'bedrock' - no credentials available (set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)\n", .{});
     return error.SkipZigTest;
 }
 
@@ -170,12 +134,6 @@ pub fn getOllamaCredentials(allocator: std.mem.Allocator) !?OllamaCredentials {
         .api_key = api_key,
         .base_url = base_url,
     };
-}
-
-pub fn skipAnthropicOAuthTest(allocator: std.mem.Allocator) error{SkipZigTest}!void {
-    if (!shouldSkipAnthropicOAuth(allocator)) return;
-    std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: E2E test for 'anthropic_oauth' - no OAuth credentials available (set ANTHROPIC_AUTH_TOKEN)\n", .{});
-    return error.SkipZigTest;
 }
 
 pub const AnthropicCredential = struct {
@@ -559,21 +517,6 @@ fn getAnthropicOAuthCredentialsFromAuthFile(allocator: std.mem.Allocator) !?Anth
         .refresh_token = refresh_token,
         .access_token = try allocator.dupe(u8, oauth_token_val.string),
     };
-}
-
-pub fn shouldSkipAnthropicOAuth(allocator: std.mem.Allocator) bool {
-    if (compat.getEnvVarOwned(allocator, "ANTHROPIC_AUTH_TOKEN")) |token| {
-        allocator.free(token);
-        return false;
-    } else |_| {}
-
-    const creds = getAnthropicOAuthCredentials(allocator) catch return true;
-    if (creds) |c| {
-        var mutable_creds = c;
-        mutable_creds.deinit(allocator);
-        return false;
-    }
-    return true;
 }
 
 pub const FreshAnthropicCredentials = struct {
