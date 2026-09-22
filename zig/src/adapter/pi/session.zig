@@ -134,18 +134,41 @@ const assistant_members = [_][]const u8{
 
 const assistant_required = [_][]const u8{ "content", "api", "provider", "model", "usage", "stopReason", "timestamp" };
 
-const EventShape = struct { name: []const u8, members: []const []const u8 };
+const Need = enum { text, boolean, array, carried };
+
+const Member = struct { name: []const u8, need: Need = .carried };
+
+const EventShape = struct { name: []const u8, members: []const Member };
+
+const kind_member = Member{ .name = "type", .need = .text };
 
 const event_shapes = [_]EventShape{
-    .{ .name = "agent_start", .members = &.{"type"} },
-    .{ .name = "agent_settled", .members = &.{"type"} },
-    .{ .name = "message_update", .members = &.{ "type", "usage", "assistantMessageEvent" } },
-    .{ .name = "message_end", .members = &.{ "type", "message" } },
-    .{ .name = "agent_end", .members = &.{ "type", "messages", "willRetry" } },
-    .{ .name = "tool_execution_start", .members = &.{ "type", "toolCallId", "toolName", "args" } },
-    .{ .name = "tool_execution_update", .members = &.{ "type", "toolCallId", "toolName", "args", "partialResult" } },
-    .{ .name = "tool_execution_end", .members = &.{ "type", "toolCallId", "toolName", "result", "isError" } },
+    .{ .name = "agent_start", .members = &.{kind_member} },
+    .{ .name = "agent_settled", .members = &.{kind_member} },
+    .{ .name = "message_update", .members = &.{ kind_member, .{ .name = "usage" }, .{ .name = "assistantMessageEvent" } } },
+    .{ .name = "message_end", .members = &.{ kind_member, .{ .name = "message" } } },
+    .{ .name = "agent_end", .members = &.{ kind_member, .{ .name = "messages", .need = .array }, .{ .name = "willRetry", .need = .boolean } } },
+    .{ .name = "tool_execution_start", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" } } },
+    .{ .name = "tool_execution_update", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" }, .{ .name = "partialResult" } } },
+    .{ .name = "tool_execution_end", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "result" }, .{ .name = "isError", .need = .boolean } } },
 };
+
+fn memberNamed(members: []const Member, name: []const u8) ?Member {
+    for (members) |member| {
+        if (std.mem.eql(u8, member.name, name)) return member;
+    }
+    return null;
+}
+
+fn satisfies(need: Need, value: std.json.Value) bool {
+    if (value == .null) return true;
+    return switch (need) {
+        .carried => true,
+        .text => value == .string,
+        .boolean => value == .bool,
+        .array => value == .array,
+    };
+}
 
 fn eventShape(name: []const u8) ?EventShape {
     for (&event_shapes) |shape| {
@@ -161,8 +184,15 @@ fn decodeEvent(reducer: *Reducer, event: std.json.Value, kind: []const u8) !bool
         return false;
     }
     for (event.object.keys()) |name| {
-        if (!listed(shape.members, name)) {
+        if (memberNamed(shape.members, name) == null) {
             try failRun(reducer, "pi_invalid_event", "event carried a member outside its pinned shape");
+            return false;
+        }
+    }
+    for (shape.members) |member| {
+        const value = event.object.get(member.name) orelse continue;
+        if (!satisfies(member.need, value)) {
+            try failRun(reducer, "pi_invalid_event", "event member is not the type its pinned shape gives it");
             return false;
         }
     }
@@ -463,16 +493,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         return;
     }
     if (std.mem.eql(u8, kind, "agent_end")) {
-        const listed_messages = memberOf(event, "messages") orelse std.json.Value{ .null = {} };
-        if (listed_messages != .array and listed_messages != .null) {
-            try failRun(reducer, "pi_invalid_event", "agent_end carried a messages member that is not a list");
-            return;
-        }
         if (memberOf(event, "willRetry")) |retry| {
-            if (retry != .bool and retry != .null) {
-                try failRun(reducer, "pi_invalid_event", "agent_end carried a willRetry that is not a boolean");
-                return;
-            }
             if (retry == .bool and retry.bool) {
                 reducer.candidate = null;
                 reducer.candidate_present = false;
@@ -480,7 +501,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
                 return;
             }
         }
-        reducer.candidate = listed_messages;
+        reducer.candidate = memberOf(event, "messages") orelse std.json.Value{ .null = {} };
         reducer.candidate_present = true;
         return;
     }
@@ -629,16 +650,8 @@ fn toolPayload(reducer: *Reducer, tool: *ToolState, carry_arguments: bool, carry
     return .{ .object = payload.* };
 }
 
-fn toolIdentifiers(reducer: *Reducer, event: std.json.Value) !bool {
-    typedStrings(event, &.{ "toolCallId", "toolName" }) catch {
-        try failRun(reducer, "pi_invalid_event", "tool event carried an identifier that is not a string");
-        return false;
-    };
-    return true;
-}
 
 fn startTool(reducer: *Reducer, event: std.json.Value) !void {
-    if (!try toolIdentifiers(reducer, event)) return;
     const native_id = textOf(event, "toolCallId");
     const name = textOf(event, "toolName");
     const args = memberOf(event, "args") orelse {
@@ -666,7 +679,6 @@ fn startTool(reducer: *Reducer, event: std.json.Value) !void {
 }
 
 fn updateTool(reducer: *Reducer, event: std.json.Value) !void {
-    if (!try toolIdentifiers(reducer, event)) return;
     const native_id = textOf(event, "toolCallId");
     const tool = findTool(reducer, native_id) orelse {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "tool update without matching active start");
@@ -685,7 +697,6 @@ fn updateTool(reducer: *Reducer, event: std.json.Value) !void {
 }
 
 fn endTool(reducer: *Reducer, event: std.json.Value) !void {
-    if (!try toolIdentifiers(reducer, event)) return;
     const native_id = textOf(event, "toolCallId");
     const tool = findTool(reducer, native_id) orelse {
         try failRun(reducer, "pi_invalid_tool_lifecycle", "tool end without matching active start");
@@ -700,10 +711,6 @@ fn endTool(reducer: *Reducer, event: std.json.Value) !void {
         return;
     }
     const carried = memberOf(event, "isError") orelse std.json.Value{ .null = {} };
-    if (carried != .bool and carried != .null) {
-        try failRun(reducer, "pi_invalid_event", "tool end carried a non-boolean isError");
-        return;
-    }
     tool.result = memberOf(event, "result");
     tool.terminal = true;
     const failed = carried == .bool and carried.bool;
@@ -2018,4 +2025,36 @@ test "a final message tool call block still requires the three members a nested 
         try apply(&reducer, try parse(a, line));
         try std.testing.expectEqualStrings("pi_invalid_message_end", lastFailure(&reducer) orelse return error.NoRefusal);
     }
+}
+
+fn expectShapeAccepts(script: []const []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try started(arena.allocator());
+    for (script) |line| {
+        try apply(&reducer, try parse(arena.allocator(), line));
+    }
+    const raised = lastFailure(&reducer) orelse return;
+    if (!std.mem.eql(u8, raised, "pi_invalid_event")) return;
+    std.debug.print("\nthe shape refused it\n", .{});
+    return error.ShapeRefusedTheFrame;
+}
+
+test "an event member of the wrong type is refused wherever the shape names a type" {
+    try expectRefusal(&.{"{\"type\":\"tool_execution_end\",\"toolCallId\":7,\"toolName\":\"n\",\"result\":{},\"isError\":false}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"tool_execution_end\",\"toolCallId\":\"c\",\"toolName\":[],\"result\":{},\"isError\":false}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"tool_execution_end\",\"toolCallId\":\"c\",\"toolName\":\"n\",\"result\":{},\"isError\":\"yes\"}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"agent_end\",\"messages\":\"x\",\"willRetry\":false}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"agent_end\",\"messages\":[],\"willRetry\":1}"}, "pi_invalid_event");
+    try expectRefusal(&.{"{\"type\":\"tool_execution_start\",\"toolCallId\":\"c\",\"toolName\":false,\"args\":{}}"}, "pi_invalid_event");
+}
+
+test "a null passes every typed member, the way encoding/json leaves the zero value in place" {
+    try expectShapeAccepts(&.{"{\"type\":\"agent_end\",\"messages\":null,\"willRetry\":null}"});
+    try expectShapeAccepts(&.{"{\"type\":\"tool_execution_start\",\"toolCallId\":null,\"toolName\":null,\"args\":{}}"});
+}
+
+test "a member the shape carries without a type passes whatever it carries" {
+    try expectShapeAccepts(&.{"{\"type\":\"message_update\",\"usage\":7,\"assistantMessageEvent\":\"x\"}"});
+    try expectShapeAccepts(&.{"{\"type\":\"tool_execution_end\",\"toolCallId\":\"c\",\"toolName\":\"n\",\"result\":7,\"isError\":false}"});
 }
