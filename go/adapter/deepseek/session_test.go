@@ -1038,3 +1038,135 @@ func TestArgumentsTravelVerbatimSoATraceWithDuplicateKeysIsRefused(t *testing.T)
 	events[requested].Payload = json.RawMessage(bytes.Replace(events[requested].Payload, []byte(carried), []byte(duplicateKeyArguments), 1))
 	adaptertest.AssertProtocolInvalidWithSubmit(t, request(), admitted, descriptor, events, "duplicate_key")
 }
+
+func descriptorFromProbe(t *testing.T) base.Descriptor {
+	t.Helper()
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return newFake(), "deepseek-chat", nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor
+}
+
+func turnEndingWithAnOpenTool(t *testing.T, endKind string) []protocol.Envelope {
+	t.Helper()
+	descriptor := descriptorFromProbe(t)
+	session, client := openTest(t)
+	admitted, stream := admission(t, session, client, "receipt")
+	client.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
+	client.ev(6, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
+	client.ev(7, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+	client.ev(8, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"` + endKind + `"}`)})
+	client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	events := drain(t, stream)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+	return events
+}
+
+func assertToolSettledBeforeTerminal(t *testing.T, events []protocol.Envelope, terminal protocol.EnvelopeType) {
+	t.Helper()
+	settled, ended := -1, -1
+	for i, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeActionCallFailed:
+			if settled >= 0 {
+				t.Fatal("the open tool was settled twice")
+			}
+			settled = i
+			var payload protocol.ActionCallPayload
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Error == nil || payload.Error.Code != "incomplete_tool" {
+				t.Fatalf("settlement error = %+v", payload.Error)
+			}
+			if payload.Error.Message != "turn settled with an unfinished deepseek tool" {
+				t.Fatalf("settlement message = %q", payload.Error.Message)
+			}
+		case terminal:
+			ended = i
+		}
+	}
+	if settled < 0 {
+		t.Fatal("the open tool was never settled")
+	}
+	if ended < 0 {
+		t.Fatalf("the run never reached %s", terminal)
+	}
+	if settled > ended {
+		t.Fatalf("the tool settled after the terminal: settled=%d terminal=%d", settled, ended)
+	}
+}
+
+func TestACompletedTurnSettlesItsOpenToolBeforeItsTerminal(t *testing.T) {
+	assertToolSettledBeforeTerminal(t, turnEndingWithAnOpenTool(t, "completed"), protocol.TypeRunCompleted)
+}
+
+func TestAFailedTurnSettlesItsOpenToolBeforeItsTerminal(t *testing.T) {
+	assertToolSettledBeforeTerminal(t, turnEndingWithAnOpenTool(t, "aborted"), protocol.TypeRunFailed)
+}
+
+func TestAToolThatFinishedIsNotSettledAgainAtTheTerminal(t *testing.T) {
+	descriptor := descriptorFromProbe(t)
+	session, client := openTest(t)
+	admitted, stream := admission(t, session, client, "receipt")
+	client.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
+	client.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.UserMessage{ID: "m", Role: "user", Source: native.MessageSource{Kind: "tool", CallID: "call-1"}, Content: []native.ContentBlock{{Type: "tool-result", ToolCallID: "call-1", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}}}}})
+	client.ev(7, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
+	client.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+	client.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	events := drain(t, stream)
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeActionCallFailed {
+			t.Fatal("a tool that reported its result was settled as unfinished")
+		}
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+}
+
+func TestARunFailedOutsideSettlementStillSettlesItsOpenTool(t *testing.T) {
+	descriptor := descriptorFromProbe(t)
+	session, client := openTest(t)
+	admitted, stream := admission(t, session, client, "receipt")
+	call := native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`}
+	client.ev(5, "tool/call", call)
+	client.ev(6, "tool/call", call)
+	events := drain(t, stream)
+	assertFailedWith(t, events, "deepseek_tool_lifecycle", "duplicate tool call")
+	assertToolSettledBeforeTerminal(t, events, protocol.TypeRunFailed)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+}
+
+func TestSettlingARunsToolsLeavesAnotherRunsAlone(t *testing.T) {
+	reducer := openTestSession(t)
+	mine := &runState{id: "run-mine", started: true}
+	theirs := &runState{id: "run-theirs", started: true}
+	ours := reducer.openToolFor(mine, "a")
+	stranger := reducer.openToolFor(theirs, "b")
+
+	reducer.settleOpenTools(mine)
+
+	if !ours.terminal {
+		t.Fatal("the run's own open tool was not settled")
+	}
+	if stranger.terminal {
+		t.Fatal("a tool belonging to another run was settled")
+	}
+}
+
+func openTestSession(t *testing.T) *Session {
+	t.Helper()
+	session, _ := openTest(t)
+	return session.(*Session)
+}
+
+func (s *Session) openToolFor(run *runState, nativeID string) *toolState {
+	tool := &toolState{nativeID: nativeID, id: protocol.ToolCallID("tool-call-" + nativeID), run: run, name: "read"}
+	s.tools[toolKey(run, nativeID)] = tool
+	return tool
+}

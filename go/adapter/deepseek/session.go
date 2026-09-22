@@ -727,6 +727,7 @@ func (s *Session) trySettle(run *runState) {
 			failedChild = failedChild || c.failed
 		}
 	}
+	s.settleOpenTools(run)
 	if failedChild {
 		s.failRun(run, "deepseek_child_failed", "subagent failed")
 		return
@@ -885,7 +886,21 @@ func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: %s", ErrNativeProtocol, msg))
 		return
 	}
+	s.settleOpenTools(run)
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}, SettledBy: settledBy}, true)
+}
+
+func (s *Session) settleOpenTools(run *runState) {
+	for _, t := range s.tools {
+		if t.run != run || t.terminal {
+			continue
+		}
+		t.terminal = true
+		p := s.toolPayload(t)
+		p.ArgumentsJSON = nil
+		p.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "turn settled with an unfinished deepseek tool"}
+		_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, p, false, t.started)
+	}
 }
 func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 	s.mu.Lock()
