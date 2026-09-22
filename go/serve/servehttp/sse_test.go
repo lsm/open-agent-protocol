@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
@@ -365,4 +367,86 @@ func TestSSEOnClosedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireErrorResponse(t, cursor.StatusCode, http.StatusConflict, cursorEnvelope, "session_closed")
+}
+
+func getSSE(t *testing.T, server *httptest.Server, path string) (*http.Response, []byte) {
+	t.Helper()
+	response, err := server.Client().Get(server.URL + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response, body
+}
+
+func driveOneRun(t *testing.T, server *httptest.Server, sessionID, prefix string, afterAnEarlierRun bool) protocol.RunID {
+	t.Helper()
+	stream := connectSSE(t, server, "/sessions/"+sessionID+"/events", "")
+	if afterAnEarlierRun {
+		stream.signal(sseEventSubscribed)
+	}
+	_, admission := submitRun(t, server, sessionID, prefix+"-submit")
+	initial := stream.drainUntil(protocol.TypeActionPermissionRequested)
+	resolvePermission(t, server, permissionRequestAt(t, initial), prefix+"-permission")
+	middle := stream.drainUntil(protocol.TypeUserInputRequested)
+	resolveInput(t, server, inputRequestAt(t, middle), prefix+"-input")
+	stream.drainUntil(protocol.TypeRunCompleted)
+	stream.expectEnd()
+	return admission.RunID
+}
+
+func TestSSECursorFollowsTheRunItNames(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "sse-two-runs")
+	first := driveOneRun(t, server, "sse-two-runs", "one", false)
+	second := driveOneRun(t, server, "sse-two-runs", "two", true)
+	if first == second {
+		t.Fatal("the second submission reused the first run id")
+	}
+
+	named := connectSSE(t, server, "/sessions/sse-two-runs/events?after=1&run_id="+string(first), "")
+	if envelope := named.envelope(); envelope.RunID != first {
+		t.Fatalf("replay began on run %q, want the named run %q", envelope.RunID, first)
+	}
+	named.drainUntil(protocol.TypeRunCompleted)
+	named.expectEnd()
+
+	unnamed := connectSSE(t, server, "/sessions/sse-two-runs/events?after=1", "")
+	if envelope := unnamed.envelope(); envelope.RunID != second {
+		t.Fatalf("an unqualified cursor replayed run %q, want the current run %q", envelope.RunID, second)
+	}
+	unnamed.drainUntil(protocol.TypeRunCompleted)
+	unnamed.expectEnd()
+}
+
+func TestSSERefusesARunWithoutACursor(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "sse-bare-run")
+	runID := driveOneRun(t, server, "sse-bare-run", "bare", false)
+
+	response, body := getSSE(t, server, "/sessions/sse-bare-run/events?run_id="+string(runID))
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("run_id without a cursor answered %d: %s", response.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "invalid_cursor") {
+		t.Fatalf("refusal body %s, want invalid_cursor", body)
+	}
+}
+
+func TestSSERefusesARunTheSessionNeverHad(t *testing.T) {
+	server := newMemoryServer(t, 0)
+	openSession(t, server, "memory", "sse-ghost-run")
+	driveOneRun(t, server, "sse-ghost-run", "ghost", false)
+
+	response, body := getSSE(t, server, "/sessions/sse-ghost-run/events?after=1&run_id=run-never")
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("a cursor naming an unknown run answered %d: %s", response.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "run_not_found") {
+		t.Fatalf("refusal body %s, want run_not_found", body)
+	}
 }

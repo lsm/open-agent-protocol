@@ -524,3 +524,85 @@ func readSSESignal(t *testing.T, body io.Reader) subscribedLine {
 		}
 	}
 }
+
+func TestRunQualifiedCursorMatchesHTTP(t *testing.T) {
+	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
+	var wantRun protocol.RunID
+	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
+		entry := openSessionEntry(t, hub, "qualified")
+		first, _ := runToCompletion(t, hub, entry)
+		_, _ = runToCompletion(t, hub, entry)
+		if wantRun == "" {
+			wantRun = first
+			continue
+		}
+		if first != wantRun {
+			t.Fatalf("the two hubs named their first run %q and %q", wantRun, first)
+		}
+	}
+
+	server, err := servehttp.New(httpHub, servehttp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpFrontend := httptest.NewServer(server.Handler())
+	defer httpFrontend.Close()
+
+	response, err := http.Get(httpFrontend.URL + "/sessions/qualified/events?after=1&run_id=" + string(wantRun))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("http answered %d", response.StatusCode)
+	}
+	overHTTP := readSSEEnvelope(t, response.Body)
+
+	f := startFrontend(t, stdioHub, Options{})
+	f.send(fmt.Sprintf(`{"id":6,"op":"events","session_id":"qualified","run_id":%q,"after":1}`, wantRun))
+	if ack := f.expectResponse(6); !ack.OK {
+		t.Fatalf("events failed: %+v", ack.Error)
+	}
+	var line signalLine
+	if err := json.Unmarshal([]byte(f.line()), &line); err != nil {
+		t.Fatal(err)
+	}
+	var overStdio protocol.Envelope
+	if err := json.Unmarshal(line.Envelope, &overStdio); err != nil {
+		t.Fatal(err)
+	}
+
+	if overHTTP.RunID != overStdio.RunID || overHTTP.RunID != wantRun {
+		t.Fatalf("http replayed %q, stdio %q, want %q", overHTTP.RunID, overStdio.RunID, wantRun)
+	}
+	if overHTTP.Type != overStdio.Type {
+		t.Fatalf("http replayed %s first, stdio %s", overHTTP.Type, overStdio.Type)
+	}
+	if overHTTP.Sequence == nil || overStdio.Sequence == nil || *overHTTP.Sequence != *overStdio.Sequence {
+		t.Fatalf("http resumed at %v, stdio at %v", overHTTP.Sequence, overStdio.Sequence)
+	}
+	f.drainSubscription(6)
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readSSEEnvelope(t *testing.T, body io.Reader) protocol.Envelope {
+	t.Helper()
+	reader := bufio.NewReader(body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("the SSE stream ended before an envelope: %v", err)
+		}
+		line = strings.TrimSuffix(line, "\n")
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		envelope, err := protocol.ParseEnvelope([]byte(strings.TrimPrefix(line, "data: ")))
+		if err != nil {
+			t.Fatalf("parse sse envelope: %v", err)
+		}
+		return envelope
+	}
+}

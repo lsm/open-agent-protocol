@@ -351,6 +351,12 @@ silence. Sequence numbers are per-run: a
 connection that happens to span an immediate resubmit (a second run admitted
 inside the settle window of the first) continues into the new run, and
 clients keying on the envelope `run_id` see each run's own sequence space.
+Because of that, a cursor without a run is ambiguous, and `run_id` says which
+one it was cut from: `?after=7&run_id=run-1` replays run-1 whether or not it is
+still the current run, and `?after=7` alone resolves onto whichever run is
+current, which is right until a second one is admitted. A `run_id` the session
+never had is `404 run_not_found`; one sent without a cursor is
+`400 invalid_cursor`, because a live subscription is always the current run.
 
 On SIGINT/SIGTERM the daemon stops accepting, terminates in-flight streams,
 and closes every session inside a bounded window — active runs that refuse
@@ -399,7 +405,7 @@ int64 and send them as integers.
 | `resolve` | `session_id`, `request` | the matching resolve response |
 | `cancel` | `session_id`, `request` | `run.cancel.response` |
 | `close` | `session_id` | `null` |
-| `events` | `session_id`, `after` | `null`, then the stream (below) |
+| `events` | `session_id`, `after`, `run_id` | `null`, then the stream (below) |
 
 `request` carries a verbatim schema/v0.1 request envelope — the same document
 the corresponding HTTP route takes as its body, validated against the same
