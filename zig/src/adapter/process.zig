@@ -442,7 +442,11 @@ test "closing the transport releases the child's pipes, not only its stdin" {
 }
 
 test "a child that goes quiet is refused once a caller sets an idle bound" {
-    const transport = try shell("sleep 30", .{ .executable = "", .read_idle_ns = 150 * std.time.ns_per_ms });
+    const transport = try shell("sleep 30", .{
+        .executable = "",
+        .read_idle_ns = 150 * std.time.ns_per_ms,
+        .exit_grace_ns = 50 * std.time.ns_per_ms,
+    });
     defer transport.deinit();
 
     try testing.expectError(Error.SilentChild, transport.next());
