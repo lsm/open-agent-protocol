@@ -313,6 +313,16 @@ pub fn build(b: *std.Build) void {
     acp_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
     const acp_corpus_test = b.addTest(.{ .root_module = acp_corpus_mod });
 
+    const claude_backend_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/backend.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    claude_backend_mod.addImport("rpc", claude_rpc_mod);
+    claude_backend_mod.addImport("session", claude_session_mod);
+    claude_backend_mod.addImport("process", adapter_process_mod);
+    const claude_backend_test = b.addTest(.{ .root_module = claude_backend_mod });
+
     const claude_corpus_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/claude/corpus.zig"),
         .target = target,
@@ -2085,7 +2095,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_backend_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_backend_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
