@@ -277,12 +277,13 @@ loud is a subscription that beats the open's response but loses to the run.
   subscription could report the sequence it begins at, as a named
   `oap-subscribed` signal emitted first on both transports, so a host that
   subscribed separately can see that it joined mid-run and resubscribe with a
-  cursor. This unit specified it and does not implement it, so it is deferred
+  cursor. This unit specified it and did not implement it, so it was deferred
   to [#61](https://github.com/lsm/open-agent-protocol/issues/61) rather than
-  left as a claim no code answers. It is separable because a compound open
-  would never emit it: its subscription begins before the session has a run,
-  so there is no position to have joined after. What it needs is a hub
-  accessor for a run's current sequence, which nothing exposes today.
+  left as a claim no code answers, and shipped there. It was separable because
+  a compound open never emits it: its subscription begins before the session
+  has a run, so there is no position to have joined after — which is now a
+  property of the signal's own condition rather than a case the frontends
+  test for.
 - **Ending one subscription on request.** The stdio pipe has no per-stream
   hangup, which [#53](https://github.com/lsm/open-agent-protocol/issues/53)
   records. A unit that lets a host subscribe inside an open is where the

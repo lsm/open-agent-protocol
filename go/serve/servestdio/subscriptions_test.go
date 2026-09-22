@@ -209,7 +209,7 @@ func TestEventsOpDeliversTheRunStream(t *testing.T) {
 func TestEventsAcknowledgementPrecedesTheStream(t *testing.T) {
 	hub := newTestHub(t, 64, 64)
 	session := openSessionEntry(t, hub, "ordered")
-	runID := runToCompletion(t, hub, session)
+	runID, _ := runToCompletion(t, hub, session)
 
 	f := startFrontend(t, hub, Options{})
 	f.send(`{"id":7,"op":"events","session_id":"ordered","after":0}`)
@@ -289,7 +289,7 @@ func TestEventsOpRefusals(t *testing.T) {
 func TestEventsOpReportsAReplayGap(t *testing.T) {
 	hub := newTestHub(t, 2, 64)
 	session := openSessionEntry(t, hub, "expired")
-	runToCompletion(t, hub, session)
+	_, _ = runToCompletion(t, hub, session)
 
 	f := startFrontend(t, hub, Options{})
 	f.send(`{"id":9,"op":"events","session_id":"expired","after":1}`)
@@ -364,7 +364,7 @@ func openSessionEntry(t *testing.T, hub *serve.Hub, id string) *serve.Session {
 	return entry
 }
 
-func runToCompletion(t *testing.T, hub *serve.Hub, entry *serve.Session) protocol.RunID {
+func runToCompletion(t *testing.T, hub *serve.Hub, entry *serve.Session) (protocol.RunID, uint64) {
 	t.Helper()
 	subscription, err := hub.Subscribe(context.Background(), entry.ID())
 	if err != nil {
@@ -411,7 +411,10 @@ func runToCompletion(t *testing.T, hub *serve.Hub, entry *serve.Session) protoco
 				},
 			})
 		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
-			return admission.RunID
+			if envelope.Sequence == nil {
+				t.Fatalf("terminal %s carries no sequence", envelope.Type)
+			}
+			return admission.RunID, *envelope.Sequence
 		}
 	}
 }
@@ -634,7 +637,7 @@ func TestAnEndingTooLargeToFrameStillArrives(t *testing.T) {
 	sessionID := strings.Repeat("s", 150)
 	hub := newTestHub(t, 2, 64)
 	entry := openSessionEntry(t, hub, sessionID)
-	runToCompletion(t, hub, entry)
+	_, _ = runToCompletion(t, hub, entry)
 
 	f := startFrontend(t, hub, Options{FrameLimit: minFrameLimit})
 	f.send(fmt.Sprintf(`{"id":1,"op":"events","session_id":%q,"after":1}`, sessionID))
@@ -1029,5 +1032,103 @@ func TestAdvanceCursorHoldsItsHighWaterMark(t *testing.T) {
 				t.Fatalf("cursor (%s, %d), want (%s, %d)", run, sequence, testCase.wantRun, testCase.wantSequence)
 			}
 		})
+	}
+}
+
+func TestEventsReportsWhereALateSubscriptionJoined(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	session := openSessionEntry(t, hub, "joined")
+	runID, lastSequence := runToCompletion(t, hub, session)
+
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":9,"op":"events","session_id":"joined"}`)
+	if response := f.expectResponse(9); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	line := f.line()
+	var signal subscribedLine
+	if err := json.Unmarshal([]byte(line), &signal); err != nil {
+		t.Fatalf("signal line %q: %v", line, err)
+	}
+	if signal.Event != signalSubscribed {
+		t.Fatalf("the line after the acknowledgement is %q, want %q", signal.Event, signalSubscribed)
+	}
+	if signal.ID != 9 || signal.SessionID != "joined" {
+		t.Fatalf("signal correlates to %d/%q, want 9/joined", signal.ID, signal.SessionID)
+	}
+	if protocol.RunID(signal.RunID) != runID {
+		t.Fatalf("signal names run %q, want %q", signal.RunID, runID)
+	}
+	if signal.JoinedAfter != lastSequence {
+		t.Fatalf("signal reports joining after %d, want the run's last sequence %d", signal.JoinedAfter, lastSequence)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEventsReportsNoJoinPointWhenNothingPrecededTheSubscription(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "fresh")
+
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":11,"op":"events","session_id":"fresh"}`)
+	if response := f.expectResponse(11); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	f.send(`{"id":12,"op":"sessions"}`)
+	line := f.line()
+	if strings.Contains(line, signalSubscribed) {
+		t.Fatalf("a subscription with no run behind it reported a join point: %s", line)
+	}
+	if response := f.decodeResponse(line); response.ID != 12 {
+		t.Fatalf("the line after the acknowledgement is response %d, want 12", response.ID)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTheSubscribedSignalPrecedesEveryEnvelope(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	session := openSessionEntry(t, hub, "ahead")
+	first, lastSequence := runToCompletion(t, hub, session)
+
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":3,"op":"events","session_id":"ahead"}`)
+	if response := f.expectResponse(3); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	var signal subscribedLine
+	if err := json.Unmarshal([]byte(f.line()), &signal); err != nil {
+		t.Fatal(err)
+	}
+	if signal.Event != signalSubscribed {
+		t.Fatalf("the line after the acknowledgement is %q, want %q", signal.Event, signalSubscribed)
+	}
+	if protocol.RunID(signal.RunID) != first || signal.JoinedAfter != lastSequence {
+		t.Fatalf("signal reports %s after %d, want %s after %d", signal.RunID, signal.JoinedAfter, first, lastSequence)
+	}
+
+	second, _ := runToCompletion(t, hub, session)
+	if second == first {
+		t.Fatal("the second submission reused the first run id")
+	}
+	for {
+		envelope := f.expectSignal(3, signalEnvelope)
+		var decoded protocol.Envelope
+		if err := json.Unmarshal(envelope.Envelope, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if decoded.RunID != second {
+			t.Fatalf("an envelope for run %q followed the signal, want only %q", decoded.RunID, second)
+		}
+		switch decoded.Type {
+		case protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled:
+			if err := f.finish(); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
 	}
 }

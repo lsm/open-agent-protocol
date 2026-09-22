@@ -335,7 +335,13 @@ reconnect with a cursor at or after `oldest_available - 1`). A stream also
 ends when the client closes the connection; a stream that is open when the
 session closes receives the events already in flight and then ends, and a
 connection made to an already-closed session is refused with
-`409 session_closed` rather than parking. Sequence numbers are per-run: a
+`409 session_closed` rather than parking. One non-terminal signal opens the
+stream rather than ending it: `event: oap-subscribed` is written first when the
+subscription joins a session whose run has already emitted, and `joined_after`
+names the last sequence it missed, so a host that subscribed separately can see
+it did not start at the beginning and resubscribe with a cursor. A subscription
+that missed nothing gets no such line, which is why a compound open never
+carries one — its subscription begins before the session has a run. Sequence numbers are per-run: a
 connection that happens to span an immediate resubmit (a second run admitted
 inside the settle window of the first) continues into the new run, and
 clients keying on the envelope `run_id` see each run's own sequence space.
@@ -421,6 +427,7 @@ written before the first envelope.
 
 | line | means |
 | --- | --- |
+| `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence it missed |
 | `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
 | `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available`/`latest_available` bound what is |
