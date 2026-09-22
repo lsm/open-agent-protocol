@@ -59,7 +59,7 @@ type runState struct {
 	candidateStep        int64
 	candidateOpen        bool
 	candidateEvents      []native.Event
-	pendingNotifications []rpc.NotificationMessage
+	pendingNotifications []bufferedNotification
 	startResult          chan error
 	startOnce            sync.Once
 	final                *native.AssistantMessageEvent
@@ -68,6 +68,11 @@ type runState struct {
 	idleAfterEnd         bool
 	subscribers          []chan base.Result
 }
+type bufferedNotification struct {
+	message  rpc.NotificationMessage
+	afterSeq int64
+}
+
 type toolState struct {
 	nativeID  string
 	id        protocol.ToolCallID
@@ -270,7 +275,7 @@ func (s *Session) applyNotification(n rpc.NotificationMessage) {
 		return
 	}
 	if !run.started {
-		run.pendingNotifications = append(run.pendingNotifications, n)
+		run.pendingNotifications = append(run.pendingNotifications, bufferedNotification{message: n, afterSeq: s.lastSeq})
 	}
 	s.applyNative(run, n)
 }
@@ -416,8 +421,8 @@ func (s *Session) evaluateAdmission(run *runState) {
 	var turnStart native.Event
 	var candidate []native.Event
 	entered, closed := false, false
-	for _, n := range run.pendingNotifications {
-		ev, ok := n.Value.(*native.SessionEventNotification)
+	for _, buffered := range run.pendingNotifications {
+		ev, ok := buffered.message.Value.(*native.SessionEventNotification)
 		if !ok {
 			continue
 		}
@@ -507,19 +512,23 @@ func (s *Session) evaluateAdmission(run *runState) {
 		return
 	}
 	run.signalStart(nil)
+	turnEndSeq := int64(0)
 	for _, e := range run.candidateEvents {
+		if e.Type == "turn/end" {
+			turnEndSeq = e.Seq
+		}
 		if e.Type != "turn/start" && e.Type != "step/start" && e.Type != "user/message" {
 			s.applyOwnedEvent(run, e)
 		}
 	}
 
-	for _, n := range run.pendingNotifications {
-		switch v := n.Value.(type) {
+	for _, buffered := range run.pendingNotifications {
+		switch v := buffered.message.Value.(type) {
 		case *native.SessionStatusNotification:
 			if v.SessionID != s.nativeID {
 				s.failRun(run, "deepseek_session_mismatch", "session.status for foreign session")
-			} else if run.turnEnded && v.Status == "idle" {
-				run.idleAfterEnd = true
+			} else if run.turnEnded && buffered.afterSeq >= turnEndSeq {
+				run.idleAfterEnd = v.Status == "idle"
 			}
 		case *native.SubagentStartedNotification:
 			if v.ParentSessionID != s.nativeID || v.ChildSessionID == s.nativeID || s.children[v.ChildSessionID] != nil {
