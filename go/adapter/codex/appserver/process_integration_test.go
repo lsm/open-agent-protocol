@@ -19,23 +19,12 @@ func TestPinnedCodexProcessAgainstResponsesMock(t *testing.T) {
 		t.Skip("skipping pinned Codex process integration in short mode")
 	}
 	if os.Getenv("OAP_CODEX_INTEGRATION") != "1" {
-		t.Skip("set OAP_CODEX_INTEGRATION=1, OAP_CODEX_BIN, and OAP_CODEX_COMMIT to run")
-	}
-	binary := os.Getenv("OAP_CODEX_BIN")
-	if binary == "" {
-		t.Fatal("OAP_CODEX_BIN is required when OAP_CODEX_INTEGRATION=1")
+		t.Skip("set OAP_CODEX_INTEGRATION=1, absolute OAP_CODEX_BIN, and OAP_CODEX_COMMIT to run; optionally set OAP_CODEX_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	if os.Getenv("OAP_CODEX_COMMIT") != CodexCommit {
 		t.Fatalf("OAP_CODEX_COMMIT must equal pinned commit %s", CodexCommit)
 	}
-	binary, err := filepath.Abs(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(binary)
-	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-		t.Fatalf("OAP_CODEX_BIN is not an executable file: %v", err)
-	}
+	binary := adaptertest.VerifiedBinary(t, "OAP_CODEX_BIN", "OAP_CODEX_SHA256", "the codex app-server built from the pinned commit")
 
 	mock := providertest.New(t, providertest.Config{OpenAIKey: "fixture-codex-key"})
 	mock.Enqueue(providertest.OpenAIResponses, providertest.Success)

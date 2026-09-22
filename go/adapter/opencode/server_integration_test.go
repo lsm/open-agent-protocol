@@ -12,17 +12,15 @@ import (
 	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
+	"github.com/lsm/open-agent-protocol/go/adapter/adaptertest"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 func TestOpenCodeServerIntegration(t *testing.T) {
 	if os.Getenv("OAP_OPENCODE_INTEGRATION") != "1" {
-		t.Skip("set OAP_OPENCODE_INTEGRATION=1 and OAP_OPENCODE_BIN to run the pinned server gate")
+		t.Skip("set OAP_OPENCODE_INTEGRATION=1 and absolute OAP_OPENCODE_BIN to run the pinned server gate; optionally set OAP_OPENCODE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
-	binary := os.Getenv("OAP_OPENCODE_BIN")
-	if binary == "" {
-		t.Fatal("OAP_OPENCODE_BIN must point at an opencode v1.18.29 binary")
-	}
+	binary := adaptertest.VerifiedBinary(t, "OAP_OPENCODE_BIN", "OAP_OPENCODE_SHA256", "an opencode v1.18.29 binary")
 	if got := os.Getenv("OAP_OPENCODE_TAG"); got != "" && got != PinnedTag {
 		t.Fatalf("OAP_OPENCODE_TAG=%q does not match the pinned %s", got, PinnedTag)
 	}
