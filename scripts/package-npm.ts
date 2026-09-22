@@ -13,13 +13,16 @@ const VERSION =
     : JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8")).version;
 
 const PLATFORMS = [
-  { target: "darwin-arm64", os: "darwin", cpu: "arm64", binary: "makai-darwin-arm64" },
-  { target: "darwin-x64", os: "darwin", cpu: "x64", binary: "makai-darwin-x64" },
-  { target: "linux-arm64", os: "linux", cpu: "arm64", binary: "makai-linux-arm64" },
-  { target: "linux-x64", os: "linux", cpu: "x64", binary: "makai-linux-x64" },
-  { target: "win32-x64", os: "win32", cpu: "x64", binary: "makai-win32-x64" },
-  { target: "win32-arm64", os: "win32", cpu: "arm64", binary: "makai-win32-arm64" },
+  { target: "darwin-arm64", os: "darwin", cpu: "arm64", binary: "oapx-darwin-arm64" },
+  { target: "darwin-x64", os: "darwin", cpu: "x64", binary: "oapx-darwin-x64" },
+  { target: "linux-arm64", os: "linux", cpu: "arm64", binary: "oapx-linux-arm64" },
+  { target: "linux-x64", os: "linux", cpu: "x64", binary: "oapx-linux-x64" },
+  { target: "win32-x64", os: "win32", cpu: "x64", binary: "oapx-win32-x64" },
+  { target: "win32-arm64", os: "win32", cpu: "arm64", binary: "oapx-win32-arm64" },
 ];
+
+const withheldIdx = process.argv.indexOf("--withhold");
+const WITHHELD_TARGETS = withheldIdx !== -1 ? process.argv[withheldIdx + 1].split(",").filter(Boolean) : [];
 
 console.log(`Packaging npm packages (version ${VERSION})...\n`);
 
@@ -31,9 +34,13 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
   mkdirSync(binDir, { recursive: true });
 
   const srcBinary = join(BIN_DIR, binary);
-  const destBinary = join(binDir, os === "win32" ? "makai.exe" : "makai");
+  const destBinary = join(binDir, os === "win32" ? "oapx.exe" : "oapx");
 
   if (!require("fs").existsSync(srcBinary)) {
+    if (WITHHELD_TARGETS.includes(target)) {
+      console.log(`  skip ${pkgName}: ${binary} was withheld by the release build`);
+      continue;
+    }
     throw new Error(`Binary not found: ${srcBinary} (required for ${pkgName})`);
   }
   copyFileSync(srcBinary, destBinary);
@@ -50,7 +57,7 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
         description: `Makai binary for ${os} ${cpu}`,
         os: [os],
         cpu: [cpu],
-        bin: { makai: os === "win32" ? "bin/makai.exe" : "bin/makai" },
+        bin: { oapx: os === "win32" ? "bin/oapx.exe" : "bin/oapx" },
         files: ["bin/"],
         license: "ISC",
         repository: {

@@ -35,9 +35,12 @@ const (
 //  2. MAKAI_BINARY_URL (else [Options].BinaryURL), which requires a SHA-256
 //     checksum from MAKAI_BINARY_SHA256 or [Options].ChecksumSHA256. The
 //     binary is cached and its checksum verified on every use.
-//  3. ./zig-out/bin/makai
-//  4. ./zig/zig-out/bin/makai
-//  5. makai on PATH.
+//  3. ./zig-out/bin/oapx, then ./zig/zig-out/bin/oapx
+//  4. ./zig-out/bin/makai, then ./zig/zig-out/bin/makai
+//  5. oapx on PATH, then makai.
+//
+// oapx is tried in every location before makai is tried in any, so a nested
+// oapx outranks a top-level makai. On Windows each name carries .exe.
 //
 // The TypeScript SDK has one more step between 2 and 3: an optional
 // @makai/cli-<platform>-<arch> npm package. That step is npm-specific and has
@@ -82,33 +85,42 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 		}
 	}
 
-	name := binaryName()
-	found, err := exec.LookPath(name)
-	if err != nil {
-		return "", fmt.Errorf("%w: no %s on PATH and no local build under %s",
-			ErrBinaryNotFound, name, strings.Join(localCandidates(), " or "))
+	for _, name := range binaryNames() {
+		found, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		logger.Debug("makai: binary resolved from PATH", "path", found)
+		return found, nil
 	}
-	logger.Debug("makai: binary resolved from PATH", "path", found)
-	return found, nil
+	return "", fmt.Errorf("%w: no %s on PATH and no local build under %s",
+		ErrBinaryNotFound, strings.Join(binaryNames(), " or "), strings.Join(localCandidates(), " or "))
 }
 
 func localCandidates() []string {
-	name := binaryName()
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil
 	}
-	return []string{
-		filepath.Join(cwd, "zig-out", "bin", name),
-		filepath.Join(cwd, "zig", "zig-out", "bin", name),
+	var candidates []string
+	for _, name := range binaryNames() {
+		candidates = append(candidates,
+			filepath.Join(cwd, "zig-out", "bin", name),
+			filepath.Join(cwd, "zig", "zig-out", "bin", name),
+		)
 	}
+	return candidates
+}
+
+func binaryNames() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"oapx.exe", "makai.exe"}
+	}
+	return []string{"oapx", "makai"}
 }
 
 func binaryName() string {
-	if runtime.GOOS == "windows" {
-		return "makai.exe"
-	}
-	return "makai"
+	return binaryNames()[0]
 }
 
 // resolveFromURL returns a cached copy of the binary at rawURL, downloading

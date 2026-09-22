@@ -81,7 +81,57 @@ def test_falls_back_to_bare_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     empty.mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(empty))
-    assert resolve_makai_binary() == "makai"
+    assert resolve_makai_binary() == "oapx"
+
+
+def test_oapx_wins_over_makai_in_the_same_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_binary(tmp_path / "zig-out" / "bin", name="makai")
+    make_binary(tmp_path / "zig-out" / "bin", name="oapx")
+    monkeypatch.chdir(tmp_path)
+    assert resolve_makai_binary() == str(tmp_path / "zig-out" / "bin" / "oapx")
+
+
+def test_oapx_in_the_nested_build_wins_over_makai_in_the_top_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    make_binary(tmp_path / "zig-out" / "bin", name="makai")
+    make_binary(tmp_path / "zig" / "zig-out" / "bin", name="oapx")
+    monkeypatch.chdir(tmp_path)
+    assert resolve_makai_binary() == str(tmp_path / "zig" / "zig-out" / "bin" / "oapx")
+
+
+def test_a_directory_named_like_the_binary_does_not_shadow_a_usable_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "zig-out" / "bin" / "oapx").mkdir(parents=True)
+    real = make_binary(tmp_path / "zig" / "zig-out" / "bin", name="oapx")
+    monkeypatch.chdir(tmp_path)
+    assert resolve_makai_binary() == str(real)
+
+
+def test_a_non_executable_file_is_not_the_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    top = tmp_path / "zig-out" / "bin"
+    top.mkdir(parents=True)
+    (top / "oapx").write_bytes(b"not executable")
+    (top / "oapx").chmod(0o644)
+    real = make_binary(tmp_path / "zig" / "zig-out" / "bin", name="oapx")
+    monkeypatch.chdir(tmp_path)
+    assert resolve_makai_binary() == str(real)
+
+
+def test_an_install_predating_the_rename_still_resolves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on_path = make_binary(tmp_path / "bin", name="makai")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
+    assert resolve_makai_binary() == str(on_path)
 
 
 class _Server(http.server.BaseHTTPRequestHandler):

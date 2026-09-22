@@ -14,7 +14,7 @@ The module lives in the `go/` subdirectory of the Makai repository, so its impor
 import makai "github.com/lsm/makai/go"
 ```
 
-You also need access to the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/makai` or `zig/zig-out/bin/makai`, then falls back to `makai` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -276,9 +276,12 @@ The checksum is required; a download without one is refused with `ErrChecksumReq
 
 With no resolver options, the SDK checks:
 
-1. `./zig-out/bin/makai` (or `makai.exe` on Windows)
-2. `./zig/zig-out/bin/makai`
-3. `makai` on `PATH`
+1. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
+2. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
+3. `oapx` on `PATH`, then `makai`
+
+`oapx` is tried in every location before `makai` is tried in any, so a nested
+`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
 The TypeScript resolver has one more step, an optional `@makai/cli-<platform>-<arch>` npm package, between the URL step and the local builds. That step is npm-specific and has no Go equivalent, so it is deliberately absent here. The practical difference: where npm would prefer a packaged binary, Go picks up your local `./zig-out` build.
 

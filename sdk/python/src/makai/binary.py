@@ -7,9 +7,9 @@ Resolution order mirrors ``typescript/src/binary_resolver.ts``:
 2. ``binary_url`` / ``MAKAI_BINARY_URL``, which **requires** a SHA-256 checksum
    (``checksum_sha256`` / ``MAKAI_BINARY_SHA256``). The download is cached and
    re-verified on every resolve.
-3. ``./zig-out/bin/makai`` relative to the current working directory.
-4. ``./zig/zig-out/bin/makai``.
-5. ``makai`` on ``PATH``.
+3. ``./zig-out/bin/oapx`` relative to the current working directory.
+4. ``./zig/zig-out/bin/oapx``.
+5. ``oapx`` on ``PATH``.
 
 The TypeScript SDK has one extra step between 2 and 3: an optional
 ``@makai/cli-<platform>-<arch>`` npm package. **That step is deliberately
@@ -63,8 +63,17 @@ class BinaryResolverOptions:
     cache_dir: Optional[str] = None
 
 
+def _is_executable_file(candidate: Path) -> bool:
+    return candidate.is_file() and os.access(candidate, os.X_OK)
+
+
+def _binary_names() -> tuple[str, ...]:
+    suffix = ".exe" if os.name == "nt" else ""
+    return tuple(f"{name}{suffix}" for name in ("oapx", "makai"))
+
+
 def _binary_name() -> str:
-    return "makai.exe" if os.name == "nt" else "makai"
+    return _binary_names()[0]
 
 
 def _sha256(content: bytes) -> str:
@@ -93,18 +102,19 @@ def resolve_makai_binary(options: Optional[BinaryResolverOptions] = None) -> str
     if binary_url:
         return _resolve_from_url(binary_url, checksum, options.cache_dir)
 
-    name = _binary_name()
-    for candidate in (
-        Path.cwd() / "zig-out" / "bin" / name,
-        Path.cwd() / "zig" / "zig-out" / "bin" / name,
-    ):
-        if candidate.exists():
-            return str(candidate)
+    for name in _binary_names():
+        for candidate in (
+            Path.cwd() / "zig-out" / "bin" / name,
+            Path.cwd() / "zig" / "zig-out" / "bin" / name,
+        ):
+            if _is_executable_file(candidate):
+                return str(candidate)
 
-    from_path = shutil.which(name)
-    if from_path:
-        return from_path
-    return name
+    for name in _binary_names():
+        from_path = shutil.which(name)
+        if from_path:
+            return from_path
+    return _binary_name()
 
 
 def _resolve_from_url(binary_url: str, checksum: Optional[str], cache_dir: Optional[str]) -> str:

@@ -317,11 +317,59 @@ func TestResolveBinaryReportsWhenNothingIsFound(t *testing.T) {
 }
 
 func TestBinaryNameMatchesThePlatform(t *testing.T) {
-	want := "makai"
+	want := []string{"oapx", "makai"}
 	if runtime.GOOS == "windows" {
-		want = "makai.exe"
+		want = []string{"oapx.exe", "makai.exe"}
 	}
-	if got := binaryName(); got != want {
-		t.Errorf("binaryName() = %q, want %q", got, want)
+	got := binaryNames()
+	if len(got) != len(want) {
+		t.Fatalf("binaryNames() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("binaryNames() = %v, want %v", got, want)
+		}
+	}
+	if binaryName() != want[0] {
+		t.Errorf("binaryName() = %q, want %q", binaryName(), want[0])
+	}
+}
+
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}
+
+func TestOapxWinsOverMakaiInTheSameDirectory(t *testing.T) {
+	isolateResolverEnv(t)
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "zig-out", "bin")
+	writeFakeBinary(t, binDir, "makai", "#!/bin/sh\n")
+	want := resolvedPath(t, writeFakeBinary(t, binDir, "oapx", "#!/bin/sh\n"))
+	chdir(t, dir)
+	resolved, err := ResolveBinary(context.Background(), &Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != want {
+		t.Errorf("resolved = %q, want %q", resolved, want)
+	}
+}
+
+func TestAnInstallPredatingTheRenameStillResolves(t *testing.T) {
+	isolateResolverEnv(t)
+	dir := t.TempDir()
+	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(dir, "zig-out", "bin"), "makai", "#!/bin/sh\n"))
+	chdir(t, dir)
+	resolved, err := ResolveBinary(context.Background(), &Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != want {
+		t.Errorf("resolved = %q, want %q", resolved, want)
 	}
 }

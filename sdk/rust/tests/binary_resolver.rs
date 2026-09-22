@@ -63,6 +63,11 @@ fn write_fake_binary(dir: &std::path::Path, relative: &[&str]) -> PathBuf {
     }
     std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
     std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
     path
 }
 
@@ -150,6 +155,62 @@ async fn local_builds_are_checked_in_order() {
 }
 
 #[tokio::test]
+async fn oapx_wins_over_makai_in_the_same_directory() {
+    let _guard = EnvGuard::set(&clear_env());
+    let temp = tempfile::tempdir().expect("tempdir");
+    write_fake_binary(temp.path(), &["zig-out", "bin", "makai"]);
+    let bin = temp.path().join("zig-out").join("bin");
+    write_fake_binary(temp.path(), &["zig-out", "bin", "oapx"]);
+
+    let resolved = BinaryResolver {
+        base_dir: Some(temp.path().to_path_buf()),
+        ..Default::default()
+    }
+    .resolve()
+    .await
+    .expect("resolves");
+    assert_eq!(resolved, bin.join("oapx"));
+}
+
+#[tokio::test]
+async fn a_directory_named_like_the_binary_does_not_shadow_a_usable_one() {
+    let _guard = EnvGuard::set(&clear_env());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let top = temp.path().join("zig-out").join("bin");
+    let nested = temp.path().join("zig").join("zig-out").join("bin");
+    std::fs::create_dir_all(&top).expect("create top");
+    std::fs::create_dir_all(top.join("oapx")).expect("decoy directory");
+    std::fs::create_dir_all(&nested).expect("create nested");
+    let real = write_fake_binary(temp.path(), &["zig", "zig-out", "bin", "oapx"]);
+
+    let resolved = BinaryResolver {
+        base_dir: Some(temp.path().to_path_buf()),
+        ..Default::default()
+    }
+    .resolve()
+    .await
+    .expect("resolves");
+    assert_eq!(resolved, real);
+}
+
+#[tokio::test]
+async fn an_install_predating_the_rename_still_resolves() {
+    let _guard = EnvGuard::set(&clear_env());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin = temp.path().join("zig-out").join("bin");
+    write_fake_binary(temp.path(), &["zig-out", "bin", "makai"]);
+
+    let resolved = BinaryResolver {
+        base_dir: Some(temp.path().to_path_buf()),
+        ..Default::default()
+    }
+    .resolve()
+    .await
+    .expect("resolves");
+    assert_eq!(resolved, bin.join("makai"));
+}
+
+#[tokio::test]
 async fn with_nothing_to_find_the_bare_command_is_returned_for_path_lookup() {
     let _guard = EnvGuard::set(&clear_env());
     let temp = tempfile::tempdir().expect("tempdir");
@@ -161,7 +222,7 @@ async fn with_nothing_to_find_the_bare_command_is_returned_for_path_lookup() {
     .resolve()
     .await
     .expect("resolves");
-    let expected = if cfg!(windows) { "makai.exe" } else { "makai" };
+    let expected = if cfg!(windows) { "oapx.exe" } else { "oapx" };
     assert_eq!(resolved, PathBuf::from(expected));
 }
 

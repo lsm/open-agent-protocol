@@ -22,42 +22,42 @@ jobs:
             os_name: macos
             arch_name: arm64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: darwin-arm64
           - runner: macos-latest
             target: x86_64-macos
             os_name: macos
             arch_name: x64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: darwin-x64
           - runner: ubuntu-latest
             target: aarch64-linux
             os_name: linux
             arch_name: arm64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: linux-arm64
           - runner: ubuntu-latest
             target: x86_64-linux
             os_name: linux
             arch_name: x64
             archive: tar.gz
-            binary_name: makai
+            binary_name: oapx
             npm_target: linux-x64
           - runner: windows-latest
             target: x86_64-windows
             os_name: windows
             arch_name: x64
             archive: zip
-            binary_name: makai.exe
+            binary_name: oapx.exe
             npm_target: win32-x64
           - runner: windows-latest
             target: aarch64-windows
             os_name: windows
             arch_name: arm64
             archive: zip
-            binary_name: makai.exe
+            binary_name: oapx.exe
             npm_target: win32-arm64
 
     steps:
@@ -112,7 +112,14 @@ jobs:
 
           if [ -z "${APPLE_CERTIFICATE:-}" ]; then
             if [ "${{ github.event_name }}" = "push" ]; then
-              echo "::error::APPLE_CERTIFICATE is unset on a tag build; a release must ship signed macOS binaries"
+              case "$GITHUB_REF_NAME" in
+                *-*)
+                  echo "MACOS_WITHHELD=true" >> "$GITHUB_ENV"
+                  echo "::warning::APPLE_CERTIFICATE is unset on the prerelease tag $GITHUB_REF_NAME; withholding the ${{ matrix.arch_name }} macOS artifact rather than shipping it unsigned"
+                  exit 0
+                  ;;
+              esac
+              echo "::error::APPLE_CERTIFICATE is unset on a stable tag build; a release must ship signed macOS binaries"
               exit 1
             fi
             echo "::warning::macOS signing secrets are unset; leaving ${{ matrix.arch_name }} binary unsigned (workflow_dispatch only)"
@@ -141,7 +148,14 @@ jobs:
 
           if [ -z "${APPLE_API_PRIVATE_KEY:-}" ]; then
             if [ "${{ github.event_name }}" = "push" ]; then
-              echo "::error::signing succeeded but APPLE_API_PRIVATE_KEY is unset on a tag build; an unnotarized Developer ID binary is still blocked by Gatekeeper"
+              case "$GITHUB_REF_NAME" in
+                *-*)
+                  echo "MACOS_WITHHELD=true" >> "$GITHUB_ENV"
+                  echo "::warning::signing succeeded but APPLE_API_PRIVATE_KEY is unset on the prerelease tag $GITHUB_REF_NAME; withholding the ${{ matrix.arch_name }} macOS artifact rather than shipping it unnotarized"
+                  exit 0
+                  ;;
+              esac
+              echo "::error::signing succeeded but APPLE_API_PRIVATE_KEY is unset on a stable tag build; an unnotarized Developer ID binary is still blocked by Gatekeeper"
               exit 1
             fi
             echo "::warning::notarization secrets are unset; leaving the signed ${{ matrix.arch_name }} binary unnotarized (workflow_dispatch only)"
@@ -168,7 +182,7 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/codesign.keychain-db" 2>/dev/null || true
 
       - name: Package tar.gz
-        if: matrix.archive == 'tar.gz'
+        if: matrix.archive == 'tar.gz' && env.MACOS_WITHHELD != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -176,13 +190,13 @@ jobs:
           if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
             VERSION="$(node -p "require('./package.json').version")"
           fi
-          ARTIFACT="makai-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz"
+          ARTIFACT="oapx-${VERSION}-${{ matrix.os_name }}-${{ matrix.arch_name }}.tar.gz"
           BIN_DIR="$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
           mkdir -p "$GITHUB_WORKSPACE/dist"
           tar -C "$BIN_DIR" -czf "$GITHUB_WORKSPACE/dist/$ARTIFACT" "${{ matrix.binary_name }}"
 
       - name: Package zip
-        if: matrix.archive == 'zip'
+        if: matrix.archive == 'zip' && env.MACOS_WITHHELD != 'true'
         shell: pwsh
         run: |
           $version = if ($env:GITHUB_REF -like 'refs/tags/v*') {
@@ -190,31 +204,34 @@ jobs:
           } else {
             (Get-Content package.json | ConvertFrom-Json).version
           }
-          $artifact = "makai-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}.zip"
+          $artifact = "oapx-$version-${{ matrix.os_name }}-${{ matrix.arch_name }}.zip"
           $binDir = "$env:GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin"
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/dist" | Out-Null
           Compress-Archive -Path "$binDir/${{ matrix.binary_name }}" -DestinationPath "$env:GITHUB_WORKSPACE/dist/$artifact" -Force
 
       - name: Upload packaged artifact
+        if: env.MACOS_WITHHELD != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: makai-${{ matrix.os_name }}-${{ matrix.arch_name }}
+          name: oapx-${{ matrix.os_name }}-${{ matrix.arch_name }}
           path: dist/*
           if-no-files-found: error
 
       - name: Stage binary for npm packaging
+        if: env.MACOS_WITHHELD != 'true'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/dist-npm-upload"
           cp "$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}/bin/${{ matrix.binary_name }}" \
-             "$GITHUB_WORKSPACE/dist-npm-upload/makai-${{ matrix.npm_target }}"
+             "$GITHUB_WORKSPACE/dist-npm-upload/oapx-${{ matrix.npm_target }}"
 
       - name: Upload binary for npm packaging
+        if: env.MACOS_WITHHELD != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: npm-binary-${{ matrix.npm_target }}
-          path: dist-npm-upload/makai-${{ matrix.npm_target }}
+          path: dist-npm-upload/oapx-${{ matrix.npm_target }}
           if-no-files-found: error
 
   checksums:
@@ -232,12 +249,12 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          sha256sum makai-*.tar.gz makai-*.zip > SHA256SUMS.txt
+          sha256sum oapx-*.tar.gz oapx-*.zip > SHA256SUMS.txt
 
       - name: Upload checksums
         uses: actions/upload-artifact@v4
         with:
-          name: makai-checksums
+          name: oapx-checksums
           path: dist/SHA256SUMS.txt
 
   release:
@@ -256,8 +273,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/makai-*.tar.gz
-            dist/makai-*.zip
+            dist/oapx-*.tar.gz
+            dist/oapx-*.zip
             dist/SHA256SUMS.txt
 
   package-npm:
@@ -309,7 +326,22 @@ jobs:
           mv dist/bin-flat dist/bin
 
       - name: Package npm packages
-        run: npx tsx scripts/package-npm.ts --version "${GITHUB_REF_NAME#v}"
+        run: |
+          set -euo pipefail
+          WITHHELD=""
+          case "$GITHUB_REF_NAME" in
+            *-*)
+              for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64 win32-arm64; do
+                if [ ! -f "dist/bin/oapx-$target" ]; then
+                  WITHHELD="${WITHHELD:+$WITHHELD,}$target"
+                fi
+              done
+              ;;
+          esac
+          if [ -n "$WITHHELD" ]; then
+            echo "::warning::the build withheld $WITHHELD; their npm platform packages are skipped"
+          fi
+          npx tsx scripts/package-npm.ts --version "${GITHUB_REF_NAME#v}" --withhold "$WITHHELD"
 
       - name: Upload npm packages
         uses: actions/upload-artifact@v4

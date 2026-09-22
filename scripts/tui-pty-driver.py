@@ -1523,7 +1523,7 @@ def run_sweep_scenario(args, repo_root, name):
 def main():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     parser = argparse.ArgumentParser(description="Drive the Makai TUI through a pseudo-terminal and measure it.")
-    parser.add_argument("--binary", default=os.path.join(repo_root, "zig", "zig-out", "bin", "makai"))
+    parser.add_argument("--binary", default=os.path.join(repo_root, "zig", "zig-out", "bin", "oapx"))
     parser.add_argument("--output-dir", default="tui-pty-out")
     parser.add_argument("--width", type=int, default=100)
     parser.add_argument("--height", type=int, default=30)

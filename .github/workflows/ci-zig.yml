@@ -140,12 +140,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build makai binary for TS SDK E2E
+      - name: Build the oapx binary for TS SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-smoke
 
       - name: Run TS SDK unit + E2E tests
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-smoke/bin/makai
+          MAKAI_BINARY_PATH: /tmp/makai-smoke/bin/oapx
         run: npm run test:sdk
 
       - name: Verify npm package ships TypeScript declarations
@@ -194,13 +194,13 @@ jobs:
         working-directory: sdk/go
         run: go vet ./...
 
-      - name: Build makai binary for Go SDK E2E
+      - name: Build the oapx binary for Go SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-go
 
       - name: Run Go SDK tests
         working-directory: sdk/go
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-go/bin/makai
+          MAKAI_BINARY_PATH: /tmp/makai-go/bin/oapx
         run: go test -race ./...
 
   # =============================================================================
@@ -243,13 +243,13 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Build makai binary for Rust SDK E2E
+      - name: Build the oapx binary for Rust SDK E2E
         working-directory: .
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-rs
 
       - name: Run Rust SDK unit + E2E tests
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-rs/bin/makai
+          MAKAI_BINARY_PATH: /tmp/makai-rs/bin/oapx
         run: cargo test --all-features
 
   # =============================================================================
@@ -296,19 +296,19 @@ jobs:
         working-directory: sdk/python
         run: python -m mypy
 
-      - name: Build makai binary for Python SDK E2E
+      - name: Build the oapx binary for Python SDK E2E
         run: zig build --build-file zig/build.zig install --prefix /tmp/makai-py
 
       - name: Run Python SDK unit + E2E tests
         working-directory: sdk/python
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-py/bin/makai
+          MAKAI_BINARY_PATH: /tmp/makai-py/bin/oapx
         run: python -m pytest -q
 
   # =============================================================================
   # TUI PTY Harness (deterministic, fixture provider — no API keys)
   #
-  # Drives `makai --tui` through a pseudo-terminal with the canned-reply
+  # Drives `oapx --tui` through a pseudo-terminal with the canned-reply
   # fixture (MAKAI_TUI_FIXTURE), asserting the core loop scenario plus the
   # #264 UX-sweep scenarios (every ratified slash command, kept key, the
   # y/a/n approval flow, session save+resume) and recording the TUI
@@ -342,7 +342,7 @@ jobs:
       - name: Run TUI PTY driver
         run: |
           zig build --build-file zig/build.zig install -Doptimize=ReleaseFast --prefix "$RUNNER_TEMP/makai-pty"
-          python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/makai" --output-dir tui-pty-out --scenario all
+          python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/oapx" --output-dir tui-pty-out --scenario all
 
       - name: Record metrics in job summary
         if: success()
@@ -393,19 +393,19 @@ jobs:
         include:
           - runner: macos-latest
             target: aarch64-macos
-            binary_name: makai
+            binary_name: oapx
           - runner: macos-latest
             target: x86_64-macos
-            binary_name: makai
+            binary_name: oapx
           - runner: ubuntu-latest
             target: aarch64-linux
-            binary_name: makai
+            binary_name: oapx
           - runner: ubuntu-latest
             target: x86_64-windows
-            binary_name: makai.exe
+            binary_name: oapx.exe
           - runner: windows-latest
             target: aarch64-windows
-            binary_name: makai.exe
+            binary_name: oapx.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

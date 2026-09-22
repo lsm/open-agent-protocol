@@ -181,7 +181,7 @@ test("binary resolver logs resolution steps", async () => {
 test("binary resolver logs auto resolution candidate checks", async () => {
   const logger = createCapturingLogger();
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
-  const binaryName = process.platform === "win32" ? "makai.exe" : "makai";
+  const binaryNames = ["oapx", "makai"].map((name) => (process.platform === "win32" ? `${name}.exe` : name));
   const resolveModule = (specifier: string): string => {
     throw new Error(`Cannot find module '${specifier}'`);
   };
@@ -191,6 +191,8 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   delete process.env.MAKAI_BINARY_PATH;
   delete process.env.MAKAI_BINARY_URL;
   delete process.env.MAKAI_BINARY_SHA256;
+  const prevSearchPath = process.env.PATH;
+  process.env.PATH = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-path-"));
   try {
     const resolved = await resolveMakaiBinary({ logger, cwd: emptyCwd, resolveModule });
     const notFoundLog = logger.entries.find((e) => e.message === "binary: bundled package not found");
@@ -199,10 +201,10 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     const candidateLogs = logger.entries.filter((e) => e.message === "binary: checking local candidate");
     assert.deepEqual(
       candidateLogs.map((e) => e.context?.path),
-      [
-        path.join(emptyCwd, "zig-out", "bin", binaryName),
-        path.join(emptyCwd, "zig", "zig-out", "bin", binaryName),
-      ],
+      binaryNames.flatMap((name) => [
+        path.join(emptyCwd, "zig-out", "bin", name),
+        path.join(emptyCwd, "zig", "zig-out", "bin", name),
+      ]),
     );
 
     const resolvedLog = logger.entries.find((e) => e.message === "binary: resolved from local candidate");
@@ -210,8 +212,8 @@ test("binary resolver logs auto resolution candidate checks", async () => {
 
     const fallbackLog = logger.entries.find((e) => e.message === "binary: falling back to PATH lookup");
     assert.ok(fallbackLog, "expected 'binary: falling back to PATH lookup' log");
-    assert.equal(fallbackLog.context?.binary, binaryName);
-    assert.equal(resolved, "makai");
+    assert.equal(fallbackLog.context?.binary, binaryNames[0]);
+    assert.equal(resolved, "oapx");
   } finally {
     if (prevPath === undefined) delete process.env.MAKAI_BINARY_PATH;
     else process.env.MAKAI_BINARY_PATH = prevPath;
@@ -219,13 +221,71 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     else process.env.MAKAI_BINARY_URL = prevUrl;
     if (prevChecksum === undefined) delete process.env.MAKAI_BINARY_SHA256;
     else process.env.MAKAI_BINARY_SHA256 = prevChecksum;
+    if (prevSearchPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevSearchPath;
     await fs.promises.rm(emptyCwd, { recursive: true, force: true });
+  }
+});
+
+test("binary resolver passes over a PATH entry that is not an executable file", async () => {
+  const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  const decoyDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-decoy-"));
+  const realDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-real-"));
+  const binaryName = process.platform === "win32" ? "oapx.exe" : "oapx";
+  await fs.promises.mkdir(path.join(decoyDir, binaryName));
+  const real = path.join(realDir, binaryName);
+  await fs.promises.writeFile(real, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const resolveModule = (specifier: string): string => {
+    throw new Error(`Cannot find module '${specifier}'`);
+  };
+  const prevBinaryPath = process.env.MAKAI_BINARY_PATH;
+  const prevSearchPath = process.env.PATH;
+  delete process.env.MAKAI_BINARY_PATH;
+  process.env.PATH = [decoyDir, realDir].join(path.delimiter);
+  try {
+    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), real);
+  } finally {
+    if (prevBinaryPath === undefined) delete process.env.MAKAI_BINARY_PATH;
+    else process.env.MAKAI_BINARY_PATH = prevBinaryPath;
+    if (prevSearchPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevSearchPath;
+    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
+    await fs.promises.rm(decoyDir, { recursive: true, force: true });
+    await fs.promises.rm(realDir, { recursive: true, force: true });
+  }
+});
+
+test("binary resolver finds an install predating the rename on PATH", async () => {
+  const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  const pathDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-path-"));
+  const legacy = path.join(pathDir, process.platform === "win32" ? "makai.exe" : "makai");
+  await fs.promises.writeFile(legacy, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const resolveModule = (specifier: string): string => {
+    throw new Error(`Cannot find module '${specifier}'`);
+  };
+  const prevBinaryPath = process.env.MAKAI_BINARY_PATH;
+  const prevBinaryUrl = process.env.MAKAI_BINARY_URL;
+  const prevSearchPath = process.env.PATH;
+  delete process.env.MAKAI_BINARY_PATH;
+  delete process.env.MAKAI_BINARY_URL;
+  process.env.PATH = pathDir;
+  try {
+    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), legacy);
+  } finally {
+    if (prevBinaryPath === undefined) delete process.env.MAKAI_BINARY_PATH;
+    else process.env.MAKAI_BINARY_PATH = prevBinaryPath;
+    if (prevBinaryUrl === undefined) delete process.env.MAKAI_BINARY_URL;
+    else process.env.MAKAI_BINARY_URL = prevBinaryUrl;
+    if (prevSearchPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevSearchPath;
+    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
+    await fs.promises.rm(pathDir, { recursive: true, force: true });
   }
 });
 
 test("binary resolver logs resolution from the bundled package", async () => {
   const logger = createCapturingLogger();
-  const bundledPath = path.join(path.sep, "bundled", "bin", process.platform === "win32" ? "makai.exe" : "makai");
+  const bundledPath = path.join(path.sep, "bundled", "bin", process.platform === "win32" ? "oapx.exe" : "oapx");
   const specifiers: string[] = [];
   const resolveModule = (specifier: string): string => {
     specifiers.push(specifier);
@@ -241,7 +301,7 @@ test("binary resolver logs resolution from the bundled package", async () => {
     const resolved = await resolveMakaiBinary({ logger, resolveModule });
     assert.equal(resolved, bundledPath);
     assert.deepEqual(specifiers, [
-      `@makai/cli-${process.platform}-${process.arch}/bin/${process.platform === "win32" ? "makai.exe" : "makai"}`,
+      `@makai/cli-${process.platform}-${process.arch}/bin/${process.platform === "win32" ? "oapx.exe" : "oapx"}`,
     ]);
 
     const bundledLog = logger.entries.find((e) => e.message === "binary: resolved from bundled package");

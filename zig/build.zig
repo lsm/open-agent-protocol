@@ -2008,11 +2008,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "oap_provider_runtime", .module = protocol_oap_provider_runtime_mod },
             .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "semantic", .module = semantic_mod },
+            .{ .name = "provider_semantic", .module = provider_semantic_mod },
+            .{ .name = "packs", .module = packs_mod },
         },
     });
 
     const makai_cli = b.addExecutable(.{
-        .name = "makai",
+        .name = "oapx",
         .root_module = makai_cli_module,
     });
     const makai_cli_test = b.addTest(.{ .root_module = makai_cli_module });
