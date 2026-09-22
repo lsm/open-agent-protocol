@@ -454,8 +454,8 @@ test "a child that goes quiet is refused once a caller sets an idle bound" {
 
 test "the idle bound asks whether the child went quiet, so a frame resets it" {
     const transport = try shell(
-        "for i in 1 2 3 4 5 6; do printf 'x\\n'; sleep 0.05; done",
-        .{ .executable = "", .read_idle_ns = 150 * std.time.ns_per_ms },
+        "i=0; while [ $i -lt 20 ]; do printf 'x\\n'; sleep 0.025; i=$((i+1)); done",
+        .{ .executable = "", .read_idle_ns = 250 * std.time.ns_per_ms },
     );
     defer transport.deinit();
 
@@ -464,7 +464,7 @@ test "the idle bound asks whether the child went quiet, so a frame resets it" {
         try testing.expectEqualStrings("x", frame);
         seen += 1;
     }
-    try testing.expectEqual(@as(usize, 6), seen);
+    try testing.expectEqual(@as(usize, 20), seen);
 }
 
 test "the idle bound is off unless a caller asks for one" {
