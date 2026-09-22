@@ -178,6 +178,9 @@ func (c *Client) Open(ctx context.Context, adapter string, sessionID protocol.Se
 	if err := envelope.DecodePayload(&opened); err != nil {
 		return nil, err
 	}
+	if opened.SessionID != envelope.SessionID {
+		return nil, fmt.Errorf("client: open response payload names session %q, envelope %q", opened.SessionID, envelope.SessionID)
+	}
 	if opened.SessionID == "" {
 		return nil, fmt.Errorf("client: open response carries no session id")
 	}
