@@ -40,3 +40,13 @@ func payloadScopeDefect(envelope protocol.Envelope) error {
 	}
 	return nil
 }
+
+func errorResponseScopeDefect(path string, failure, request protocol.Envelope) error {
+	if request.SessionID != "" && failure.SessionID != request.SessionID {
+		return fmt.Errorf("client: %s error response is scoped to session %q, want %q", path, failure.SessionID, request.SessionID)
+	}
+	if request.RunID != "" && failure.RunID != request.RunID {
+		return fmt.Errorf("client: %s error response is scoped to run %q, want %q", path, failure.RunID, request.RunID)
+	}
+	return nil
+}

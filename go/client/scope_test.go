@@ -438,3 +438,97 @@ func TestClientRejectsAnOpenResponseWhoseEnvelopeNamesNoSession(t *testing.T) {
 		t.Fatalf("error %q does not report the scope defect", err)
 	}
 }
+
+func errorEnvelopeEchoingRequest(t *testing.T, scope func(*protocol.Envelope)) *Client {
+	t.Helper()
+	return requestStub(t, func(w http.ResponseWriter, r *http.Request) {
+		asked, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := protocol.ParseEnvelope(asked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		failure, err := protocol.NewEnvelope(protocol.TypeErrorResponse, protocol.EnvelopeID("err-scope"), protocol.ErrorResponse{
+			Error: protocol.ProtocolError{Code: "unknown_session", Message: "no such session"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		failure.InReplyTo = request.ID
+		scope(&failure)
+		body, err := failure.MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(body)
+	})
+}
+
+func submitAgainstScopedFailure(t *testing.T, scope func(*protocol.Envelope)) error {
+	t.Helper()
+	c := errorEnvelopeEchoingRequest(t, scope)
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	_, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
+		Delivery: protocol.DeliveryAuto,
+	})
+	return err
+}
+
+func TestClientRefusesAnErrorEnvelopeScopedToAnotherSession(t *testing.T) {
+	err := submitAgainstScopedFailure(t, func(failure *protocol.Envelope) {
+		failure.SessionID = "someone-elses-session"
+	})
+	if err == nil {
+		t.Fatal("an error attributed to a different session was surfaced as this session's")
+	}
+	if !strings.Contains(err.Error(), "scoped to session") {
+		t.Fatalf("error does not name the scope defect: %v", err)
+	}
+	if strings.Contains(err.Error(), "correlation") {
+		t.Fatalf("the correlation check fired instead, so this test proves nothing about scope: %v", err)
+	}
+}
+
+func TestClientRefusesAnErrorEnvelopeScopedToAnotherRun(t *testing.T) {
+	c := errorEnvelopeEchoingRequest(t, func(failure *protocol.Envelope) {
+		failure.SessionID = "wire"
+		failure.RunID = "someone-elses-run"
+	})
+	session := &Session{client: c, id: "wire", adapter: "memory"}
+	_, err := session.Cancel(context.Background(), "r-1")
+	if err == nil {
+		t.Fatal("an error attributed to a different run was surfaced as this run's")
+	}
+	if !strings.Contains(err.Error(), "scoped to run") {
+		t.Fatalf("error does not name the run defect: %v", err)
+	}
+}
+
+func TestClientLetsAnErrorPassWhenTheRequestNamesNoRun(t *testing.T) {
+	err := submitAgainstScopedFailure(t, func(failure *protocol.Envelope) {
+		failure.SessionID = "wire"
+		failure.RunID = "a-run-the-request-never-named"
+	})
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("a submit carries no run to be scoped against, so the run check must not fire: %v", err)
+	}
+}
+
+func TestClientSurfacesACorrectlyScopedErrorEnvelope(t *testing.T) {
+	err := submitAgainstScopedFailure(t, func(failure *protocol.Envelope) {
+		failure.SessionID = "wire"
+	})
+	var serverErr *ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("a correctly scoped error was not surfaced as a ServerError: %v", err)
+	}
+	if serverErr.Code != "unknown_session" || serverErr.Message != "no such session" {
+		t.Fatalf("code=%q message=%q", serverErr.Code, serverErr.Message)
+	}
+}
