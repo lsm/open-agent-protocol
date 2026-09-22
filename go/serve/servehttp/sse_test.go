@@ -184,6 +184,13 @@ func TestSSELiveSubscriptionMidRun(t *testing.T) {
 	initial := stream.drainUntil(protocol.TypeActionPermissionRequested)
 
 	late := connectSSE(t, server, "/sessions/sse-mid-run/events", "")
+	joined := late.signal(sseEventSubscribed)
+	if joined["run_id"] != string(admission.RunID) {
+		t.Fatalf("the late subscriber was told it joined run %v, want %s", joined["run_id"], admission.RunID)
+	}
+	if joined["joined_after"] != float64(*initial[len(initial)-1].Sequence) {
+		t.Fatalf("the late subscriber was told it joined after %v, want %d", joined["joined_after"], *initial[len(initial)-1].Sequence)
+	}
 	resolvePermission(t, server, permissionRequestAt(t, initial), "resolve-mid-1")
 	middle := stream.drainUntil(protocol.TypeRunStatusUpdated)
 	lateSeen := late.drainUntil(protocol.TypeRunStatusUpdated)
@@ -200,7 +207,6 @@ func TestSSELiveSubscriptionMidRun(t *testing.T) {
 	late.drainUntil(protocol.TypeRunCompleted)
 	stream.expectEnd()
 	late.expectEnd()
-	_ = admission
 }
 
 func TestSSEStreamEndsOnSessionClose(t *testing.T) {

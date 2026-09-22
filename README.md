@@ -335,7 +335,19 @@ reconnect with a cursor at or after `oldest_available - 1`). A stream also
 ends when the client closes the connection; a stream that is open when the
 session closes receives the events already in flight and then ends, and a
 connection made to an already-closed session is refused with
-`409 session_closed` rather than parking. Sequence numbers are per-run: a
+`409 session_closed` rather than parking. One non-terminal signal opens the
+stream rather than ending it: `event: oap-subscribed` is written first when the
+subscription joins a session whose run has already emitted, and `joined_after`
+names the last sequence it missed, so a host that subscribed separately can see
+it did not start at the beginning and resubscribe with a cursor. The signal
+reports a position inside the run the subscription is attached to, and nothing
+about earlier runs: a subscription that begins at the start of its run gets no
+such line, whether that is a compound open's, whose subscription begins before
+the session has a run, or one that arrives between runs, after a second run is
+admitted and before it emits. In that last case the subscriber did miss the
+run before, and is not told so here — those events are another run's sequence
+space, and a signal naming a run the stream is not carrying would be worse than
+silence. Sequence numbers are per-run: a
 connection that happens to span an immediate resubmit (a second run admitted
 inside the settle window of the first) continues into the new run, and
 clients keying on the envelope `run_id` see each run's own sequence space.
@@ -421,6 +433,7 @@ written before the first envelope.
 
 | line | means |
 | --- | --- |
+| `"event":"oap-subscribed"` | the subscription joined its run already in progress; `joined_after` is the last sequence of that run it missed. Advisory, so a form too large to frame is retried without `session_id`, `run_id` and `message` and then dropped, never ending the subscription |
 | `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
 | `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available`/`latest_available` bound what is |

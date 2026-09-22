@@ -39,6 +39,7 @@ const (
 	signalSessionClosed = "oap-session-closed"
 	signalStreamFailed  = "oap-stream-failed"
 	signalFrameLimit    = "oap-frame-limit"
+	signalSubscribed    = "oap-subscribed"
 )
 
 type envelopeLine struct {
@@ -56,6 +57,15 @@ type overflowLine struct {
 	RunID        string `json:"run_id,omitempty"`
 	LastSequence uint64 `json:"last_sequence"`
 	Message      string `json:"message,omitempty"`
+}
+
+type subscribedLine struct {
+	Event       string `json:"event"`
+	ID          int64  `json:"id"`
+	SessionID   string `json:"session_id,omitempty"`
+	RunID       string `json:"run_id,omitempty"`
+	JoinedAfter uint64 `json:"joined_after"`
+	Message     string `json:"message,omitempty"`
 }
 
 type gapLine struct {
@@ -911,6 +921,13 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 func (s *Server) pump(ctx context.Context, entry *serve.Session, subscription *serve.Subscription, id int64, resumeFrom uint64, lines chan<- outLine) {
 	defer subscription.Close()
 
+	if run, joined, mid := subscription.JoinedAt(); mid {
+		if err := s.announceJoin(ctx, lines, entry, id, run, joined); err != nil {
+			s.logger.Printf("servestdio: subscription %d: %v", id, err)
+			return
+		}
+	}
+
 	var deliveredRun protocol.RunID
 	deliveredSequence := resumeFrom
 	for {
@@ -1005,6 +1022,23 @@ func (s *Server) failSubscription(ctx context.Context, lines chan<- outLine, ent
 			Message: "the run's event stream failed; resume with a cursor after this sequence",
 		},
 		streamFailedLine{Event: signalStreamFailed, ID: id, Sequence: sequence})
+}
+
+func (s *Server) announceJoin(ctx context.Context, lines chan<- outLine, entry *serve.Session, id int64, run protocol.RunID, joined uint64) error {
+	err := s.send(ctx, lines, subscribedLine{
+		Event: signalSubscribed, ID: id, SessionID: string(entry.ID()),
+		RunID: string(run), JoinedAfter: joined,
+		Message: "the subscription begins after this sequence; resubscribe with a cursor at or before it to replay what preceded this point",
+	})
+	if !errors.Is(err, ErrLineTooLarge) {
+		return err
+	}
+	s.logger.Printf("servestdio: subscription %d: %v", id, err)
+	if err := s.send(ctx, lines, subscribedLine{Event: signalSubscribed, ID: id, JoinedAfter: joined}); !errors.Is(err, ErrLineTooLarge) {
+		return err
+	}
+	s.logger.Printf("servestdio: subscription %d: the join point does not fit the frame limit", id)
+	return nil
 }
 
 func (s *Server) endSubscription(ctx context.Context, lines chan<- outLine, id int64, full, minimal any) {

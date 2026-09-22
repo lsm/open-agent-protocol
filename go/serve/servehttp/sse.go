@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	sseEventOverflow  = "oap-overflow"
-	sseEventReplayGap = "oap-replay-gap"
+	sseEventOverflow   = "oap-overflow"
+	sseEventReplayGap  = "oap-replay-gap"
+	sseEventSubscribed = "oap-subscribed"
 )
 
 func (s *Server) streamSubscription(w io.Writer, flusher http.Flusher, subscription *serve.Subscription) {
@@ -38,6 +39,18 @@ func (s *Server) streamSubscription(w io.Writer, flusher http.Flusher, subscript
 		}
 		flusher.Flush()
 	}
+}
+
+func writeSSESubscribed(w io.Writer, flusher http.Flusher, subscription *serve.Subscription) {
+	run, joined, mid := subscription.JoinedAt()
+	if !mid {
+		return
+	}
+	writeSSESignal(w, flusher, sseEventSubscribed, map[string]any{
+		"run_id":       string(run),
+		"joined_after": joined,
+		"message":      "the subscription begins after this sequence; resubscribe with a cursor at or before it to replay what preceded this point",
+	})
 }
 
 func writeSSEGap(w io.Writer, flusher http.Flusher, gap *base.ReplayGap) {

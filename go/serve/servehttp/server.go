@@ -735,6 +735,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	defer subscription.Close()
 	startSSE(w, flusher)
+	writeSSESubscribed(w, flusher, subscription)
 	s.streamSubscription(w, flusher, subscription)
 }
 
