@@ -270,8 +270,8 @@ fn pumpToEnd(backend: *Backend) !void {
     }
 }
 
-fn started(arena: *std.heap.ArenaAllocator, script: []const u8) !Backend {
-    var backend = try shellBackend(arena, script);
+fn started(arena: *std.heap.ArenaAllocator, comptime script: []const u8) !Backend {
+    var backend = try shellBackend(arena, "head -n 1 >/dev/null; " ++ script);
     try backend.submit("turn-1", "go", .{ .run_id = "run-1", .submission_id = "sub-1" });
     return backend;
 }
