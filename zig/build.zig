@@ -255,6 +255,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     hermes_rpc_mod.addImport("gojson", adapter_gojson_mod);
+    hermes_rpc_mod.addImport("goquote", adapter_goquote_mod);
     const hermes_session_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/hermes/session.zig"),
         .target = target,
