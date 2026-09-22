@@ -225,6 +225,7 @@ const (
 	paramSession = "session_id"
 	paramRequest = "request"
 	paramAfter   = "after"
+	paramRun     = "run_id"
 
 	paramAllowDegraded = "allow_degraded_features"
 )
@@ -235,7 +236,7 @@ func (request requestLine) only(fields ...string) *wireError {
 		allowed[field] = true
 	}
 	var extra []string
-	for _, param := range []string{paramAdapter, paramSession, paramAfter, paramRequest, paramAllowDegraded} {
+	for _, param := range []string{paramAdapter, paramSession, paramRun, paramAfter, paramRequest, paramAllowDegraded} {
 		if !allowed[param] && request.present[param] {
 			extra = append(extra, param)
 		}
@@ -818,7 +819,7 @@ func (s *Server) closeOp(ctx context.Context, sessionID string) (json.RawMessage
 func (s *Server) serveEvents(ctx context.Context, run *runState, request requestLine, lines chan<- outLine) {
 	id := *request.ID
 	fail := func(werr *wireError) { s.respond(ctx, lines, request, nil, werr) }
-	if werr := request.only(paramSession, paramAfter); werr != nil {
+	if werr := request.only(paramSession, paramRun, paramAfter); werr != nil {
 		fail(werr)
 		return
 	}
@@ -843,7 +844,10 @@ func (s *Server) serveEvents(ctx context.Context, run *runState, request request
 			return
 		}
 		resumeFrom = after
-		options = append(options, serve.After("", after))
+		options = append(options, serve.After(protocol.RunID(request.RunID), after))
+	} else if request.RunID != "" {
+		fail(&wireError{Code: "invalid_cursor", Message: "run_id names the run a cursor belongs to; it has no meaning without after"})
+		return
 	}
 
 	pumps, outcome, why := run.attach()

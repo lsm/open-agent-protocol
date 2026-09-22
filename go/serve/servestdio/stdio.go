@@ -583,6 +583,7 @@ type requestLine struct {
 	Op        string          `json:"op"`
 	Adapter   string          `json:"adapter,omitempty"`
 	SessionID string          `json:"session_id,omitempty"`
+	RunID     string          `json:"run_id,omitempty"`
 	After     json.RawMessage `json:"after,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
 
@@ -618,7 +619,7 @@ func decodeRequest(frame []byte) (requestLine, error) {
 }
 
 var canonicalKeys = map[string]bool{
-	"id": true, "op": true, "adapter": true, "session_id": true, "after": true, "request": true,
+	"id": true, "op": true, "adapter": true, "session_id": true, "run_id": true, "after": true, "request": true,
 	"allow_degraded_features": true,
 }
 

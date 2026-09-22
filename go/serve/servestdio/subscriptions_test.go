@@ -1031,3 +1031,117 @@ func TestAdvanceCursorHoldsItsHighWaterMark(t *testing.T) {
 		})
 	}
 }
+
+func TestEventsCursorFollowsTheRunItNames(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	session := openSessionEntry(t, hub, "two-runs")
+	first := runToCompletion(t, hub, session)
+	second := runToCompletion(t, hub, session)
+	if first == second {
+		t.Fatal("the second submission reused the first run id")
+	}
+
+	f := startFrontend(t, hub, Options{})
+	f.send(fmt.Sprintf(`{"id":4,"op":"events","session_id":"two-runs","run_id":%q,"after":1}`, first))
+	if response := f.expectResponse(4); !response.OK {
+		t.Fatalf("a cursor naming an older run was refused: %+v", response.Error)
+	}
+	signal := f.expectSignal(4, signalEnvelope)
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(signal.Envelope, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.RunID != first {
+		t.Fatalf("replay began on run %q, want the named run %q", envelope.RunID, first)
+	}
+
+	f.drainSubscription(4)
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEventsCursorWithoutARunStillFollowsTheCurrentOne(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	session := openSessionEntry(t, hub, "unnamed")
+	runToCompletion(t, hub, session)
+	second := runToCompletion(t, hub, session)
+
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":6,"op":"events","session_id":"unnamed","after":1}`)
+	if response := f.expectResponse(6); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	signal := f.expectSignal(6, signalEnvelope)
+	var envelope protocol.Envelope
+	if err := json.Unmarshal(signal.Envelope, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.RunID != second {
+		t.Fatalf("an unqualified cursor replayed run %q, want the current run %q", envelope.RunID, second)
+	}
+
+	f.drainSubscription(6)
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEventsRefusesARunWithoutACursor(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	session := openSessionEntry(t, hub, "bare")
+	runID := runToCompletion(t, hub, session)
+
+	f := startFrontend(t, hub, Options{})
+	f.send(fmt.Sprintf(`{"id":8,"op":"events","session_id":"bare","run_id":%q}`, runID))
+	response := f.expectResponse(8)
+	if response.OK {
+		t.Fatal("run_id without a cursor was accepted")
+	}
+	if response.Error.Code != "invalid_cursor" {
+		t.Fatalf("refusal code %q, want invalid_cursor", response.Error.Code)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEventsRefusesARunTheSessionNeverHad(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	session := openSessionEntry(t, hub, "ghost-run")
+	runToCompletion(t, hub, session)
+
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":10,"op":"events","session_id":"ghost-run","run_id":"run-never","after":1}`)
+	response := f.expectResponse(10)
+	if response.OK {
+		t.Fatal("a cursor naming an unknown run was accepted")
+	}
+	if response.Error.Code != "run_not_found" {
+		t.Fatalf("refusal code %q, want run_not_found", response.Error.Code)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunIDBelongsToTheEventsOpAlone(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	openSession(t, hub, "scoped")
+
+	f := startFrontend(t, hub, Options{})
+	f.send(`{"id":12,"op":"state","session_id":"scoped","run_id":"run-1"}`)
+	response := f.expectResponse(12)
+	if response.OK {
+		t.Fatal("the state op accepted a run_id")
+	}
+	if response.Error.Code != "invalid_request" {
+		t.Fatalf("refusal code %q, want invalid_request", response.Error.Code)
+	}
+	if !strings.Contains(response.Error.Message, "run_id") {
+		t.Fatalf("refusal %q does not name run_id", response.Error.Message)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
