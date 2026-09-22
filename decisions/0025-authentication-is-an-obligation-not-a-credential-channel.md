@@ -140,8 +140,8 @@ names both.
 ### Status is reported through one enum, in one place
 
 `authStatus` — `authenticated`, `login_required`, `expired`, `failed`,
-`unknown` — moves from `provider.schema.json` to `common.schema.json`, and both
-profiles reference it.
+`unknown` — moves from `provider.schema.json` to `common.schema.json`. One
+profile references it there: `modelEntry.auth_status`, on the provider side.
 
 **The state attaches to the thing it describes, and this protocol already
 decided where that is.** It is not the provider descriptor.
@@ -183,9 +183,12 @@ It moves rather than being copied because a second enum is a second thing to
 drift, which is the defect [#177](https://github.com/lsm/open-agent-protocol/issues/177)
 already is one instance of: the provider profile's `ProtocolError` dropped
 `retriable` because it had been modelled as its own struct rather than as the
-common shape narrowed by `allOf`. One vocabulary with two references is the
-pattern that held; two vocabularies naming the same states is the one that did
-not.
+common shape narrowed by `allOf`. `protocolError` is defined once and
+referenced from both profiles; `authStatus` is now defined once and referenced
+from one, and moving it is what makes the second reference, whenever
+agent-control needs one, a `$ref` rather than a fresh enum. One vocabulary in
+one place is the pattern that held; two vocabularies naming the same states is
+the one that did not.
 
 The enum's distinctions are the reason a feature support level is not enough on
 its own. An endpoint that cannot reach a model for want of a credential does
