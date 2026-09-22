@@ -268,6 +268,73 @@ and the schema keeps `code` an open string. A shared cross-harness code
 registry would be premature: no consumer requirement exists and the mappings
 are pinned per ledger. No change.
 
+## PF-12. Provider provisioning has no native operation to map — **unit held**
+
+**Evidence.** Searched for a provider write across all eight ledgers. The only
+provider-shaped operations recorded anywhere are OpenCode's `provider.list` and
+`provider.list/get`, both reads. No create, add, register, attach or set
+appears in any tranche.
+
+Three harnesses take a `provider` argument and all three are selecting from a
+catalog the process was started with, not introducing one:
+
+- **Hermes** — `session.create {… profile?, model?, provider?, …}`. The
+  integration gate records the mechanism plainly: the provider endpoint is an
+  in-process loopback reached through `OPENAI_BASE_URL`, the credential is a
+  test-owned fixture key, and the model "statically resolves to the openai
+  provider in the pinned catalog".
+- **DeepSeek** — `initialize {cwd, provider, model, maxTokens?}`, with the
+  endpoint supplied out of band through `DEEPSEEK_BASE_URL`.
+- **OpenCode** — `ModelRef {id, providerID, variant?}` on a session, resolved
+  against `provider.list/get`.
+
+In every case the endpoint and the credential arrive as environment at spawn.
+The session argument chooses among what the operator already configured.
+
+**Adjudication.** [The composition draft](../drafts/composition.md) records an
+empty provisioning row beside a complete tool-sources row, and
+[Decision 0017](../decisions/0017-provider-provisioning.md) writes that row as
+a `providers[]` attachment at session open. The row is real, but it is two
+questions and they have opposite standing.
+
+*Selecting* a provider is already expressible and needs no unit.
+`modelDescriptor` carries `provider_id` and `modelsResponse` carries
+`providers[]` of `providerDescriptor` with `wire`, `kind` and `endpoint`, so a
+control layer reads `models.list`, sees every model tagged with its provider
+and every provider's shape, and names one with `submit.model_id`. Choosing the
+model chooses the provider. This is the half every harness supports and it
+landed with 0006 and 0014 without anyone recording that it closed half of the
+missing row.
+
+*Attaching* a provider the loop does not have is what 0017 specifies, and it
+has no native evidence at this pin. [Decision 0003](../decisions/0003-staged-unit-graduation.md)
+step 3 requires a native adapter this project does not control to execute the
+unit through its production codec and reducer, advertised at the level the
+evidence supports. There is no operation to execute. It also cannot honestly
+graduate `emulated`, because emulation needs a native behavior to stand over
+and the only available substitute — respawning the child with a different
+environment — is process lifecycle rather than a session operation, and would
+silently change the identity of every session already open on that child.
+
+0017 is therefore **held at proposed**, not withdrawn. Its reasoning survives
+intact and its dependency on 0014 has since been satisfied; what is missing is
+upstream, not in this tree. It becomes graduable when a pinned harness gains a
+provider-introduction operation, or when a tranche brings a harness that has
+one. The `environment` bare-`NAME` allowlist it specifies is the right shape
+for that day and should not be redesigned in the meantime.
+
+Recorded because the composition table invites the opposite conclusion. Read
+alone it shows one empty row and one accepted precedent (`tool_sources`,
+Decision 0008) and reads as a single unit of work, unblocked. It is not, and
+the reason is not visible from the table.
+
+**Actionable instead.** `run.model_selection` is declared by exactly one
+adapter, Codex, at `native`/`ScopeRun`. Hermes, OpenCode, Pi and DeepSeek all
+accept a model natively — session-scoped for the first three, connection-scoped
+for DeepSeek, which fits neither `ScopeRun` nor `ScopeSession` and is its own
+mismatch to record. Those are unmapped rows with evidence available today,
+where 0017's is a mapped design with no evidence at all.
+
 ## What was deliberately not changed
 
 No evidence in eight tranches supported pulling forward: durable idempotent
@@ -291,6 +358,7 @@ exactly as Decision 0001 records, now with the additional citations above.
 | PF-9 upstream/convention | recorded | ledger + adapter fix |
 | PF-10 unowned-frame attribution | confirmation | this document |
 | PF-11 error-code synthesis | non-change, recorded | this document |
+| PF-12 provider provisioning | unit held, no native evidence | this document; Decision 0017 stays proposed |
 
 ## Review outcome (tranche verified)
 
