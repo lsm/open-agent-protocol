@@ -165,8 +165,8 @@ pub fn parseMessage(arena: std.mem.Allocator, line: []const u8, diagnostic: ?*Di
             if (!allowed(&allowed_error_members, entry.key_ptr.*)) return report.quoted(arena, "unknown error member {s}", entry.key_ptr.*);
         }
         const code = value.object.get("code") orelse return report.invalid("error code is required");
-        if (code != .integer and code != .null) return report.invalid("malformed error object");
         const detail = value.object.get("message") orelse return report.invalid("error message is required");
+        if (code != .integer and code != .null) return report.invalid("malformed error object");
         if (detail != .string or detail.string.len == 0) return report.invalid("malformed error object");
     }
     return .{ .kind = kind, .method = named, .raw = line };
@@ -345,6 +345,14 @@ const refusals = [_]Refusal{
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":\"m\"}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":1,\"message\":7}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":null}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\"}}", .message = "hermes rpc: invalid JSON-RPC message: error message is required" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":null}}", .message = "hermes rpc: invalid JSON-RPC message: error message is required" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{}}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"data\":1}}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"message\":7}}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":\"m\"}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":7}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":\"\"}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"m\"}", .message = "hermes rpc: id must be a string or integer" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"m\"}", .message = "hermes rpc: id must be a string or integer" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":[1],\"method\":\"m\"}", .message = "hermes rpc: id must be a string or integer" },
