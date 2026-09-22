@@ -598,6 +598,11 @@ func everyQuestionAnswerable(questions []protocol.InputQuestion) bool {
 		if len(question.Options) == 0 {
 			return false
 		}
+		for _, option := range question.Options {
+			if option.ID == "" || option.Label == "" {
+				return false
+			}
+		}
 	}
 	return true
 }

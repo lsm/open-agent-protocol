@@ -1163,9 +1163,23 @@ func TestFailedRunSettlesItsOpenChildrenToo(t *testing.T) {
 }
 
 func TestAGateNobodyCanAnswerIsRefused(t *testing.T) {
+	for _, frame := range []struct {
+		name  string
+		event string
+	}{
+		{"no prompt", `{"request_id":"aaaa1111","question":"","choices":["a","b"]}`},
+		{"an empty choice", `{"request_id":"aaaa1111","question":"which?","choices":[""]}`},
+		{"an empty choice in a batch", `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"pick","choices":[""]}]}`},
+	} {
+		t.Run(frame.name, func(t *testing.T) { assertGateRefused(t, frame.event) })
+	}
+}
+
+func assertGateRefused(t *testing.T, frame string) {
+	t.Helper()
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"","choices":["a","b"]}`)
+	f.event(native.EventClarifyRequest, 2, frame)
 	got := <-ch
 	events := drain(t, got.stream)
 	for _, envelope := range events {
@@ -1225,6 +1239,9 @@ func TestEveryQuestionAnswerableStatesWhatTheSchemaRequires(t *testing.T) {
 		{"a text question needs none", protocol.InputQuestion{ID: "q", Prompt: "say?", Kind: protocol.InputText}, true},
 		{"no id", protocol.InputQuestion{Prompt: "which?", Kind: protocol.InputText}, false},
 		{"no prompt", protocol.InputQuestion{ID: "q", Kind: protocol.InputText}, false},
+		{"an option with no id", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice, Options: []protocol.InputOption{{Label: "a"}}}, false},
+		{"an option with no label", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice, Options: []protocol.InputOption{{ID: "a"}}}, false},
+		{"one option of several with no id", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice, Options: []protocol.InputOption{{ID: "a", Label: "a"}, {Label: "b"}}}, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := everyQuestionAnswerable([]protocol.InputQuestion{test.question}); got != test.want {
