@@ -218,6 +218,23 @@ Verified against this tree at `68168956`:
   `"frame"` one. An earlier draft of this record had the status on the
   descriptor beside the flag and called it frame-decidable; that shape is
   refused by 0014 and the scope claim went with it.
+- The refused `providerDescriptor` member was a different failure from those
+  three, and wants a different check. Those were claims stronger than the tree
+  supports, and a grep for the negative catches them. This was a claim the tree
+  had already **adjudicated**: `0014:217` contains the exact motivation offered
+  for the member — a client that cannot tell "logged into one vendor, not the
+  other" cannot render a model picker — as the reason for the request it then
+  refuses. No care about phrasing finds that. `grep -rn auth_status decisions/`
+  does, in one command, and it was not run because the question felt like design
+  rather than fact.
+
+  The check has a failure mode worth naming beside it, because it defeated the
+  check *while it was being verified*: run with `| head -4`, that grep returned
+  0017 and this record and truncated 0014 — the one record that decides it.
+  Three times in this work a `head` has hidden the answer to a question about
+  whether something exists. A search asking whether something exists is not
+  allowed to be truncated.
+
 - [Decision 0020](0020-error-codes-are-declared.md)'s `error_codes` descriptor,
   which carries a code and the action a caller should take, is **decided and
   not built**. `error_codes` exists only in `pack.schema.json:36`, as a bare
