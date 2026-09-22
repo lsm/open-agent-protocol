@@ -49,6 +49,24 @@ pub struct BinaryResolver {
     pub base_dir: Option<PathBuf>,
 }
 
+async fn is_executable_file(candidate: &std::path::Path) -> bool {
+    let Ok(metadata) = tokio::fs::metadata(candidate).await else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 /// The names of the runtime executable on this platform, preferred first.
 ///
 /// `makai` trails `oapx` so an install predating the rename keeps resolving.
@@ -139,7 +157,7 @@ impl BinaryResolver {
                 base.join("zig-out").join("bin").join(name),
                 base.join("zig").join("zig-out").join("bin").join(name),
             ] {
-                if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
+                if is_executable_file(&candidate).await {
                     tracing::debug!(path = %candidate.display(), "resolved binary from local build");
                     return Ok(candidate);
                 }

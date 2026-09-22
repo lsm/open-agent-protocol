@@ -63,6 +63,10 @@ class BinaryResolverOptions:
     cache_dir: Optional[str] = None
 
 
+def _is_executable_file(candidate: Path) -> bool:
+    return candidate.is_file() and os.access(candidate, os.X_OK)
+
+
 def _binary_names() -> tuple[str, ...]:
     suffix = ".exe" if os.name == "nt" else ""
     return tuple(f"{name}{suffix}" for name in ("oapx", "makai"))
@@ -103,7 +107,7 @@ def resolve_makai_binary(options: Optional[BinaryResolverOptions] = None) -> str
             Path.cwd() / "zig-out" / "bin" / name,
             Path.cwd() / "zig" / "zig-out" / "bin" / name,
         ):
-            if candidate.exists():
+            if _is_executable_file(candidate):
                 return str(candidate)
 
     for name in _binary_names():
