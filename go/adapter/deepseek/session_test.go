@@ -1,6 +1,7 @@
 package deepseek
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -933,4 +934,107 @@ func TestCompletedTurnWithNoAssistantMessageIsRefused(t *testing.T) {
 		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
 	})
 	assertFailedWith(t, events, "deepseek_missing_final_message", "completed turn omitted assistant message")
+}
+
+const duplicateKeyArguments = `{"path":"a","path":"b"}`
+
+func notificationParams(t *testing.T, seq int64, typ string, data any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(&native.SessionEventNotification{SessionID: "session", Event: event(seq, typ, data)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func toolCallEvent(arguments string) native.ToolCall {
+	return native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: arguments}
+}
+
+func finalToolCallMessage(arguments string) assistantMessageWire {
+	blocks := []native.ContentBlock{{Type: "tool-call", ID: "call-1", Name: "read", Arguments: arguments}}
+	return assistantMessage(1, 1, "a", blocks, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil)
+}
+
+func TestDuplicateKeyArgumentsAreRefusedAtBothSinksAndValidOnesAreNot(t *testing.T) {
+	for _, sink := range []struct {
+		name  string
+		frame func(arguments string) any
+	}{
+		{"tool/call", func(arguments string) any { return toolCallEvent(arguments) }},
+		{"assistant/message", func(arguments string) any { return finalToolCallMessage(arguments) }},
+	} {
+		t.Run(sink.name, func(t *testing.T) {
+			_, err := native.DecodeNotification(native.NotifySessionEvent, notificationParams(t, 5, sink.name, sink.frame(duplicateKeyArguments)))
+			if !errors.Is(err, native.ErrInvalid) {
+				t.Fatalf("duplicate keys in arguments were admitted: %v", err)
+			}
+			if _, err := native.DecodeNotification(native.NotifySessionEvent, notificationParams(t, 5, sink.name, sink.frame(`{"path":"a"}`))); err != nil {
+				t.Fatalf("distinct keys in arguments were refused: %v", err)
+			}
+		})
+	}
+}
+
+func TestArgumentsCarryingANumberGoCannotHoldAreStillAdmitted(t *testing.T) {
+	const beyondFloat64 = `{"ts":1e999}`
+	if !json.Valid([]byte(beyondFloat64)) {
+		t.Fatal("the probe literal is not JSON")
+	}
+	for _, sink := range []struct {
+		name  string
+		frame func(arguments string) any
+	}{
+		{"tool/call", func(arguments string) any { return toolCallEvent(arguments) }},
+		{"assistant/message", func(arguments string) any { return finalToolCallMessage(arguments) }},
+	} {
+		t.Run(sink.name, func(t *testing.T) {
+			if _, err := native.DecodeNotification(native.NotifySessionEvent, notificationParams(t, 5, sink.name, sink.frame(beyondFloat64))); err != nil {
+				t.Fatalf("a number the trace decoder accepts was refused: %v", err)
+			}
+		})
+	}
+}
+
+func TestArgumentsTravelVerbatimSoATraceWithDuplicateKeysIsRefused(t *testing.T) {
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return newFake(), "deepseek-chat", nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := implementation.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, client := openTest(t)
+	admitted, stream := admission(t, session, client, "receipt")
+	const carried = `{"path":"a","mode":"r"}`
+	client.ev(5, "tool/call", toolCallEvent(carried))
+	client.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.UserMessage{ID: "m", Role: "user", Source: native.MessageSource{Kind: "tool", CallID: "call-1"}, Content: []native.ContentBlock{{Type: "tool-result", ToolCallID: "call-1", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}}}}})
+	client.ev(7, "assistant/message", finalToolCallMessage(carried))
+	client.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+	client.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	events := drain(t, stream)
+
+	requested := -1
+	for i, envelope := range events {
+		if envelope.Type != protocol.TypeActionCallRequested {
+			continue
+		}
+		requested = i
+		var payload protocol.ActionCallPayload
+		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if string(payload.ArgumentsJSON) != carried {
+			t.Fatalf("arguments did not travel verbatim: %s", payload.ArgumentsJSON)
+		}
+	}
+	if requested < 0 {
+		t.Fatal("no action.call.requested was emitted")
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptor, events)
+
+	events[requested].Payload = json.RawMessage(bytes.Replace(events[requested].Payload, []byte(carried), []byte(duplicateKeyArguments), 1))
+	adaptertest.AssertProtocolInvalidWithSubmit(t, request(), admitted, descriptor, events, "duplicate_key")
 }
