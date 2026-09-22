@@ -797,6 +797,26 @@ func respondMethod(kind string) string {
 	return ""
 }
 
+func (s *Session) settleChildren(run *runState) {
+	for _, binding := range s.interactions {
+		if binding.run != run || binding.resolved {
+			continue
+		}
+		binding.resolved = true
+		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
+	}
+	for _, t := range s.tools {
+		if t.run != run || t.terminal {
+			continue
+		}
+		t.terminal = true
+		p := s.toolPayload(t)
+		p.ArgumentsJSON = nil
+		p.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "turn settled with an unfinished hermes tool"}
+		_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, p, false, t.started)
+	}
+}
+
 func (s *Session) settleRun(run *runState, payload *native.MessageCompletePayload) {
 	if !run.started {
 
@@ -812,6 +832,7 @@ func (s *Session) settleRun(run *runState, payload *native.MessageCompletePayloa
 		s.failRun(run, "hermes_invalid_settlement", "child-mirror settlement on the parent stream")
 		return
 	}
+	s.settleChildren(run)
 	if payload.Status == "complete" {
 		usage := &protocol.Usage{InputTokens: uint64(payload.Usage.Input), OutputTokens: uint64(payload.Usage.Output), TotalTokens: uint64(payload.Usage.Total)}
 		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(payload.Text)}, StopReason: "completed", Usage: usage}, true)
@@ -949,6 +970,7 @@ func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 		s.abortPreStartUnlocked(run, fmt.Errorf("%w: %s", ErrNativeProtocol, msg))
 		return
 	}
+	s.settleChildren(run)
 	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: msg}, SettledBy: settledBy}, true)
 }
 
