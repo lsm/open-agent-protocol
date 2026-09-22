@@ -887,6 +887,9 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	if cancelled.SettledBy != protocol.SettledByInferred {
 		t.Fatalf("settled_by = %q, want %q", cancelled.SettledBy, protocol.SettledByInferred)
 	}
+	if queuedEvents[0].Extensions[costExtension] == nil {
+		t.Fatalf("a reservation cancelled before promotion carried no cost: %v", queuedEvents[0].Extensions)
+	}
 
 	state, err := session.State(context.Background())
 	if err != nil {
@@ -1625,5 +1628,37 @@ func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
 	}
 	if reported.TotalCostUSD != 1.0 {
 		t.Fatalf("total_cost_usd = %v, want the two steps summed", reported.TotalCostUSD)
+	}
+}
+
+func TestAFailedTerminalCarriesTheCostTheStepsReported(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	messageID := native.MessageID(response.MessageIDs[0])
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
+	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 5, native.TypeStepFailed, native.StepFailedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", Error: native.UnknownErrorBlock{Type: "ProviderError", Message: "upstream refused"}})
+	events := adaptertest.Drain(t, stream, time.Second)
+
+	terminal := events[len(events)-1]
+	if terminal.Type != protocol.TypeRunFailed {
+		t.Fatalf("terminal = %s (%v)", terminal.Type, types(events))
+	}
+	carried := terminal.Extensions[costExtension]
+	if carried == nil {
+		t.Fatalf("a run that failed after a paid step carried no cost: %v", terminal.Extensions)
+	}
+	var reported struct {
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	}
+	if err := json.Unmarshal(carried, &reported); err != nil {
+		t.Fatal(err)
+	}
+	if reported.TotalCostUSD != 0.25 {
+		t.Fatalf("total_cost_usd = %v, want the step that completed before the failure", reported.TotalCostUSD)
 	}
 }

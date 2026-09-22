@@ -55,10 +55,18 @@ than from a vendor domain, because the repository is what the provenance record
 establishes and `anomalyco`'s domain is not something this tree knows.
 
 Every `step.ended` in the pinned corpus carries `cost`, and every one carries
-zero, so all thirteen cases now report `"total_cost_usd": 0`. That is the
-harness's own statement and not an absence: unlike Claude's `*float64`, this
-member is always present on the wire, so there is no case where the adapter has
-nothing to say.
+zero, so every one of the fifteen cases now reports `"total_cost_usd": 0`. That
+is the harness's own statement and not an absence: unlike Claude's `*float64`,
+this member is always present on the wire, so there is no case where the adapter
+has nothing to say.
+
+Every terminal carries it, not only the ones that succeeded. Four corpus cases
+end in `run.failed` and two in `run.cancelled`, including a reservation
+cancelled before it was ever promoted, and a run that failed after a paid step
+still spent what it spent. The cost is a fact about the run rather than about
+the way it ended, which is the rule the Claude adapter's ledger states and the
+reason `failRunSettled` stamps the extension rather than the completion path
+alone.
 
 ## Wire protocol
 

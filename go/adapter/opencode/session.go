@@ -981,7 +981,7 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 	if reservation {
 
 		<-run.admitted
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion", SettledBy: protocol.SettledByInferred}, true)
+		_ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: id, Reason: "reservation cancelled before promotion", SettledBy: protocol.SettledByInferred}, true, s.reportedRunCost(run))
 		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
 	if err := s.client.Interrupt(ctx, s.nativeID); err != nil {
@@ -1116,7 +1116,13 @@ func (s *session) failRun(run *runState, code, message string) {
 
 func (s *session) failRunSettled(run *runState, code, message, settledBy string) {
 	s.settleTools(run, true)
-	_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true)
+	_ = s.emitWith(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: message}, SettledBy: settledBy}, true, s.reportedRunCost(run))
+}
+
+func (s *session) reportedRunCost(run *runState) map[string]json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return reportedCost(run.cost)
 }
 
 func (s *session) transportFailed() {
