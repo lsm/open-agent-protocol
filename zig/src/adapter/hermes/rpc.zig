@@ -350,7 +350,6 @@ const refusals = [_]Refusal{
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{}}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"data\":1}}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"message\":7}}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
-    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":\"m\"}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":7}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":\"\"}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"m\"}", .message = "hermes rpc: id must be a string or integer" },
@@ -410,5 +409,17 @@ test "a refusal that quotes Go's own decoder is named here rather than reproduce
         } else |_| {}
         try testing.expectEqualStrings(expectation.message, diagnostic.message);
         try testing.expect(std.mem.startsWith(u8, diagnostic.message, invalid_message_prefix));
+    }
+}
+
+test "no frame is pinned twice, in either table" {
+    inline for (.{ refusals, substitutes }) |table| {
+        for (table, 0..) |row, i| {
+            for (table[i + 1 ..]) |later| {
+                if (!std.mem.eql(u8, row.frame, later.frame)) continue;
+                std.debug.print("\npinned twice: {s}\n", .{row.frame});
+                return error.FramePinnedTwice;
+            }
+        }
     }
 }
