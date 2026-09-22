@@ -4,7 +4,7 @@ Every test here needs ``OAP_SDK_BINARY_PATH`` and skips without it, so a green
 ``pytest`` with the variable unset means **zero** real-runtime coverage. Build
 one first::
 
-    zig build install --prefix /tmp/makai-py
+    zig build install --prefix /tmp/oapx-py
     OAP_SDK_BINARY_PATH=/tmp/oapx-py/bin/oapx pytest
 
 No provider credentials are needed: the model catalogue, envelope validation,

@@ -4,7 +4,7 @@
 //! mirrors `typescript/test/makai_binary_smoke.test.ts`. Build one with:
 //!
 //! ```text
-//! zig build install --prefix /tmp/makai-rs
+//! zig build install --prefix /tmp/oapx-rs
 //! OAP_SDK_BINARY_PATH=/tmp/oapx-rs/bin/oapx cargo test --test real_binary
 //! ```
 //!

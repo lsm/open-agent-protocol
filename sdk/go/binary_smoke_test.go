@@ -13,7 +13,7 @@ import (
 // These tests drive a real `oapx --stdio` runtime. They are skipped unless
 // OAP_SDK_BINARY_PATH names one:
 //
-//	zig build install --prefix /tmp/makai-go
+//	zig build install --prefix /tmp/oapx-go
 //	OAP_SDK_BINARY_PATH=/tmp/oapx-go/bin/oapx go test -race ./...
 //
 // Everything covered here works without provider credentials: model
