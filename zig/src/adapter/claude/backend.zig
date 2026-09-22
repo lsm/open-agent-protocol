@@ -6,6 +6,8 @@ const rpc = @import("rpc");
 pub const Error = error{
     ExecutableRequired,
     ToolPostureRequired,
+    ToolAllowlistEmpty,
+    ToolNameEmpty,
     InvalidTurnUUID,
 };
 
@@ -47,6 +49,8 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
     switch (posture) {
         .unrestricted => {},
         .allowed => |names| {
+            if (names.len == 0) return Error.ToolAllowlistEmpty;
+            for (names) |name| if (name.len == 0) return Error.ToolNameEmpty;
             try argv.append(arena, "--allowedTools");
             try argv.appendSlice(arena, names);
         },
@@ -73,10 +77,38 @@ pub fn validateTurnUUID(uuid: []const u8) !void {
     }
 }
 
+fn goJSONString(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
+    const encoded = try std.json.Stringify.valueAlloc(arena, value, .{});
+    var out = std.ArrayList(u8).empty;
+    var index: usize = 0;
+    while (index < encoded.len) {
+        if (index + 3 <= encoded.len and encoded[index] == 0xE2 and encoded[index + 1] == 0x80) {
+            if (encoded[index + 2] == 0xA8) {
+                try out.appendSlice(arena, "\\u2028");
+                index += 3;
+                continue;
+            }
+            if (encoded[index + 2] == 0xA9) {
+                try out.appendSlice(arena, "\\u2029");
+                index += 3;
+                continue;
+            }
+        }
+        switch (encoded[index]) {
+            '<' => try out.appendSlice(arena, "\\u003c"),
+            '>' => try out.appendSlice(arena, "\\u003e"),
+            '&' => try out.appendSlice(arena, "\\u0026"),
+            else => try out.append(arena, encoded[index]),
+        }
+        index += 1;
+    }
+    return out.toOwnedSlice(arena);
+}
+
 pub fn userTurn(arena: std.mem.Allocator, uuid: []const u8, text: []const u8) ![]const u8 {
     try validateTurnUUID(uuid);
-    const content = try std.json.Stringify.valueAlloc(arena, text, .{});
-    const turn = try std.json.Stringify.valueAlloc(arena, uuid, .{});
+    const content = try goJSONString(arena, text);
+    const turn = try goJSONString(arena, uuid);
     return std.mem.concat(arena, u8, &.{
         "{\"message\":{\"content\":",
         content,
@@ -118,6 +150,7 @@ pub const Backend = struct {
         try self.reducer.submitAs(uuid, identity);
         self.transport.write(frame) catch |err| {
             self.settled = true;
+            self.reap();
             try self.reducer.transportFailed(@errorName(err));
             return err;
         };
@@ -200,14 +233,20 @@ test "a model and a tool allowlist follow the fixed argv, in that order" {
     for (want, tail) |expected, got| try std.testing.expectEqualStrings(expected, got);
 }
 
-test "an unrestricted posture passes no allowlist, which is not the same as an empty one" {
+test "an unrestricted posture passes no allowlist, and an empty allowlist is refused rather than meaning one" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const unrestricted = try spawnFor(arena.allocator(), .{ .executable = "/bin/claude", .tools = .unrestricted });
     for (unrestricted.args) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "--allowedTools"));
 
-    const empty = try spawnFor(arena.allocator(), .{ .executable = "/bin/claude", .tools = .{ .allowed = &.{} } });
-    try std.testing.expectEqualStrings("--allowedTools", empty.args[empty.args.len - 1]);
+    try std.testing.expectError(Error.ToolAllowlistEmpty, spawnFor(arena.allocator(), .{
+        .executable = "/bin/claude",
+        .tools = .{ .allowed = &.{} },
+    }));
+    try std.testing.expectError(Error.ToolNameEmpty, spawnFor(arena.allocator(), .{
+        .executable = "/bin/claude",
+        .tools = .{ .allowed = &.{ "Read", "" } },
+    }));
 }
 
 test "a config that states no tool posture is refused rather than defaulted" {
@@ -233,6 +272,18 @@ test "the user turn is the frame the pinned marshal produces, key order included
     try std.testing.expectEqualStrings(
         "{\"message\":{\"content\":\"fix the test\",\"role\":\"user\"},\"origin\":{\"kind\":\"human\"}," ++
             "\"parent_tool_use_id\":null,\"session_id\":\"default\",\"type\":\"user\",\"uuid\":\"turn-1\"}",
+        frame,
+    );
+}
+
+test "prompt text is escaped the way encoding/json escapes it, HTML and line separators included" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const frame = try userTurn(arena.allocator(), "turn-1", "a<b&c>d\u{2028}e\u{2029}f");
+    try std.testing.expectEqualStrings(
+        "{\"message\":{\"content\":\"a\\u003cb\\u0026c\\u003ed\\u2028e\\u2029f\",\"role\":\"user\"}," ++
+            "\"origin\":{\"kind\":\"human\"},\"parent_tool_use_id\":null,\"session_id\":\"default\"," ++
+            "\"type\":\"user\",\"uuid\":\"turn-1\"}",
         frame,
     );
 }
@@ -415,6 +466,7 @@ test "a turn the transport refuses to write settles the run rather than leaving 
     );
     try std.testing.expect(backend.reducer.unusable);
     try std.testing.expect(backend.reducer.run == null);
+    try std.testing.expect(backend.closed);
     try std.testing.expect(!try backend.pump());
 }
 
