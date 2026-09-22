@@ -371,6 +371,7 @@ pub const Reducer = struct {
             self.buffered.clearRetainingCapacity();
             return;
         }
+        try self.settleChildren(run);
         var failure = self.object();
         try self.put(&failure, "code", str("hermes_process_exit"));
         try self.put(&failure, "message", str(detail));
@@ -1751,6 +1752,39 @@ test "the endpoint and revision the options name are what the envelopes carry" {
     try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
     try testing.expectEqualStrings("hermes.supplied", payloadAt(&reducer, 1).get("requested_by").?.string);
     try testing.expectEqualStrings("supplied-revision", reducer.envelopes.items[1].object.get("capability_revision").?.string);
+}
+
+test "a transport death settles the run's open children before its terminal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once","deny"]}
+    );
+    try feedEvent(&reducer, scratch, "tool.start",
+        \\{"tool_id":"t1","name":"read","context":"read"}
+    );
+    try reducer.transportFailed("hermes native: child exited");
+
+    var resolved: ?usize = null;
+    var failed: ?usize = null;
+    var terminal: ?usize = null;
+    for (reducer.envelopes.items, 0..) |envelope, index| {
+        const kind = envelope.object.get("type").?.string;
+        if (std.mem.eql(u8, kind, "user.input.resolved")) resolved = index;
+        if (std.mem.eql(u8, kind, "action.call.failed")) failed = index;
+        if (std.mem.eql(u8, kind, "run.failed")) terminal = index;
+    }
+    try testing.expect(resolved != null);
+    try testing.expect(failed != null);
+    try testing.expect(terminal != null);
+    try testing.expect(resolved.? < terminal.?);
+    try testing.expect(failed.? < terminal.?);
+    try testing.expectEqualStrings("cancelled", payloadAt(&reducer, resolved.?).get("status").?.string);
+    try testing.expectEqualStrings("incomplete_tool", payloadAt(&reducer, failed.?).get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("hermes_process_exit", payloadAt(&reducer, terminal.?).get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("inferred", payloadAt(&reducer, terminal.?).get("settled_by").?.string);
 }
 
 test "a run settles its open children before its own terminal" {
