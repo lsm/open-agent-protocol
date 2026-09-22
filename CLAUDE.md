@@ -14,6 +14,13 @@ by later decisions; `drafts/` holds the prose profiles, and
 adapting eight harnesses; `research/<harness>-<pin>-mapping.md` is the spec for
 one adapter. Read the decisions before changing protocol behavior.
 
+The Zig runtime and the SDK wire have their own normative pair, which the
+protocol records do not cover and which is easy to miss now that they live in
+one file: `DESIGN.md` is authoritative for architecture, protocol boundaries,
+ownership, sequencing and transport posture, and
+`docs/v1-sdk-agent-provider-spec.md` is the normative SDK and protocol spec.
+Read those before changing SDK or Zig protocol behavior.
+
 A `research/` ledger and a `fixtures/adapters/` corpus both record an upstream
 project's vocabulary rather than ours, so never rename an identifier inside
 either. A sweep that renamed a native member in a corpus would rename it in the
@@ -136,6 +143,14 @@ one it serves. They share the base envelope and vocabulary but not
 an argument rather than a flag (decision 0019). State lives under `~/.oapx`; on
 macOS credentials are Keychain-first under `ai.hyperneo.oap`, falling back to
 `~/.oapx/auth.json`, so clearing that file alone leaves live credentials behind.
+
+**Never move credentials to a plain file.** The Keychain is awkward on macOS —
+reads fail fast and fall back, writes still prompt, and an access list binds to
+the code hash so every unsigned rebuild prompts again. None of that is a reason
+to relocate them; it is a reason to sign the build. And because a write prompts,
+a non-interactive shell never surfaces the prompt and the write **blocks**
+rather than failing: bound any invocation that may persist credentials with an
+external timeout, so a hang is visible instead of silent.
 
 Rules the source will not tell you:
 
