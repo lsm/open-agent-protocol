@@ -8,9 +8,9 @@ from typing import Any, Dict, List
 import pytest
 
 from conftest import FakeServerFactory, read_log
-from makai.auth import flatten_auth_event
-from makai.errors import TIMEOUT_CODE, MakaiAuthError
-from makai.types import (
+from oap_sdk.auth import flatten_auth_event
+from oap_sdk.errors import TIMEOUT_CODE, MakaiAuthError
+from oap_sdk.types import (
     AuthErrorEvent,
     AuthEvent,
     AuthFlowHandlers,
@@ -339,7 +339,7 @@ async def test_prompt_handler_exception_cancels(fake: FakeServerFactory) -> None
 
 
 async def test_per_call_handlers_win_over_client_defaults(fake: FakeServerFactory) -> None:
-    from makai.client import AuthOptions
+    from oap_sdk.client import AuthOptions
 
     default: List[AuthEvent] = []
     per_call: List[AuthEvent] = []
@@ -368,7 +368,7 @@ async def test_per_call_handlers_win_over_client_defaults(fake: FakeServerFactor
 
 
 async def test_client_default_handlers_used_when_no_per_call(fake: FakeServerFactory) -> None:
-    from makai.client import AuthOptions
+    from oap_sdk.client import AuthOptions
 
     default: List[AuthEvent] = []
     client = await fake.client(

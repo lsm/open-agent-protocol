@@ -6,7 +6,7 @@ const { ulid } = require("ulid");
 process.stdout.write(JSON.stringify({ type: "ready", protocol_version: "1" }) + "\n");
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-const requestLog = process.env.MAKAI_TEST_REQUEST_LOG || "";
+const requestLog = process.env.OAP_SDK_TEST_REQUEST_LOG || "";
 
 function appendLog(path, line) {
   if (!path) return;

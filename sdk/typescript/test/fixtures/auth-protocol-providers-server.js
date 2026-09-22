@@ -7,8 +7,8 @@ const { ulid } = require("ulid");
 process.stdout.write(JSON.stringify({ type: "ready", protocol_version: "1" }) + "\n");
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-const requestLog = process.env.MAKAI_TEST_REQUEST_LOG || "";
-const frameLog = process.env.MAKAI_TEST_FRAME_LOG || "";
+const requestLog = process.env.OAP_SDK_TEST_REQUEST_LOG || "";
+const frameLog = process.env.OAP_SDK_TEST_FRAME_LOG || "";
 
 function appendLog(path, line) {
   if (!path) return;
@@ -70,7 +70,7 @@ rl.on("line", (line) => {
         },
       });
     };
-    const responseDelayMs = Number(process.env.MAKAI_TEST_RESPONSE_DELAY_MS || "0");
+    const responseDelayMs = Number(process.env.OAP_SDK_TEST_RESPONSE_DELAY_MS || "0");
     if (responseDelayMs > 0) setTimeout(respond, responseDelayMs);
     else respond();
   }

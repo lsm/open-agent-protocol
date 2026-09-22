@@ -1,5 +1,5 @@
 [package]
-name = "makai"
+name = "oap-sdk"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
@@ -12,7 +12,7 @@ categories = ["api-bindings", "asynchronous"]
 
 [features]
 default = []
-# Enables downloading the runtime binary from `MAKAI_BINARY_URL` / `binary_url`.
+# Enables downloading the runtime binary from `OAP_SDK_BINARY_URL` / `binary_url`.
 # Without it a configured URL is only usable when the checksum-verified file is
 # already present in the cache directory.
 download = ["dep:reqwest"]

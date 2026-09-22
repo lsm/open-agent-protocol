@@ -10,12 +10,12 @@ Reference spec: `docs/v1-sdk-agent-provider-spec.md`
 
 - TS OAuth login/list APIs exist, but currently shell out to CLI auth commands.
 - Demo chat still manually:
-  - reads `~/.makai/auth.json`,
+  - reads `~/.oapx/auth.json`,
   - builds provider-specific HTTP headers/requests,
   - parses provider-specific responses.
 - `MakaiStdioClient` currently provides transport primitives (`connect`, `send`, `nextFrame`) but no high-level chat API.
 - `makai --stdio` currently returns `ready` and does not process protocol chat envelopes yet.
-- TS tests pass locally (`npm test`), with binary-dependent e2e tests skipped when `MAKAI_BINARY_PATH` is unset.
+- TS tests pass locally (`npm test`), with binary-dependent e2e tests skipped when `OAP_SDK_BINARY_PATH` is unset.
 
 ## Plan
 
@@ -119,7 +119,7 @@ Reference spec: `docs/v1-sdk-agent-provider-spec.md`
   - high-level `auth.listProviders` / `auth.login` / `provider.complete` / `provider.stream` / `agent.run` / `agent.stream` integration tests with fixtures,
   - demo tests updated to assert provider-agnostic chat path.
 - End-to-end:
-  - run binary smoke/e2e tests with `MAKAI_BINARY_PATH` configured in CI.
+  - run binary smoke/e2e tests with `OAP_SDK_BINARY_PATH` configured in CI.
 
 ## Acceptance Criteria
 

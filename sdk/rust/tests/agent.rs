@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use makai::{AgentEvent, Error, ExecutionRequest, ProviderEvent, RunOptions, Tool};
+use oap_sdk::{AgentEvent, Error, ExecutionRequest, ProviderEvent, RunOptions, Tool};
 
 const MODEL: &str = "anthropic/anthropic-messages@claude-sonnet-4-5";
 
@@ -26,7 +26,7 @@ fn kinds(frames: &[serde_json::Value]) -> Vec<String> {
 async fn run_walks_start_message_result_and_stop_in_order() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -56,7 +56,7 @@ async fn inbound_sequences_are_per_session_and_start_at_one() {
     // to 2, and the stop carries the next expected value.
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -88,7 +88,7 @@ async fn inbound_sequences_are_per_session_and_start_at_one() {
 async fn each_run_gets_a_fresh_session_and_restarts_at_one() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -124,7 +124,7 @@ async fn each_run_gets_a_fresh_session_and_restarts_at_one() {
 async fn a_caller_supplied_session_id_is_used_verbatim() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -194,7 +194,7 @@ async fn tool_results_correlate_to_the_request_and_skip_the_inbound_counter() {
     // consume an inbound sequence number, so the stop still carries 3.
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("agent_tools")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -306,7 +306,7 @@ async fn stream_aggregates_usage_across_turns() {
 async fn stream_tears_the_session_down_after_a_clean_finish() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -338,7 +338,7 @@ async fn stream_tears_the_session_down_after_a_clean_finish() {
 async fn dropping_an_agent_stream_stops_the_session() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("agent_slow")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -398,7 +398,7 @@ async fn a_busy_session_is_never_stopped_by_the_attempt_that_lost_it() {
     // run. Stopping it would remove and cancel that run.
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("agent_busy")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -432,7 +432,7 @@ async fn a_rejected_start_is_reported_without_a_stop() {
     // up as an extra frame here.
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("agent_busy")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -466,8 +466,8 @@ async fn an_unresolved_message_makes_the_stop_probe_both_sequences() {
     // told the client nothing before the call timed out.
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("agent_silent_after_message")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
-        .env("MAKAI_FAKE_EXPECTED_STOP_SEQUENCE", "3")
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_EXPECTED_STOP_SEQUENCE", "3")
         .response_timeout(Duration::from_millis(300))
         .connect()
         .await
@@ -513,8 +513,8 @@ async fn an_aborted_stream_stops_an_unresolved_session_at_both_sequences() {
     // idle eviction.
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("agent_silent_after_message")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
-        .env("MAKAI_FAKE_EXPECTED_STOP_SEQUENCE", "2")
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_EXPECTED_STOP_SEQUENCE", "2")
         .response_timeout(Duration::from_millis(300))
         .connect()
         .await
@@ -558,8 +558,8 @@ async fn a_settled_run_stops_once_without_probing() {
     // admitted, so the stop goes straight to the post-send value.
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
-        .env("MAKAI_FAKE_EXPECTED_STOP_SEQUENCE", "3")
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_EXPECTED_STOP_SEQUENCE", "3")
         .connect()
         .await
         .expect("connects");

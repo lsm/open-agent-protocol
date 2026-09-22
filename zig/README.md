@@ -16,7 +16,7 @@ If you are consuming a scoped release, install the scope published by your regis
 npm install @anthropic/makai
 ```
 
-You also need access to the Makai runtime binary. By default the SDK prefers the installed `@makai/cli-<platform>-<arch>` optional dependency, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`, then `makai`. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the Makai runtime binary. By default the SDK prefers the installed `@oap-sdk/cli-<platform>-<arch>` optional dependency, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`, then `makai`. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -228,7 +228,7 @@ async function main(): Promise<void> {
         onEvent: (event) => {
           if (event.type === "auth_url") console.log(`Open ${event.url}`);
         },
-        onPrompt: async (prompt) => prompt.allow_empty ? "" : process.env.MAKAI_AUTH_CODE ?? "",
+        onPrompt: async (prompt) => prompt.allow_empty ? "" : process.env.OAPX_AUTH_CODE ?? "",
       },
     },
   });
@@ -293,7 +293,7 @@ import { createMakaiClient } from "makai";
 async function main(): Promise<void> {
   const client = await createMakaiClient({
     resolver: {
-      binaryPath: "/opt/makai/bin/makai",
+      binaryPath: "/opt/oapx/bin/oapx",
     },
   });
 
@@ -307,7 +307,7 @@ async function main(): Promise<void> {
 void main();
 ```
 
-You can also set `MAKAI_BINARY_PATH=/opt/makai/bin/makai`.
+You can also set `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`.
 
 ### Download from URL with checksum
 
@@ -333,21 +333,21 @@ async function main(): Promise<void> {
 void main();
 ```
 
-Environment variable equivalents are `MAKAI_BINARY_URL` and `MAKAI_BINARY_SHA256`.
+Environment variable equivalents are `OAP_SDK_BINARY_URL` and `OAP_SDK_BINARY_SHA256`.
 
 ### PATH lookup and local builds
 
 With no resolver options, Makai checks, in order:
 
-1. The `@makai/cli-<platform>-<arch>` optional dependency, when it is installed
+1. The `@oap-sdk/cli-<platform>-<arch>` optional dependency, when it is installed
 2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-3. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
+3. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 4. `oapx` on `PATH`, then `makai`
 
 `oapx` is tried in every location before `makai` is tried in any, so a nested
 `oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
-Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. Set `MAKAI_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
+Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. Set `OAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
 
 `handshakeTimeoutMs` bounds the `ready` handshake in `connect()`; a failed handshake terminates the spawned runtime process. `responseTimeoutMs` bounds each `provider`, `agent`, and `models` frame wait. `frameTimeoutMs` bounds each `auth` frame wait, and is also the fallback for `responseTimeoutMs` when that is unset. Setting only `responseTimeoutMs` leaves `client.auth` on its 30s default.
 
@@ -359,7 +359,7 @@ async function main(): Promise<void> {
     // Optional transport settings:
     args: ["--stdio"],
     cwd: process.cwd(),
-    env: { ...process.env, MAKAI_LOG: "info" },
+    env: { ...process.env, OAPX_LOG: "info" },
     handshakeTimeoutMs: 2_000,
     responseTimeoutMs: 30_000,
     frameTimeoutMs: 30_000,

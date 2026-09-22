@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from makai._ids import is_nano_id, is_ulid, new_nano_id, new_ulid
+from oap_sdk._ids import is_nano_id, is_ulid, new_nano_id, new_ulid
 
 NANO_ID_RE = re.compile(r"^[0-9A-Za-z]{21}$")
 ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")

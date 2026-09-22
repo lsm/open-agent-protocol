@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use makai::{Client, ClientBuilder};
+use oap_sdk::{Client, ClientBuilder};
 
 /// The protocol fake built alongside the crate.
 pub fn fake_binary() -> PathBuf {
@@ -20,13 +20,13 @@ pub fn fake_binary() -> PathBuf {
 
 /// A client wired to the protocol fake running `scenario`.
 pub fn fake_builder(scenario: &str) -> ClientBuilder {
-    // `env_clear` keeps an ambient `MAKAI_BINARY_PATH` or a stale scenario from
+    // `env_clear` keeps an ambient `OAP_SDK_BINARY_PATH` or a stale scenario from
     // the developer's shell out of the child, so a test means exactly one thing.
     ClientBuilder::new()
         .command(fake_binary())
         .args(Vec::<String>::new())
         .env_clear()
-        .env("MAKAI_FAKE_SCENARIO", scenario)
+        .env("OAP_SDK_FAKE_SCENARIO", scenario)
         .handshake_timeout(Duration::from_millis(2_000))
         .response_timeout(Duration::from_millis(2_000))
         .frame_timeout(Duration::from_millis(2_000))
@@ -40,13 +40,13 @@ pub async fn fake_client(scenario: &str) -> Client {
         .expect("fake server connects")
 }
 
-/// The real `makai --stdio` binary, when `MAKAI_BINARY_PATH` names one.
+/// The real `makai --stdio` binary, when `OAP_SDK_BINARY_PATH` names one.
 ///
 /// Mirrors the TypeScript SDK's smoke tests: without the variable the
 /// binary-backed tests skip rather than fail, so `cargo test` is green on a
 /// machine with no runtime build.
 pub fn real_binary() -> Option<PathBuf> {
-    let path = std::env::var("MAKAI_BINARY_PATH").ok()?;
+    let path = std::env::var("OAP_SDK_BINARY_PATH").ok()?;
     let path = PathBuf::from(path);
     path.exists().then_some(path)
 }
@@ -70,7 +70,7 @@ pub fn real_builder(path: &std::path::Path) -> ClientBuilder {
     // waiting on a GUI prompt that a test runner can never satisfy. Naming a
     // service that holds no item makes the lookup miss immediately and fall
     // through to the file store, which is what CI (Linux) uses anyway.
-    builder.env("MAKAI_KEYCHAIN_SERVICE", "com.makai.auth.rust-sdk-tests")
+    builder.env("OAPX_KEYCHAIN_SERVICE", "com.makai.auth.rust-sdk-tests")
 }
 
 /// Skips the test body unless a real runtime is available.
@@ -80,7 +80,7 @@ macro_rules! require_real_binary {
         match $crate::common::real_binary() {
             Some(path) => path,
             None => {
-                eprintln!("skipping: MAKAI_BINARY_PATH is not set");
+                eprintln!("skipping: OAP_SDK_BINARY_PATH is not set");
                 return;
             }
         }
@@ -93,11 +93,11 @@ macro_rules! require_real_binary {
 /// that item from an unsigned local build blocks in `AuthorizationCopyRights`
 /// waiting on a UI prompt no test runner can answer. Everywhere else — including
 /// CI, which is Linux — the file store is used and the write is unattended.
-/// Set `MAKAI_RUST_SDK_ALLOW_KEYCHAIN=1` to run these anyway on a Mac where the
+/// Set `OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN=1` to run these anyway on a Mac where the
 /// item's ACL has already been approved.
 pub fn credential_writes_are_unattended() -> bool {
     !cfg!(target_os = "macos")
-        || std::env::var("MAKAI_RUST_SDK_ALLOW_KEYCHAIN").as_deref() == Ok("1")
+        || std::env::var("OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN").as_deref() == Ok("1")
 }
 
 /// Skips the test body when the runtime would block on a credential-store prompt.
@@ -107,7 +107,7 @@ macro_rules! require_unattended_credential_store {
         if !$crate::common::credential_writes_are_unattended() {
             eprintln!(
                 "skipping: the macOS login Keychain would prompt; \
-                 set MAKAI_RUST_SDK_ALLOW_KEYCHAIN=1 to run anyway"
+                 set OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN=1 to run anyway"
             );
             return;
         }

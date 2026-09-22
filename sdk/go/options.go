@@ -23,14 +23,14 @@ const (
 // runtime binary automatically, runs it as `makai --stdio`, and uses the
 // default timeouts.
 type Options struct {
-	// BinaryPath runs a specific runtime binary. The MAKAI_BINARY_PATH
+	// BinaryPath runs a specific runtime binary. The OAP_SDK_BINARY_PATH
 	// environment variable takes precedence over this field, matching the
 	// TypeScript SDK's resolution order.
 	BinaryPath string
 
 	// BinaryURL downloads the runtime from a URL when no explicit path is
 	// configured. ChecksumSHA256 is required alongside it. The
-	// MAKAI_BINARY_URL and MAKAI_BINARY_SHA256 environment variables take
+	// OAP_SDK_BINARY_URL and OAP_SDK_BINARY_SHA256 environment variables take
 	// precedence over these fields.
 	BinaryURL string
 	// ChecksumSHA256 is the lowercase hex SHA-256 of the binary at

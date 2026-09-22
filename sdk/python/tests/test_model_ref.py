@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from makai._model_ref import ModelRefParseError, parse_model_ref
-from makai.execution import _model_from_ref, _provider_id_from_ref, _split_model_ref
+from oap_sdk._model_ref import ModelRefParseError, parse_model_ref
+from oap_sdk.execution import _model_from_ref, _provider_id_from_ref, _split_model_ref
 
 
 def test_parses_canonical_ref() -> None:

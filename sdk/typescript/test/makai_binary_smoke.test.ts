@@ -5,11 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { createMakaiAuthClient, createMakaiStdioClient, StdioProtocolError } from "../src";
 
-const binaryPath = process.env.MAKAI_BINARY_PATH;
+const binaryPath = process.env.OAP_SDK_BINARY_PATH;
 
 test("e2e: connect to makai binary over stdio", async (t) => {
   if (!binaryPath) {
-    t.skip("MAKAI_BINARY_PATH is not set");
+    t.skip("OAP_SDK_BINARY_PATH is not set");
     return;
   }
 
@@ -23,7 +23,7 @@ test("e2e: connect to makai binary over stdio", async (t) => {
 
 test("e2e: nextFrame times out when the runtime sends nothing", async (t) => {
   if (!binaryPath) {
-    t.skip("MAKAI_BINARY_PATH is not set");
+    t.skip("OAP_SDK_BINARY_PATH is not set");
     return;
   }
 
@@ -38,7 +38,7 @@ test("e2e: nextFrame times out when the runtime sends nothing", async (t) => {
 
 test("e2e: malformed envelope is rejected with a nack and the runtime stays up", async (t) => {
   if (!binaryPath) {
-    t.skip("MAKAI_BINARY_PATH is not set");
+    t.skip("OAP_SDK_BINARY_PATH is not set");
     return;
   }
 
@@ -67,7 +67,7 @@ test("e2e: malformed envelope is rejected with a nack and the runtime stays up",
 
 test("e2e: version skew fails fast", async (t) => {
   if (!binaryPath) {
-    t.skip("MAKAI_BINARY_PATH is not set");
+    t.skip("OAP_SDK_BINARY_PATH is not set");
     return;
   }
 
@@ -88,7 +88,7 @@ test("e2e: version skew fails fast", async (t) => {
 
 test("e2e: auth login persists credentials", async (t) => {
   if (!binaryPath) {
-    t.skip("MAKAI_BINARY_PATH is not set");
+    t.skip("OAP_SDK_BINARY_PATH is not set");
     return;
   }
 
@@ -102,7 +102,7 @@ test("e2e: auth login persists credentials", async (t) => {
     await client.auth.login("test-fixture", {
       onPrompt: async () => "ok",
     });
-    const authPath = path.join(tempHome, ".makai", "auth.json");
+    const authPath = path.join(tempHome, ".oapx", "auth.json");
     const raw = await fs.readFile(authPath, "utf8");
     const parsed = JSON.parse(raw) as Record<string, { refresh?: string; access?: string }>;
     assert.equal(typeof parsed["test-fixture"]?.refresh, "string");

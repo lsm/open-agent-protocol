@@ -91,8 +91,8 @@ function defaultProviderEventsFor(env) {
   ];
 }
 
-const configuredProviderEvents = process.env.MAKAI_TEST_PROVIDER_EVENTS_PATH
-  ? loadJson(process.env.MAKAI_TEST_PROVIDER_EVENTS_PATH, null)
+const configuredProviderEvents = process.env.OAP_SDK_TEST_PROVIDER_EVENTS_PATH
+  ? loadJson(process.env.OAP_SDK_TEST_PROVIDER_EVENTS_PATH, null)
   : null;
 
 const defaultAgentEvents = [
@@ -108,15 +108,15 @@ const defaultAgentEvents = [
 
 emit({ type: "ready", protocol_version: "1" });
 
-const requestLog = process.env.MAKAI_TEST_REQUEST_LOG || "";
-const authStatePath = process.env.MAKAI_TEST_AUTH_STATE_PATH || "";
-const providerResult = loadJson(process.env.MAKAI_TEST_PROVIDER_RESULT_PATH, defaultProviderResult);
-const agentEvents = loadJson(process.env.MAKAI_TEST_AGENT_EVENTS_PATH, defaultAgentEvents);
-const agentResult = loadJson(process.env.MAKAI_TEST_AGENT_RESULT_PATH, null);
-const agentError = loadJson(process.env.MAKAI_TEST_AGENT_ERROR_PATH, null);
+const requestLog = process.env.OAP_SDK_TEST_REQUEST_LOG || "";
+const authStatePath = process.env.OAP_SDK_TEST_AUTH_STATE_PATH || "";
+const providerResult = loadJson(process.env.OAP_SDK_TEST_PROVIDER_RESULT_PATH, defaultProviderResult);
+const agentEvents = loadJson(process.env.OAP_SDK_TEST_AGENT_EVENTS_PATH, defaultAgentEvents);
+const agentResult = loadJson(process.env.OAP_SDK_TEST_AGENT_RESULT_PATH, null);
+const agentError = loadJson(process.env.OAP_SDK_TEST_AGENT_ERROR_PATH, null);
 // Loop-internal failure payload ({ code, message }) for the failure-pair knob
 // below; null when the knob is off.
-const agentFailurePair = loadJson(process.env.MAKAI_TEST_AGENT_FAILURE_PAIR_PATH, null);
+const agentFailurePair = loadJson(process.env.OAP_SDK_TEST_AGENT_FAILURE_PAIR_PATH, null);
 // The failure pair fires ONCE (a one-off internal failure); later messages on
 // the session run the normal event flow so a same-id follow-up run can
 // succeed and prove it was not poisoned by the first run's settlement.
@@ -140,7 +140,7 @@ const defaultModelsResponse = {
   fetched_at_ms: 1,
   cache_max_age_ms: 300000,
 };
-const modelsResponse = loadJson(process.env.MAKAI_TEST_MODELS_RESPONSE_PATH, defaultModelsResponse);
+const modelsResponse = loadJson(process.env.OAP_SDK_TEST_MODELS_RESPONSE_PATH, defaultModelsResponse);
 
 const requestCounts = new Map();
 const authenticatedProviders = new Set();
@@ -150,20 +150,20 @@ const authFlows = new Map();
 // a live session id rejects agent_start (agent_busy) and only a
 // sequence-valid agent_stop removes the session (replying agent_stopped).
 // Without this env the fixture stays a stateless line responder.
-const trackAgentSessions = Boolean(process.env.MAKAI_TEST_TRACK_AGENT_SESSIONS);
+const trackAgentSessions = Boolean(process.env.OAP_SDK_TEST_TRACK_AGENT_SESSIONS);
 const agentSessions = new Map();
 // Sessions whose first agent_message was rejected by the
-// MAKAI_TEST_REJECT_FIRST_AGENT_MESSAGE knob (one-shot per session).
+// OAP_SDK_TEST_REJECT_FIRST_AGENT_MESSAGE knob (one-shot per session).
 const agentMessageRejectionsDone = new Set();
 // Sessions whose first agent_message output was suppressed by
-// MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE (one-shot per session): the
+// OAP_SDK_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE (one-shot per session): the
 // message is ACCEPTED (counter advanced) but no run output follows — the
 // unknown-outcome scenario of §13.4.1/#210 gap 7. Later messages on the same
 // session flow normally so a same-id retry can succeed once the probe's stop
 // removed the session.
 const agentMessageSuppressionsDone = new Set();
 // Sessions whose first agent_message failed admission with an uncorrelated
-// runtime agent_error (one-shot per session): MAKAI_TEST_ADMISSION_RUNTIME_ERROR
+// runtime agent_error (one-shot per session): OAP_SDK_TEST_ADMISSION_RUNTIME_ERROR
 // mirrors §13.4.1's server-side acceptance-path failure — the expected counter
 // does NOT advance and nothing is admitted, but the frame on the wire is
 // identical to §13.4.2's settlement of an admitted run.
@@ -189,8 +189,8 @@ function saveAuthState() {
 loadAuthState();
 
 function shouldAuthReject(envType) {
-  if (process.env.MAKAI_TEST_AUTH_REQUIRED_ALWAYS) return true;
-  if (!process.env.MAKAI_TEST_AUTH_REQUIRED_ONCE) return false;
+  if (process.env.OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS) return true;
+  if (!process.env.OAP_SDK_TEST_AUTH_REQUIRED_ONCE) return false;
   const count = requestCounts.get(envType) || 0;
   requestCounts.set(envType, count + 1);
   return count === 0;
@@ -198,7 +198,7 @@ function shouldAuthReject(envType) {
 
 function authRequiredPayload() {
   const payload = { error_code: "auth_required", reason: "login required" };
-  if (!process.env.MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID) {
+  if (!process.env.OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID) {
     payload.provider_id = "anthropic";
   }
   return payload;
@@ -221,7 +221,7 @@ rl.on("line", (line) => {
       emit(frame(env, "nack", authRequiredPayload(), 3));
       return;
     }
-    if (process.env.MAKAI_TEST_SUPPRESS_COMPLETE_RESPONSE) return;
+    if (process.env.OAP_SDK_TEST_SUPPRESS_COMPLETE_RESPONSE) return;
     emit(frame(env, "result", providerResult, 3));
   } else if (env.type === "stream_request") {
     if (shouldAuthReject("stream_request")) {
@@ -240,7 +240,7 @@ rl.on("line", (line) => {
         // agent_error frame (code+message, both carrying in_reply_to); the
         // nack flavor stays the default so coverage exercises both SDK
         // rejection paths.
-        if (process.env.MAKAI_TEST_AGENT_BUSY_AS_ERROR) {
+        if (process.env.OAP_SDK_TEST_AGENT_BUSY_AS_ERROR) {
           emit(frame(env, "agent_error", { code: "agent_busy", message: "session already exists" }, 3));
         } else {
           emit(frame(env, "nack", { error_code: "agent_busy", reason: "session already exists" }, 3));
@@ -255,7 +255,7 @@ rl.on("line", (line) => {
       emit(frame(env, "nack", authRequiredPayload(), 3));
       return;
     }
-    if (process.env.MAKAI_TEST_SUPPRESS_AGENT_START_RESPONSE) {
+    if (process.env.OAP_SDK_TEST_SUPPRESS_AGENT_START_RESPONSE) {
       // Start admitted (the session registers above when tracking) but the
       // reply never arrives: the start's outcome is UNKNOWABLE to the client
       // — the §6.1/#205 timeout scenario.
@@ -267,15 +267,15 @@ rl.on("line", (line) => {
     // session is rejected exactly like a real-server validation failure
     // (request-correlated agent_error, sequence 0) and admits nothing — the
     // expected counter does not advance.
-    if (process.env.MAKAI_TEST_REJECT_FIRST_AGENT_MESSAGE && !agentMessageRejectionsDone.has(env.session_id)) {
+    if (process.env.OAP_SDK_TEST_REJECT_FIRST_AGENT_MESSAGE && !agentMessageRejectionsDone.has(env.session_id)) {
       agentMessageRejectionsDone.add(env.session_id);
       emit(frame(env, "agent_error", { code: "invalid_request", message: "invalid sequence" }, 0));
       return;
     }
-    if (process.env.MAKAI_TEST_ADMISSION_RUNTIME_ERROR && !admissionRuntimeErrorsDone.has(env.session_id)) {
+    if (process.env.OAP_SDK_TEST_ADMISSION_RUNTIME_ERROR && !admissionRuntimeErrorsDone.has(env.session_id)) {
       // §13.4.1 admission-path failure: UNCORRELATED runtime agent_error,
       // counter not advanced, nothing admitted — the wire twin of the
-      // §13.4.2 settlement the MAKAI_TEST_AGENT_ERROR_PATH knob emits. A
+      // §13.4.2 settlement the OAP_SDK_TEST_AGENT_ERROR_PATH knob emits. A
       // client must not read either shape as proof of acceptance (#210
       // gap 7); placed BEFORE the tracking advance so the expected counter
       // stays at the pre-send value.
@@ -295,13 +295,13 @@ rl.on("line", (line) => {
       }
       agentSessions.set(env.session_id, expected + 1);
     }
-    if (process.env.MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE && !agentMessageSuppressionsDone.has(env.session_id)) {
+    if (process.env.OAP_SDK_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE && !agentMessageSuppressionsDone.has(env.session_id)) {
       agentMessageSuppressionsDone.add(env.session_id);
       return;
     }
-    if (process.env.MAKAI_TEST_AGENT_MALFORMED_RESULT_JSON) {
+    if (process.env.OAP_SDK_TEST_AGENT_MALFORMED_RESULT_JSON) {
       emit(frame(env, "agent_result", { result_json: "not-json" }, 3));
-    } else if (process.env.MAKAI_TEST_AGENT_MALFORMED_EVENT_JSON) {
+    } else if (process.env.OAP_SDK_TEST_AGENT_MALFORMED_EVENT_JSON) {
       emit(frame(env, "agent_started", { session_id: env.session_id }, 3));
       emit(frame(env, "agent_event", { event_json: "not-json" }, 4));
     } else if (agentFailurePair && !failurePairFired) {
@@ -347,7 +347,7 @@ rl.on("line", (line) => {
       emit(frame(env, "agent_stopped", { session_id: env.session_id, reason: env.payload?.reason || "stopped" }, 3));
     }
   } else if (env.type === "auth_providers_request") {
-    const providers = process.env.MAKAI_TEST_AUTH_REQUIRES_PROMPT ? [
+    const providers = process.env.OAP_SDK_TEST_AUTH_REQUIRES_PROMPT ? [
       {
         id: "test-fixture",
         name: "Test Fixture (CI)",
@@ -361,7 +361,7 @@ rl.on("line", (line) => {
     const providerId = env.payload?.provider_id || "";
     const flowId = env.stream_id || env.payload?.flow_id || "";
     authFlows.set(flowId, providerId);
-    if (process.env.MAKAI_TEST_AUTH_REQUIRES_PROMPT) {
+    if (process.env.OAP_SDK_TEST_AUTH_REQUIRES_PROMPT) {
       emit(frame(env, "auth_event", { prompt: { flow_id: flowId, prompt_id: "test-prompt", provider_id: providerId, message: "Enter code", allow_empty: false } }, 3));
     } else {
       authenticatedProviders.add(providerId);

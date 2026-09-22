@@ -2,10 +2,10 @@
 //!
 //! The order mirrors `typescript/src/binary_resolver.ts`:
 //!
-//! 1. an explicit path, or `MAKAI_BINARY_PATH`;
-//! 2. a URL (`binary_url` / `MAKAI_BINARY_URL`) with a **required** SHA-256
+//! 1. an explicit path, or `OAP_SDK_BINARY_PATH`;
+//! 2. a URL (`binary_url` / `OAP_SDK_BINARY_URL`) with a **required** SHA-256
 //!    checksum, cached on disk;
-//! 3. *(TypeScript only)* the `@makai/cli-<platform>-<arch>` npm package;
+//! 3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package;
 //! 4. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`;
 //! 5. the same pair under `./zig/zig-out/bin/`;
 //! 6. `oapx` on `PATH`.
@@ -16,7 +16,7 @@
 //! library crate, and inventing one (a `build.rs` download, say) would put a
 //! network fetch in the build with none of the checksum guarantees step 2
 //! insists on. Consumers who install the binary through a package manager should
-//! point `MAKAI_BINARY_PATH` at it, or let step 6 find it on `PATH`.
+//! point `OAP_SDK_BINARY_PATH` at it, or let step 6 find it on `PATH`.
 //!
 //! Step 2 needs the `download` feature to *fetch*. Without it, an already-cached
 //! file is still verified and used, and a cache miss is a clear error rather
@@ -29,9 +29,9 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 
-const ENV_BINARY_PATH: &str = "MAKAI_BINARY_PATH";
-const ENV_BINARY_URL: &str = "MAKAI_BINARY_URL";
-const ENV_BINARY_SHA256: &str = "MAKAI_BINARY_SHA256";
+const ENV_BINARY_PATH: &str = "OAP_SDK_BINARY_PATH";
+const ENV_BINARY_URL: &str = "OAP_SDK_BINARY_URL";
+const ENV_BINARY_SHA256: &str = "OAP_SDK_BINARY_SHA256";
 
 /// How to find the runtime binary.
 #[derive(Debug, Clone, Default)]

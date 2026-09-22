@@ -19,47 +19,47 @@ import (
 // instead of into the test suite.
 
 const (
-	envFakeHost = "MAKAI_GO_FAKE_HOST"
+	envFakeHost = "OAP_SDK_GO_FAKE_HOST"
 
 	// envRequestLog names a file the host appends every inbound envelope to,
 	// so a test can assert on what the SDK actually put on the wire.
-	envRequestLog = "MAKAI_GO_FAKE_REQUEST_LOG"
+	envRequestLog = "OAP_SDK_GO_FAKE_REQUEST_LOG"
 
 	// envProviderEvents replaces the provider stream's event list with a
 	// JSON array of event objects.
-	envProviderEvents = "MAKAI_GO_FAKE_PROVIDER_EVENTS"
+	envProviderEvents = "OAP_SDK_GO_FAKE_PROVIDER_EVENTS"
 	// envProviderResult replaces the buffered completion result payload.
-	envProviderResult = "MAKAI_GO_FAKE_PROVIDER_RESULT"
+	envProviderResult = "OAP_SDK_GO_FAKE_PROVIDER_RESULT"
 	// envAgentEvents replaces the agent run's event list.
-	envAgentEvents = "MAKAI_GO_FAKE_AGENT_EVENTS"
+	envAgentEvents = "OAP_SDK_GO_FAKE_AGENT_EVENTS"
 	// envAgentResult settles the agent run with an agent_result frame
 	// carrying this payload instead of running the event list.
-	envAgentResult = "MAKAI_GO_FAKE_AGENT_RESULT"
+	envAgentResult = "OAP_SDK_GO_FAKE_AGENT_RESULT"
 	// envModelsResponse replaces the models_response payload.
-	envModelsResponse = "MAKAI_GO_FAKE_MODELS_RESPONSE"
+	envModelsResponse = "OAP_SDK_GO_FAKE_MODELS_RESPONSE"
 	// envNack makes the host reject the named frame type with a payload:
 	// "<frame_type>:<json payload>".
-	envNack = "MAKAI_GO_FAKE_NACK"
+	envNack = "OAP_SDK_GO_FAKE_NACK"
 	// envSuppress makes the host acknowledge the named frame types but send
 	// no response, as a comma-separated list.
-	envSuppress = "MAKAI_GO_FAKE_SUPPRESS"
+	envSuppress = "OAP_SDK_GO_FAKE_SUPPRESS"
 	// envTrackSessions makes the host enforce the agent session lifecycle:
 	// a live id rejects agent_start with agent_busy, and only a
 	// sequence-valid agent_stop removes it.
-	envTrackSessions = "MAKAI_GO_FAKE_TRACK_SESSIONS"
+	envTrackSessions = "OAP_SDK_GO_FAKE_TRACK_SESSIONS"
 	// envToolCalls makes the agent run ask the client to execute tools. It
 	// is a JSON array of {tool_call_id, tool_name, args_json} objects.
-	envToolCalls = "MAKAI_GO_FAKE_TOOL_CALLS"
+	envToolCalls = "OAP_SDK_GO_FAKE_TOOL_CALLS"
 	// envToolResultLog names a file the host appends each tool_result
 	// payload to.
-	envToolResultLog = "MAKAI_GO_FAKE_TOOL_RESULT_LOG"
+	envToolResultLog = "OAP_SDK_GO_FAKE_TOOL_RESULT_LOG"
 	// envAuthPrompt makes the login flow ask for a code before succeeding;
 	// its value is the answer that completes the flow.
-	envAuthPrompt = "MAKAI_GO_FAKE_AUTH_PROMPT"
+	envAuthPrompt = "OAP_SDK_GO_FAKE_AUTH_PROMPT"
 	// envAuthProviders replaces the auth_providers_response payload.
-	envAuthProviders = "MAKAI_GO_FAKE_AUTH_PROVIDERS"
+	envAuthProviders = "OAP_SDK_GO_FAKE_AUTH_PROVIDERS"
 	// envSlowResponse delays every response by this many milliseconds.
-	envSlowResponse = "MAKAI_GO_FAKE_SLOW_MS"
+	envSlowResponse = "OAP_SDK_GO_FAKE_SLOW_MS"
 )
 
 // Scenario names for envFakeHost.

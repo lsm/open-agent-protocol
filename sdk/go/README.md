@@ -5,13 +5,13 @@ Go SDK for Makai's stdio protocol. The SDK starts or connects to a `makai --stdi
 ## Installation
 
 ```bash
-go get github.com/lsm/makai/go
+go get github.com/lsm/open-agent-protocol/sdk/go
 ```
 
 The module lives in the `go/` subdirectory of the Makai repository, so its import path ends in `/go` while the package itself is named `makai`:
 
 ```go
-import makai "github.com/lsm/makai/go"
+import makai "github.com/lsm/open-agent-protocol/sdk/go"
 ```
 
 You also need access to the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"log"
 
-	makai "github.com/lsm/makai/go"
+	makai "github.com/lsm/open-agent-protocol/sdk/go"
 )
 
 func main() {
@@ -254,11 +254,11 @@ resolved, err := client.Models.Resolve(ctx, makai.ResolveModelRequest{
 
 ```go
 client, err := makai.New(ctx, &makai.Options{
-	BinaryPath: "/opt/makai/bin/makai",
+	BinaryPath: "/opt/oapx/bin/oapx",
 })
 ```
 
-You can also set `MAKAI_BINARY_PATH=/opt/makai/bin/makai`. Note that the environment variable **takes precedence over** `Options.BinaryPath`; this mirrors the TypeScript SDK, so one override steers both.
+You can also set `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`. Note that the environment variable **takes precedence over** `Options.BinaryPath`; this mirrors the TypeScript SDK, so one override steers both.
 
 ### Download from URL with checksum
 
@@ -270,20 +270,20 @@ client, err := makai.New(ctx, &makai.Options{
 })
 ```
 
-The checksum is required; a download without one is refused with `ErrChecksumRequired`. A cached copy is re-verified on every use and re-downloaded if it does not match. Environment variable equivalents are `MAKAI_BINARY_URL` and `MAKAI_BINARY_SHA256`.
+The checksum is required; a download without one is refused with `ErrChecksumRequired`. A cached copy is re-verified on every use and re-downloaded if it does not match. Environment variable equivalents are `OAP_SDK_BINARY_URL` and `OAP_SDK_BINARY_SHA256`.
 
 ### PATH lookup and local builds
 
 With no resolver options, the SDK checks:
 
 1. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-2. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
+2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 3. `oapx` on `PATH`, then `makai`
 
 `oapx` is tried in every location before `makai` is tried in any, so a nested
 `oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
-The TypeScript resolver has one more step, an optional `@makai/cli-<platform>-<arch>` npm package, between the URL step and the local builds. That step is npm-specific and has no Go equivalent, so it is deliberately absent here. The practical difference: where npm would prefer a packaged binary, Go picks up your local `./zig-out` build.
+The TypeScript resolver has one more step, an optional `@oap-sdk/cli-<platform>-<arch>` npm package, between the URL step and the local builds. That step is npm-specific and has no Go equivalent, so it is deliberately absent here. The practical difference: where npm would prefer a packaged binary, Go picks up your local `./zig-out` build.
 
 ### Transport settings
 
@@ -291,7 +291,7 @@ The TypeScript resolver has one more step, an optional `@makai/cli-<platform>-<a
 client, err := makai.New(ctx, &makai.Options{
 	Args:             []string{"--stdio"},
 	Dir:              workingDirectory,
-	Env:              append(os.Environ(), "MAKAI_LOG=info"),
+	Env:              append(os.Environ(), "OAPX_LOG=info"),
 	HandshakeTimeout: 5 * time.Second,
 	RequestTimeout:   30 * time.Second,
 	ShutdownGrace:    2 * time.Second,
@@ -339,7 +339,7 @@ Protocol-level tests run against a fake host built into the test binary, so they
 
 ```bash
 zig build install --prefix /tmp/makai-go       # from the repository root
-MAKAI_BINARY_PATH=/tmp/makai-go/bin/makai go test -race ./...
+OAP_SDK_BINARY_PATH=/tmp/makai-go/bin/makai go test -race ./...
 ```
 
-The real-runtime tests skip themselves when `MAKAI_BINARY_PATH` is unset. They isolate `HOME` (and, on macOS, `MAKAI_KEYCHAIN_SERVICE`) so a test run cannot read or write your own credentials.
+The real-runtime tests skip themselves when `OAP_SDK_BINARY_PATH` is unset. They isolate `HOME` (and, on macOS, `OAPX_KEYCHAIN_SERVICE`) so a test run cannot read or write your own credentials.

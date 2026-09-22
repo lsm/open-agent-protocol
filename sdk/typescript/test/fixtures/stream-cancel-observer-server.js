@@ -1,9 +1,9 @@
 const fs = require("node:fs");
 const readline = require("node:readline");
 
-const framePath = process.env.MAKAI_TEST_FRAME_LOG || "";
-const deltaCount = Number(process.env.MAKAI_TEST_DELTA_COUNT || 40);
-const deltaIntervalMs = Number(process.env.MAKAI_TEST_DELTA_INTERVAL_MS || 25);
+const framePath = process.env.OAP_SDK_TEST_FRAME_LOG || "";
+const deltaCount = Number(process.env.OAP_SDK_TEST_DELTA_COUNT || 40);
+const deltaIntervalMs = Number(process.env.OAP_SDK_TEST_DELTA_INTERVAL_MS || 25);
 
 function record(type) {
   if (framePath) fs.appendFileSync(framePath, type + "\n");

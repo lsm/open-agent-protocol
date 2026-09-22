@@ -4,7 +4,7 @@
 //! cargo run --example complete
 //! ```
 
-use makai::{Client, ExecutionRequest};
+use oap_sdk::{Client, ExecutionRequest};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

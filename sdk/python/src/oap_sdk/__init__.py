@@ -18,7 +18,7 @@ newline-delimited JSON protocol:
 Quick start::
 
     import asyncio
-    import makai
+    import oap_sdk
 
     async def main() -> None:
         async with makai.connect() as client:

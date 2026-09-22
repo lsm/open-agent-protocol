@@ -145,8 +145,8 @@ test("client.auth.listProviders emits ULID stream and message IDs on stdio", asy
     fixtureClientOptions("auth-protocol-providers-server.js", {
       env: {
         ...process.env,
-        MAKAI_TEST_REQUEST_LOG: logPath,
-        MAKAI_TEST_FRAME_LOG: frameLogPath,
+        OAP_SDK_TEST_REQUEST_LOG: logPath,
+        OAP_SDK_TEST_FRAME_LOG: frameLogPath,
       },
     }),
   );
@@ -181,7 +181,7 @@ test("client.auth.login emits ULID flow IDs on stdio", async () => {
   const logPath = path.join(tmpDir, "request.log");
   const client = await createMakaiAuthClient(
     fixtureClientOptions("auth-protocol-login-success-server.js", {
-      env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath },
+      env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
     }),
   );
   try {
@@ -265,7 +265,7 @@ test("client.auth.listProviders timeout includes actionable diagnostics", async 
   const client = await createMakaiAuthClient(
     fixtureClientOptions("auth-protocol-providers-server.js", {
       frameTimeoutMs: 20,
-      env: { ...process.env, MAKAI_TEST_RESPONSE_DELAY_MS: "100" },
+      env: { ...process.env, OAP_SDK_TEST_RESPONSE_DELAY_MS: "100" },
     }),
   );
   try {

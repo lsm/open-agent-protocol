@@ -7,7 +7,7 @@
 use std::io::Write;
 
 use futures::StreamExt;
-use makai::{Client, ExecutionRequest, ProviderEvent};
+use oap_sdk::{Client, ExecutionRequest, ProviderEvent};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

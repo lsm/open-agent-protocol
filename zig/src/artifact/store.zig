@@ -104,7 +104,7 @@ pub const ArtifactStore = struct {
     pub fn init(allocator: std.mem.Allocator, max_total_bytes: ?u64) !ArtifactStore {
         const home = try compat.getEnvVarOwned(allocator, "HOME");
         defer allocator.free(home);
-        const root_path = try std.fs.path.join(allocator, &.{ home, ".makai", "artifacts" });
+        const root_path = try std.fs.path.join(allocator, &.{ home, ".oapx", "artifacts" });
         errdefer allocator.free(root_path);
         return initWithPathOwned(allocator, root_path, max_total_bytes, true);
     }

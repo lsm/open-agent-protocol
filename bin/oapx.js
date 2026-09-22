@@ -3,18 +3,18 @@
 /**
  * Makai CLI launcher.
  * Detects the current platform and spawns the correct compiled binary
- * from the matching @makai/cli-{platform} optional dependency.
+ * from the matching @oap-sdk/cli-{platform} optional dependency.
  */
 
 const { spawnSync } = require("child_process");
 
 const PLATFORM_MAP = {
-  "darwin-arm64": "@makai/cli-darwin-arm64",
-  "darwin-x64": "@makai/cli-darwin-x64",
-  "linux-arm64": "@makai/cli-linux-arm64",
-  "linux-x64": "@makai/cli-linux-x64",
-  "win32-x64": "@makai/cli-win32-x64",
-  "win32-arm64": "@makai/cli-win32-arm64",
+  "darwin-arm64": "@oap-sdk/cli-darwin-arm64",
+  "darwin-x64": "@oap-sdk/cli-darwin-x64",
+  "linux-arm64": "@oap-sdk/cli-linux-arm64",
+  "linux-x64": "@oap-sdk/cli-linux-x64",
+  "win32-x64": "@oap-sdk/cli-win32-x64",
+  "win32-arm64": "@oap-sdk/cli-win32-arm64",
 };
 
 const platformKey = `${process.platform}-${process.arch}`;

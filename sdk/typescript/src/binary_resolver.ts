@@ -39,9 +39,9 @@ export type BinaryResolverOptions =
   | BinaryUrlResolverOptions
   | BinaryAutoResolverOptions;
 
-const ENV_BINARY_PATH = "MAKAI_BINARY_PATH";
-const ENV_BINARY_URL = "MAKAI_BINARY_URL";
-const ENV_BINARY_SHA256 = "MAKAI_BINARY_SHA256";
+const ENV_BINARY_PATH = "OAP_SDK_BINARY_PATH";
+const ENV_BINARY_URL = "OAP_SDK_BINARY_URL";
+const ENV_BINARY_SHA256 = "OAP_SDK_BINARY_SHA256";
 
 const BINARY_NAMES = ["oapx", "makai"];
 
@@ -173,7 +173,7 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
   const binaryNames = binaryNamesForPlatform();
 
   const platformKey = `${process.platform}-${process.arch}`;
-  const bundledPackage = `@makai/cli-${platformKey}`;
+  const bundledPackage = `@oap-sdk/cli-${platformKey}`;
   const resolveModule = options.resolveModule ?? ((specifier: string) => require.resolve(specifier));
   try {
     let bundledPath: string | undefined;

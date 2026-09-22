@@ -49,7 +49,7 @@ func newTestClientWithOptions(t *testing.T, opts *Options) (*Client, error) {
 	if opts.RequestTimeout == 0 {
 		opts.RequestTimeout = 5 * time.Second
 	}
-	// MAKAI_BINARY_PATH would otherwise override the explicit path, since
+	// OAP_SDK_BINARY_PATH would otherwise override the explicit path, since
 	// the resolver gives the environment precedence.
 	t.Setenv(EnvBinaryPath, "")
 	t.Setenv(EnvBinaryURL, "")

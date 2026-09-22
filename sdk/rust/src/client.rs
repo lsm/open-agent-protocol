@@ -63,7 +63,7 @@ impl ClientBuilder {
     /// Runs this exact executable, bypassing binary resolution entirely.
     ///
     /// Unlike [`ClientBuilder::binary_path`], nothing overrides this — not even
-    /// `MAKAI_BINARY_PATH`. Use it when the caller, not the operator, decides
+    /// `OAP_SDK_BINARY_PATH`. Use it when the caller, not the operator, decides
     /// which process to run: a test harness pointing at a protocol fake, or an
     /// application shipping its own runtime.
     pub fn command(mut self, path: impl Into<PathBuf>) -> Self {
@@ -73,7 +73,7 @@ impl ClientBuilder {
 
     /// Prefers this binary when resolving.
     ///
-    /// `MAKAI_BINARY_PATH` still wins, matching the TypeScript SDK, so an
+    /// `OAP_SDK_BINARY_PATH` still wins, matching the TypeScript SDK, so an
     /// operator can redirect an application that hardcoded a path. Use
     /// [`ClientBuilder::command`] when that override is not wanted.
     pub fn binary_path(mut self, path: impl Into<PathBuf>) -> Self {

@@ -81,7 +81,7 @@ test("handshake timeout terminates the spawned runtime process", async () => {
   const client = await createMakaiStdioClient({
     command: process.execPath,
     args: [pidReportingServer],
-    env: { ...process.env, MAKAI_TEST_PID_FILE: pidFile, MAKAI_TEST_HANDSHAKE: "silent" },
+    env: { ...process.env, OAP_SDK_TEST_PID_FILE: pidFile, OAP_SDK_TEST_HANDSHAKE: "silent" },
     handshakeTimeoutMs: 150,
   });
 
@@ -98,7 +98,7 @@ test("createMakaiClient leaves no orphan runtime when the handshake times out", 
       createMakaiClient({
         command: process.execPath,
         args: [pidReportingServer],
-        env: { ...process.env, MAKAI_TEST_PID_FILE: pidFile, MAKAI_TEST_HANDSHAKE: "silent" },
+        env: { ...process.env, OAP_SDK_TEST_PID_FILE: pidFile, OAP_SDK_TEST_HANDSHAKE: "silent" },
         handshakeTimeoutMs: 150,
       }),
     /handshake timed out/,
@@ -115,7 +115,7 @@ test("createMakaiAuthClient leaves no orphan runtime when the handshake times ou
       createMakaiAuthClient({
         command: process.execPath,
         args: [pidReportingServer],
-        env: { ...process.env, MAKAI_TEST_PID_FILE: pidFile, MAKAI_TEST_HANDSHAKE: "silent" },
+        env: { ...process.env, OAP_SDK_TEST_PID_FILE: pidFile, OAP_SDK_TEST_HANDSHAKE: "silent" },
         handshakeTimeoutMs: 150,
       }),
     /handshake timed out/,
@@ -130,7 +130,7 @@ test("protocol version mismatch terminates the spawned runtime process", async (
   const client = new MakaiStdioClient({
     command: process.execPath,
     args: [pidReportingServer],
-    env: { ...process.env, MAKAI_TEST_PID_FILE: pidFile, MAKAI_TEST_HANDSHAKE: "version_mismatch" },
+    env: { ...process.env, OAP_SDK_TEST_PID_FILE: pidFile, OAP_SDK_TEST_HANDSHAKE: "version_mismatch" },
     handshakeTimeoutMs: 3000,
   });
 
@@ -145,7 +145,7 @@ test("handshake error frame terminates the spawned runtime process", async () =>
   const client = new MakaiStdioClient({
     command: process.execPath,
     args: [pidReportingServer],
-    env: { ...process.env, MAKAI_TEST_PID_FILE: pidFile, MAKAI_TEST_HANDSHAKE: "error_frame" },
+    env: { ...process.env, OAP_SDK_TEST_PID_FILE: pidFile, OAP_SDK_TEST_HANDSHAKE: "error_frame" },
     handshakeTimeoutMs: 3000,
   });
 
@@ -160,7 +160,7 @@ test("breaking out of provider.stream cancels the runtime stream", async () => {
   const client = await createMakaiClient({
     command: process.execPath,
     args: [streamCancelObserverServer],
-    env: { ...process.env, MAKAI_TEST_FRAME_LOG: frameLog },
+    env: { ...process.env, OAP_SDK_TEST_FRAME_LOG: frameLog },
     handshakeTimeoutMs: 3000,
     responseTimeoutMs: 5000,
   });
@@ -185,7 +185,7 @@ test("provider.stream that runs to completion does not cancel the runtime stream
   const client = await createMakaiClient({
     command: process.execPath,
     args: [streamCancelObserverServer],
-    env: { ...process.env, MAKAI_TEST_FRAME_LOG: frameLog, MAKAI_TEST_DELTA_COUNT: "2", MAKAI_TEST_DELTA_INTERVAL_MS: "5" },
+    env: { ...process.env, OAP_SDK_TEST_FRAME_LOG: frameLog, OAP_SDK_TEST_DELTA_COUNT: "2", OAP_SDK_TEST_DELTA_INTERVAL_MS: "5" },
     handshakeTimeoutMs: 3000,
     responseTimeoutMs: 5000,
   });
@@ -208,7 +208,7 @@ test("aborting provider.stream cancels the runtime stream exactly once", async (
   const client = await createMakaiClient({
     command: process.execPath,
     args: [streamCancelObserverServer],
-    env: { ...process.env, MAKAI_TEST_FRAME_LOG: frameLog },
+    env: { ...process.env, OAP_SDK_TEST_FRAME_LOG: frameLog },
     handshakeTimeoutMs: 3000,
     responseTimeoutMs: 5000,
   });

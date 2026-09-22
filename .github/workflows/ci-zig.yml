@@ -145,7 +145,7 @@ jobs:
 
       - name: Run TS SDK unit + E2E tests
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-smoke/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/makai-smoke/bin/oapx
         run: npm run test:sdk
 
       - name: Verify npm package ships TypeScript declarations
@@ -156,7 +156,7 @@ jobs:
   #
   # The Go module in sdk/go/ is self-contained and is deliberately NOT wired into
   # the Zig build. Its protocol tests run against a fake host built into the
-  # test binary; MAKAI_BINARY_PATH additionally switches on the real-runtime
+  # test binary; OAP_SDK_BINARY_PATH additionally switches on the real-runtime
   # smoke tests, which skip themselves when it is unset.
   # =============================================================================
   go-sdk:
@@ -200,7 +200,7 @@ jobs:
       - name: Run Go SDK tests
         working-directory: sdk/go
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-go/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/makai-go/bin/oapx
         run: go test -race ./...
 
   # =============================================================================
@@ -249,20 +249,20 @@ jobs:
 
       - name: Run Rust SDK unit + E2E tests
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-rs/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/makai-rs/bin/oapx
         run: cargo test --all-features
 
   # =============================================================================
   # Python SDK (sdk/python/)
   #
-  # Mirrors ts-sdk-e2e: build the runtime, point MAKAI_BINARY_PATH at it, and
+  # Mirrors ts-sdk-e2e: build the runtime, point OAP_SDK_BINARY_PATH at it, and
   # run the suite. Without that variable every test in
   # sdk/python/tests/test_real_binary.py skips, so the E2E lane sets it explicitly.
   #
-  # MAKAI_TEST_REAL_AUTH is deliberately NOT set: the auth-protocol E2E test
+  # OAP_SDK_TEST_REAL_AUTH is deliberately NOT set: the auth-protocol E2E test
   # stays opt-in. On macOS an unsigned local build blocks on a Keychain access
   # prompt and auth_providers_request never answers. Linux reads
-  # ~/.makai/auth.json instead and should be fine, but that has not been
+  # ~/.oapx/auth.json instead and should be fine, but that has not been
   # verified on a runner, so enabling it here is left as a follow-up rather
   # than a guess that could redden main.
   #
@@ -302,14 +302,14 @@ jobs:
       - name: Run Python SDK unit + E2E tests
         working-directory: sdk/python
         env:
-          MAKAI_BINARY_PATH: /tmp/makai-py/bin/oapx
+          OAP_SDK_BINARY_PATH: /tmp/makai-py/bin/oapx
         run: python -m pytest -q
 
   # =============================================================================
   # TUI PTY Harness (deterministic, fixture provider — no API keys)
   #
   # Drives `oapx --tui` through a pseudo-terminal with the canned-reply
-  # fixture (MAKAI_TUI_FIXTURE), asserting the core loop scenario plus the
+  # fixture (OAPX_TUI_FIXTURE), asserting the core loop scenario plus the
   # #264 UX-sweep scenarios (every ratified slash command, kept key, the
   # y/a/n approval flow, session save+resume) and recording the TUI
   # performance baseline (startup-to-first-frame, keypress-to-render latency,

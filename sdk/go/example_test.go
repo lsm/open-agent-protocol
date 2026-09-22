@@ -8,7 +8,7 @@ import (
 	"log"
 	"os"
 
-	makai "github.com/lsm/makai/go"
+	makai "github.com/lsm/open-agent-protocol/sdk/go"
 )
 
 func ExampleNew() {

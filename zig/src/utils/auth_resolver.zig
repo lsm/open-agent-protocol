@@ -243,7 +243,7 @@ test "resolveApiKey - empty key with no storage returns AuthRequired" {
 
 test "envKeyForProvider reads the declared variable and ignores other providers" {
     const providers = [_]custom_providers.CustomProvider{
-        .{ .id = "gateway", .name = "Gateway", .api = "openai-completions", .base_url = "https://gw.test", .env_key = "MAKAI_TEST_GATEWAY_KEY" },
+        .{ .id = "gateway", .name = "Gateway", .api = "openai-completions", .base_url = "https://gw.test", .env_key = "OAPX_TEST_GATEWAY_KEY" },
         .{ .id = "keyless", .name = "Keyless", .api = "openai-completions", .base_url = "http://localhost:8000" },
     };
 

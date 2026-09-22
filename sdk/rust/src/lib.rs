@@ -12,9 +12,9 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use makai::{Client, ExecutionRequest};
+//! use oap_sdk::{Client, ExecutionRequest};
 //!
-//! # async fn run() -> makai::Result<()> {
+//! # async fn run() -> oap_sdk::Result<()> {
 //! let client = Client::connect().await?;
 //!
 //! let model = client
@@ -45,9 +45,9 @@
 //!
 //! ```no_run
 //! use futures::StreamExt;
-//! use makai::{Client, ExecutionRequest, ProviderEvent};
+//! use oap_sdk::{Client, ExecutionRequest, ProviderEvent};
 //!
-//! # async fn run() -> makai::Result<()> {
+//! # async fn run() -> oap_sdk::Result<()> {
 //! # let client = Client::connect().await?;
 //! # let model_ref = String::new();
 //! let mut events = Box::pin(

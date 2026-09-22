@@ -373,7 +373,7 @@ frame-routing specification (§13) with makai's own deviations ledger
 (`docs/oap-alignment.md`), #198's rename, #201's correlated waiter routing,
 and #202's idle-session eviction all landed. v0.2.0 is also the first release
 shipping official binaries, which the live process gate can bind by digest
-(`OAP_MAKAI_SHA256`). The wire is largely compatible; this re-pin applies
+(`OAP_OAP_SDK_SHA256`). The wire is largely compatible; this re-pin applies
 targeted updates and records the deltas below. No OAP protocol or schema
 change is proven by any finding at this pin, so none is raised. Advertised
 capabilities are unchanged, so the capability revision string
@@ -445,7 +445,7 @@ frame type as observed-only. Recorded per the feedback rule; no OAP change.
 ### New observable server behaviors
 
 - Idle-session TTL eviction (#202/#206): silent sweep (30-minute default,
-  `MAKAI_AGENT_SESSION_IDLE_TTL_MS`, `0` disables), never selecting sessions
+  `OAPX_AGENT_SESSION_IDLE_TTL_MS`, `0` disables), never selecting sessions
   with in-flight runs; the first observable evidence is a request-correlated
   sequence-zero `agent_error` `agent_not_found` ("session not found") on the
   next `agent_message`. The adapter treats that correlated answer as

@@ -1120,7 +1120,7 @@ fn sessionIdleTtlFromEnvValue(raw: ?[]const u8) ?u64 {
 }
 
 fn agentServerOptionsFromEnv(allocator: std.mem.Allocator) AgentProtocolServer.Options {
-    const raw = compat.getEnvVarOwned(allocator, "MAKAI_AGENT_SESSION_IDLE_TTL_MS") catch return .{};
+    const raw = compat.getEnvVarOwned(allocator, "OAPX_AGENT_SESSION_IDLE_TTL_MS") catch return .{};
     defer allocator.free(raw);
     const ttl_ms = sessionIdleTtlFromEnvValue(raw) orelse return .{};
     return .{ .session_idle_ttl_ms = ttl_ms };
@@ -3369,7 +3369,7 @@ fn pumpAndDrainStdioLoop(
     _ = try stdio_loop.drainOutbound(outbound);
 }
 
-test "MAKAI_AGENT_SESSION_IDLE_TTL_MS value parsing" {
+test "OAPX_AGENT_SESSION_IDLE_TTL_MS value parsing" {
     try std.testing.expect(sessionIdleTtlFromEnvValue(null) == null);
     try std.testing.expect(sessionIdleTtlFromEnvValue("") == null);
     try std.testing.expect(sessionIdleTtlFromEnvValue("   ") == null);
@@ -6912,7 +6912,7 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
 const OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS: i64 = 120_000;
 
 fn oapProviderStreamIdleTtlMs(allocator: std.mem.Allocator) i64 {
-    const raw = provider_base_url.envOwnedOrNull(allocator, "MAKAI_OAP_PROVIDER_STREAM_IDLE_TTL_MS") catch
+    const raw = provider_base_url.envOwnedOrNull(allocator, "OAPX_OAP_PROVIDER_STREAM_IDLE_TTL_MS") catch
         return OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS;
     const value = raw orelse return OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS;
     defer allocator.free(value);
@@ -7777,7 +7777,7 @@ fn runOapMode(
         return err;
     };
 
-    const env_model = try provider_base_url.envOwnedOrNull(allocator, "MAKAI_OAP_MODEL");
+    const env_model = try provider_base_url.envOwnedOrNull(allocator, "OAPX_OAP_MODEL");
     defer if (env_model) |value| allocator.free(value);
     const default_model_id: ?[]const u8 = parsed.default_model_id orelse env_model;
 

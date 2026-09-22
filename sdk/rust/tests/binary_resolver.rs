@@ -9,9 +9,9 @@
 
 use std::path::PathBuf;
 
-use makai::BinaryResolver;
+use oap_sdk::BinaryResolver;
 
-/// `MAKAI_BINARY_PATH` and friends are process-global, so the tests that touch
+/// `OAP_SDK_BINARY_PATH` and friends are process-global, so the tests that touch
 /// them run one at a time.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -50,9 +50,9 @@ impl Drop for EnvGuard {
 
 fn clear_env() -> Vec<(&'static str, Option<&'static str>)> {
     vec![
-        ("MAKAI_BINARY_PATH", None),
-        ("MAKAI_BINARY_URL", None),
-        ("MAKAI_BINARY_SHA256", None),
+        ("OAP_SDK_BINARY_PATH", None),
+        ("OAP_SDK_BINARY_URL", None),
+        ("OAP_SDK_BINARY_SHA256", None),
     ]
 }
 
@@ -95,10 +95,10 @@ async fn the_environment_variable_outranks_the_explicit_option() {
     let from_env = write_fake_binary(temp.path(), &["env", "makai"]);
     let from_option = write_fake_binary(temp.path(), &["option", "makai"]);
     let mut env = clear_env();
-    env[0] = ("MAKAI_BINARY_PATH", Some(from_env.to_str().expect("utf8")));
+    env[0] = ("OAP_SDK_BINARY_PATH", Some(from_env.to_str().expect("utf8")));
     // Leak the path so it can live in the 'static tuple the guard takes.
     let leaked: &'static str = Box::leak(from_env.to_string_lossy().into_owned().into_boxed_str());
-    env[0] = ("MAKAI_BINARY_PATH", Some(leaked));
+    env[0] = ("OAP_SDK_BINARY_PATH", Some(leaked));
     let _guard = EnvGuard::set(&env);
 
     let resolved = BinaryResolver {
@@ -267,19 +267,19 @@ async fn a_cached_download_is_used_when_its_checksum_matches() {
 
 #[tokio::test]
 async fn the_builder_command_bypasses_the_environment_override() {
-    // `MAKAI_BINARY_PATH` outranks the resolver's `binary_path`, matching the
+    // `OAP_SDK_BINARY_PATH` outranks the resolver's `binary_path`, matching the
     // TypeScript SDK. `ClientBuilder::command` is the escape hatch for callers
     // that must pin an exact executable — a test harness, or an application
     // shipping its own runtime.
     let mut env = clear_env();
-    env[0] = ("MAKAI_BINARY_PATH", Some("/definitely/not/here/makai"));
+    env[0] = ("OAP_SDK_BINARY_PATH", Some("/definitely/not/here/makai"));
     let _guard = EnvGuard::set(&env);
 
-    let client = makai::ClientBuilder::new()
+    let client = oap_sdk::ClientBuilder::new()
         .command(env!("CARGO_BIN_EXE_makai-protocol-fake"))
         .args(Vec::<String>::new())
         .env_clear()
-        .env("MAKAI_FAKE_SCENARIO", "ok")
+        .env("OAP_SDK_FAKE_SCENARIO", "ok")
         .handshake_timeout(std::time::Duration::from_millis(2_000))
         .connect()
         .await

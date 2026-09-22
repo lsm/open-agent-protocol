@@ -23,7 +23,7 @@ Create a client, resolve a model, send one chat message, and print the assistant
 ```python
 import asyncio
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
@@ -56,7 +56,7 @@ Use `client.provider.stream(...)` for provider-level streaming. It is the SDK's 
 import asyncio
 import sys
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
@@ -116,7 +116,7 @@ import asyncio
 import json
 from typing import Any
 
-import makai
+import oap_sdk
 
 
 def get_weather(args: dict[str, Any], context: makai.ToolContext) -> str:
@@ -183,7 +183,7 @@ Use `client.auth.list_providers()` to inspect auth state, and `client.auth.login
 ```python
 import asyncio
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
@@ -234,7 +234,7 @@ Models are discovered through `client.models`. Use `model_ref` from the returned
 import asyncio
 import datetime
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
@@ -266,7 +266,7 @@ asyncio.run(main())
 For scripts and REPLs, `makai.connect_sync()` runs the async client on a private event loop in a background thread. Do not call it from inside a running event loop.
 
 ```python
-import makai
+import oap_sdk
 
 with makai.connect_sync() as client:
     model = client.models.resolve(provider_id="anthropic", model_id="claude-sonnet-4-5")
@@ -290,11 +290,11 @@ with makai.connect_sync() as client:
 
 ```python
 client = await makai.connect(
-    resolver=makai.BinaryResolverOptions(binary_path="/opt/makai/bin/makai")
+    resolver=makai.BinaryResolverOptions(binary_path="/opt/oapx/bin/oapx")
 )
 ```
 
-You can also set `MAKAI_BINARY_PATH=/opt/makai/bin/makai`, which takes precedence over `binary_path`.
+You can also set `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`, which takes precedence over `binary_path`.
 
 ### Download from URL with checksum
 
@@ -308,20 +308,20 @@ client = await makai.connect(
 )
 ```
 
-The checksum is mandatory and re-verified against the cache on every resolve. Environment variable equivalents are `MAKAI_BINARY_URL` and `MAKAI_BINARY_SHA256`.
+The checksum is mandatory and re-verified against the cache on every resolve. Environment variable equivalents are `OAP_SDK_BINARY_URL` and `OAP_SDK_BINARY_SHA256`.
 
 ### Resolution order
 
-1. `resolver.binary_path`, or `MAKAI_BINARY_PATH` (the environment wins)
-2. `resolver.binary_url` / `MAKAI_BINARY_URL`, which requires a SHA-256 checksum
+1. `resolver.binary_path`, or `OAP_SDK_BINARY_PATH` (the environment wins)
+2. `resolver.binary_url` / `OAP_SDK_BINARY_URL`, which requires a SHA-256 checksum
 3. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-4. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
+4. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 5. `oapx` on `PATH`, then `makai`
 
 `oapx` is tried in every location before `makai` is tried in any, so a nested
 `oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
-The TypeScript SDK has one extra step between 2 and 3: an optional `@makai/cli-<platform>-<arch>` npm package. That step is **deliberately omitted** here — npm installs those automatically through optional dependencies, Python's equivalent would be platform-specific wheels, and none are published for makai. Set `MAKAI_BINARY_PATH` when you need to pin a specific binary.
+The TypeScript SDK has one extra step between 2 and 3: an optional `@oap-sdk/cli-<platform>-<arch>` npm package. That step is **deliberately omitted** here — npm installs those automatically through optional dependencies, Python's equivalent would be platform-specific wheels, and none are published for makai. Set `OAP_SDK_BINARY_PATH` when you need to pin a specific binary.
 
 ### Transport options
 
@@ -329,7 +329,7 @@ The TypeScript SDK has one extra step between 2 and 3: an optional `@makai/cli-<
 client = await makai.connect(
     args=["--stdio"],
     cwd=".",
-    env={**os.environ, "MAKAI_LOG": "info"},
+    env={**os.environ, "OAPX_LOG": "info"},
     handshake_timeout=5.0,   # seconds to wait for the `ready` frame
     response_timeout=30.0,   # seconds per provider/agent frame
     frame_timeout=30.0,      # seconds per auth frame
@@ -353,7 +353,7 @@ Closing a client terminates the child process: stdin is closed, then `terminate(
 `MakaiStreamError.kind` is one of `provider_error`, `transport_error`, `aborted`, `unknown`. Timeouts carry a `diagnostics` mapping with the stream/session/message ids and remediation suggestions.
 
 ```python
-import makai
+import oap_sdk
 
 try:
     response = await client.provider.complete(model_ref=model_ref, messages=messages)
@@ -374,7 +374,7 @@ except makai.MakaiAuthError as error:
 The package ships a `py.typed` marker and passes `mypy --strict`. Request shapes are `TypedDict`s so plain dictionaries work; responses and stream events are frozen dataclasses.
 
 ```python
-from makai import (
+from oap_sdk import (
     AgentEnd, AgentStart, AgentStreamEvent, AssistantMessage, AuthEvent,
     AuthFlowHandlers, ChatMessage, CompletionResponse, ContentPart,
     ListModelsResponse, MessageEnd, MessageStart, ModelDescriptor,
@@ -420,9 +420,9 @@ pytest                    # fake-server suite; no binary or credentials needed
 mypy                      # strict type checking over src/ and tests/
 
 zig build install --prefix /tmp/makai-py      # from the repo root
-MAKAI_BINARY_PATH=/tmp/makai-py/bin/makai pytest   # adds the real-binary suite
+OAP_SDK_BINARY_PATH=/tmp/makai-py/bin/makai pytest   # adds the real-binary suite
 ```
 
-Tests in `tests/test_real_binary.py` skip when `MAKAI_BINARY_PATH` is unset, so a green `pytest` without it means zero real-runtime coverage. Set it explicitly when you mean to exercise the real host.
+Tests in `tests/test_real_binary.py` skip when `OAP_SDK_BINARY_PATH` is unset, so a green `pytest` without it means zero real-runtime coverage. Set it explicitly when you mean to exercise the real host.
 
 Everything else runs against `tests/fixtures/fake_server.py`, a configurable protocol host in the spirit of `typescript/test/fixtures/*.js`.

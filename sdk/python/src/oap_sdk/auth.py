@@ -1,7 +1,7 @@
 """The ``auth`` namespace: provider listing and interactive login.
 
 The runtime owns credential storage and every OAuth flow. This SDK never reads
-``~/.makai/auth.json``, never spawns ``makai auth ...``, and never sees token
+``~/.oapx/auth.json``, never spawns ``makai auth ...``, and never sees token
 material -- it drives the auth protocol over the same transport as everything
 else (spec §3.7).
 

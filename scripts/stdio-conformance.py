@@ -49,7 +49,7 @@ NANOID_ALPHABET = string.ascii_letters + string.digits
 ULID_LEAD = "01234567"
 
 DEFAULT_BINARY_CANDIDATES = (
-    os.environ.get("MAKAI_BINARY_PATH", ""),
+    os.environ.get("OAP_SDK_BINARY_PATH", ""),
     "zig-out/bin/oapx",
     "zig/zig-out/bin/oapx",
     "/tmp/makai-stdio-test/bin/oapx",
@@ -924,7 +924,7 @@ def group_eviction(ctx):
     results = []
 
     # A tiny TTL evicts an idle session, and the id is reusable afterwards.
-    host = ctx.host(env={"MAKAI_AGENT_SESSION_IDLE_TTL_MS": "1"})
+    host = ctx.host(env={"OAPX_AGENT_SESSION_IDLE_TTL_MS": "1"})
     host.next_frame(timeout=3.0)
     session = nanoid()
     host.exchange(agent_frame("agent_start", session, 1, start_payload(session)))
@@ -941,7 +941,7 @@ def group_eviction(ctx):
         "%s / %s" % (evicted, restart)))
 
     # TTL 0 disables eviction.
-    host = ctx.host(env={"MAKAI_AGENT_SESSION_IDLE_TTL_MS": "0"})
+    host = ctx.host(env={"OAPX_AGENT_SESSION_IDLE_TTL_MS": "0"})
     host.next_frame(timeout=3.0)
     session = nanoid()
     host.exchange(agent_frame("agent_start", session, 1, start_payload(session)))
@@ -949,12 +949,12 @@ def group_eviction(ctx):
     alive = kinds(host.exchange(agent_frame("agent_status", session, 2, {"session_id": session})))
     host.shutdown()
     results.append(Result(
-        "MAKAI_AGENT_SESSION_IDLE_TTL_MS=0 disables eviction", "eviction",
+        "OAPX_AGENT_SESSION_IDLE_TTL_MS=0 disables eviction", "eviction",
         "pass" if alive == ["session_info"] else "fail",
         "spec 13.2.6 (0 disables the idle TTL)", "session_info", str(alive)))
 
     # An agent_status poll refreshes the idle clock.
-    host = ctx.host(env={"MAKAI_AGENT_SESSION_IDLE_TTL_MS": "2500"})
+    host = ctx.host(env={"OAPX_AGENT_SESSION_IDLE_TTL_MS": "2500"})
     host.next_frame(timeout=3.0)
     session = nanoid()
     host.exchange(agent_frame("agent_start", session, 1, start_payload(session)))
@@ -1310,7 +1310,7 @@ def main():
     binary = resolve_binary(args.binary)
     if not binary:
         sys.stderr.write(
-            "no makai binary found; pass --binary or set MAKAI_BINARY_PATH\n"
+            "no makai binary found; pass --binary or set OAP_SDK_BINARY_PATH\n"
             "build one with: zig build install --prefix /tmp/makai-stdio-test\n")
         return 2
 

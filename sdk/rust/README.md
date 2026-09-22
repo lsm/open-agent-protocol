@@ -19,7 +19,7 @@ You also need the Makai runtime binary. By default the SDK looks for a local bui
 
 ```bash
 zig build install --prefix /tmp/makai
-export MAKAI_BINARY_PATH=/tmp/makai/bin/makai
+export OAP_SDK_BINARY_PATH=/tmp/makai/bin/makai
 ```
 
 ## Quick start
@@ -179,7 +179,7 @@ use makai::{AuthHandlers, AuthRetryPolicy, Client};
 let client = Client::builder()
     .auth_retry_policy(AuthRetryPolicy::AutoOnce)
     .auth_handlers(AuthHandlers::new().on_prompt(|_| async move {
-        Ok(std::env::var("MAKAI_AUTH_CODE").unwrap_or_default())
+        Ok(std::env::var("OAPX_AUTH_CODE").unwrap_or_default())
     }))
     .connect()
     .await?;
@@ -230,8 +230,8 @@ use makai::Client;
 
 # async fn run() -> makai::Result<()> {
 let client = Client::builder()
-    .binary_path("/opt/makai/bin/makai")
-    .env("MAKAI_LOG", "info")
+    .binary_path("/opt/oapx/bin/oapx")
+    .env("OAPX_LOG", "info")
     .handshake_timeout(Duration::from_secs(2))
     .response_timeout(Duration::from_secs(30))
     .frame_timeout(Duration::from_secs(30))
@@ -246,11 +246,11 @@ let client = Client::builder()
 
 Mirroring the TypeScript resolver, in order:
 
-1. `MAKAI_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
-2. `MAKAI_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`MAKAI_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
-3. *(TypeScript only)* the `@makai/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
+1. `OAP_SDK_BINARY_PATH`, then `ClientBuilder::binary_path` / `BinaryResolver::binary_path`;
+2. `OAP_SDK_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`OAP_SDK_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
+3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
 4. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
-5. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`;
+5. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
 6. `oapx` on `PATH`, then `makai`.
 
 `oapx` is tried in every location before `makai` is tried in any, so a nested
@@ -258,7 +258,7 @@ Mirroring the TypeScript resolver, in order:
 
 The environment variable outranks the builder option, as in TypeScript, so an operator can redirect an application that hardcoded a path. `ClientBuilder::command(path)` bypasses resolution entirely when that override is not wanted.
 
-**The npm platform-package step is deliberately omitted.** It resolves through Node's module resolution against an optional npm dependency; Rust has no equivalent channel that ships a platform-specific executable alongside a library crate, and inventing one (a `build.rs` download, say) would put a network fetch in the build with none of the checksum guarantees step 2 insists on. Install the binary however you like and point `MAKAI_BINARY_PATH` at it, or let step 6 find it on `PATH`.
+**The npm platform-package step is deliberately omitted.** It resolves through Node's module resolution against an optional npm dependency; Rust has no equivalent channel that ships a platform-specific executable alongside a library crate, and inventing one (a `build.rs` download, say) would put a network fetch in the build with none of the checksum guarantees step 2 insists on. Install the binary however you like and point `OAP_SDK_BINARY_PATH` at it, or let step 6 find it on `PATH`.
 
 Downloading from a URL needs the `download` feature (off by default, to keep an HTTP stack out of the default dependency tree):
 
@@ -322,7 +322,7 @@ makai::ClientBuilder::new()
     .command(env!("CARGO_BIN_EXE_makai-protocol-fake"))
     .args(Vec::<String>::new())
     .env_clear()
-    .env("MAKAI_FAKE_SCENARIO", "ok")
+    .env("OAP_SDK_FAKE_SCENARIO", "ok")
 # }
 ```
 
@@ -330,9 +330,9 @@ To also exercise a real runtime:
 
 ```bash
 zig build install --prefix /tmp/makai-rs
-MAKAI_BINARY_PATH=/tmp/makai-rs/bin/makai cargo test
+OAP_SDK_BINARY_PATH=/tmp/makai-rs/bin/makai cargo test
 ```
 
-Without `MAKAI_BINARY_PATH` the `real_binary` tests skip, mirroring `typescript/test/makai_binary_smoke.test.ts`.
+Without `OAP_SDK_BINARY_PATH` the `real_binary` tests skip, mirroring `typescript/test/makai_binary_smoke.test.ts`.
 
-**On macOS**, the two tests that make the runtime *persist* credentials skip by default: `saveToPreferredStorage` writes to the login Keychain, and creating that item from an unsigned local build blocks in `AuthorizationCopyRights` waiting on a UI prompt no test runner can answer. Everything else runs. Set `MAKAI_RUST_SDK_ALLOW_KEYCHAIN=1` to run them on a Mac where the item's ACL is already approved. CI runs on Linux, where the file store is used and the write is unattended.
+**On macOS**, the two tests that make the runtime *persist* credentials skip by default: `saveToPreferredStorage` writes to the login Keychain, and creating that item from an unsigned local build blocks in `AuthorizationCopyRights` waiting on a UI prompt no test runner can answer. Everything else runs. Set `OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN=1` to run them on a Mac where the item's ACL is already approved. CI runs on Linux, where the file store is used and the write is unattended.

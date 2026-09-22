@@ -994,7 +994,7 @@ belonging in the protocol is that a caller must branch on the fact and cannot
 discover it from the endpoint, and all twelve meet it: all twelve appear in live
 branch conditions in that tree's OpenAI and Anthropic request builders, and
 `parseCapabilities` accepts all twelve from a user-written
-`~/.makai/providers.json`. A fact a human has to declare by hand is the
+`~/.oapx/providers.json`. A fact a human has to declare by hand is the
 definition of undiscoverable.
 
 | Fact | Values | Makai's name | Why a caller must know |

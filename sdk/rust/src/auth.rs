@@ -1,7 +1,7 @@
 //! Provider authentication: listing auth state and running interactive logins.
 //!
 //! Token material stays inside the runtime. This SDK never reads
-//! `~/.makai/auth.json`, never shells out to `makai auth ...`, and never hands a
+//! `~/.oapx/auth.json`, never shells out to `makai auth ...`, and never hands a
 //! credential back to the caller (spec §3.7).
 
 use std::future::Future;
