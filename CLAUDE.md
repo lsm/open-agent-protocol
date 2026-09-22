@@ -195,6 +195,12 @@ Rules the source will not tell you:
   `owns_events` without cloning before push is a use-after-free. A stream ends
   via `complete`/`completeWithError`, never a `.done` event. Full contract:
   `docs/zig-stream-memory-ownership.md`.
+- **`ProtocolClient` is a separate contract, and those rules do not cover it.**
+  `waitResultFor` hands back a shallow copy of the message held in
+  `stream_results`, and `removeStreamState` deinits that stored message, so a
+  result kept past cleanup holds freed slices. `cloneAssistantMessage` it first
+  when it must outlive the call — `EventStream.cloneResult` is a different API
+  and does not apply here.
 - **`AgentEvent` has no error variant, and failure does not arrive through one
   channel.** When `runLoop` returns an error the thread calls
   `completeWithError` *instead of* pushing `agent_end`, so no terminal event
@@ -313,4 +319,5 @@ these when touching `serve/` or `cmd/oap/serve.go`.
   environment values.
 - Foreign-harness identifiers stay in namespaced `extensions`; they never become
   OAP identities.
-- If behavior changes, update the spec or draft in the same PR.
+- If behavior changes, update the spec or draft in the same PR, and add an
+  entry under `Unreleased` in `CHANGELOG.md`, which follows Keep a Changelog.
