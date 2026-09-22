@@ -929,7 +929,7 @@ func TestAbortedFinalCancelsOpenToolsBeforeParent(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	_ = adaptertest.Next(t, stream, time.Second)
+	started := adaptertest.Next(t, stream, time.Second)
 	client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "open", "toolName": "read", "args": map[string]any{}})
 	client.onCall = func(c native.Command) {
 		if c.Type == native.CommandAbort {
@@ -944,6 +944,7 @@ func TestAbortedFinalCancelsOpenToolsBeforeParent(t *testing.T) {
 	if len(events) < 2 || events[len(events)-2].Type != protocol.TypeActionCallCancelled || events[len(events)-1].Type != protocol.TypeRunCancelled {
 		t.Fatalf("events=%v", eventTypes(events))
 	}
+	assertCancelledTrace(t, response, append([]protocol.Envelope{started}, events...))
 }
 
 func TestAbortedFinalWithIntentCancels(t *testing.T) {
