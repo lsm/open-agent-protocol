@@ -36,11 +36,11 @@ func (h *Hub) Subscribe(ctx context.Context, id protocol.SessionID, options ...S
 		option(&config)
 	}
 	if config.after == nil {
-		sub, open := entry.subscribe(h.queue)
+		sub, joinedRun, joinedAt, open := entry.subscribe(h.queue)
 		if !open {
 			return nil, &SessionClosedError{ID: id}
 		}
-		return &Subscription{session: entry, ctx: ctx, sub: sub, positions: make(map[protocol.RunID]uint64)}, nil
+		return &Subscription{session: entry, ctx: ctx, sub: sub, joinedRun: joinedRun, joinedAt: joinedAt, positions: make(map[protocol.RunID]uint64)}, nil
 	}
 	if entry.IsClosed() {
 		return nil, &SessionClosedError{ID: id}
@@ -76,12 +76,19 @@ type Subscription struct {
 	lastRun   protocol.RunID
 	positions map[protocol.RunID]uint64
 
+	joinedRun protocol.RunID
+	joinedAt  uint64
+
 	closeOnce sync.Once
 	finished  bool
 	err       error
 }
 
 func (s *Subscription) RunID() protocol.RunID { return s.run }
+
+func (s *Subscription) JoinedAt() (protocol.RunID, uint64, bool) {
+	return s.joinedRun, s.joinedAt, s.joinedRun != "" && s.joinedAt > 0
+}
 
 func (s *Subscription) Next() (protocol.Envelope, error) {
 	if s.finished {

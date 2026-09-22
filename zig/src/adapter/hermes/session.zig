@@ -74,6 +74,7 @@ const Run = struct {
     message_id: []const u8 = "",
     sequence: i64 = 0,
     started: bool = false,
+    accepted: bool = false,
     open_seen: bool = false,
     terminal: bool = false,
 };
@@ -150,6 +151,13 @@ pub const Reducer = struct {
         self.run = .{ .message_id = try self.nextID("message") };
     }
 
+    pub fn admit(self: *Reducer) Reduce!void {
+        const run = self.active() orelse return;
+        if (run.accepted) return;
+        run.accepted = true;
+        if (run.open_seen) try self.startRun();
+    }
+
     fn startRun(self: *Reducer) Reduce!void {
         const run = self.active() orelse return;
         if (run.started) return;
@@ -212,6 +220,10 @@ pub const Reducer = struct {
     pub fn refuseSubmission(self: *Reducer) void {
         const run = self.run orelse return;
         if (run.started) return;
+        self.abortReservation();
+    }
+
+    fn abortReservation(self: *Reducer) void {
         self.buffered.clearRetainingCapacity();
         self.run = null;
     }
@@ -263,7 +275,7 @@ pub const Reducer = struct {
             return;
         }
         run.open_seen = true;
-        if (!run.started) try self.startRun();
+        if (!run.started and run.accepted) try self.startRun();
     }
 
     fn applyRunEvent(self: *Reducer, kind: []const u8, payload: std.json.Value) Reduce!void {
@@ -763,7 +775,7 @@ pub const Reducer = struct {
 
     fn failRun(self: *Reducer, code: []const u8, message: []const u8) !void {
         const run = self.active() orelse return;
-        if (!run.started) return;
+        if (!run.started) return self.abortReservation();
         try self.settleChildren(run);
         var failure = self.object();
         try self.put(&failure, "code", str(code));
@@ -931,6 +943,7 @@ fn openRun(arena: *std.heap.ArenaAllocator) !Reducer {
     var reducer = Reducer.init(arena, .{});
     reducer.open();
     try reducer.submit();
+    try reducer.admit();
     try feedBare(&reducer, arena.allocator(), "message.start");
     return reducer;
 }
@@ -1162,6 +1175,7 @@ test "a gate that arrives before the run started emits nothing and mints nothing
     var reducer = Reducer.init(&arena, .{});
     reducer.open();
     try reducer.submit();
+    try reducer.admit();
     try feedEvent(&reducer, arena.allocator(), "approval.request",
         \\{"command":"ls","choices":["once"]}
     );
@@ -1357,6 +1371,7 @@ test "a gate left open by one run is not answerable from the next" {
         \\{"status":"complete","text":"done"}
     );
     try reducer.submit();
+    try reducer.admit();
     try feedBare(&reducer, scratch, "message.start");
 
     try testing.expectEqualStrings("run.started", typeAt(&reducer, 5));
@@ -1415,6 +1430,7 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
     try testing.expect(reducer.pendingInteraction("clarify") == null);
 
     try reducer.submit();
+    try reducer.admit();
     try feedBare(&reducer, scratch, "message.start");
     try feedEvent(&reducer, scratch, "clarify.request",
         \\{"request_id":"bbbb2222","question":"again?","choices":["b"]}
@@ -1561,6 +1577,7 @@ test "an event that arrives before the turn opens is kept and replayed, not drop
     var reducer = Reducer.init(&arena, .{});
     reducer.open();
     try reducer.submit();
+    try reducer.admit();
 
     try feedEvent(&reducer, scratch, "clarify.request",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
@@ -1598,6 +1615,7 @@ test "a run-scoped event with no run reserved is someone else's, and the rest ar
     );
     try testing.expect(!quiet.unusable);
     try quiet.submit();
+    try quiet.admit();
 }
 
 test "traffic the pinned protocol never carries disowns the session" {
@@ -1682,6 +1700,7 @@ test "a settled run still tolerates traffic that belongs to no turn" {
 
     try testing.expect(!reducer.unusable);
     try reducer.submit();
+    try reducer.admit();
 }
 
 test "a transport that dies takes the session with it, started run or not" {
@@ -1699,6 +1718,7 @@ test "a transport that dies takes the session with it, started run or not" {
     var reserved = Reducer.init(&arena, .{});
     reserved.open();
     try reserved.submit();
+    try reserved.admit();
     try feedEvent(&reserved, scratch, "clarify.request",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
@@ -1730,6 +1750,7 @@ test "an injected run id replaces the minted one without skipping it" {
     var injected = Reducer.init(&arena, .{});
     injected.open();
     try injected.submitAs(.{ .run_id = "run-supplied" });
+    try injected.admit();
     try feedBare(&injected, scratch, "message.start");
     try feedEvent(&injected, scratch, "approval.request", approval);
 
@@ -1751,6 +1772,7 @@ test "the endpoint and revision the options name are what the envelopes carry" {
     var reducer = Reducer.init(&arena, .{ .endpoint = "hermes.supplied", .revision = "supplied-revision" });
     reducer.open();
     try reducer.submit();
+    try reducer.admit();
     try feedBare(&reducer, scratch, "message.start");
     try feedEvent(&reducer, scratch, "approval.request",
         \\{"command":"rm -rf /tmp/x","choices":["once","deny"]}
@@ -1827,6 +1849,100 @@ test "a run settles its open children before its own terminal" {
     try testing.expectEqualStrings("incomplete_tool", payloadAt(&reducer, failed.?).get("error").?.object.get("code").?.string);
 }
 
+test "a grammar violation before admission drops the reservation rather than nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try feedBare(&reducer, scratch, "message.start");
+    try feedEvent(&reducer, scratch, "message.delta", "{\"text\":\"stale\"}");
+    try feedBare(&reducer, scratch, "message.start");
+
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try testing.expect(reducer.run == null);
+    try testing.expectEqual(@as(usize, 0), reducer.buffered.items.len);
+
+    try reducer.admit();
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+
+    try reducer.submit();
+    try reducer.admit();
+    try feedBare(&reducer, scratch, "message.start");
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+}
+
+test "a message.start before the gateway answers starts no run, and the reservation still releases" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try feedBare(&reducer, scratch, "message.start");
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+
+    reducer.refuseSubmission();
+    try testing.expect(reducer.run == null);
+    try reducer.submit();
+    try reducer.admit();
+    try feedBare(&reducer, scratch, "message.start");
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+}
+
+test "a turn admitted after its message.start starts on the admission" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try feedEvent(&reducer, scratch, "message.delta", "{\"text\":\"early\"}");
+    try feedBare(&reducer, scratch, "message.start");
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+
+    try reducer.admit();
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+    try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("early", payloadAt(&reducer, 1).get("part").?.object.get("text").?.string);
+}
+
+test "an admission that arrives before the turn opens still starts on the message.start" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try reducer.admit();
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try feedBare(&reducer, scratch, "message.start");
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+}
+
+test "refusing a submission the gateway already admitted and opened leaves the run alone" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try reducer.admit();
+    try feedBare(&reducer, scratch, "message.start");
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+
+    reducer.refuseSubmission();
+    try testing.expect(reducer.run != null);
+    try testing.expectError(Error.RunActive, reducer.submit());
+}
+
 test "a refused submission drops what it buffered, it does not hand it to the next run" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -1835,10 +1951,12 @@ test "a refused submission drops what it buffered, it does not hand it to the ne
     var reducer = Reducer.init(&arena, .{});
     reducer.open();
     try reducer.submit();
+    try reducer.admit();
     try feedEvent(&reducer, scratch, "message.delta", "{\"text\":\"stale\"}");
     reducer.refuseSubmission();
 
     try reducer.submit();
+    try reducer.admit();
     try feedBare(&reducer, scratch, "message.start");
     try feedEvent(&reducer, scratch, "message.delta", "{\"text\":\"fresh\"}");
 

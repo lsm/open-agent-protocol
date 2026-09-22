@@ -3,6 +3,15 @@
   "$id": "common.schema.json",
   "title": "Open Agent Protocol common types",
   "$defs": {
+    "authStatus": {
+      "enum": [
+        "authenticated",
+        "login_required",
+        "expired",
+        "failed",
+        "unknown"
+      ]
+    },
     "nonEmptyString": { "type": "string", "minLength": 1 },
     "opaqueID": { "$ref": "#/$defs/nonEmptyString" },
     "toolSourceKind": { "enum": ["native", "local", "process", "remote", "hosted"] },

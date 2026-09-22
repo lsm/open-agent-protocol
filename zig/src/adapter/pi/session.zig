@@ -137,7 +137,7 @@ const assistant_required = [_][]const u8{ "content", "api", "provider", "model",
 
 const Need = enum { text, boolean, array, carried };
 
-const Member = struct { name: []const u8, need: Need = .carried };
+const Member = struct { name: []const u8, need: Need = .carried, required: bool = false };
 
 const EventShape = struct { name: []const u8, members: []const Member };
 
@@ -152,6 +152,22 @@ const event_shapes = [_]EventShape{
     .{ .name = "tool_execution_start", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" } } },
     .{ .name = "tool_execution_update", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "args" }, .{ .name = "partialResult" } } },
     .{ .name = "tool_execution_end", .members = &.{ kind_member, .{ .name = "toolCallId", .need = .text }, .{ .name = "toolName", .need = .text }, .{ .name = "result" }, .{ .name = "isError", .need = .boolean } } },
+    .{ .name = "turn_start", .members = &.{kind_member} },
+    .{ .name = "turn_end", .members = &.{ kind_member, .{ .name = "message", .required = true }, .{ .name = "toolResults", .required = true } } },
+    .{ .name = "message_start", .members = &.{ kind_member, .{ .name = "message", .required = true } } },
+    .{ .name = "queue_update", .members = &.{ kind_member, .{ .name = "steering", .required = true }, .{ .name = "followUp", .required = true } } },
+    .{ .name = "compaction_start", .members = &.{ kind_member, .{ .name = "reason", .required = true } } },
+    .{ .name = "compaction_end", .members = &.{ kind_member, .{ .name = "reason", .required = true }, .{ .name = "aborted", .required = true }, .{ .name = "willRetry", .required = true }, .{ .name = "result" }, .{ .name = "errorMessage" } } },
+    .{ .name = "entry_appended", .members = &.{ kind_member, .{ .name = "entry", .required = true } } },
+    .{ .name = "session_info_changed", .members = &.{ kind_member, .{ .name = "name" } } },
+    .{ .name = "thinking_level_changed", .members = &.{ kind_member, .{ .name = "level", .required = true } } },
+    .{ .name = "auto_retry_start", .members = &.{ kind_member, .{ .name = "attempt", .required = true }, .{ .name = "maxAttempts", .required = true }, .{ .name = "delayMs", .required = true }, .{ .name = "errorMessage", .required = true } } },
+    .{ .name = "auto_retry_end", .members = &.{ kind_member, .{ .name = "success", .required = true }, .{ .name = "attempt", .required = true }, .{ .name = "finalError" } } },
+    .{ .name = "summarization_retry_scheduled", .members = &.{ kind_member, .{ .name = "attempt", .required = true }, .{ .name = "maxAttempts", .required = true }, .{ .name = "delayMs", .required = true }, .{ .name = "errorMessage", .required = true } } },
+    .{ .name = "summarization_retry_attempt_start", .members = &.{ kind_member, .{ .name = "source", .required = true }, .{ .name = "reason" } } },
+    .{ .name = "summarization_retry_finished", .members = &.{kind_member} },
+    .{ .name = "bash_execution_update", .members = &.{ kind_member, .{ .name = "delta", .required = true }, .{ .name = "id" } } },
+    .{ .name = "extension_error", .members = &.{ kind_member, .{ .name = "extensionPath", .required = true }, .{ .name = "event", .required = true }, .{ .name = "error", .required = true } } },
 };
 
 fn memberNamed(members: []const Member, name: []const u8) ?Member {
@@ -191,7 +207,13 @@ fn decodeEvent(reducer: *Reducer, event: std.json.Value, kind: []const u8) !bool
         }
     }
     for (shape.members) |member| {
-        const value = event.object.get(member.name) orelse continue;
+        const value = event.object.get(member.name) orelse {
+            if (member.required) {
+                try failRun(reducer, "pi_invalid_event", "event omitted a member its pinned shape requires");
+                return false;
+            }
+            continue;
+        };
         if (!satisfies(member.need, value)) {
             try failRun(reducer, "pi_invalid_event", "event member is not the type its pinned shape gives it");
             return false;
@@ -1065,6 +1087,67 @@ test "an event outside the pinned vocabulary is refused" {
     try expectRefusal(&.{"{\"type\":\"invented_event\"}"}, "pi_unknown_event");
 }
 
+test "every kind the port ignores has a row in the shape table" {
+    for (&ignored_events) |kind| {
+        if (eventShape(kind) == null) return error.KindWithoutShape;
+    }
+}
+
+test "each kind the port ignores is still held to the members the oracle requires of it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const accepted = [_][]const u8{
+        "{\"type\":\"turn_start\"}",
+        "{\"type\":\"turn_end\",\"message\":{},\"toolResults\":[]}",
+        "{\"type\":\"message_start\",\"message\":{}}",
+        "{\"type\":\"queue_update\",\"steering\":[],\"followUp\":[]}",
+        "{\"type\":\"compaction_start\",\"reason\":\"threshold\"}",
+        "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false}",
+        "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false,\"willRetry\":false,\"result\":{},\"errorMessage\":\"e\"}",
+        "{\"type\":\"entry_appended\",\"entry\":{}}",
+        "{\"type\":\"session_info_changed\"}",
+        "{\"type\":\"session_info_changed\",\"name\":\"n\"}",
+        "{\"type\":\"thinking_level_changed\",\"level\":\"high\"}",
+        "{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":2,\"delayMs\":10,\"errorMessage\":\"e\"}",
+        "{\"type\":\"auto_retry_end\",\"success\":true,\"attempt\":1}",
+        "{\"type\":\"auto_retry_end\",\"success\":true,\"attempt\":1,\"finalError\":\"e\"}",
+        "{\"type\":\"summarization_retry_scheduled\",\"attempt\":1,\"maxAttempts\":2,\"delayMs\":10,\"errorMessage\":\"e\"}",
+        "{\"type\":\"summarization_retry_attempt_start\",\"source\":\"s\"}",
+        "{\"type\":\"summarization_retry_attempt_start\",\"source\":\"s\",\"reason\":\"r\"}",
+        "{\"type\":\"summarization_retry_finished\"}",
+        "{\"type\":\"bash_execution_update\",\"delta\":\"d\"}",
+        "{\"type\":\"bash_execution_update\",\"delta\":\"d\",\"id\":\"i\"}",
+        "{\"type\":\"extension_error\",\"extensionPath\":\"p\",\"event\":\"e\",\"error\":\"x\"}",
+    };
+    for (accepted) |line| {
+        var reducer = try started(a);
+        try apply(&reducer, try parse(a, line));
+        try std.testing.expect(lastFailure(&reducer) == null);
+    }
+    const refused = [_][]const u8{
+        "{\"type\":\"turn_start\",\"attempt\":1}",
+        "{\"type\":\"turn_end\",\"message\":{}}",
+        "{\"type\":\"message_start\"}",
+        "{\"type\":\"queue_update\",\"steering\":[]}",
+        "{\"type\":\"compaction_start\"}",
+        "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"aborted\":false}",
+        "{\"type\":\"entry_appended\"}",
+        "{\"type\":\"session_info_changed\",\"title\":\"t\"}",
+        "{\"type\":\"thinking_level_changed\"}",
+        "{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":2,\"errorMessage\":\"e\"}",
+        "{\"type\":\"auto_retry_end\",\"success\":true}",
+        "{\"type\":\"summarization_retry_scheduled\",\"attempt\":1,\"maxAttempts\":2,\"delayMs\":10}",
+        "{\"type\":\"summarization_retry_attempt_start\"}",
+        "{\"type\":\"summarization_retry_finished\",\"source\":\"s\"}",
+        "{\"type\":\"bash_execution_update\"}",
+        "{\"type\":\"extension_error\",\"extensionPath\":\"p\",\"event\":\"e\"}",
+    };
+    for (refused) |line| {
+        try expectRefusal(&.{line}, "pi_invalid_event");
+    }
+}
+
 test "a candidate message that will not decode is refused at settlement" {
     try expectRefusal(&.{
         "{\"type\":\"agent_end\",\"messages\":[{\"role\":\"assistant\"}],\"willRetry\":false}",
@@ -1180,6 +1263,52 @@ fn expectExtensionRefusal(request: []const u8, code: []const u8) !void {
     try applyExtension(&reducer, try parse(arena.allocator(), request));
     const raised = lastFailure(&reducer) orelse return error.NoRefusal;
     try std.testing.expectEqualStrings(code, raised);
+}
+
+test "a message payload that is not an object is refused the way an undecodable one is" {
+    const message_end = [_][]const u8{
+        "{\"type\":\"message_end\",\"message\":null}",
+        "{\"type\":\"message_end\",\"message\":\"not an object\"}",
+        "{\"type\":\"message_end\",\"message\":[]}",
+        "{\"type\":\"message_end\",\"message\":7}",
+    };
+    for (message_end) |line| {
+        try expectRefusal(&.{line}, "pi_invalid_message_end");
+    }
+
+    const message_update = [_][]const u8{
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":null}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":\"x\"}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":[]}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":7}",
+    };
+    for (message_update) |line| {
+        try expectRefusal(&.{line}, "pi_invalid_message_update");
+    }
+}
+
+test "the usage, args, partialResult and result members take a value of any type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const anything = [_][]const u8{ "\"x\"", "7", "true", "[]", "{}", "null" };
+    for (anything) |value| {
+        const usage = try std.fmt.allocPrint(a, "{{\"type\":\"message_update\",\"usage\":{s},\"assistantMessageEvent\":{{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}}}}", .{value});
+        const start = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_start\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"args\":{s}}}", .{value});
+        const update = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_update\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"partialResult\":{s}}}", .{value});
+        const end = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_end\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"result\":{s},\"isError\":false}}", .{value});
+        const traces = [_][]const []const u8{
+            &.{usage},
+            &.{start},
+            &.{ start, update },
+            &.{ start, end },
+        };
+        for (traces) |lines| {
+            var reducer = try started(a);
+            for (lines) |line| try apply(&reducer, try parse(a, line));
+            try std.testing.expect(lastFailure(&reducer) == null);
+        }
+    }
 }
 
 test "a select extension offering no options is refused" {

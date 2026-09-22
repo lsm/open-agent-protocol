@@ -2,7 +2,8 @@ const std = @import("std");
 const rpc = @import("rpc");
 
 pub const capability_revision = "claude-code-2.1.263-oap-v3";
-pub const protocol_name = "open-agent-protocol";
+pub const cost_extension = "com.anthropic.claude-code.cost";
+const protocol_name = "open-agent-protocol";
 pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";
 pub const endpoint_id = "claude-code.cli";
@@ -164,7 +165,22 @@ pub const Reducer = struct {
         tool_call_id: []const u8 = "",
         turn_id: []const u8 = "",
         in_reply_to: []const u8 = "",
+        extensions: ?std.json.Value = null,
     };
+
+    fn emitTerminal(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, extensions: ?std.json.Value) ![]const u8 {
+        return self.emitEnvelope(run, kind, payload, .{ .extensions = extensions });
+    }
+
+    fn reportedCost(self: *Reducer, frame: std.json.ObjectMap) !?std.json.Value {
+        const carried = frame.get("total_cost_usd") orelse return null;
+        if (carried == .null) return null;
+        var cost = self.object();
+        try self.put(&cost, "total_cost_usd", carried);
+        var extensions = self.object();
+        try self.put(&extensions, cost_extension, .{ .object = cost });
+        return .{ .object = extensions };
+    }
 
     fn emitEnvelope(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, correlation: Correlation) ![]const u8 {
         const tool_call_id = correlation.tool_call_id;
@@ -186,6 +202,7 @@ pub const Reducer = struct {
         if (tool_call_id.len > 0) try self.put(&envelope, "tool_call_id", str(tool_call_id));
         if (correlation.turn_id.len > 0) try self.put(&envelope, "turn_id", str(correlation.turn_id));
         try self.put(&envelope, "capability_revision", str(self.options.revision));
+        if (correlation.extensions) |carried| try self.put(&envelope, "extensions", carried);
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
         return id;
     }
@@ -555,18 +572,19 @@ pub const Reducer = struct {
         try self.sweepRun();
 
         var payload = try self.terminalPayload(run);
+        const reported = try self.reportedCost(frame);
         if (cancelled(frame)) {
             const reason = try std.fmt.allocPrint(self.allocator(), "interrupt confirmed by terminal_reason {s}", .{stringMember(frame, "terminal_reason") orelse ""});
             try self.put(&payload, "reason", str(reason));
             try self.closeTerminal(frame, &payload);
-            _ = try self.emit(run, "run.cancelled", .{ .object = payload });
+            _ = try self.emitTerminal(run, "run.cancelled", .{ .object = payload }, reported);
         } else if (failed(frame)) {
             var failure = self.object();
             try self.put(&failure, "code", str(try self.failureCode(frame)));
             try self.put(&failure, "message", str(try self.errorResultText(frame)));
             try self.put(&payload, "error", .{ .object = failure });
             try self.closeTerminal(frame, &payload);
-            _ = try self.emit(run, "run.failed", .{ .object = payload });
+            _ = try self.emitTerminal(run, "run.failed", .{ .object = payload }, reported);
         } else {
             var response = self.object();
             try self.put(&response, "id", str(run.message_id));
@@ -576,7 +594,7 @@ pub const Reducer = struct {
             const reason: []const u8 = if (maxTurns(frame)) "max_turns" else stopReason(frame);
             try self.put(&payload, "stop_reason", str(reason));
             try self.closeTerminal(frame, &payload);
-            _ = try self.emit(run, "run.completed", .{ .object = payload });
+            _ = try self.emitTerminal(run, "run.completed", .{ .object = payload }, reported);
         }
         self.run = null;
     }
@@ -1384,6 +1402,32 @@ fn childRun(reducer: *Reducer, arena: std.mem.Allocator, task_type: []const u8) 
     try observeText(reducer, arena,
         \\{"type":"result","session_id":"s","subtype":"success","result":"spawned","user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
     );
+}
+
+test "a terminal carries the cost the harness reported, and none when it reported none" {
+    var priced = std.heap.ArenaAllocator.init(testing.allocator);
+    defer priced.deinit();
+    var reducer = Reducer.init(&priced, .{});
+    reducer.open();
+    try startedRun(&reducer, priced.allocator(), "turn-1");
+    try observeText(&reducer, priced.allocator(),
+        \\{"type":"result","session_id":"s","subtype":"success","result":"done","total_cost_usd":0.0001,"user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
+    );
+    const terminal = reducer.envelopes.items[reducer.envelopes.items.len - 1].object;
+    const extensions = terminal.get("extensions") orelse return error.NoExtensions;
+    const carried = extensions.object.get(cost_extension) orelse return error.NoCost;
+    try testing.expect(carried.object.get("total_cost_usd") != null);
+
+    var free = std.heap.ArenaAllocator.init(testing.allocator);
+    defer free.deinit();
+    var silent = Reducer.init(&free, .{});
+    silent.open();
+    try startedRun(&silent, free.allocator(), "turn-1");
+    try observeText(&silent, free.allocator(),
+        \\{"type":"result","session_id":"s","subtype":"success","result":"done","user_message_uuid":"turn-1","queued_turn_count":0,"uuid":"r1"}
+    );
+    const quiet = silent.envelopes.items[silent.envelopes.items.len - 1].object;
+    try testing.expect(quiet.get("extensions") == null);
 }
 
 test "a local child holds the terminal until it settles" {

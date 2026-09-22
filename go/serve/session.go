@@ -73,6 +73,7 @@ type Session struct {
 	subs         map[*subscriber]struct{}
 	nextSerial   uint64
 	serials      map[protocol.RunID]uint64
+	sequences    map[protocol.RunID]uint64
 
 	finished map[protocol.RunID]bool
 }
@@ -81,7 +82,8 @@ func newSession(id protocol.SessionID, adapterName string, session base.Session)
 	return &Session{
 		id: id, adapterName: adapterName, session: session,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
-		finished: make(map[protocol.RunID]bool),
+		sequences: make(map[protocol.RunID]uint64),
+		finished:  make(map[protocol.RunID]bool),
 	}
 }
 
@@ -336,15 +338,15 @@ func (sub *subscriber) stop(state *terminalState) {
 	sub.finishOnce.Do(func() { close(sub.finish) })
 }
 
-func (s *Session) subscribe(queue int) (*subscriber, bool) {
+func (s *Session) subscribe(queue int) (*subscriber, protocol.RunID, uint64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return nil, false
+		return nil, "", 0, false
 	}
 	sub := newSubscriber(queue, s.runID, s.serials[s.runID])
 	s.subs[sub] = struct{}{}
-	return sub, true
+	return sub, s.runID, s.sequences[s.runID], true
 }
 
 func (s *Session) unsubscribe(sub *subscriber) {
@@ -613,6 +615,9 @@ func (s *Session) exitReader(runID protocol.RunID, end *terminalState) {
 
 func (s *Session) publish(envelope protocol.Envelope) {
 	s.mu.Lock()
+	if envelope.Sequence != nil && *envelope.Sequence > s.sequences[envelope.RunID] {
+		s.sequences[envelope.RunID] = *envelope.Sequence
+	}
 	for sub := range s.subs {
 
 		sub.track(envelope.RunID, s.serials[envelope.RunID])

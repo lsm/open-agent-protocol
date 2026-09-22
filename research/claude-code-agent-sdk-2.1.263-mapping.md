@@ -1037,6 +1037,30 @@ this list: it is a raw message on `AssistantFrame` and a typed struct on
 `ResultFrame`, and only the result one is read, through a terminal path whose
 three call sites all sit in `settle`.
 
+**`total_cost_usd` was read by nobody until #117, and the omission taught a
+downstream the wrong thing.** The harness computes a cost per run and the
+reducer mapped `usage` to three token counts and dropped the rest, so a consumer
+of `run.completed` saw tokens, no cost, and concluded cost is unavailable at
+this boundary — which is what the review spike in `lsm/hyperneo-review#540`
+concluded, and it planned its own per-model estimation around a number the
+harness had already computed exactly.
+
+It travels under `extensions` as `com.anthropic.claude-code.cost`, on every
+terminal rather than only on `run.completed`, because the harness reports the
+cost of the run and not of the way it ended. `protocol.Usage` is three token
+fields frozen by STABILITY.md and `RunCompletedPayload` has no extensions slot,
+so promoting cost into `Usage` is a protocol change and a separate decision
+about whether cost is a protocol concept or a harness detail; the envelope's
+`extensions` map carries it today without touching frozen surface, and matches
+the rule that foreign-harness material stays namespaced. Five of the thirteen
+corpus cases report a non-zero cost, so the expectations were regenerated for
+exactly those five and for nothing else.
+
+The sibling check the issue asked for: OpenCode declares `Cost` on two native
+types and reads neither, so it drops the same class of figure. No adapter's
+`expected-oap.json` carried any cost before this change. Tracked separately
+rather than folded in, because it rewrites a second corpus.
+
 **Null means absence at four different levels, and the answer is not uniform.**
 It took three separate findings to state the rule at the member, the array item
 and the intermediate, so the fourth -- the required-member table -- was swept

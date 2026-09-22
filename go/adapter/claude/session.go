@@ -959,13 +959,14 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 
 	s.sweepRun(run)
 	usage := &protocol.Usage{InputTokens: uint64(frame.Usage.InputTokens), OutputTokens: uint64(frame.Usage.OutputTokens), TotalTokens: uint64(frame.Usage.InputTokens + frame.Usage.OutputTokens)}
+	reported := reportedCost(frame)
 	switch {
 	case frame.Cancelled():
-		_ = s.emit(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "interrupt confirmed by terminal_reason " + frame.TerminalReason, Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
+		_, _ = s.emitWith(run, protocol.TypeRunCancelled, protocol.RunCancelledPayload{SessionID: s.state.SessionID, RunID: run.id, Reason: "interrupt confirmed by terminal_reason " + frame.TerminalReason, Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true, "", reported)
 	case frame.MaxTurns():
-		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: "max_turns", Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
+		_, _ = s.emitWith(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: "max_turns", Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true, "", reported)
 	case !frame.IsError && frame.Subtype == native.ResultSuccess:
-		_ = s.emit(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: stopReason(frame), Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
+		_, _ = s.emitWith(run, protocol.TypeRunCompleted, protocol.RunCompletedPayload{SessionID: s.state.SessionID, RunID: run.id, FinalResponse: protocol.Message{ID: run.messageID, Role: protocol.RoleAssistant, Content: protocol.TextContent(frame.Result)}, StopReason: stopReason(frame), Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true, "", reported)
 	default:
 		code := "claude_" + frame.Subtype
 		if frame.TerminalReason != "" && frame.Subtype == native.ResultSuccess {
@@ -974,8 +975,21 @@ func (s *Session) publishTerminal(run *runState, frame *native.ResultFrame) {
 		if frame.APIErrorStatus != nil {
 			code = "claude_api_" + strconv.Itoa(*frame.APIErrorStatus)
 		}
-		_ = s.emit(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: errorResultText(frame)}, Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true)
+		_, _ = s.emitWith(run, protocol.TypeRunFailed, protocol.RunFailedPayload{SessionID: s.state.SessionID, RunID: run.id, Error: protocol.ProtocolError{Code: code, Message: errorResultText(frame)}, Usage: usage, DurationMS: reportedDuration(frame.DurationMS)}, true, "", reported)
 	}
+}
+
+const costExtension = "com.anthropic.claude-code.cost"
+
+func reportedCost(frame *native.ResultFrame) map[string]json.RawMessage {
+	if frame.TotalCostUSD == nil {
+		return nil
+	}
+	value, err := json.Marshal(map[string]float64{"total_cost_usd": *frame.TotalCostUSD})
+	if err != nil {
+		return nil
+	}
+	return map[string]json.RawMessage{costExtension: value}
 }
 
 func (s *Session) sweepRun(run *runState) {
@@ -1161,6 +1175,10 @@ func (s *Session) emit(run *runState, t protocol.EnvelopeType, p any, terminal b
 }
 
 func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, terminal bool, reply protocol.EnvelopeID) (protocol.Envelope, error) {
+	return s.emitWith(run, t, p, terminal, reply, nil)
+}
+
+func (s *Session) emitWith(run *runState, t protocol.EnvelopeType, p any, terminal bool, reply protocol.EnvelopeID, extensions map[string]json.RawMessage) (protocol.Envelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if run.terminal {
@@ -1179,6 +1197,7 @@ func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, te
 	e.RunID = run.id
 	e.CapabilityRevision = CapabilityRevision
 	e.InReplyTo = reply
+	e.Extensions = extensions
 	if t == protocol.TypeUserInputRequested || t == protocol.TypeUserInputResolved {
 		var payload struct {
 			InteractionID protocol.InteractionID `json:"interaction_id"`

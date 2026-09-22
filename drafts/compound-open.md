@@ -194,7 +194,7 @@ are kept as asked, because what a design left open is part of the record.
 
 **Answered:** no cursor on `subscribe`, and reattach stays with `events`
 alone. The joined-at sequence is a named `oap-subscribed` signal on both
-transports rather than a response member, and is deferred unbuilt to
+transports rather than a response member, and was built under
 [#61](https://github.com/lsm/open-agent-protocol/issues/61). The
 acknowledgement for `message` is no new member at all: it rides in the
 state document's `active_runs`, which already had the shape, so

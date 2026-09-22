@@ -1019,3 +1019,50 @@ func TestControlRefusalOutranksOrdinaryValidation(t *testing.T) {
 		t.Fatalf("got %v, want the ordinary refusal when no control is at fault", err)
 	}
 }
+
+func TestCancellationSettlesAnOpenActionAsCancelled(t *testing.T) {
+	client, session, descriptor := openFake(t)
+	admission, stream := submitFake(t, session)
+	client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
+	item := native.Item{Type: "commandExecution", ID: "native-item", Command: "true", Status: "inProgress", Arguments: json.RawMessage(`{"command":"true"}`)}
+	client.send(t, native.MethodItemStarted, native.ItemNotification{ThreadID: client.threadID, TurnID: client.turnID, Item: item})
+
+	var events []protocol.Envelope
+	for len(events) < 3 {
+		select {
+		case result := <-stream:
+			events = append(events, result.Envelope)
+		case <-time.After(time.Second):
+			t.Fatalf("only saw %+v", envelopeTypes(events))
+		}
+	}
+	if _, err := session.Cancel(context.Background(), admission.RunID); err != nil {
+		t.Fatal(err)
+	}
+	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInterrupted}})
+	events = append(events, drainClosed(t, stream)...)
+
+	settled, terminal := -1, -1
+	for i, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeActionCallCancelled:
+			settled = i
+		case protocol.TypeRunCancelled:
+			terminal = i
+		case protocol.TypeActionCallFailed:
+			t.Fatalf("an interrupted turn settled its action as failed: %v", envelopeTypes(events))
+		}
+	}
+	if settled < 0 || terminal < 0 || settled > terminal {
+		t.Fatalf("settled=%d terminal=%d events=%v", settled, terminal, envelopeTypes(events))
+	}
+	adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+}
+
+func envelopeTypes(events []protocol.Envelope) []protocol.EnvelopeType {
+	out := make([]protocol.EnvelopeType, 0, len(events))
+	for _, envelope := range events {
+		out = append(out, envelope.Type)
+	}
+	return out
+}

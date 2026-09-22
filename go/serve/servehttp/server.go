@@ -681,6 +681,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if cursor == "" {
 		cursor = r.Header.Get("Last-Event-ID")
 	}
+	run := r.URL.Query().Get("run_id")
 	var options []serve.SubscribeOption
 	if cursor != "" {
 		after, err := strconv.ParseUint(cursor, 10, 64)
@@ -689,7 +690,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		options = append(options, serve.After("", after))
+		options = append(options, serve.After(protocol.RunID(run), after))
+	} else if run != "" {
+		s.writeError(w, http.StatusBadRequest, "invalid_cursor", "run_id names the run a cursor belongs to; it has no meaning without after", protocol.Envelope{SessionID: entry.ID()})
+		return
 	}
 	var subscription *serve.Subscription
 	if held := s.takeHeld(entry.ID()); held != nil {
@@ -735,6 +739,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	defer subscription.Close()
 	startSSE(w, flusher)
+	writeSSESubscribed(w, flusher, subscription)
 	s.streamSubscription(w, flusher, subscription)
 }
 

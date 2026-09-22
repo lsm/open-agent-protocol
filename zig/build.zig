@@ -323,6 +323,16 @@ pub fn build(b: *std.Build) void {
     acp_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
     const acp_corpus_test = b.addTest(.{ .root_module = acp_corpus_mod });
 
+    const claude_backend_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/backend.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    claude_backend_mod.addImport("rpc", claude_rpc_mod);
+    claude_backend_mod.addImport("session", claude_session_mod);
+    claude_backend_mod.addImport("process", adapter_process_mod);
+    const claude_backend_test = b.addTest(.{ .root_module = claude_backend_mod });
+
     const claude_corpus_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/claude/corpus.zig"),
         .target = target,
@@ -651,23 +661,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const google_vertex_api_mod = b.createModule(.{
-        .root_source_file = b.path("src/providers/google_vertex_api.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "ai_types", .module = ai_types_mod },
-            .{ .name = "event_stream", .module = event_stream_mod },
-            .{ .name = "api_registry", .module = api_registry_mod },
-            .{ .name = "sse_parser", .module = sse_parser_mod },
-            .{ .name = "json_writer", .module = json_writer_mod },
-            .{ .name = "retry", .module = retry_mod },
-            .{ .name = "compat", .module = compat_mod },
-            .{ .name = "pre_transform", .module = pre_transform_mod },
-            .{ .name = "string_builder", .module = string_builder_mod },
-            .{ .name = "compat", .module = compat_mod },
-        },
-    });
 
     const ollama_api_mod = b.createModule(.{
         .root_source_file = b.path("src/providers/ollama_api.zig"),
@@ -1589,7 +1582,6 @@ pub fn build(b: *std.Build) void {
     const openai_responses_api_test = b.addTest(.{ .root_module = openai_responses_api_mod });
     const azure_openai_responses_api_test = b.addTest(.{ .root_module = azure_openai_responses_api_mod });
     const google_generative_api_test = b.addTest(.{ .root_module = google_generative_api_mod });
-    const google_vertex_api_test = b.addTest(.{ .root_module = google_vertex_api_mod });
     const ollama_api_test = b.addTest(.{ .root_module = ollama_api_mod });
     const sse_parser_test = b.addTest(.{ .root_module = sse_parser_mod });
 
@@ -2096,7 +2088,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_backend_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_backend_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
@@ -2153,7 +2147,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(openai_responses_api_test).step);
     test_step.dependOn(&b.addRunArtifact(azure_openai_responses_api_test).step);
     test_step.dependOn(&b.addRunArtifact(google_generative_api_test).step);
-    test_step.dependOn(&b.addRunArtifact(google_vertex_api_test).step);
     test_step.dependOn(&b.addRunArtifact(ollama_api_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
@@ -2320,7 +2313,6 @@ pub fn build(b: *std.Build) void {
     test_unit_providers_step.dependOn(&b.addRunArtifact(openai_responses_api_test).step);
     test_unit_providers_step.dependOn(&b.addRunArtifact(azure_openai_responses_api_test).step);
     test_unit_providers_step.dependOn(&b.addRunArtifact(google_generative_api_test).step);
-    test_unit_providers_step.dependOn(&b.addRunArtifact(google_vertex_api_test).step);
     test_unit_providers_step.dependOn(&b.addRunArtifact(ollama_api_test).step);
     test_unit_providers_step.dependOn(&b.addRunArtifact(sse_parser_test).step);
     test_unit_providers_step.dependOn(&b.addRunArtifact(auth_provider_defs_test).step);

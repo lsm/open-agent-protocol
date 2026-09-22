@@ -30,7 +30,7 @@ export OAP_SDK_BINARY_PATH=/tmp/oapx/bin/oapx
 
 Create a client, resolve a model, send one message, print the reply.
 
-```rust
+```rust,no_run
 use oap_sdk::{Client, ExecutionRequest};
 
 #[tokio::main]
@@ -318,17 +318,23 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-`cargo test` needs no credentials and no runtime binary: the integration tests drive `makai-protocol-fake`, a scriptable stand-in for `makai --stdio` that ships with the crate. Point `ClientBuilder::command` at it to test your own code the same way:
+`cargo test` needs no credentials and no runtime binary: the integration tests drive `makai-protocol-fake`, a scriptable stand-in for `oapx --stdio` that ships with the crate. You can test your own code against it the same way, by pointing `ClientBuilder::command` at the built binary:
 
 ```rust
-# fn build() -> oap_sdk::ClientBuilder {
+# fn build(fake: std::path::PathBuf) -> oap_sdk::ClientBuilder {
 oap_sdk::ClientBuilder::new()
-    .command(env!("CARGO_BIN_EXE_makai-protocol-fake"))
+    .command(fake)
     .args(Vec::<String>::new())
     .env_clear()
     .env("OAP_SDK_FAKE_SCENARIO", "ok")
 # }
 ```
+
+Inside this crate, `tests/common/mod.rs` gets that path from
+`env!("CARGO_BIN_EXE_makai-protocol-fake")`. Cargo defines that variable only for
+a crate's own integration tests, so from another crate it does not exist: build
+the binary with `cargo build --bin makai-protocol-fake` and pass the path
+yourself.
 
 To also exercise a real runtime:
 

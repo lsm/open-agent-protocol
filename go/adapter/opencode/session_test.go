@@ -887,6 +887,9 @@ func TestBusyAutoReservesAndCancelsBeforePromotion(t *testing.T) {
 	if cancelled.SettledBy != protocol.SettledByInferred {
 		t.Fatalf("settled_by = %q, want %q", cancelled.SettledBy, protocol.SettledByInferred)
 	}
+	if queuedEvents[0].Extensions[costExtension] == nil {
+		t.Fatalf("a reservation cancelled before promotion carried no cost: %v", queuedEvents[0].Extensions)
+	}
 
 	state, err := session.State(context.Background())
 	if err != nil {
@@ -1593,5 +1596,122 @@ func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
 		if envelope.Sequence == nil || *envelope.Sequence != uint64(index+1) {
 			t.Fatalf("resumed sequences are not contiguous: %v", types(resumedEvents))
 		}
+	}
+}
+
+func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	messageID := native.MessageID(response.MessageIDs[0])
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	started := adaptertest.Next(t, stream, time.Second)
+	if started.Type != protocol.TypeRunStarted {
+		t.Fatalf("first=%s", started.Type)
+	}
+	client.emit(t, 3, native.TypeToolCalled, native.ToolCalledData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", CallID: "call_1", Tool: "read", Input: map[string]any{"path": "/x"}})
+	requested := adaptertest.Next(t, stream, time.Second)
+	toolStarted := adaptertest.Next(t, stream, time.Second)
+	if requested.Type != protocol.TypeActionCallRequested || toolStarted.Type != protocol.TypeActionCallStarted {
+		t.Fatalf("tool events = %s %s", requested.Type, toolStarted.Type)
+	}
+
+	if _, err := session.Cancel(context.Background(), response.RunID); err != nil {
+		t.Fatal(err)
+	}
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "aborted"})
+	rest := adaptertest.Drain(t, stream, time.Second)
+
+	events := append([]protocol.Envelope{started, requested, toolStarted}, rest...)
+	settled, terminal := -1, -1
+	for i, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeActionCallCancelled:
+			settled = i
+		case protocol.TypeRunCancelled:
+			terminal = i
+		case protocol.TypeActionCallFailed:
+			t.Fatalf("a cancelled run settled its tool as failed: %v", types(events))
+		}
+	}
+	if settled < 0 || terminal < 0 || settled > terminal {
+		t.Fatalf("settled=%d terminal=%d events=%v", settled, terminal, types(events))
+	}
+	adaptertest.AssertProtocolValidWithCancellation(t, response, testAdapterDescriptor(t), events)
+}
+
+func TestATerminalCarriesTheCostTheStepsReported(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	gate := make(chan struct{})
+	client.mu.Lock()
+	client.idleGate = gate
+	client.mu.Unlock()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	messageID := native.MessageID(response.MessageIDs[0])
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
+	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 5, native.TypeStepEnded, native.StepEndedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", Finish: "stop", Cost: 0.75})
+	close(gate)
+	events := adaptertest.Drain(t, stream, time.Second)
+
+	terminal := events[len(events)-1]
+	if terminal.Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal = %s (%v)", terminal.Type, types(events))
+	}
+	carried := terminal.Extensions[costExtension]
+	if carried == nil {
+		t.Fatalf("the terminal carried no cost: %v", terminal.Extensions)
+	}
+	var reported struct {
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	}
+	if err := json.Unmarshal(carried, &reported); err != nil {
+		t.Fatal(err)
+	}
+	if reported.TotalCostUSD != 1.0 {
+		t.Fatalf("total_cost_usd = %v, want the two steps summed", reported.TotalCostUSD)
+	}
+}
+
+func TestAFailedTerminalCarriesTheCostTheStepsReported(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	gate := make(chan struct{})
+	client.mu.Lock()
+	client.idleGate = gate
+	client.mu.Unlock()
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	messageID := native.MessageID(response.MessageIDs[0])
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	client.emit(t, 3, native.TypeStepEnded, native.StepEndedData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "tool_use", Cost: 0.25})
+	client.emit(t, 4, native.TypeStepStarted, native.StepStartedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a2"})
+	client.emit(t, 5, native.TypeStepFailed, native.StepFailedData{Timestamp: 5, SessionID: client.session, AssistantMessage: "msg_a2", Error: native.UnknownErrorBlock{Type: "ProviderError", Message: "upstream refused"}})
+	close(gate)
+	events := adaptertest.Drain(t, stream, time.Second)
+
+	terminal := events[len(events)-1]
+	if terminal.Type != protocol.TypeRunFailed {
+		t.Fatalf("terminal = %s (%v)", terminal.Type, types(events))
+	}
+	carried := terminal.Extensions[costExtension]
+	if carried == nil {
+		t.Fatalf("a run that failed after a paid step carried no cost: %v", terminal.Extensions)
+	}
+	var reported struct {
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	}
+	if err := json.Unmarshal(carried, &reported); err != nil {
+		t.Fatal(err)
+	}
+	if reported.TotalCostUSD != 0.25 {
+		t.Fatalf("total_cost_usd = %v, want the step that completed before the failure", reported.TotalCostUSD)
 	}
 }

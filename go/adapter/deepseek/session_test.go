@@ -1170,3 +1170,101 @@ func (s *Session) openToolFor(run *runState, nativeID string) *toolState {
 	s.tools[toolKey(run, nativeID)] = tool
 	return tool
 }
+
+func preAdmissionTurn(t *testing.T, tail func(f *fakeClient)) []protocol.Envelope {
+	t.Helper()
+	session, client := openTest(t)
+	ch := submitAsync(session)
+	<-client.started
+	client.prompts <- promptReply{id: "receipt", before: func() {
+		client.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")}}})
+		client.ev(2, "turn/start", native.TurnStart{Turn: 1})
+		client.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+		client.ev(4, "user/message", native.UserMessage{ID: "receipt", Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")})
+		client.ev(5, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
+		tail(client)
+		barrier := make(chan struct{})
+		client.in <- rpc.InboundMessage{Barrier: barrier}
+		<-barrier
+	}}
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		return drainOpen(t, got.st)
+	case <-time.After(2 * time.Second):
+		t.Fatal("admission timed out")
+	}
+	return nil
+}
+
+func drainOpen(t *testing.T, stream base.EventStream) []protocol.Envelope {
+	t.Helper()
+	var out []protocol.Envelope
+	quiet := time.NewTimer(150 * time.Millisecond)
+	defer quiet.Stop()
+	for {
+		select {
+		case result, ok := <-stream:
+			if !ok {
+				return out
+			}
+			if result.Error != nil {
+				t.Fatal(result.Error)
+			}
+			out = append(out, result.Envelope)
+			if !quiet.Stop() {
+				<-quiet.C
+			}
+			quiet.Reset(150 * time.Millisecond)
+		case <-quiet.C:
+			return out
+		}
+	}
+}
+
+func assertSettled(t *testing.T, events []protocol.Envelope, want bool) {
+	t.Helper()
+	settled := false
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeRunCompleted {
+			settled = true
+		}
+	}
+	if settled != want {
+		var types []protocol.EnvelopeType
+		for _, envelope := range events {
+			types = append(types, envelope.Type)
+		}
+		t.Fatalf("settled = %v, want %v: %v", settled, want, types)
+	}
+}
+
+func TestAnIdleThatPrecededTheTurnEndDoesNotArmSettlement(t *testing.T) {
+	events := preAdmissionTurn(t, func(client *fakeClient) {
+		client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+		client.ev(6, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		client.ev(7, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	})
+	assertSettled(t, events, false)
+}
+
+func TestAnIdleThatFollowedTheTurnEndStillArmsSettlement(t *testing.T) {
+	events := preAdmissionTurn(t, func(client *fakeClient) {
+		client.ev(6, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		client.ev(7, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	assertSettled(t, events, true)
+}
+
+func TestARunningAfterTheIdleDisarmsSettlement(t *testing.T) {
+	events := preAdmissionTurn(t, func(client *fakeClient) {
+		client.ev(6, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		client.ev(7, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+		client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "running"})
+	})
+	assertSettled(t, events, false)
+}

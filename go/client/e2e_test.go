@@ -786,7 +786,7 @@ func validEventEnvelope(t *testing.T, typ protocol.EnvelopeType, sequence uint64
 
 func validRunEnvelope(t *testing.T, typ protocol.EnvelopeType, runID string, sequence uint64) []byte {
 	t.Helper()
-	envelope, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(fmt.Sprintf("wire-%s-%d", runID, sequence)), protocol.RunStatusUpdatedPayload{})
+	envelope, err := protocol.NewEnvelope(typ, protocol.EnvelopeID(fmt.Sprintf("wire-%s-%d", runID, sequence)), protocol.RunStatusUpdatedPayload{SessionID: "wire", RunID: protocol.RunID(runID)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -988,7 +988,7 @@ func TestClientRequestIDsUniqueAcrossClients(t *testing.T) {
 
 func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
 
-	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-noseq"), protocol.RunStatusUpdatedPayload{})
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-noseq"), protocol.RunStatusUpdatedPayload{SessionID: "wire"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1011,7 +1011,7 @@ func TestClientRejectsUnsequencedEnvelope(t *testing.T) {
 
 func TestClientRejectsZeroSequence(t *testing.T) {
 
-	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-zero"), protocol.RunStatusUpdatedPayload{})
+	envelope, err := protocol.NewEnvelope(protocol.TypeRunStatusUpdated, protocol.EnvelopeID("wire-zero"), protocol.RunStatusUpdatedPayload{SessionID: "wire"})
 	if err != nil {
 		t.Fatal(err)
 	}

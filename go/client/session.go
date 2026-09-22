@@ -37,6 +37,12 @@ func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequ
 	if err := response.DecodePayload(&admission); err != nil {
 		return admission, err
 	}
+	if err := s.bindResponse(s.path("/submit"), response, admission.SessionID, true); err != nil {
+		return protocol.MessageSubmitResponse{}, err
+	}
+	if err := s.bindRun(s.path("/submit"), response, admission.RunID); err != nil {
+		return protocol.MessageSubmitResponse{}, err
+	}
 	return admission, nil
 }
 
@@ -99,8 +105,15 @@ func (s *Session) ResolvePermission(ctx context.Context, request protocol.Permis
 		return err
 	}
 	envelope.SessionID, envelope.RunID = s.id, request.RunID
-	_, err = s.client.exchange(ctx, http.MethodPost, s.path("/resolve"), &envelope, protocol.TypeActionPermissionResolveResponse)
-	return err
+	response, err := s.client.exchange(ctx, http.MethodPost, s.path("/resolve"), &envelope, protocol.TypeActionPermissionResolveResponse)
+	if err != nil {
+		return err
+	}
+	var resolved protocol.PermissionResolveResponse
+	if err := response.DecodePayload(&resolved); err != nil {
+		return err
+	}
+	return s.bindResolution(response, resolved.SessionID, resolved.RunID, resolved.InteractionID, request.InteractionID)
 }
 
 func (s *Session) ResolveInput(ctx context.Context, request protocol.UserInputResolveRequest) error {
@@ -115,8 +128,15 @@ func (s *Session) ResolveInput(ctx context.Context, request protocol.UserInputRe
 		return err
 	}
 	envelope.SessionID, envelope.RunID = s.id, request.RunID
-	_, err = s.client.exchange(ctx, http.MethodPost, s.path("/resolve"), &envelope, protocol.TypeUserInputResolveResponse)
-	return err
+	response, err := s.client.exchange(ctx, http.MethodPost, s.path("/resolve"), &envelope, protocol.TypeUserInputResolveResponse)
+	if err != nil {
+		return err
+	}
+	var resolved protocol.UserInputResolveResponse
+	if err := response.DecodePayload(&resolved); err != nil {
+		return err
+	}
+	return s.bindResolution(response, resolved.SessionID, resolved.RunID, resolved.InteractionID, request.InteractionID)
 }
 
 func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
@@ -132,6 +152,12 @@ func (s *Session) Cancel(ctx context.Context, runID protocol.RunID) (protocol.Ru
 	}
 	if err := response.DecodePayload(&ack); err != nil {
 		return ack, err
+	}
+	if err := s.bindResponse(s.path("/cancel"), response, ack.SessionID, true); err != nil {
+		return protocol.RunCancelResponse{}, err
+	}
+	if err := s.bindRun(s.path("/cancel"), response, ack.RunID); err != nil {
+		return protocol.RunCancelResponse{}, err
 	}
 	return ack, nil
 }
@@ -153,6 +179,19 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	return state, nil
 }
 
+func (s *Session) bindResolution(response protocol.Envelope, payloadScope protocol.SessionID, payloadRun protocol.RunID, answered, asked protocol.InteractionID) error {
+	if err := s.bindResponse(s.path("/resolve"), response, payloadScope, true); err != nil {
+		return err
+	}
+	if err := s.bindRun(s.path("/resolve"), response, payloadRun); err != nil {
+		return err
+	}
+	if answered != asked {
+		return fmt.Errorf("client: %s response resolves interaction %q, want %q", s.path("/resolve"), answered, asked)
+	}
+	return nil
+}
+
 func (s *Session) bindResponse(path string, response protocol.Envelope, payloadScope protocol.SessionID, required bool) error {
 	if response.SessionID != s.id {
 		return fmt.Errorf("client: %s response is scoped to session %q, want %q", path, response.SessionID, s.id)
@@ -162,6 +201,16 @@ func (s *Session) bindResponse(path string, response protocol.Envelope, payloadS
 	}
 	if payloadScope != response.SessionID {
 		return fmt.Errorf("client: %s payload names session %q, envelope %q", path, payloadScope, response.SessionID)
+	}
+	return nil
+}
+
+func (s *Session) bindRun(path string, response protocol.Envelope, payloadRun protocol.RunID) error {
+	if payloadRun == "" {
+		return nil
+	}
+	if payloadRun != response.RunID {
+		return fmt.Errorf("client: %s payload names run %q, envelope %q", path, payloadRun, response.RunID)
 	}
 	return nil
 }
