@@ -17,6 +17,12 @@ pub const Options = struct {
     native_id: []const u8 = "sess0001",
     model: []const u8 = "hermes-test",
     responder: []const u8 = "user",
+    endpoint: []const u8 = endpoint_id,
+    revision: []const u8 = capability_revision,
+};
+
+pub const Identity = struct {
+    run_id: []const u8 = "",
 };
 
 const Tool = struct {
@@ -75,6 +81,7 @@ const Run = struct {
 pub const Reducer = struct {
     arena: *std.heap.ArenaAllocator,
     options: Options,
+    identity: Identity = .{},
     ids: usize = 0,
     clock: i64 = 0,
     run: ?Run = null,
@@ -131,10 +138,15 @@ pub const Reducer = struct {
     }
 
     pub fn submit(self: *Reducer) !void {
+        return self.submitAs(.{});
+    }
+
+    pub fn submitAs(self: *Reducer, identity: Identity) !void {
         if (self.unusable) return Error.SessionUnusable;
         if (self.run) |run| {
             if (!run.terminal) return Error.RunActive;
         }
+        self.identity = identity;
         self.run = .{ .message_id = try self.nextID("message") };
     }
 
@@ -142,7 +154,8 @@ pub const Reducer = struct {
         const run = self.active() orelse return;
         if (run.started) return;
         run.started = true;
-        run.id = try self.nextID("run");
+        const minted = try self.nextID("run");
+        run.id = if (self.identity.run_id.len > 0) self.identity.run_id else minted;
 
         var payload = self.object();
         try self.put(&payload, "session_id", str(self.options.session_id));
@@ -191,7 +204,7 @@ pub const Reducer = struct {
                 }
             }
         }
-        try self.put(&envelope, "capability_revision", str(capability_revision));
+        try self.put(&envelope, "capability_revision", str(self.options.revision));
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
         return id;
     }
@@ -290,7 +303,7 @@ pub const Reducer = struct {
         try self.put(&body, "session_id", str(self.options.session_id));
         try self.put(&body, "run_id", str(tool.run_id));
         try self.put(&body, "tool_call_id", str(tool.id));
-        try self.put(&body, "requested_by", str(endpoint_id));
+        try self.put(&body, "requested_by", str(self.options.endpoint));
         try self.put(&body, "execution_owner", str("hermes"));
         if (tool.name.len > 0) try self.put(&body, "name", str(tool.name));
         if (arguments) {
@@ -533,7 +546,7 @@ pub const Reducer = struct {
     fn resolvedPayload(self: *Reducer, binding: Interaction, run: *Run, status: []const u8, answers: ?[]const Answer) !std.json.Value {
         var body = self.object();
         try self.put(&body, "interaction_id", str(binding.id));
-        try self.put(&body, "requested_by", str(endpoint_id));
+        try self.put(&body, "requested_by", str(self.options.endpoint));
         try self.put(&body, "responded_by", str(self.options.responder));
         try self.put(&body, "session_id", str(self.options.session_id));
         try self.put(&body, "run_id", str(run.id));
@@ -645,7 +658,7 @@ pub const Reducer = struct {
 
         var requested = self.object();
         try self.put(&requested, "interaction_id", str(id));
-        try self.put(&requested, "requested_by", str(endpoint_id));
+        try self.put(&requested, "requested_by", str(self.options.endpoint));
         try self.put(&requested, "responded_by", str(self.options.responder));
         try self.put(&requested, "session_id", str(self.options.session_id));
         try self.put(&requested, "run_id", str(run.id));
@@ -1668,4 +1681,49 @@ test "a transport that dies takes the session with it, started run or not" {
     idle.open();
     try idle.transportFailed("gateway exited");
     try testing.expect(idle.unusable);
+}
+
+test "an injected run id replaces the minted one without skipping it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const approval =
+        \\{"command":"rm -rf /tmp/x","choices":["once","deny"]}
+    ;
+
+    var minted = try openRun(&arena);
+    try feedEvent(&minted, scratch, "approval.request", approval);
+
+    var injected = Reducer.init(&arena, .{});
+    injected.open();
+    try injected.submitAs(.{ .run_id = "run-supplied" });
+    try feedBare(&injected, scratch, "message.start");
+    try feedEvent(&injected, scratch, "approval.request", approval);
+
+    try testing.expectEqualStrings("run-supplied", payloadAt(&injected, 0).get("run_id").?.string);
+    try testing.expect(!std.mem.eql(u8, "run-supplied", payloadAt(&minted, 0).get("run_id").?.string));
+
+    try testing.expectEqualStrings("user.input.requested", typeAt(&injected, 1));
+    try testing.expectEqualStrings(
+        payloadAt(&minted, 1).get("interaction_id").?.string,
+        payloadAt(&injected, 1).get("interaction_id").?.string,
+    );
+}
+
+test "the endpoint and revision the options name are what the envelopes carry" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{ .endpoint = "hermes.supplied", .revision = "supplied-revision" });
+    reducer.open();
+    try reducer.submit();
+    try feedBare(&reducer, scratch, "message.start");
+    try feedEvent(&reducer, scratch, "approval.request",
+        \\{"command":"rm -rf /tmp/x","choices":["once","deny"]}
+    );
+
+    try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("hermes.supplied", payloadAt(&reducer, 1).get("requested_by").?.string);
+    try testing.expectEqualStrings("supplied-revision", reducer.envelopes.items[1].object.get("capability_revision").?.string);
 }
