@@ -147,6 +147,12 @@ def sdk_resolves(work: Path) -> bool:
 
     Asked of mypy rather than of `importlib`, because an installed package
     without a `py.typed` marker is `Any` to mypy while importing fine.
+
+    Stated as what must be present rather than what must be absent. Absence is
+    satisfied by a mypy that is missing, crashed, or has reworded its note --
+    the dev extras pin `mypy>=1.11` with no upper bound -- and each of those
+    would hand back a pass over an `Any` SDK, which is this check's own failure
+    mode reappearing one level up.
     """
     probe = work / "probe_sdk.py"
     probe.write_text("import oap_sdk\n\nclient: oap_sdk.MakaiClient\nreveal_type(client)\n")
@@ -156,7 +162,7 @@ def sdk_resolves(work: Path) -> bool:
         text=True,
     )
     probe.unlink()
-    return 'Revealed type is "Any"' not in seen.stdout
+    return "MakaiClient" in seen.stdout
 
 
 def main() -> int:
