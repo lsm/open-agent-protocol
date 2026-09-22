@@ -114,3 +114,7 @@ pub use types::{
     RunOptions, Tool, ToolInvocation, ToolResult, Usage,
 };
 pub use wire::Frame;
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct Readme;
