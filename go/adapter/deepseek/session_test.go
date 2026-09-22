@@ -976,6 +976,26 @@ func TestDuplicateKeyArgumentsAreRefusedAtBothSinksAndValidOnesAreNot(t *testing
 	}
 }
 
+func TestArgumentsCarryingANumberGoCannotHoldAreStillAdmitted(t *testing.T) {
+	const beyondFloat64 = `{"ts":1e999}`
+	if !json.Valid([]byte(beyondFloat64)) {
+		t.Fatal("the probe literal is not JSON")
+	}
+	for _, sink := range []struct {
+		name  string
+		frame func(arguments string) any
+	}{
+		{"tool/call", func(arguments string) any { return toolCallEvent(arguments) }},
+		{"assistant/message", func(arguments string) any { return finalToolCallMessage(arguments) }},
+	} {
+		t.Run(sink.name, func(t *testing.T) {
+			if _, err := native.DecodeNotification(native.NotifySessionEvent, notificationParams(t, 5, sink.name, sink.frame(beyondFloat64))); err != nil {
+				t.Fatalf("a number the trace decoder accepts was refused: %v", err)
+			}
+		})
+	}
+}
+
 func TestArgumentsTravelVerbatimSoATraceWithDuplicateKeysIsRefused(t *testing.T) {
 	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return newFake(), "deepseek-chat", nil })})
 	if err != nil {

@@ -634,6 +634,16 @@ admitted by follows from where the member ends up, not from its type. `meta` on
 `tool/result` is still checked with `json.Valid`, and correctly, because nothing
 projects it into a trace.
 
+And a predicate that stands in for a decoder has to match it in both
+directions. The first version of this gate reused the duplicate-key walk as
+written, whose `json.Decoder` converts every number through `ParseFloat`, so
+`{"ts":1e999}` was refused as an invalid frame although the shared validator —
+which decodes with `UseNumber` — carries it without complaint. The port was
+right here and the oracle was not: Zig's parser keeps such a literal as
+`number_string`. The walk now uses `UseNumber` too, and a second fuzz target
+asserts the direction the first could not see, that the walk refuses well-formed
+JSON only for a duplicate key.
+
 The direction of the gap is worth recording because it is the opposite of the
 pi port's. pi carries a hand-written member validator, so its defects have been
 over-strictness: it refused a `toolcall_end` whose nested `toolCall` was `null`,
