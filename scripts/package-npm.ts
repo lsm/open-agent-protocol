@@ -76,8 +76,6 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
 const mainDir = join(NPM_DIR, "oap-sdk");
 mkdirSync(mainDir, { recursive: true });
 
-copyFileSync(join(ROOT, "bin", "oapx.js"), join(mainDir, "oapx.js"));
-chmodSync(join(mainDir, "oapx.js"), 0o755);
 
 const srcDir = join(ROOT, "dist", "src");
 const destSrcDir = join(mainDir, "dist", "src");
@@ -85,15 +83,7 @@ mkdirSync(destSrcDir, { recursive: true });
 
 const mainPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
 mainPkg.version = VERSION;
-mainPkg.bin = { oapx: "oapx.js" };
-mainPkg.files = ["dist/src/", "oapx.js", "README.md"];
-if (mainPkg.optionalDependencies) {
-  for (const dep of Object.keys(mainPkg.optionalDependencies)) {
-    if (dep.startsWith("@oap-sdk/cli-")) {
-      mainPkg.optionalDependencies[dep] = VERSION;
-    }
-  }
-}
+mainPkg.files = ["dist/src/", "README.md"];
 
 writeFileSync(
   join(mainDir, "package.json"),

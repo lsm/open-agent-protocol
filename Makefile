@@ -1,12 +1,12 @@
 ZIG ?= zig
 ARGS ?=
-MAKAI_CODESIGN_IDENTITY ?=
+OAPX_CODESIGN_IDENTITY ?=
 ZIG_GLOBAL_CACHE := $(shell $(ZIG) env 2>/dev/null | sed -n 's/.*global_cache_dir[" ]*[:=] *"\([^"]*\)".*/\1/p')
 
 .PHONY: help build tui test test-tui check clean clean-all
 
 help:
-	@echo "make build      build the makai CLI into zig/zig-out/bin (MAKAI_CODESIGN_IDENTITY=<sha1> to sign)"
+	@echo "make build      build the makai CLI into zig/zig-out/bin (OAPX_CODESIGN_IDENTITY=<sha1> to sign)"
 	@echo "make tui        build, then start the TUI (extra flags: make tui ARGS='--model ...')"
 	@echo "make test       run every unit test group"
 	@echo "make test-tui   run the TUI unit tests"
@@ -16,8 +16,8 @@ help:
 
 build:
 	$(ZIG) build --build-file zig/build.zig
-ifneq ($(MAKAI_CODESIGN_IDENTITY),)
-	codesign --force --identifier ai.hyperneo.oap --sign "$(MAKAI_CODESIGN_IDENTITY)" zig/zig-out/bin/oapx
+ifneq ($(OAPX_CODESIGN_IDENTITY),)
+	codesign --force --identifier ai.hyperneo.oap --sign "$(OAPX_CODESIGN_IDENTITY)" zig/zig-out/bin/oapx
 endif
 
 tui: build
