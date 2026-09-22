@@ -1,5 +1,6 @@
 const std = @import("std");
 const rpc = @import("rpc");
+const gojson = @import("gojson");
 const goquote = @import("goquote");
 
 pub const capability_revision = "acp-v1.7.0-schema-v1.21.0-oap-v3";
@@ -392,12 +393,12 @@ pub const Reducer = struct {
             try self.failActive("acp_invalid_update", "malformed or foreign session/update");
             return;
         }
-        const native_session = params.object.get("sessionId") orelse std.json.Value{ .null = {} };
-        if (native_session != .string or !std.mem.eql(u8, native_session.string, self.options.native_id)) {
+        const native_session = gojson.foldedSet(params.object, &.{"sessionId"}) orelse std.json.Value{ .null = {} };
+        if (gojson.foldedWrongType(params.object, &.{"sessionId"}, .string) or native_session != .string or !std.mem.eql(u8, native_session.string, self.options.native_id)) {
             try self.failActive("acp_invalid_update", "malformed or foreign session/update");
             return;
         }
-        const update = params.object.get("update") orelse {
+        const update = gojson.foldedLast(params.object, &.{"update"}) orelse {
             try self.failActive("acp_invalid_update", "malformed session update");
             return;
         };
@@ -411,7 +412,11 @@ pub const Reducer = struct {
             return;
         }
 
-        const kind = update.object.get("sessionUpdate") orelse std.json.Value{ .null = {} };
+        if (gojson.foldedWrongType(update.object, &.{"sessionUpdate"}, .string)) {
+            try self.failActive("acp_invalid_update", "malformed session update");
+            return;
+        }
+        const kind = gojson.foldedSet(update.object, &.{"sessionUpdate"}) orelse std.json.Value{ .null = {} };
         if (kind != .string) {
             if (kind == .null) {
                 try self.failActive("acp_unknown_update", "unknown stable ACP session update");
@@ -433,7 +438,7 @@ pub const Reducer = struct {
                 try self.failActive("acp_invalid_tool_call", "malformed tool call");
                 return;
             }
-            _ = try self.applyToolCall(update);
+            _ = try self.applyToolCall(update, null);
             return;
         }
         if (std.mem.eql(u8, kind, "tool_call_update")) {
@@ -450,21 +455,20 @@ pub const Reducer = struct {
     }
 
     fn applyChunk(self: *Reducer, update: std.json.ObjectMap) !void {
-        const content = update.get("content") orelse std.json.Value{ .null = {} };
-        if (content != .object or !chunkDecodes(update, content.object)) {
+        if (gojson.foldedWrongType(update, &.{"content"}, .object) or !chunkDecodes(update)) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
-        const content_type = content.object.get("type") orelse std.json.Value{ .null = {} };
+        const content_type = gojson.foldedSet(update, &.{ "content", "type" }) orelse std.json.Value{ .null = {} };
         if (content_type != .string or !std.mem.eql(u8, content_type.string, "text")) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
-        const text = stringMember(content.object, "text");
+        const text = stringAt(update, &.{ "content", "text" });
 
         const run = &self.run.?;
         var message_id = run.message_id;
-        const native_message = update.get("messageId") orelse std.json.Value{ .null = {} };
+        const native_message = gojson.foldedSet(update, &.{"messageId"}) orelse std.json.Value{ .null = {} };
         if (native_message == .string and native_message.string.len > 0) {
             message_id = try self.bindMessage(native_message.string);
             run.message_id = message_id;
@@ -507,9 +511,9 @@ pub const Reducer = struct {
         return null;
     }
 
-    fn applyToolCall(self: *Reducer, update: std.json.ObjectMap) !bool {
-        const native_id = stringMember(update, "toolCallId");
-        const title = stringMember(update, "title");
+    fn applyToolCall(self: *Reducer, update: std.json.ObjectMap, parent: ?[]const u8) !bool {
+        const native_id = nestedString(update, parent, "toolCallId");
+        const title = nestedString(update, parent, "title");
         if (native_id.len == 0 or title.len == 0) {
             try self.failActive("acp_invalid_tool_call", "tool id and title are required");
             return false;
@@ -533,14 +537,14 @@ pub const Reducer = struct {
         }
         const tool = &self.tools.items[at];
         tool.title = title;
-        tool.kind = stringMember(update, "kind");
-        tool.raw_input = update.get("rawInput");
-        tool.raw_output = update.get("rawOutput");
-        tool.json_content = update.get("content");
-        tool.locations = update.get("locations");
+        tool.kind = nestedString(update, parent, "kind");
+        tool.raw_input = nestedLast(update, parent, "rawInput");
+        tool.raw_output = nestedLast(update, parent, "rawOutput");
+        tool.json_content = nestedLast(update, parent, "content");
+        tool.locations = nestedLast(update, parent, "locations");
         const first = !tool.requested;
         tool.requested = true;
-        const status = stringMember(update, "status");
+        const status = nestedString(update, parent, "status");
         if (first) {
             const payload = try self.toolPayload(tool, .{ .arguments = true, .arguments_null = true });
             _ = try self.emit(run, "action.call.requested", .{ .object = payload });
@@ -569,10 +573,10 @@ pub const Reducer = struct {
             if (value.len > 0) tool.title = value;
         }
         if (presentString(update, "kind")) |value| tool.kind = value;
-        if (update.get("rawInput")) |value| tool.raw_input = value;
-        if (update.get("rawOutput")) |value| tool.raw_output = value;
-        if (update.get("content")) |value| tool.json_content = value;
-        if (update.get("locations")) |value| tool.locations = value;
+        if (gojson.foldedLast(update, &.{"rawInput"})) |value| tool.raw_input = value;
+        if (gojson.foldedLast(update, &.{"rawOutput"})) |value| tool.raw_output = value;
+        if (gojson.foldedLast(update, &.{"content"})) |value| tool.json_content = value;
+        if (gojson.foldedLast(update, &.{"locations"})) |value| tool.locations = value;
         const started = tool.started;
         const status = presentString(update, "status") orelse "";
         if (status.len == 0) {
@@ -668,12 +672,11 @@ pub const Reducer = struct {
             try self.failActive("acp_invalid_permission", "malformed permission request");
             return;
         }
-        const tool_call = params.object.get("toolCall").?.object;
-        const options = params.object.get("options").?.array;
+        const options = gojson.foldedSet(params.object, &.{"options"}).?.array;
         if (self.active() == null) return;
 
-        if (!try self.applyToolCall(tool_call)) return;
-        const index = self.findTool(stringMember(tool_call, "toolCallId")).?;
+        if (!try self.applyToolCall(params.object, "toolCall")) return;
+        const index = self.findTool(stringAt(params.object, &.{ "toolCall", "toolCallId" })).?;
         const run = &self.run.?;
 
         const id = try self.nextID("interaction");
@@ -708,7 +711,7 @@ pub const Reducer = struct {
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
         try self.put(&payload, "tool_call_id", str(self.tools.items[index].id));
-        try self.put(&payload, "title", str(stringMember(tool_call, "title")));
+        try self.put(&payload, "title", str(stringAt(params.object, &.{ "toolCall", "title" })));
         try self.put(&payload, "choices", .{ .array = choices });
         if (self.tools.items[index].raw_input) |value| try self.put(&payload, "arguments_json", value);
         gate.requested_event = try self.emit(run, "action.permission.requested", .{ .object = payload });
@@ -767,10 +770,10 @@ fn idScalar(index: usize) u21 {
 
 const content_block_strings = [_][]const u8{ "type", "text", "data", "mimeType", "uri" };
 
-fn chunkDecodes(update: std.json.ObjectMap, content: std.json.ObjectMap) bool {
+fn chunkDecodes(update: std.json.ObjectMap) bool {
     if (!typedString(update, "messageId")) return false;
     for (content_block_strings) |key| {
-        if (!typedString(content, key)) return false;
+        if (gojson.foldedWrongType(update, &.{ "content", key }, .string)) return false;
     }
     return true;
 }
@@ -782,19 +785,32 @@ fn correlatedType(kind: []const u8) bool {
     return false;
 }
 
-fn stringMember(map: std.json.ObjectMap, key: []const u8) []const u8 {
-    const value = map.get(key) orelse return "";
+fn stringAt(map: std.json.ObjectMap, path: []const []const u8) []const u8 {
+    const value = gojson.foldedSet(map, path) orelse return "";
     return if (value == .string) value.string else "";
 }
 
+fn stringMember(map: std.json.ObjectMap, key: []const u8) []const u8 {
+    return stringAt(map, &.{key});
+}
+
+fn nestedString(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) []const u8 {
+    if (parent) |name| return stringAt(map, &.{ name, key });
+    return stringAt(map, &.{key});
+}
+
+fn nestedLast(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) ?std.json.Value {
+    if (parent) |name| return gojson.foldedLast(map, &.{ name, key });
+    return gojson.foldedLast(map, &.{key});
+}
+
 fn presentString(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
-    const value = map.get(key) orelse return null;
+    const value = gojson.foldedLast(map, &.{key}) orelse return null;
     return if (value == .string) value.string else null;
 }
 
 fn typedString(map: std.json.ObjectMap, key: []const u8) bool {
-    const value = map.get(key) orelse return true;
-    return value == .string or value == .null;
+    return !gojson.foldedWrongType(map, &.{key}, .string);
 }
 
 const tool_call_strings = [_][]const u8{ "sessionUpdate", "toolCallId", "title", "kind", "status" };
@@ -802,6 +818,13 @@ const tool_call_strings = [_][]const u8{ "sessionUpdate", "toolCallId", "title",
 fn toolCallDecodes(update: std.json.ObjectMap) bool {
     for (tool_call_strings) |key| {
         if (!typedString(update, key)) return false;
+    }
+    return true;
+}
+
+fn nestedToolCallDecodes(params: std.json.ObjectMap) bool {
+    for (tool_call_strings) |key| {
+        if (gojson.foldedWrongType(params, &.{ "toolCall", key }, .string)) return false;
     }
     return true;
 }
@@ -823,12 +846,15 @@ fn definedOptionKind(kind: []const u8) bool {
 
 fn permissionDecodes(params: std.json.Value, native_id: []const u8) bool {
     if (params != .object) return false;
-    const session = params.object.get("sessionId") orelse return false;
+    const session = gojson.foldedSet(params.object, &.{"sessionId"}) orelse return false;
     if (session != .string or !std.mem.eql(u8, session.string, native_id)) return false;
-    const tool_call = params.object.get("toolCall") orelse return false;
-    if (tool_call != .object or !toolCallDecodes(tool_call.object)) return false;
-    if (stringMember(tool_call.object, "toolCallId").len == 0) return false;
-    const options = params.object.get("options") orelse return false;
+    if (gojson.foldedWrongType(params.object, &.{"sessionId"}, .string)) return false;
+    const tool_call = gojson.foldedSet(params.object, &.{"toolCall"}) orelse return false;
+    if (gojson.foldedWrongType(params.object, &.{"toolCall"}, .object)) return false;
+    if (tool_call != .object or !nestedToolCallDecodes(params.object)) return false;
+    if (stringAt(params.object, &.{ "toolCall", "toolCallId" }).len == 0) return false;
+    if (gojson.foldedWrongType(params.object, &.{"options"}, .array)) return false;
+    const options = gojson.foldedLast(params.object, &.{"options"}) orelse return false;
     if (options != .array or options.array.items.len == 0) return false;
     for (options.array.items) |entry| {
         if (entry == .null) continue;
@@ -2021,4 +2047,247 @@ test "the endpoint and the revision an envelope cites are the ones the caller su
     stock.open();
     try stock.submit(1);
     try testing.expectEqualStrings(capability_revision, stock.envelopes.items[0].object.get("capability_revision").?.string);
+}
+
+test "a differently cased member name is the member, the way encoding/json reads it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var folded = try openRun(&arena);
+    try feed(&folded, scratch, wrap(
+        \\{"SESSIONUPDATE":"agent_message_chunk","CONTENT":{"TYPE":"text","TEXT":"hi"}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&folded, 1));
+    try testing.expectEqualStrings("hi", payloadAt(&folded, 1).get("part").?.object.get("text").?.string);
+
+    var session = try openRun(&arena);
+    try feed(&session, scratch,
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"SESSIONID":"native-session","UPDATE":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}
+    );
+    try testing.expectEqualStrings("content.delta", typeAt(&session, 1));
+}
+
+test "the last spelling in wire order wins, and a null spelling never does" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var last = try openRun(&arena);
+    try feed(&last, scratch, wrap(
+        \\{"sessionUpdate":"plan","SESSIONUPDATE":"agent_message_chunk","content":{"type":"text","text":"hi"}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&last, 1));
+
+    var nulled = try openRun(&arena);
+    try feed(&nulled, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","SESSIONUPDATE":null,"content":{"type":"text","text":"hi"}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&nulled, 1));
+}
+
+test "a wrongly typed spelling refuses the update even when a later one would have done" {
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":7,"SESSIONUPDATE":"agent_message_chunk","content":{"type":"text","text":"hi"}}
+    ), "acp_invalid_update", "malformed session update");
+    try expectRefusal(wrap(
+        \\{"sessionUpdate":"agent_message_chunk","SESSIONUPDATE":true,"content":{"type":"text","text":"hi"}}
+    ), "acp_invalid_update", "malformed session update");
+}
+
+test "the envelope around the update is read exactly, because the codec reads it from a map" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","method":"session/update","PARAMS":{"sessionId":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}
+    );
+
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("acp_invalid_update", codeAt(&reducer, 1));
+}
+
+test "a null spelling clears a pointer member and is a no-op on a plain one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"t","TITLE":"second","title":null,"status":"in_progress"}
+    ));
+
+    try testing.expectEqualStrings("action.call.started", typeAt(&reducer, 2));
+    try testing.expectEqualStrings("first", payloadAt(&reducer, 2).get("name").?.string);
+
+    var kept = try openRun(&arena);
+    try feed(&kept, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","CONTENT":{"type":"text","text":"hi"},"content":null}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&kept, 1));
+    try testing.expectEqualStrings("hi", payloadAt(&kept, 1).get("part").?.object.get("text").?.string);
+}
+
+test "a null spelling clears a slice member, so the gate has no options left" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"first"},"OPTIONS":[{"optionId":"o","name":"n","kind":"allow_once"}],"options":null}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, last));
+    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, last));
+}
+
+test "a mistyped options spelling refuses the gate, even behind a valid one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"first"},"options":7,"OPTIONS":[{"optionId":"o","name":"n","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, last));
+    try testing.expectEqualStrings("acp_invalid_permission", codeAt(&reducer, last));
+}
+
+test "a mistyped spelling refuses whatever it names, whichever order it arrives in" {
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":7,"SESSIONID":"native-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi"}}}}
+    , "acp_invalid_update", "malformed or foreign session/update");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":7,"CONTENT":{"type":"text","text":"hi"}}
+    ));
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("acp_invalid_message_chunk", codeAt(&reducer, 1));
+}
+
+test "two spellings of a struct member merge leaf by leaf, they do not replace each other" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var split = try openRun(&arena);
+    try feed(&split, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"text":"b"}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&split, 1));
+    try testing.expectEqualStrings("b", payloadAt(&split, 1).get("part").?.object.get("text").?.string);
+
+    var reversed = try openRun(&arena);
+    try feed(&reversed, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","CONTENT":{"text":"b"},"content":{"type":"text","text":"a"}}
+    ));
+    try testing.expectEqualStrings("a", payloadAt(&reversed, 1).get("part").?.object.get("text").?.string);
+
+    var typed = try openRun(&arena);
+    try feed(&typed, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"type":"image"}}
+    ));
+    try testing.expectEqualStrings("run.failed", typeAt(&typed, 1));
+    try testing.expectEqualStrings("acp_invalid_message_chunk", codeAt(&typed, 1));
+}
+
+test "a split toolCall spelling opens the gate the merged one describes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t"},"TOOLCALL":{"title":"y"},"options":[{"optionId":"o","name":"n","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, last));
+}
+
+test "an empty toolCallId is refused by the permission gate, not by the tool gate below it" {
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"","title":"T"},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
+    , "acp_invalid_permission", "malformed permission request");
+    try expectRefusal(
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"T"},"TOOLCALL":{"toolCallId":""},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
+    , "acp_invalid_permission", "malformed permission request");
+}
+
+test "a later spelling that names the toolCallId rescues an empty earlier one" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"t","title":"first","kind":"read","status":"pending"}
+    ));
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"","title":"T"},"TOOLCALL":{"toolCallId":"t"},"options":[{"optionId":"o","name":"n","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, last));
+}
+
+test "a null leaf in a later spelling leaves a string member alone" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var typed = try openRun(&arena);
+    try feed(&typed, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"type":null}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&typed, 1));
+    try testing.expectEqualStrings("a", payloadAt(&typed, 1).get("part").?.object.get("text").?.string);
+
+    var texted = try openRun(&arena);
+    try feed(&texted, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"text":null}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&texted, 1));
+    try testing.expectEqualStrings("a", payloadAt(&texted, 1).get("part").?.object.get("text").?.string);
+}
+
+test "a null leaf clears a raw member but not the title beside it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"first","rawInput":{"p":1}},"TOOLCALL":{"title":null,"rawInput":null},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, last));
+    const payload = payloadAt(&reducer, last);
+    try testing.expectEqualStrings("first", payload.get("title").?.string);
+    try testing.expect(payload.get("arguments_json").? == .null);
 }

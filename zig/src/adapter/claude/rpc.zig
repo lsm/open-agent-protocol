@@ -205,88 +205,18 @@ pub const FrameReader = struct {
     }
 };
 
-fn foldNext(text: []const u8, index: *usize) ?u21 {
-    if (index.* >= text.len) return null;
-    const byte = text[index.*];
-    if (byte < 0x80) {
-        index.* += 1;
-        return std.ascii.toLower(byte);
-    }
-    const width = std.unicode.utf8ByteSequenceLength(byte) catch {
-        index.* += 1;
-        return byte;
-    };
-    if (index.* + width > text.len) {
-        index.* += 1;
-        return byte;
-    }
-    const code = std.unicode.utf8Decode(text[index.* .. index.* + width]) catch {
-        index.* += 1;
-        return byte;
-    };
-    index.* += width;
-    return switch (code) {
-        0x17f => 's',
-        0x212a => 'k',
-        else => code,
-    };
-}
-
-fn foldEql(left: []const u8, right: []const u8) bool {
-    var at_left: usize = 0;
-    var at_right: usize = 0;
-    while (true) {
-        const a = foldNext(left, &at_left);
-        const b = foldNext(right, &at_right);
-        if (a == null and b == null) return true;
-        if (a == null or b == null) return false;
-        if (a.? != b.?) return false;
-    }
-}
-
 pub fn lookup(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
-    return memberSet(object, &.{key});
+    return gojson.foldedSet(object, &.{key});
 }
 
 pub fn lookupRaw(object: std.json.ObjectMap, key: []const u8) ?std.json.Value {
-    return member(object, &.{key});
-}
-
-fn memberSet(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
-    var found: ?std.json.Value = null;
-    var entries = object.iterator();
-    while (entries.next()) |entry| {
-        if (!foldEql(entry.key_ptr.*, path[0])) continue;
-        if (path.len == 1) {
-            if (entry.value_ptr.* == .null) continue;
-            found = entry.value_ptr.*;
-            continue;
-        }
-        if (entry.value_ptr.* != .object) continue;
-        if (memberSet(entry.value_ptr.object, path[1..])) |nested| found = nested;
-    }
-    return found;
-}
-
-fn member(object: std.json.ObjectMap, path: []const []const u8) ?std.json.Value {
-    var found: ?std.json.Value = null;
-    var entries = object.iterator();
-    while (entries.next()) |entry| {
-        if (!foldEql(entry.key_ptr.*, path[0])) continue;
-        if (path.len == 1) {
-            found = entry.value_ptr.*;
-            continue;
-        }
-        if (entry.value_ptr.* != .object) continue;
-        if (member(entry.value_ptr.object, path[1..])) |nested| found = nested;
-    }
-    return found;
+    return gojson.foldedLast(object, &.{key});
 }
 
 fn anyWrong(object: std.json.ObjectMap, path: []const []const u8, need: Declared) bool {
     var entries = object.iterator();
     while (entries.next()) |entry| {
-        if (!foldEql(entry.key_ptr.*, path[0])) continue;
+        if (!gojson.foldEql(entry.key_ptr.*, path[0])) continue;
         if (path.len == 1) {
             if (wrongValue(entry.value_ptr.*, need)) return true;
             continue;
@@ -301,8 +231,8 @@ fn anyWrong(object: std.json.ObjectMap, path: []const []const u8, need: Declared
 fn unsatisfied(object: std.json.ObjectMap, required: []const Member) ?[]const u8 {
     for (required) |need| {
         const value = switch (need.need) {
-            .text => memberSet(object, need.path),
-            else => member(object, need.path),
+            .text => gojson.foldedSet(object, need.path),
+            else => gojson.foldedLast(object, need.path),
         } orelse return need.detail;
         switch (need.need) {
             .text => if (value != .string or value.string.len == 0) return need.detail,
@@ -342,7 +272,7 @@ const mcp_server_declared = [_]Declared{
 const block_text_members = [_][]const u8{ "type", "text", "thinking", "id", "name", "tool_use_id" };
 
 fn wrongContentBlock(object: std.json.ObjectMap) bool {
-    const content = member(object, &.{ "message", "content" }) orelse return false;
+    const content = gojson.foldedLast(object, &.{ "message", "content" }) orelse return false;
     return wrongBlocks(content);
 }
 
@@ -568,7 +498,7 @@ fn observationMembers(frame_type: []const u8, subtype: []const u8) []const Membe
 }
 
 fn taskStatusIsTerminal(object: std.json.ObjectMap) bool {
-    const status = memberSet(object, &.{"status"}) orelse return false;
+    const status = gojson.foldedSet(object, &.{"status"}) orelse return false;
     if (status != .string) return false;
     for (terminal_task_statuses) |terminal| {
         if (std.mem.eql(u8, status.string, terminal)) return true;
@@ -660,7 +590,7 @@ pub fn parseMessage(arena: std.mem.Allocator, data: []const u8, diagnostic: ?*Di
         return report.refuseFrame(detail);
     }
     if (std.mem.eql(u8, message.type, "system") and std.mem.eql(u8, message.subtype, "task_notification") and !taskStatusIsTerminal(object)) {
-        const status = memberSet(object, &.{"status"}) orelse std.json.Value{ .string = "" };
+        const status = gojson.foldedSet(object, &.{"status"}) orelse std.json.Value{ .string = "" };
         const shown = if (status == .string) status.string else "";
         return report.refuseQuoted(arena, Error.InvalidMessage, "task_notification status {s} is not completed, failed, or stopped", shown);
     }
@@ -1119,14 +1049,14 @@ test "folding follows the two runes that fold to an ASCII letter" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    try testing.expect(foldEql("session_id", "\u{17f}ession_id"));
-    try testing.expect(foldEql("kind", "\u{212a}ind"));
-    try testing.expect(foldEql("task_id", "tas\u{212a}_id"));
-    try testing.expect(foldEql("SESSION_ID", "\u{17f}ession_id"));
-    try testing.expect(!foldEql("session_id", "\u{17f}ession_idx"));
-    try testing.expect(!foldEql("kind", "\u{e9}ind"));
-    try testing.expect(!foldEql("kind", "kin"));
-    try testing.expect(!foldEql("kin", "kind"));
+    try testing.expect(gojson.foldEql("session_id", "\u{17f}ession_id"));
+    try testing.expect(gojson.foldEql("kind", "\u{212a}ind"));
+    try testing.expect(gojson.foldEql("task_id", "tas\u{212a}_id"));
+    try testing.expect(gojson.foldEql("SESSION_ID", "\u{17f}ession_id"));
+    try testing.expect(!gojson.foldEql("session_id", "\u{17f}ession_idx"));
+    try testing.expect(!gojson.foldEql("kind", "\u{e9}ind"));
+    try testing.expect(!gojson.foldEql("kind", "kin"));
+    try testing.expect(!gojson.foldEql("kin", "kind"));
 
     try refuses(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"s\",\"\u{17f}ession_id\":7}");
     try accepts(&arena, "{\"type\":\"result\",\"subtype\":\"success\",\"\u{17f}ESSION_ID\":\"s\"}");
