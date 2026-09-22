@@ -709,39 +709,65 @@ fn carriesText(value: std.json.Value, member: []const u8) bool {
     return textOf(value, member).len != 0;
 }
 
-fn notificationRefusal(method: []const u8, params: std.json.Value) ?[]const u8 {
+fn unknownMember(params: std.json.Value, allowed: []const []const u8) ?[]const u8 {
+    if (params != .object) return null;
+    for (params.object.keys()) |name| {
+        if (!oneOf(allowed, name)) return name;
+    }
+    return null;
+}
+
+const Refusal = union(enum) {
+    said: []const u8,
+    member: []const u8,
+    unknown_method,
+};
+
+fn notificationRefusal(method: []const u8, params: std.json.Value) ?Refusal {
     if (std.mem.eql(u8, method, "session.event")) {
-        if (!carriesText(params, "sessionId")) return "session.event sessionId is required";
+        if (unknownMember(params, &.{ "sessionId", "event" })) |name| return .{ .member = name };
+        if (!carriesText(params, "sessionId")) return .{ .said = "session.event sessionId is required" };
+        if (memberOf(params, "event") == null) return .{ .said = "invalid event envelope" };
         return null;
     }
     if (std.mem.eql(u8, method, "session.status")) {
-        if (!carriesText(params, "sessionId") or !oneOf(&.{ "idle", "running" }, textOf(params, "status"))) return "invalid session.status";
+        if (unknownMember(params, &.{ "sessionId", "status" })) |name| return .{ .member = name };
+        if (!carriesText(params, "sessionId") or !oneOf(&.{ "idle", "running" }, textOf(params, "status"))) return .{ .said = "invalid session.status" };
         return null;
     }
     if (std.mem.eql(u8, method, "subagent.started")) {
-        if (!carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) return "invalid subagent.started";
+        if (unknownMember(params, &.{ "parentSessionId", "childSessionId" })) |name| return .{ .member = name };
+        if (!carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) return .{ .said = "invalid subagent.started" };
         return null;
     }
     if (std.mem.eql(u8, method, "subagent.finished")) {
-        if (!carriesText(params, "provider") or !carriesText(params, "agentId") or !carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) {
-            return "invalid subagent.finished identity";
+        if (unknownMember(params, &.{ "provider", "agentId", "parentSessionId", "childSessionId", "status", "stopReason", "lastAssistantMessage" })) |name| {
+            return .{ .member = name };
         }
-        if (!oneOf(&.{ "ok", "error" }, textOf(params, "status"))) return "invalid subagent status";
-        if (!oneOf(&.{ "completed", "aborted", "error", "max-tokens", "refusal" }, textOf(params, "stopReason"))) return "invalid subagent stopReason";
+        if (!carriesText(params, "provider") or !carriesText(params, "agentId") or !carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) {
+            return .{ .said = "invalid subagent.finished identity" };
+        }
+        if (!oneOf(&.{ "ok", "error" }, textOf(params, "status"))) return .{ .said = "invalid subagent status" };
+        if (!oneOf(&.{ "completed", "aborted", "error", "max-tokens", "refusal" }, textOf(params, "stopReason"))) return .{ .said = "invalid subagent stopReason" };
         return null;
     }
-    return "unknown notification";
+    return .unknown_method;
 }
 
 pub fn observeNotification(reducer: *Reducer, method: []const u8, params: std.json.Value) !void {
     if (reducer.closed) return Error.SessionClosed;
-    if (notificationRefusal(method, params)) |what| {
-        if (std.mem.eql(u8, what, "unknown notification")) {
-            const quoted = try std.fmt.allocPrint(reducer.arena, "unknown notification {s}", .{goquote.quote(reducer.arena, method)});
-            try invalidNotification(reducer, quoted);
-            return;
+    if (notificationRefusal(method, params)) |refusal| {
+        switch (refusal) {
+            .said => |what| try invalidNotification(reducer, what),
+            .member => |name| {
+                const said = try std.fmt.allocPrint(reducer.arena, "json: unknown field {s}", .{goquote.quote(reducer.arena, name)});
+                try invalidNotification(reducer, said);
+            },
+            .unknown_method => {
+                const quoted = try std.fmt.allocPrint(reducer.arena, "unknown notification {s}", .{goquote.quote(reducer.arena, method)});
+                try invalidNotification(reducer, quoted);
+            },
         }
-        try invalidNotification(reducer, what);
         return;
     }
     if (!reducer.reserved or reducer.terminal) {
@@ -1478,6 +1504,31 @@ test "every notification shape the oracle refuses is refused here, with its text
             .method = "subagent.finished",
             .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"invented\"}",
             .said = "invalid subagent stopReason",
+        },
+        .{
+            .method = "session.event",
+            .params = "{\"sessionId\":\"session\"}",
+            .said = "invalid event envelope",
+        },
+        .{
+            .method = "session.status",
+            .params = "{\"sessionId\":\"session\",\"status\":\"idle\",\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
+        },
+        .{
+            .method = "session.event",
+            .params = "{\"sessionId\":\"session\",\"event\":{\"type\":\"turn/start\",\"seq\":9,\"data\":{\"turn\":1}},\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
+        },
+        .{
+            .method = "subagent.started",
+            .params = "{\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
+        },
+        .{
+            .method = "subagent.finished",
+            .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"extra\":1}",
+            .said = "json: unknown field \"extra\"",
         },
     };
     for (cases) |case| {

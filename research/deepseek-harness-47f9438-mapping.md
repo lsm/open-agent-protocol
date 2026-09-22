@@ -644,14 +644,28 @@ right here and the oracle was not: Zig's parser keeps such a literal as
 asserts the direction the first could not see, that the walk refuses well-formed
 JSON only for a duplicate key.
 
-**The port now refuses the notification shapes the oracle refuses, with one
-member left over.** `observeNotification` read members loosely and let the
+**The port now refuses the notification params the oracle refuses, leaving the
+event payload itself.** `observeNotification` read members loosely and let the
 reducer's own checks decide, so a `session.status` with no `sessionId`, a
 `subagent.finished` with no `provider`, `agentId` or `stopReason`, and an
 unknown method all reached logic the oracle's codec never lets them reach. The
-seven shape rules and their texts were taken by running `DecodeNotification`
-over each frame rather than by reading it, and the port asserts the oracle's
-message verbatim.
+shape rules and their texts were taken by running `DecodeNotification` over
+each frame rather than by reading it, and the port asserts the oracle's message
+verbatim.
+
+Two classes needed naming rather than assuming. `DecodeStrict` sets
+`DisallowUnknownFields`, so a param object carrying any member outside its
+pinned struct kills the transport — `{"sessionId":"s","status":"idle","extra":1}`
+is refused, not mapped — and each of the four methods is now closed over its own
+member set, reporting Go's own `json: unknown field "extra"`. A `session.event`
+carrying no `event` member is likewise a codec refusal rather than an unknown
+event downstream, and now reports the oracle's `invalid event envelope`.
+
+What the params gate still does not reach is the event payload's *contents*.
+`Event.Validate` decides the event vocabulary and its per-kind shape, which is
+the same body of rules `validBlocksRaw` needs and is deferred with it below. So
+a `session.event` whose `event` is present but malformed is refused here by the
+reducer, with the reducer's code, rather than by the codec with the oracle's.
 
 Three of this port's own tests were sending `subagent.finished` frames without
 `provider`, `agentId` or `stopReason` — frames the oracle's codec refuses, so
