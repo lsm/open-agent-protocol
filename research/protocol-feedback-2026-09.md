@@ -288,11 +288,12 @@ catalog the endpoint already held, not introducing one:
 - **OpenCode** — `ModelRef {id, providerID, variant?}` on a session, resolved
   against `provider.list/get`.
 
-For Hermes and DeepSeek the endpoint and the credential demonstrably arrive as
-environment at spawn; both ledgers name the variable. OpenCode's mechanism is
-not pinned — its ledger records that the provider route response shapes are
-unpinned, and it lists `credential` among the eighteen API groups, which points
-away from environment rather than toward it.
+How the operator supplies the endpoint is not stated here, because it differs
+per harness and the adjudication does not turn on it. Hermes is the reason to
+say so rather than generalise: its gate reaches the loopback through a
+`config.yaml` `custom_providers` entry, and its ledger records that for a named
+provider `OPENAI_BASE_URL` is *deliberately ignored* as stale env poisoning, so
+"the environment cannot do it". Only the credential is env-borne there.
 
 What all three do share is the only thing the adjudication rests on: the
 session argument names an entry the endpoint resolves against state it already
