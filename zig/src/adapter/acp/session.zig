@@ -438,7 +438,7 @@ pub const Reducer = struct {
                 try self.failActive("acp_invalid_tool_call", "malformed tool call");
                 return;
             }
-            _ = try self.applyToolCall(update);
+            _ = try self.applyToolCall(update, null);
             return;
         }
         if (std.mem.eql(u8, kind, "tool_call_update")) {
@@ -455,18 +455,16 @@ pub const Reducer = struct {
     }
 
     fn applyChunk(self: *Reducer, update: std.json.ObjectMap) !void {
-        const merged = try gojson.foldedMerge(self.allocator(), update, "content");
-        if (gojson.foldedWrongType(update, &.{"content"}, .object) or merged == null or !chunkDecodes(update)) {
+        if (gojson.foldedWrongType(update, &.{"content"}, .object) or !chunkDecodes(update)) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
-        const content = merged.?;
-        const content_type = gojson.foldedSet(content, &.{"type"}) orelse std.json.Value{ .null = {} };
+        const content_type = gojson.foldedSet(update, &.{ "content", "type" }) orelse std.json.Value{ .null = {} };
         if (content_type != .string or !std.mem.eql(u8, content_type.string, "text")) {
             try self.failActive("acp_invalid_message_chunk", "unsupported assistant chunk");
             return;
         }
-        const text = stringMember(content, "text");
+        const text = stringAt(update, &.{ "content", "text" });
 
         const run = &self.run.?;
         var message_id = run.message_id;
@@ -513,9 +511,9 @@ pub const Reducer = struct {
         return null;
     }
 
-    fn applyToolCall(self: *Reducer, update: std.json.ObjectMap) !bool {
-        const native_id = stringMember(update, "toolCallId");
-        const title = stringMember(update, "title");
+    fn applyToolCall(self: *Reducer, update: std.json.ObjectMap, parent: ?[]const u8) !bool {
+        const native_id = nestedString(update, parent, "toolCallId");
+        const title = nestedString(update, parent, "title");
         if (native_id.len == 0 or title.len == 0) {
             try self.failActive("acp_invalid_tool_call", "tool id and title are required");
             return false;
@@ -539,14 +537,14 @@ pub const Reducer = struct {
         }
         const tool = &self.tools.items[at];
         tool.title = title;
-        tool.kind = stringMember(update, "kind");
-        tool.raw_input = gojson.foldedLast(update, &.{"rawInput"});
-        tool.raw_output = gojson.foldedLast(update, &.{"rawOutput"});
-        tool.json_content = gojson.foldedLast(update, &.{"content"});
-        tool.locations = gojson.foldedLast(update, &.{"locations"});
+        tool.kind = nestedString(update, parent, "kind");
+        tool.raw_input = nestedLast(update, parent, "rawInput");
+        tool.raw_output = nestedLast(update, parent, "rawOutput");
+        tool.json_content = nestedLast(update, parent, "content");
+        tool.locations = nestedLast(update, parent, "locations");
         const first = !tool.requested;
         tool.requested = true;
-        const status = stringMember(update, "status");
+        const status = nestedString(update, parent, "status");
         if (first) {
             const payload = try self.toolPayload(tool, .{ .arguments = true, .arguments_null = true });
             _ = try self.emit(run, "action.call.requested", .{ .object = payload });
@@ -674,12 +672,11 @@ pub const Reducer = struct {
             try self.failActive("acp_invalid_permission", "malformed permission request");
             return;
         }
-        const tool_call = (try gojson.foldedMerge(self.allocator(), params.object, "toolCall")).?;
         const options = gojson.foldedSet(params.object, &.{"options"}).?.array;
         if (self.active() == null) return;
 
-        if (!try self.applyToolCall(tool_call)) return;
-        const index = self.findTool(stringMember(tool_call, "toolCallId")).?;
+        if (!try self.applyToolCall(params.object, "toolCall")) return;
+        const index = self.findTool(stringAt(params.object, &.{ "toolCall", "toolCallId" })).?;
         const run = &self.run.?;
 
         const id = try self.nextID("interaction");
@@ -714,7 +711,7 @@ pub const Reducer = struct {
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
         try self.put(&payload, "tool_call_id", str(self.tools.items[index].id));
-        try self.put(&payload, "title", str(stringMember(tool_call, "title")));
+        try self.put(&payload, "title", str(stringAt(params.object, &.{ "toolCall", "title" })));
         try self.put(&payload, "choices", .{ .array = choices });
         if (self.tools.items[index].raw_input) |value| try self.put(&payload, "arguments_json", value);
         gate.requested_event = try self.emit(run, "action.permission.requested", .{ .object = payload });
@@ -795,6 +792,16 @@ fn stringAt(map: std.json.ObjectMap, path: []const []const u8) []const u8 {
 
 fn stringMember(map: std.json.ObjectMap, key: []const u8) []const u8 {
     return stringAt(map, &.{key});
+}
+
+fn nestedString(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) []const u8 {
+    if (parent) |name| return stringAt(map, &.{ name, key });
+    return stringAt(map, &.{key});
+}
+
+fn nestedLast(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) ?std.json.Value {
+    if (parent) |name| return gojson.foldedLast(map, &.{ name, key });
+    return gojson.foldedLast(map, &.{key});
 }
 
 fn presentString(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -2246,4 +2253,41 @@ test "a later spelling that names the toolCallId rescues an empty earlier one" {
 
     const last = reducer.envelopes.items.len - 1;
     try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, last));
+}
+
+test "a null leaf in a later spelling leaves a string member alone" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var typed = try openRun(&arena);
+    try feed(&typed, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"type":null}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&typed, 1));
+    try testing.expectEqualStrings("a", payloadAt(&typed, 1).get("part").?.object.get("text").?.string);
+
+    var texted = try openRun(&arena);
+    try feed(&texted, scratch, wrap(
+        \\{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a"},"CONTENT":{"text":null}}
+    ));
+    try testing.expectEqualStrings("content.delta", typeAt(&texted, 1));
+    try testing.expectEqualStrings("a", payloadAt(&texted, 1).get("part").?.object.get("text").?.string);
+}
+
+test "a null leaf clears a raw member but not the title beside it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch,
+        \\{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{"sessionId":"native-session","toolCall":{"toolCallId":"t","title":"first","rawInput":{"p":1}},"TOOLCALL":{"title":null,"rawInput":null},"options":[{"optionId":"a","name":"A","kind":"allow_once"}]}}
+    );
+
+    const last = reducer.envelopes.items.len - 1;
+    try testing.expectEqualStrings("action.permission.requested", typeAt(&reducer, last));
+    const payload = payloadAt(&reducer, last);
+    try testing.expectEqualStrings("first", payload.get("title").?.string);
+    try testing.expect(payload.get("arguments_json").? == .null);
 }
