@@ -433,7 +433,7 @@ written before the first envelope.
 
 | line | means |
 | --- | --- |
-| `"event":"oap-subscribed"` | the subscription joined its run already in progress; `joined_after` is the last sequence of that run it missed |
+| `"event":"oap-subscribed"` | the subscription joined its run already in progress; `joined_after` is the last sequence of that run it missed. Advisory, so a form too large to frame is retried without `session_id`, `run_id` and `message` and then dropped, never ending the subscription |
 | `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
 | `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available`/`latest_available` bound what is |

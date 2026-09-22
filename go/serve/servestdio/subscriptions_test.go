@@ -1132,3 +1132,48 @@ func TestTheSubscribedSignalPrecedesEveryEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription(t *testing.T) {
+	const wide = "joined-0d8f1b2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e"
+	hub := newTestHub(t, 64, 64)
+	session := openSessionEntry(t, hub, wide)
+	runID, lastSequence := runToCompletion(t, hub, session)
+
+	f := startFrontend(t, hub, Options{FrameLimit: 256})
+	f.send(fmt.Sprintf(`{"id":13,"op":"events","session_id":%q}`, wide))
+	if response := f.expectResponse(13); !response.OK {
+		t.Fatalf("events failed: %+v", response.Error)
+	}
+	line := f.line()
+	var signal subscribedLine
+	if err := json.Unmarshal([]byte(line), &signal); err != nil {
+		t.Fatalf("signal line %q: %v", line, err)
+	}
+	if signal.Event != signalSubscribed {
+		t.Fatalf("the line after the acknowledgement is %q, want %q", signal.Event, signalSubscribed)
+	}
+	if signal.JoinedAfter != lastSequence {
+		t.Fatalf("the minimal signal reports joining after %d, want %d", signal.JoinedAfter, lastSequence)
+	}
+	if signal.SessionID != "" || signal.Message != "" || signal.RunID != "" {
+		t.Fatalf("the minimal signal kept the members that did not fit: %s", line)
+	}
+	if len(line) > 256 {
+		t.Fatalf("the minimal signal is %d bytes, over the frame limit", len(line))
+	}
+	if protocol.RunID(signal.RunID) == runID {
+		t.Fatal("the minimal signal kept the run id")
+	}
+
+	runToCompletion(t, hub, session)
+	var next signalLine
+	if err := json.Unmarshal([]byte(f.line()), &next); err != nil {
+		t.Fatal(err)
+	}
+	if next.Event != signalFrameLimit {
+		t.Fatalf("the next line is %q; the pump stopped at the join signal rather than running on to the next run", next.Event)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
