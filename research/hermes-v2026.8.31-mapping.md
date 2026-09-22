@@ -402,13 +402,25 @@ credential presence never enables live traffic.
   dual-identity `session.create`, idle state, clean stdin-EOF teardown.
   No prompt is submitted, so no provider traffic is possible.
 - `OAP_HERMES_INTEGRATION=1` adds the hermetic behavioral gate: the only
-  provider endpoint is an in-process loopback speaking streaming OpenAI
-  chat completions (`OPENAI_BASE_URL`), the single credential is the
-  test-owned fixture key, and the model statically resolves to the
-  openai provider in the pinned catalog (`gpt-5.6-sol`). Asserts started
-  admission, streamed deltas, `run.completed` settlement, the exact
-  loopback request (path/model/bearer/stream), post-run idle, clean
-  close.
+  reachable provider is an in-process loopback speaking streaming OpenAI
+  chat completions, reached through Hermes's own configuration rather than
+  the environment. The gate writes `$HOME/.hermes/config.yaml` selecting
+  `model.provider: custom:loopback` and declaring that `custom_providers`
+  entry (`base_url` = the loopback, `key_env: OPENAI_API_KEY`,
+  `api_mode: chat`, model `gpt-5.6-sol`), so the model resolves to the
+  custom provider, not to the built-in `openai` one in the pinned catalog.
+  For a named provider the environment cannot redirect this gateway; see
+  *Integration gate: PASS* below for the run that proved it. The single
+  credential is the test-owned fixture key, env-borne in `OPENAI_API_KEY`
+  and read through `key_env`. The gate still also exports `OPENAI_BASE_URL`
+  at the same loopback. That is not what redirects, and since both name one
+  address the gate cannot by itself show the config entry is sufficient;
+  the recorded run with only the variable set is what shows it. Asserts
+  started admission, non-empty streamed content deltas, `run.completed`
+  with the fixture response, the first loopback request's path, model and
+  bearer, post-run idle, clean close. `stream=true` is enforced by the mock,
+  which refuses any other request with HTTP 400, rather than asserted by the
+  gate.
 - Optional `OAP_HERMES_SHA256` (64 hex) binds the interpreter artifact
   for exact-artifact evidence; without it a passing gate is runtime
   evidence only.
