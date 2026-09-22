@@ -984,6 +984,9 @@ func (s *Session) wireContent(raw json.RawMessage, run *runState) (protocol.Mess
 			if tool == nil {
 				return protocol.MessageContent{}, fmt.Errorf("final message references unknown tool %q", p.ID)
 			}
+			if p.Name != tool.name {
+				return protocol.MessageContent{}, fmt.Errorf("final message calls tool %q %q, which was started as %q", p.ID, p.Name, tool.name)
+			}
 			out = append(out, protocol.ContentPart{Type: protocol.ContentToolCall, ToolCallID: tool.id, Name: p.Name, ArgumentsJSON: cloneRaw(p.Arguments)})
 		default:
 			return protocol.MessageContent{}, fmt.Errorf("unknown message content %q", header.Type)
