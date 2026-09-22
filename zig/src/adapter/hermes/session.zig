@@ -220,6 +220,10 @@ pub const Reducer = struct {
     pub fn refuseSubmission(self: *Reducer) void {
         const run = self.run orelse return;
         if (run.started) return;
+        self.abortReservation();
+    }
+
+    fn abortReservation(self: *Reducer) void {
         self.buffered.clearRetainingCapacity();
         self.run = null;
     }
@@ -771,7 +775,7 @@ pub const Reducer = struct {
 
     fn failRun(self: *Reducer, code: []const u8, message: []const u8) !void {
         const run = self.active() orelse return;
-        if (!run.started) return;
+        if (!run.started) return self.abortReservation();
         try self.settleChildren(run);
         var failure = self.object();
         try self.put(&failure, "code", str(code));
@@ -1843,6 +1847,32 @@ test "a run settles its open children before its own terminal" {
     try testing.expect(failed.? < terminal.?);
     try testing.expectEqualStrings("cancelled", payloadAt(&reducer, resolved.?).get("status").?.string);
     try testing.expectEqualStrings("incomplete_tool", payloadAt(&reducer, failed.?).get("error").?.object.get("code").?.string);
+}
+
+test "a grammar violation before admission drops the reservation rather than nothing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try feedBare(&reducer, scratch, "message.start");
+    try feedEvent(&reducer, scratch, "message.delta", "{\"text\":\"stale\"}");
+    try feedBare(&reducer, scratch, "message.start");
+
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+    try testing.expect(reducer.run == null);
+    try testing.expectEqual(@as(usize, 0), reducer.buffered.items.len);
+
+    try reducer.admit();
+    try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
+
+    try reducer.submit();
+    try reducer.admit();
+    try feedBare(&reducer, scratch, "message.start");
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
 }
 
 test "a message.start before the gateway answers starts no run, and the reservation still releases" {
