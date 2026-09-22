@@ -208,10 +208,16 @@ Verified against this tree at `68168956`:
 - No authentication vocabulary exists in the core schemas. `auth` appears in
   exactly one schema file, `provider.schema.json`, as the `authStatus` enum and
   the `auth_status` member that references it, the latter on a *model*
-  descriptor. Neither is cited by line: this commit moves the enum, and a line
-  number in a file the same commit edits invalidates itself. The draft's
-  `:184` pointed at the enum rather than the member when it was written, and
-  after the move it points at `modelLifecycle`. `allows_anonymous` is a member of
+  descriptor. Neither is cited by line, and the reason is stronger than drift. A
+  line number means something only relative to a commit. Within one tree, a
+  commit that edits the file invalidates its own citations — the draft's `:184`
+  pointed at the enum rather than the member when written, and after the move it
+  points at `modelLifecycle`. Across two trees it is worse than stale: while
+  this record was in review, `auth_status` sat at `:275` on `main` and `:266` on
+  this branch, so a line cited between two readers was **wrong at the moment it
+  was spoken, with both of them having verified correctly**. Time does not have
+  to pass. A member name resolves in any tree that has the thing; a line number
+  without a ref does not resolve at all. `allows_anonymous` is a member of
   that file's `providerDescriptor`, and `auth_status` is on `modelEntry`, so the
   anonymous-versus-`login_required` contradiction spans `provider.describe.response`
   and `provider.models.list.response`. It is a `"scope": "trace"` check, not a
