@@ -1654,3 +1654,48 @@ func TestABlockAfterATerminalizingOneIsNotStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func settledWithFrame(t *testing.T, frame string) (protocol.MessageSubmitResponse, []protocol.Envelope) {
+	t.Helper()
+	_, session, peer := openWire(t)
+	outcome := submit(session)
+	uuid := turnUUIDOf(t, peer.writtenUser())
+	peer.send(initFrame)
+	peer.send(streamEcho(uuid))
+	result := awaitSubmit(t, outcome)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	peer.send(strings.ReplaceAll(frame, "REPLACE_UUID", uuid))
+	return result.admission, adaptertest.Drain(t, result.stream, 5*time.Second)
+}
+
+func TestATerminalCarriesTheCostTheHarnessReported(t *testing.T) {
+	admission, events := settledWithFrame(t, resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0))
+	assertValidTrace(t, admission, events)
+	carried := terminalOf(events).Extensions[costExtension]
+	if carried == nil {
+		t.Fatalf("terminal carried no cost: %v", eventTypes(events))
+	}
+	var reported struct {
+		TotalCostUSD float64 `json:"total_cost_usd"`
+	}
+	if err := json.Unmarshal(carried, &reported); err != nil {
+		t.Fatal(err)
+	}
+	if reported.TotalCostUSD != 0.0001 {
+		t.Fatalf("total_cost_usd = %v, want the 0.0001 the frame reported", reported.TotalCostUSD)
+	}
+}
+
+func TestATerminalWithoutAReportedCostCarriesNoExtension(t *testing.T) {
+	frame := strings.Replace(resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0), `"total_cost_usd":0.0001,`, "", 1)
+	if strings.Contains(frame, "total_cost_usd") {
+		t.Fatal("the probe frame still names a cost")
+	}
+	admission, events := settledWithFrame(t, frame)
+	assertValidTrace(t, admission, events)
+	if len(terminalOf(events).Extensions) != 0 {
+		t.Fatalf("extensions = %v, want none when the harness reported no cost", terminalOf(events).Extensions)
+	}
+}
