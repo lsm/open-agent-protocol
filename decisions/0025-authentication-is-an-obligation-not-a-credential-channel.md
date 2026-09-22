@@ -145,6 +145,18 @@ the endpoint.** Both `providerDescriptor`s gain the optional member:
 model-provider-core. `modelDescriptor.auth_status` stays where it is, because a
 model can need an entitlement its provider's credential does not carry.
 
+Of that, only the enum's move lands with this record. Neither
+`providerDescriptor` gains the member here, because adding one requires the
+matching edits to `protocol/`, the validator, a fixture and
+`clients/ts/src/protocol.ts` that this repository requires to move together,
+and those belong with the validator work. **This record is therefore
+decided-and-not-built on exactly one point, and that point is the additive
+`auth_status` member on both `providerDescriptor`s.** It is written down rather
+than left implicit because this same record checked whether
+[Decision 0020](0020-error-codes-are-declared.md)'s `error_codes` descriptor was
+built, found it was not, and had to say so — a reader should not have to run
+that check twice.
+
 A single endpoint-level `auth_status` was the draft's first shape and it does
 not survive its own defect case. An endpoint holding two providers in different
 states has no way to say so, and the contradiction this unit most needs to
