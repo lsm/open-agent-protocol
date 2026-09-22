@@ -135,6 +135,36 @@ def prepare(body: list[str]) -> tuple[str, int]:
     return prefix + indented + "\n", prefix.count("\n")
 
 
+def sdk_resolves(work: Path) -> bool:
+    """Whether mypy can see real types behind `oap_sdk`, not `Any`.
+
+    `--ignore-missing-imports` is what makes an absent SDK survivable, and it
+    is also what makes this check worthless without one: the import becomes
+    `Any`, every attribute reached through the declared `client` is allowed,
+    and the run reports OK having checked nothing. That is the failure #182
+    exists to prevent, one layer down, so it is asked directly rather than
+    assumed from the CI job order.
+
+    Asked of mypy rather than of `importlib`, because an installed package
+    without a `py.typed` marker is `Any` to mypy while importing fine.
+
+    Stated as what must be present rather than what must be absent. Absence is
+    satisfied by a mypy that is missing, crashed, or has reworded its note --
+    the dev extras pin `mypy>=1.11` with no upper bound -- and each of those
+    would hand back a pass over an `Any` SDK, which is this check's own failure
+    mode reappearing one level up.
+    """
+    probe = work / "probe_sdk.py"
+    probe.write_text("import oap_sdk\n\nclient: oap_sdk.MakaiClient\nreveal_type(client)\n")
+    seen = subprocess.run(
+        [sys.executable, "-m", "mypy", "--no-error-summary", "--ignore-missing-imports", str(probe)],
+        capture_output=True,
+        text=True,
+    )
+    probe.unlink()
+    return "MakaiClient" in seen.stdout
+
+
 def main() -> int:
     blocks = extract(README.read_text())
     if not blocks:
@@ -142,6 +172,12 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="oap-readme-samples-") as work:
         samples = Path(work)
+        if not sdk_resolves(samples):
+            return fail(
+                "oap_sdk is Any to mypy, so every sample would pass without being checked — "
+                "install the SDK with its dev extras first (pip install -e 'sdk/python[dev]')"
+            )
+
         above: dict[int, int] = {}
         for start, body in blocks:
             text, offset = prepare(body)
