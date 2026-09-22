@@ -15,7 +15,8 @@ Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 This protocol has no authentication vocabulary. The executable core is
 session, run, action, models, capabilities and user-input, plus `inference.*`
 on the provider profile. The single exception is `auth_status` on a model
-descriptor (`schema/v0.1/provider.schema.json:184`), which reports a state and
+descriptor (`schema/v0.1/provider.schema.json`, the `auth_status` member on
+`modelEntry`), which reports a state and
 describes no flow.
 
 The four SDKs in this tree do have one. They drive the makai stdio protocol's
@@ -197,9 +198,12 @@ endpoint must not report an anonymous provider as one that needs a login.
 Verified against this tree at `68168956`:
 
 - No authentication vocabulary exists in the core schemas. `auth` appears in
-  exactly one schema file, `provider.schema.json`, as `authStatus` (`:184`) and
-  the `auth_status` member that references it (`:275`), the latter on a *model*
-  descriptor. `allows_anonymous` is already a member of that file's
+  exactly one schema file, `provider.schema.json`, as the `authStatus` enum and
+  the `auth_status` member that references it, the latter on a *model*
+  descriptor. Neither is cited by line: this commit moves the enum, and a line
+  number in a file the same commit edits invalidates itself. The draft's
+  `:184` pointed at the enum rather than the member when it was written, and
+  after the move it points at `modelLifecycle`. `allows_anonymous` is already a member of that file's
   `providerDescriptor`, which is why the anonymous-versus-`login_required`
   contradiction becomes checkable within one frame once the status sits beside
   it.
@@ -227,9 +231,14 @@ Verified against this tree at `68168956`:
 - Three mistakes in this record ran the same way, and the direction is the
   useful part. The third arrived *in the sentence rewritten to fix the first
   two*: scoped to agent-control-core, the claim became "structural rather than
-  policed", which is still false, because six members of `action.schema.json`
-  are typed `true` and accept any JSON value. A pattern named in a record is
-  not a pattern fixed by it. "The code is what a human types, so it is not a credential" and "no
+  policed", which is still false, because seven members of
+  `action.schema.json` are typed `true` and accept any JSON value, across four
+  names — `arguments_json`, `result`, `progress` and `updated_arguments_json`.
+  A pattern named in a record is not a pattern fixed by it. The count itself
+  was wrong on first writing for a fourth instance of the same habit: it came
+  from grepping three names I expected rather than asking which members are
+  typed `true`, so `updated_arguments_json` could not have appeared however
+  carefully I read the output. "The code is what a human types, so it is not a credential" and "no
   envelope has a member that would hold one" both *sound* structural, and a
   structural claim reads as self-evident, so it is the kind that does not get
   checked. The second was one `rg` away from either confirmed or refuted. The
