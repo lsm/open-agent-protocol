@@ -181,15 +181,6 @@
         }
       }
     },
-    "authStatus": {
-      "enum": [
-        "authenticated",
-        "login_required",
-        "expired",
-        "failed",
-        "unknown"
-      ]
-    },
     "modelLifecycle": {
       "enum": [
         "stable",
@@ -273,7 +264,7 @@
           "$ref": "#/$defs/reasoningLevel"
         },
         "auth_status": {
-          "$ref": "#/$defs/authStatus"
+          "$ref": "common.schema.json#/$defs/authStatus"
         }
       },
       "additionalProperties": false
