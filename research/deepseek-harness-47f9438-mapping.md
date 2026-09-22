@@ -617,13 +617,32 @@ shared validator refuses. Tracked as #143, which is smaller than it looks: the
 refusal surface exists, so what is missing is the predicates and the mapping
 from each to its native error text, not a new failure mode.
 
-One divergence is deliberate and is not part of #143. Arguments carrying
-duplicate keys are accepted by the oracle — `json.Valid` tolerates them and the
-raw bytes are projected — and refused here, because a `std.json.Value` has no
-representation for a duplicated key, so the port can neither carry them nor
-report what the harness actually said. #147 holds the question; the oracle's
-own projection produces a trace the shared validator rejects at its decode
-phase, so there is no reading under which both implementations are right.
+That row once held a fourth entry, and it pointed the other way: arguments
+carrying duplicate keys were refused here and accepted by the oracle, because a
+`std.json.Value` has no representation for a duplicated key while `json.Valid`
+tolerates one. #147 settled it against the oracle. The pinned harness does admit
+such arguments, but the adapter projects them verbatim, and the shared
+validator rejects a trace containing them at its decode phase — so admitting the
+frame only moves the refusal downstream, to a consumer with no way to say which
+harness said what. `json.Valid` was the wrong predicate for a member destined
+for a trace, and both implementations now refuse the frame with the same text.
+Normalising instead was available and rejected: last-key-wins would make the
+trace report something the harness did not say.
+
+The narrower reading is the one to carry: the predicate a native member is
+admitted by follows from where the member ends up, not from its type. `meta` on
+`tool/result` is still checked with `json.Valid`, and correctly, because nothing
+projects it into a trace.
+
+And a predicate that stands in for a decoder has to match it in both
+directions. The first version of this gate reused the duplicate-key walk as
+written, whose `json.Decoder` converts every number through `ParseFloat`, so
+`{"ts":1e999}` was refused as an invalid frame although the shared validator —
+which decodes with `UseNumber` — carries it without complaint. The port was
+right here and the oracle was not: Zig's parser keeps such a literal as
+`number_string`. The walk now uses `UseNumber` too, and a second fuzz target
+asserts the direction the first could not see, that the walk refuses well-formed
+JSON only for a duplicate key.
 
 The direction of the gap is worth recording because it is the opposite of the
 pi port's. pi carries a hand-written member validator, so its defects have been

@@ -1578,13 +1578,22 @@ test "tool arguments the port cannot hold settle the way the native refusal does
     try std.testing.expect(lastFailure(&accepted) == null);
 }
 
-test "duplicate keys in tool arguments are the one refusal the oracle does not make" {
+test "duplicate keys in tool arguments are refused although the bytes parse" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
+
+    const duplicated = "{\"x\":1,\"x\":2}";
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, duplicated, .{ .duplicate_field_behavior = .use_last });
+    try std.testing.expect(parsed == .object);
+
     var reducer = try admittedRun(a);
     try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{\\\"x\\\":1,\\\"x\\\":2}\"}}"));
     try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&reducer) orelse return error.NoRefusal);
+    try std.testing.expectEqualStrings(
+        "deepseek native: invalid pinned message: invalid tool/call",
+        failureMessage(&reducer) orelse return error.NoRefusal,
+    );
 }
 
 test "closing over a reserved run is refused, and closing twice is not" {

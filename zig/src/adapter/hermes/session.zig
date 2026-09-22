@@ -378,6 +378,7 @@ pub const Reducer = struct {
             self.buffered.clearRetainingCapacity();
             return;
         }
+        try self.settleChildren(run);
         var failure = self.object();
         try self.put(&failure, "code", str("hermes_process_exit"));
         try self.put(&failure, "message", str(detail));
@@ -422,6 +423,7 @@ pub const Reducer = struct {
             try self.failRun("hermes_invalid_settlement", "child-mirror settlement on the parent stream");
             return;
         }
+        try self.settleChildren(run);
         if (std.mem.eql(u8, status, "complete")) {
             var response = self.object();
             try self.put(&response, "id", str(run.message_id));
@@ -740,9 +742,29 @@ pub const Reducer = struct {
         try self.failRun("hermes_external_activity", what);
     }
 
+    fn settleChildren(self: *Reducer, run: *Run) Reduce!void {
+        for (self.interactions.items, 0..) |binding, index| {
+            if (!std.mem.eql(u8, binding.run_id, run.id) or binding.resolved) continue;
+            self.interactions.items[index].resolved = true;
+            const body = try self.resolvedPayload(binding, run, "cancelled", null);
+            _ = try self.emitEnvelope(run, "user.input.resolved", body, binding.requested);
+        }
+        for (self.tools.items, 0..) |tool, index| {
+            if (!std.mem.eql(u8, tool.run_id, run.id) or tool.terminal) continue;
+            self.tools.items[index].terminal = true;
+            var body = try self.toolPayload(&self.tools.items[index], false);
+            var failure = self.object();
+            try self.put(&failure, "code", str("incomplete_tool"));
+            try self.put(&failure, "message", str("turn settled with an unfinished hermes tool"));
+            try self.put(&body, "error", .{ .object = failure });
+            _ = try self.emitEnvelope(run, "action.call.failed", .{ .object = body }, self.tools.items[index].started);
+        }
+    }
+
     fn failRun(self: *Reducer, code: []const u8, message: []const u8) !void {
         const run = self.active() orelse return;
         if (!run.started) return;
+        try self.settleChildren(run);
         var failure = self.object();
         try self.put(&failure, "code", str(code));
         try self.put(&failure, "message", str(message));
@@ -1196,9 +1218,10 @@ test "an expire naming no open gate is silent, and a malformed one fails the run
     try feedEvent(&reducer, scratch, "clarify.expire",
         \\{"request_id":"dddd4444","unknown":1}
     );
-    try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
-    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 3));
-    try testing.expectEqualStrings("invalid expire", payloadAt(&reducer, 3).get("error").?.object.get("message").?.string);
+    try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 4));
+    try testing.expectEqualStrings("invalid expire", payloadAt(&reducer, 4).get("error").?.object.get("message").?.string);
 }
 
 test "a resolution echoes the answers it was given and returns the run to running" {
@@ -1298,9 +1321,10 @@ test "a settled run refuses a resolution instead of emitting past its terminal" 
         \\{"status":"complete","text":"done"}
     );
 
-    try testing.expectEqualStrings("run.completed", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("run.completed", typeAt(&reducer, 4));
     try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
-    try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
 }
 
 test "the pending gate a driver looks up is the open one of that kind" {
@@ -1335,9 +1359,9 @@ test "a gate left open by one run is not answerable from the next" {
     try reducer.submit();
     try feedBare(&reducer, scratch, "message.start");
 
-    try testing.expectEqualStrings("run.started", typeAt(&reducer, 4));
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 5));
     try testing.expectError(Error.InteractionNotFound, reducer.resolve(stranded, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
-    try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 6), reducer.envelopes.items.len);
 }
 
 test "a batch resolution matches each answer to the question it names, in any order" {
@@ -1436,19 +1460,21 @@ test "a clarify gate with an empty choice list is free text, not a choice with n
     try testing.expectEqualStrings("text", questionsAt(&reducer, 1).items[0].object.get("kind").?.string);
 }
 
-test "an expire that names no request cancels nothing, least of all an approval" {
+test "an expire that names no request fails the run rather than cancelling an approval" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     var reducer = try gate(&arena, "approval.request",
         \\{"command":"ls","choices":["once"]}
     );
+    try testing.expect(!reducer.interactions.items[0].resolved);
+
     try feedEvent(&reducer, scratch, "clarify.expire", "{}");
 
-    try testing.expectEqual(@as(usize, 4), reducer.envelopes.items.len);
-    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 3));
-    try testing.expectEqualStrings("expire without request_id", payloadAt(&reducer, 3).get("error").?.object.get("message").?.string);
-    try testing.expect(!reducer.interactions.items[0].resolved);
+    try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("run.failed", typeAt(&reducer, 4));
+    try testing.expectEqualStrings("expire without request_id", payloadAt(&reducer, 4).get("error").?.object.get("message").?.string);
 }
 
 test "an event for another gateway session is not this session's to reduce" {
@@ -1733,6 +1759,72 @@ test "the endpoint and revision the options name are what the envelopes carry" {
     try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
     try testing.expectEqualStrings("hermes.supplied", payloadAt(&reducer, 1).get("requested_by").?.string);
     try testing.expectEqualStrings("supplied-revision", reducer.envelopes.items[1].object.get("capability_revision").?.string);
+}
+
+test "a transport death settles the run's open children before its terminal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once","deny"]}
+    );
+    try feedEvent(&reducer, scratch, "tool.start",
+        \\{"tool_id":"t1","name":"read","context":"read"}
+    );
+    try reducer.transportFailed("hermes native: child exited");
+
+    var resolved: ?usize = null;
+    var failed: ?usize = null;
+    var terminal: ?usize = null;
+    for (reducer.envelopes.items, 0..) |envelope, index| {
+        const kind = envelope.object.get("type").?.string;
+        if (std.mem.eql(u8, kind, "user.input.resolved")) resolved = index;
+        if (std.mem.eql(u8, kind, "action.call.failed")) failed = index;
+        if (std.mem.eql(u8, kind, "run.failed")) terminal = index;
+    }
+    try testing.expect(resolved != null);
+    try testing.expect(failed != null);
+    try testing.expect(terminal != null);
+    try testing.expect(resolved.? < terminal.?);
+    try testing.expect(failed.? < terminal.?);
+    try testing.expectEqualStrings("cancelled", payloadAt(&reducer, resolved.?).get("status").?.string);
+    try testing.expectEqualStrings("incomplete_tool", payloadAt(&reducer, failed.?).get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("hermes_process_exit", payloadAt(&reducer, terminal.?).get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("inferred", payloadAt(&reducer, terminal.?).get("settled_by").?.string);
+}
+
+test "a run settles its open children before its own terminal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = try gate(&arena, "approval.request",
+        \\{"command":"ls","choices":["once","deny"]}
+    );
+    try feedEvent(&reducer, scratch, "tool.start",
+        \\{"tool_id":"t1","name":"read","context":"read"}
+    );
+    try feedEvent(&reducer, scratch, "message.complete",
+        \\{"status":"complete","text":"done"}
+    );
+
+    var resolved: ?usize = null;
+    var failed: ?usize = null;
+    var terminal: ?usize = null;
+    for (reducer.envelopes.items, 0..) |envelope, index| {
+        const kind = envelope.object.get("type").?.string;
+        if (std.mem.eql(u8, kind, "user.input.resolved")) resolved = index;
+        if (std.mem.eql(u8, kind, "action.call.failed")) failed = index;
+        if (std.mem.eql(u8, kind, "run.completed")) terminal = index;
+    }
+    try testing.expect(resolved != null);
+    try testing.expect(failed != null);
+    try testing.expect(terminal != null);
+    try testing.expect(resolved.? < terminal.?);
+    try testing.expect(failed.? < terminal.?);
+    try testing.expectEqualStrings("cancelled", payloadAt(&reducer, resolved.?).get("status").?.string);
+    try testing.expectEqualStrings("incomplete_tool", payloadAt(&reducer, failed.?).get("error").?.object.get("code").?.string);
 }
 
 test "a refused submission drops what it buffered, it does not hand it to the next run" {
