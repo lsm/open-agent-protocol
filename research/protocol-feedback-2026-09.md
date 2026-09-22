@@ -276,7 +276,7 @@ provider-shaped operations recorded anywhere are OpenCode's `provider.list` and
 appears in any tranche.
 
 Three harnesses take a `provider` argument and all three are selecting from a
-catalog the process was started with, not introducing one:
+catalog the endpoint already held, not introducing one:
 
 - **Hermes** — `session.create {… profile?, model?, provider?, …}`. The
   integration gate records the mechanism plainly: the provider endpoint is an
@@ -288,8 +288,17 @@ catalog the process was started with, not introducing one:
 - **OpenCode** — `ModelRef {id, providerID, variant?}` on a session, resolved
   against `provider.list/get`.
 
-In every case the endpoint and the credential arrive as environment at spawn.
-The session argument chooses among what the operator already configured.
+For Hermes and DeepSeek the endpoint and the credential demonstrably arrive as
+environment at spawn; both ledgers name the variable. OpenCode's mechanism is
+not pinned — its ledger records that the provider route response shapes are
+unpinned, and it lists `credential` among the eighteen API groups, which points
+away from environment rather than toward it.
+
+What all three do share is the only thing the adjudication rests on: the
+session argument names an entry the endpoint resolves against state it already
+held — `provider.list/get` for OpenCode, the pinned catalog for Hermes — rather
+than introducing one. How the operator configured that state varies and does
+not matter here.
 
 **Adjudication.** [The composition draft](../drafts/composition.md) records an
 empty provisioning row beside a complete tool-sources row, and
@@ -302,9 +311,10 @@ questions and they have opposite standing.
 `providers[]` of `providerDescriptor` with `wire`, `kind` and `endpoint`, so a
 control layer reads `models.list`, sees every model tagged with its provider
 and every provider's shape, and names one with `submit.model_id`. Choosing the
-model chooses the provider. This is the half every harness supports and it
-landed with 0006 and 0014 without anyone recording that it closed half of the
-missing row.
+model chooses the provider. This is the half with native evidence -- every
+harness that exposes a provider catalog at all supports it, and the ledgers
+record no harness refusing it -- and it landed with 0006 and 0014 without
+anyone recording that it closed half of the missing row.
 
 *Attaching* a provider the loop does not have is what 0017 specifies, and it
 has no native evidence at this pin. [Decision 0003](../decisions/0003-staged-unit-graduation.md)
