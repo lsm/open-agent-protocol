@@ -2434,7 +2434,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
 
     var stderr_redirect = redirectStderrToLog(allocator, &environ_map);
     defer stderr_redirect.restore();
-    if (stderr_redirect.active()) std.debug.print("--- makai --tui session started at {d} ms (stderr redirected here while the TUI owns the terminal) ---\n", .{compat.time.nowMillis()});
+    if (stderr_redirect.active()) std.debug.print("--- oapx --tui session started at {d} ms (stderr redirected here while the TUI owns the terminal) ---\n", .{compat.time.nowMillis()});
 
     const fixture = try FixtureRuntime.fromEnv(allocator, &environ_map);
     defer if (fixture) |runtime| runtime.deinit();

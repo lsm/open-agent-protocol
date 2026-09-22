@@ -284,7 +284,7 @@ func TestResolveBinaryFallsBackToPath(t *testing.T) {
 	}
 	isolateResolverEnv(t)
 	pathDir := t.TempDir()
-	onPath := writeFakeBinary(t, pathDir, "makai", "#!/bin/sh\n")
+	onPath := writeFakeBinary(t, pathDir, "oapx", "#!/bin/sh\n")
 
 	// An empty working directory means no local build to prefer.
 	chdir(t, t.TempDir())
@@ -317,21 +317,12 @@ func TestResolveBinaryReportsWhenNothingIsFound(t *testing.T) {
 }
 
 func TestBinaryNameMatchesThePlatform(t *testing.T) {
-	want := []string{"oapx", "makai"}
+	want := "oapx"
 	if runtime.GOOS == "windows" {
-		want = []string{"oapx.exe", "makai.exe"}
+		want = "oapx.exe"
 	}
-	got := binaryNames()
-	if len(got) != len(want) {
-		t.Fatalf("binaryNames() = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("binaryNames() = %v, want %v", got, want)
-		}
-	}
-	if binaryName() != want[0] {
-		t.Errorf("binaryName() = %q, want %q", binaryName(), want[0])
+	if binaryName() != want {
+		t.Errorf("binaryName() = %q, want %q", binaryName(), want)
 	}
 }
 
@@ -344,7 +335,7 @@ func resolvedPath(t *testing.T, path string) string {
 	return resolved
 }
 
-func TestOapxWinsOverMakaiInTheSameDirectory(t *testing.T) {
+func TestLegacyMakaiDoesNotShadowOapx(t *testing.T) {
 	isolateResolverEnv(t)
 	dir := t.TempDir()
 	binDir := filepath.Join(dir, "zig-out", "bin")
@@ -360,16 +351,14 @@ func TestOapxWinsOverMakaiInTheSameDirectory(t *testing.T) {
 	}
 }
 
-func TestAnInstallPredatingTheRenameStillResolves(t *testing.T) {
+func TestAnInstallPredatingTheRenameIsNotResolved(t *testing.T) {
 	isolateResolverEnv(t)
 	dir := t.TempDir()
-	want := resolvedPath(t, writeFakeBinary(t, filepath.Join(dir, "zig-out", "bin"), "makai", "#!/bin/sh\n"))
+	writeFakeBinary(t, filepath.Join(dir, "zig-out", "bin"), "makai", "#!/bin/sh\n")
 	chdir(t, dir)
-	resolved, err := ResolveBinary(context.Background(), &Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved != want {
-		t.Errorf("resolved = %q, want %q", resolved, want)
+	t.Setenv("PATH", t.TempDir())
+	_, err := ResolveBinary(context.Background(), &Options{})
+	if !errors.Is(err, ErrBinaryNotFound) {
+		t.Fatalf("expected ErrBinaryNotFound, got %v", err)
 	}
 }

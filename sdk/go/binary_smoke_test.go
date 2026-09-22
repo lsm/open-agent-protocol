@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-// These tests drive a real `makai --stdio` runtime. They are skipped unless
+// These tests drive a real `oapx --stdio` runtime. They are skipped unless
 // OAP_SDK_BINARY_PATH names one:
 //
-//	zig build install --prefix /tmp/makai-go
-//	OAP_SDK_BINARY_PATH=/tmp/makai-go/bin/makai go test -race ./...
+//	zig build install --prefix /tmp/oapx-go
+//	OAP_SDK_BINARY_PATH=/tmp/oapx-go/bin/oapx go test -race ./...
 //
 // Everything covered here works without provider credentials: model
 // discovery falls back to the runtime's static catalog, auth listing reports

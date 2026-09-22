@@ -277,7 +277,7 @@ test("client.auth.listProviders timeout includes actionable diagnostics", async 
         error.message.includes("Timed out waiting for auth_providers_response after 20ms") &&
         error.message.includes("stream_id=") &&
         error.message.includes("message_id=") &&
-        error.message.includes("Verify the makai binary") &&
+        error.message.includes("Verify the oapx binary") &&
         error.diagnostics?.operation === "auth_providers_response" &&
         error.diagnostics.timeout_ms === 20 &&
         typeof error.diagnostics.stream_id === "string" &&

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// The fake host is a stand-in for `makai --stdio`. It runs inside the test
+// The fake host is a stand-in for `oapx --stdio`. It runs inside the test
 // binary, re-executed as a child process, which keeps protocol-level tests
 // free of both API keys and an external runtime.
 //

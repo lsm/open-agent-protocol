@@ -158,7 +158,7 @@ test("stdio transport logs error frame during handshake", async () => {
 test("binary resolver logs resolution steps", async () => {
   const logger = createCapturingLogger();
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-bin-log-"));
-  const binaryPath = path.join(tempDir, process.platform === "win32" ? "makai.exe" : "makai");
+  const binaryPath = path.join(tempDir, process.platform === "win32" ? "oapx.exe" : "oapx");
   await fs.promises.writeFile(binaryPath, "fixture");
 
   const prev = process.env.OAP_SDK_BINARY_PATH;
@@ -181,7 +181,7 @@ test("binary resolver logs resolution steps", async () => {
 test("binary resolver logs auto resolution candidate checks", async () => {
   const logger = createCapturingLogger();
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
-  const binaryNames = ["oapx", "makai"].map((name) => (process.platform === "win32" ? `${name}.exe` : name));
+  const binaryName = process.platform === "win32" ? "oapx.exe" : "oapx";
   const resolveModule = (specifier: string): string => {
     throw new Error(`Cannot find module '${specifier}'`);
   };
@@ -201,10 +201,10 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     const candidateLogs = logger.entries.filter((e) => e.message === "binary: checking local candidate");
     assert.deepEqual(
       candidateLogs.map((e) => e.context?.path),
-      binaryNames.flatMap((name) => [
-        path.join(emptyCwd, "zig-out", "bin", name),
-        path.join(emptyCwd, "zig", "zig-out", "bin", name),
-      ]),
+      [
+        path.join(emptyCwd, "zig-out", "bin", binaryName),
+        path.join(emptyCwd, "zig", "zig-out", "bin", binaryName),
+      ],
     );
 
     const resolvedLog = logger.entries.find((e) => e.message === "binary: resolved from local candidate");
@@ -212,8 +212,8 @@ test("binary resolver logs auto resolution candidate checks", async () => {
 
     const fallbackLog = logger.entries.find((e) => e.message === "binary: falling back to PATH lookup");
     assert.ok(fallbackLog, "expected 'binary: falling back to PATH lookup' log");
-    assert.equal(fallbackLog.context?.binary, binaryNames[0]);
-    assert.equal(resolved, "oapx");
+    assert.equal(fallbackLog.context?.binary, binaryName);
+    assert.equal(resolved, binaryName);
   } finally {
     if (prevPath === undefined) delete process.env.OAP_SDK_BINARY_PATH;
     else process.env.OAP_SDK_BINARY_PATH = prevPath;
@@ -255,7 +255,7 @@ test("binary resolver passes over a PATH entry that is not an executable file", 
   }
 });
 
-test("binary resolver finds an install predating the rename on PATH", async () => {
+test("binary resolver ignores an install predating the rename on PATH", async () => {
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
   const pathDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-path-"));
   const legacy = path.join(pathDir, process.platform === "win32" ? "makai.exe" : "makai");
@@ -270,7 +270,7 @@ test("binary resolver finds an install predating the rename on PATH", async () =
   delete process.env.OAP_SDK_BINARY_URL;
   process.env.PATH = pathDir;
   try {
-    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), legacy);
+    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), process.platform === "win32" ? "oapx.exe" : "oapx");
   } finally {
     if (prevBinaryPath === undefined) delete process.env.OAP_SDK_BINARY_PATH;
     else process.env.OAP_SDK_BINARY_PATH = prevBinaryPath;

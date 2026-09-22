@@ -256,7 +256,7 @@ class StdioTransport:
             )
         except (OSError, ValueError) as exc:
             raise MakaiStreamError(
-                f"failed to spawn makai binary {command!r}: {exc}", kind="transport_error"
+                f"failed to spawn oapx binary {command!r}: {exc}", kind="transport_error"
             ) from exc
 
         if self._closed:
@@ -428,7 +428,7 @@ class StdioTransport:
         code = await process.wait() if process.returncode is None else process.returncode
         self._abandon(
             MakaiStreamError(
-                f"makai process exited (code={code}) before the request completed",
+                f"oapx process exited (code={code}) before the request completed",
                 kind="transport_error",
             )
         )

@@ -2031,7 +2031,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run the Makai CLI");
+    const run_step = b.step("run", "Run the oapx CLI");
     run_step.dependOn(&run_cmd.step);
 
     const run_tui_cmd = b.addRunArtifact(makai_cli);

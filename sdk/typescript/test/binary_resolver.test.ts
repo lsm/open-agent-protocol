@@ -13,7 +13,7 @@ const ENV_BINARY_SHA256 = "OAP_SDK_BINARY_SHA256";
 
 test("resolveMakaiBinary prefers OAP_SDK_BINARY_PATH override", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "makai-bin-path-"));
-  const binaryPath = path.join(tempDir, process.platform === "win32" ? "makai.exe" : "makai");
+  const binaryPath = path.join(tempDir, process.platform === "win32" ? "oapx.exe" : "oapx");
   await fs.writeFile(binaryPath, "fixture");
 
   const prev = process.env[ENV_BINARY_PATH];
@@ -39,7 +39,7 @@ test("resolveMakaiBinary rejects URL override without checksum", async () => {
   try {
     await assert.rejects(
       () => resolveMakaiBinary({ cacheDir }),
-      /SHA256 checksum is required when downloading makai binary from URL/,
+      /SHA256 checksum is required when downloading oapx binary from URL/,
     );
   } finally {
     if (prevUrl === undefined) delete process.env[ENV_BINARY_URL];
@@ -66,7 +66,7 @@ test("resolveMakaiBinary rejects resolver URL option without checksum", async ()
         resolveMakaiBinary({
           binaryUrl: "http://127.0.0.1:1/makai-test.bin",
         }),
-      /SHA256 checksum is required when downloading makai binary from URL/,
+      /SHA256 checksum is required when downloading oapx binary from URL/,
     );
   } finally {
     if (prevUrl === undefined) delete process.env[ENV_BINARY_URL];

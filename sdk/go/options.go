@@ -20,7 +20,7 @@ const (
 )
 
 // Options configures a [Client]. The zero value is valid: it resolves the
-// runtime binary automatically, runs it as `makai --stdio`, and uses the
+// runtime binary automatically, runs it as `oapx --stdio`, and uses the
 // default timeouts.
 type Options struct {
 	// BinaryPath runs a specific runtime binary. The OAP_SDK_BINARY_PATH

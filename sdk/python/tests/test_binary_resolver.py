@@ -20,7 +20,7 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def make_binary(directory: Path, name: str = "makai") -> Path:
+def make_binary(directory: Path, name: str = "oapx") -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
     path.write_bytes(b"#!/bin/sh\nexit 0\n")
@@ -56,7 +56,7 @@ def test_zig_out_before_zig_zig_out(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     make_binary(tmp_path / "zig-out" / "bin")
     make_binary(tmp_path / "zig" / "zig-out" / "bin")
     monkeypatch.chdir(tmp_path)
-    assert resolve_makai_binary() == str(tmp_path / "zig-out" / "bin" / "makai")
+    assert resolve_makai_binary() == str(tmp_path / "zig-out" / "bin" / "oapx")
 
 
 def test_nested_zig_out_used_when_top_level_absent(
@@ -64,7 +64,7 @@ def test_nested_zig_out_used_when_top_level_absent(
 ) -> None:
     make_binary(tmp_path / "zig" / "zig-out" / "bin")
     monkeypatch.chdir(tmp_path)
-    assert resolve_makai_binary() == str(tmp_path / "zig" / "zig-out" / "bin" / "makai")
+    assert resolve_makai_binary() == str(tmp_path / "zig" / "zig-out" / "bin" / "oapx")
 
 
 def test_path_lookup_when_no_local_build(
@@ -84,16 +84,7 @@ def test_falls_back_to_bare_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert resolve_makai_binary() == "oapx"
 
 
-def test_oapx_wins_over_makai_in_the_same_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    make_binary(tmp_path / "zig-out" / "bin", name="makai")
-    make_binary(tmp_path / "zig-out" / "bin", name="oapx")
-    monkeypatch.chdir(tmp_path)
-    assert resolve_makai_binary() == str(tmp_path / "zig-out" / "bin" / "oapx")
-
-
-def test_oapx_in_the_nested_build_wins_over_makai_in_the_top_level(
+def test_legacy_makai_does_not_shadow_nested_oapx(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     make_binary(tmp_path / "zig-out" / "bin", name="makai")
@@ -123,15 +114,15 @@ def test_a_non_executable_file_is_not_the_binary(
     assert resolve_makai_binary() == str(real)
 
 
-def test_an_install_predating_the_rename_still_resolves(
+def test_an_install_predating_the_rename_is_not_resolved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    on_path = make_binary(tmp_path / "bin", name="makai")
+    make_binary(tmp_path / "bin", name="makai")
     empty = tmp_path / "empty"
     empty.mkdir()
     monkeypatch.chdir(empty)
     monkeypatch.setenv("PATH", str(tmp_path / "bin"))
-    assert resolve_makai_binary() == str(on_path)
+    assert resolve_makai_binary() == "oapx"
 
 
 class _Server(http.server.BaseHTTPRequestHandler):

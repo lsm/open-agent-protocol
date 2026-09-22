@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Black-box conformance driver for `makai --stdio` (the protocol host).
+# Black-box conformance driver for `oapx --stdio` (the protocol host).
 #
 # The host reads newline-delimited JSON envelopes on stdin and writes them on
 # stdout, routing by envelope shape into the auth, provider, and agent protocol
@@ -13,8 +13,8 @@
 # are deliberately absent.
 #
 # Usage:
-#   zig build install --prefix /tmp/makai-stdio-test
-#   python3 scripts/stdio-conformance.py --binary /tmp/makai-stdio-test/bin/makai
+#   zig build install --prefix /tmp/oapx-stdio-test
+#   python3 scripts/stdio-conformance.py --binary /tmp/oapx-stdio-test/bin/oapx
 #   python3 scripts/stdio-conformance.py --group envelope --verbose
 #   python3 scripts/stdio-conformance.py --json > report.json
 #
@@ -22,7 +22,7 @@
 # driver doubles as a regression gate. Checks tagged `info` record a behavior
 # the spec does not pin down; they never affect exit status.
 #
-# Each check runs in its own `makai --stdio` process because several of the
+# Each check runs in its own `oapx --stdio` process because several of the
 # behaviors under test are process-fatal.
 #
 # macOS note: an unsigned build reads the login Keychain through an ACL prompt
@@ -52,10 +52,7 @@ DEFAULT_BINARY_CANDIDATES = (
     os.environ.get("OAP_SDK_BINARY_PATH", ""),
     "zig-out/bin/oapx",
     "zig/zig-out/bin/oapx",
-    "/tmp/makai-stdio-test/bin/oapx",
-    "zig-out/bin/makai",
-    "zig/zig-out/bin/makai",
-    "/tmp/makai-stdio-test/bin/makai",
+    "/tmp/oapx-stdio-test/bin/oapx",
 )
 
 MODEL_REF = "anthropic/anthropic-messages@claude-sonnet-4-5"
@@ -121,7 +118,7 @@ def message_payload(session_id, text="hello", model_ref=MODEL_REF):
 
 
 class Host:
-    """One `makai --stdio` process with a background stdout reader."""
+    """One `oapx --stdio` process with a background stdout reader."""
 
     def __init__(self, binary, env=None):
         child_env = dict(os.environ)
@@ -1287,8 +1284,8 @@ def resolve_binary(explicit):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Conformance driver for makai --stdio")
-    parser.add_argument("--binary", help="path to the makai binary")
+    parser = argparse.ArgumentParser(description="Conformance driver for oapx --stdio")
+    parser.add_argument("--binary", help="path to the oapx binary")
     parser.add_argument("--group", action="append", choices=sorted(GROUPS),
                         help="run only these groups (repeatable)")
     parser.add_argument("--list", action="store_true", help="list groups and exit")
@@ -1310,8 +1307,8 @@ def main():
     binary = resolve_binary(args.binary)
     if not binary:
         sys.stderr.write(
-            "no makai binary found; pass --binary or set OAP_SDK_BINARY_PATH\n"
-            "build one with: zig build install --prefix /tmp/makai-stdio-test\n")
+            "no oapx binary found; pass --binary or set OAP_SDK_BINARY_PATH\n"
+            "build one with: zig build install --prefix /tmp/oapx-stdio-test\n")
         return 2
 
     selected = args.group or sorted(GROUPS)

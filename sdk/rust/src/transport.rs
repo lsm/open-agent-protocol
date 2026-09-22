@@ -1,4 +1,4 @@
-//! The stdio transport: one `makai --stdio` child process, framed as NDJSON.
+//! The stdio transport: one `oapx --stdio` child process, framed as NDJSON.
 //!
 //! # Shape
 //!
@@ -329,7 +329,7 @@ pub(crate) struct TransportOptions {
     pub handshake_timeout: Duration,
 }
 
-/// A connected `makai --stdio` runtime.
+/// A connected `oapx --stdio` runtime.
 pub(crate) struct Transport {
     inner: Arc<Inner>,
 }

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- `oapx` is now the only executable name the TypeScript, Go, Python and Rust SDKs resolve automatically. The temporary fallback to a pre-rename `makai` executable has been removed from local-build discovery, `PATH` lookup and npm platform-package resolution; explicit binary paths and verified download URLs remain supported. CI, release archives, npm platform packages, conformance tooling and the Zig build already ship `oapx`, so this completes the executable-name cut without changing the legacy stdio wire protocol the SDKs currently speak.
+
 ### Added
 
 - `oap_sdk` re-exports the four type names that were listed in `oap_sdk.types.__all__` and nowhere else: `ToolExecutor`, `AuthEventHandler`, `AuthPromptHandler` and `Role`. They are the names a *typed* consumer reaches for and nothing else needs — the signature of a `ToolDefinition.execute` callback, the two auth handler signatures, and the message-role union — so `from oap_sdk import ToolExecutor` raised `ImportError` while the other forty-five of the forty-nine names `types` publishes imported fine. That asymmetry is what makes it an omission rather than a decision, and the README had been reaching past the package surface to `oap_sdk.types` for one name as a result. A test now asserts the package re-exports every name `types` publishes, so the two lists cannot drift apart again silently.

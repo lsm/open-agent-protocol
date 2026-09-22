@@ -1,6 +1,6 @@
 // Package makai is a Go SDK for the Makai stdio protocol.
 //
-// The SDK spawns (or connects to) a `makai --stdio` runtime and exposes four
+// The SDK spawns (or connects to) an `oapx --stdio` runtime and exposes four
 // namespaces over its newline-delimited JSON framing:
 //
 //   - [Client.Auth] lists auth providers and drives interactive login flows.

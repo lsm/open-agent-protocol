@@ -1,4 +1,4 @@
-//! A scriptable stand-in for `makai --stdio`.
+//! A scriptable stand-in for `oapx --stdio`.
 //!
 //! It speaks the same NDJSON protocol but answers from a fixed script instead of
 //! a provider, so the SDK's transport, framing, sequencing, error mapping, and

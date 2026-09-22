@@ -1,11 +1,11 @@
-//! End-to-end coverage against a real `makai --stdio` build.
+//! End-to-end coverage against a real `oapx --stdio` build.
 //!
 //! These need a runtime binary and skip when `OAP_SDK_BINARY_PATH` is unset, which
 //! mirrors `typescript/test/makai_binary_smoke.test.ts`. Build one with:
 //!
 //! ```text
-//! zig build install --prefix /tmp/makai-rs
-//! OAP_SDK_BINARY_PATH=/tmp/makai-rs/bin/makai cargo test --test real_binary
+//! zig build install --prefix /tmp/oapx-rs
+//! OAP_SDK_BINARY_PATH=/tmp/oapx-rs/bin/oapx cargo test --test real_binary
 //! ```
 //!
 //! Nothing here needs provider credentials. The paths that would are exercised

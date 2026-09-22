@@ -226,7 +226,7 @@ impl ClientBuilder {
 
 /// A connected Makai runtime.
 ///
-/// Holds one `makai --stdio` child process. All four namespaces multiplex over
+/// Holds one `oapx --stdio` child process. All four namespaces multiplex over
 /// it, so one client serves concurrent calls.
 ///
 /// Dropping the client terminates the child. [`Client::close`] does the same

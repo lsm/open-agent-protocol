@@ -27,10 +27,10 @@ type Client struct {
 	transport *transport
 }
 
-// New resolves the makai runtime, starts it as a stdio protocol host, and
+// New resolves the oapx runtime, starts it as a stdio protocol host, and
 // completes the protocol handshake.
 //
-// A nil opts uses the defaults: automatic binary resolution, `makai --stdio`,
+// A nil opts uses the defaults: automatic binary resolution, `oapx --stdio`,
 // and the default timeouts. See [ResolveBinary] for the resolution order.
 //
 // ctx bounds startup and the handshake only. It does not bound the client's

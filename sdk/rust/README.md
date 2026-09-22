@@ -19,7 +19,7 @@ futures = "0.3"
 
 The crate is imported as `oap_sdk`.
 
-You also need the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit options.
+You also need the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`. See [Configuration](#configuration) for explicit options.
 
 ```bash
 zig build install --prefix /tmp/oapx
@@ -254,15 +254,13 @@ Mirroring the TypeScript resolver, in order:
 2. `OAP_SDK_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`OAP_SDK_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
 3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
 4. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
-5. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`;
-6. `oapx` on `PATH`, then `makai` on `PATH`.
+5. `oapx` on `PATH`.
 
-`oapx` is tried in every location before `makai` is tried in any, so a nested
-`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
+On Windows the executable name is `oapx.exe`.
 
 The environment variable outranks the builder option, as in TypeScript, so an operator can redirect an application that hardcoded a path. `ClientBuilder::command(path)` bypasses resolution entirely when that override is not wanted.
 
-**The npm platform-package step is deliberately omitted.** It resolves through Node's module resolution against an optional npm dependency; Rust has no equivalent channel that ships a platform-specific executable alongside a library crate, and inventing one (a `build.rs` download, say) would put a network fetch in the build with none of the checksum guarantees step 2 insists on. Install the binary however you like and point `OAP_SDK_BINARY_PATH` at it, or let step 6 find it on `PATH`.
+**The npm platform-package step is deliberately omitted.** It resolves through Node's module resolution against an optional npm dependency; Rust has no equivalent channel that ships a platform-specific executable alongside a library crate, and inventing one (a `build.rs` download, say) would put a network fetch in the build with none of the checksum guarantees step 2 insists on. Install the binary however you like and point `OAP_SDK_BINARY_PATH` at it, or let step 5 find it on `PATH`.
 
 Downloading from a URL needs the `download` feature (off by default, to keep an HTTP stack out of the default dependency tree):
 
