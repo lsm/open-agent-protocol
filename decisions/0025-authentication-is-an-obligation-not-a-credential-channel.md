@@ -143,33 +143,41 @@ names both.
 `unknown` — moves from `provider.schema.json` to `common.schema.json`, and both
 profiles reference it.
 
-**The state attaches to the thing it describes, which is a provider and never
-the endpoint.** Both `providerDescriptor`s gain the optional member:
-`capabilities.schema.json` for agent-control-core, `provider.schema.json` for
-model-provider-core. `modelDescriptor.auth_status` stays where it is, because a
-model can need an entitlement its provider's credential does not carry.
+**The state attaches to the thing it describes, and this protocol already
+decided where that is.** It is not the provider descriptor.
+[Decision 0014](0014-provider-descriptors.md) considered `auth_status` there,
+against a real request for it, and refused: a descriptor is fixed for a
+capability revision while auth state changes the moment someone logs in, so a
+revision-fixed carrier would be either stale or unstable. Provider *identity*
+is stable and belongs on the descriptor; provider *usability* is dynamic and
+belongs somewhere generated per read.
+[Decision 0017](0017-provider-provisioning.md) restates it and does not rejoin
+them, and [the provider draft](../drafts/model-provider-core.md) resolves it:
+the volatile fact goes on the entry in the response, and "that distinction is
+the whole of 0014's objection and it is satisfied, not overridden."
 
-Of that, only the enum's move lands with this record. Neither
-`providerDescriptor` gains the member here, because adding one requires the
-matching edits to `protocol/`, the validator, a fixture and
-`clients/ts/src/protocol.ts` that this repository requires to move together,
-and those belong with the validator work. **This record is therefore
-decided-and-not-built on exactly one point, and that point is the additive
-`auth_status` member on both `providerDescriptor`s.** It is written down rather
-than left implicit because this same record checked whether
-[Decision 0020](0020-error-codes-are-declared.md)'s `error_codes` descriptor was
-built, found it was not, and had to say so — a reader should not have to run
-that check twice.
+So the provider profile already carries this correctly. `modelEntry` in
+`provider.models.list.response` has `auth_status` beside `provider_id`, and the
+response is built per request. A caller asking whether one vendor needs a login
+reads it off that vendor's entries, freshly, every time.
 
-A single endpoint-level `auth_status` was the draft's first shape and it does
-not survive its own defect case. An endpoint holding two providers in different
-states has no way to say so, and the contradiction this unit most needs to
-catch — a provider advertising `allows_anonymous` while reporting
-`login_required` — cannot be expressed at all if the status does not sit beside
-the flag it contradicts. Keeping them in one descriptor makes that defect
-decidable from a single frame rather than assembled across a trace, which is
-the difference between a `"scope": "frame"` fixture and a `"scope": "trace"`
-one.
+That also answers the case that made an endpoint-level member look necessary.
+A single `auth_status` on `capabilities.response` cannot say that one provider
+is authenticated and another is not — but the per-read entry can, because every
+entry names its provider, and it does so without a revision-fixed carrier going
+stale between two reads.
+
+Agent-control has no equivalent member today: `modelsResponse` carries
+`modelDescriptor`s with no auth state. If it needs one, it goes there, for the
+same reason — a response is generated per read — and not on
+`capabilities.schema.json`'s `providerDescriptor`. This record does not add it,
+because nothing in `+auth` requires the agent-control side to report provider
+auth state, and adding a member to answer a question nobody has asked is how
+the descriptor accumulated the pressure 0014 had to refuse.
+
+**So the only schema change this record makes is the enum's move**, and it
+changes no validation outcome: the same JSON validates, no diagnostic differs,
+and `oap check` passes its 550 fixtures untouched.
 
 It moves rather than being copied because a second enum is a second thing to
 drift, which is the defect [#177](https://github.com/lsm/open-agent-protocol/issues/177)
@@ -203,10 +211,13 @@ Verified against this tree at `68168956`:
   descriptor. Neither is cited by line: this commit moves the enum, and a line
   number in a file the same commit edits invalidates itself. The draft's
   `:184` pointed at the enum rather than the member when it was written, and
-  after the move it points at `modelLifecycle`. `allows_anonymous` is already a member of that file's
-  `providerDescriptor`, which is why the anonymous-versus-`login_required`
-  contradiction becomes checkable within one frame once the status sits beside
-  it.
+  after the move it points at `modelLifecycle`. `allows_anonymous` is a member of
+  that file's `providerDescriptor`, and `auth_status` is on `modelEntry`, so the
+  anonymous-versus-`login_required` contradiction spans `provider.describe.response`
+  and `provider.models.list.response`. It is a `"scope": "trace"` check, not a
+  `"frame"` one. An earlier draft of this record had the status on the
+  descriptor beside the flag and called it frame-decidable; that shape is
+  refused by 0014 and the scope claim went with it.
 - [Decision 0020](0020-error-codes-are-declared.md)'s `error_codes` descriptor,
   which carries a code and the action a caller should take, is **decided and
   not built**. `error_codes` exists only in `pack.schema.json:36`, as a bare
@@ -261,8 +272,10 @@ Moving `authStatus` into `common.schema.json` needs no fixture. It relocates a
 definition and repoints one `$ref`, so the same JSON validates and no
 diagnostic changes; `oap check` passes its 550 fixtures untouched. The
 repository rule that a `schema/v0.1/*.json` change moves with `protocol/`, the
-validator, a fixture and `clients/ts/src/protocol.ts` applies to the additive
-`auth_status` member, which is the part deferred to the validator work.
+validator, a fixture and `clients/ts/src/protocol.ts` has nothing to apply to
+here, because this record adds no member. What the validator work carries is
+the `+auth` payload rule and the `credential_in_trace` hoist, neither of which
+is a schema change.
 
 ## What this unit does not admit
 
