@@ -651,7 +651,6 @@ fn toolPayload(reducer: *Reducer, tool: *ToolState, carry_arguments: bool, carry
     return .{ .object = payload.* };
 }
 
-
 fn startTool(reducer: *Reducer, event: std.json.Value) !void {
     const native_id = textOf(event, "toolCallId");
     const name = textOf(event, "toolName");
@@ -1391,7 +1390,7 @@ fn wireContentOf(reducer: *Reducer, raw: std.json.Value) !std.json.Value {
             try closedMembers(part, &.{ "type", "id", "name", "arguments", "thoughtSignature", "namespace" });
             const tool = findTool(reducer, textOf(part, "id")) orelse return Error.InvalidFrame;
             const name = textOf(part, "name");
-            if (name.len == 0) return Error.InvalidFrame;
+            if (!std.mem.eql(u8, name, tool.name)) return Error.InvalidFrame;
             const shape = try reducer.object();
             try shape.put(reducer.arena, "type", Reducer.str("tool_call"));
             try shape.put(reducer.arena, "tool_call_id", Reducer.str(tool.id));
@@ -1464,13 +1463,15 @@ test "a final toolCall part carries the OAP tool-call id, not the native one" {
     try std.testing.expectEqualStrings("tool-call-6", textOf(content.array.items[0], "tool_call_id"));
 }
 
-test "a final toolCall part with an empty name is refused, not emitted without one" {
-    try expectRefusal(&.{
-        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
-        "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":false}",
-        agentEndWith("[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"\",\"arguments\":{}}]"),
-        settled_text,
-    }, "pi_invalid_final_message");
+test "a final toolCall part naming its tool anything else is refused, empty or not" {
+    inline for ([_][]const u8{ "", "write" }) |renamed| {
+        try expectRefusal(&.{
+            "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"args\":{}}",
+            "{\"type\":\"tool_execution_end\",\"toolCallId\":\"t1\",\"toolName\":\"grep\",\"result\":{},\"isError\":false}",
+            agentEndWith("[{\"type\":\"toolCall\",\"id\":\"t1\",\"name\":\"" ++ renamed ++ "\",\"arguments\":{}}]"),
+            settled_text,
+        }, "pi_invalid_final_message");
+    }
 }
 
 test "a final message referencing a tool the run never started is refused" {

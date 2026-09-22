@@ -1165,6 +1165,39 @@ func TestFinalMessageNamingAnUnknownToolIsRefused(t *testing.T) {
 	assertRunFailedWith(t, events, "pi_invalid_final_message", `final message references unknown tool "nobody"`)
 }
 
+func TestAToolStartedWithoutANameIsRefused(t *testing.T) {
+	events := failingRun(t, func(client *fakeClient) {
+		client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "native", "toolName": "", "args": map[string]any{}})
+	})
+	assertRunFailedWith(t, events, "pi_invalid_tool_lifecycle", "invalid tool start")
+}
+
+func TestFinalMessageRenamingItsToolIsRefused(t *testing.T) {
+	for _, final := range []struct {
+		name  string
+		named string
+	}{
+		{"an empty name", ""},
+		{"a different name", "write"},
+	} {
+		t.Run(final.name, func(t *testing.T) {
+			client := newFakeClient()
+			session := openTest(t, client, 32)
+			admitted, stream := submitTest(t, session)
+			client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": "native", "toolName": "read", "args": map[string]any{"path": "x"}})
+			client.emit(t, map[string]any{"type": "tool_execution_end", "toolCallId": "native", "toolName": "read", "result": map[string]any{"text": "x"}, "isError": false})
+			message := assistant("done", "stop")
+			message["content"] = []any{map[string]any{"type": "toolCall", "id": "native", "name": final.named, "arguments": map[string]any{"path": "x"}}}
+			client.emit(t, map[string]any{"type": "message_end", "message": message})
+			client.emit(t, map[string]any{"type": "agent_end", "messages": []any{message}, "willRetry": false})
+			client.emit(t, map[string]any{"type": "agent_settled"})
+			events := adaptertest.Drain(t, stream, time.Second)
+			assertRunFailedWith(t, events, "pi_invalid_final_message", `final message calls tool "native" "`+final.named+`", which was started as "read"`)
+			adaptertest.AssertProtocolValidWithDescriptor(t, admitted, testDescriptor(t), events)
+		})
+	}
+}
+
 func TestCandidateMessageOfAnUnknownRoleIsRefused(t *testing.T) {
 	events := failingRun(t, func(client *fakeClient) {
 		client.emit(t, map[string]any{"type": "agent_end", "messages": []any{map[string]any{"role": "invented"}}, "willRetry": false})
