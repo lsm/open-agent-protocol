@@ -278,28 +278,24 @@ appears in any tranche.
 Three harnesses take a `provider` argument and all three are selecting from a
 catalog the endpoint already held, not introducing one:
 
-- **Hermes** — `session.create {… profile?, model?, provider?, …}`. The
-  integration gate records the mechanism plainly: the provider endpoint is an
-  in-process loopback reached through `OPENAI_BASE_URL`, the credential is a
-  test-owned fixture key, and the model "statically resolves to the openai
-  provider in the pinned catalog".
+- **Hermes** — `session.create {… profile?, model?, provider?, …}`, resolved
+  against a `config.yaml` `custom_providers` entry the gateway reads at
+  startup. Taken from the gate's own outcome rather than its setup
+  description: the ledger records that for a *named* provider
+  `OPENAI_BASE_URL` is deliberately ignored as stale env poisoning, the
+  gateway dialled the real `api.openai.com` and returned 401, and the pinned
+  redirect is the config entry — "the environment cannot do it". Only the
+  credential is env-borne, through `key_env`.
 - **DeepSeek** — `initialize {cwd, provider, model, maxTokens?}`, with the
   endpoint supplied out of band through `DEEPSEEK_BASE_URL`.
 - **OpenCode** — `ModelRef {id, providerID, variant?}` on a session, resolved
   against `provider.list/get`.
 
-How the operator supplies the endpoint is not stated here, because it differs
-per harness and the adjudication does not turn on it. Hermes is the reason to
-say so rather than generalise: its gate reaches the loopback through a
-`config.yaml` `custom_providers` entry, and its ledger records that for a named
-provider `OPENAI_BASE_URL` is *deliberately ignored* as stale env poisoning, so
-"the environment cannot do it". Only the credential is env-borne there.
-
-What all three do share is the only thing the adjudication rests on: the
-session argument names an entry the endpoint resolves against state it already
-held — `provider.list/get` for OpenCode, the pinned catalog for Hermes — rather
-than introducing one. How the operator configured that state varies and does
-not matter here.
+How the operator fills that state differs per harness — a config file for
+Hermes, environment for DeepSeek, unpinned for OpenCode — and the adjudication
+does not turn on it. What all three share is the only thing it rests on: the
+session argument **names** an entry the endpoint resolves against state it
+built before the session existed, rather than introducing one.
 
 **Adjudication.** [The composition draft](../drafts/composition.md) records an
 empty provisioning row beside a complete tool-sources row, and
