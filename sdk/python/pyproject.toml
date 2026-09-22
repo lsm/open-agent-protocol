@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "oap-sdk"
 version = "0.1.0"
-description = "Python SDK for the Makai streaming AI runtime's stdio protocol"
+description = "Python SDK for the Open Agent Protocol project's runtime, over its stdio protocol"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "ISC" }
-authors = [{ name = "makai contributors" }]
+authors = [{ name = "Open Agent Protocol contributors" }]
 keywords = ["oap_sdk", "sdk", "streaming", "llm", "stdio"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -25,8 +25,8 @@ dependencies = []
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.11"]
 
 [project.urls]
-Homepage = "https://github.com/lsm/makai"
-Source = "https://github.com/lsm/makai"
+Homepage = "https://github.com/lsm/open-agent-protocol"
+Source = "https://github.com/lsm/open-agent-protocol/tree/main/sdk/python"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oap_sdk"]
@@ -39,7 +39,7 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
-  "real_binary: needs OAP_SDK_BINARY_PATH pointing at a built makai runtime",
+  "real_binary: needs OAP_SDK_BINARY_PATH pointing at a built oapx runtime",
 ]
 
 [tool.mypy]

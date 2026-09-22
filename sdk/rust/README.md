@@ -1,25 +1,29 @@
-# Makai Rust SDK
+# OAP Rust SDK
 
-Rust SDK for Makai's stdio protocol. The SDK starts a `makai --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs with client-side tools, auth flows, and model discovery.
+Rust SDK published as `oap-sdk`. It starts an `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs with client-side tools, auth flows, and model discovery.
 
 It mirrors the [TypeScript SDK](../typescript/README.md): same protocol, same namespaces, same error taxonomy.
 
+The wire it speaks today is the makai stdio protocol, not OAP. The package name is where this is going, not where it is.
+
 ## Installation
 
-The crate lives in this repository at `rust/`. Until it is published, depend on it by path or by git:
+The crate lives in this repository at `sdk/rust/`. Until it is published, depend on it by path or by git:
 
 ```toml
 [dependencies]
-makai = { git = "https://github.com/lsm/makai", package = "makai" }
+oap-sdk = { git = "https://github.com/lsm/open-agent-protocol" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures = "0.3"
 ```
 
-You also need the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit options.
+The crate is imported as `oap_sdk`.
+
+You also need the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit options.
 
 ```bash
-zig build install --prefix /tmp/makai
-export OAP_SDK_BINARY_PATH=/tmp/makai/bin/makai
+zig build install --prefix /tmp/oapx
+export OAP_SDK_BINARY_PATH=/tmp/oapx/bin/oapx
 ```
 
 ## Quick start
@@ -27,7 +31,7 @@ export OAP_SDK_BINARY_PATH=/tmp/makai/bin/makai
 Create a client, resolve a model, send one message, print the reply.
 
 ```rust
-use makai::{Client, ExecutionRequest};
+use oap_sdk::{Client, ExecutionRequest};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,9 +63,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use futures::StreamExt;
-use makai::{Client, ExecutionRequest, ProviderEvent};
+use oap_sdk::{Client, ExecutionRequest, ProviderEvent};
 
-# async fn run(client: &makai::Client, model_ref: &str) -> makai::Result<()> {
+# async fn run(client: &oap_sdk::Client, model_ref: &str) -> oap_sdk::Result<()> {
 let mut events = Box::pin(
     client
         .provider()
@@ -90,10 +94,10 @@ Exactly one terminal event ends the stream — `MessageEnd` or `Error`. Failures
 
 ## Agent loop with tools
 
-`agent().run(...)` and `agent().stream(...)` drive the Makai agent loop. Tool schemas are JSON Schema documents in a string; tools with a handler **execute in your process** — the runtime publishes `tool_execute` and waits for the correlated `tool_result`.
+`agent().run(...)` and `agent().stream(...)` drive the runtime's agent loop. Tool schemas are JSON Schema documents in a string; tools with a handler **execute in your process** — the runtime publishes `tool_execute` and waits for the correlated `tool_result`.
 
 ```rust
-use makai::{Client, ExecutionRequest, Tool};
+use oap_sdk::{Client, ExecutionRequest, Tool};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -101,7 +105,7 @@ struct WeatherArgs {
     city: String,
 }
 
-# async fn run(client: &makai::Client, model_ref: &str) -> makai::Result<()> {
+# async fn run(client: &oap_sdk::Client, model_ref: &str) -> oap_sdk::Result<()> {
 let weather = Tool::new(
     "get_weather",
     "Get the current weather for a city.",
@@ -139,9 +143,9 @@ For streaming, iterate `agent().stream(request)` and handle `AgentStart`, `TurnS
 `auth().list_providers()` inspects auth state; `auth().login(...)` runs an interactive flow. Token material is owned by the runtime and is never exposed by the SDK.
 
 ```rust
-use makai::{AuthEvent, AuthHandlers, AuthStatus, Client};
+use oap_sdk::{AuthEvent, AuthHandlers, AuthStatus, Client};
 
-# async fn run(client: &makai::Client) -> makai::Result<()> {
+# async fn run(client: &oap_sdk::Client) -> oap_sdk::Result<()> {
 let providers = client.auth().list_providers().await?;
 let needs_login = providers
     .iter()
@@ -173,9 +177,9 @@ A flow that reaches a prompt with no `on_prompt` handler is cancelled rather tha
 You can also configure one-shot automatic retry for `provider` and `agent` calls:
 
 ```rust
-use makai::{AuthHandlers, AuthRetryPolicy, Client};
+use oap_sdk::{AuthHandlers, AuthRetryPolicy, Client};
 
-# async fn run() -> makai::Result<()> {
+# async fn run() -> oap_sdk::Result<()> {
 let client = Client::builder()
     .auth_retry_policy(AuthRetryPolicy::AutoOnce)
     .auth_handlers(AuthHandlers::new().on_prompt(|_| async move {
@@ -195,9 +199,9 @@ With `AutoOnce`, a call that hits `auth_required` logs in once and retries. With
 Models are discovered through `client.models()`. Use `model_ref` from the returned descriptor in provider and agent requests. **Treat `model_ref` as opaque**: do not parse or construct it.
 
 ```rust
-use makai::{Client, ListModelsRequest};
+use oap_sdk::{Client, ListModelsRequest};
 
-# async fn run(client: &makai::Client) -> makai::Result<()> {
+# async fn run(client: &oap_sdk::Client) -> oap_sdk::Result<()> {
 let response = client
     .models()
     .list(ListModelsRequest {
@@ -226,9 +230,9 @@ for model in &response.models {
 
 ```rust
 use std::time::Duration;
-use makai::Client;
+use oap_sdk::Client;
 
-# async fn run() -> makai::Result<()> {
+# async fn run() -> oap_sdk::Result<()> {
 let client = Client::builder()
     .binary_path("/opt/oapx/bin/oapx")
     .env("OAPX_LOG", "info")
@@ -250,8 +254,8 @@ Mirroring the TypeScript resolver, in order:
 2. `OAP_SDK_BINARY_URL` / `binary_url` with a **required** SHA-256 checksum (`OAP_SDK_BINARY_SHA256` / `checksum_sha256`), cached under `~/.cache/makai/bin`;
 3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package — **not implemented in Rust**, see below;
 4. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
-5. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`;
-6. `oapx` on `PATH`, then `makai`.
+5. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`;
+6. `oapx` on `PATH`, then `makai` on `PATH`.
 
 `oapx` is tried in every location before `makai` is tried in any, so a nested
 `oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
@@ -263,7 +267,7 @@ The environment variable outranks the builder option, as in TypeScript, so an op
 Downloading from a URL needs the `download` feature (off by default, to keep an HTTP stack out of the default dependency tree):
 
 ```toml
-makai = { version = "0.1", features = ["download"] }
+oap-sdk = { version = "0.1", features = ["download"] }
 ```
 
 Without it, an already-cached file is still checksum-verified and used, and a cache miss is a clear error rather than a silent fallback to a different binary than you pinned.
@@ -282,9 +286,9 @@ All failures are one `Error` enum, mirroring the TypeScript error classes:
 | *(untyped in TS)* | `Error::InvalidRequest { message }` — rejected before anything is sent |
 
 ```rust
-use makai::Error;
+use oap_sdk::Error;
 
-# fn handle(error: makai::Error) {
+# fn handle(error: oap_sdk::Error) {
 match error {
     Error::AuthRequired { provider_id, .. } => eprintln!("login required for {provider_id}"),
     Error::Stream { kind, code, .. } => eprintln!("stream failed ({kind}/{code:?})"),
@@ -317,8 +321,8 @@ cargo test
 `cargo test` needs no credentials and no runtime binary: the integration tests drive `makai-protocol-fake`, a scriptable stand-in for `makai --stdio` that ships with the crate. Point `ClientBuilder::command` at it to test your own code the same way:
 
 ```rust
-# fn build() -> makai::ClientBuilder {
-makai::ClientBuilder::new()
+# fn build() -> oap_sdk::ClientBuilder {
+oap_sdk::ClientBuilder::new()
     .command(env!("CARGO_BIN_EXE_makai-protocol-fake"))
     .args(Vec::<String>::new())
     .env_clear()
@@ -329,10 +333,10 @@ makai::ClientBuilder::new()
 To also exercise a real runtime:
 
 ```bash
-zig build install --prefix /tmp/makai-rs
-OAP_SDK_BINARY_PATH=/tmp/makai-rs/bin/makai cargo test
+zig build install --prefix /tmp/oapx-rs
+OAP_SDK_BINARY_PATH=/tmp/oapx-rs/bin/oapx cargo test
 ```
 
-Without `OAP_SDK_BINARY_PATH` the `real_binary` tests skip, mirroring `typescript/test/makai_binary_smoke.test.ts`.
+Without `OAP_SDK_BINARY_PATH` the `real_binary` tests skip, mirroring `sdk/typescript/test/makai_binary_smoke.test.ts`.
 
 **On macOS**, the two tests that make the runtime *persist* credentials skip by default: `saveToPreferredStorage` writes to the login Keychain, and creating that item from an unsigned local build blocks in `AuthorizationCopyRights` waiting on a UI prompt no test runner can answer. Everything else runs. Set `OAP_SDK_RUST_SDK_ALLOW_KEYCHAIN=1` to run them on a Mac where the item's ACL is already approved. CI runs on Linux, where the file store is used and the write is unattended.

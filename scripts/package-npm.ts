@@ -104,7 +104,7 @@ function copyDir(src: string, dest: string) {
 }
 copyDir(srcDir, destSrcDir);
 
-copyFileSync(join(ROOT, "README.md"), join(mainDir, "README.md"));
+copyFileSync(join(ROOT, "sdk", "typescript", "README.md"), join(mainDir, "README.md"));
 
 console.log(`  Created oap-sdk (main package)`);
 

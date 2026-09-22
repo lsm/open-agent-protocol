@@ -1,6 +1,8 @@
-# Makai Go SDK
+# OAP Go SDK
 
-Go SDK for Makai's stdio protocol. The SDK starts or connects to a `makai --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
+Go SDK for the makai stdio protocol. It starts or connects to an `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
+
+The wire it speaks today is the makai stdio protocol, not OAP. The name is where this is going, not where it is.
 
 ## Installation
 
@@ -8,13 +10,13 @@ Go SDK for Makai's stdio protocol. The SDK starts or connects to a `makai --stdi
 go get github.com/lsm/open-agent-protocol/sdk/go
 ```
 
-The module lives in the `go/` subdirectory of the Makai repository, so its import path ends in `/go` while the package itself is named `makai`:
+The module lives at `sdk/go/`, so its import path ends in `/go` while the package itself is still named `makai`. Alias it:
 
 ```go
 import makai "github.com/lsm/open-agent-protocol/sdk/go"
 ```
 
-You also need access to the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -102,7 +104,7 @@ A provider stream emits exactly one terminal event, either `*MessageEnd` or `*Er
 
 ## Agent loop with tools
 
-Use `client.Agent.Run(...)` when you want the Makai agent loop to manage provider turns and the tool lifecycle. Tool definitions carry a JSON Schema string; the tool itself runs in your process, through `Execute`.
+Use `client.Agent.Run(...)` when you want the runtime's agent loop to manage provider turns and the tool lifecycle. Tool definitions carry a JSON Schema string; the tool itself runs in your process, through `Execute`.
 
 ```go
 weather := makai.Tool{
@@ -264,9 +266,9 @@ You can also set `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`. Note that the environ
 
 ```go
 client, err := makai.New(ctx, &makai.Options{
-	BinaryURL:      "https://example.com/releases/makai-darwin-arm64",
+	BinaryURL:      "https://example.com/releases/oapx-darwin-arm64",
 	ChecksumSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	CacheDir:       "/tmp/makai-bin-cache",
+	CacheDir:       "/tmp/oapx-bin-cache",
 })
 ```
 
@@ -277,8 +279,8 @@ The checksum is required; a download without one is refused with `ErrChecksumReq
 With no resolver options, the SDK checks:
 
 1. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-3. `oapx` on `PATH`, then `makai`
+2. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
+3. `oapx` on `PATH`, then `makai` on `PATH`
 
 `oapx` is tried in every location before `makai` is tried in any, so a nested
 `oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
@@ -338,8 +340,8 @@ go test -race ./...
 Protocol-level tests run against a fake host built into the test binary, so they need no runtime and no API keys. To additionally exercise the real runtime:
 
 ```bash
-zig build install --prefix /tmp/makai-go       # from the repository root
-OAP_SDK_BINARY_PATH=/tmp/makai-go/bin/makai go test -race ./...
+zig build install --prefix /tmp/oapx-go       # from the repository root
+OAP_SDK_BINARY_PATH=/tmp/oapx-go/bin/oapx go test -race ./...
 ```
 
 The real-runtime tests skip themselves when `OAP_SDK_BINARY_PATH` is unset. They isolate `HOME` (and, on macOS, `OAPX_KEYCHAIN_SERVICE`) so a test run cannot read or write your own credentials.
