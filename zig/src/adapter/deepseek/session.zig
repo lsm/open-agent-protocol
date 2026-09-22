@@ -245,11 +245,25 @@ fn failRun(reducer: *Reducer, code: []const u8, message: []const u8) !void {
     try failSettled(reducer, code, message, "");
 }
 
+fn settleOpenTools(reducer: *Reducer) !void {
+    for (reducer.tools.items) |tool| {
+        if (tool.terminal) continue;
+        tool.terminal = true;
+        var payload = try toolPayload(reducer, tool, false);
+        const err = try reducer.object();
+        try err.put(reducer.arena, "code", Reducer.str("incomplete_tool"));
+        try err.put(reducer.arena, "message", Reducer.str("turn settled with an unfinished deepseek tool"));
+        try payload.object.put(reducer.arena, "error", .{ .object = err.* });
+        _ = try reducer.emitReplying("action.call.failed", payload, false, tool.started_event);
+    }
+}
+
 fn failSettled(reducer: *Reducer, code: []const u8, message: []const u8, settled_by: []const u8) !void {
     if (!reducer.started) {
         reducer.terminal = true;
         return;
     }
+    try settleOpenTools(reducer);
     const err = try reducer.object();
     try err.put(reducer.arena, "code", Reducer.str(code));
     try err.put(reducer.arena, "message", Reducer.str(message));
@@ -566,6 +580,7 @@ fn trySettle(reducer: *Reducer) !void {
         if (!child.terminal) return;
         failed_child = failed_child or child.failed;
     }
+    try settleOpenTools(reducer);
     if (failed_child) {
         try failRun(reducer, "deepseek_child_failed", "subagent failed");
         return;
@@ -1196,6 +1211,76 @@ test "a final message carrying no content block completes with empty text, never
     const content = finalContent(&reducer) orelse return error.RunDidNotComplete;
     try std.testing.expect(content == .string);
     try std.testing.expectEqualStrings("", content.string);
+}
+
+fn settlementIndex(reducer: *Reducer, kind: []const u8) ?usize {
+    for (reducer.emitted.items, 0..) |envelope, index| {
+        if (std.mem.eql(u8, textOf(envelope, "type"), kind)) return index;
+    }
+    return null;
+}
+
+fn expectToolSettledBefore(reducer: *Reducer, terminal: []const u8) !void {
+    const settled = settlementIndex(reducer, "action.call.failed") orelse return error.ToolNeverSettled;
+    const ended = settlementIndex(reducer, terminal) orelse return error.RunNeverTerminated;
+    try std.testing.expect(settled < ended);
+    const payload = memberOf(reducer.emitted.items[settled], "payload") orelse return error.NoPayload;
+    const failure = memberOf(payload, "error") orelse return error.NoError;
+    try std.testing.expectEqualStrings("incomplete_tool", textOf(failure, "code"));
+    try std.testing.expectEqualStrings("turn settled with an unfinished deepseek tool", textOf(failure, "message"));
+}
+
+test "a completed turn settles its open tool before its own terminal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+
+    try expectToolSettledBefore(&reducer, "run.completed");
+}
+
+test "a failed turn settles its open tool before its own terminal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"aborted\"}}}"));
+    try observeStatus(&reducer, "idle");
+
+    try expectToolSettledBefore(&reducer, "run.failed");
+}
+
+test "a run failed outside settlement still settles its open tool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+
+    try std.testing.expectEqualStrings("deepseek_tool_lifecycle", lastFailure(&reducer) orelse return error.NoRefusal);
+    try expectToolSettledBefore(&reducer, "run.failed");
+}
+
+test "a tool that reported its result is not settled again at the terminal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = try admittedRun(a);
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c-1\",\"name\":\"read\",\"arguments\":\"{}\"}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"tool/result\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"source\":{\"kind\":\"tool\",\"callId\":\"c-1\"},\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1,\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}}"));
+    try applyEvent(&reducer, try parse(a, "{\"type\":\"turn/end\",\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}"));
+    try observeStatus(&reducer, "idle");
+
+    try std.testing.expect(settlementIndex(&reducer, "action.call.failed") == null);
+    try std.testing.expect(settlementIndex(&reducer, "action.call.completed") != null);
+    try std.testing.expect(settlementIndex(&reducer, "run.completed") != null);
 }
 
 test "a final tool call carries the arguments of the final block, not those of the call event" {
