@@ -106,7 +106,7 @@ oapx                                 the TUI
 oapx run "fix the failing test"      one shot, same loop, no server
 oapx serve agent                     agent-control-core
 oapx serve provider                  model-provider-core
-oapx serve agent provider            both profiles, one process — --addr only
+oapx serve agent,provider --stdio    both profiles, one process, one pipe
 oapx serve agent --backend claude    a harness behind the same door
 oapx validate <trace.json>           the validator, either profile
 oapx check                           schemas, fixtures, reference adapter
@@ -610,25 +610,21 @@ port it never appears under `zig/`, and it disappears with `go/` rather than
 being removed. That makes the question a deletion rather than a port, which is
 cheaper to decide and worth deciding early.
 
-**What `oapx serve agent provider` routes on, and what answers a frame with no
-profile.** This was filed as untested and is worse than that: it contradicts
-what is built. Each of the implementation's two endpoints refuses the other's
-profile **at decode**, and the refusal names which profile that endpoint serves.
+**Composed profile routing on stdio.** Resolved by
+[Decision 0027](0027-composed-stdio-profiles.md), which amends the earlier
+provider stdio rule. `oapx serve agent,provider --stdio` routes on the required
+top-level `profile` before profile-specific decoding. Agent sessions/runs and
+provider inferences remain separate scope domains. A caller using only one
+profile need not initialize or understand the other. The command's comma is
+the CLI profile-list separator.
 
-**On `--stdio` the question is already answered, by a rule this record failed
-to cite.** [The stdio binding](../drafts/provider-stdio.md) requires a binary
-serving both profiles to serve them on **separate spawns, not interleaved on one
-pipe**, because the profiles have disjoint envelope sets and separate scope
-domains and one stream carrying both would oblige every consumer to implement
-both to route anything. That is this question's own objection, made earlier and
-better. This record conforms to the rule rather than amending it: `oapx serve
-agent provider --stdio` is refused, each spawn's profile is fixed by the
-arguments that started it, and no frame on that pipe is unattributable.
+An absent or unknown `profile` with a recoverable `id` receives a correlated
+agent-profile `error.response` with `invalid_request` and the connection stays
+open. A frame without an addressable id, or with broken framing, is fatal.
 
-So the router is an `--addr` question only — one socket, two profiles, and a
-frame to place before decode. It needs a router that reads the envelope's
-`profile` before decode and hands the frame to the endpoint that owns it, and
-the hard case is a frame whose `profile` is absent or unknown.
+The following paragraphs preserve the historical error-routing analysis that
+preceded Decision 0027. Its proposed provider-profile `error.response`
+addition and separate-spawn conclusion are **superseded**, not open work.
 
 **The answer this record proposes: an `error.response` carrying
 `invalid_request`, correlated where an id can be recovered, connection kept

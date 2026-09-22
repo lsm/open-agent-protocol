@@ -248,6 +248,12 @@ type CapabilitiesUpdated struct {
 
 const FeatureModelsList = "models.list"
 
+const (
+	FeatureSessionModelSwitch = "session.model.switch"
+	FeatureProvidersAttach    = "action.providers.attach"
+	ModeSessionLive           = "session_live"
+)
+
 type ModelsRequest struct {
 	SessionID             SessionID `json:"session_id"`
 	AllowDegradedFeatures []string  `json:"allow_degraded_features,omitempty"`
@@ -272,8 +278,9 @@ type ModelDescriptor struct {
 }
 
 type ModelEventPosition struct {
-	RunID    RunID  `json:"run_id"`
-	Sequence uint64 `json:"sequence"`
+	RunID           RunID      `json:"run_id,omitempty"`
+	Sequence        uint64     `json:"sequence,omitempty"`
+	SwitchRequestID EnvelopeID `json:"switch_request_id,omitempty"`
 }
 
 const (
@@ -288,11 +295,13 @@ const (
 )
 
 type ProviderDescriptor struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name,omitempty"`
-	Wire        string `json:"wire,omitempty"`
-	Kind        string `json:"kind,omitempty"`
-	Endpoint    string `json:"endpoint,omitempty"`
+	ID                 string `json:"id"`
+	DisplayName        string `json:"display_name,omitempty"`
+	Wire               string `json:"wire,omitempty"`
+	Kind               string `json:"kind,omitempty"`
+	Endpoint           string `json:"endpoint,omitempty"`
+	ServiceID          string `json:"service_id,omitempty"`
+	UpstreamProviderID string `json:"upstream_provider_id,omitempty"`
 }
 
 type ModelsResponse struct {
@@ -378,6 +387,53 @@ type SessionOpenResponse = SessionState
 
 type SessionStateRequest struct {
 	SessionID SessionID `json:"session_id"`
+}
+
+type SessionModelSwitchRequest struct {
+	SessionID             SessionID `json:"session_id"`
+	ModelID               string    `json:"model_id"`
+	AllowDegradedFeatures []string  `json:"allow_degraded_features,omitempty"`
+}
+
+func (r SessionModelSwitchRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+type SessionModelSwitchResponse struct {
+	SessionID       SessionID `json:"session_id"`
+	ModelID         string    `json:"model_id"`
+	PreviousModelID string    `json:"previous_model_id,omitempty"`
+}
+
+type ProviderAttachment struct {
+	ID         string `json:"id"`
+	ProviderID string `json:"provider_id"`
+	ServiceID  string `json:"service_id,omitempty"`
+}
+
+type SessionProviderAttachRequest struct {
+	SessionID             SessionID          `json:"session_id"`
+	Provider              ProviderAttachment `json:"provider"`
+	AllowDegradedFeatures []string           `json:"allow_degraded_features,omitempty"`
+}
+
+func (r SessionProviderAttachRequest) AllowsDegraded(key string) bool {
+	for _, allowed := range r.AllowDegradedFeatures {
+		if allowed == key {
+			return true
+		}
+	}
+	return false
+}
+
+type SessionProviderAttachResponse struct {
+	SessionID  SessionID `json:"session_id"`
+	ProviderID string    `json:"provider_id"`
 }
 
 type SessionState struct {

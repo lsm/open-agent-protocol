@@ -14,6 +14,7 @@ import { getNoopLogger, isNoopLogger, type MakaiLogger } from "./logger";
 import { createMakaiModelsApi } from "./models_client";
 import { MakaiProtocolError, type MakaiModelsApi } from "./models_types";
 import { type CreateMakaiStdioClientOptions, createMakaiStdioClient, MakaiStdioClient, type StdioFrame } from "./stdio_client";
+import { createOapClient, OapUnsupportedFeatureError } from "./oap_client";
 import {
   createTimeoutDiagnostics,
   formatTimeoutMessage,
@@ -85,7 +86,10 @@ export interface MakaiClient {
   close(): Promise<void>;
 }
 
-export type CreateMakaiClientOptions = CreateMakaiStdioClientOptions & MakaiClientOptions;
+export type CreateMakaiClientOptions = CreateMakaiStdioClientOptions & MakaiClientOptions & {
+  /** Explicit compatibility opt-in. OAP is the default and never falls back automatically. */
+  wireProtocol?: "oap" | "legacy";
+};
 
 export function createMakaiProviderApi(
   transport: MakaiStdioClient,
@@ -313,6 +317,15 @@ class StdioProviderApi implements MakaiProviderApi {
 }
 
 class StdioAgentApi implements MakaiAgentApi {
+  async switchModel(): Promise<void> {
+    throw new OapUnsupportedFeatureError("session.model.switch on the legacy wire");
+  }
+  async runSelected(): Promise<AgentRunResponse> {
+    throw new OapUnsupportedFeatureError("session-selected model runs on the legacy wire");
+  }
+  async *streamSelected(): AsyncIterable<AgentStreamEvent> {
+    throw new OapUnsupportedFeatureError("session-selected model streams on the legacy wire");
+  }
   private readonly responseTimeoutMs: number;
   private readonly authRetryPolicy?: RunOptions["auth_retry_policy"];
   private readonly auth?: MakaiAuthApi;
@@ -1690,7 +1703,12 @@ async function withAuthRetry<T>(
 }
 
 export async function createMakaiClient(options: CreateMakaiClientOptions = {}): Promise<MakaiClient> {
-  const { auth: authOptions, responseTimeoutMs, frameTimeoutMs, logger, ...transportOptions } = options;
+  if (options.wireProtocol === "legacy") return createLegacyMakaiClient(options);
+  return createOapClient(options);
+}
+
+async function createLegacyMakaiClient(options: CreateMakaiClientOptions): Promise<MakaiClient> {
+  const { auth: authOptions, responseTimeoutMs, frameTimeoutMs, logger, wireProtocol: _wireProtocol, ...transportOptions } = options;
   const transport = await createMakaiStdioClient({ ...transportOptions, logger });
   await transport.connect();
   const authClient = new MakaiAuthClient(transport, { handlers: authOptions?.handlers, frameTimeoutMs, logger });

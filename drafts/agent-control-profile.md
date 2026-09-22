@@ -365,6 +365,8 @@ These request events are the control layer's primary agent-control surface:
 | Start login | `auth.login.request` | `auth.event`, then `auth.login.result` |
 | List sessions | `session.list.request` | `session.list.response` |
 | Open session | `session.open.request` | `session.open.response` |
+| Switch session model | `session.model.switch.request` | `session.model.switch.response`, then canonical state reflects the new default |
+| Attach OAP provider to session | `session.provider.attach.request` | `session.provider.attach.response`; optional `+provider-attach` |
 | Load transcript | `transcript.load.request` | `transcript.load.response` |
 | Submit session message | `session.message.submit.request` | `session.message.submit.response`, then run stream when admitted |
 | Interrupt run | `run.interrupt.request` | `run.interrupted` |
@@ -418,6 +420,12 @@ provide executable tool definitions from the control layer. An implementation
 that cannot honor instruction override or tool selection should report
 `run.instructions` or `run.tool_selection` as degraded or
 unavailable.
+
+`session.model.switch.request` is different from the per-submit `model_id`:
+it changes the session default for future runs and does not retarget an active
+run. Optional `session.provider.attach.request` makes an OAP provider service
+available to that session; it does not select one of its models. The client
+switches explicitly after the catalog includes the attachment.
 
 The response is `session.message.submit.response`. It acknowledges admission,
 not completion, and reports `requested_delivery`, concrete

@@ -1,10 +1,11 @@
 # Native OAP Implementers
 
 This is the register named by section 6 of the
-[stability commitment](STABILITY.md). Everyone on it is sent any proposed
-breaking change to `0.1` core, as a `proposed` decision record, at least 30
-days before it can land — and their response is recorded verbatim in that
-decision.
+[stability commitment](STABILITY.md). After the first tagged v0.1 release,
+everyone on it is sent any proposed breaking change to released core, as a
+`proposed` decision record, at least 30 days before it can land — and their
+response is recorded verbatim in that decision. Before that first tag, v0.1
+remains a pre-release working contract.
 
 **The register is empty today.** That is a statement of fact, not a filter:
 nobody has been turned away, and no entry is pending.

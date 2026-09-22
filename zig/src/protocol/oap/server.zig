@@ -6,9 +6,9 @@ const oap_envelope = @import("oap_envelope");
 const json_writer = @import("json_writer");
 const model_ref = @import("model_ref");
 
-pub const ENDPOINT_ID = "makai.agent-control";
-pub const ENDPOINT_NAME = "Makai";
-pub const CAPABILITY_REVISION = "makai-oap-core-v1";
+pub const ENDPOINT_ID = "oapx.agent-control";
+pub const ENDPOINT_NAME = "OAPX";
+pub const CAPABILITY_REVISION = "oapx-oap-core-v2";
 pub const DELIVERY_RESOLUTION_IDLE = "session_idle";
 
 pub const AdvertisedFeature = struct {
@@ -23,6 +23,10 @@ pub const advertised_features = [_]AdvertisedFeature{
     .{ .key = "capabilities", .level = .native },
     .{ .key = "session.open", .level = .native },
     .{ .key = "session.state", .level = .native },
+    .{ .key = "session.model.switch", .level = .native },
+    .{ .key = "models.list", .level = .native },
+    .{ .key = "auth.providers", .level = .native },
+    .{ .key = "auth.login", .level = .native },
     .{ .key = "session.message.submit", .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "run.streaming", .level = .native },
@@ -32,7 +36,11 @@ pub const advertised_features = [_]AdvertisedFeature{
         .level = .degraded,
         .reason = "cancellation is session scoped teardown; the session closes with the run",
     },
-    .{ .key = "content.reasoning", .level = .native },
+    .{
+        .key = "content.reasoning",
+        .level = .degraded,
+        .reason = "outbound reasoning is preserved, but inbound reasoning parts are not accepted",
+    },
     .{ .key = "run.model_selection", .level = .native, .scope = "run" },
 };
 
@@ -140,6 +148,7 @@ pub const Server = struct {
     descriptor: Descriptor,
     endpoint_version: []const u8,
     default_model_id: ?[]const u8,
+    model_catalog: std.ArrayList([]const u8),
     initialized: bool = false,
     session_idle_ttl_ms: u64,
     sessions: std.StringHashMap(SessionEntry),
@@ -157,11 +166,23 @@ pub const Server = struct {
             try allocator.dupe(u8, value)
         else
             null;
+        errdefer if (default_model_id) |value| allocator.free(value);
+        var model_catalog = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (model_catalog.items) |value| allocator.free(value);
+            model_catalog.deinit(allocator);
+        }
+        if (default_model_id) |value| {
+            const catalog_id = try allocator.dupe(u8, value);
+            errdefer allocator.free(catalog_id);
+            try model_catalog.append(allocator, catalog_id);
+        }
         return .{
             .allocator = allocator,
             .descriptor = options.descriptor,
             .endpoint_version = endpoint_version,
             .default_model_id = default_model_id,
+            .model_catalog = model_catalog,
             .session_idle_ttl_ms = options.session_idle_ttl_ms,
             .sessions = std.StringHashMap(SessionEntry).init(allocator),
             .evicted = std.ArrayList([]const u8).empty,
@@ -193,7 +214,25 @@ pub const Server = struct {
 
         self.allocator.free(self.endpoint_version);
         if (self.default_model_id) |value| self.allocator.free(value);
+        for (self.model_catalog.items) |value| self.allocator.free(value);
+        self.model_catalog.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    pub fn addModel(self: *Self, model_id: []const u8) !void {
+        for (self.model_catalog.items) |known| {
+            if (std.mem.eql(u8, known, model_id)) return;
+        }
+        const owned = try self.allocator.dupe(u8, model_id);
+        errdefer self.allocator.free(owned);
+        try self.model_catalog.append(self.allocator, owned);
+    }
+
+    fn hasModel(self: *const Self, model_id: []const u8) bool {
+        for (self.model_catalog.items) |known| {
+            if (std.mem.eql(u8, known, model_id)) return true;
+        }
+        return false;
     }
 
     pub fn popEvictedSession(self: *Self) ?[]const u8 {
@@ -295,8 +334,8 @@ pub const Server = struct {
         defer parsed.deinit();
         if (parsed.value != .object) return error.MalformedLine;
 
-        if (parsed.value.object.get("protocol") == null) {
-            const control = parsed.value.object.get("control") orelse return error.MalformedLine;
+        if (parsed.value.object.get("protocol") == null and parsed.value.object.get("control") != null) {
+            const control = parsed.value.object.get("control").?;
             if (control != .string) return error.MalformedLine;
             const id = blk: {
                 const value = parsed.value.object.get("id") orelse break :blk null;
@@ -306,6 +345,7 @@ pub const Server = struct {
             try self.pushUnsupportedControl(control.string, id);
             return;
         }
+        if (parsed.value.object.get("protocol") == null and parsed.value.object.get("id") == null) return error.MalformedLine;
 
         const declared_id = blk: {
             const value = parsed.value.object.get("id") orelse break :blk null;
@@ -313,6 +353,63 @@ pub const Server = struct {
             if (value.string.len == 0) break :blk null;
             break :blk value.string;
         } orelse return error.UnaddressableEnvelope;
+
+        const declared_profile = parsed.value.object.get("profile");
+        if (declared_profile == null or declared_profile.? != .string or
+            !std.mem.eql(u8, declared_profile.?.string, oap_types.PROFILE))
+        {
+            try self.pushError(
+                declared_id,
+                null,
+                null,
+                oap_types.EmittedErrorCode.invalid_request.text(),
+                "envelope profile is missing or unknown",
+                &.{.{ .key = "feature", .value = "profile" }},
+            );
+            return;
+        }
+
+        // Attachment is an optional unit. This endpoint has no configured
+        // external provider-service registry yet, so refuse it at the feature
+        // gate rather than mistaking the request for an unknown core frame.
+        if (parsed.value.object.get("type")) |declared_type| {
+            if (declared_type == .string and
+                std.mem.eql(u8, declared_type.string, "session.provider.attach.request"))
+            {
+                if (parsed.value.object.get("capability_revision")) |revision| {
+                    if (revision != .string) {
+                        try self.pushError(declared_id, null, null, "invalid_request", "capability_revision must be a string", &.{});
+                        return;
+                    }
+                    if (!std.mem.eql(u8, revision.string, self.descriptor.capability_revision)) {
+                        try self.pushError(
+                            declared_id,
+                            null,
+                            null,
+                            oap_types.EmittedErrorCode.stale_capabilities.text(),
+                            "request pinned a capability revision this endpoint no longer serves",
+                            &.{
+                                .{ .key = "expected_revision", .value = revision.string },
+                                .{ .key = "current_revision", .value = self.descriptor.capability_revision },
+                            },
+                        );
+                        return;
+                    }
+                }
+                try self.pushError(
+                    declared_id,
+                    null,
+                    null,
+                    oap_types.EmittedErrorCode.unsupported_feature.text(),
+                    "provider attachment is not configured on this endpoint",
+                    &.{
+                        .{ .key = "feature", .value = "action.providers.attach" },
+                        .{ .key = "reason", .value = "unadvertised" },
+                    },
+                );
+                return;
+            }
+        }
 
         var env = oap_envelope.deserializeEnvelope(line, self.allocator) catch |err| {
             try self.emitDecodeError(err, declared_id);
@@ -372,6 +469,8 @@ pub const Server = struct {
         switch (env.payload) {
             .session_open_request => |payload| try self.handleSessionOpen(env, payload),
             .session_state_request => |payload| try self.handleSessionState(env, payload),
+            .models_request => |payload| try self.handleModels(env, payload),
+            .session_model_switch_request => |payload| try self.handleModelSwitch(env, payload),
             .message_submit_request => |payload| try self.handleSubmit(env, payload),
             .run_cancel_request => |payload| try self.handleCancel(env, payload),
             else => try self.pushError(
@@ -586,6 +685,139 @@ pub const Server = struct {
         try self.emitSessionState(env.id, entry, .state);
     }
 
+    fn handleModels(self: *Self, env: oap_types.Envelope, payload: oap_types.ModelsRequest) !void {
+        if (try self.refuseScopeDisagreement(env, payload.session_id, null)) return;
+        const entry = self.sessions.getPtr(payload.session_id) orelse {
+            try self.pushError(
+                env.id,
+                env.session_id,
+                null,
+                oap_types.EmittedErrorCode.session_not_found.text(),
+                "session is not open on this endpoint",
+                &.{},
+            );
+            return;
+        };
+
+        const models = try self.allocator.alloc(oap_types.ModelDescriptor, self.model_catalog.items.len);
+        var built: usize = 0;
+        errdefer {
+            for (models[0..built]) |*model| model.deinit(self.allocator);
+            self.allocator.free(models);
+        }
+        for (self.model_catalog.items, 0..) |known, index| {
+            const id = try self.allocator.dupe(u8, known);
+            errdefer self.allocator.free(id);
+            const display_name = try self.allocator.dupe(u8, known);
+            errdefer self.allocator.free(display_name);
+            const provider_id = blk: {
+                var parsed = model_ref.parseModelRef(self.allocator, known) catch break :blk null;
+                defer parsed.deinit(self.allocator);
+                break :blk try self.allocator.dupe(u8, parsed.provider_id);
+            };
+            models[index] = .{
+                .id = id,
+                .display_name = display_name,
+                .provider_id = provider_id,
+                .default = if (entry.current_model_id) |current| std.mem.eql(u8, current, known) else false,
+            };
+            built = index + 1;
+        }
+
+        const id = try self.newUlidString();
+        errdefer self.allocator.free(id);
+        const reply = try self.allocator.dupe(u8, env.id);
+        errdefer self.allocator.free(reply);
+        const scope_id = try self.allocator.dupe(u8, entry.session_id);
+        errdefer self.allocator.free(scope_id);
+        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
+        errdefer self.allocator.free(revision);
+        const response_session = try self.allocator.dupe(u8, entry.session_id);
+        errdefer self.allocator.free(response_session);
+        const current_model_id = if (entry.current_model_id) |current| try self.allocator.dupe(u8, current) else null;
+        errdefer if (current_model_id) |value| self.allocator.free(value);
+        try self.pushEnvelope(.{
+            .id = id,
+            .in_reply_to = reply,
+            .session_id = scope_id,
+            .capability_revision = revision,
+            .timestamp_ms = compat.time.nowMillis(),
+            .payload = .{ .models_response = .{
+                .session_id = response_session,
+                .current_model_id = current_model_id,
+                .models = models,
+            } },
+        });
+    }
+
+    fn handleModelSwitch(self: *Self, env: oap_types.Envelope, payload: oap_types.SessionModelSwitchRequest) !void {
+        if (try self.refuseScopeDisagreement(env, payload.session_id, null)) return;
+        const entry = self.sessions.getPtr(payload.session_id) orelse {
+            try self.pushError(
+                env.id,
+                env.session_id,
+                null,
+                oap_types.EmittedErrorCode.session_not_found.text(),
+                "session is not open on this endpoint",
+                &.{},
+            );
+            return;
+        };
+        if (entry.status == .closed) {
+            try self.pushError(
+                env.id,
+                env.session_id,
+                null,
+                oap_types.EmittedErrorCode.session_not_found.text(),
+                "the session is closed",
+                &.{},
+            );
+            return;
+        }
+        if (!self.hasModel(payload.model_id)) {
+            try self.pushError(
+                env.id,
+                env.session_id,
+                null,
+                oap_types.EmittedErrorCode.model_not_found.text(),
+                "the requested model is not in this session's catalog",
+                &.{.{ .key = "model_id", .value = payload.model_id }},
+            );
+            return;
+        }
+
+        const next_model = try self.allocator.dupe(u8, payload.model_id);
+        const previous = entry.current_model_id;
+        entry.current_model_id = next_model;
+        entry.updated_at_ms = compat.time.nowMillis();
+
+        const id = try self.newUlidString();
+        errdefer self.allocator.free(id);
+        const reply = try self.allocator.dupe(u8, env.id);
+        errdefer self.allocator.free(reply);
+        const scope_id = try self.allocator.dupe(u8, entry.session_id);
+        errdefer self.allocator.free(scope_id);
+        const response_session = try self.allocator.dupe(u8, entry.session_id);
+        errdefer self.allocator.free(response_session);
+        const response_model = try self.allocator.dupe(u8, next_model);
+        errdefer self.allocator.free(response_model);
+        const response_previous = if (previous) |value| try self.allocator.dupe(u8, value) else null;
+        errdefer if (response_previous) |value| self.allocator.free(value);
+        try self.pushEnvelope(.{
+            .id = id,
+            .in_reply_to = reply,
+            .session_id = scope_id,
+            .timestamp_ms = entry.updated_at_ms,
+            .payload = .{ .session_model_switch_response = .{
+                .session_id = response_session,
+                .model_id = response_model,
+                .previous_model_id = response_previous,
+            } },
+        });
+        if (previous) |value| self.allocator.free(value);
+        try self.publishSessionState(entry);
+    }
+
     const StateKind = enum { open, state };
 
     fn emitSessionState(self: *Self, request_id: []const u8, entry: *SessionEntry, kind: StateKind) !void {
@@ -761,6 +993,18 @@ pub const Server = struct {
                 null,
                 oap_types.EmittedErrorCode.model_not_found.text(),
                 "the selected model reference is not a valid provider_id/api@model_id",
+                &.{.{ .key = "model_id", .value = effective_model.? }},
+            );
+            return;
+        }
+
+        if (!self.hasModel(effective_model.?)) {
+            try self.pushError(
+                env.id,
+                env.session_id,
+                null,
+                oap_types.EmittedErrorCode.model_not_found.text(),
+                "the selected model is not in this session's catalog",
                 &.{.{ .key = "model_id", .value = effective_model.? }},
             );
             return;
@@ -1658,6 +1902,81 @@ fn discardPending(server: *Server, allocator: std.mem.Allocator) void {
     }
 }
 
+test "a core model switch changes the session default without a run" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@first" });
+    defer server.deinit();
+    try server.addModel("anthropic/anthropic-messages@second");
+    try openTestSession(&server, allocator, "sess-1");
+
+    try server.handleEnvelope(.{
+        .id = "switch-1",
+        .session_id = "sess-1",
+        .payload = .{ .session_model_switch_request = .{
+            .session_id = "sess-1",
+            .model_id = "anthropic/anthropic-messages@second",
+        } },
+    });
+
+    var response = try nextEnvelope(&server, allocator);
+    defer response.deinit(allocator);
+    try std.testing.expectEqualStrings("switch-1", response.in_reply_to.?);
+    try std.testing.expectEqualStrings("anthropic/anthropic-messages@first", response.payload.session_model_switch_response.previous_model_id.?);
+    try std.testing.expectEqualStrings("anthropic/anthropic-messages@second", response.payload.session_model_switch_response.model_id);
+
+    var update = try nextEnvelope(&server, allocator);
+    defer update.deinit(allocator);
+    try std.testing.expectEqualStrings("anthropic/anthropic-messages@second", update.payload.session_state_updated.current_model_id.?);
+    try std.testing.expect(!server.hasActiveRun());
+
+    try server.handleEnvelope(.{
+        .id = "state-1",
+        .session_id = "sess-1",
+        .payload = .{ .session_state_request = .{ .session_id = "sess-1" } },
+    });
+    var state = try nextEnvelope(&server, allocator);
+    defer state.deinit(allocator);
+    try std.testing.expectEqualStrings("anthropic/anthropic-messages@second", state.payload.session_state_response.current_model_id.?);
+}
+
+test "a core model switch refuses a model outside the catalog" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@first" });
+    defer server.deinit();
+    try openTestSession(&server, allocator, "sess-1");
+    try server.handleEnvelope(.{
+        .id = "switch-1",
+        .session_id = "sess-1",
+        .payload = .{ .session_model_switch_request = .{
+            .session_id = "sess-1",
+            .model_id = "anthropic/anthropic-messages@unknown",
+        } },
+    });
+    var response = try nextEnvelope(&server, allocator);
+    defer response.deinit(allocator);
+    try std.testing.expectEqualStrings("model_not_found", response.payload.error_response.code);
+    try std.testing.expect(server.popOutbound() == null);
+}
+
+test "models list exposes the same catalog used by core switching" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@first" });
+    defer server.deinit();
+    try server.addModel("anthropic/anthropic-messages@second");
+    try openTestSession(&server, allocator, "sess-1");
+    try server.handleEnvelope(.{
+        .id = "models-1",
+        .session_id = "sess-1",
+        .payload = .{ .models_request = .{ .session_id = "sess-1" } },
+    });
+    var response = try nextEnvelope(&server, allocator);
+    defer response.deinit(allocator);
+    try std.testing.expectEqualStrings("models-1", response.in_reply_to.?);
+    try std.testing.expectEqual(@as(usize, 2), response.payload.models_response.models.len);
+    try std.testing.expectEqualStrings("anthropic", response.payload.models_response.models[1].provider_id.?);
+    try std.testing.expect(response.payload.models_response.models[0].default);
+}
+
 test "initialize negotiates the core profile and pins the capability revision" {
     const allocator = std.testing.allocator;
     var server = try Server.init(allocator, .{ .endpoint_version = "test" });
@@ -1811,6 +2130,7 @@ test "a run control is judged against the backend's feature list" {
     var native = try Server.init(allocator, .{ .endpoint_version = "test" });
     defer native.deinit();
     defer discardPending(&native, allocator);
+    try native.addModel("anthropic/anthropic-messages@m");
     try openTestSession(&native, allocator, "sess-1");
     try native.handleEnvelope(.{ .id = "req-1", .session_id = "sess-1", .payload = .{ .message_submit_request = submit } });
 
@@ -2335,6 +2655,7 @@ test "an advertised run control admits and is reported on the run" {
     var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@session-default" });
     defer server.deinit();
     defer discardPending(&server, allocator);
+    try server.addModel("anthropic/anthropic-messages@per-run");
 
     try openTestSession(&server, allocator, "sess-1");
 
@@ -2700,6 +3021,45 @@ test "an undecodable envelope answers with a typed error rather than crashing" {
     var second = try nextEnvelope(&server, allocator);
     defer second.deinit(allocator);
     try std.testing.expectEqualStrings("unsupported_feature", second.payload.error_response.code);
+}
+
+test "an addressable unknown profile receives a correlated profile refusal" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{});
+    defer server.deinit();
+
+    try server.handleLine(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"unknown\",\"type\":\"capabilities.request\",\"id\":\"bad-profile\",\"payload\":{}}",
+    );
+    var reply = try nextEnvelope(&server, allocator);
+    defer reply.deinit(allocator);
+    try std.testing.expectEqualStrings("bad-profile", reply.in_reply_to.?);
+    try std.testing.expectEqualStrings("invalid_request", reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("profile", reply.payload.error_response.detail("feature").?);
+
+    try server.handleLine(
+        "{\"type\":\"capabilities.request\",\"id\":\"missing-profile\",\"payload\":{}}",
+    );
+    var missing_reply = try nextEnvelope(&server, allocator);
+    defer missing_reply.deinit(allocator);
+    try std.testing.expectEqualStrings("missing-profile", missing_reply.in_reply_to.?);
+    try std.testing.expectEqualStrings("profile", missing_reply.payload.error_response.detail("feature").?);
+}
+
+test "unconfigured provider attachment receives a named optional-feature refusal" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{});
+    defer server.deinit();
+
+    try server.handleLine(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"type\":\"session.provider.attach.request\",\"id\":\"attach\",\"payload\":{}}",
+    );
+    var reply = try nextEnvelope(&server, allocator);
+    defer reply.deinit(allocator);
+    try std.testing.expectEqualStrings("attach", reply.in_reply_to.?);
+    try std.testing.expectEqualStrings("unsupported_feature", reply.payload.error_response.code);
+    try std.testing.expectEqualStrings("action.providers.attach", reply.payload.error_response.detail("feature").?);
 }
 
 test "a full conversation drives the endpoint end to end over lines" {

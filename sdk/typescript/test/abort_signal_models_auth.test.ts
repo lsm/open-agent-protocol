@@ -191,7 +191,7 @@ test("createMakaiClient provider.complete rejects with AbortSignal.abort()", asy
   const fixtureScript = path.join(sourceFixturesDir, "execution-server.js");
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-abort-client-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
@@ -218,7 +218,7 @@ test("createMakaiClient agent.stream rejects with AbortSignal.abort()", async ()
   const fixtureScript = path.join(sourceFixturesDir, "execution-server.js");
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-abort-agent-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },

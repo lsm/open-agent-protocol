@@ -1,14 +1,8 @@
-"""The ``auth`` namespace: provider listing and interactive login.
+"""Provider auth listing and interactive login over agent-profile ``+auth``.
 
-The runtime owns credential storage and every OAuth flow. This SDK never reads
-``~/.oapx/auth.json``, never spawns ``oapx auth ...``, and never sees token
-material -- it drives the auth protocol over the same transport as everything
-else (spec §3.7).
-
-A login is a single ``flow_id``-scoped exchange: the SDK sends
-``auth_login_start``, forwards each ``auth_event`` to ``on_event``, answers
-``prompt`` events through ``on_prompt`` with an ``auth_prompt_response``, and
-finishes on ``auth_login_result``.
+The runtime owns credentials. A local OAP login is a flow-id-scoped exchange
+of start, URL/prompt/progress events, prompt replies, and one terminal. The
+older Makai V1 exchange remains available only in explicit legacy mode.
 """
 
 from __future__ import annotations
@@ -75,6 +69,8 @@ class AuthApi:
             MakaiAuthError: the request was rejected, timed out, or the
                 response was malformed.
         """
+        if not self._transport.legacy_wire:
+            return await self._oap_list_providers()
         stream_id = new_ulid()
         envelope = build_stream_envelope("auth_providers_request", stream_id, {})
         context = TimeoutContext(
@@ -127,6 +123,8 @@ class AuthApi:
                 ``kind="provider_error"`` when the provider rejected the
                 login; ``kind="transport_error"`` on timeouts.
         """
+        if not self._transport.legacy_wire:
+            return await self._oap_login(provider_id, handlers)
         effective = handlers or self._default_handlers
         flow_id = new_ulid()
         sequence = 1
@@ -233,6 +231,124 @@ class AuthApi:
                     await self._cancel(flow_id, sequence)
                 raise
 
+    async def _oap_list_providers(self) -> List[ProviderAuthInfo]:
+        from ._oap import AGENT, envelope
+
+        request = envelope(AGENT, "auth.providers.request", {})
+        async with self._transport.route(request_id=request["id"]) as route:
+            await self._transport.send(request)
+            frame = await route.next_frame(self._frame_timeout)
+        if frame.get("type") == "error.response":
+            raise _oap_auth_error(frame)
+        if frame.get("type") != "auth.providers.response":
+            raise MakaiAuthError("expected auth.providers.response", kind="transport_error")
+        providers = _require_payload(frame).get("providers")
+        if not isinstance(providers, list):
+            raise MakaiAuthError("auth.providers.response has no providers array", kind="transport_error")
+        result: List[ProviderAuthInfo] = []
+        for item in providers:
+            if not isinstance(item, dict):
+                raise MakaiAuthError("auth provider is not an object", kind="transport_error")
+            status = item.get("auth_status", "unknown")
+            if status not in _VALID_AUTH_STATUSES:
+                status = "unknown"
+            result.append(ProviderAuthInfo(
+                id=str(item.get("id", "")), name=str(item.get("name", "")),
+                auth_status=cast(AuthStatus, status),
+                last_error=_optional_string_field(item, "last_error"),
+            ))
+        return result
+
+    async def _oap_login(self, provider_id: str, handlers: Optional[AuthFlowHandlers]) -> None:
+        from ._oap import AGENT, envelope
+
+        if not provider_id:
+            raise MakaiAuthError("login requires a provider id", kind="provider_error", code="invalid_request")
+        effective = handlers or self._default_handlers
+        start = envelope(AGENT, "auth.login.start.request", {"provider_id": provider_id})
+        flow_id: Optional[str] = None
+        settled = False
+        expected_sequence = 1
+        cancelled_locally = False
+        async with self._transport.route(request_id=start["id"]) as flow:
+            try:
+                await self._transport.send(start)
+                response = await flow.next_frame(self._frame_timeout)
+                if response.get("type") == "error.response":
+                    raise _oap_auth_error(response)
+                if response.get("type") != "auth.login.start.response":
+                    raise MakaiAuthError("expected auth.login.start.response", kind="transport_error")
+                flow_id = _require_payload(response).get("flow_id")
+                if not isinstance(flow_id, str) or not flow_id:
+                    raise MakaiAuthError("auth login start omitted flow_id", kind="transport_error")
+
+                while True:
+                    frame = await flow.next_frame(self._frame_timeout)
+                    kind = frame.get("type")
+                    if kind == "error.response":
+                        raise _oap_auth_error(frame)
+                    if kind not in ("auth.login.event", "auth.login.completed"):
+                        raise MakaiAuthError(f"unexpected auth flow envelope: {kind}", kind="transport_error")
+                    sequence = frame.get("sequence")
+                    if not isinstance(sequence, int) or sequence != expected_sequence:
+                        raise MakaiAuthError("auth flow sequence gap", kind="transport_error", code="protocol_violation")
+                    expected_sequence += 1
+                    payload = _require_payload(frame)
+                    if payload.get("flow_id") != flow_id or payload.get("provider_id") != provider_id:
+                        raise MakaiAuthError("auth flow identity changed", kind="transport_error", code="protocol_violation")
+
+                    if kind == "auth.login.completed":
+                        settled = True
+                        status = payload.get("status")
+                        if status == "success":
+                            await self._emit(effective, AuthSuccessEvent(flow_id=flow_id, provider_id=provider_id))
+                            return
+                        raw_error = payload.get("error")
+                        error = raw_error if isinstance(raw_error, dict) else {}
+                        message = error.get("message") or ("auth login cancelled" if status == "cancelled" else "auth login failed")
+                        if cancelled_locally and status == "cancelled":
+                            message = "auth login cancelled: no on_prompt handler is configured"
+                        raise MakaiAuthError(str(message), kind="cancelled" if status == "cancelled" else "provider_error",
+                                             code=error.get("code") if isinstance(error.get("code"), str) else None)
+
+                    event_kind = payload.get("kind")
+                    if event_kind == "url":
+                        event: AuthEvent = AuthUrlEvent(flow_id=flow_id, provider_id=provider_id,
+                            url=str(payload.get("url", "")), instructions=_optional_string_field(payload, "instructions"))
+                    elif event_kind == "progress":
+                        event = AuthProgressEvent(flow_id=flow_id, provider_id=provider_id,
+                                                  message=str(payload.get("message", "")))
+                    elif event_kind == "prompt":
+                        event = AuthPromptEvent(flow_id=flow_id, provider_id=provider_id,
+                            prompt_id=str(payload.get("prompt_id", "")), message=str(payload.get("message", "")),
+                            allow_empty=payload.get("allow_empty") is True)
+                    else:
+                        raise MakaiAuthError("unknown OAP auth event kind", kind="transport_error")
+                    await self._emit(effective, event)
+                    if isinstance(event, AuthPromptEvent):
+                        if effective is None or effective.on_prompt is None:
+                            cancelled_locally = True
+                            await self._transport.send_best_effort(envelope(
+                                AGENT, "auth.login.cancel.request", {"flow_id": flow_id}))
+                            continue
+                        answer = await self._ask(effective, event)
+                        if len(answer) > 4096 or (not answer and not event.allow_empty):
+                            raise MakaiAuthError("auth prompt answer violates endpoint limits", kind="provider_error", code="invalid_request")
+                        reply = envelope(AGENT, "auth.login.reply.request", {
+                            "flow_id": flow_id, "prompt_id": event.prompt_id, "answer": answer})
+                        async with self._transport.route(request_id=reply["id"]) as answer_route:
+                            await self._transport.send(reply)
+                            acknowledgement = await answer_route.next_frame(self._frame_timeout)
+                        if acknowledgement.get("type") == "error.response":
+                            raise _oap_auth_error(acknowledgement)
+                        if acknowledgement.get("type") != "auth.login.reply.response" or not _require_payload(acknowledgement).get("accepted"):
+                            raise MakaiAuthError("auth prompt answer was not accepted", kind="provider_error", code="invalid_request")
+            except BaseException:
+                if flow_id and not settled:
+                    await self._transport.send_best_effort(envelope(
+                        AGENT, "auth.login.cancel.request", {"flow_id": flow_id}))
+                raise
+
     async def _ask(self, handlers: AuthFlowHandlers, event: AuthPromptEvent) -> str:
         assert handlers.on_prompt is not None
         try:
@@ -300,6 +416,20 @@ def flatten_auth_event(payload: Mapping[str, Any]) -> AuthEvent:
         if isinstance(value, dict):
             return _normalize(variant, value)
     raise MakaiAuthError(f"unknown auth_event variant: {dict(payload)!r}", kind="unknown")
+
+
+def _oap_auth_error(frame: Mapping[str, Any]) -> MakaiAuthError:
+    payload = frame.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    detail = payload.get("error")
+    if not isinstance(detail, dict):
+        detail = payload
+    code = detail.get("code")
+    return MakaiAuthError(
+        str(detail.get("message") or "OAP auth request failed"),
+        kind="provider_error", code=code if isinstance(code, str) else None,
+    )
 
 
 def _normalize(variant: str, data: Mapping[str, Any]) -> AuthEvent:

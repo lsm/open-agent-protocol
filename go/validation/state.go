@@ -108,8 +108,10 @@ type sessionTrack struct {
 
 	mutated bool
 
-	attached      map[string]protocol.ToolSourceDescriptor
-	attachedOrder []string
+	attached           map[string]protocol.ToolSourceDescriptor
+	attachedOrder      []string
+	attachedProviders  map[string]protocol.ProviderAttachment
+	switchObservations map[protocol.EnvelopeID]*switchObservation
 
 	toolCatalog *sessionCatalog
 
@@ -173,6 +175,7 @@ type state struct {
 	pendingResolves map[protocol.EnvelopeID]*pendingResolve
 
 	pendingModels map[protocol.EnvelopeID]*pendingModelsQuery
+	authFlows     map[protocol.AuthFlowID]*authFlow
 
 	tolerant bool
 
@@ -180,7 +183,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -273,6 +276,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.checkSelectionModes(i, line, e, p)
 		s.checkQueueLimits(i, line, e, p)
 		s.checkAttachModes(i, line, e, p)
+		s.checkProviderAttachModes(i, line, e, p)
 		s.checkDescriptorSources(i, line, e, p)
 		s.checkCatalogAdvertisement(i, line, e, outgoing)
 		s.checkQueueAdvertisement(i, line, e, outgoing)
@@ -303,6 +307,28 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		_ = e.DecodePayload(&p)
 		s.checkScope(i, line, e, p.SessionID, "")
 		s.modelsResponse(i, line, e, p)
+	case protocol.TypeAuthLoginStartResponse:
+		s.authStartResponse(i, line, e)
+	case protocol.TypeAuthLoginEvent:
+		s.authEvent(i, line, e)
+	case protocol.TypeAuthLoginReplyRequest:
+		s.authReplyRequest(i, line, e)
+	case protocol.TypeAuthLoginReplyResponse:
+		s.authReplyResponse(i, line, e)
+	case protocol.TypeAuthLoginCancelRequest:
+		s.authCancelRequest(i, line, e)
+	case protocol.TypeAuthLoginCancelResponse:
+		s.authCancelResponse(i, line, e)
+	case protocol.TypeAuthLoginCompleted:
+		s.authCompleted(i, line, e)
+	case protocol.TypeSessionModelSwitchRequest:
+		s.modelSwitchRequest(i, line, e)
+	case protocol.TypeSessionModelSwitchResponse:
+		s.modelSwitchResponse(i, line, e)
+	case protocol.TypeSessionProviderAttachRequest:
+		s.providerAttachRequest(i, line, e)
+	case protocol.TypeSessionProviderAttachResponse:
+		s.providerAttachResponse(i, line, e)
 	case protocol.TypeSessionOpenResponse:
 		var p protocol.SessionOpenResponse
 		_ = e.DecodePayload(&p)
@@ -371,6 +397,9 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 			s.sessions[p.SessionID] = st
 		}
 		s.applyStateDocument(i, line, e, p, st)
+		if e.Type == protocol.TypeSessionStateUpdated {
+			s.observeSwitchState(st, p.CurrentModelID)
+		}
 
 		if st.guardDefault && p.CurrentModelID != st.expectedDefault {
 			s.addExpected(CodeUnappliedControl, i, line, e, "/payload/current_model_id", "a per_run model selection moved the session default", st.expectedDefault, p.CurrentModelID)
@@ -450,6 +479,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.settleToolSourceRefusal(i, line, e)
 		s.settleModelsRefusal(i, line, e)
 		s.settleSubscribeRefusal(i, line, e)
+		s.settleModelControlRefusal(i, line, e)
 	case protocol.TypeRunCancelResponse:
 		var p protocol.RunCancelResponse
 		_ = e.DecodePayload(&p)
@@ -550,7 +580,7 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	}
 	req.responded = true
 
-	if e.Type != protocol.TypeErrorResponse && req.typ != protocol.TypeProtocolInitializeRequest && req.typ != protocol.TypeCapabilitiesRequest && req.capabilityRevision != "" && string(e.CapabilityRevision) != req.capabilityRevision {
+	if e.Type != protocol.TypeErrorResponse && req.typ != protocol.TypeProtocolInitializeRequest && req.typ != protocol.TypeCapabilitiesRequest && !strings.HasPrefix(string(req.typ), "auth.") && req.capabilityRevision != "" && string(e.CapabilityRevision) != req.capabilityRevision {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "successful response must repeat the request capability revision", req.capabilityRevision, string(e.CapabilityRevision), string(e.InReplyTo))
 	}
 	if e.Type == protocol.TypeErrorResponse {
@@ -632,6 +662,14 @@ func requestScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		var p protocol.SessionStateRequest
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
+	case protocol.TypeSessionModelSwitchRequest:
+		var p protocol.SessionModelSwitchRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeSessionProviderAttachRequest:
+		var p protocol.SessionProviderAttachRequest
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
 	case protocol.TypeModelsRequest:
 		var p protocol.ModelsRequest
 		_ = e.DecodePayload(&p)
@@ -680,6 +718,14 @@ func responseScope(e protocol.Envelope) (protocol.SessionID, protocol.RunID) {
 		return p.SessionID, p.RunID
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		var p protocol.SessionState
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeSessionModelSwitchResponse:
+		var p protocol.SessionModelSwitchResponse
+		_ = e.DecodePayload(&p)
+		return p.SessionID, ""
+	case protocol.TypeSessionProviderAttachResponse:
+		var p protocol.SessionProviderAttachResponse
 		_ = e.DecodePayload(&p)
 		return p.SessionID, ""
 	case protocol.TypeModelsResponse:
@@ -1412,6 +1458,8 @@ func (s *state) featureKeys(i, line int, e protocol.Envelope, keys []string) {
 }
 func (s *state) close(index int) {
 	s.closeQueue()
+	s.closeSwitchObservations()
+	s.closeAuthFlows()
 	for _, rec := range s.recoveries {
 		if rec.gap && !rec.stateSeen {
 			e := protocol.Envelope{Type: protocol.TypeSessionStateResponse, SessionID: rec.session}

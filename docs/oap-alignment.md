@@ -1,4 +1,21 @@
-# Makai OAP Alignment Ledger
+# Makai OAP Alignment Ledger (Historical)
+
+This ledger records the earlier Makai-to-OAP adapter and the first native
+`makai --oap` slice. Its claims about the *current* endpoint, SDK defaults,
+capability list, and command name are historical, not an implementation guide.
+The current first-party host is `oapx serve agent,provider --stdio`: one
+JSONL stdio process routes by OAP `profile` and exposes independent agent and
+model-provider cores. The agent default can be changed mid-session through
+`session.model.switch`; `+models` and local-stdio `+auth` are implemented.
+Agent inference now traverses the OAP model-provider-core interface even when
+both profiles are co-hosted. See Decisions
+[0027](../decisions/0027-composed-stdio-profiles.md),
+[0028](../decisions/0028-live-model-and-provider-control.md), and
+[0029](../decisions/0029-authentication-over-agent-control.md) for the current
+contract. Dynamic provider attachment remains optional and remote provider
+transport is follow-up work. The current OAP agent endpoint does not yet
+advertise `+control-tools`; SDKs explicitly reject client-executed tools on
+their default OAP path and retain the legacy wire only by explicit opt-in.
 
 Status: deviations ledger and convergence contract between makai's agent-protocol
 semantics and the Open Agent Protocol (OAP) agent-control core. This is the document

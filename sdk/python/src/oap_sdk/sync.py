@@ -200,10 +200,22 @@ class SyncAgentApi:
         self._client = client
         self.models = SyncModelsApi(loop, client)
 
+    def open_session(self, session_id: Optional[str] = None) -> Mapping[str, Any]:
+        return self._loop.run(self._client.agent.open_session(session_id))
+
+    def available_models(self, session_id: str) -> Mapping[str, Any]:
+        return self._loop.run(self._client.agent.available_models(session_id))
+
+    def switch_model(self, session_id: str, model_ref: str) -> Mapping[str, Any]:
+        return self._loop.run(self._client.agent.switch_model(session_id, model_ref))
+
+    def attach_provider(self, session_id: str, provider: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._loop.run(self._client.agent.attach_provider(session_id, provider))
+
     def run(
         self,
         *,
-        model_ref: str,
+        model_ref: Optional[str] = None,
         messages: Sequence[ChatMessage],
         tools: Optional[Sequence[ToolDefinition]] = None,
         options: Optional[RunOptions] = None,
@@ -217,7 +229,7 @@ class SyncAgentApi:
     def stream(
         self,
         *,
-        model_ref: str,
+        model_ref: Optional[str] = None,
         messages: Sequence[ChatMessage],
         tools: Optional[Sequence[ToolDefinition]] = None,
         options: Optional[RunOptions] = None,
@@ -285,6 +297,7 @@ def connect_sync(
     response_timeout: Optional[float] = None,
     frame_timeout: Optional[float] = None,
     handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT_S,
+    legacy_wire: Optional[bool] = None,
 ) -> SyncMakaiClient:
     """Start a runtime and return a blocking client.
 
@@ -313,6 +326,7 @@ def connect_sync(
                 response_timeout=response_timeout,
                 frame_timeout=frame_timeout,
                 handshake_timeout=handshake_timeout,
+                legacy_wire=legacy_wire,
             )._open()
         )
     except BaseException:

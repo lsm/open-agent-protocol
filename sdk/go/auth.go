@@ -101,6 +101,9 @@ type AuthService struct {
 // ListProviders returns every provider the runtime can authenticate, with its
 // current credential state.
 func (s *AuthService) ListProviders(ctx context.Context) ([]ProviderAuthInfo, error) {
+	if s.transport != nil && !s.transport.legacyWire {
+		return s.oapListProviders(ctx)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, &AuthError{Kind: AuthKindCancelled, Message: "auth provider listing aborted", err: err}
 	}
@@ -147,6 +150,9 @@ func (s *AuthService) ListProviders(ctx context.Context) ([]ProviderAuthInfo, er
 // and [AuthKindTransportError] for framing and timeout failures. Cancelling
 // ctx cancels the flow with the runtime before returning.
 func (s *AuthService) Login(ctx context.Context, providerID string, handlers LoginHandlers) error {
+	if s.transport != nil && !s.transport.legacyWire {
+		return s.oapLogin(ctx, providerID, handlers)
+	}
 	if providerID == "" {
 		return &AuthError{Kind: AuthKindUnknown, Message: "login requires a provider id"}
 	}

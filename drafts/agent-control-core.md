@@ -154,30 +154,25 @@ boundary, which is where an inference call belongs. The model provider is
 one of OAP's own layers, named as such in this repository's README beside the
 control layer, the agent loop and the tool executor, and that README says those
 layers may live in one process. An endpoint that speaks to a vendor API
-directly — normalizing the OpenAI and Anthropic request and streaming shapes
-behind one agent loop, with no third-party harness in between — is an ordinary
-OAP endpoint. It has a session, runs and tools like any other, and how it
-obtains its tokens is below this boundary and nobody else's business.
+directly is an ordinary OAP endpoint: how it obtains tokens is below this
+boundary. The first-party `oapx` agent loop makes a stronger architectural
+choice: it speaks `model-provider-core` downward, whether the provider
+service is co-hosted or operator-configured on another connection. The
+provider service, not the agent loop, owns OpenAI- and Anthropic-shaped
+request differences.
 
 What is excluded is exposing that inference call *through* OAP to the control
 layer as its own operation. The distinction matters because the two get
 confused: a provider layer under an endpoint is in scope by the README's own
 model, and a `provider.complete` envelope on the control wire is not.
 
-The reason is what OAP is for. Eight harnesses disagree about terminals,
-sequences, cancellation and admission, and this profile exists to make those
-comparable. They do not disagree about inference: the vendor wire formats
-already settled it, and this repository models that separately and
-deliberately in `provider/`, as compatibility surfaces rather than protocol.
-A profile that grew to cover inference would be re-normalizing something
-already normalized, and would have to answer what run identity means for an
-execution with no agent semantics — a question with no good answer.
-
-The practical consequence, stated plainly so nobody discovers it late: **a
-harness whose wire exposes direct provider access to its clients cannot move
-that surface onto OAP.** It runs OAP for the agent boundary and keeps its own
-surface, or a vendor's, for direct inference. That is a boundary rather than a
-shortfall, and it is deliberate.
+The two profiles answer different questions. Agent control normalizes
+sessions, runs, admission, and tools. Model-provider core normalizes direct
+inference and model discovery, without assigning that call a session or run.
+A harness that exposes both may expose both OAP profiles, including on one
+stdio connection under
+[Decision 0027](../decisions/0027-composed-stdio-profiles.md). Their
+vocabularies remain distinct even when one process serves them together.
 
 It constrains what the wire exposes and not what an endpoint is built on. An
 implementer free to drop their passthrough surface, or one who never had it,
@@ -332,6 +327,7 @@ Kinds:
 | query | `capabilities.request` | `capabilities.response` | Return revisioned effective capabilities and degradation records for control-layer gating. |
 | command | `session.open.request` | `session.open.response` | Open a new or existing session and return its stable `session_id`. |
 | query | `session.state.request` | `session.state.response` | Return canonical state for reconnect and recovery. |
+| command | `session.model.switch.request` | `session.model.switch.response` | Persistently change this session's default model for future run starts. |
 | command | `session.message.submit.request` | `session.message.submit.response` | Accept a user-visible message submission and report admission. |
 | command | `run.cancel.request` | `run.cancel.response`, or `error.response` if declared unavailable | Accept cancellation or explicitly reject it with a typed unsupported-feature error. |
 | event | `session.state.updated` | not a response | Emit when canonical session state changes. |
@@ -487,9 +483,25 @@ The core separates live stream events from canonical state.
 - `updated_at_ms`
 - `metadata`
 
-`session.state.updated` broadcasts the same shape when status changes. Core
+`session.state.updated` broadcasts the same shape when canonical state changes. Core
 session statuses are `idle`, `queued`, `running`, `waiting_for_input`, `closed`,
 and `error`.
+
+`session.model.switch.request` is core and changes `current_model_id` for this
+session before its correlated response. It does not retarget a running run.
+`session.state.updated` broadcasts the new canonical model even if the
+session's status did not change. A later control-free run uses the new default;
+a per-submit `model_id` remains a run override under `run.model_selection`.
+The complete race, queue-promotion, and catalog rules are in
+[Decision 0028](../decisions/0028-live-model-and-provider-control.md).
+
+An endpoint advertising optional `action.providers.attach` in `session_live`
+mode may accept `session.provider.attach.request` while a session exists. Its
+`provider` object names an OAP `model-provider-core` service and provider,
+not a vendor protocol or credential. Acceptance makes models available in
+that session's catalog but does not change `current_model_id`; the control
+layer switches separately. A combined stdio host does not attach its provider
+implicitly.
 
 When persistence is advertised, `transcript.load.request` loads persisted
 messages for initial history, pagination, or reconnect recovery. A response
@@ -634,6 +646,7 @@ Minimum features:
 - `capabilities`
 - `session.state`
 - `session.open`
+- `session.model.switch`
 - `session.message.submit`
 - `session.message.delivery.auto`
 - `run.streaming`
@@ -660,6 +673,7 @@ Common optional core features:
 - `content.image`
 - `action.tools.list`
 - `action.tool_sources.attach`
+- `action.providers.attach`
 - `action.tools.execute`
 - `action.tools.progress`
 - `action.permissions`
@@ -729,12 +743,14 @@ An implementation is core-conformant if it can:
 2. return a revisioned capability descriptor;
 3. open a session;
 4. return canonical session state;
-5. accept a message submit and return `session.message.submit.response`;
-6. stream assistant text through `content.delta`;
-7. emit run status updates for meaningful lifecycle changes;
-8. end every accepted run with one terminal run event;
-9. cancel a running run or report cancellation as unavailable;
-10. return correlated `error.response` envelopes for unsupported commands and
+5. accept a `session.model.switch` to an available model and reflect it in
+   canonical session state, or reject a missing model with `model_not_found`;
+6. accept a message submit and return `session.message.submit.response`;
+7. stream assistant text through `content.delta`;
+8. emit run status updates for meaningful lifecycle changes;
+9. end every accepted run with one terminal run event;
+10. cancel a running run or report cancellation as unavailable;
+11. return correlated `error.response` envelopes for unsupported commands and
     invalid requests.
 
 A core implementation must reject a request carrying a stale

@@ -92,6 +92,7 @@ mod events;
 mod execution;
 mod ids;
 mod models;
+mod oap;
 mod provider;
 mod transport;
 mod types;

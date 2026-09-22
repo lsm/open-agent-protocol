@@ -685,10 +685,10 @@ fn allowedPayloadMembers(tag: std.meta.Tag(types.Payload)) []const []const u8 {
         .provider_credential_grant_response => &.{ "accepted", "credential_ref", "error", "expires_at_ms" },
         .provider_credential_grant_channel => &.{ "channel", "nonce" },
         .inference_create_request => &.{
-            "allow_degraded_features", "credential_ref",   "headers",  "include_snapshot",
-            "max_output_tokens",       "messages",         "metadata", "model_ref",
-            "output_schema",           "reasoning",        "stream",   "temperature",
-            "tool_choice",             "tools",            "top_p",
+            "allow_degraded_features", "credential_ref", "headers",  "include_snapshot",
+            "max_output_tokens",       "messages",       "metadata", "model_ref",
+            "output_schema",           "reasoning",      "stream",   "temperature",
+            "tool_choice",             "tools",          "top_p",
         },
         .inference_create_response => &.{ "accepted", "error", "honoured" },
         .inference_started => &.{ "endpoint", "model_ref", "started_at_ms" },
@@ -950,6 +950,14 @@ fn deserializeCreateRequest(obj: std.json.ObjectMap, allocator: std.mem.Allocato
         if (tools_value != .array) return DecodeError.InvalidField;
         for (tools_value.array.items) |item| {
             if (item != .object) return DecodeError.InvalidField;
+            var fields = item.object.iterator();
+            while (fields.next()) |field| {
+                const key = field.key_ptr.*;
+                if (!std.mem.eql(u8, key, "name") and
+                    !std.mem.eql(u8, key, "description") and
+                    !std.mem.eql(u8, key, "input_schema")) return DecodeError.UnknownField;
+            }
+            if (item.object.get("input_schema") == null) return DecodeError.MissingField;
             const name = try oap_envelope.requiredOwnedString(item.object, "name", allocator);
             errdefer allocator.free(name);
             const description = try oap_envelope.optionalOwnedString(item.object, "description", allocator);
@@ -1521,6 +1529,16 @@ test "a payload member the profile does not define is refused" {
         "\"messages\":[],\"base_url\":\"https://attacker.test\"}}";
     try std.testing.expectError(DecodeError.UnknownField, deserializeEnvelope(create_with_base_url, allocator));
 
+    const tool_missing_schema = head ++
+        "\"type\":\"inference.create.request\",\"id\":\"m\",\"payload\":{\"model_ref\":\"p/ollama@m\"," ++
+        "\"messages\":[],\"tools\":[{\"name\":\"lookup\"}]}}";
+    try std.testing.expectError(DecodeError.MissingField, deserializeEnvelope(tool_missing_schema, allocator));
+
+    const tool_legacy_schema = head ++
+        "\"type\":\"inference.create.request\",\"id\":\"m\",\"payload\":{\"model_ref\":\"p/ollama@m\"," ++
+        "\"messages\":[],\"tools\":[{\"name\":\"lookup\",\"input_schema_json\":{}}]}}";
+    try std.testing.expectError(DecodeError.UnknownField, deserializeEnvelope(tool_legacy_schema, allocator));
+
     const describe_with_extra = head ++
         "\"type\":\"provider.describe.response\",\"id\":\"m\",\"payload\":{\"providers\":[],\"nonsense\":1}}";
     try std.testing.expectError(DecodeError.UnknownField, deserializeEnvelope(describe_with_extra, allocator));
@@ -1702,7 +1720,6 @@ test "all twelve compatibility facts survive a round trip" {
                     .cache_ttl_control = true,
                 },
             }}),
-
         } },
     };
     defer env.deinit(allocator);

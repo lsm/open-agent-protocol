@@ -21,6 +21,9 @@ type ProviderService struct {
 // no usable credentials. Cancelling ctx aborts the call, asks the runtime to
 // abandon the stream, and returns an error wrapping ctx.Err().
 func (s *ProviderService) Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
+	if s.transport != nil && !s.transport.legacyWire {
+		return s.oapComplete(ctx, req)
+	}
 	if err := validateExecutionRequest(req.ModelRef, req.Messages); err != nil {
 		return nil, err
 	}
@@ -91,6 +94,9 @@ func (s *ProviderService) Complete(ctx context.Context, req CompletionRequest) (
 // Stream itself only fails on request validation and on the initial write, so
 // most failures surface from [ProviderStream.Err] after the loop ends.
 func (s *ProviderService) Stream(ctx context.Context, req CompletionRequest) (*ProviderStream, error) {
+	if s.transport != nil && !s.transport.legacyWire {
+		return s.oapStream(ctx, req)
+	}
 	if err := validateExecutionRequest(req.ModelRef, req.Messages); err != nil {
 		return nil, err
 	}
@@ -122,6 +128,11 @@ func (s *ProviderService) Stream(ctx context.Context, req CompletionRequest) (*P
 //
 // It is not safe for concurrent use: drive it from one goroutine.
 type ProviderStream struct {
+	oap              bool
+	oapModelRef      string
+	oapInferenceID   string
+	oapPartKinds     map[int]string
+	oapResponse      *CompletionResponse
 	ctx              context.Context
 	transport        *transport
 	sub              *subscription
@@ -140,6 +151,9 @@ type ProviderStream struct {
 // It returns false at the end of the stream and on failure; check
 // [ProviderStream.Err] to tell the two apart.
 func (s *ProviderStream) Next() bool {
+	if s.oap {
+		return s.oapNext()
+	}
 	if s.done {
 		return false
 	}
@@ -192,6 +206,20 @@ func (s *ProviderStream) Err() error { return s.err }
 // completion, asks the runtime to abandon it. Close is idempotent and returns
 // the same error as [ProviderStream.Err].
 func (s *ProviderStream) Close() error {
+	if s.oap {
+		if s.sub == nil {
+			return s.err
+		}
+		if !s.finished && s.oapInferenceID != "" {
+			f := oapFrame(oapProvider, "inference.cancel.request", map[string]any{"reason": "caller_closed"})
+			f.InferenceID = s.oapInferenceID
+			s.transport.sendBestEffort(f)
+		}
+		s.sub.close()
+		s.sub = nil
+		s.done = true
+		return s.err
+	}
 	if s.sub == nil {
 		return s.err
 	}

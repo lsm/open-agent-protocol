@@ -19,9 +19,9 @@ additions when they are parts of one shape.
         |  model-provider-core              |  tool execution
         |  (decision 0016, proposed)        |  (sources, 0008; control-owned, 0011)
         v                                   v
-  model provider                       tool executor
-  OpenAI-compatible,                   process, local, remote,
-  Anthropic-compatible                 hosted, MCP, control-layer
+  OAP model provider                   tool executor
+  (vendor APIs behind it)              process, local, remote,
+                                      hosted, MCP, control-layer
 ```
 
 An agent loop sits between three boundaries. Above it, a client drives
@@ -34,14 +34,14 @@ The layers are logical, not deployment sides. All of this can be one process,
 or a client in a browser, a loop on a server, tools on a third machine, and a
 model behind a vendor's API.
 
-**How the loop is built is not the protocol's business, and both ways are
-ordinary.** A loop may wrap a vendor SDK and expose `agent-control-core` above
-it; that is what most pinned harnesses do. Or it may speak to inference
-endpoints directly and expose the same profile; that is what Makai does. The
-upper boundary is identical. The lower one is where they differ, and
-`model-provider-core` is what makes it a boundary rather than an
-implementation detail. It is specified in
-[the model-provider-core draft](model-provider-core.md).
+**How every OAP agent implementation builds its loop is not the protocol's
+business.** A loop may wrap a vendor SDK and expose `agent-control-core` above
+it; most pinned harnesses do. `oapx` uses a separate provider layer: its agent
+loop speaks `model-provider-core` to local or operator-configured provider
+services and does not speak OpenAI or Anthropic wire formats directly. The
+provider layer owns those vendor differences. The lower boundary is specified
+in [the model-provider-core draft](model-provider-core.md). The remote HTTP
+binding for it remains follow-up work.
 
 ## What a client may choose
 
@@ -59,20 +59,27 @@ For **tools**, that story is complete:
 | What exists in this session | `action.tools.list` | 0008 |
 | Which tools this run may use | `submit.tool_choice` | 0005 |
 
-For **providers**, it is a third of that:
+For **providers**, the current design is:
 
 | Concern | Surface | Status |
 | --- | --- | --- |
-| Where inference comes from | `session.open.request.providers` — id, wire, kind, endpoint, environment | proposed in 0017 |
-| What exists | `models.list`, with `provider_id` as a bare label | 0006; descriptors proposed in 0014 |
-| Which model this run uses | `submit.model_id` | 0005 |
+| Direct inference and discovery | `model-provider-core` | 0016 |
+| Make an OAP provider service available to a session | `session.provider.attach` with `provider_id` and optional operator service id | 0028, optional |
+| What the agent session can use | `models.request`/`models.response`, with provider descriptors | 0006, 0014 |
+| Change the session default now | `session.model.switch` | 0028, core |
+| Override one run | `session.message.submit.request.model_id` | 0005 |
 
-That row is the one a client notices, and until 0017 it was empty. A client can
-say "use this MCP server over stdio" and could not say "use this provider" —
-and "use this SDK with that provider" is the same request seen from the loop's
-side.
+An attached provider becomes available but is not implicitly selected. The
+client may then switch the session's model to one it offers. In a combined
+`oapx serve agent,provider --stdio` process, the two profile doors share one
+pipe but the attachment remains explicit; co-location alone never changes a
+session. See [Decision 0027](../decisions/0027-composed-stdio-profiles.md).
 
-## The shape the missing row should take
+## Historical open-only attachment analysis
+
+The analysis below predates Decision 0028. Its `session.open.request.providers`
+shape was proposed in Decision 0017 but never graduated into the schema; the
+current live attachment has no caller-supplied vendor wire or destination.
 
 [Decision 0017](../decisions/0017-provider-provisioning.md) now writes this
 row. What follows is the frame it was written against, kept because the

@@ -24,6 +24,7 @@ pub struct ClientBuilder {
     command: Option<PathBuf>,
     resolver: BinaryResolver,
     args: Vec<String>,
+    legacy_wire: bool,
     cwd: Option<PathBuf>,
     env: BTreeMap<String, String>,
     env_clear: bool,
@@ -40,11 +41,16 @@ impl Default for ClientBuilder {
         Self {
             command: None,
             resolver: BinaryResolver::default(),
-            args: vec!["--stdio".to_owned()],
+            args: vec![
+                "serve".to_owned(),
+                "agent,provider".to_owned(),
+                "--stdio".to_owned(),
+            ],
+            legacy_wire: false,
             cwd: None,
             env: BTreeMap::new(),
             env_clear: false,
-            expected_protocol_version: "1".to_owned(),
+            expected_protocol_version: "0.1".to_owned(),
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             response_timeout: DEFAULT_RESPONSE_TIMEOUT,
             frame_timeout: DEFAULT_FRAME_TIMEOUT,
@@ -107,13 +113,22 @@ impl ClientBuilder {
         self
     }
 
-    /// Replaces the runtime's arguments. Defaults to `["--stdio"]`.
+    /// Replaces the runtime's arguments. Defaults to `serve agent,provider --stdio`.
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
         self.args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Explicitly opts into the pre-OAP Makai stdio wire for compatibility.
+    /// The default speaks OAP and never falls back automatically.
+    pub fn legacy_wire(mut self) -> Self {
+        self.legacy_wire = true;
+        self.args = vec!["--stdio".to_owned()];
+        self.expected_protocol_version = "1".to_owned();
         self
     }
 
@@ -136,7 +151,7 @@ impl ClientBuilder {
         self
     }
 
-    /// The protocol version the `ready` frame must advertise. Defaults to `"1"`.
+    /// The OAP protocol version negotiated at initialization. Defaults to `"0.1"`.
     pub fn expected_protocol_version(mut self, version: impl Into<String>) -> Self {
         self.expected_protocol_version = version.into();
         self
@@ -183,6 +198,7 @@ impl ClientBuilder {
         let transport = Transport::connect(TransportOptions {
             command,
             args: self.args.clone(),
+            legacy_wire: self.legacy_wire,
             cwd: self.cwd.clone(),
             env: self
                 .env

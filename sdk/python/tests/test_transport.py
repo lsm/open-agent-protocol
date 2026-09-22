@@ -40,6 +40,23 @@ async def test_handshake_rejects_garbage_line(fake: FakeServerFactory) -> None:
         await fake.transport({"handshake": "garbage"})
 
 
+async def test_malformed_stdout_does_not_log_sensitive_bytes(caplog: Any) -> None:
+    sensitive = "oauth-code-that-must-not-appear"
+    program = (
+        "import sys; print('not-json ' + " + repr(sensitive) + ", flush=True); "
+        "sys.stdin.readline()"
+    )
+    transport = StdioTransport(
+        command=sys.executable, args=["-u", "-c", program], legacy_wire=False
+    )
+    with caplog.at_level("WARNING", logger="oap_sdk.transport"):
+        with pytest.raises(MakaiStreamError) as failure:
+            await transport.connect()
+    assert sensitive not in str(failure.value)
+    assert sensitive not in caplog.text
+    assert "bytes=" in caplog.text
+
+
 async def test_handshake_times_out_on_silent_server(fake: FakeServerFactory) -> None:
     with pytest.raises(MakaiStreamError, match="handshake timed out"):
         await fake.transport({"handshake": "silent"}, handshake_timeout=0.3)

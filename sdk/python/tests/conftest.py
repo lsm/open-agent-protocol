@@ -22,6 +22,10 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
 
+# The historical fixture speaks Makai V1. Opt in explicitly; production
+# clients default to the combined OAP profile connection.
+os.environ["OAP_SDK_LEGACY_WIRE"] = "1"
+
 from oap_sdk.client import AuthOptions, MakaiClient
 from oap_sdk.transport import StdioTransport
 

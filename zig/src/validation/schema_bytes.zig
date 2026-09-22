@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const action = @embedFile("schema_action");
+pub const auth = @embedFile("schema_auth");
 pub const capabilities = @embedFile("schema_capabilities");
 pub const common = @embedFile("schema_common");
 pub const envelope = @embedFile("schema_envelope");
@@ -20,6 +21,7 @@ pub const Entry = struct {
 
 pub const all = [_]Entry{
     .{ .name = "action.schema.json", .bytes = action },
+    .{ .name = "auth.schema.json", .bytes = auth },
     .{ .name = "capabilities.schema.json", .bytes = capabilities },
     .{ .name = "common.schema.json", .bytes = common },
     .{ .name = "envelope.schema.json", .bytes = envelope },
@@ -34,7 +36,7 @@ pub const all = [_]Entry{
 };
 
 test "every bundled schema is embedded, non-empty and parses" {
-    try std.testing.expectEqual(@as(usize, 12), all.len);
+    try std.testing.expectEqual(@as(usize, 13), all.len);
     for (all) |entry| {
         try std.testing.expect(entry.bytes.len > 0);
         var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, entry.bytes, .{});

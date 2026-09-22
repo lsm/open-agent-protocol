@@ -245,6 +245,24 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 try w.endArray();
             }
         },
+        .models_request => |value| {
+            try w.writeStringField("session_id", value.session_id);
+        },
+        .models_response => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            if (value.current_model_id) |model_id| try w.writeStringField("current_model_id", model_id);
+            try w.writeKey("models");
+            try w.beginArray();
+            for (value.models) |model| {
+                try w.beginObject();
+                try w.writeStringField("id", model.id);
+                if (model.display_name) |name| try w.writeStringField("display_name", name);
+                if (model.provider_id) |provider_id| try w.writeStringField("provider_id", provider_id);
+                if (model.default) try w.writeBoolField("default", true);
+                try w.endObject();
+            }
+            try w.endArray();
+        },
         .session_open_request => |value| {
             if (value.session_id) |session_id| try w.writeStringField("session_id", session_id);
         },
@@ -253,6 +271,18 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
         },
         .session_open_response, .session_state_response, .session_state_updated => |value| {
             try serializeSessionState(w, value);
+        },
+        .session_model_switch_request => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("model_id", value.model_id);
+            if (value.allow_degraded_features.len > 0) {
+                try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
+            }
+        },
+        .session_model_switch_response => |value| {
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("model_id", value.model_id);
+            if (value.previous_model_id) |previous| try w.writeStringField("previous_model_id", previous);
         },
         .message_submit_request => |value| {
             try w.writeStringField("session_id", value.session_id);
@@ -724,6 +754,48 @@ fn deserializePayload(
     if (std.mem.eql(u8, type_str, "capabilities.response")) {
         return .{ .capabilities_response = try deserializeCapabilities(obj, allocator) };
     }
+    if (std.mem.eql(u8, type_str, "models.request")) {
+        return .{ .models_request = .{
+            .session_id = try requiredOwnedString(obj, "session_id", allocator),
+        } };
+    }
+    if (std.mem.eql(u8, type_str, "models.response")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const current_model_id = try optionalOwnedString(obj, "current_model_id", allocator);
+        errdefer if (current_model_id) |value| allocator.free(value);
+        const models_value = obj.get("models") orelse return DecodeError.MissingField;
+        if (models_value != .array) return DecodeError.InvalidField;
+        const models = try allocator.alloc(oap_types.ModelDescriptor, models_value.array.items.len);
+        var built: usize = 0;
+        errdefer {
+            for (models[0..built]) |*model| model.deinit(allocator);
+            allocator.free(models);
+        }
+        for (models_value.array.items, 0..) |item, index| {
+            if (item != .object) return DecodeError.InvalidField;
+            const id = try requiredOwnedString(item.object, "id", allocator);
+            errdefer allocator.free(id);
+            const display_name = try optionalOwnedString(item.object, "display_name", allocator);
+            errdefer if (display_name) |value| allocator.free(value);
+            const provider_id = try optionalOwnedString(item.object, "provider_id", allocator);
+            errdefer if (provider_id) |value| allocator.free(value);
+            const default_value = item.object.get("default");
+            if (default_value != null and default_value.? != .bool) return DecodeError.InvalidField;
+            models[index] = .{
+                .id = id,
+                .display_name = display_name,
+                .provider_id = provider_id,
+                .default = if (default_value) |value| value.bool else false,
+            };
+            built = index + 1;
+        }
+        return .{ .models_response = .{
+            .session_id = session_id,
+            .current_model_id = current_model_id,
+            .models = models,
+        } };
+    }
     if (std.mem.eql(u8, type_str, "session.open.request")) {
         return .{ .session_open_request = .{
             .session_id = try optionalOwnedString(obj, "session_id", allocator),
@@ -742,6 +814,32 @@ fn deserializePayload(
     }
     if (std.mem.eql(u8, type_str, "session.state.updated")) {
         return .{ .session_state_updated = try deserializeSessionState(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "session.model.switch.request")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const model_id = try requiredOwnedString(obj, "model_id", allocator);
+        errdefer allocator.free(model_id);
+        const allow_degraded = if (obj.get("allow_degraded_features") != null)
+            try deserializeStringArray(obj, "allow_degraded_features", allocator)
+        else
+            &.{};
+        return .{ .session_model_switch_request = .{
+            .session_id = session_id,
+            .model_id = model_id,
+            .allow_degraded_features = allow_degraded,
+        } };
+    }
+    if (std.mem.eql(u8, type_str, "session.model.switch.response")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const model_id = try requiredOwnedString(obj, "model_id", allocator);
+        errdefer allocator.free(model_id);
+        return .{ .session_model_switch_response = .{
+            .session_id = session_id,
+            .model_id = model_id,
+            .previous_model_id = try optionalOwnedString(obj, "previous_model_id", allocator),
+        } };
     }
     if (std.mem.eql(u8, type_str, "session.message.submit.request")) {
         return .{ .message_submit_request = try deserializeSubmitRequest(obj, allocator) };

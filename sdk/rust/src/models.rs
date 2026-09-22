@@ -218,7 +218,97 @@ impl ModelsApi {
                 ));
             }
         }
-        self.dispatch(&request).await
+        if self.transport.is_oap() {
+            self.list_oap(&request).await
+        } else {
+            self.dispatch(&request).await
+        }
+    }
+
+    async fn list_oap(&self, request: &ListModelsRequest) -> Result<ListModelsResponse> {
+        let frame = self
+            .transport
+            .request_oap(
+                crate::wire::PROVIDER_PROFILE,
+                "provider.models.list.request",
+                match &request.provider_id {
+                    Some(provider_id) => json!({ "provider_id": provider_id }),
+                    None => json!({}),
+                },
+                None,
+                self.response_timeout,
+            )
+            .await?;
+        if frame.kind != "provider.models.list.response" {
+            return Err(Error::protocol(
+                "unexpected OAP models response",
+                Some("malformed_response"),
+            ));
+        }
+        let entries = frame
+            .payload()
+            .get("models")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                Error::protocol(
+                    "OAP models response has no models",
+                    Some("malformed_response"),
+                )
+            })?;
+        let mut models = Vec::new();
+        for entry in entries {
+            let mut mapped = entry.clone();
+            let Some(obj) = mapped.as_object_mut() else {
+                return Err(Error::protocol(
+                    "OAP model entry is not an object",
+                    Some("malformed_response"),
+                ));
+            };
+            let wire = obj
+                .get("wire")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
+            obj.insert("api".to_owned(), wire);
+            if !obj.contains_key("display_name") {
+                let model_id = obj
+                    .get("model_id")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
+                obj.insert("display_name".to_owned(), model_id);
+            }
+            if obj.get("source").and_then(Value::as_str) == Some("discovered") {
+                obj.insert("source".to_owned(), Value::String("dynamic".to_owned()));
+            } else if obj.get("source").and_then(Value::as_str) == Some("fallback") {
+                obj.insert(
+                    "source".to_owned(),
+                    Value::String("static_fallback".to_owned()),
+                );
+            }
+            let model: ModelDescriptor = serde_json::from_value(mapped).map_err(|err| {
+                Error::protocol(
+                    format!("OAP model entry is malformed: {err}"),
+                    Some("malformed_response"),
+                )
+            })?;
+            if request.api.as_deref().is_some_and(|api| api != model.api)
+                || request
+                    .model_id
+                    .as_deref()
+                    .is_some_and(|id| id != model.model_id)
+                || request.include_deprecated != Some(true)
+                    && model.lifecycle == ModelLifecycle::Deprecated
+                || request.include_login_required != Some(true)
+                    && model.auth_status == AuthStatus::LoginRequired
+            {
+                continue;
+            }
+            models.push(model);
+        }
+        Ok(ListModelsResponse {
+            models,
+            fetched_at_ms: crate::ids::now_millis(),
+            cache_max_age_ms: 0,
+        })
     }
 
     /// Looks up exactly one model.

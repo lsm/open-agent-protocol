@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// AgentService runs the runtime's agent loop: it manages provider turns and
-// the tool-execution lifecycle, and asks this client to run the tools the
-// model calls.
+// AgentService runs the runtime's agent loop and controls OAP sessions.
+// Client-executed tools require a capability the current OAP endpoint does
+// not advertise, so OAP calls with Tools fail explicitly. The optional
+// Makai V1 wire retains its original client-tool behavior.
 type AgentService struct {
 	transport *transport
 	timeout   time.Duration
@@ -18,9 +19,9 @@ type AgentService struct {
 // Run executes an agent run to completion and returns the final assistant
 // response.
 //
-// Tools with an Execute function are invoked as the model calls them. A tool
-// the model calls but that has no Execute is reported back to the model as
-// not executable by this client.
+// On the default OAP wire, Tools are refused with unsupported_feature until
+// client-executed tool control is available. On explicit Makai V1, Execute
+// callbacks retain their original behavior.
 //
 // Failures are [*StreamError], or [*AuthRequiredError] when a provider turn
 // failed for lack of credentials. Note that a provider failure can also
@@ -30,6 +31,9 @@ type AgentService struct {
 // Cancelling ctx aborts the run, asks the runtime to stop the session, and
 // returns an error wrapping ctx.Err().
 func (s *AgentService) Run(ctx context.Context, req AgentRequest) (*CompletionResponse, error) {
+	if s.transport != nil && !s.transport.legacyWire {
+		return s.oapRun(ctx, req)
+	}
 	run, err := s.begin(ctx, req)
 	if err != nil {
 		return nil, err
@@ -84,6 +88,9 @@ func (s *AgentService) Run(ctx context.Context, req AgentRequest) (*CompletionRe
 // Closing before the run finishes stops the session, so an abandoned stream
 // does not leave a run holding its session id.
 func (s *AgentService) Stream(ctx context.Context, req AgentRequest) (*AgentStream, error) {
+	if s.transport != nil && !s.transport.legacyWire {
+		return s.oapStream(ctx, req)
+	}
 	run, err := s.begin(ctx, req)
 	if err != nil {
 		return nil, err
@@ -153,18 +160,22 @@ func (r AgentRequest) sessionID() string {
 //
 // It is not safe for concurrent use: drive it from one goroutine.
 type AgentStream struct {
-	run     *agentRun
-	pending []AgentEvent
-	current AgentEvent
-	err     error
-	done    bool
-	started bool
+	oapState *oapAgentState
+	run      *agentRun
+	pending  []AgentEvent
+	current  AgentEvent
+	err      error
+	done     bool
+	started  bool
 }
 
 // Next advances to the next event, reporting whether one is available.
 // It returns false at the end of the run and on failure; check
 // [AgentStream.Err] to tell the two apart.
 func (s *AgentStream) Next() bool {
+	if s.oapState != nil {
+		return s.oapNext()
+	}
 	if s.done {
 		return false
 	}
@@ -232,6 +243,9 @@ func (s *AgentStream) Err() error { return s.err }
 // Close stops the run's session and releases its frame route. It is
 // idempotent and returns the same error as [AgentStream.Err].
 func (s *AgentStream) Close() error {
+	if s.oapState != nil {
+		return s.oapClose()
+	}
 	if s.run == nil {
 		return s.err
 	}

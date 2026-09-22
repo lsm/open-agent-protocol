@@ -1,8 +1,8 @@
 # OAP TypeScript SDK
 
-TypeScript SDK published as `oap-sdk`. It starts or connects to an `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
+TypeScript SDK published as `oap-sdk`. The default client spawns `oapx serve agent,provider --stdio` and speaks OAP v0.1 on both profiles: agent sessions and authentication on `agent-control-core`, direct inference and provider model discovery on `model-provider-core`.
 
-The wire it speaks today is the makai stdio protocol, not OAP. The package name is where this is going, not where it is.
+`createOapClient()` is the preferred entry point. `createMakaiClient()` remains an alias that now defaults to OAP; it never silently falls back to the old wire. Pass `{ wireProtocol: "legacy" }` only when you explicitly need a still-unmigrated Makai feature. The low-level `createMakaiStdioClient`, `createMakaiAuthClient`, and related factories are legacy-wire APIs and deprecated for new integrations.
 
 ## Installation
 
@@ -103,34 +103,15 @@ void main();
 
 If you are migrating from an API that used `client.complete({ stream: true })`, the equivalent call is `client.provider.stream(request)`; non-streaming calls use `client.provider.complete(request)`.
 
-## Agent loop with tools
+## Agent runs and model switching
 
-Use `client.agent.run(...)` when you want the Makai agent loop to manage provider turns and tool execution lifecycle. Tool definitions are JSON Schema strings. Tool execution runs in your client code: when the runtime requests a tool call, the SDK invokes that tool's `execute(args, context)` callback and sends the result back to the runtime. Tools without an `execute` callback — and callbacks that throw — are reported to the model as error tool results. When using `agent.stream(...)`, you also receive streaming lifecycle events; the iteration ends with `agent_end` on success, or with an `error` event / a thrown `MakaiStreamError` on failure.
+Use `client.agent.run(...)` for an agent session, or `client.agent.stream(...)` for lifecycle and content events. `switchModel(sessionId, modelRef)` changes the selected model of an open session; `runSelected(sessionId, messages)` uses that selection on the next run. The OAP server currently does not expose client-executed agent tools, so an OAP call containing `tools` fails with `OapUnsupportedFeatureError` rather than dropping callbacks. Direct provider calls may carry declaration-only tools, but client-side `execute` callbacks are unsupported there too.
 
 ```ts
-import { createMakaiClient, type ToolDefinition } from "oap-sdk";
-
-const tools: ToolDefinition[] = [
-  {
-    name: "get_weather",
-    description: "Get the current weather for a city.",
-    parameters_schema_json: JSON.stringify({
-      type: "object",
-      properties: {
-        city: { type: "string", description: "City and state or country." },
-      },
-      required: ["city"],
-      additionalProperties: false,
-    }),
-    execute: async (args) => {
-      const city = typeof args.city === "string" ? args.city : "an unknown city";
-      return `It is sunny in ${city} today.`;
-    },
-  },
-];
+import { createOapClient } from "oap-sdk";
 
 async function main(): Promise<void> {
-  const client = await createMakaiClient();
+  const client = await createOapClient();
 
   try {
     const { model } = await client.models.resolve({
@@ -141,9 +122,7 @@ async function main(): Promise<void> {
 
     const response = await client.agent.run({
       model_ref: model.model_ref,
-      messages: [{ role: "user", content: "Should I bring an umbrella in San Francisco today?" }],
-      tools,
-      options: { max_tokens: 512, auth_retry_policy: "auto_once" },
+      messages: [{ role: "user", content: "Say hello." }],
     });
 
     console.log(response.message.content);
@@ -155,11 +134,11 @@ async function main(): Promise<void> {
 void main();
 ```
 
-For agent streaming, iterate over `client.agent.stream(request)` and handle `agent_start`, `turn_start`, `tool_execution_start`, `tool_execution_end`, provider deltas, and the terminal `agent_end` event.
+For agent streaming, iterate over `client.agent.stream(request)` and handle `agent_start`, content deltas, and the terminal `agent_end` event. Client-side tool callbacks remain available only under explicit `{ wireProtocol: "legacy" }` until `+control-tools` is implemented.
 
 ### Agent model discovery
 
-`client.agent.models` is a separate `MakaiModelsApi` instance that delegates to the same underlying model-discovery API over the shared transport as `client.models`. The two instances produce the same results but are not the same object (`client.agent.models !== client.models`).
+`client.agent.models` is a compatibility alias for the provider model catalog exposed as `client.models` on the same OAP connection.
 
 ```ts
 import { createMakaiClient } from "oap-sdk";
@@ -167,7 +146,7 @@ import { createMakaiClient } from "oap-sdk";
 async function main(): Promise<void> {
   const client = await createMakaiClient();
 
-  // Both call the same underlying API and return the same results:
+  // Both read the provider model catalog on the same OAP connection:
   const { models } = await client.models.list();
   const { models: agentModels } = await client.agent.models.list();
 
@@ -289,7 +268,7 @@ void main();
 
 ## Configuration
 
-`createMakaiClient(...)`, `createMakaiStdioClient(...)`, and `createMakaiAuthClient(...)` accept stdio transport options and binary resolver options.
+`createOapClient(...)` and `createMakaiClient(...)` accept stdio transport and binary resolver options. The low-level `createMakaiStdioClient(...)` and `createMakaiAuthClient(...)` remain legacy-wire only.
 
 ### Explicit binary path
 
@@ -353,7 +332,7 @@ On Windows the executable name is `oapx.exe`.
 
 Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
 
-`handshakeTimeoutMs` bounds the `ready` handshake in `connect()`; a failed handshake terminates the spawned runtime process. `responseTimeoutMs` bounds each `provider`, `agent`, and `models` frame wait. `frameTimeoutMs` bounds each `auth` frame wait, and is also the fallback for `responseTimeoutMs` when that is unset. Setting only `responseTimeoutMs` leaves `client.auth` on its 30s default.
+There is no legacy `ready` frame on OAP. The client initializes the agent profile and describes the provider profile. `responseTimeoutMs` bounds provider and agent replies; `frameTimeoutMs` bounds auth event waits. A failed connection closes the spawned process.
 
 ```ts
 import { createMakaiClient } from "oap-sdk";
@@ -361,7 +340,7 @@ import { createMakaiClient } from "oap-sdk";
 async function main(): Promise<void> {
   const client = await createMakaiClient({
     // Optional transport settings:
-    args: ["--stdio"],
+    args: ["serve", "agent,provider", "--stdio"],
     cwd: process.cwd(),
     env: { ...process.env, OAPX_LOG: "info" },
     handshakeTimeoutMs: 2_000,
@@ -389,7 +368,7 @@ async function closeClient(client: { close(): Promise<void> }): Promise<void> {
 
 ## Cancellation
 
-Pass an `AbortSignal` as `options.signal` to cancel a `provider` or `agent` call. `client.auth.login(providerId, handlers, { signal })` takes one too. Aborting rejects the call with an `Error` whose `name` is `"AbortError"` — use the exported `isAbortError(error)` guard rather than `instanceof`, because it is not a `MakaiStreamError`.
+Pass an `AbortSignal` as `options.signal` to cancel a `provider` or `agent` call; these reject with an `Error` whose `name` is `"AbortError"`. `client.auth.login(providerId, handlers, { signal })` also accepts a signal and reports cancellation as `MakaiAuthError` with `kind: "cancelled"`.
 
 ```ts
 import { createMakaiClient, isAbortError } from "oap-sdk";
@@ -421,7 +400,7 @@ async function main(): Promise<void> {
 void main;
 ```
 
-Leaving the loop early (a `break`, a `return`, or a thrown error inside the body) also cancels the run: the SDK sends a best-effort `abort_request` for `provider.stream` and an `agent_stop` for `agent.stream` when the iterator is disposed before a terminal event.
+Leaving an OAP stream early also cancels it: the SDK sends a best-effort `inference.cancel.request` for direct inference or `run.cancel.request` for an agent run. Explicit legacy mode uses its original `abort_request`/`agent_stop` frames.
 
 ## Error handling
 
@@ -539,11 +518,8 @@ type RunOptions = {
   reasoning_effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   auth_retry_policy?: "manual" | "auto_once";
   /**
-   * Correlation key for the run's agent session (21-char NanoID, sent as the
-   * `agent_start` payload `session_id`). NOT a resume handle — sessions are
-   * not resumable; resend the full context on interruption. Not stable under
-   * `auth_retry_policy: "auto_once"`: the SDK silently regenerates the id for
-   * the retried attempt (#198).
+   * OAP session identity. Use `agent.switchModel(session_id, model_ref)` to
+   * select a new model mid-session, then `agent.runSelected(session_id, messages)`.
    */
   session_id?: string;
   metadata?: Record<string, string>;

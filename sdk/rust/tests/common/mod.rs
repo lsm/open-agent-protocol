@@ -23,6 +23,7 @@ pub fn fake_builder(scenario: &str) -> ClientBuilder {
     // `env_clear` keeps an ambient `OAP_SDK_BINARY_PATH` or a stale scenario from
     // the developer's shell out of the child, so a test means exactly one thing.
     ClientBuilder::new()
+        .legacy_wire()
         .command(fake_binary())
         .args(Vec::<String>::new())
         .env_clear()
@@ -54,6 +55,7 @@ pub fn real_binary() -> Option<PathBuf> {
 /// A client wired to the real runtime.
 pub fn real_builder(path: &std::path::Path) -> ClientBuilder {
     let mut builder = ClientBuilder::new()
+        .legacy_wire()
         .command(path)
         .args(["--stdio"])
         .env_clear()

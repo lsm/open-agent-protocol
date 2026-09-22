@@ -13,6 +13,10 @@ use crate::ids::{new_ulid, now_millis};
 
 /// Protocol envelope version. V1 keeps this pinned at 1.
 pub(crate) const ENVELOPE_VERSION: u32 = 1;
+pub(crate) const OAP_PROTOCOL: &str = "open-agent-protocol";
+pub(crate) const OAP_VERSION: &str = "0.1";
+pub(crate) const AGENT_PROFILE: &str = "open-agent-protocol.agent-control-core";
+pub(crate) const PROVIDER_PROFILE: &str = "open-agent-protocol.model-provider-core";
 
 /// An outbound envelope.
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +120,12 @@ pub struct Frame {
     pub stream_id: Option<String>,
     /// The agent route key, when present.
     pub session_id: Option<String>,
+    /// OAP agent run route key.
+    pub run_id: Option<String>,
+    /// OAP provider event route key.
+    pub inference_id: Option<String>,
+    /// OAP profile discriminator.
+    pub profile: Option<String>,
     /// This envelope's own identity.
     pub message_id: Option<String>,
     /// The `message_id` of the request this frame replies to, when it is a reply.
@@ -132,6 +142,9 @@ struct RawFrame {
     kind: Option<String>,
     stream_id: Option<String>,
     session_id: Option<String>,
+    run_id: Option<String>,
+    inference_id: Option<String>,
+    profile: Option<String>,
     message_id: Option<String>,
     in_reply_to: Option<String>,
     sequence: Option<u64>,
@@ -140,13 +153,13 @@ struct RawFrame {
 impl Frame {
     /// Parses one NDJSON line.
     pub(crate) fn parse(line: &str) -> Result<Self> {
-        let raw: Value = serde_json::from_str(line)
-            .map_err(|err| Error::transport(format!("invalid JSON frame: {err}")))?;
+        let raw: Value =
+            serde_json::from_str(line).map_err(|_| Error::transport("invalid JSON frame"))?;
         if !raw.is_object() {
             return Err(Error::transport("frame is not a JSON object"));
         }
         let fields: RawFrame = serde_json::from_value(raw.clone())
-            .map_err(|err| Error::transport(format!("malformed envelope fields: {err}")))?;
+            .map_err(|_| Error::transport("malformed envelope fields"))?;
         let Some(kind) = fields.kind else {
             return Err(Error::transport("frame is missing 'type'"));
         };
@@ -154,6 +167,9 @@ impl Frame {
             kind,
             stream_id: fields.stream_id,
             session_id: fields.session_id,
+            run_id: fields.run_id,
+            inference_id: fields.inference_id,
+            profile: fields.profile,
             message_id: fields.message_id,
             in_reply_to: fields.in_reply_to,
             sequence: fields.sequence,
@@ -327,6 +343,15 @@ mod tests {
         assert!(Frame::parse("not json").is_err());
         assert!(Frame::parse("[1,2,3]").is_err());
         assert!(Frame::parse(r#"{"stream_id":"S"}"#).is_err());
+    }
+
+    #[test]
+    fn malformed_frames_do_not_expose_raw_contents() {
+        let bad_json = Frame::parse(r#"{"answer":"secret-code","#).unwrap_err();
+        assert_eq!(bad_json.message(), "invalid JSON frame");
+        let bad_field =
+            Frame::parse(r#"{"type":"ack","stream_id":{"answer":"secret-code"}}"#).unwrap_err();
+        assert_eq!(bad_field.message(), "malformed envelope fields");
     }
 
     #[test]

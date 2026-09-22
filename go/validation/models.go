@@ -15,9 +15,10 @@ type pendingModelsQuery struct {
 }
 
 type modelMark struct {
-	model    string
-	run      protocol.RunID
-	sequence uint64
+	model         string
+	run           protocol.RunID
+	sequence      uint64
+	switchRequest protocol.EnvelopeID
 }
 
 type unjudgedModel struct {
@@ -68,6 +69,15 @@ func (s *state) observeModel(session protocol.SessionID, model string, run proto
 	}
 	st := s.track(session)
 	st.modelMarks = append(st.modelMarks, modelMark{model: model, run: run, sequence: sequence})
+	s.reconcileHeldCatalogs(st)
+}
+
+func (s *state) observeModelSwitch(session protocol.SessionID, model string, request protocol.EnvelopeID) {
+	if model == "" {
+		return
+	}
+	st := s.track(session)
+	st.modelMarks = append(st.modelMarks, modelMark{model: model, switchRequest: request})
 	s.reconcileHeldCatalogs(st)
 }
 
@@ -167,6 +177,18 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 	}
 	st := s.track(p.SessionID)
 	s.checkCatalogCurrentModel(i, line, e, p, st)
+	for alias := range st.attachedProviders {
+		present := false
+		for _, provider := range p.Providers {
+			if provider.ID == alias {
+				present = true
+				break
+			}
+		}
+		if !present {
+			s.addExpected(CodeUnmatchedProvider, i, line, e, "/payload/providers", "catalog omitted an attached provider", alias, "absent")
+		}
+	}
 
 	level := s.features[protocol.FeatureModelsList]
 	binding := level == protocol.SupportNative || level == protocol.SupportEmulated
@@ -264,7 +286,10 @@ func (s *state) checkCatalogCurrentModel(i, line int, e protocol.Envelope, p pro
 
 func (t *sessionTrack) markAt(position protocol.ModelEventPosition) (string, bool) {
 	for _, mark := range t.modelMarks {
-		if mark.run == position.RunID && mark.sequence == position.Sequence {
+		if position.SwitchRequestID != "" && mark.switchRequest == position.SwitchRequestID {
+			return mark.model, true
+		}
+		if position.SwitchRequestID == "" && mark.run == position.RunID && mark.sequence == position.Sequence {
 			return mark.model, true
 		}
 	}
@@ -284,6 +309,13 @@ func (t *sessionTrack) modelWindow(query *pendingModelsQuery) []string {
 }
 
 func (s *state) positionOwner(session protocol.SessionID, position protocol.ModelEventPosition) (known, owned bool) {
+	if position.SwitchRequestID != "" {
+		req := s.requests[position.SwitchRequestID]
+		if req == nil || req.typ != protocol.TypeSessionModelSwitchRequest {
+			return false, false
+		}
+		return true, req.session == session
+	}
 	r := s.runs[position.RunID]
 	if r == nil {
 		return false, false
@@ -292,12 +324,23 @@ func (s *state) positionOwner(session protocol.SessionID, position protocol.Mode
 }
 
 func (s *state) positionReached(session protocol.SessionID, position protocol.ModelEventPosition) bool {
+	if position.SwitchRequestID != "" {
+		req := s.requests[position.SwitchRequestID]
+		return req != nil && req.session == session && req.responded
+	}
 	r := s.runs[position.RunID]
 	return r != nil && r.session == session && r.next > position.Sequence
 }
 
 func (s *state) foreignPosition(i, line int, e protocol.Envelope, session protocol.SessionID, position protocol.ModelEventPosition) {
 	owner := session
+	if position.SwitchRequestID != "" {
+		if req := s.requests[position.SwitchRequestID]; req != nil {
+			owner = req.session
+		}
+		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/as_of_model_event/switch_request_id", "catalog names a model switch owned by another session", string(session), string(owner), string(position.SwitchRequestID))
+		return
+	}
 	if r := s.runs[position.RunID]; r != nil {
 		owner = r.session
 	}

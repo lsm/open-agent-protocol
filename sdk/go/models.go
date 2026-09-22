@@ -144,6 +144,9 @@ type ModelsService struct {
 // or runtime rejected, [CodeMalformedResponse] for a reply that did not match
 // the protocol, or the runtime's own code for a rejection.
 func (s *ModelsService) List(ctx context.Context, req ListModelsRequest) (*ListModelsResponse, error) {
+	if s.transport != nil && !s.transport.legacyWire {
+		return s.oapList(ctx, req)
+	}
 	if len(req.ProviderID) > maxProviderIDLength {
 		return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "provider_id exceeds the maximum length of 256 characters"}
 	}
@@ -159,6 +162,16 @@ func (s *ModelsService) List(ctx context.Context, req ListModelsRequest) (*ListM
 // It is an error for the runtime to match no model or more than one; both
 // surface as a [*ProtocolError] with [CodeInvalidRequest].
 func (s *ModelsService) Resolve(ctx context.Context, req ResolveModelRequest) (*ModelDescriptor, error) {
+	if s.transport != nil && !s.transport.legacyWire {
+		response, err := s.oapList(ctx, ListModelsRequest{ProviderID: req.ProviderID, API: req.API, ModelID: req.ModelID})
+		if err != nil {
+			return nil, err
+		}
+		if len(response.Models) != 1 {
+			return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "model not found or ambiguous"}
+		}
+		return &response.Models[0], nil
+	}
 	switch {
 	case req.ProviderID == "":
 		return nil, &ProtocolError{Code: CodeInvalidRequest, Message: "resolve requires provider_id"}

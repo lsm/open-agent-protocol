@@ -50,8 +50,8 @@ use crate::ids::new_session_id;
 use crate::models::ModelsApi;
 use crate::provider::{frame_to_error, nack_to_error, promote_auth_error};
 use crate::transport::{Subscription, Transport};
-use crate::types::{AuthRetryPolicy, CompletionResponse, ToolInvocation, Usage};
-use crate::wire::{Envelope, Frame};
+use crate::types::{AuthRetryPolicy, ChatMessage, CompletionResponse, ToolInvocation, Usage};
+use crate::wire::{Envelope, Frame, AGENT_PROFILE};
 
 /// How long the SDK waits for the tail of a settled session before giving up.
 const DRAIN_BUDGET: Duration = Duration::from_millis(250);
@@ -183,6 +183,10 @@ impl AgentApi {
 
     /// Runs the agent loop to completion and returns the final assistant message.
     pub async fn run(&self, request: ExecutionRequest) -> Result<CompletionResponse> {
+        if self.transport.is_oap() {
+            validate_oap_agent_request(&request)?;
+            return self.run_oap(&request).await;
+        }
         request.validate()?;
         let policy = request
             .options
@@ -222,6 +226,237 @@ impl AgentApi {
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn run_oap(&self, request: &ExecutionRequest) -> Result<CompletionResponse> {
+        let provider_id = provider_id_from_ref(&request.model_ref);
+        match self.run_oap_once(request).await {
+            Ok(response) => Ok(response),
+            Err(error) if crate::oap::is_auth_failure(&error) => {
+                let Some(provider_id) = provider_id else {
+                    return Err(error);
+                };
+                let policy = request
+                    .options
+                    .auth_retry_policy
+                    .or(self.auth_retry_policy)
+                    .unwrap_or_default();
+                if policy != AuthRetryPolicy::AutoOnce {
+                    return Err(Error::auth_required(
+                        provider_id,
+                        error.message().to_owned(),
+                    ));
+                }
+                self.auth
+                    .login(&provider_id, None)
+                    .await
+                    .map_err(|_| Error::auth_required(&provider_id, error.message().to_owned()))?;
+                self.run_oap_once(request).await.map_err(|retry_error| {
+                    if crate::oap::is_auth_failure(&retry_error) {
+                        Error::auth_required(provider_id, retry_error.message().to_owned())
+                    } else {
+                        retry_error
+                    }
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn run_oap_once(&self, request: &ExecutionRequest) -> Result<CompletionResponse> {
+        let (session_id, run_id, mut subscription) = self.begin_oap(request).await?;
+        let mut guard = OapRunGuard::new(Arc::clone(&self.transport), session_id, run_id.clone());
+        loop {
+            let frame = subscription
+                .next_within(self.response_timeout, "run.completed")
+                .await?;
+            if frame.run_id.as_deref().is_some_and(|id| id != run_id) {
+                continue;
+            }
+            match frame.kind.as_str() {
+                "run.completed" => {
+                    guard.settle();
+                    let message = frame.payload().get("final_response").ok_or_else(|| {
+                        Error::protocol(
+                            "run.completed has no final_response",
+                            Some("malformed_response"),
+                        )
+                    })?;
+                    return crate::oap::response(
+                        message,
+                        frame.payload(),
+                        if request.model_ref.is_empty() {
+                            frame
+                                .payload()
+                                .get("model_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                        } else {
+                            &request.model_ref
+                        },
+                    );
+                }
+                "run.failed" => {
+                    guard.settle();
+                    let err = frame.payload().get("error").unwrap_or(frame.payload());
+                    return Err(Error::provider_stream(
+                        err.get("message")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("agent run failed"),
+                        err.get("code")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                        provider_id_from_ref(&request.model_ref),
+                    ));
+                }
+                "run.cancelled" => {
+                    guard.settle();
+                    return Err(Error::stream(
+                        crate::error::StreamErrorKind::Aborted,
+                        "agent run cancelled",
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn begin_oap(
+        &self,
+        request: &ExecutionRequest,
+    ) -> Result<(String, String, Subscription)> {
+        if !request.tools.is_empty() {
+            return Err(crate::oap::unsupported("client-executed tools (+tools)"));
+        }
+        if request.options.temperature.is_some()
+            || request.options.max_tokens.is_some()
+            || request.options.reasoning_effort.is_some()
+        {
+            return Err(crate::oap::unsupported("agent sampling controls"));
+        }
+        let session_id = request
+            .options
+            .session_id
+            .clone()
+            .unwrap_or_else(new_session_id);
+        let opened = self
+            .transport
+            .request_oap(
+                AGENT_PROFILE,
+                "session.open.request",
+                json!({ "session_id": session_id }),
+                Some(("session_id", &session_id)),
+                self.response_timeout,
+            )
+            .await?;
+        if opened.kind != "session.open.response" {
+            return Err(Error::protocol(
+                "unexpected OAP session response",
+                Some("malformed_response"),
+            ));
+        }
+        let subscription = self.transport.subscribe_session(&session_id);
+        if !subscription.owns_session() {
+            return Err(Error::protocol(
+                "session is already in use",
+                Some("session_busy"),
+            ));
+        }
+        let mut submit_payload = json!({
+            "session_id": session_id,
+            "messages": crate::oap::messages(request)?,
+            "delivery": "auto",
+        });
+        if !request.model_ref.is_empty() {
+            if let Some(fields) = submit_payload.as_object_mut() {
+                fields.insert("model_id".to_owned(), json!(request.model_ref));
+            }
+        }
+        let submitted = self
+            .transport
+            .request_oap(
+                AGENT_PROFILE,
+                "session.message.submit.request",
+                submit_payload,
+                Some(("session_id", &session_id)),
+                self.response_timeout,
+            )
+            .await?;
+        if submitted.kind != "session.message.submit.response"
+            || submitted
+                .payload()
+                .get("accepted")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            return Err(Error::protocol(
+                "OAP submission was not admitted",
+                Some("malformed_response"),
+            ));
+        }
+        let run_id = submitted
+            .payload()
+            .get("run_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                Error::protocol("OAP admission has no run_id", Some("malformed_response"))
+            })?
+            .to_owned();
+        Ok((session_id, run_id, subscription))
+    }
+
+    /// Switches the selected model of an open OAP session; the next admitted run uses it.
+    pub async fn switch_model(&self, session_id: &str, model_id: &str) -> Result<()> {
+        if !self.transport.is_oap() {
+            return Err(crate::oap::unsupported(
+                "session.model.switch on the legacy wire",
+            ));
+        }
+        let response = self
+            .transport
+            .request_oap(
+                AGENT_PROFILE,
+                "session.model.switch.request",
+                json!({ "session_id": session_id, "model_id": model_id }),
+                Some(("session_id", session_id)),
+                self.response_timeout,
+            )
+            .await?;
+        if response.kind != "session.model.switch.response" {
+            return Err(Error::protocol(
+                "unexpected OAP model switch response",
+                Some("malformed_response"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Starts a run on an open session using the model selected by `switch_model`.
+    pub async fn run_selected(
+        &self,
+        session_id: impl Into<String>,
+        messages: Vec<ChatMessage>,
+    ) -> Result<CompletionResponse> {
+        if !self.transport.is_oap() {
+            return Err(crate::oap::unsupported(
+                "session-selected model runs on the legacy wire",
+            ));
+        }
+        let mut request = ExecutionRequest::new("", messages);
+        request.options.session_id = Some(session_id.into());
+        self.run(request).await
+    }
+
+    /// Streams a run on an open OAP session using its selected model.
+    pub fn stream_selected(
+        &self,
+        session_id: impl Into<String>,
+        messages: Vec<ChatMessage>,
+    ) -> impl Stream<Item = Result<AgentEvent>> + Send + 'static {
+        let mut request = ExecutionRequest::new("", messages);
+        request.options.session_id = Some(session_id.into());
+        self.stream(request)
     }
 
     async fn run_once(
@@ -380,6 +615,94 @@ impl AgentApi {
     ) -> impl Stream<Item = Result<AgentEvent>> + Send + 'static {
         let this = self.clone();
         try_stream! {
+            if this.transport.is_oap() {
+                validate_oap_agent_request(&request)?;
+                let policy = request.options.auth_retry_policy.or(this.auth_retry_policy).unwrap_or_default();
+                let provider_id = provider_id_from_ref(&request.model_ref);
+                let mut retried = false;
+                'oap_attempt: loop {
+                    let (session_id, run_id, mut subscription) = match this.begin_oap(&request).await {
+                        Ok(started) => started,
+                        Err(error) if crate::oap::is_auth_failure(&error) => {
+                            let Some(provider_id) = provider_id.as_deref() else { Err(error)?; unreachable!() };
+                            if !retried && policy == AuthRetryPolicy::AutoOnce {
+                                retried = true;
+                                this.auth.login(provider_id, None).await
+                                    .map_err(|_| Error::auth_required(provider_id, error.message().to_owned()))?;
+                                continue 'oap_attempt;
+                            }
+                            Err(Error::auth_required(provider_id, error.message().to_owned()))?
+                        }
+                        Err(error) => Err(error)?,
+                    };
+                    let mut guard = OapRunGuard::new(Arc::clone(&this.transport), session_id.clone(), run_id.clone());
+                    let mut start: Option<AgentEvent> = None;
+                    let mut yielded_content = false;
+                    loop {
+                        let frame = subscription.next_within(this.response_timeout, "agent run event").await?;
+                        if frame.run_id.as_deref().is_some_and(|id| id != run_id) { continue; }
+                        let data = frame.payload();
+                        match frame.kind.as_str() {
+                            "run.started" => start = Some(AgentEvent::AgentStart { session_id: Some(session_id.clone()) }),
+                            "content.delta" => {
+                                if let Some(part) = data.get("part") {
+                                    let delta = match part.get("type").and_then(serde_json::Value::as_str) {
+                                        Some("text") => Some(ProviderEvent::TextDelta { delta: part.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned() }),
+                                        Some("reasoning") => Some(ProviderEvent::ThinkingDelta { delta: part.get("reasoning").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned() }),
+                                        _ => None,
+                                    };
+                                    if let Some(delta) = delta {
+                                        if let Some(start) = start.take() { yield start; }
+                                        yielded_content = true;
+                                        yield AgentEvent::Provider(delta);
+                                    }
+                                }
+                            }
+                            "run.completed" => {
+                                guard.settle();
+                                if let Some(start) = start.take() { yield start; }
+                                let identity = request.model_ref.split_once('/').and_then(|(provider, rest)| rest.split_once('@').map(|(api, _)| (provider, api)));
+                                yield AgentEvent::AgentEnd {
+                                    usage: data.get("usage").and_then(Usage::parse),
+                                    stop_reason: data.get("stop_reason").and_then(serde_json::Value::as_str).map(str::to_owned),
+                                    error_message: None,
+                                    provider_id: identity.map(|parts| parts.0.to_owned()),
+                                    api: identity.map(|parts| parts.1.to_owned()),
+                                };
+                                return;
+                            }
+                            "run.failed" => {
+                                guard.settle();
+                                let err = data.get("error").unwrap_or(data);
+                                let error = Error::provider_stream(
+                                    err.get("message").and_then(serde_json::Value::as_str).unwrap_or("agent run failed"),
+                                    err.get("code").and_then(serde_json::Value::as_str).map(str::to_owned),
+                                    provider_id.clone(),
+                                );
+                                if crate::oap::is_auth_failure(&error) {
+                                    let Some(provider_id) = provider_id.as_deref() else { Err(error)?; unreachable!() };
+                                    if !yielded_content && !retried && policy == AuthRetryPolicy::AutoOnce {
+                                        retried = true;
+                                        this.auth.login(provider_id, None).await
+                                            .map_err(|_| Error::auth_required(provider_id, error.message().to_owned()))?;
+                                        continue 'oap_attempt;
+                                    }
+                                    Err(Error::auth_required(provider_id, error.message().to_owned()))?;
+                                }
+                                Err(error)?;
+                            }
+                            "run.cancelled" => {
+                                guard.settle();
+                                Err(Error::stream(crate::error::StreamErrorKind::Aborted, "agent run cancelled"))?;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if request.model_ref.is_empty() && request.options.session_id.is_some() {
+                Err(crate::oap::unsupported("session-selected model streams on the legacy wire"))?;
+            }
             request.validate()?;
             let policy = request
                 .options
@@ -569,6 +892,70 @@ impl AgentApi {
                     }
                 }
             }
+        }
+    }
+}
+
+fn validate_oap_agent_request(request: &ExecutionRequest) -> Result<()> {
+    if request.model_ref.is_empty() {
+        if request
+            .options
+            .session_id
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(Error::invalid_request(
+                "session-selected run requires a nonempty session_id",
+            ));
+        }
+        return Ok(());
+    }
+    // OAP session IDs are opaque strings, not the legacy wire's NanoIDs.
+    let mut validated = request.clone();
+    validated.options.session_id = None;
+    validated.validate()?;
+    if request
+        .options
+        .session_id
+        .as_deref()
+        .is_some_and(str::is_empty)
+    {
+        return Err(Error::invalid_request("OAP session_id cannot be empty"));
+    }
+    Ok(())
+}
+
+struct OapRunGuard {
+    transport: Arc<Transport>,
+    session_id: String,
+    run_id: String,
+    settled: bool,
+}
+
+impl OapRunGuard {
+    fn new(transport: Arc<Transport>, session_id: String, run_id: String) -> Self {
+        Self {
+            transport,
+            session_id,
+            run_id,
+            settled: false,
+        }
+    }
+    fn settle(&mut self) {
+        self.settled = true;
+    }
+}
+
+impl Drop for OapRunGuard {
+    fn drop(&mut self) {
+        if !self.settled {
+            let _ = self.transport.send_oap(
+                AGENT_PROFILE,
+                "run.cancel.request",
+                &crate::ids::new_ulid(),
+                json!({ "session_id": self.session_id, "run_id": self.run_id }),
+                Some(("session_id", &self.session_id)),
+            );
         }
     }
 }

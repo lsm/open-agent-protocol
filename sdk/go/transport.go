@@ -45,6 +45,7 @@ func (k routeKind) String() string {
 // waits for the process to exit. Calls never read the pipe themselves, so a
 // slow or abandoned call cannot stall another call's frames.
 type transport struct {
+	legacyWire    bool
 	cmd           *exec.Cmd
 	stdin         io.WriteCloser
 	logger        *slog.Logger
@@ -56,6 +57,8 @@ type transport struct {
 	streams    map[string][]*subscription
 	sessions   map[string][]*subscription
 	correlates map[string]*subscription
+	inferences map[string]*subscription
+	authFlows  map[string]*subscription
 	stderr     *tailBuffer
 
 	// done closes when the reader goroutine stops, which happens when the
@@ -95,6 +98,7 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	cmd.Stderr = stderrTail
 
 	t := &transport{
+		legacyWire:    opts.LegacyWire,
 		cmd:           cmd,
 		stdin:         stdin,
 		logger:        opts.logger(),
@@ -102,6 +106,8 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 		streams:       make(map[string][]*subscription),
 		sessions:      make(map[string][]*subscription),
 		correlates:    make(map[string]*subscription),
+		inferences:    make(map[string]*subscription),
+		authFlows:     make(map[string]*subscription),
 		stderr:        stderrTail,
 		done:          make(chan struct{}),
 		exited:        make(chan struct{}),
@@ -114,6 +120,15 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 
 	handshake := make(chan *frame, 1)
 	go t.readLoop(stdout, handshake)
+	if !opts.LegacyWire {
+		if err := t.send(oapFrame("open-agent-protocol.agent-control-core", "protocol.initialize.request", map[string]any{
+			"protocol_versions": []string{"0.1"},
+			"profiles":          []string{"open-agent-protocol.agent-control-core"},
+		})); err != nil {
+			_ = t.close()
+			return nil, err
+		}
+	}
 
 	if err := t.awaitHandshake(ctx, handshake, opts); err != nil {
 		_ = t.close()
@@ -133,16 +148,26 @@ func (t *transport) awaitHandshake(ctx context.Context, handshake <-chan *frame,
 		if !ok {
 			return t.terminalError("handshake")
 		}
-		switch f.Type {
-		case "ready":
-			expected := opts.protocolVersion()
-			if f.ProtocolVersion != expected {
-				return fmt.Errorf("%w: expected %q, got %q", ErrProtocolVersion, expected, f.ProtocolVersion)
+		if t.legacyWire && f.Type == "ready" {
+			if f.ProtocolVersion != opts.protocolVersion() {
+				return fmt.Errorf("%w: expected %q, got %q", ErrProtocolVersion, opts.protocolVersion(), f.ProtocolVersion)
 			}
-			t.logger.Debug("makai: handshake complete", "protocol_version", f.ProtocolVersion)
 			return nil
-		case "error":
+		}
+		switch f.Type {
+		case "protocol.initialize.response":
+			expected := opts.protocolVersion()
+			actual := f.payload().str("protocol_version")
+			if actual != expected {
+				return fmt.Errorf("%w: expected %q, got %q", ErrProtocolVersion, expected, actual)
+			}
+			t.logger.Debug("oap: initialize complete", "protocol_version", actual)
+			return nil
+		case "error", "error.response":
 			payload := f.payload()
+			if nested := payload.obj("error"); nested != nil {
+				payload = nested
+			}
 			return &ProtocolError{
 				Code:    payload.str("code", "error_code"),
 				Message: payload.strOrDefault("runtime rejected the handshake", "message", "reason"),
@@ -212,6 +237,20 @@ func (t *transport) dispatch(f *frame) {
 	var target *subscription
 	if f.InReplyTo != "" {
 		target = t.correlates[f.InReplyTo]
+		if target != nil && f.Type == "inference.create.response" && f.InferenceID != "" {
+			t.inferences[f.InferenceID] = target
+		}
+		if target != nil && f.Type == "auth.login.start.response" {
+			if flowID := f.payload().str("flow_id"); flowID != "" {
+				t.authFlows[flowID] = target
+			}
+		}
+	}
+	if target == nil && (f.Type == "auth.login.event" || f.Type == "auth.login.completed") {
+		target = t.authFlows[f.payload().str("flow_id")]
+	}
+	if target == nil && f.InferenceID != "" {
+		target = t.inferences[f.InferenceID]
 	}
 	if target == nil && f.StreamID != "" {
 		if subs := t.streams[f.StreamID]; len(subs) > 0 {
@@ -340,6 +379,16 @@ func (t *transport) unsubscribe(sub *subscription) {
 	for messageID, owner := range t.correlates {
 		if owner == sub {
 			delete(t.correlates, messageID)
+		}
+	}
+	for inferenceID, owner := range t.inferences {
+		if owner == sub {
+			delete(t.inferences, inferenceID)
+		}
+	}
+	for flowID, owner := range t.authFlows {
+		if owner == sub {
+			delete(t.authFlows, flowID)
 		}
 	}
 }

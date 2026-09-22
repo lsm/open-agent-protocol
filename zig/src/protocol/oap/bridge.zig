@@ -165,7 +165,7 @@ pub const Bridge = struct {
             .agent_event => |event_json| try self.applyAgentEvent(server, oap_session_id, event_json),
             .agent_result => |result_json| try self.retainResultEvidence(oap_session_id, result_json),
             .agent_error => |payload| {
-                const mapped = mapNativeErrorCode(payload.code);
+                const mapped = authFailureCode(payload.message) orelse mapNativeErrorCode(payload.code);
                 try server.settleFailed(oap_session_id, mapped.text(), payload.message);
                 if (mapped == .session_not_found) self.forgetSession(oap_session_id);
             },
@@ -254,7 +254,7 @@ pub const Bridge = struct {
 
         if (std.mem.eql(u8, event_type, "error")) {
             const message = stringField(root, "message") orelse "the agent loop failed";
-            const code = if (stringField(root, "code")) |text|
+            const code = authFailureCode(message) orelse if (stringField(root, "code")) |text|
                 mapNativeErrorName(text)
             else
                 oap_types.EmittedErrorCode.internal_error;
@@ -286,7 +286,8 @@ pub const Bridge = struct {
             try server.settleCancelled(oap_session_id, "the native agent loop reported cancellation");
         } else if (std.mem.eql(u8, stop_reason, "error")) {
             const message = if (evidence) |value| value.text else "the agent loop ended in an error state";
-            try server.settleFailed(oap_session_id, oap_types.EmittedErrorCode.provider_error.text(), message);
+            const code = authFailureCode(message) orelse oap_types.EmittedErrorCode.provider_error;
+            try server.settleFailed(oap_session_id, code.text(), message);
         } else {
             if (evidence) |value| server.noteUsage(oap_session_id, value.usage);
             const text = if (evidence) |value| value.text else "";
@@ -382,9 +383,18 @@ pub fn mapNativeErrorCode(code: agent_types.AgentErrorCode) oap_types.EmittedErr
         .agent_not_found, .session_expired => .session_not_found,
         .agent_busy => .session_busy,
         .tool_not_found, .tool_execution_error => .provider_error,
-        .context_overflow, .rate_limited, .auth_required => .provider_error,
+        .context_overflow, .rate_limited => .provider_error,
+        .auth_required => .credential_missing,
         .internal_error => .internal_error,
     };
+}
+
+fn authFailureCode(message: []const u8) ?oap_types.EmittedErrorCode {
+    for ([_]oap_types.EmittedErrorCode{ .credential_missing, .credential_expired, .credential_rejected }) |code| {
+        if (std.mem.startsWith(u8, message, code.text()) and
+            message.len > code.text().len and message[code.text().len] == ':') return code;
+    }
+    return null;
 }
 
 fn mapNativeErrorName(name: []const u8) oap_types.EmittedErrorCode {

@@ -1,4 +1,12 @@
-# Makai TypeScript SDK
+# OAPX Runtime (Historical Makai SDK Notes)
+
+This document was imported with the Makai runtime and describes its legacy
+stdio SDK. For the current OAPX CLI, run `oapx serve agent,provider --stdio`;
+the maintained SDK guides are in [`sdk/typescript`](../sdk/typescript/README.md),
+[`sdk/go`](../sdk/go/README.md), [`sdk/python`](../sdk/python/README.md), and
+[`sdk/rust`](../sdk/rust/README.md). The old `oapx --stdio` wire remains an
+explicit compatibility mode, not the SDK default. The material below is kept
+as historical reference for that mode.
 
 TypeScript SDK for Makai's stdio protocol. The SDK starts or connects to a `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
 

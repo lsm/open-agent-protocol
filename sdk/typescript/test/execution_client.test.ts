@@ -655,7 +655,7 @@ test("client.agent.stream auto_once retries after yielded auth lifecycle events"
     { type: "turn_end", stop_reason: "error", error_message: "auth_required" },
     { type: "agent_end", stop_reason: "error", error_message: "auth_required", provider_id: "anthropic" },
   ]));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath },
@@ -1003,7 +1003,7 @@ test("client.agent.stream throws MakaiStreamError on malformed event_json", asyn
 test("createMakaiClient wires all namespaces correctly", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-client-wiring-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
@@ -1056,7 +1056,7 @@ test("client.provider.stream normalizes top-level start frame to message_start",
 test("client.provider.complete auto_once retries on auth_required nack and succeeds", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-complete-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
@@ -1083,7 +1083,7 @@ test("client.provider.complete auto_once retries on auth_required nack and succe
 test("client.provider.stream auto_once retries on auth_required nack and yields events", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
@@ -1108,7 +1108,7 @@ test("client.provider.stream auto_once retries on auth_required nack and yields 
 test("client.provider.complete auto_once retries at most once when auth_required persists", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-complete-limit-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
@@ -1133,7 +1133,7 @@ test("client.provider.complete auto_once retries at most once when auth_required
 test("client.provider.stream auto_once retries at most once when auth_required persists", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-stream-limit-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
@@ -1170,7 +1170,7 @@ test("client.agent.run auto_once retries on auth_required nack and succeeds", as
       stop_reason: "end_turn",
     }],
   }));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
@@ -1195,7 +1195,7 @@ test("client.agent.run auto_once retries on auth_required nack and succeeds", as
 test("client.agent.run auto_once retries at most once when auth_required persists", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-agent-limit-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
@@ -1232,7 +1232,7 @@ test("client.agent.run auto_once uses fresh session_id on retry", async () => {
       stop_reason: "end_turn",
     }],
   }));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
@@ -1259,7 +1259,7 @@ test("client.agent.run auto_once uses fresh session_id on retry", async () => {
 test("manual auth_retry_policy does not retry on auth_required", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-manual-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
@@ -1286,7 +1286,7 @@ test("manual auth_retry_policy does not retry on auth_required", async () => {
 test("auto_once normalizes login failure to auth_required with partial handlers", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-fail-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRES_PROMPT: "1" },
@@ -1313,7 +1313,7 @@ test("auto_once normalizes login failure to auth_required with partial handlers"
 test("manual policy backfills provider_id on auth_required nack missing provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-manual-backfill-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1338,7 +1338,7 @@ test("manual policy backfills provider_id on auth_required nack missing provider
 test("manual policy backfills provider_id on auth_required stream nack missing provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-manual-backfill-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1366,7 +1366,7 @@ test("manual policy backfills provider_id on auth_required stream nack missing p
 test("manual policy backfills provider_id on agent run auth_required nack missing provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-manual-backfill-agent-run-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1391,7 +1391,7 @@ test("manual policy backfills provider_id on agent run auth_required nack missin
 test("manual policy backfills provider_id on agent stream auth_required nack missing provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-manual-backfill-agent-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1419,7 +1419,7 @@ test("manual policy backfills provider_id on agent stream auth_required nack mis
 test("manual policy backfills provider_id for non-canonical model_ref on auth_required nack", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-manual-backfill-noncanon-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1447,7 +1447,7 @@ test("manual policy backfills provider_id for non-canonical model_ref on auth_re
 test("client.agent.stream auto_once retries on auth_required nack and yields events", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-agent-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
@@ -1472,7 +1472,7 @@ test("client.agent.stream auto_once retries on auth_required nack and yields eve
 test("client.agent.stream auto_once uses fresh session_id on retry", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-agent-stream-session-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
@@ -1499,7 +1499,7 @@ test("client.agent.stream auto_once uses fresh session_id on retry", async () =>
 test("client.agent.stream auto_once retries at most once when auth_required persists", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-agent-stream-limit-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
@@ -1524,7 +1524,7 @@ test("client.agent.stream auto_once retries at most once when auth_required pers
 test("per-request manual auth_retry_policy overrides client auto_once", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-override-manual-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
@@ -1549,7 +1549,7 @@ test("per-request manual auth_retry_policy overrides client auto_once", async ()
 test("per-request auto_once auth_retry_policy overrides client manual", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-override-auto-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
@@ -1572,7 +1572,7 @@ test("per-request auto_once auth_retry_policy overrides client manual", async ()
 test("client.provider.complete auto_once retries when error lacks provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-no-pid-complete-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1595,7 +1595,7 @@ test("client.provider.complete auto_once retries when error lacks provider_id", 
 test("client.provider.stream auto_once retries when error lacks provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-no-pid-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1630,7 +1630,7 @@ test("client.agent.run auto_once retries when error lacks provider_id", async ()
       stop_reason: "end_turn",
     }],
   }));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
@@ -1653,7 +1653,7 @@ test("client.agent.run auto_once retries when error lacks provider_id", async ()
 test("client.agent.stream auto_once retries when error lacks provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-no-pid-agent-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1676,7 +1676,7 @@ test("client.agent.stream auto_once retries when error lacks provider_id", async
 test("client.provider.complete auto_once retries for non-canonical model_ref when error lacks provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-noncanon-complete-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1704,7 +1704,7 @@ test("client.provider.complete auto_once retries for non-canonical model_ref whe
 test("client.provider.stream auto_once retries for non-canonical model_ref when error lacks provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-noncanon-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1744,7 +1744,7 @@ test("client.agent.run auto_once retries for non-canonical model_ref when error 
       stop_reason: "end_turn",
     }],
   }));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
@@ -1772,7 +1772,7 @@ test("client.agent.run auto_once retries for non-canonical model_ref when error 
 test("client.agent.stream auto_once retries for non-canonical model_ref when error lacks provider_id", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-auth-retry-noncanon-agent-stream-test-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
@@ -1831,7 +1831,7 @@ test("acceptance: OAuth, model discovery, and provider execution share provider-
   const modelsPath = path.join(tmpDir, "models.json");
   fs.writeFileSync(modelsPath, JSON.stringify({ models: [model], fetched_at_ms: 1, cache_max_age_ms: 300000 }));
 
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: {
@@ -1884,7 +1884,7 @@ test("acceptance: provider and agent model lists have identical output shape", a
   };
   const modelsPath = path.join(tmpDir, "models.json");
   fs.writeFileSync(modelsPath, JSON.stringify({ models: [model], fetched_at_ms: 7, cache_max_age_ms: 300000 }));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_MODELS_RESPONSE_PATH: modelsPath },
@@ -1915,7 +1915,7 @@ test("acceptance: provider and agent execution accept the same model_ref", async
       stop_reason: "end_turn",
     }],
   }));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
@@ -2413,7 +2413,7 @@ test("client.agent.run auth retry stops the abandoned session", async () => {
       stop_reason: "end_turn",
     }],
   }));
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath, OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" },
@@ -2552,7 +2552,7 @@ test("client.agent.stream does not stop a caller-supplied session when the start
 test("client.agent.run auth-retry attempt with a lost start reply still stops its SDK-generated session (#205)", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-agent-stop-retry-lost-"));
   const logPath = path.join(tmpDir, "request.log");
-  const handle = await createMakaiClient({
+  const handle = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [fixtureScript],
     env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_SUPPRESS_AGENT_START_RESPONSE: "1", OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" },

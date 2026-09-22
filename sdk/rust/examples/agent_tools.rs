@@ -1,4 +1,5 @@
-//! Run the agent loop with a tool that executes in this process.
+//! Run the legacy agent loop with a tool that executes in this process.
+//! Client-executed tools are not yet available on the OAP default endpoint.
 //!
 //! ```text
 //! cargo run --example agent_tools
@@ -15,7 +16,7 @@ struct WeatherArgs {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::connect().await?;
+    let client = Client::builder().legacy_wire().connect().await?;
 
     let model = client
         .models()

@@ -16,7 +16,7 @@ use crate::error::{AuthErrorKind, Error, Result};
 use crate::ids::new_ulid;
 use crate::models::AuthStatus;
 use crate::transport::Transport;
-use crate::wire::{Envelope, Frame};
+use crate::wire::{Envelope, Frame, AGENT_PROFILE};
 
 /// One provider's auth state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +182,40 @@ impl AuthApi {
 
     /// Lists every provider the runtime knows about, with its auth state.
     pub async fn list_providers(&self) -> Result<Vec<ProviderAuthInfo>> {
+        if self.transport.is_oap() {
+            let response = self
+                .transport
+                .request_oap(
+                    AGENT_PROFILE,
+                    "auth.providers.request",
+                    json!({}),
+                    None,
+                    self.frame_timeout,
+                )
+                .await?;
+            if response.kind != "auth.providers.response" {
+                return Err(Error::protocol(
+                    "unexpected OAP auth providers response",
+                    Some("malformed_response"),
+                ));
+            }
+            let providers = response
+                .payload()
+                .get("providers")
+                .cloned()
+                .ok_or_else(|| {
+                    Error::protocol(
+                        "OAP auth providers response has no providers",
+                        Some("malformed_response"),
+                    )
+                })?;
+            return serde_json::from_value(providers).map_err(|err| {
+                Error::protocol(
+                    format!("invalid OAP auth providers response: {err}"),
+                    Some("malformed_response"),
+                )
+            });
+        }
         let stream_id = new_ulid();
         let mut subscription = self.transport.subscribe_stream(&stream_id);
         self.transport
@@ -220,6 +254,9 @@ impl AuthApi {
     /// the returned future cancels the flow: the SDK sends `auth_cancel` so the
     /// runtime does not leave an OAuth listener running.
     pub async fn login(&self, provider_id: &str, handlers: Option<&AuthHandlers>) -> Result<()> {
+        if self.transport.is_oap() {
+            return self.login_oap(provider_id, handlers).await;
+        }
         let handlers = handlers.unwrap_or(&self.handlers).clone();
         let flow_id = new_ulid();
         let mut subscription = self.transport.subscribe_stream(&flow_id);
@@ -344,6 +381,209 @@ impl AuthApi {
         }
     }
 
+    async fn login_oap(&self, provider_id: &str, handlers: Option<&AuthHandlers>) -> Result<()> {
+        let handlers = handlers.unwrap_or(&self.handlers).clone();
+        let started = self
+            .transport
+            .request_oap(
+                AGENT_PROFILE,
+                "auth.login.start.request",
+                json!({ "provider_id": provider_id }),
+                None,
+                self.frame_timeout,
+            )
+            .await?;
+        if started.kind != "auth.login.start.response" {
+            return Err(Error::protocol(
+                "unexpected OAP auth login start response",
+                Some("malformed_response"),
+            ));
+        }
+        let flow_id = started.payload_non_empty("flow_id").ok_or_else(|| {
+            Error::protocol(
+                "OAP auth login start response has no flow_id",
+                Some("malformed_response"),
+            )
+        })?;
+        let mut subscription = self.transport.subscribe_stream(&flow_id);
+        let mut guard = OapLoginGuard {
+            transport: Arc::clone(&self.transport),
+            flow_id: flow_id.clone(),
+            settled: false,
+        };
+        let mut sequence = 0u64;
+        loop {
+            let frame = subscription
+                .next_within(self.frame_timeout, "auth.login.event/auth.login.completed")
+                .await
+                .map_err(to_auth_error)?;
+            if frame.profile.as_deref() != Some(AGENT_PROFILE)
+                || frame.sequence != Some(sequence + 1)
+                || frame.payload_str("flow_id") != Some(flow_id.as_str())
+                || frame.payload_str("provider_id") != Some(provider_id)
+            {
+                return Err(Error::protocol(
+                    "OAP auth flow identity or sequence mismatch",
+                    Some("malformed_response"),
+                ));
+            }
+            sequence += 1;
+            match frame.kind.as_str() {
+                "auth.login.event" => {
+                    let event = match frame.payload_str("kind") {
+                        Some("url") => AuthEvent::AuthUrl {
+                            flow_id: flow_id.clone(),
+                            provider_id: provider_id.to_owned(),
+                            url: frame.payload_non_empty("url").ok_or_else(|| {
+                                Error::protocol("auth URL is missing", Some("malformed_response"))
+                            })?,
+                            instructions: frame.payload_str("instructions").map(str::to_owned),
+                        },
+                        Some("prompt") => AuthEvent::Prompt(AuthPrompt {
+                            flow_id: flow_id.clone(),
+                            provider_id: provider_id.to_owned(),
+                            prompt_id: frame.payload_non_empty("prompt_id").ok_or_else(|| {
+                                Error::protocol(
+                                    "auth prompt_id is missing",
+                                    Some("malformed_response"),
+                                )
+                            })?,
+                            message: frame.payload_non_empty("message").ok_or_else(|| {
+                                Error::protocol(
+                                    "auth prompt message is missing",
+                                    Some("malformed_response"),
+                                )
+                            })?,
+                            allow_empty: frame
+                                .payload()
+                                .get("allow_empty")
+                                .and_then(serde_json::Value::as_bool)
+                                .ok_or_else(|| {
+                                    Error::protocol(
+                                        "auth prompt allow_empty is missing",
+                                        Some("malformed_response"),
+                                    )
+                                })?,
+                        }),
+                        Some("progress") => AuthEvent::Progress {
+                            flow_id: flow_id.clone(),
+                            provider_id: provider_id.to_owned(),
+                            message: frame.payload_non_empty("message").ok_or_else(|| {
+                                Error::protocol(
+                                    "auth progress message is missing",
+                                    Some("malformed_response"),
+                                )
+                            })?,
+                        },
+                        _ => {
+                            return Err(Error::protocol(
+                                "unknown OAP auth event kind",
+                                Some("malformed_response"),
+                            ))
+                        }
+                    };
+                    if let Some(callback) = &handlers.on_event {
+                        callback(event.clone());
+                    }
+                    if let AuthEvent::Prompt(prompt) = event {
+                        let Some(handler) = &handlers.on_prompt else {
+                            return Err(Error::auth(
+                                AuthErrorKind::Cancelled,
+                                "auth login cancelled (no prompt handler configured)",
+                                None,
+                            ));
+                        };
+                        let answer = handler(prompt.clone()).await.map_err(|message| {
+                            Error::auth(AuthErrorKind::Unknown, message, None)
+                        })?;
+                        if answer.len() > 4096 || (!prompt.allow_empty && answer.is_empty()) {
+                            return Err(Error::auth(
+                                AuthErrorKind::Unknown,
+                                "invalid auth prompt answer",
+                                None,
+                            ));
+                        }
+                        let reply = self.transport.request_oap(
+                            AGENT_PROFILE, "auth.login.reply.request",
+                            json!({ "flow_id": flow_id, "prompt_id": prompt.prompt_id, "answer": answer }),
+                            None, self.frame_timeout,
+                        ).await?;
+                        if reply.kind != "auth.login.reply.response"
+                            || reply.payload_str("flow_id") != Some(flow_id.as_str())
+                            || reply.payload_str("prompt_id") != Some(prompt.prompt_id.as_str())
+                            || reply
+                                .payload()
+                                .get("accepted")
+                                .and_then(serde_json::Value::as_bool)
+                                != Some(true)
+                        {
+                            return Err(Error::protocol(
+                                "OAP auth prompt answer was not accepted",
+                                Some("malformed_response"),
+                            ));
+                        }
+                    }
+                }
+                "auth.login.completed" => {
+                    guard.settled = true;
+                    let error = frame.payload().get("error");
+                    let code = error
+                        .and_then(|value| value.get("code"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned);
+                    let message = error
+                        .and_then(|value| value.get("message"))
+                        .and_then(serde_json::Value::as_str);
+                    return match frame.payload_str("status") {
+                        Some("success") => {
+                            if let Some(callback) = &handlers.on_event {
+                                callback(AuthEvent::Success {
+                                    flow_id,
+                                    provider_id: provider_id.to_owned(),
+                                });
+                            }
+                            Ok(())
+                        }
+                        Some("failed") => {
+                            let detail = message.unwrap_or("auth login failed").to_owned();
+                            if let Some(callback) = &handlers.on_event {
+                                callback(AuthEvent::Error {
+                                    flow_id,
+                                    provider_id: provider_id.to_owned(),
+                                    code: code.clone(),
+                                    message: detail.clone(),
+                                });
+                            }
+                            Err(Error::auth(AuthErrorKind::ProviderError, detail, code))
+                        }
+                        Some("cancelled") => {
+                            let detail = message.unwrap_or("auth login cancelled").to_owned();
+                            if let Some(callback) = &handlers.on_event {
+                                callback(AuthEvent::Error {
+                                    flow_id,
+                                    provider_id: provider_id.to_owned(),
+                                    code: code.clone(),
+                                    message: detail.clone(),
+                                });
+                            }
+                            Err(Error::auth(AuthErrorKind::Cancelled, detail, code))
+                        }
+                        _ => Err(Error::protocol(
+                            "unknown OAP auth completion status",
+                            Some("malformed_response"),
+                        )),
+                    };
+                }
+                _ => {
+                    return Err(Error::protocol(
+                        "unexpected OAP auth flow frame",
+                        Some("malformed_response"),
+                    ))
+                }
+            }
+        }
+    }
+
     fn cancel(&self, flow_id: &str, sequence: u64) {
         self.transport.send_best_effort(&Envelope::for_flow(
             "auth_cancel",
@@ -372,6 +612,28 @@ impl AuthApi {
                 Err(_) => return,
             }
         }
+    }
+}
+
+/// Cancels an OAP flow when its login future is dropped or fails before a terminal.
+struct OapLoginGuard {
+    transport: Arc<Transport>,
+    flow_id: String,
+    settled: bool,
+}
+
+impl Drop for OapLoginGuard {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let _ = self.transport.send_oap(
+            AGENT_PROFILE,
+            "auth.login.cancel.request",
+            &new_ulid(),
+            json!({ "flow_id": self.flow_id }),
+            None,
+        );
     }
 }
 

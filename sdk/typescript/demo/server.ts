@@ -154,6 +154,9 @@ export function createDemoServer(options: DemoServerOptions = {}): Server {
   function clientOptions(extra?: Partial<CreateMakaiClientOptions>): CreateMakaiClientOptions {
     const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}), ...(homeDir ? { HOME: homeDir } : {}) };
     return {
+      // This demo still exercises the pre-OAP auth and client-tool flow.
+      // Keep its legacy dependency explicit until the OAP extensions land.
+      wireProtocol: "legacy",
       ...(options.command ? { command: options.command, args: options.args, env } : binaryPath ? { resolver: { binaryPath }, env } : { env, resolver: { binaryPath: "" } }),
       ...extra,
     };

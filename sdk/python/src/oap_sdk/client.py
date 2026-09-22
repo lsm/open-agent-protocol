@@ -1,6 +1,6 @@
 """The top-level client: one transport, four namespaces.
 
-``MakaiClient`` owns a single ``oapx --stdio`` child process and exposes
+``MakaiClient`` owns a single ``oapx serve agent,provider --stdio`` child process and exposes
 ``auth``, ``models``, ``provider``, and ``agent`` over it. The protocols
 multiplex, so concurrent calls on one client are fine; ordering is guaranteed
 only within a stream or session.
@@ -14,6 +14,7 @@ from typing import Any, Generator, Mapping, Optional, Sequence, Type
 
 from .auth import AuthApi
 from .binary import BinaryResolverOptions
+from ._oap import OAPAgentApi, OAPModelsApi, OAPProviderApi
 from .execution import AgentApi, ProviderApi
 from .models import ModelsApi
 from .transport import DEFAULT_HANDSHAKE_TIMEOUT_S, StdioTransport
@@ -66,27 +67,28 @@ class MakaiClient:
         self.auth = AuthApi(
             transport, handlers=auth_options.handlers, frame_timeout=auth_timeout
         )
-        """Auth provider listing and interactive login."""
 
-        self.models = ModelsApi(transport, response_timeout=models_timeout)
-        """Model discovery. ``model_ref`` values are opaque."""
-
-        self.provider = ProviderApi(
-            transport,
-            response_timeout=execution_timeout,
-            auth_retry_policy=auth_options.auth_retry_policy,
-            auth=self.auth,
-        )
-        """Direct provider completions and streaming."""
-
-        self.agent = AgentApi(
-            transport,
-            response_timeout=execution_timeout,
-            auth_retry_policy=auth_options.auth_retry_policy,
-            auth=self.auth,
-            models=ModelsApi(transport, response_timeout=models_timeout),
-        )
-        """The runtime's agent loop, with tools executed in your process."""
+        self.models: ModelsApi | OAPModelsApi
+        self.provider: ProviderApi | OAPProviderApi
+        self.agent: AgentApi | OAPAgentApi
+        if transport.legacy_wire:
+            self.models = ModelsApi(transport, response_timeout=models_timeout)
+            self.provider = ProviderApi(
+                transport, response_timeout=execution_timeout,
+                auth_retry_policy=auth_options.auth_retry_policy, auth=self.auth)
+            self.agent = AgentApi(
+                transport, response_timeout=execution_timeout,
+                auth_retry_policy=auth_options.auth_retry_policy, auth=self.auth,
+                models=ModelsApi(transport, response_timeout=models_timeout))
+        else:
+            self.models = OAPModelsApi(transport, response_timeout=models_timeout)
+            self.provider = OAPProviderApi(
+                transport, response_timeout=execution_timeout,
+                auth_retry_policy=auth_options.auth_retry_policy, auth=self.auth)
+            self.agent = OAPAgentApi(
+                transport, response_timeout=execution_timeout,
+                auth_retry_policy=auth_options.auth_retry_policy, auth=self.auth,
+                models=OAPModelsApi(transport, response_timeout=models_timeout))
 
     @property
     def transport(self) -> StdioTransport:
@@ -124,6 +126,7 @@ class _ClientConnector:
         response_timeout: Optional[float],
         frame_timeout: Optional[float],
         handshake_timeout: float,
+        legacy_wire: Optional[bool],
     ) -> None:
         self._command = command
         self._args = args
@@ -134,6 +137,7 @@ class _ClientConnector:
         self._response_timeout = response_timeout
         self._frame_timeout = frame_timeout
         self._handshake_timeout = handshake_timeout
+        self._legacy_wire = legacy_wire
         self._client: Optional[MakaiClient] = None
 
     async def _open(self) -> MakaiClient:
@@ -144,6 +148,7 @@ class _ClientConnector:
             env=self._env,
             resolver=self._resolver,
             handshake_timeout=self._handshake_timeout,
+            legacy_wire=self._legacy_wire,
         )
         await transport.connect()
         try:
@@ -186,8 +191,9 @@ def connect(
     response_timeout: Optional[float] = None,
     frame_timeout: Optional[float] = None,
     handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT_S,
+    legacy_wire: Optional[bool] = None,
 ) -> _ClientConnector:
-    """Start a ``oapx --stdio`` runtime and return a connected client.
+    """Start a combined OAP agent/provider stdio runtime and return a client.
 
     Usable both ways::
 
@@ -198,7 +204,10 @@ def connect(
     Args:
         command: Explicit binary to run. Defaults to
             :func:`~oap_sdk.binary.resolve_makai_binary`.
-        args: Process arguments. Defaults to ``["--stdio"]``.
+        args: Process arguments. Defaults to
+            ``["serve", "agent,provider", "--stdio"]``.
+        legacy_wire: Explicitly use the pre-OAP Makai V1 wire. Defaults to
+            false unless ``OAP_SDK_LEGACY_WIRE=1`` is set.
         cwd: Working directory for the child process.
         env: Environment for the child process. Defaults to the parent's.
         resolver: Binary resolution options.
@@ -206,7 +215,7 @@ def connect(
         response_timeout: Seconds to wait for a provider/agent frame
             (default 30) and a models frame (default 5).
         frame_timeout: Seconds to wait for an auth frame (default 30).
-        handshake_timeout: Seconds to wait for the ``ready`` frame.
+        handshake_timeout: Seconds to wait for OAP initialize or legacy ready.
     """
     return _ClientConnector(
         command=command,
@@ -218,4 +227,5 @@ def connect(
         response_timeout=response_timeout,
         frame_timeout=frame_timeout,
         handshake_timeout=handshake_timeout,
+        legacy_wire=legacy_wire,
     )

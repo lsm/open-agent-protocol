@@ -8,6 +8,8 @@
         "authenticated",
         "login_required",
         "expired",
+        "refreshing",
+        "login_in_progress",
         "failed",
         "unknown"
       ]

@@ -95,7 +95,7 @@ test("createMakaiClient leaves no orphan runtime when the handshake times out", 
   const pidFile = await tempFile("makai-pid-factory-");
   await assert.rejects(
     () =>
-      createMakaiClient({
+      createMakaiClient({ wireProtocol: "legacy",
         command: process.execPath,
         args: [pidReportingServer],
         env: { ...process.env, OAP_SDK_TEST_PID_FILE: pidFile, OAP_SDK_TEST_HANDSHAKE: "silent" },
@@ -157,7 +157,7 @@ test("handshake error frame terminates the spawned runtime process", async () =>
 
 test("breaking out of provider.stream cancels the runtime stream", async () => {
   const frameLog = await tempFile("makai-frames-break-");
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [streamCancelObserverServer],
     env: { ...process.env, OAP_SDK_TEST_FRAME_LOG: frameLog },
@@ -182,7 +182,7 @@ test("breaking out of provider.stream cancels the runtime stream", async () => {
 
 test("provider.stream that runs to completion does not cancel the runtime stream", async () => {
   const frameLog = await tempFile("makai-frames-complete-");
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [streamCancelObserverServer],
     env: { ...process.env, OAP_SDK_TEST_FRAME_LOG: frameLog, OAP_SDK_TEST_DELTA_COUNT: "2", OAP_SDK_TEST_DELTA_INTERVAL_MS: "5" },
@@ -205,7 +205,7 @@ test("provider.stream that runs to completion does not cancel the runtime stream
 
 test("aborting provider.stream cancels the runtime stream exactly once", async () => {
   const frameLog = await tempFile("makai-frames-abort-");
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [streamCancelObserverServer],
     env: { ...process.env, OAP_SDK_TEST_FRAME_LOG: frameLog },
@@ -231,7 +231,7 @@ test("aborting provider.stream cancels the runtime stream exactly once", async (
 });
 
 test("provider and agent calls on a closed transport reject with MakaiStreamError", async () => {
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [streamCancelObserverServer],
     handshakeTimeoutMs: 3000,
@@ -253,7 +253,7 @@ test("provider and agent calls on a closed transport reject with MakaiStreamErro
 });
 
 test("aborting a provider call rejects with a plain AbortError, not MakaiStreamError", async () => {
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [streamCancelObserverServer],
     handshakeTimeoutMs: 3000,
@@ -276,7 +276,7 @@ test("aborting a provider call rejects with a plain AbortError, not MakaiStreamE
 });
 
 test("models.list on a closed transport rejects with a plain Error, not MakaiProtocolError", async () => {
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [streamCancelObserverServer],
     handshakeTimeoutMs: 3000,
@@ -294,7 +294,7 @@ test("models.list on a closed transport rejects with a plain Error, not MakaiPro
 });
 
 test("responseTimeoutMs does not govern the auth namespace", async () => {
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [streamCancelObserverServer],
     handshakeTimeoutMs: 3000,

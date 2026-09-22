@@ -38,8 +38,10 @@ API. The vocabulary is uniform; the honesty about the endpoint is not optional.
 
 ## What This Profile Is Not
 
-It is not an inference API. It does not replace a vendor's own SDK for anything
-beyond one call, and it takes no position on how a vendor should design theirs.
+It is a normalized API for **one direct inference call** and model discovery,
+not a general-purpose vendor API. It does not replace a vendor's own SDK for
+embeddings, fine-tuning, files, or the rest of that vendor's surface, and it
+takes no position on how a vendor should design theirs.
 
 It is not part of `agent-control-core`, and no envelope, rule or capability of
 that profile changes because this exists. An endpoint implementing only agent

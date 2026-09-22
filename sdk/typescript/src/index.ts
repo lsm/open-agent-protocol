@@ -52,6 +52,17 @@ export {
 } from "./execution_client";
 
 export {
+  createOapClient,
+  OapStdioTransport,
+  OapUnsupportedFeatureError,
+  OAP_PROTOCOL,
+  OAP_VERSION,
+  OAP_AGENT_PROFILE,
+  OAP_PROVIDER_PROFILE,
+  type OapEnvelope,
+} from "./oap_client";
+
+export {
   MakaiAuthRequiredError,
   MakaiStreamError,
   type AgentRunRequest,

@@ -8,7 +8,7 @@ import (
 
 // Default timeouts and grace periods. Override them through [Options].
 const (
-	// defaultHandshakeTimeout bounds the wait for the runtime's ready frame.
+	// defaultHandshakeTimeout bounds the wait for OAP initialize (or legacy ready).
 	defaultHandshakeTimeout = 5 * time.Second
 	// defaultRequestTimeout bounds the wait for each individual frame of a
 	// response. A long provider turn is not a timeout as long as the runtime
@@ -20,9 +20,12 @@ const (
 )
 
 // Options configures a [Client]. The zero value is valid: it resolves the
-// runtime binary automatically, runs it as `oapx --stdio`, and uses the
+// runtime binary automatically, runs `oapx serve agent,provider --stdio`, and uses the
 // default timeouts.
 type Options struct {
+	// LegacyWire explicitly selects the pre-OAP Makai V1 stdio protocol.
+	// The default is the combined OAP 0.1 agent/provider connection.
+	LegacyWire bool
 	// BinaryPath runs a specific runtime binary. The OAP_SDK_BINARY_PATH
 	// environment variable takes precedence over this field, matching the
 	// TypeScript SDK's resolution order.
@@ -40,7 +43,8 @@ type Options struct {
 	// $XDG_CACHE_HOME/makai/bin, or ~/.cache/makai/bin.
 	CacheDir string
 
-	// Args are the runtime's arguments. Defaults to ["--stdio"].
+	// Args are the runtime's arguments. Defaults to
+	// ["serve", "agent,provider", "--stdio"].
 	Args []string
 	// Dir is the runtime's working directory. Defaults to the caller's.
 	Dir string
@@ -49,10 +53,10 @@ type Options struct {
 	Env []string
 
 	// ExpectedProtocolVersion is the envelope protocol version the runtime
-	// must announce in its handshake. Defaults to "1".
+	// must announce during initialize. Defaults to "0.1".
 	ExpectedProtocolVersion string
 
-	// HandshakeTimeout bounds the wait for the ready frame. Defaults to 5s.
+	// HandshakeTimeout bounds the wait for initialize/ready. Defaults to 5s.
 	HandshakeTimeout time.Duration
 	// RequestTimeout bounds the wait for each frame of a response.
 	// Defaults to 30s.
@@ -68,14 +72,20 @@ type Options struct {
 
 func (o *Options) args() []string {
 	if o == nil || o.Args == nil {
-		return []string{"--stdio"}
+		if o != nil && o.LegacyWire {
+			return []string{"--stdio"}
+		}
+		return []string{"serve", "agent,provider", "--stdio"}
 	}
 	return o.Args
 }
 
 func (o *Options) protocolVersion() string {
 	if o == nil || o.ExpectedProtocolVersion == "" {
-		return "1"
+		if o != nil && o.LegacyWire {
+			return "1"
+		}
+		return "0.1"
 	}
 	return o.ExpectedProtocolVersion
 }

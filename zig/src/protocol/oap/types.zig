@@ -71,6 +71,9 @@ pub const EmittedErrorCode = enum {
     run_not_found,
     run_already_terminal,
     provider_error,
+    credential_missing,
+    credential_expired,
+    credential_rejected,
     internal_error,
 
     pub fn text(self: EmittedErrorCode) []const u8 {
@@ -351,6 +354,64 @@ pub const SessionStateRequest = struct {
     }
 };
 
+pub const ModelsRequest = struct {
+    session_id: []const u8,
+
+    pub fn deinit(self: *ModelsRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+    }
+};
+
+pub const ModelDescriptor = struct {
+    id: []const u8,
+    display_name: ?[]const u8 = null,
+    provider_id: ?[]const u8 = null,
+    default: bool = false,
+
+    pub fn deinit(self: *ModelDescriptor, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.display_name) |value| allocator.free(value);
+        if (self.provider_id) |value| allocator.free(value);
+    }
+};
+
+pub const ModelsResponse = struct {
+    session_id: []const u8,
+    current_model_id: ?[]const u8 = null,
+    models: []ModelDescriptor,
+
+    pub fn deinit(self: *ModelsResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        if (self.current_model_id) |value| allocator.free(value);
+        for (self.models) |*model| model.deinit(allocator);
+        allocator.free(self.models);
+    }
+};
+
+pub const SessionModelSwitchRequest = struct {
+    session_id: []const u8,
+    model_id: []const u8,
+    allow_degraded_features: []const []const u8 = &.{},
+
+    pub fn deinit(self: *SessionModelSwitchRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.model_id);
+        freeStringList(allocator, self.allow_degraded_features);
+    }
+};
+
+pub const SessionModelSwitchResponse = struct {
+    session_id: []const u8,
+    model_id: []const u8,
+    previous_model_id: ?[]const u8 = null,
+
+    pub fn deinit(self: *SessionModelSwitchResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.model_id);
+        if (self.previous_model_id) |value| allocator.free(value);
+    }
+};
+
 pub const SessionState = struct {
     session_id: []const u8,
     status: SessionStatus,
@@ -538,11 +599,15 @@ pub const Payload = union(enum) {
     initialize_response: InitializeResponse,
     capabilities_request: void,
     capabilities_response: CapabilitiesResponse,
+    models_request: ModelsRequest,
+    models_response: ModelsResponse,
     session_open_request: SessionOpenRequest,
     session_open_response: SessionState,
     session_state_request: SessionStateRequest,
     session_state_response: SessionState,
     session_state_updated: SessionState,
+    session_model_switch_request: SessionModelSwitchRequest,
+    session_model_switch_response: SessionModelSwitchResponse,
     message_submit_request: MessageSubmitRequest,
     message_submit_response: MessageSubmitResponse,
     run_cancel_request: RunCancelRequest,
@@ -561,11 +626,15 @@ pub const Payload = union(enum) {
             .initialize_request => |*value| value.deinit(allocator),
             .initialize_response => |*value| value.deinit(allocator),
             .capabilities_response => |*value| value.deinit(allocator),
+            .models_request => |*value| value.deinit(allocator),
+            .models_response => |*value| value.deinit(allocator),
             .session_open_request => |*value| value.deinit(allocator),
             .session_open_response => |*value| value.deinit(allocator),
             .session_state_request => |*value| value.deinit(allocator),
             .session_state_response => |*value| value.deinit(allocator),
             .session_state_updated => |*value| value.deinit(allocator),
+            .session_model_switch_request => |*value| value.deinit(allocator),
+            .session_model_switch_response => |*value| value.deinit(allocator),
             .message_submit_request => |*value| value.deinit(allocator),
             .message_submit_response => |*value| value.deinit(allocator),
             .run_cancel_request => |*value| value.deinit(allocator),
@@ -586,11 +655,15 @@ pub const Payload = union(enum) {
             .initialize_response => "protocol.initialize.response",
             .capabilities_request => "capabilities.request",
             .capabilities_response => "capabilities.response",
+            .models_request => "models.request",
+            .models_response => "models.response",
             .session_open_request => "session.open.request",
             .session_open_response => "session.open.response",
             .session_state_request => "session.state.request",
             .session_state_response => "session.state.response",
             .session_state_updated => "session.state.updated",
+            .session_model_switch_request => "session.model.switch.request",
+            .session_model_switch_response => "session.model.switch.response",
             .message_submit_request => "session.message.submit.request",
             .message_submit_response => "session.message.submit.response",
             .run_cancel_request => "run.cancel.request",

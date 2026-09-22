@@ -32,6 +32,7 @@ __all__ = [
     "TextContentPart",
     "ThinkingContentPart",
     "ImageContentPart",
+    "UrlImageContentPart",
     "ToolCallContentPart",
     "ToolResultContentPart",
     "ContentPart",
@@ -122,17 +123,23 @@ class ImageContentPart(TypedDict):
     mime_type: str
 
 
+class UrlImageContentPart(TypedDict):
+    type: Literal["image"]
+    url: str
+
+
 class ToolCallContentPart(TypedDict):
     type: Literal["tool_call"]
     tool_call_id: str
     name: str
     arguments_json: str
+    carry: NotRequired[str]
 
 
 class ToolResultContentPart(TypedDict):
     type: Literal["tool_result"]
     tool_call_id: str
-    tool_name: str
+    tool_name: NotRequired[str]
     content: Union[str, List[TextContentPart]]
     is_error: NotRequired[bool]
     details_json: NotRequired[str]
@@ -142,6 +149,7 @@ ContentPart = Union[
     TextContentPart,
     ThinkingContentPart,
     ImageContentPart,
+    UrlImageContentPart,
     ToolCallContentPart,
     ToolResultContentPart,
 ]
@@ -151,8 +159,8 @@ Content = Union[str, List[ContentPart]]
 class ChatMessage(TypedDict):
     """One conversation turn.
 
-    ``system`` and ``developer`` messages are folded into the request's system
-    prompt by the SDK; every other role is sent as a message.
+    OAP preserves ``system`` and ``developer`` roles. Makai V1 folds them
+    into its system prompt in explicit legacy mode.
     """
 
     role: Role
@@ -181,11 +189,10 @@ ToolExecutor = Callable[
 class ToolDefinition:
     """A tool the model may call.
 
-    ``parameters_schema_json`` is a JSON Schema **string**, matching the wire
-    format. ``execute`` is optional: supply it for ``agent`` calls so the SDK
-    can run the tool in your process when the runtime asks. It may be a plain
-    function or a coroutine function. Tools without ``execute`` are advertised
-    to the model but reported back as not executable if called.
+    ``parameters_schema_json`` is a JSON Schema string; the OAP provider path
+    parses it to ``input_schema`` and returns calls to the caller. ``execute``
+    is used only by explicit Makai V1 agent mode. The current OAP agent host
+    rejects client-executed tools with ``unsupported_feature``.
     """
 
     name: str
@@ -198,11 +205,10 @@ class ToolDefinition:
 class RunOptions:
     """Per-request knobs.
 
-    ``session_id`` is a **correlation key only**, not a resume handle: sessions
-    are not resumable (spec §13.1). Supplying one lets you correlate SDK calls
-    with runtime logs; on interruption you must resend the full context. Under
-    ``auth_retry_policy="auto_once"`` the SDK regenerates the id for the
-    retried attempt, so it is not stable across a retry.
+    ``session_id`` names an OAP agent session; in explicit Makai V1 it remains
+    a one-run correlation key. Agent token/sampling options are not projected
+    on the current OAP submit surface and fail explicitly. On an auto-once
+    auth retry, a fresh session id is used for the retried attempt.
     """
 
     temperature: Optional[float] = None

@@ -1,6 +1,6 @@
 # Decision 0025: Authentication Is an Obligation, Not a Credential Channel
 
-Status: proposed
+Status: superseded by [Decision 0029](0029-authentication-over-agent-control.md) before acceptance
 Date: 2026-09-22
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`, relocating one enum

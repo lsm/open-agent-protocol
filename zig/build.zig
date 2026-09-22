@@ -17,6 +17,9 @@ pub fn build(b: *std.Build) void {
     schema_bytes_mod.addAnonymousImport("schema_action", .{
         .root_source_file = b.path("../schema/v0.1/action.schema.json"),
     });
+    schema_bytes_mod.addAnonymousImport("schema_auth", .{
+        .root_source_file = b.path("../schema/v0.1/auth.schema.json"),
+    });
     schema_bytes_mod.addAnonymousImport("schema_capabilities", .{
         .root_source_file = b.path("../schema/v0.1/capabilities.schema.json"),
     });
@@ -1130,6 +1133,19 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const protocol_oap_auth_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/oap/auth_adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "auth_types", .module = protocol_auth_types_mod },
+            .{ .name = "auth_server", .module = protocol_auth_server_mod },
+            .{ .name = "json_writer", .module = json_writer_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+        },
+    });
+
     const protocol_auth_runtime_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/auth/runtime.zig"),
         .target = target,
@@ -1266,6 +1282,22 @@ pub fn build(b: *std.Build) void {
             .{ .name = "protocol_runtime", .module = protocol_runtime_mod },
             .{ .name = "transports/in_process", .module = in_process_transport_mod },
             .{ .name = "compat", .module = compat_mod },
+        },
+    });
+
+    const agent_oap_provider_bridge_mod = b.createModule(.{
+        .root_source_file = b.path("src/agent/oap_provider_bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "agent_types", .module = agent_types_mod },
+            .{ .name = "event_stream", .module = event_stream_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
+            .{ .name = "oap_provider_envelope", .module = protocol_oap_provider_envelope_mod },
+            .{ .name = "oap_provider_catalog", .module = protocol_oap_provider_catalog_mod },
         },
     });
 
@@ -1867,6 +1899,7 @@ pub fn build(b: *std.Build) void {
     const protocol_auth_types_test = b.addTest(.{ .root_module = protocol_auth_types_mod });
     const protocol_auth_envelope_test = b.addTest(.{ .root_module = protocol_auth_envelope_mod });
     const protocol_auth_server_test = b.addTest(.{ .root_module = protocol_auth_server_mod });
+    const protocol_oap_auth_adapter_test = b.addTest(.{ .root_module = protocol_oap_auth_adapter_mod });
     const protocol_auth_runtime_test = b.addTest(.{ .root_module = protocol_auth_runtime_mod });
 
     const protocol_tool_types_test = b.addTest(.{ .root_module = protocol_tool_types_mod });
@@ -1882,6 +1915,7 @@ pub fn build(b: *std.Build) void {
     const agent_mod_test = b.addTest(.{ .root_module = agent_mod });
 
     const agent_provider_protocol_bridge_test = b.addTest(.{ .root_module = agent_provider_protocol_bridge_mod });
+    const agent_oap_provider_bridge_test = b.addTest(.{ .root_module = agent_oap_provider_bridge_mod });
     const tui_session_test = b.addTest(.{ .root_module = tui_session_mod });
     const tui_config_test = b.addTest(.{ .root_module = tui_config_mod });
     const tui_runtime_test = b.addTest(.{ .root_module = tui_runtime_mod });
@@ -2004,9 +2038,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_base_url", .module = provider_base_url_mod },
             .{ .name = "oap_server", .module = protocol_oap_server_mod },
             .{ .name = "oap_bridge", .module = protocol_oap_bridge_mod },
+            .{ .name = "oap_auth_adapter", .module = protocol_oap_auth_adapter_mod },
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "oap_provider_server", .module = protocol_oap_provider_server_mod },
             .{ .name = "oap_provider_catalog", .module = protocol_oap_provider_catalog_mod },
+            .{ .name = "agent_oap_provider_bridge", .module = agent_oap_provider_bridge_mod },
             .{ .name = "oap_provider_grant_channel", .module = protocol_oap_provider_grant_channel_mod },
             .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "oap_provider_runtime", .module = protocol_oap_provider_runtime_mod },
@@ -2169,6 +2205,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(agent_loop_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_mod_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
+    test_step.dependOn(&b.addRunArtifact(agent_oap_provider_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_session_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_config_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
@@ -2205,6 +2242,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
@@ -2290,6 +2328,9 @@ pub fn build(b: *std.Build) void {
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_bridge_test).step);
+    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
+    const test_unit_oap_auth_adapter_step = b.step("test-unit-oap-auth-adapter", "Run OAP auth adapter unit tests");
+    test_unit_oap_auth_adapter_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
@@ -2375,6 +2416,7 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_agent_bridge_step = b.step("test-unit-agent-bridge", "Run agent bridge unit tests");
     test_unit_agent_bridge_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
+    test_unit_agent_bridge_step.dependOn(&b.addRunArtifact(agent_oap_provider_bridge_test).step);
 
     const test_unit_agent_unit_step = b.step("test-unit-agent-unit", "Run agent unit test file");
     test_unit_agent_unit_step.dependOn(&b.addRunArtifact(agent_test).step);

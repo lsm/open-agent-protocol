@@ -77,6 +77,10 @@ const (
 	CodeAmbiguousDefaultModel    = "ambiguous_default_model"
 	CodeDuplicateModelID         = "duplicate_model_id"
 	CodeUnannouncedCatalogChange = "unannounced_catalog_change"
+
+	CodeAuthFlowOrder       = "auth_flow_order"
+	CodeAuthPromptMismatch  = "auth_prompt_mismatch"
+	CodeMissingAuthTerminal = "missing_auth_terminal"
 )
 
 type Diagnostic struct {

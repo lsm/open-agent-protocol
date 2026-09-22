@@ -87,6 +87,14 @@ was conforming when it was given owe a different code.
 
 ### A catalog belongs to the revision it was served under
 
+[Decision 0028](0028-live-model-and-provider-control.md) adds one explicit
+session-local invalidation: an accepted `session.provider.attach.response`
+invalidates the model catalog for that session, even if the endpoint-wide
+`capability_revision` stays the same. A fresh `models.request` is then needed
+before the caller treats the expanded catalog as authoritative. No other
+session's catalog is invalidated by that attachment. This does not permit an
+unannounced mutation within a revision in the absence of an accepted attach.
+
 The catalog is part of the capability snapshot. A `capabilities.updated`, or a
 new `capabilities.response` that *changes the active revision*, discards it, so
 no admission is judged against a stale list: a newly added model is not falsely
@@ -194,6 +202,12 @@ earlier selection may have matched a list that was never served and diagnosing
 it would convict an endpoint for a catalog nobody could have read.
 
 ### `current_model_id` is judged across the query's window, not at an instant
+
+Core `session.model.switch` is another model-affecting operation. Its accepted
+response is a causal anchor and may be named by
+`as_of_model_event.switch_request_id`; a run-driven mutation retains the
+existing `{run_id, sequence}` anchor. The two shapes are exclusive. A switch
+changes `current_model_id` but does not change the catalog's model identities.
 
 A catalog overlapping a session mutation is captured at an instant the trace
 cannot name: the adapter may read the old model and have the mutation's run

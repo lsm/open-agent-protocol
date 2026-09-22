@@ -19,18 +19,29 @@ compose and what a client may choose about the layers below the one it talks
 to. Two of those boundaries have profiles. `agent-control-core` is the control
 layer talking to an agent loop — sessions, runs, tools — and is what this
 repository executes today.
-[Decision 0016](decisions/0016-model-provider-profile.md) proposes
-`model-provider-core` for the boundary below it, and
-[**drafts/model-provider-core.md**](drafts/model-provider-core.md) is its
-specification: an agent loop talking to a model provider, normalizing
-OpenAI-compatible and Anthropic-compatible endpoints behind one vocabulary.
-Neither is executable — no implementation speaks it yet. An agent loop that wraps a vendor SDK and one
-that speaks to inference endpoints directly both expose `agent-control-core`
-upward; the lower profile is what they speak downward, and it is the boundary
-every multi-vendor loop re-solves privately today.
+[Decision 0016](decisions/0016-model-provider-profile.md) and
+[**drafts/model-provider-core.md**](drafts/model-provider-core.md) specify the
+lower model-provider boundary. `oapx` now implements both profiles and uses
+model-provider-core for its own agent inference; it can expose them together
+on one stdio connection. Other agent implementations may still wrap vendor
+SDKs internally.
 
-Implementing OAP natively? [**STABILITY.md**](STABILITY.md) is what this
-project commits to about the v0.1 core surface: what is frozen, what may still
+Run the combined endpoint with:
+
+```sh
+oapx serve agent,provider --stdio
+```
+
+The four SDKs in `sdk/` use this OAP mode by default. The agent's selected
+model can be changed mid-session with `session.model.switch`, and local
+authentication flows use the optional `+auth` unit. Dynamic provider
+attachment is specified but optional; remote provider transport is follow-up
+work. Client-executed agent tools and agent sampling options are not yet
+represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
+the default path; the old Makai wire is available only by explicit opt-in.
+
+Implementing OAP natively? [**STABILITY.md**](STABILITY.md) describes the
+v0.1 pre-release contract: what will freeze at the first tag, what may still
 be added, how conformance is defined and answered, how long a deprecation runs,
 and what you are owed before a breaking change lands. Implementers who want
 notice of proposed breaking changes add themselves to
@@ -52,7 +63,7 @@ Protocol artifacts:
 - [Illustrative protocol envelopes](examples/README.md)
 - `fixtures/`: normative executable conformance traces
 - `fixtures/packs/`: extension packs, loadable with `oap validate -pack`
-- `schema/v0.1/`: JSON Schema bundle for the agent-control core
+- `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles
 
 Executable core (Go 1.27 or later):
 

@@ -166,7 +166,7 @@ test("demo: auth-required chat response is client error", async () => {
 
 test("demo: auth fixture flow reaches cancelled terminal state", async () => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "makai-demo-home-"));
-  const client = await createMakaiClient({
+  const client = await createMakaiClient({ wireProtocol: "legacy",
     command: process.execPath,
     args: [executionFixture],
     env: { ...process.env, HOME: tempHome, OAP_SDK_TEST_AUTH_REQUIRES_PROMPT: "1" },

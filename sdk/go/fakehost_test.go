@@ -82,6 +82,7 @@ const (
 	// scenarioIgnoreStdin keeps running after its stdin closes, so Close has
 	// to kill it.
 	scenarioIgnoreStdin = "ignore-stdin"
+	scenarioOAP         = "oap-combined"
 )
 
 // fakeHostEnv returns the environment for a child running the given scenario,
@@ -122,6 +123,8 @@ func blockForever() {
 // runFakeHost is the child process entry point. It never returns.
 func runFakeHost(scenario string) {
 	switch scenario {
+	case scenarioOAP:
+		runOAPHost()
 	case scenarioSilent:
 		blockForever()
 	case scenarioBadVersion:

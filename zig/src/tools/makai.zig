@@ -26,6 +26,8 @@ const tui_app = @import("tui_app");
 const model_catalog = @import("model_catalog");
 const provider_base_url = @import("provider_base_url");
 const oap_server = @import("oap_server");
+const oap_auth_adapter = @import("oap_auth_adapter");
+const agent_oap_provider_bridge = @import("agent_oap_provider_bridge");
 const pre_transform = @import("pre_transform");
 const semantic = @import("semantic");
 const provider_semantic = @import("provider_semantic");
@@ -445,6 +447,7 @@ const StdioProtocolLoop = struct {
     agent_server: AgentProtocolServer,
     agent_pipe: in_process.SerializedPipe,
     provider_bridge: agent_bridge.InProcessProviderProtocolBridge,
+    oap_provider_bridge: ?agent_oap_provider_bridge.InProcessOapProviderBridge = null,
     active_agent_runs: std.ArrayList(ActiveAgentRun),
     tool_bridge: StdioToolBridge,
     auth_server: AuthProtocolServer,
@@ -514,6 +517,12 @@ const StdioProtocolLoop = struct {
         }
 
         self.* = undefined;
+    }
+
+    pub fn useOapProviderCore(self: *Self) void {
+        self.oap_provider_bridge = agent_oap_provider_bridge.InProcessOapProviderBridge.init(.{
+            .open_fn = openAgentOapProviderTransport,
+        });
     }
 
     pub fn dispatchInboundLine(self: *Self, line: []const u8) !bool {
@@ -707,7 +716,10 @@ const StdioProtocolLoop = struct {
 
         const config = agent_loop.AgentLoopConfig{
             .model = prepared.model,
-            .protocol = (&self.provider_bridge).protocolClient(),
+            .protocol = if (self.oap_provider_bridge) |*provider_bridge|
+                provider_bridge.protocolClient()
+            else
+                (&self.provider_bridge).protocolClient(),
             .tools = prepared.tools,
             .execute_tool_via_protocol_fn = executeStdioToolViaAgentProtocol,
             .execute_tool_via_protocol_ctx = tool_executor,
@@ -1129,6 +1141,24 @@ fn agentServerOptionsFromEnv(allocator: std.mem.Allocator) AgentProtocolServer.O
 fn modelFromCanonicalRef(allocator: std.mem.Allocator, ref: []const u8) !ai_types.Model {
     var parsed = model_ref.parseModelRef(allocator, ref) catch return error.InvalidModelRef;
     errdefer parsed.deinit(allocator);
+
+    // The legacy agent host stores an API name in this slot, while OAP model
+    // references name the provider wire. Resolve the latter at the boundary so
+    // the agent still runs against its local model metadata, then sends the
+    // original OAP wire back down through model-provider-core.
+    if (oap_provider_types.parseModelRef(ref)) |oap_ref| {
+        if (builtInForProvider(oap_ref.provider_id)) |builtin| {
+            const mapping = oap_provider_catalog.mapApiToWire(builtin.api) orelse return error.InvalidModelRef;
+            const same_wire_id = if (mapping.wire_id) |wire_id|
+                oap_ref.wire_id != null and std.mem.eql(u8, wire_id, oap_ref.wire_id.?)
+            else
+                oap_ref.wire_id == null;
+            if (mapping.wire != oap_ref.wire or !same_wire_id) return error.InvalidModelRef;
+            const api = try allocator.dupe(u8, builtin.api);
+            allocator.free(parsed.api);
+            parsed.api = api;
+        }
+    }
 
     if (try modelFromProductionCatalog(allocator, parsed)) |model| {
         parsed.deinit(allocator);
@@ -2309,6 +2339,9 @@ fn runServe(
         try compat.stdio.writeAll(stderr, "serve takes a role, agent or provider\n\n");
         return error.InvalidServeRole;
     }
+    if (isCombinedServeRole(args[0])) {
+        return runOapMode(allocator, args[1..], stdin, stdout, stderr, true);
+    }
     const role = serveRole(args[0]) orelse {
         var buf: [256]u8 = undefined;
         const msg = try std.fmt.bufPrint(&buf, "serve takes a role, agent or provider: {s}\n\n", .{args[0]});
@@ -2316,12 +2349,16 @@ fn runServe(
         return error.InvalidServeRole;
     };
     return switch (role) {
-        .agent => runOapMode(allocator, args[1..], stdin, stdout, stderr),
+        .agent => runOapMode(allocator, args[1..], stdin, stdout, stderr, false),
         .provider => runServeProvider(allocator, args[1..], stdin, stdout, stderr),
     };
 }
 
 const ServeRole = enum { agent, provider };
+
+fn isCombinedServeRole(name: []const u8) bool {
+    return std.mem.eql(u8, name, "agent,provider") or std.mem.eql(u8, name, "provider,agent");
+}
 
 fn serveRole(name: []const u8) ?ServeRole {
     if (std.mem.eql(u8, name, "agent")) return .agent;
@@ -2337,15 +2374,16 @@ fn runServeProvider(
     stderr: std.Io.File,
 ) !void {
     var answers_specimens = false;
-    if (args.len != 0) {
-        if (args.len == 1 and std.mem.eql(u8, args[0], "--specimens")) {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--specimens")) {
             answers_specimens = true;
-        } else {
-            var buf: [256]u8 = undefined;
-            const msg = try std.fmt.bufPrint(&buf, "serve provider takes only --specimens: {s}\n\n", .{args[0]});
-            try compat.stdio.writeAll(stderr, msg);
-            return error.InvalidServeOption;
+            continue;
         }
+        if (std.mem.eql(u8, arg, "--stdio")) continue;
+        var buf: [256]u8 = undefined;
+        const msg = try std.fmt.bufPrint(&buf, "serve provider takes only --stdio or --specimens: {s}\n\n", .{arg});
+        try compat.stdio.writeAll(stderr, msg);
+        return error.InvalidServeOption;
     }
     return runOapProviderMode(allocator, stdin, stdout, stderr, answers_specimens);
 }
@@ -2441,8 +2479,9 @@ fn printUsage(file: std.Io.File) !void {
         \\Usage:
         \\  oapx                                              Start the terminal UI
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
-        \\  oapx serve agent [--model <model-ref>]
-        \\  oapx serve provider [--specimens]
+        \\  oapx serve agent [--stdio] [--model <model-ref>]
+        \\  oapx serve provider [--stdio] [--specimens]
+        \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx validate <trace.json>...
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
@@ -2460,11 +2499,12 @@ fn printUsage(file: std.Io.File) !void {
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
+        \\  serve agent,provider  Serve both OAP profiles over one stdio connection
         \\  validate         Run the semantic validator over one or more traces
         \\  auth providers   List oauth-capable providers
         \\  auth login       Run OAuth flow and persist credentials
         \\  --version        Print binary version
-        \\  --stdio          Start stdio mode, the transport the SDKs drive
+        \\  --stdio          Start the legacy Makai stdio mode; SDKs use serve
         \\
         \\Superseded flags, still accepted: --tui, -p, --oap, --oap-provider
         \\
@@ -6519,7 +6559,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, args[1], "--oap")) {
-        runOapMode(allocator, args[2..], stdin, stdout, stderr) catch |err| {
+        runOapMode(allocator, args[2..], stdin, stdout, stderr, false) catch |err| {
             if (err == error.MalformedLine or err == error.UnaddressableEnvelope) std.process.exit(1);
             return err;
         };
@@ -6607,6 +6647,16 @@ test "modelFromCanonicalRef applies default base URL for non-catalog refs" {
         defer legacy_model.deinit(allocator);
         try std.testing.expect(!legacy_model.reasoning);
     }
+}
+
+test "OAP model wire reference resolves to local API without changing provider identity" {
+    const allocator = std.testing.allocator;
+    var model = try modelFromCanonicalRef(allocator, "ollama/other:ollama-chat@llama3");
+    defer model.deinit(allocator);
+    try std.testing.expectEqualStrings("ollama", model.provider);
+    try std.testing.expectEqualStrings("ollama", model.api);
+    try std.testing.expectEqualStrings("llama3", model.id);
+    try std.testing.expectError(error.InvalidModelRef, modelFromCanonicalRef(allocator, "openai/openai-chat-completions@gpt-test"));
 }
 
 test "print mode parses options that follow the prompt" {
@@ -6764,6 +6814,7 @@ test "print mode short-circuits on --tui-runtime with its prompt" {
 }
 const OapModeArgs = struct {
     default_model_id: ?[]const u8 = null,
+    answers_specimens: bool = false,
 };
 
 const OapArgError = struct {
@@ -6784,6 +6835,11 @@ fn parseOapModeArgs(args: []const []const u8, arg_error: *OapArgError) !OapModeA
             }
             index += 1;
             parsed.default_model_id = args[index];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--stdio")) continue;
+        if (std.mem.eql(u8, arg, "--specimens")) {
+            parsed.answers_specimens = true;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--")) {
@@ -7088,6 +7144,96 @@ fn resolveOapStoredCredential(
     return resolved;
 }
 
+/// The agent's provider client speaks exactly the model-provider-core wire.
+/// A transport owns one in-process provider endpoint per inference; the same
+/// adapter can later be replaced with a remote stdio/HTTP transport.
+const AgentOapProviderTransport = struct {
+    allocator: std.mem.Allocator,
+    registry: api_registry.ApiRegistry,
+    server: oap_provider_server.Server,
+    running: std.ArrayList(RunningOapInference) = .empty,
+    api_key: ?[]u8 = null,
+
+    fn deinit(self: *AgentOapProviderTransport) void {
+        for (self.running.items) |*entry| entry.deinit(self.allocator);
+        self.running.deinit(self.allocator);
+        self.server.deinit();
+        self.registry.deinit();
+        if (self.api_key) |key| self.allocator.free(key);
+        self.allocator.destroy(self);
+    }
+};
+
+fn openAgentOapProviderTransport(
+    _: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    _: ai_types.Model,
+    api_key: ?[]const u8,
+) anyerror!agent_oap_provider_bridge.Transport {
+    const provider_transport = try allocator.create(AgentOapProviderTransport);
+    errdefer allocator.destroy(provider_transport);
+    provider_transport.* = .{
+        .allocator = allocator,
+        .registry = api_registry.ApiRegistry.init(allocator),
+        .server = oap_provider_server.Server.init(allocator, .{
+            .capability_revision = VERSION,
+            .grant_channel = .unsupported,
+            .accepts_inference = true,
+            .resolves_own_credentials = true,
+            .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+        }),
+    };
+    errdefer {
+        provider_transport.server.deinit();
+        provider_transport.registry.deinit();
+    }
+    if (api_key) |key| provider_transport.api_key = try allocator.dupe(u8, key);
+    errdefer if (provider_transport.api_key) |key| allocator.free(key);
+    try register_builtins.registerBuiltInApiProviders(&provider_transport.registry);
+    try populateOapProviderCatalog(allocator, &provider_transport.server);
+    return .{
+        .ctx = provider_transport,
+        .send_line_fn = agentOapProviderSendLine,
+        .pump_fn = agentOapProviderPump,
+        .recv_line_fn = agentOapProviderRecvLine,
+        .close_fn = agentOapProviderClose,
+    };
+}
+
+fn agentOapProviderSendLine(context: ?*anyopaque, line: []const u8) anyerror!void {
+    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
+    try provider_transport.server.handleLine(line);
+    while (provider_transport.server.popPendingStart()) |inference_id| {
+        defer provider_transport.allocator.free(inference_id);
+        try startOapInference(
+            provider_transport.allocator,
+            &provider_transport.registry,
+            &provider_transport.server,
+            &provider_transport.running,
+            inference_id,
+            &.{},
+            provider_transport.api_key,
+        );
+    }
+}
+
+fn agentOapProviderPump(context: ?*anyopaque) anyerror!void {
+    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
+    _ = try pumpOapInferences(provider_transport.allocator, &provider_transport.server, &provider_transport.running, 120_000);
+}
+
+fn agentOapProviderRecvLine(context: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]u8 {
+    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
+    const line = provider_transport.server.popOutbound() orelse return null;
+    defer provider_transport.allocator.free(line);
+    return try allocator.dupe(u8, line);
+}
+
+fn agentOapProviderClose(context: ?*anyopaque) void {
+    const provider_transport: *AgentOapProviderTransport = @ptrCast(@alignCast(context));
+    provider_transport.deinit();
+}
+
 fn startOapInference(
     allocator: std.mem.Allocator,
     registry: *api_registry.ApiRegistry,
@@ -7095,6 +7241,7 @@ fn startOapInference(
     running: *std.ArrayList(RunningOapInference),
     inference_id: []const u8,
     granted: []const OapGrantedValue,
+    trusted_api_key: ?[]const u8,
 ) !void {
     const inference = server.findInference(inference_id) orelse return;
 
@@ -7134,9 +7281,11 @@ fn startOapInference(
     var resolved_credential: ?auth_resolver.ResolvedKey = null;
     defer if (resolved_credential) |*key| key.deinit(allocator);
 
-    if (inference.credential_ref) |reference| {
+    if (trusted_api_key) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key);
+
+    if (options.getApiKey() == null) if (inference.credential_ref) |reference| {
         if (grantedValueFor(granted, reference)) |value| options.api_key = @TypeOf(options.api_key).initBorrowed(value);
-    }
+    };
     if (options.getApiKey() == null or options.getApiKey().?.len == 0) {
         resolved_credential = resolveOapStoredCredential(allocator, builtin.id);
         if (resolved_credential) |key| options.api_key = @TypeOf(options.api_key).initBorrowed(key.api_key);
@@ -7721,7 +7870,7 @@ fn runOapProviderMode(
 
         while (server.popPendingStart()) |inference_id| {
             defer allocator.free(inference_id);
-            try startOapInference(allocator, &registry, &server, &running, inference_id, granted_values.items);
+            try startOapInference(allocator, &registry, &server, &running, inference_id, granted_values.items, null);
             did_work = true;
         }
 
@@ -7751,12 +7900,28 @@ fn drainOapProviderOutbound(
     return wrote;
 }
 
+fn isProviderOapLine(allocator: std.mem.Allocator, line: []const u8) !bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return false;
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const profile = parsed.value.object.get("profile") orelse return false;
+    return profile == .string and std.mem.eql(u8, profile.string, provider_profile);
+}
+
+fn oapInputDrained(stream: *transport.ByteStream) bool {
+    return stream.isDone() and !stream.hasPending();
+}
+
 fn runOapMode(
     allocator: std.mem.Allocator,
     args: []const []const u8,
     stdin: std.Io.File,
     stdout: std.Io.File,
     stderr: std.Io.File,
+    serve_provider: bool,
 ) !void {
     var arg_error = OapArgError{};
     const parsed = parseOapModeArgs(args, &arg_error) catch |err| {
@@ -7783,6 +7948,7 @@ fn runOapMode(
 
     var stdio_loop = try StdioProtocolLoop.initWithBuiltins(allocator);
     defer stdio_loop.deinit();
+    stdio_loop.useOapProviderCore();
 
     var oap = try oap_server.Server.init(allocator, .{
         .endpoint_version = VERSION,
@@ -7790,8 +7956,45 @@ fn runOapMode(
     });
     defer oap.deinit();
 
+    var oap_auth_server = AuthProtocolServer.init(allocator, .{});
+    defer oap_auth_server.deinit();
+    var auth_adapter = oap_auth_adapter.Adapter.init(allocator, &oap_auth_server);
+    defer auth_adapter.deinit();
+    auth_adapter.setCapabilityRevision(oap.descriptor.capability_revision);
+
     var bridge = oap_bridge.Bridge.init(allocator);
     defer bridge.deinit();
+
+    var provider_registry = api_registry.ApiRegistry.init(allocator);
+    defer provider_registry.deinit();
+    var provider_server = oap_provider_server.Server.init(allocator, .{
+        .capability_revision = VERSION,
+        .grant_channel = if (oap_provider_grant_channel.GrantChannel.supported) .out_of_band else .unsupported,
+        .accepts_inference = true,
+        .resolves_own_credentials = true,
+        .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+    });
+    defer provider_server.deinit();
+    var grant_channels = std.ArrayList(OapGrantChannel).empty;
+    defer {
+        for (grant_channels.items) |*entry| entry.deinit(allocator);
+        grant_channels.deinit(allocator);
+    }
+    var granted_values = std.ArrayList(OapGrantedValue).empty;
+    defer {
+        for (granted_values.items) |*entry| entry.deinit(allocator);
+        granted_values.deinit(allocator);
+    }
+    var grant_ordinal: u64 = 0;
+    var running_inferences = std.ArrayList(RunningOapInference).empty;
+    defer {
+        for (running_inferences.items) |*entry| entry.deinit(allocator);
+        running_inferences.deinit(allocator);
+    }
+    const provider_idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator);
+    try register_builtins.registerBuiltInApiProviders(&provider_registry);
+    try populateOapProviderCatalog(allocator, &provider_server);
+    for (provider_server.models.items) |model| try oap.addModel(model.model_ref);
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
@@ -7808,6 +8011,7 @@ fn runOapMode(
         clearOwnedLines(allocator, &submission_lines);
         submission_lines.deinit(allocator);
     }
+    var auth_input_closed = false;
 
     while (true) {
         var did_work = false;
@@ -7818,6 +8022,31 @@ fn runOapMode(
 
             const line = std.mem.trim(u8, mutable_chunk.data, " \t\r\n");
             if (line.len == 0) continue;
+            if (serve_provider) {
+                if (try oapSpecimenRequestId(line, allocator)) |request_id| {
+                    defer allocator.free(request_id);
+                    if (parsed.answers_specimens) {
+                        try provider_server.emitSpecimens(request_id);
+                    } else {
+                        try provider_server.emitSpecimenError(request_id, "this endpoint was not started with --specimens");
+                    }
+                    did_work = true;
+                    continue;
+                }
+                if (try isProviderOapLine(allocator, line)) {
+                    provider_server.handleLine(line) catch |err| {
+                        _ = try drainOapProviderOutbound(stdout, allocator, &provider_server);
+                        try compat.stdio.writeAll(stderr, OAP_PROVIDER_EXHAUSTED_MESSAGE);
+                        return err;
+                    };
+                    did_work = true;
+                    continue;
+                }
+            }
+            if (oap.initialized and try auth_adapter.handleLine(line)) {
+                did_work = true;
+                continue;
+            }
             oap.handleLine(line) catch |err| switch (err) {
                 error.MalformedLine, error.UnaddressableEnvelope => {
                     _ = try writeOapOutbound(stdout, allocator, &oap);
@@ -7840,9 +8069,25 @@ fn runOapMode(
         }
 
         if (try pumpOapIntents(allocator, &oap, &bridge, &stdio_loop, &submission_lines)) did_work = true;
+        if (try auth_adapter.pump() > 0) did_work = true;
 
-        if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
+        if (serve_provider) {
+            if (try announceOapGrants(allocator, &provider_server, &grant_channels, &grant_ordinal)) did_work = true;
+            if (try pumpOapGrants(allocator, &provider_server, &grant_channels, &granted_values, compat.time.nowMillis())) did_work = true;
+            while (provider_server.popPendingStart()) |inference_id| {
+                defer allocator.free(inference_id);
+                try startOapInference(allocator, &provider_registry, &provider_server, &running_inferences, inference_id, granted_values.items, null);
+                did_work = true;
+            }
+            if (try pumpOapInferences(allocator, &provider_server, &running_inferences, provider_idle_ttl_ms)) did_work = true;
+        }
+
+        if (oapInputDrained(stdin_stream)) {
             stdio_loop.markStdinDisconnected();
+            if (!auth_input_closed) {
+                try auth_adapter.cancelAllOnDisconnect();
+                auth_input_closed = true;
+            }
             if (oap.hasActiveRun()) {
                 if (try bridge.failUnmappedActiveRuns(&oap, OAP_EOF_MESSAGE)) did_work = true;
             }
@@ -7867,9 +8112,13 @@ fn runOapMode(
         }
 
         if (try writeOapOutbound(stdout, allocator, &oap)) did_work = true;
+        if (try writeOapAuthOutbound(stdout, allocator, &auth_adapter)) did_work = true;
+        if (serve_provider and try drainOapProviderOutbound(stdout, allocator, &provider_server)) did_work = true;
 
-        if (stdin_stream.isDone() and !did_work and !stdio_loop.hasActiveProviderStreams() and
-            !stdio_loop.hasActiveAgentRuns() and !stdio_loop.hasActiveAuthFlows())
+        // The reader may mark EOF after enqueueing its final line. Drain that
+        // line before leaving, even when this iteration did no other work.
+        if (oapInputDrained(stdin_stream) and !did_work and running_inferences.items.len == 0 and !stdio_loop.hasActiveProviderStreams() and
+            !stdio_loop.hasActiveAgentRuns() and !stdio_loop.hasActiveAuthFlows() and oap_auth_server.activeFlowCount() == 0)
         {
             break;
         }
@@ -7878,6 +8127,22 @@ fn runOapMode(
     }
 
     _ = try writeOapOutbound(stdout, allocator, &oap);
+    _ = try writeOapAuthOutbound(stdout, allocator, &auth_adapter);
+    if (serve_provider) _ = try drainOapProviderOutbound(stdout, allocator, &provider_server);
+}
+
+fn writeOapAuthOutbound(
+    stdout: std.Io.File,
+    allocator: std.mem.Allocator,
+    adapter: *oap_auth_adapter.Adapter,
+) !bool {
+    var wrote = false;
+    while (adapter.popOutbound()) |line| {
+        defer allocator.free(line);
+        try compat.stdio.writeLine(stdout, line);
+        wrote = true;
+    }
+    return wrote;
 }
 
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
@@ -7964,6 +8229,12 @@ test "oap mode arguments accept a default model" {
     try std.testing.expectEqualStrings("anthropic/anthropic-messages@claude", parsed.default_model_id.?);
 }
 
+test "oap mode arguments accept explicit stdio and specimen control" {
+    var arg_error = OapArgError{};
+    const parsed = try parseOapModeArgs(&[_][]const u8{ "--stdio", "--specimens" }, &arg_error);
+    try std.testing.expect(parsed.answers_specimens);
+}
+
 test "oap mode arguments default to no configured model" {
     var arg_error = OapArgError{};
     const parsed = try parseOapModeArgs(&[_][]const u8{}, &arg_error);
@@ -7974,9 +8245,9 @@ test "oap mode rejects unknown options, missing values, and positionals" {
     var unknown = OapArgError{};
     try std.testing.expectError(
         error.InvalidArgument,
-        parseOapModeArgs(&[_][]const u8{"--stdio"}, &unknown),
+        parseOapModeArgs(&[_][]const u8{"--unknown"}, &unknown),
     );
-    try std.testing.expectEqualStrings("--stdio", unknown.unknown_option.?);
+    try std.testing.expectEqualStrings("--unknown", unknown.unknown_option.?);
 
     var missing = OapArgError{};
     try std.testing.expectError(
@@ -8080,7 +8351,7 @@ test "a failed start releases the inference it could not run" {
     const inference_id = try allocator.dupe(u8, server.active.items[0].id);
     defer allocator.free(inference_id);
 
-    try startOapInference(allocator, &registry, &server, &running, inference_id, &.{});
+    try startOapInference(allocator, &registry, &server, &running, inference_id, &.{}, null);
 
     try std.testing.expectEqual(@as(usize, 0), running.items.len);
     if (server.active.items.len != 0) {
@@ -8121,10 +8392,16 @@ fn settleTestInference(
         .stream = stream,
         .context = .{ .messages = &.{} },
         .model = .{
-            .id = "m", .name = "m", .api = "ollama", .provider = "ollama", .base_url = "",
-            .reasoning = false, .input = &.{},
+            .id = "m",
+            .name = "m",
+            .api = "ollama",
+            .provider = "ollama",
+            .base_url = "",
+            .reasoning = false,
+            .input = &.{},
             .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-            .context_window = 1, .max_tokens = 1,
+            .context_window = 1,
+            .max_tokens = 1,
         },
         .cancelled = cancelled,
         .last_progress_ms = 0,
@@ -8618,6 +8895,33 @@ test "serve names a role, and the role is a noun rather than a flag" {
     try std.testing.expect(serveRole("Agent") == null);
     try std.testing.expect(serveRole("endpoint") == null);
     try std.testing.expect(serveRole("") == null);
+    try std.testing.expect(isCombinedServeRole("agent,provider"));
+    try std.testing.expect(isCombinedServeRole("provider,agent"));
+    try std.testing.expect(!isCombinedServeRole("agent,agent"));
+}
+
+test "combined stdio drains queued input after reader reports EOF" {
+    var stream = transport.ByteStream.init(std.testing.allocator);
+    defer stream.deinit();
+    try stream.push(.{ .data = "last request", .owned = false });
+    stream.complete({});
+    try std.testing.expect(!oapInputDrained(&stream));
+    var chunk = stream.poll().?;
+    chunk.deinit(std.testing.allocator);
+    try std.testing.expect(oapInputDrained(&stream));
+}
+
+test "combined stdio dispatches only the provider profile to the provider handler" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(try isProviderOapLine(
+        allocator,
+        "{\"protocol\":\"open-agent-protocol\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"provider.describe.request\",\"id\":\"q1\",\"payload\":{}}",
+    ));
+    try std.testing.expect(!try isProviderOapLine(
+        allocator,
+        "{\"protocol\":\"open-agent-protocol\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q2\",\"payload\":{}}",
+    ));
+    try std.testing.expect(!try isProviderOapLine(allocator, "{broken"));
 }
 
 fn diagnosedCodes(allocator: std.mem.Allocator, trace: []const u8, out: *std.ArrayList([]const u8)) !void {
