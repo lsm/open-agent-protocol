@@ -119,7 +119,7 @@ pub const Backend = struct {
         try self.transport.write(frame);
     }
 
-    pub fn pump(self: *Backend, scratch: std.mem.Allocator) !bool {
+    pub fn pump(self: *Backend) !bool {
         if (self.settled) return false;
         const line = self.transport.next() catch |err| {
             try self.settle(err);
@@ -129,8 +129,10 @@ pub const Backend = struct {
             try self.settle(null);
             return false;
         };
+        const arena = self.arena.allocator();
+        const held = try arena.dupe(u8, bytes);
         var diagnostic = rpc.Diagnostic{};
-        const message = rpc.parseMessage(scratch, bytes, &diagnostic) catch {
+        const message = rpc.parseMessage(arena, held, &diagnostic) catch {
             self.settled = true;
             self.reap();
             try self.reducer.transportFailed(diagnostic.message);
@@ -260,9 +262,9 @@ fn shellBackend(arena: *std.heap.ArenaAllocator, script: []const u8) !Backend {
     }, .{}) catch return error.SkipZigTest;
 }
 
-fn pumpToEnd(backend: *Backend, scratch: std.mem.Allocator) !void {
+fn pumpToEnd(backend: *Backend) !void {
     var guard: usize = 0;
-    while (try backend.pump(scratch)) {
+    while (try backend.pump()) {
         guard += 1;
         if (guard > 64) return error.PumpDidNotSettle;
     }
@@ -274,16 +276,6 @@ fn started(arena: *std.heap.ArenaAllocator, script: []const u8) !Backend {
     return backend;
 }
 
-fn envelopeTypes(backend: *Backend, arena: std.mem.Allocator) ![]const []const u8 {
-    var kinds = std.ArrayList([]const u8).empty;
-    for (backend.envelopes()) |envelope| {
-        if (envelope != .object) continue;
-        const kind = envelope.object.get("type") orelse continue;
-        if (kind == .string) try kinds.append(arena, kind.string);
-    }
-    return kinds.toOwnedSlice(arena);
-}
-
 const init_frame = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s\",\"tools\":[\"Read\"],\"mcp_servers\":[],\"model\":\"claude-test\"}";
 
 test "a frame the child writes reaches the reducer rather than being refused" {
@@ -292,9 +284,9 @@ test "a frame the child writes reaches the reducer rather than being refused" {
     var backend = try started(&arena, "printf '%s\\n' '" ++ init_frame ++ "'");
     defer backend.close();
 
-    try std.testing.expect(try backend.pump(arena.allocator()));
+    try std.testing.expect(try backend.pump());
     try std.testing.expect(!backend.reducer.unusable);
-    try pumpToEnd(&backend, arena.allocator());
+    try pumpToEnd(&backend);
     try std.testing.expect(backend.settled);
 }
 
@@ -304,7 +296,7 @@ test "settling reaps the child, so the failure names the status it exited on" {
     var backend = try started(&arena, "exit 3");
     defer backend.close();
 
-    try pumpToEnd(&backend, arena.allocator());
+    try pumpToEnd(&backend);
     try std.testing.expect(backend.settled);
     try std.testing.expect(backend.reducer.unusable);
     try std.testing.expectEqual(process.Departure.exited, backend.transport.departed().departure);
@@ -317,7 +309,7 @@ test "a line the codec refuses settles the run and reaps the child rather than b
     var backend = try started(&arena, "printf 'not json\\n'");
     defer backend.close();
 
-    try std.testing.expect(!try backend.pump(arena.allocator()));
+    try std.testing.expect(!try backend.pump());
     try std.testing.expect(backend.settled);
     try std.testing.expect(backend.reducer.unusable);
     try std.testing.expect(backend.closed);
@@ -330,11 +322,11 @@ test "a backend settled by a refused line reports no more work, though a frame i
     var backend = try started(&arena, "printf '%s\\n' 'not json' '" ++ init_frame ++ "'");
     defer backend.close();
 
-    try std.testing.expect(!try backend.pump(arena.allocator()));
+    try std.testing.expect(!try backend.pump());
     try std.testing.expect(backend.settled);
     const settled_count = backend.envelopes().len;
 
-    try std.testing.expect(!try backend.pump(arena.allocator()));
+    try std.testing.expect(!try backend.pump());
     try std.testing.expectEqual(settled_count, backend.envelopes().len);
 
     const buffered = try backend.transport.next();
@@ -348,11 +340,28 @@ test "a settled backend stops pumping rather than reading a closed child again" 
     var backend = try started(&arena, "true");
     defer backend.close();
 
-    try std.testing.expect(!try backend.pump(arena.allocator()));
+    try std.testing.expect(!try backend.pump());
     const settled_count = backend.envelopes().len;
-    try std.testing.expect(!try backend.pump(arena.allocator()));
+    try std.testing.expect(!try backend.pump());
     try std.testing.expectEqual(settled_count, backend.envelopes().len);
     try std.testing.expect(backend.reducer.unusable);
+}
+
+const filler_frame = "{\"type\":\"" ++ ("Z" ** 100) ++ "\"}";
+
+test "what the reducer keeps from a frame outlives the next frame" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try started(&arena, "printf '%s\\n' '" ++ init_frame ++ "' '" ++ filler_frame ++ "'");
+    defer backend.close();
+
+    try std.testing.expect(try backend.pump());
+    try std.testing.expectEqual(@as(usize, 1), backend.reducer.run.?.buffered.items.len);
+    try std.testing.expect(try backend.pump());
+
+    const held = backend.reducer.run.?.buffered.items[0];
+    try std.testing.expectEqualStrings("system", held.type);
+    try std.testing.expectEqualStrings(init_frame, held.raw);
 }
 
 test "the turn the seam writes is the turn the child reads" {
