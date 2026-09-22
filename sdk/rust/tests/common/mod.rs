@@ -40,7 +40,7 @@ pub async fn fake_client(scenario: &str) -> Client {
         .expect("fake server connects")
 }
 
-/// The real `makai --stdio` binary, when `OAP_SDK_BINARY_PATH` names one.
+/// The real `oapx --stdio` binary, when `OAP_SDK_BINARY_PATH` names one.
 ///
 /// Mirrors the TypeScript SDK's smoke tests: without the variable the
 /// binary-backed tests skip rather than fail, so `cargo test` is green on a

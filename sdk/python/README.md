@@ -16,7 +16,7 @@ pip install ./sdk/python
 
 Once it is published, `pip install oap-sdk` will do the same.
 
-You also need access to the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -317,11 +317,9 @@ The checksum is mandatory and re-verified against the cache on every resolve. En
 1. `resolver.binary_path`, or `OAP_SDK_BINARY_PATH` (the environment wins)
 2. `resolver.binary_url` / `OAP_SDK_BINARY_URL`, which requires a SHA-256 checksum
 3. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-4. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
-5. `oapx` on `PATH`, then `makai` on `PATH`
+4. `oapx` on `PATH`
 
-`oapx` is tried in every location before `makai` is tried in any, so a nested
-`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
+On Windows the executable name is `oapx.exe`.
 
 The TypeScript SDK has one extra step between 2 and 3: the `@oap-sdk/cli-<platform>-<arch>` npm package, when it is installed. That step is **deliberately omitted** here — Python's equivalent would be platform-specific wheels, and none are published. Set `OAP_SDK_BINARY_PATH` when you need to pin a specific binary.
 

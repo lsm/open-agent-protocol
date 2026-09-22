@@ -5,7 +5,7 @@ Every test here needs ``OAP_SDK_BINARY_PATH`` and skips without it, so a green
 one first::
 
     zig build install --prefix /tmp/makai-py
-    OAP_SDK_BINARY_PATH=/tmp/makai-py/bin/makai pytest
+    OAP_SDK_BINARY_PATH=/tmp/oapx-py/bin/oapx pytest
 
 No provider credentials are needed: the model catalogue, envelope validation,
 frame routing, and process lifetime are all reachable without them.

@@ -6,8 +6,8 @@
 //! 2. a URL (`binary_url` / `OAP_SDK_BINARY_URL`) with a **required** SHA-256
 //!    checksum, cached on disk;
 //! 3. *(TypeScript only)* the `@oap-sdk/cli-<platform>-<arch>` npm package;
-//! 4. `./zig-out/bin/oapx`, then `./zig-out/bin/makai`;
-//! 5. the same pair under `./zig/zig-out/bin/`;
+//! 4. `./zig-out/bin/oapx`;
+//! 5. `./zig/zig-out/bin/oapx`;
 //! 6. `oapx` on `PATH`.
 //!
 //! Step 3 has no Rust counterpart and is deliberately skipped. It resolves
@@ -67,18 +67,7 @@ async fn is_executable_file(candidate: &std::path::Path) -> bool {
     }
 }
 
-/// The names of the runtime executable on this platform, preferred first.
-///
-/// `makai` trails `oapx` so an install predating the rename keeps resolving.
-fn binary_names() -> &'static [&'static str] {
-    if cfg!(windows) {
-        &["oapx.exe", "makai.exe"]
-    } else {
-        &["oapx", "makai"]
-    }
-}
-
-/// The preferred name of the runtime executable on this platform.
+/// The name of the runtime executable on this platform.
 fn binary_name() -> &'static str {
     if cfg!(windows) {
         "oapx.exe"
@@ -128,7 +117,7 @@ impl BinaryResolver {
             let resolved = absolutize(&path, self.base_dir.as_deref());
             if !tokio::fs::try_exists(&resolved).await.unwrap_or(false) {
                 return Err(Error::transport(format!(
-                    "makai binary not found at {}",
+                    "oapx binary not found at {}",
                     resolved.display()
                 )));
             }
@@ -142,7 +131,7 @@ impl BinaryResolver {
                 .or_else(|| self.checksum_sha256.clone())
                 .ok_or_else(|| {
                     Error::transport(format!(
-                        "a SHA-256 checksum is required when downloading the makai binary from {url}"
+                        "a SHA-256 checksum is required when downloading the oapx binary from {url}"
                     ))
                 })?;
             return self.resolve_from_url(&url, &checksum).await;
@@ -152,15 +141,16 @@ impl BinaryResolver {
             Some(base) => base.clone(),
             None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
         };
-        for name in binary_names() {
-            for candidate in [
-                base.join("zig-out").join("bin").join(name),
-                base.join("zig").join("zig-out").join("bin").join(name),
-            ] {
-                if is_executable_file(&candidate).await {
-                    tracing::debug!(path = %candidate.display(), "resolved binary from local build");
-                    return Ok(candidate);
-                }
+        for candidate in [
+            base.join("zig-out").join("bin").join(binary_name()),
+            base.join("zig")
+                .join("zig-out")
+                .join("bin")
+                .join(binary_name()),
+        ] {
+            if is_executable_file(&candidate).await {
+                tracing::debug!(path = %candidate.display(), "resolved binary from local build");
+                return Ok(candidate);
             }
         }
 
@@ -223,14 +213,14 @@ impl BinaryResolver {
         }
 
         write_executable(target, &bytes).await?;
-        tracing::info!(path = %target.display(), "downloaded makai binary");
+        tracing::info!(path = %target.display(), "downloaded oapx binary");
         Ok(target.to_path_buf())
     }
 
     #[cfg(not(feature = "download"))]
     async fn download(&self, url: &str, target: &Path, _checksum: &str) -> Result<PathBuf> {
         Err(Error::transport(format!(
-            "{url} is not cached at {} and this build of the makai crate cannot download it; \
+            "{url} is not cached at {} and this build of the oap-sdk crate cannot download it; \
              enable the `download` feature or set {ENV_BINARY_PATH}",
             target.display()
         )))
@@ -465,10 +455,8 @@ mod tests {
     fn the_binary_name_matches_the_platform() {
         if cfg!(windows) {
             assert_eq!(binary_name(), "oapx.exe");
-            assert_eq!(binary_names(), &["oapx.exe", "makai.exe"]);
         } else {
             assert_eq!(binary_name(), "oapx");
-            assert_eq!(binary_names(), &["oapx", "makai"]);
         }
     }
 }

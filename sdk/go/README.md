@@ -16,7 +16,7 @@ The module lives at `sdk/go/`, so its import path ends in `/go` while the packag
 import makai "github.com/lsm/open-agent-protocol/sdk/go"
 ```
 
-You also need access to the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -279,11 +279,9 @@ The checksum is required; a download without one is refused with `ErrChecksumReq
 With no resolver options, the SDK checks:
 
 1. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-2. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
-3. `oapx` on `PATH`, then `makai` on `PATH`
+2. `oapx` on `PATH`
 
-`oapx` is tried in every location before `makai` is tried in any, so a nested
-`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
+On Windows the executable name is `oapx.exe`.
 
 The TypeScript resolver has one more step, an optional `@oap-sdk/cli-<platform>-<arch>` npm package, between the URL step and the local builds. That step is npm-specific and has no Go equivalent, so it is deliberately absent here. The practical difference: where npm would prefer a packaged binary, Go picks up your local `./zig-out` build.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# PTY driver for the Makai TUI (#259): launches `makai --tui` inside a
+# PTY driver for the oapx TUI (#259): launches `oapx --tui` inside a
 # pseudo-terminal, replays scripted scenarios, captures every rendered byte
 # stream with timestamps, and reports a performance baseline. Determinism
 # comes from OAPX_TUI_FIXTURE (see zig/src/tui/fixture_provider.zig): the
@@ -17,7 +17,7 @@
 #
 # Usage:
 #   zig build install -Doptimize=ReleaseFast --prefix /tmp/makai-pty
-#   python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/makai \
+#   python3 scripts/tui-pty-driver.py --binary /tmp/oapx-pty/bin/oapx \
 #       --output-dir tui-pty-out
 #   python3 scripts/tui-pty-driver.py --binary ... --scenario all
 #

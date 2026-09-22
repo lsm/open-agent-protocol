@@ -14,11 +14,11 @@ var (
 
 	// ErrBinaryNotFound is returned by binary resolution when no makai
 	// runtime could be located through any of the configured candidates.
-	ErrBinaryNotFound = errors.New("makai: makai binary not found")
+	ErrBinaryNotFound = errors.New("makai: oapx binary not found")
 
 	// ErrChecksumRequired is returned when a binary URL is configured
 	// without the SHA-256 checksum that downloading requires.
-	ErrChecksumRequired = errors.New("makai: sha256 checksum is required when resolving the makai binary from a URL")
+	ErrChecksumRequired = errors.New("makai: sha256 checksum is required when resolving the oapx binary from a URL")
 
 	// ErrChecksumMismatch is returned when a downloaded or cached binary
 	// does not match its configured SHA-256 checksum.

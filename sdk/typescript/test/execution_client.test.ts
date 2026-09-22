@@ -313,7 +313,7 @@ test("agent.run timeout includes actionable diagnostics", async () => {
         err.kind === "transport_error" &&
         err.message.includes("Timed out waiting for agent result after 20ms for provider 'anthropic'") &&
         err.message.includes("session_id=testNanoIdSess1234567") &&
-        err.message.includes("Verify the makai binary") &&
+        err.message.includes("Verify the oapx binary") &&
         err.diagnostics?.operation === "agent result" &&
         err.diagnostics.timeout_ms === 20 &&
         err.diagnostics.provider_id === "anthropic" &&

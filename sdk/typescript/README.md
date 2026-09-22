@@ -12,7 +12,7 @@ npm install oap-sdk
 
 No release has been published yet; until one is, install from a checkout of this repository.
 
-The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oap-sdk/cli-<platform>-<arch>` package, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
+The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oap-sdk/cli-<platform>-<arch>` package, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -347,11 +347,9 @@ With no resolver options, the SDK checks, in order:
 
 1. The `@oap-sdk/cli-<platform>-<arch>` package, when it is installed
 2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
-3. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
-4. `oapx` on `PATH`, then `makai` on `PATH`
+3. `oapx` on `PATH`
 
-`oapx` is tried in every location before `makai` is tried in any, so a nested
-`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
+On Windows the executable name is `oapx.exe`.
 
 Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
 

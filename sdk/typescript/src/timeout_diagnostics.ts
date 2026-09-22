@@ -19,7 +19,7 @@ export type ErrorWithDiagnostics = Error & {
 };
 
 export const TIMEOUT_SUGGESTIONS = [
-  "Verify the makai binary is installed, executable, and still running.",
+  "Verify the oapx binary is installed, executable, and still running.",
   "Check network connectivity and provider service health.",
   "Review server logs using the included stream_id/message_id for correlation.",
   "Increase the responseTimeoutMs/frameTimeoutMs option if the provider is expected to be slow.",

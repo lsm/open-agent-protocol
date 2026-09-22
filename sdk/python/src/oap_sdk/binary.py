@@ -46,10 +46,10 @@ _DOWNLOAD_TIMEOUT_S = 120.0
 
 @dataclass(frozen=True)
 class BinaryResolverOptions:
-    """Options controlling how the ``makai`` binary is located.
+    """Options controlling how the ``oapx`` binary is located.
 
     Attributes:
-        binary_path: Explicit path to a ``makai`` executable.
+        binary_path: Explicit path to an ``oapx`` executable.
         binary_url: URL to download the binary from. Requires
             ``checksum_sha256``.
         checksum_sha256: Hex-encoded SHA-256 of the downloaded binary.
@@ -67,13 +67,8 @@ def _is_executable_file(candidate: Path) -> bool:
     return candidate.is_file() and os.access(candidate, os.X_OK)
 
 
-def _binary_names() -> tuple[str, ...]:
-    suffix = ".exe" if os.name == "nt" else ""
-    return tuple(f"{name}{suffix}" for name in ("oapx", "makai"))
-
-
 def _binary_name() -> str:
-    return _binary_names()[0]
+    return "oapx.exe" if os.name == "nt" else "oapx"
 
 
 def _sha256(content: bytes) -> str:
@@ -81,7 +76,7 @@ def _sha256(content: bytes) -> str:
 
 
 def resolve_makai_binary(options: Optional[BinaryResolverOptions] = None) -> str:
-    """Return the path (or bare command name) of the ``makai`` binary.
+    """Return the path (or bare command name) of the ``oapx`` binary.
 
     Raises:
         FileNotFoundError: An explicit path was given but does not exist.
@@ -94,7 +89,7 @@ def resolve_makai_binary(options: Optional[BinaryResolverOptions] = None) -> str
     if explicit:
         resolved = Path(explicit).expanduser().resolve()
         if not resolved.exists():
-            raise FileNotFoundError(f"makai binary not found at {resolved}")
+            raise FileNotFoundError(f"oapx binary not found at {resolved}")
         return str(resolved)
 
     binary_url = os.environ.get(ENV_BINARY_URL) or options.binary_url
@@ -102,25 +97,21 @@ def resolve_makai_binary(options: Optional[BinaryResolverOptions] = None) -> str
     if binary_url:
         return _resolve_from_url(binary_url, checksum, options.cache_dir)
 
-    for name in _binary_names():
-        for candidate in (
-            Path.cwd() / "zig-out" / "bin" / name,
-            Path.cwd() / "zig" / "zig-out" / "bin" / name,
-        ):
-            if _is_executable_file(candidate):
-                return str(candidate)
+    name = _binary_name()
+    for candidate in (
+        Path.cwd() / "zig-out" / "bin" / name,
+        Path.cwd() / "zig" / "zig-out" / "bin" / name,
+    ):
+        if _is_executable_file(candidate):
+            return str(candidate)
 
-    for name in _binary_names():
-        from_path = shutil.which(name)
-        if from_path:
-            return from_path
-    return _binary_name()
+    return shutil.which(name) or name
 
 
 def _resolve_from_url(binary_url: str, checksum: Optional[str], cache_dir: Optional[str]) -> str:
     if not checksum:
         raise ValueError(
-            f"SHA256 checksum is required when downloading makai binary from URL: {binary_url}"
+            f"SHA256 checksum is required when downloading oapx binary from URL: {binary_url}"
         )
     expected = checksum.lower()
 

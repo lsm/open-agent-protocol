@@ -76,7 +76,7 @@ async fn an_explicit_path_wins_over_local_builds() {
     let _guard = EnvGuard::set(&clear_env());
     let temp = tempfile::tempdir().expect("tempdir");
     let explicit = write_fake_binary(temp.path(), &["custom", "makai"]);
-    write_fake_binary(temp.path(), &["zig-out", "bin", "makai"]);
+    write_fake_binary(temp.path(), &["zig-out", "bin", "oapx"]);
 
     let resolved = BinaryResolver {
         binary_path: Some(explicit.clone()),
@@ -136,7 +136,7 @@ async fn local_builds_are_checked_in_order() {
     let _guard = EnvGuard::set(&clear_env());
 
     let temp = tempfile::tempdir().expect("tempdir");
-    let nested = write_fake_binary(temp.path(), &["zig", "zig-out", "bin", "makai"]);
+    let nested = write_fake_binary(temp.path(), &["zig", "zig-out", "bin", "oapx"]);
     let resolved = BinaryResolver {
         base_dir: Some(temp.path().to_path_buf()),
         ..Default::default()
@@ -146,7 +146,7 @@ async fn local_builds_are_checked_in_order() {
     .expect("resolves");
     assert_eq!(resolved, nested, "zig/zig-out is the second candidate");
 
-    let top = write_fake_binary(temp.path(), &["zig-out", "bin", "makai"]);
+    let top = write_fake_binary(temp.path(), &["zig-out", "bin", "oapx"]);
     let resolved = BinaryResolver {
         base_dir: Some(temp.path().to_path_buf()),
         ..Default::default()
@@ -158,7 +158,7 @@ async fn local_builds_are_checked_in_order() {
 }
 
 #[tokio::test]
-async fn oapx_wins_over_makai_in_the_same_directory() {
+async fn legacy_makai_does_not_shadow_oapx() {
     let _guard = EnvGuard::set(&clear_env());
     let temp = tempfile::tempdir().expect("tempdir");
     write_fake_binary(temp.path(), &["zig-out", "bin", "makai"]);
@@ -197,10 +197,9 @@ async fn a_directory_named_like_the_binary_does_not_shadow_a_usable_one() {
 }
 
 #[tokio::test]
-async fn an_install_predating_the_rename_still_resolves() {
+async fn an_install_predating_the_rename_is_not_resolved() {
     let _guard = EnvGuard::set(&clear_env());
     let temp = tempfile::tempdir().expect("tempdir");
-    let bin = temp.path().join("zig-out").join("bin");
     write_fake_binary(temp.path(), &["zig-out", "bin", "makai"]);
 
     let resolved = BinaryResolver {
@@ -210,7 +209,8 @@ async fn an_install_predating_the_rename_still_resolves() {
     .resolve()
     .await
     .expect("resolves");
-    assert_eq!(resolved, bin.join("makai"));
+    let expected = if cfg!(windows) { "oapx.exe" } else { "oapx" };
+    assert_eq!(resolved, PathBuf::from(expected));
 }
 
 #[tokio::test]

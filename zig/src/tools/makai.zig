@@ -6798,7 +6798,7 @@ fn parseOapModeArgs(args: []const []const u8, arg_error: *OapArgError) !OapModeA
 
 const OAP_PROVIDER_PROFILE_REVISION = "ea5e5b9b29dc27a3e84eb6fe6a0f5055fb437988";
 
-const OAP_PROVIDER_EXHAUSTED_MESSAGE = "makai --oap-provider: out of memory decoding a line on stdin; the endpoint is stopping rather than continuing in an unknown state\n";
+const OAP_PROVIDER_EXHAUSTED_MESSAGE = "oapx --oap-provider: out of memory decoding a line on stdin; the endpoint is stopping rather than continuing in an unknown state\n";
 
 test "the only failure that escapes handleLine is the one the stderr message names" {
     const E = @typeInfo(@typeInfo(@TypeOf(oap_provider_server.Server.handleLine)).@"fn".return_type.?).error_union.error_set;
@@ -7881,8 +7881,8 @@ fn runOapMode(
 }
 
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
-const OAP_MALFORMED_LINE_MESSAGE = "makai --oap: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
-const OAP_UNADDRESSABLE_ENVELOPE_MESSAGE = "makai --oap: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const OAP_MALFORMED_LINE_MESSAGE = "oapx --oap: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
+const OAP_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx --oap: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
 
 fn pumpOapIntents(
     allocator: std.mem.Allocator,
