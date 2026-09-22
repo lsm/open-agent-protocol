@@ -158,6 +158,7 @@ pub fn parseMessage(arena: std.mem.Allocator, line: []const u8, diagnostic: ?*Di
         }
     }
     if (failure) |value| {
+        if (value == .null) return report.invalid("error code is required");
         if (value != .object) return report.invalid("malformed error object");
         var fields = value.object.iterator();
         while (fields.next()) |entry| {
@@ -342,6 +343,7 @@ const refusals = [_]Refusal{
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":1,\"message\":\"\"}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":\"x\",\"message\":\"m\"}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"code\":1,\"message\":7}}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":null}", .message = "hermes rpc: invalid JSON-RPC message: error code is required" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"m\"}", .message = "hermes rpc: id must be a string or integer" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"m\"}", .message = "hermes rpc: id must be a string or integer" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":[1],\"method\":\"m\"}", .message = "hermes rpc: id must be a string or integer" },
@@ -385,6 +387,7 @@ const substitutes = [_]Refusal{
     .{ .frame = "{\"jsonrpc\":\"2.0\",}", .message = "hermes rpc: invalid JSON-RPC message: frame is not decodable JSON" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":7}", .message = "hermes rpc: invalid JSON-RPC message: malformed error object" },
     .{ .frame = "{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":{\"x\":1e999}}", .message = "hermes rpc: invalid JSON-RPC message: frame carries a number Go cannot decode" },
+    .{ .frame = "{\"jsonrpc\":\"2.0\",\"method\":\"m\"} x}", .message = "hermes rpc: invalid JSON-RPC message: trailing JSON value" },
 };
 
 test "three refusals quote Go's own decoder and are named here rather than reproduced" {
