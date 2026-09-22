@@ -49,9 +49,11 @@ fn terminate(id: std.process.Child.Id) void {
 
 const Expiry = struct {
     fired: std.atomic.Value(bool) = .init(false),
+    settled: std.atomic.Value(bool) = .init(false),
 
     fn run(self: *Expiry, waiting: std.Io, id: std.process.Child.Id, grace: u64) void {
         waiting.sleep(.fromNanoseconds(@intCast(grace)), .awake) catch return;
+        if (self.settled.load(.acquire)) return;
         self.fired.store(true, .release);
         terminate(id);
     }
@@ -206,14 +208,12 @@ pub const Transport = struct {
     fn reap(self: *Transport, child: *std.process.Child) ?std.process.Child.Term {
         const id = child.id orelse return null;
         var expiry: Expiry = .{};
-        var guard = self.io().concurrent(Expiry.run, .{ &expiry, self.io(), id, self.grace }) catch {
-            return child.wait(self.io()) catch null;
-        };
-        const settled = child.wait(self.io());
+        var guard = self.io().concurrent(Expiry.run, .{ &expiry, self.io(), id, self.grace }) catch return null;
+        const waited = child.wait(self.io());
+        expiry.settled.store(true, .release);
         guard.cancel(self.io());
-        const term = settled catch return null;
-        if (expiry.fired.load(.acquire) and term == .signal) return null;
-        return term;
+        if (expiry.fired.load(.acquire)) return null;
+        return waited catch null;
     }
 
     fn strand(self: *Transport, child: *std.process.Child) void {
@@ -457,4 +457,17 @@ test "a child that closes its own stdout and then goes inside the budget still r
     transport.close();
     try testing.expectEqual(Departure.exited, transport.departed().departure);
     try testing.expectEqual(@as(u32, 7), transport.departed().status);
+}
+
+test "an expiry whose child has already been waited on signals nothing" {
+    const transport = try shell("cat", .{ .executable = "" });
+    defer transport.deinit();
+
+    var expiry: Expiry = .{};
+    expiry.settled.store(true, .release);
+    expiry.run(transport.io(), transport.child.?.id.?, 10 * std.time.ns_per_ms);
+    try testing.expect(!expiry.fired.load(.acquire));
+
+    try transport.write("{\"a\":1}");
+    try testing.expectEqualStrings("{\"a\":1}", (try transport.next()).?);
 }
