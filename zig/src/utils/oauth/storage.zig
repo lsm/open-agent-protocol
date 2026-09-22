@@ -1049,7 +1049,7 @@ test "AuthStorage - load non-existent file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const previous_home = try setHomeForTest(std.testing.allocator, tmp.sub_path[0..]);
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
     var storage = try AuthStorage.loadFromFile(std.testing.allocator);
@@ -1202,9 +1202,12 @@ const TestHomeOverride = struct {
     previous: std.process.Environ,
     entry: [:0]u8,
     block: []?[*:0]const u8,
+    home: []const u8,
 };
 
-fn setHomeForTest(allocator: std.mem.Allocator, home: []const u8) !TestHomeOverride {
+fn setHomeForTest(allocator: std.mem.Allocator, tmp: *const std.testing.TmpDir) !TestHomeOverride {
+    const home = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path });
+    errdefer allocator.free(home);
     const entry = try std.mem.concatWithSentinel(allocator, u8, &.{ "HOME=", home }, 0);
     errdefer allocator.free(entry);
 
@@ -1215,13 +1218,14 @@ fn setHomeForTest(allocator: std.mem.Allocator, home: []const u8) !TestHomeOverr
 
     const previous = std.testing.environ;
     std.testing.environ = .{ .block = .{ .slice = block[0..1 :null] } };
-    return .{ .previous = previous, .entry = entry, .block = block };
+    return .{ .previous = previous, .entry = entry, .block = block, .home = home };
 }
 
 fn restoreHomeForTest(allocator: std.mem.Allocator, override: TestHomeOverride) void {
     std.testing.environ = override.previous;
     allocator.free(override.block);
     allocator.free(override.entry);
+    allocator.free(override.home);
 }
 
 fn countAuthTempFiles(home: []const u8) !usize {
@@ -1251,8 +1255,8 @@ test "oauth_storage_saveToFile_direct_sets_0600_and_same_directory_temp_rename" 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const home = tmp.sub_path[0..];
-    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    const home = previous_home.home;
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
     var storage = AuthStorage{
@@ -1289,8 +1293,8 @@ test "oauth_storage_saveToFile_rename_failure_leaves_target_unchanged_and_cleans
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const home = tmp.sub_path[0..];
-    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    const home = previous_home.home;
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
     const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
@@ -1327,8 +1331,8 @@ test "oauth_storage_loadFromFile_cleans_stale_temp_files" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const home = tmp.sub_path[0..];
-    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    const home = previous_home.home;
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
     const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
@@ -1351,8 +1355,8 @@ test "oauth_storage_saveToFile_replaces_existing_file_without_requiring_temp_cle
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const home = tmp.sub_path[0..];
-    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    const home = previous_home.home;
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
     const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
@@ -1398,8 +1402,8 @@ test "oauth_storage_saveToFile_does_not_require_directory_iteration" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const home = tmp.sub_path[0..];
-    const previous_home = try setHomeForTest(std.testing.allocator, home);
+    const previous_home = try setHomeForTest(std.testing.allocator, &tmp);
+    const home = previous_home.home;
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
     const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
