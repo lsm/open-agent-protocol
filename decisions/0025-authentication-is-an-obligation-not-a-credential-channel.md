@@ -46,9 +46,12 @@ refreshing it.
 
 This unit carries the first two and never the third. Completion happens between
 the endpoint and its identity provider over a channel this protocol does not
-describe, and for `+auth` the rule is structural rather than policed: the
-agent-control-core envelope set has no member that would hold a credential, so
-there is nowhere in it for one to travel.
+describe. What agent-control-core gives the rule is narrower than it is
+tempting to claim: **no member of its envelope set is a credential**, so a
+token has no place it belongs — but `action.schema.json` types
+`arguments_json`, `result` and `progress` as `true`, any JSON value at all, and
+a token put in one of those would pass the schema. The rule is declared and
+policed, not structural, and `credential_in_trace` is what polices it.
 
 That is a scope claim about this unit, not about the protocol, and the
 difference is worth stating because the protocol has already priced the other
@@ -221,8 +224,12 @@ Verified against this tree at `68168956`:
   `go/validation/provider_test.go:147`, which refuses a trace carrying
   `"value":"sk-abc"`. Caught in review; both statements are now scoped to the
   agent-control-core envelope set.
-- Both mistakes in this record ran the same way, and the direction is the useful
-  part. "The code is what a human types, so it is not a credential" and "no
+- Three mistakes in this record ran the same way, and the direction is the
+  useful part. The third arrived *in the sentence rewritten to fix the first
+  two*: scoped to agent-control-core, the claim became "structural rather than
+  policed", which is still false, because six members of `action.schema.json`
+  are typed `true` and accept any JSON value. A pattern named in a record is
+  not a pattern fixed by it. "The code is what a human types, so it is not a credential" and "no
   envelope has a member that would hold one" both *sound* structural, and a
   structural claim reads as self-evident, so it is the kind that does not get
   checked. The second was one `rg` away from either confirmed or refuted. The
@@ -241,11 +248,12 @@ An endpoint whose auth genuinely cannot be expressed as an interaction — one
 needing a token in the answer — declares `+auth` unavailable rather than
 approximating it. That is the same discipline every other unit follows.
 
-Schema, validator, diagnostic codes and fixtures move together, per the
-repository rule that a `schema/v0.1/*.json` change requires matching edits to
-`protocol/`, the validator, a fixture, and `clients/ts/src/protocol.ts`. Moving
-`authStatus` into `common.schema.json` touches the provider profile, so the
-provider corpus moves in the same commit.
+Moving `authStatus` into `common.schema.json` needs no fixture. It relocates a
+definition and repoints one `$ref`, so the same JSON validates and no
+diagnostic changes; `oap check` passes its 550 fixtures untouched. The
+repository rule that a `schema/v0.1/*.json` change moves with `protocol/`, the
+validator, a fixture and `clients/ts/src/protocol.ts` applies to the additive
+`auth_status` member, which is the part deferred to the validator work.
 
 ## What this unit does not admit
 
