@@ -440,13 +440,98 @@ func TestRequestBudgetMatchesHTTP(t *testing.T) {
 	}
 }
 
+func TestSubscribedSignalMatchesHTTP(t *testing.T) {
+	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
+	var wantRun protocol.RunID
+	var wantJoined uint64
+	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
+		entry := openSessionEntry(t, hub, "joined")
+		runID, lastSequence := runToCompletion(t, hub, entry)
+		if wantRun == "" {
+			wantRun, wantJoined = runID, lastSequence
+			continue
+		}
+		if runID != wantRun || lastSequence != wantJoined {
+			t.Fatalf("the two hubs ran different scripts: %s/%d and %s/%d", wantRun, wantJoined, runID, lastSequence)
+		}
+	}
+
+	server, err := servehttp.New(httpHub, servehttp.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpFrontend := httptest.NewServer(server.Handler())
+	defer httpFrontend.Close()
+
+	response, err := http.Get(httpFrontend.URL + "/sessions/joined/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	overHTTP := readSSESignal(t, response.Body)
+
+	f := startFrontend(t, stdioHub, Options{})
+	f.send(`{"id":5,"op":"events","session_id":"joined"}`)
+	if ack := f.expectResponse(5); !ack.OK {
+		t.Fatalf("events failed: %+v", ack.Error)
+	}
+	var overStdio subscribedLine
+	if err := json.Unmarshal([]byte(f.line()), &overStdio); err != nil {
+		t.Fatal(err)
+	}
+
+	if overHTTP.Event != overStdio.Event {
+		t.Fatalf("http named the signal %q and stdio %q", overHTTP.Event, overStdio.Event)
+	}
+	if overHTTP.Event != "oap-subscribed" {
+		t.Fatalf("both transports named the signal %q, want oap-subscribed", overHTTP.Event)
+	}
+	if overHTTP.RunID != overStdio.RunID || protocol.RunID(overHTTP.RunID) != wantRun {
+		t.Fatalf("http named run %q, stdio %q, want %q", overHTTP.RunID, overStdio.RunID, wantRun)
+	}
+	if overHTTP.JoinedAfter != overStdio.JoinedAfter || overHTTP.JoinedAfter != wantJoined {
+		t.Fatalf("http joined after %d, stdio %d, want %d", overHTTP.JoinedAfter, overStdio.JoinedAfter, wantJoined)
+	}
+	if overHTTP.Message != overStdio.Message {
+		t.Fatalf("http explained the signal as %q and stdio as %q", overHTTP.Message, overStdio.Message)
+	}
+	if err := f.finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readSSESignal(t *testing.T, body io.Reader) subscribedLine {
+	t.Helper()
+	reader := bufio.NewReader(body)
+	var signal subscribedLine
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("the SSE stream ended before a signal frame: %v", err)
+		}
+		line = strings.TrimSuffix(line, "\n")
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			signal.Event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &signal); err != nil {
+				t.Fatalf("signal data %q: %v", line, err)
+			}
+			if signal.Event == "" {
+				t.Fatalf("a data frame arrived before any named signal: %q", line)
+			}
+			return signal
+		}
+	}
+}
+
 func TestRunQualifiedCursorMatchesHTTP(t *testing.T) {
 	httpHub, stdioHub := newTestHub(t, 64, 64), newTestHub(t, 64, 64)
 	var wantRun protocol.RunID
 	for _, hub := range []*serve.Hub{httpHub, stdioHub} {
 		entry := openSessionEntry(t, hub, "qualified")
-		first := runToCompletion(t, hub, entry)
-		runToCompletion(t, hub, entry)
+		first, _ := runToCompletion(t, hub, entry)
+		_, _ = runToCompletion(t, hub, entry)
 		if wantRun == "" {
 			wantRun = first
 			continue

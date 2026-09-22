@@ -186,6 +186,13 @@ func TestSSELiveSubscriptionMidRun(t *testing.T) {
 	initial := stream.drainUntil(protocol.TypeActionPermissionRequested)
 
 	late := connectSSE(t, server, "/sessions/sse-mid-run/events", "")
+	joined := late.signal(sseEventSubscribed)
+	if joined["run_id"] != string(admission.RunID) {
+		t.Fatalf("the late subscriber was told it joined run %v, want %s", joined["run_id"], admission.RunID)
+	}
+	if joined["joined_after"] != float64(*initial[len(initial)-1].Sequence) {
+		t.Fatalf("the late subscriber was told it joined after %v, want %d", joined["joined_after"], *initial[len(initial)-1].Sequence)
+	}
 	resolvePermission(t, server, permissionRequestAt(t, initial), "resolve-mid-1")
 	middle := stream.drainUntil(protocol.TypeRunStatusUpdated)
 	lateSeen := late.drainUntil(protocol.TypeRunStatusUpdated)
@@ -202,7 +209,6 @@ func TestSSELiveSubscriptionMidRun(t *testing.T) {
 	late.drainUntil(protocol.TypeRunCompleted)
 	stream.expectEnd()
 	late.expectEnd()
-	_ = admission
 }
 
 func TestSSEStreamEndsOnSessionClose(t *testing.T) {
@@ -377,9 +383,12 @@ func getSSE(t *testing.T, server *httptest.Server, path string) (*http.Response,
 	return response, body
 }
 
-func driveOneRun(t *testing.T, server *httptest.Server, sessionID, prefix string) protocol.RunID {
+func driveOneRun(t *testing.T, server *httptest.Server, sessionID, prefix string, afterAnEarlierRun bool) protocol.RunID {
 	t.Helper()
 	stream := connectSSE(t, server, "/sessions/"+sessionID+"/events", "")
+	if afterAnEarlierRun {
+		stream.signal(sseEventSubscribed)
+	}
 	_, admission := submitRun(t, server, sessionID, prefix+"-submit")
 	initial := stream.drainUntil(protocol.TypeActionPermissionRequested)
 	resolvePermission(t, server, permissionRequestAt(t, initial), prefix+"-permission")
@@ -393,8 +402,8 @@ func driveOneRun(t *testing.T, server *httptest.Server, sessionID, prefix string
 func TestSSECursorFollowsTheRunItNames(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "sse-two-runs")
-	first := driveOneRun(t, server, "sse-two-runs", "one")
-	second := driveOneRun(t, server, "sse-two-runs", "two")
+	first := driveOneRun(t, server, "sse-two-runs", "one", false)
+	second := driveOneRun(t, server, "sse-two-runs", "two", true)
 	if first == second {
 		t.Fatal("the second submission reused the first run id")
 	}
@@ -417,7 +426,7 @@ func TestSSECursorFollowsTheRunItNames(t *testing.T) {
 func TestSSERefusesARunWithoutACursor(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "sse-bare-run")
-	runID := driveOneRun(t, server, "sse-bare-run", "bare")
+	runID := driveOneRun(t, server, "sse-bare-run", "bare", false)
 
 	response, body := getSSE(t, server, "/sessions/sse-bare-run/events?run_id="+string(runID))
 	if response.StatusCode != http.StatusBadRequest {
@@ -431,7 +440,7 @@ func TestSSERefusesARunWithoutACursor(t *testing.T) {
 func TestSSERefusesARunTheSessionNeverHad(t *testing.T) {
 	server := newMemoryServer(t, 0)
 	openSession(t, server, "memory", "sse-ghost-run")
-	driveOneRun(t, server, "sse-ghost-run", "ghost")
+	driveOneRun(t, server, "sse-ghost-run", "ghost", false)
 
 	response, body := getSSE(t, server, "/sessions/sse-ghost-run/events?after=1&run_id=run-never")
 	if response.StatusCode != http.StatusNotFound {
