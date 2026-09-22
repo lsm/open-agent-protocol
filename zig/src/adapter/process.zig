@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 pub const default_frame_limit: usize = 8 << 20;
 pub const default_exit_grace_ns: u64 = 5 * std.time.ns_per_s;
+pub const default_read_idle_ns: u64 = 0;
 
 pub const Error = error{
     ExecutableRequired,
@@ -12,6 +13,7 @@ pub const Error = error{
     UnterminatedFrame,
     EmbeddedNewline,
     NotRunning,
+    SilentChild,
 };
 
 pub const Spawn = struct {
@@ -21,6 +23,7 @@ pub const Spawn = struct {
     working_directory: ?[]const u8 = null,
     frame_limit: usize = default_frame_limit,
     exit_grace_ns: u64 = default_exit_grace_ns,
+    read_idle_ns: u64 = default_read_idle_ns,
 };
 
 pub const Departure = enum { running, exited, signalled, stranded };
@@ -63,6 +66,7 @@ pub const Transport = struct {
     allocator: std.mem.Allocator,
     limit: usize,
     grace: u64,
+    idle: u64,
     threaded: std.Io.Threaded = undefined,
     child: ?std.process.Child = null,
     streams: std.Io.File.MultiReader.Buffer(1) = undefined,
@@ -94,6 +98,7 @@ pub const Transport = struct {
             .allocator = allocator,
             .limit = request.frame_limit,
             .grace = request.exit_grace_ns,
+            .idle = request.read_idle_ns,
             .threaded = .init(allocator, .{}),
         };
         errdefer self.threaded.deinit();
@@ -151,6 +156,12 @@ pub const Transport = struct {
         }
     }
 
+    fn idleDeadline(self: *Transport) std.Io.Timeout {
+        if (self.idle == 0) return .none;
+        const budget: std.Io.Timeout = .{ .duration = .{ .clock = .awake, .raw = .fromNanoseconds(@intCast(self.idle)) } };
+        return budget.toDeadline(self.io());
+    }
+
     fn take(self: *Transport) !?[]const u8 {
         const at = std.mem.indexOfScalar(u8, self.pending.items, '\n') orelse {
             if (self.pending.items.len > self.limit) return Error.FrameTooLarge;
@@ -174,11 +185,12 @@ pub const Transport = struct {
             self.ended = true;
             return;
         }
-        self.multi.fill(1, .none) catch |raised| switch (raised) {
+        self.multi.fill(1, self.idleDeadline()) catch |raised| switch (raised) {
             error.EndOfStream => {
                 self.ended = true;
                 return;
             },
+            error.Timeout => return Error.SilentChild,
             else => |leftover| return leftover,
         };
         const reader = self.multi.reader(0);
@@ -427,6 +439,33 @@ test "closing the transport releases the child's pipes, not only its stdin" {
     killed.close();
     try testing.expectEqual(Departure.stranded, killed.departed().departure);
     try testing.expect(killed.child == null);
+}
+
+test "a child that goes quiet is refused once a caller sets an idle bound" {
+    const transport = try shell("sleep 30", .{ .executable = "", .read_idle_ns = 150 * std.time.ns_per_ms });
+    defer transport.deinit();
+
+    try testing.expectError(Error.SilentChild, transport.next());
+}
+
+test "the idle bound asks whether the child went quiet, so a frame resets it" {
+    const transport = try shell(
+        "for i in 1 2 3 4 5 6; do printf 'x\\n'; sleep 0.05; done",
+        .{ .executable = "", .read_idle_ns = 150 * std.time.ns_per_ms },
+    );
+    defer transport.deinit();
+
+    var seen: usize = 0;
+    while (try transport.next()) |frame| {
+        try testing.expectEqualStrings("x", frame);
+        seen += 1;
+    }
+    try testing.expectEqual(@as(usize, 6), seen);
+}
+
+test "the idle bound is off unless a caller asks for one" {
+    try testing.expectEqual(@as(u64, 0), default_read_idle_ns);
+    try testing.expectEqual(@as(u64, 0), (Spawn{ .executable = "x" }).read_idle_ns);
 }
 
 test "a chatty child that will not go is killed on one budget, not one per read" {
