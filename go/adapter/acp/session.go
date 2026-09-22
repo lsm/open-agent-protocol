@@ -795,7 +795,11 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		p := pending.gate
 		_ = p.request.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
 		reason := protocol.ProtocolError{Code: "run_settled", Message: "parent run settled the permission request"}
-		_, _ = s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID)
+		if _, err := s.emitEnvelope(run, protocol.TypeActionPermissionResolved, protocol.PermissionResolvedPayload{InteractionID: p.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: p.tool.id, Outcome: protocol.InteractionCancelled, Reason: &reason}, false, pending.requestEventID); err != nil {
+			s.mu.Lock()
+			p.resolved = false
+			s.mu.Unlock()
+		}
 	}
 	for _, t := range tools {
 		if !t.started && !cancel {
@@ -818,7 +822,11 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		} else {
 			p.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "prompt completed with unfinished ACP tool"}
 		}
-		_ = s.emit(run, typ, p, false)
+		if err := s.emit(run, typ, p, false); err != nil {
+			s.mu.Lock()
+			t.terminal = false
+			s.mu.Unlock()
+		}
 	}
 }
 func (s *session) transportFailed() {

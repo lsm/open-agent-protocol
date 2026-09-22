@@ -265,6 +265,16 @@ pub fn build(b: *std.Build) void {
     hermes_session_mod.addImport("rpc", hermes_rpc_mod);
     hermes_session_mod.addImport("goquote", adapter_goquote_mod);
     const hermes_rpc_test = b.addTest(.{ .root_module = hermes_rpc_mod });
+    const hermes_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/hermes/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    hermes_corpus_mod.addImport("corpus", adapter_corpus_mod);
+    hermes_corpus_mod.addImport("rpc", hermes_rpc_mod);
+    hermes_corpus_mod.addImport("session", hermes_session_mod);
+    hermes_corpus_mod.addOptions("build_options", gate_options);
+    const hermes_corpus_test = b.addTest(.{ .root_module = hermes_corpus_mod });
 
     const acp_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/acp/rpc.zig"),
@@ -2081,6 +2091,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
+    test_step.dependOn(&b.addRunArtifact(hermes_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_session_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
@@ -2210,6 +2221,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(hermes_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(hermes_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(hermes_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(hermes_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_goquote_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_session_test).step);
