@@ -1307,3 +1307,89 @@ func TestSettlementWithAnEmptyCandidateIsRefused(t *testing.T) {
 	})
 	assertRunFailedWith(t, events, "pi_missing_final_message", "agent settlement omitted assistant message")
 }
+
+func resolveInput(t *testing.T, s *Session, run protocol.RunID, requested protocol.Envelope) {
+	t.Helper()
+	var payload protocol.UserInputRequestedPayload
+	if err := requested.DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	answer := protocol.InputAnswer{QuestionID: payload.Questions[0].ID, SelectedOptionIDs: []string{payload.Questions[0].Options[0].ID}}
+	resolution := base.InteractionResolution{RunID: run, RespondedBy: "user", Input: &protocol.UserInputResolveRequest{InteractionID: payload.InteractionID, RequestedBy: endpointID, RespondedBy: "user", SessionID: "session", RunID: run, Answers: []protocol.InputAnswer{answer}}}
+	if err := s.Resolve(context.Background(), resolution); err != nil {
+		t.Fatalf("resolve %s: %v", payload.InteractionID, err)
+	}
+}
+
+func TestAResolvedGateReportsTheOldestStillOutstanding(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	admitted, stream := submitTest(t, s)
+	if event := adaptertest.Next(t, stream, time.Second); event.Type != protocol.TypeRunStarted {
+		t.Fatalf("event=%s", event.Type)
+	}
+	for _, id := range []string{"ui-1", "ui-2", "ui-3"} {
+		client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: id, Method: native.ExtensionSelect, Title: id, Options: []string{"a", "b"}})
+	}
+	var requested []protocol.Envelope
+	var opened []protocol.InteractionID
+	for i := 0; i < 6; i++ {
+		event := adaptertest.Next(t, stream, time.Second)
+		if event.Type == protocol.TypeUserInputRequested {
+			requested = append(requested, event)
+			var payload protocol.UserInputRequestedPayload
+			if err := event.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			opened = append(opened, payload.InteractionID)
+			continue
+		}
+		if event.Type != protocol.TypeRunStatusUpdated {
+			t.Fatalf("event=%s", event.Type)
+		}
+	}
+	if len(requested) != 3 {
+		t.Fatalf("opened %d gates, want 3", len(requested))
+	}
+
+	for at, gate := range requested {
+		resolveInput(t, s, admitted.RunID, gate)
+		if event := adaptertest.Next(t, stream, time.Second); event.Type != protocol.TypeUserInputResolved {
+			t.Fatalf("event=%s, want user.input.resolved", event.Type)
+		}
+		update := adaptertest.Next(t, stream, time.Second)
+		var status protocol.RunStatusUpdatedPayload
+		if err := update.DecodePayload(&status); err != nil {
+			t.Fatal(err)
+		}
+		if at == len(requested)-1 {
+			if status.Status != protocol.RunRunning || status.PendingUserInputID != "" {
+				t.Fatalf("after the last gate: status=%s pending=%q, want running and none", status.Status, status.PendingUserInputID)
+			}
+			continue
+		}
+		if status.Status != protocol.RunWaitingForInput {
+			t.Fatalf("after gate %d: status=%s, want waiting_for_input", at+1, status.Status)
+		}
+		if status.PendingUserInputID != opened[at+1] {
+			t.Fatalf("after gate %d: pending=%q, want the oldest still open %q", at+1, status.PendingUserInputID, opened[at+1])
+		}
+	}
+}
+
+func TestTheOldestOutstandingGateIsTheRunsOwn(t *testing.T) {
+	session := openTest(t, newFakeClient(), 32)
+	mine := &runState{id: "run-mine"}
+	theirs := &runState{id: "run-theirs"}
+	session.interactions["theirs"] = &inputState{id: "theirs", run: theirs, opened: 1}
+	session.interactions["mine"] = &inputState{id: "mine", run: mine, opened: 2}
+
+	oldest := session.oldestPendingInput(mine)
+	if oldest == nil || oldest.id != "mine" {
+		t.Fatalf("oldest = %+v, want this run's own gate", oldest)
+	}
+	session.interactions["mine"].phase = interactionResolved
+	if settled := session.oldestPendingInput(mine); settled != nil {
+		t.Fatalf("oldest = %+v, want none once this run has nothing open", settled)
+	}
+}
