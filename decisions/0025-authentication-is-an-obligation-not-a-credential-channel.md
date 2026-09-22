@@ -114,8 +114,23 @@ names both.
 
 `authStatus` — `authenticated`, `login_required`, `expired`, `failed`,
 `unknown` — moves from `provider.schema.json` to `common.schema.json`, and both
-profiles reference it. `capabilities.response` gains an optional `auth_status`
-using it.
+profiles reference it.
+
+**The state attaches to the thing it describes, which is a provider and never
+the endpoint.** Both `providerDescriptor`s gain the optional member:
+`capabilities.schema.json` for agent-control-core, `provider.schema.json` for
+model-provider-core. `modelDescriptor.auth_status` stays where it is, because a
+model can need an entitlement its provider's credential does not carry.
+
+A single endpoint-level `auth_status` was the draft's first shape and it does
+not survive its own defect case. An endpoint holding two providers in different
+states has no way to say so, and the contradiction this unit most needs to
+catch — a provider advertising `allows_anonymous` while reporting
+`login_required` — cannot be expressed at all if the status does not sit beside
+the flag it contradicts. Keeping them in one descriptor makes that defect
+decidable from a single frame rather than assembled across a trace, which is
+the difference between a `"scope": "frame"` fixture and a `"scope": "trace"`
+one.
 
 It moves rather than being copied because a second enum is a second thing to
 drift, which is the defect [#177](https://github.com/lsm/open-agent-protocol/issues/177)
@@ -145,7 +160,11 @@ Verified against this tree at `68168956`:
 
 - No authentication vocabulary exists in the core schemas. `auth` appears in
   exactly one schema file, `provider.schema.json`, as `authStatus` (`:184`) and
-  the `auth_status` member that references it (`:275`).
+  the `auth_status` member that references it (`:275`), the latter on a *model*
+  descriptor. `allows_anonymous` is already a member of that file's
+  `providerDescriptor`, which is why the anonymous-versus-`login_required`
+  contradiction becomes checkable within one frame once the status sits beside
+  it.
 - [Decision 0020](0020-error-codes-are-declared.md)'s `error_codes` descriptor,
   which carries a code and the action a caller should take, is **decided and
   not built**. `error_codes` exists only in `pack.schema.json:36`, as a bare
