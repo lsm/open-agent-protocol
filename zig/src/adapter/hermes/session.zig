@@ -212,6 +212,7 @@ pub const Reducer = struct {
     pub fn refuseSubmission(self: *Reducer) void {
         const run = self.run orelse return;
         if (run.started) return;
+        self.buffered.clearRetainingCapacity();
         self.run = null;
     }
 
@@ -1732,4 +1733,31 @@ test "the endpoint and revision the options name are what the envelopes carry" {
     try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
     try testing.expectEqualStrings("hermes.supplied", payloadAt(&reducer, 1).get("requested_by").?.string);
     try testing.expectEqualStrings("supplied-revision", reducer.envelopes.items[1].object.get("capability_revision").?.string);
+}
+
+test "a refused submission drops what it buffered, it does not hand it to the next run" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try reducer.submit();
+    try feedEvent(&reducer, scratch, "message.delta", "{\"text\":\"stale\"}");
+    reducer.refuseSubmission();
+
+    try reducer.submit();
+    try feedBare(&reducer, scratch, "message.start");
+    try feedEvent(&reducer, scratch, "message.delta", "{\"text\":\"fresh\"}");
+
+    for (reducer.envelopes.items) |envelope| {
+        const payload = envelope.object.get("payload").?.object;
+        const part = payload.get("part") orelse continue;
+        const text = part.object.get("text").?.string;
+        try testing.expect(!std.mem.eql(u8, "stale", text));
+    }
+    try testing.expectEqualStrings("run.started", typeAt(&reducer, 0));
+    try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("fresh", payloadAt(&reducer, 1).get("part").?.object.get("text").?.string);
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
 }
