@@ -391,12 +391,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict
 
-from oap_sdk import ContentPart
-from oap_sdk.types import ToolExecutor
+from oap_sdk import ContentPart, Role, ToolExecutor
 
 
 class ChatMessage(TypedDict):
-    role: Literal["system", "developer", "user", "assistant", "tool"]
+    role: Role
     content: str | list[ContentPart]
     name: NotRequired[str]
     tool_call_id: NotRequired[str]
