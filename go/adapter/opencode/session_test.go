@@ -1595,3 +1595,46 @@ func TestHeldEnvelopesAreNotReplayableUntilReleased(t *testing.T) {
 		}
 	}
 }
+
+func TestCancelSettlesAnOpenToolAsCancelled(t *testing.T) {
+	client := newFakeClient()
+	client.promoted = true
+	session, _ := openTest(t, client, 32)
+	response, stream := submitTest(t, session)
+	messageID := native.MessageID(response.MessageIDs[0])
+	client.emit(t, 1, native.TypePrompted, native.PromptedData{Timestamp: 1, SessionID: client.session, MessageID: messageID, Prompt: native.Prompt{Text: "hello"}, Delivery: native.DeliverySteer})
+	client.emit(t, 2, native.TypeStepStarted, native.StepStartedData{Timestamp: 2, SessionID: client.session, AssistantMessage: "msg_a1"})
+	started := adaptertest.Next(t, stream, time.Second)
+	if started.Type != protocol.TypeRunStarted {
+		t.Fatalf("first=%s", started.Type)
+	}
+	client.emit(t, 3, native.TypeToolCalled, native.ToolCalledData{Timestamp: 3, SessionID: client.session, AssistantMessage: "msg_a1", CallID: "call_1", Tool: "read", Input: map[string]any{"path": "/x"}})
+	requested := adaptertest.Next(t, stream, time.Second)
+	toolStarted := adaptertest.Next(t, stream, time.Second)
+	if requested.Type != protocol.TypeActionCallRequested || toolStarted.Type != protocol.TypeActionCallStarted {
+		t.Fatalf("tool events = %s %s", requested.Type, toolStarted.Type)
+	}
+
+	if _, err := session.Cancel(context.Background(), response.RunID); err != nil {
+		t.Fatal(err)
+	}
+	client.emit(t, 4, native.TypeStepEnded, native.StepEndedData{Timestamp: 4, SessionID: client.session, AssistantMessage: "msg_a1", Finish: "aborted"})
+	rest := adaptertest.Drain(t, stream, time.Second)
+
+	events := append([]protocol.Envelope{started, requested, toolStarted}, rest...)
+	settled, terminal := -1, -1
+	for i, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeActionCallCancelled:
+			settled = i
+		case protocol.TypeRunCancelled:
+			terminal = i
+		case protocol.TypeActionCallFailed:
+			t.Fatalf("a cancelled run settled its tool as failed: %v", types(events))
+		}
+	}
+	if settled < 0 || terminal < 0 || settled > terminal {
+		t.Fatalf("settled=%d terminal=%d events=%v", settled, terminal, types(events))
+	}
+	adaptertest.AssertProtocolValidWithCancellation(t, response, testAdapterDescriptor(t), events)
+}
