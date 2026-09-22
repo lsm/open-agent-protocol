@@ -56,7 +56,7 @@ async function setupModelsHarness(): Promise<ModelsHarness> {
   const client = new MakaiStdioClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_RESPONSE_PATH: responsePath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_RESPONSE_PATH: responsePath },
     handshakeTimeoutMs: 5000,
   });
   await client.connect();
@@ -97,9 +97,9 @@ test("models.list rejects when signal is aborted during response wait", async ()
     args: [fixtureScript],
     env: {
       ...process.env,
-      MAKAI_TEST_REQUEST_LOG: logPath,
-      MAKAI_TEST_RESPONSE_PATH: responsePath,
-      MAKAI_TEST_RESPONSE_DELAY_MS: "5000",
+      OAP_SDK_TEST_REQUEST_LOG: logPath,
+      OAP_SDK_TEST_RESPONSE_PATH: responsePath,
+      OAP_SDK_TEST_RESPONSE_DELAY_MS: "5000",
     },
     handshakeTimeoutMs: 5000,
   });
@@ -194,7 +194,7 @@ test("createMakaiClient provider.complete rejects with AbortSignal.abort()", asy
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
   });
@@ -221,7 +221,7 @@ test("createMakaiClient agent.stream rejects with AbortSignal.abort()", async ()
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
   });

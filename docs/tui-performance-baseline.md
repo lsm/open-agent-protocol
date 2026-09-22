@@ -9,7 +9,7 @@ baseline, the same way `zig build bench` guards the streaming core (see
 ## Deterministic fixture provider
 
 The scenario must not depend on API keys or network access. When the
-`MAKAI_TUI_FIXTURE` environment variable is set to a non-empty value, the TUI
+`OAPX_TUI_FIXTURE` environment variable is set to a non-empty value, the TUI
 entry point (`zig/src/tui/app.zig` `run()`) swaps the production provider
 protocol client for the fixture provider in `zig/src/tui/fixture_provider.zig`:
 every submitted turn streams the env value back as the assistant reply. The
@@ -91,7 +91,7 @@ canned-reply value: `|`-separated steps `text:<body>`, `tool:<name>` or
 cancelled — for steer/abort coverage), and `error:<message>`. A literal `|`
 or `\` inside a step payload (common in shell tool arguments) is escaped as
 `\|` / `\\`. A value whose first segment carries no step prefix stays a single
-text reply, so existing `MAKAI_TUI_FIXTURE` usage is unchanged.
+text reply, so existing `OAPX_TUI_FIXTURE` usage is unchanged.
 
 ## Metric definitions
 
@@ -129,8 +129,8 @@ scenario (its own transcript/batches plus `frames.jsonl` and `notes.json`).
 
 ```bash
 zig build install -Doptimize=ReleaseFast --prefix /tmp/makai-pty
-python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/makai --output-dir tui-pty-out
-python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/makai --output-dir tui-pty-out --scenario all
+python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/oapx --output-dir tui-pty-out
+python3 scripts/tui-pty-driver.py --binary /tmp/makai-pty/bin/oapx --output-dir tui-pty-out --scenario all
 ```
 
 CI runs the `--scenario all` invocation in the `TUI PTY Harness` job on every

@@ -11,10 +11,10 @@ import (
 )
 
 // These tests drive a real `makai --stdio` runtime. They are skipped unless
-// MAKAI_BINARY_PATH names one:
+// OAP_SDK_BINARY_PATH names one:
 //
 //	zig build install --prefix /tmp/makai-go
-//	MAKAI_BINARY_PATH=/tmp/makai-go/bin/makai go test -race ./...
+//	OAP_SDK_BINARY_PATH=/tmp/makai-go/bin/makai go test -race ./...
 //
 // Everything covered here works without provider credentials: model
 // discovery falls back to the runtime's static catalog, auth listing reports
@@ -27,7 +27,7 @@ func newSmokeClient(t *testing.T) *Client {
 	t.Helper()
 	binary := os.Getenv(EnvBinaryPath)
 	if binary == "" {
-		t.Skip("MAKAI_BINARY_PATH is not set")
+		t.Skip("OAP_SDK_BINARY_PATH is not set")
 	}
 
 	// The runtime reads and writes real credential storage. Point it at a
@@ -39,7 +39,7 @@ func newSmokeClient(t *testing.T) *Client {
 	env := append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+home,
-		"MAKAI_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
+		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
 	)
 
 	client, err := New(context.Background(), &Options{
@@ -442,7 +442,7 @@ func TestSmokeConcurrentRequests(t *testing.T) {
 func TestSmokeCloseTerminatesTheRuntime(t *testing.T) {
 	binary := os.Getenv(EnvBinaryPath)
 	if binary == "" {
-		t.Skip("MAKAI_BINARY_PATH is not set")
+		t.Skip("OAP_SDK_BINARY_PATH is not set")
 	}
 	home := t.TempDir()
 
@@ -450,7 +450,7 @@ func TestSmokeCloseTerminatesTheRuntime(t *testing.T) {
 		BinaryPath: binary,
 		Env: append(os.Environ(),
 			"HOME="+home,
-			"MAKAI_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
+			"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
 		),
 		HandshakeTimeout: 15 * time.Second,
 	})

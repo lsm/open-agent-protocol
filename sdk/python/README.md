@@ -1,20 +1,22 @@
-# Makai Python SDK
+# OAP Python SDK
 
-Python SDK for Makai's stdio protocol. The SDK starts a `makai --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
+Python SDK published as `oap-sdk` and imported as `oap_sdk`. It starts an `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
 
 The SDK is async-first (`asyncio`) with a thin blocking wrapper for scripts. It has no third-party runtime dependencies and requires Python 3.11+.
+
+The wire it speaks today is the makai stdio protocol, not OAP. The package name is where this is going, not where it is.
 
 ## Installation
 
 The package is not published to PyPI yet. Install it from a checkout of this repository:
 
 ```bash
-pip install ./python
+pip install ./sdk/python
 ```
 
-Once it is published, `pip install makai` will do the same.
+Once it is published, `pip install oap-sdk` will do the same.
 
-You also need access to the Makai runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
+You also need access to the runtime binary. By default the SDK looks for a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then falls back to `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
@@ -23,11 +25,11 @@ Create a client, resolve a model, send one chat message, and print the assistant
 ```python
 import asyncio
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         model = await client.models.resolve(
             provider_id="anthropic",
             api="anthropic-messages",
@@ -37,7 +39,7 @@ async def main() -> None:
         response = await client.provider.complete(
             model_ref=model.model_ref,
             messages=[{"role": "user", "content": "Write a haiku about streams."}],
-            options=makai.RunOptions(max_tokens=128),
+            options=oap_sdk.RunOptions(max_tokens=128),
         )
 
         print(response.text)
@@ -46,7 +48,7 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`async with makai.connect()` closes the client for you. If you would rather hold the client yourself, `client = await makai.connect()` works too — then you own `await client.close()`.
+`async with oap_sdk.connect()` closes the client for you. If you would rather hold the client yourself, `client = await oap_sdk.connect()` works too — then you own `await client.close()`.
 
 ## Streaming completions
 
@@ -56,11 +58,11 @@ Use `client.provider.stream(...)` for provider-level streaming. It is the SDK's 
 import asyncio
 import sys
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         model = await client.models.resolve(
             provider_id="anthropic",
             api="anthropic-messages",
@@ -70,20 +72,20 @@ async def main() -> None:
         async for event in client.provider.stream(
             model_ref=model.model_ref,
             messages=[{"role": "user", "content": "Explain lock-free queues in one paragraph."}],
-            options=makai.RunOptions(max_tokens=256),
+            options=oap_sdk.RunOptions(max_tokens=256),
         ):
             match event:
-                case makai.MessageStart():
+                case oap_sdk.MessageStart():
                     print(f"Streaming {event.provider_id}/{event.model_id}", file=sys.stderr)
-                case makai.TextDelta():
+                case oap_sdk.TextDelta():
                     sys.stdout.write(event.delta)
-                case makai.ThinkingDelta():
+                case oap_sdk.ThinkingDelta():
                     pass  # Reasoning output is surfaced separately from normal text.
-                case makai.ToolCall():
+                case oap_sdk.ToolCall():
                     print(f"\nTool call: {event.name}({event.arguments_json})", file=sys.stderr)
-                case makai.MessageEnd():
+                case oap_sdk.MessageEnd():
                     print(f"\nStop reason: {event.stop_reason}", file=sys.stderr)
-                case makai.StreamError():
+                case oap_sdk.StreamError():
                     raise RuntimeError(event.message)
 
 
@@ -101,7 +103,7 @@ from contextlib import aclosing
 
 async with aclosing(client.provider.stream(model_ref=..., messages=[...])) as stream:
     async for event in stream:
-        if isinstance(event, makai.TextDelta) and "stop" in event.delta:
+        if isinstance(event, oap_sdk.TextDelta) and "stop" in event.delta:
             break
 ```
 
@@ -109,22 +111,22 @@ Running a stream to completion needs no such ceremony.
 
 ## Agent loop with tools
 
-Use `client.agent.run(...)` when you want the Makai agent loop to manage provider turns and tool execution. Tool schemas are JSON Schema **strings**. Supply an `execute` callback and the SDK runs the tool **in your process** when the runtime asks for it, replying with a correlated `tool_result`.
+Use `client.agent.run(...)` when you want the runtime's agent loop to manage provider turns and tool execution. Tool schemas are JSON Schema **strings**. Supply an `execute` callback and the SDK runs the tool **in your process** when the runtime asks for it, replying with a correlated `tool_result`.
 
 ```python
 import asyncio
 import json
 from typing import Any
 
-import makai
+import oap_sdk
 
 
-def get_weather(args: dict[str, Any], context: makai.ToolContext) -> str:
+def get_weather(args: dict[str, Any], context: oap_sdk.ToolContext) -> str:
     return f"It is 17C and raining in {args['city']}."
 
 
 tools = [
-    makai.ToolDefinition(
+    oap_sdk.ToolDefinition(
         name="get_weather",
         description="Get the current weather for a city.",
         parameters_schema_json=json.dumps(
@@ -141,7 +143,7 @@ tools = [
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         model = await client.models.resolve(
             provider_id="anthropic",
             api="anthropic-messages",
@@ -152,7 +154,7 @@ async def main() -> None:
             model_ref=model.model_ref,
             messages=[{"role": "user", "content": "Should I bring an umbrella in San Francisco today?"}],
             tools=tools,
-            options=makai.RunOptions(max_tokens=512, auth_retry_policy="auto_once"),
+            options=oap_sdk.RunOptions(max_tokens=512, auth_retry_policy="auto_once"),
         )
 
         print(response.text)
@@ -183,29 +185,29 @@ Use `client.auth.list_providers()` to inspect auth state, and `client.auth.login
 ```python
 import asyncio
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         providers = await client.auth.list_providers()
         anthropic = next((p for p in providers if p.id == "anthropic"), None)
 
         if anthropic is not None and anthropic.auth_status != "authenticated":
-            def on_event(event: makai.AuthEvent) -> None:
-                if isinstance(event, makai.AuthUrlEvent):
+            def on_event(event: oap_sdk.AuthEvent) -> None:
+                if isinstance(event, oap_sdk.AuthUrlEvent):
                     print(f"Open {event.url}")
                     if event.instructions:
                         print(event.instructions)
-                elif isinstance(event, makai.AuthProgressEvent):
+                elif isinstance(event, oap_sdk.AuthProgressEvent):
                     print(event.message)
 
-            def on_prompt(prompt: makai.AuthPromptEvent) -> str:
+            def on_prompt(prompt: oap_sdk.AuthPromptEvent) -> str:
                 return input(f"{prompt.message} ")
 
             await client.auth.login(
                 "anthropic",
-                makai.AuthFlowHandlers(on_event=on_event, on_prompt=on_prompt),
+                oap_sdk.AuthFlowHandlers(on_event=on_event, on_prompt=on_prompt),
             )
 
 
@@ -217,10 +219,10 @@ Both handlers may be coroutine functions. A `prompt` event with no `on_prompt` h
 You can also configure automatic one-shot auth retry for `provider` and `agent` calls:
 
 ```python
-client = await makai.connect(
-    auth=makai.AuthOptions(
+client = await oap_sdk.connect(
+    auth=oap_sdk.AuthOptions(
         auth_retry_policy="auto_once",
-        handlers=makai.AuthFlowHandlers(on_event=lambda event: None),
+        handlers=oap_sdk.AuthFlowHandlers(on_event=lambda event: None),
     )
 )
 # Calls that hit auth_required can now trigger one login attempt automatically.
@@ -234,11 +236,11 @@ Models are discovered through `client.models`. Use `model_ref` from the returned
 import asyncio
 import datetime
 
-import makai
+import oap_sdk
 
 
 async def main() -> None:
-    async with makai.connect() as client:
+    async with oap_sdk.connect() as client:
         result = await client.models.list(provider_id="anthropic", include_login_required=True)
 
         fetched = datetime.datetime.fromtimestamp(result.fetched_at_ms / 1000, datetime.UTC)
@@ -263,18 +265,18 @@ asyncio.run(main())
 
 ## Blocking wrapper
 
-For scripts and REPLs, `makai.connect_sync()` runs the async client on a private event loop in a background thread. Do not call it from inside a running event loop.
+For scripts and REPLs, `oap_sdk.connect_sync()` runs the async client on a private event loop in a background thread. Do not call it from inside a running event loop.
 
 ```python
-import makai
+import oap_sdk
 
-with makai.connect_sync() as client:
+with oap_sdk.connect_sync() as client:
     model = client.models.resolve(provider_id="anthropic", model_id="claude-sonnet-4-5")
     for event in client.provider.stream(
         model_ref=model.model_ref,
         messages=[{"role": "user", "content": "hello"}],
     ):
-        if isinstance(event, makai.TextDelta):
+        if isinstance(event, oap_sdk.TextDelta):
             print(event.delta, end="")
 ```
 
@@ -284,52 +286,52 @@ with makai.connect_sync() as client:
 
 ## Configuration
 
-`makai.connect(...)` and `makai.connect_sync(...)` accept transport options and binary resolver options.
+`oap_sdk.connect(...)` and `oap_sdk.connect_sync(...)` accept transport options and binary resolver options.
 
 ### Explicit binary path
 
 ```python
-client = await makai.connect(
-    resolver=makai.BinaryResolverOptions(binary_path="/opt/makai/bin/makai")
+client = await oap_sdk.connect(
+    resolver=oap_sdk.BinaryResolverOptions(binary_path="/opt/oapx/bin/oapx")
 )
 ```
 
-You can also set `MAKAI_BINARY_PATH=/opt/makai/bin/makai`, which takes precedence over `binary_path`.
+You can also set `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`, which takes precedence over `binary_path`.
 
 ### Download from URL with checksum
 
 ```python
-client = await makai.connect(
-    resolver=makai.BinaryResolverOptions(
-        binary_url="https://example.com/releases/makai-darwin-arm64",
+client = await oap_sdk.connect(
+    resolver=oap_sdk.BinaryResolverOptions(
+        binary_url="https://example.com/releases/oapx-darwin-arm64",
         checksum_sha256="0123456789abcdef" * 4,
-        cache_dir="/tmp/makai-bin-cache",
+        cache_dir="/tmp/oapx-bin-cache",
     )
 )
 ```
 
-The checksum is mandatory and re-verified against the cache on every resolve. Environment variable equivalents are `MAKAI_BINARY_URL` and `MAKAI_BINARY_SHA256`.
+The checksum is mandatory and re-verified against the cache on every resolve. Environment variable equivalents are `OAP_SDK_BINARY_URL` and `OAP_SDK_BINARY_SHA256`.
 
 ### Resolution order
 
-1. `resolver.binary_path`, or `MAKAI_BINARY_PATH` (the environment wins)
-2. `resolver.binary_url` / `MAKAI_BINARY_URL`, which requires a SHA-256 checksum
+1. `resolver.binary_path`, or `OAP_SDK_BINARY_PATH` (the environment wins)
+2. `resolver.binary_url` / `OAP_SDK_BINARY_URL`, which requires a SHA-256 checksum
 3. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
 4. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
-5. `oapx` on `PATH`, then `makai`
+5. `oapx` on `PATH`, then `makai` on `PATH`
 
 `oapx` is tried in every location before `makai` is tried in any, so a nested
 `oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
 
-The TypeScript SDK has one extra step between 2 and 3: an optional `@makai/cli-<platform>-<arch>` npm package. That step is **deliberately omitted** here — npm installs those automatically through optional dependencies, Python's equivalent would be platform-specific wheels, and none are published for makai. Set `MAKAI_BINARY_PATH` when you need to pin a specific binary.
+The TypeScript SDK has one extra step between 2 and 3: the `@oap-sdk/cli-<platform>-<arch>` npm package, when it is installed. That step is **deliberately omitted** here — Python's equivalent would be platform-specific wheels, and none are published. Set `OAP_SDK_BINARY_PATH` when you need to pin a specific binary.
 
 ### Transport options
 
 ```python
-client = await makai.connect(
+client = await oap_sdk.connect(
     args=["--stdio"],
     cwd=".",
-    env={**os.environ, "MAKAI_LOG": "info"},
+    env={**os.environ, "OAPX_LOG": "info"},
     handshake_timeout=5.0,   # seconds to wait for the `ready` frame
     response_timeout=30.0,   # seconds per provider/agent frame
     frame_timeout=30.0,      # seconds per auth frame
@@ -353,17 +355,17 @@ Closing a client terminates the child process: stdin is closed, then `terminate(
 `MakaiStreamError.kind` is one of `provider_error`, `transport_error`, `aborted`, `unknown`. Timeouts carry a `diagnostics` mapping with the stream/session/message ids and remediation suggestions.
 
 ```python
-import makai
+import oap_sdk
 
 try:
     response = await client.provider.complete(model_ref=model_ref, messages=messages)
-except makai.MakaiAuthRequiredError as error:
+except oap_sdk.MakaiAuthRequiredError as error:
     print(f"Login required for {error.provider_id}")
-except makai.MakaiStreamError as error:
+except oap_sdk.MakaiStreamError as error:
     print(f"Stream failed ({error.kind}/{error.code}): {error}")
-except makai.MakaiProtocolError as error:
+except oap_sdk.MakaiProtocolError as error:
     print(f"Protocol failed ({error.code}): {error}")
-except makai.MakaiAuthError as error:
+except oap_sdk.MakaiAuthError as error:
     print(f"Auth failed ({error.kind}/{error.code}): {error}")
 ```
 
@@ -374,7 +376,7 @@ except makai.MakaiAuthError as error:
 The package ships a `py.typed` marker and passes `mypy --strict`. Request shapes are `TypedDict`s so plain dictionaries work; responses and stream events are frozen dataclasses.
 
 ```python
-from makai import (
+from oap_sdk import (
     AgentEnd, AgentStart, AgentStreamEvent, AssistantMessage, AuthEvent,
     AuthFlowHandlers, ChatMessage, CompletionResponse, ContentPart,
     ListModelsResponse, MessageEnd, MessageStart, ModelDescriptor,
@@ -419,10 +421,10 @@ pip install -e ".[dev]"
 pytest                    # fake-server suite; no binary or credentials needed
 mypy                      # strict type checking over src/ and tests/
 
-zig build install --prefix /tmp/makai-py      # from the repo root
-MAKAI_BINARY_PATH=/tmp/makai-py/bin/makai pytest   # adds the real-binary suite
+zig build install --prefix /tmp/oapx-py      # from the repo root
+OAP_SDK_BINARY_PATH=/tmp/oapx-py/bin/oapx pytest   # adds the real-binary suite
 ```
 
-Tests in `tests/test_real_binary.py` skip when `MAKAI_BINARY_PATH` is unset, so a green `pytest` without it means zero real-runtime coverage. Set it explicitly when you mean to exercise the real host.
+Tests in `tests/test_real_binary.py` skip when `OAP_SDK_BINARY_PATH` is unset, so a green `pytest` without it means zero real-runtime coverage. Set it explicitly when you mean to exercise the real host.
 
 Everything else runs against `tests/fixtures/fake_server.py`, a configurable protocol host in the spirit of `typescript/test/fixtures/*.js`.

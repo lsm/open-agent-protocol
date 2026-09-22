@@ -12,7 +12,7 @@ mod common;
 use std::time::Duration;
 
 use futures::StreamExt;
-use makai::{Client, ClientBuilder, Error, ExecutionRequest, ListModelsRequest};
+use oap_sdk::{Client, ClientBuilder, Error, ExecutionRequest, ListModelsRequest};
 
 #[tokio::test]
 async fn connects_and_completes_the_handshake() {
@@ -176,7 +176,10 @@ async fn concurrent_calls_multiplex_over_one_transport() {
 async fn closing_the_client_reaps_the_child() {
     let pid_file = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_PID_FILE", pid_file.path().display().to_string())
+        .env(
+            "OAP_SDK_FAKE_PID_FILE",
+            pid_file.path().display().to_string(),
+        )
         .connect()
         .await
         .expect("connects");
@@ -196,7 +199,10 @@ async fn dropping_the_client_terminates_the_child() {
     let pid_file = tempfile::NamedTempFile::new().expect("temp file");
     let pid = {
         let _client = common::fake_builder("ok")
-            .env("MAKAI_FAKE_PID_FILE", pid_file.path().display().to_string())
+            .env(
+                "OAP_SDK_FAKE_PID_FILE",
+                pid_file.path().display().to_string(),
+            )
             .connect()
             .await
             .expect("connects");
@@ -221,7 +227,10 @@ async fn dropping_a_client_mid_stream_terminates_the_child() {
     let pid_file = tempfile::NamedTempFile::new().expect("temp file");
     let pid = {
         let client = common::fake_builder("provider_slow")
-            .env("MAKAI_FAKE_PID_FILE", pid_file.path().display().to_string())
+            .env(
+                "OAP_SDK_FAKE_PID_FILE",
+                pid_file.path().display().to_string(),
+            )
             .connect()
             .await
             .expect("connects");
@@ -322,7 +331,7 @@ async fn namespace_handles_outlive_the_client_value() {
 async fn every_outbound_frame_is_one_ndjson_line_with_the_v1_envelope() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -361,7 +370,7 @@ async fn every_outbound_frame_is_one_ndjson_line_with_the_v1_envelope() {
 async fn generated_ids_match_the_wire_formats() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -409,12 +418,12 @@ async fn generated_ids_match_the_wire_formats() {
 #[tokio::test]
 async fn the_builder_controls_the_child_environment() {
     // `env_clear` plus one variable is what the fake sees; if the builder leaked
-    // the parent environment, an ambient MAKAI_FAKE_SCENARIO would win.
+    // the parent environment, an ambient OAP_SDK_FAKE_SCENARIO would win.
     let client = ClientBuilder::new()
         .command(common::fake_binary())
         .args(Vec::<String>::new())
         .env_clear()
-        .env("MAKAI_FAKE_SCENARIO", "auth_required")
+        .env("OAP_SDK_FAKE_SCENARIO", "auth_required")
         .handshake_timeout(Duration::from_millis(2_000))
         .response_timeout(Duration::from_millis(2_000))
         .connect()

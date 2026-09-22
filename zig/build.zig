@@ -1757,12 +1757,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const e2e_provider_base_url_test_run = b.addRunArtifact(e2e_provider_base_url_test);
-    e2e_provider_base_url_test_run.setEnvironmentVariable("MAKAI_BASE_URL", "");
+    e2e_provider_base_url_test_run.setEnvironmentVariable("OAPX_BASE_URL", "");
     e2e_provider_base_url_test_run.setEnvironmentVariable("ANTHROPIC_BASE_URL", "");
     e2e_provider_base_url_test_run.setEnvironmentVariable("DEEPSEEK_BASE_URL", "");
     e2e_provider_base_url_test_run.setEnvironmentVariable("KIMI_REGION", "");
     e2e_provider_base_url_test_run.setEnvironmentVariable("OPENAI_BASE_URL", "https://env-override.makai.test/openai");
-    e2e_provider_base_url_test_run.setEnvironmentVariable("MAKAI_BASE_URL_IS_PROXY", "");
+    e2e_provider_base_url_test_run.setEnvironmentVariable("OAPX_BASE_URL_IS_PROXY", "");
     e2e_provider_base_url_test_run.setEnvironmentVariable("ANTHROPIC_BASE_URL_IS_PROXY", "");
     e2e_provider_base_url_test_run.setEnvironmentVariable("DEEPSEEK_BASE_URL_IS_PROXY", "");
     e2e_provider_base_url_test_run.setEnvironmentVariable("OPENAI_BASE_URL_IS_PROXY", "true");

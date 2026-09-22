@@ -12,7 +12,7 @@ fn defaultIo() std.Io {
 const auth_file_name = "auth.json";
 const auth_temp_prefix = auth_file_name ++ ".tmp.";
 const keychain_service = "ai.hyperneo.oap";
-const keychain_service_env = "MAKAI_KEYCHAIN_SERVICE";
+const keychain_service_env = "OAPX_KEYCHAIN_SERVICE";
 const keychain_account = auth_file_name;
 const keychain_shared_account = "auth.shared.json";
 const keychain_item_label = "makai credentials";
@@ -866,9 +866,9 @@ pub const AuthStorage = struct {
     fn loadFromFileWithSaveFn(allocator: std.mem.Allocator, save_fn: ?SaveFn) !AuthStorage {
         const home = compat.getEnvVarOwned(allocator, "HOME") catch return error.NoHomeDir;
         defer allocator.free(home);
-        const dir_path = try std.fs.path.join(allocator, &.{ home, ".makai" });
+        const dir_path = try std.fs.path.join(allocator, &.{ home, ".oapx" });
         defer allocator.free(dir_path);
-        const path = try std.fs.path.join(allocator, &.{ home, ".makai", auth_file_name });
+        const path = try std.fs.path.join(allocator, &.{ home, ".oapx", auth_file_name });
         defer allocator.free(path);
 
         const cwd = compat.fs.getCwd();
@@ -926,10 +926,10 @@ pub const AuthStorage = struct {
     pub fn saveToFile(self: *const AuthStorage) !void {
         const home = compat.getEnvVarOwned(self.allocator, "HOME") catch return error.NoHomeDir;
         defer self.allocator.free(home);
-        const dir_path = try std.fs.path.join(self.allocator, &.{ home, ".makai" });
+        const dir_path = try std.fs.path.join(self.allocator, &.{ home, ".oapx" });
         defer self.allocator.free(dir_path);
 
-        const file_path = try std.fs.path.join(self.allocator, &.{ home, ".makai", auth_file_name });
+        const file_path = try std.fs.path.join(self.allocator, &.{ home, ".oapx", auth_file_name });
         defer self.allocator.free(file_path);
 
         const cwd = compat.fs.getCwd();
@@ -1225,7 +1225,7 @@ fn restoreHomeForTest(allocator: std.mem.Allocator, override: TestHomeOverride) 
 }
 
 fn countAuthTempFiles(home: []const u8) !usize {
-    const dir_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    const dir_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
     defer std.testing.allocator.free(dir_path);
 
     var dir = try compat.fs.getCwd().openDir(defaultIo(), dir_path, .{ .iterate = true });
@@ -1266,7 +1266,7 @@ test "oauth_storage_saveToFile_direct_sets_0600_and_same_directory_temp_rename" 
 
     try storage.saveToFile();
 
-    const file_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    const file_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx", auth_file_name });
     defer std.testing.allocator.free(file_path);
 
     const content = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), file_path, 4096);
@@ -1293,11 +1293,11 @@ test "oauth_storage_saveToFile_rename_failure_leaves_target_unchanged_and_cleans
     const previous_home = try setHomeForTest(std.testing.allocator, home);
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
-    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
     defer std.testing.allocator.free(makai_path);
     try compat.fs.createDir(compat.fs.getCwd(), makai_path);
 
-    const blocker_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    const blocker_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx", auth_file_name });
     defer std.testing.allocator.free(blocker_path);
     try compat.fs.createDir(compat.fs.getCwd(), blocker_path);
 
@@ -1318,7 +1318,7 @@ test "oauth_storage_saveToFile_rename_failure_leaves_target_unchanged_and_cleans
 }
 
 fn writeAuthTestFile(home: []const u8, name: []const u8, content: []const u8) !void {
-    const path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", name });
+    const path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx", name });
     defer std.testing.allocator.free(path);
     try compat.fs.writeFile(compat.fs.getCwd(), path, content);
 }
@@ -1331,7 +1331,7 @@ test "oauth_storage_loadFromFile_cleans_stale_temp_files" {
     const previous_home = try setHomeForTest(std.testing.allocator, home);
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
-    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
     defer std.testing.allocator.free(makai_path);
     try compat.fs.createDir(compat.fs.getCwd(), makai_path);
 
@@ -1355,11 +1355,11 @@ test "oauth_storage_saveToFile_replaces_existing_file_without_requiring_temp_cle
     const previous_home = try setHomeForTest(std.testing.allocator, home);
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
-    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
     defer std.testing.allocator.free(makai_path);
     try compat.fs.createDir(compat.fs.getCwd(), makai_path);
 
-    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx", auth_file_name });
     defer std.testing.allocator.free(auth_path);
     try compat.fs.writeFile(compat.fs.getCwd(), auth_path, "original-credentials");
 
@@ -1382,7 +1382,7 @@ test "oauth_storage_saveToFile_replaces_existing_file_without_requiring_temp_cle
     defer std.testing.allocator.free(content);
     try std.testing.expect(std.mem.find(u8, content, "replacement-key") != null);
 
-    const active_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", active_tmp });
+    const active_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx", active_tmp });
     defer std.testing.allocator.free(active_path);
     const active_content = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), active_path, 4096);
     defer std.testing.allocator.free(active_content);
@@ -1402,7 +1402,7 @@ test "oauth_storage_saveToFile_does_not_require_directory_iteration" {
     const previous_home = try setHomeForTest(std.testing.allocator, home);
     defer restoreHomeForTest(std.testing.allocator, previous_home);
 
-    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai" });
+    const makai_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx" });
     defer std.testing.allocator.free(makai_path);
     try compat.fs.createDir(compat.fs.getCwd(), makai_path);
     try compat.fs.getCwd().setFilePermissions(defaultIo(), makai_path, @enumFromInt(0o300), .{});
@@ -1419,7 +1419,7 @@ test "oauth_storage_saveToFile_does_not_require_directory_iteration" {
 
     try storage.saveToFile();
 
-    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".makai", auth_file_name });
+    const auth_path = try std.fs.path.join(std.testing.allocator, &.{ home, ".oapx", auth_file_name });
     defer std.testing.allocator.free(auth_path);
     const content = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), auth_path, 4096);
     defer std.testing.allocator.free(content);

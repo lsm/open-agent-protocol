@@ -228,7 +228,7 @@ fn getAnthropicCredentialFromAuthFile(allocator: std.mem.Allocator) !?AnthropicC
     const home_dir = compat.getEnvVarOwned(allocator, "HOME") catch return null;
     defer allocator.free(home_dir);
 
-    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".makai", "auth.json" });
+    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".oapx", "auth.json" });
     defer allocator.free(auth_path);
 
     const file = std.Io.Dir.openFileAbsolute(std.testing.io, auth_path, .{}) catch return null;
@@ -306,7 +306,7 @@ fn getApiKeyFromAuthFile(allocator: std.mem.Allocator, provider_name: []const u8
     const home_dir = compat.getEnvVarOwned(allocator, "HOME") catch return null;
     defer allocator.free(home_dir);
 
-    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".makai", "auth.json" });
+    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".oapx", "auth.json" });
     defer allocator.free(auth_path);
 
     const file = std.Io.Dir.openFileAbsolute(std.testing.io, auth_path, .{}) catch return null;
@@ -407,7 +407,7 @@ fn getGitHubCopilotCredentialsFromAuthFile(allocator: std.mem.Allocator) !?GitHu
     const home_dir = compat.getEnvVarOwned(allocator, "HOME") catch return null;
     defer allocator.free(home_dir);
 
-    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".makai", "auth.json" });
+    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".oapx", "auth.json" });
     defer allocator.free(auth_path);
 
     const file = std.Io.Dir.openFileAbsolute(std.testing.io, auth_path, .{}) catch return null;
@@ -517,7 +517,7 @@ fn getAnthropicOAuthCredentialsFromAuthFile(allocator: std.mem.Allocator) !?Anth
     const home_dir = compat.getEnvVarOwned(allocator, "HOME") catch return null;
     defer allocator.free(home_dir);
 
-    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".makai", "auth.json" });
+    const auth_path = try std.fs.path.join(allocator, &[_][]const u8{ home_dir, ".oapx", "auth.json" });
     defer allocator.free(auth_path);
 
     const file = std.Io.Dir.openFileAbsolute(std.testing.io, auth_path, .{}) catch return null;

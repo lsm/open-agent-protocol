@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
-use makai::{
+use oap_sdk::{
     AuthEvent, AuthHandlers, AuthRetryPolicy, AuthStatus, Error, ExecutionRequest,
     ListModelsRequest, ModelCapability, ModelSource, ProviderEvent, RunOptions,
 };
@@ -46,7 +46,7 @@ async fn models_list_parses_the_typed_descriptor() {
 async fn models_list_sends_only_the_filters_it_was_given() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -370,7 +370,7 @@ async fn provider_stream_normalizes_the_whole_event_sequence() {
 async fn dropping_a_provider_stream_sends_an_abort() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("provider_slow")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -408,7 +408,7 @@ async fn dropping_a_provider_stream_sends_an_abort() {
 async fn a_completed_provider_stream_does_not_abort() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -529,7 +529,7 @@ async fn a_per_request_policy_overrides_the_client_default() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
         .auth_retry_policy(AuthRetryPolicy::AutoOnce)
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");
@@ -562,7 +562,7 @@ async fn a_per_request_policy_overrides_the_client_default() {
 async fn invalid_requests_are_rejected_without_touching_the_wire() {
     let log = tempfile::NamedTempFile::new().expect("temp file");
     let client = common::fake_builder("ok")
-        .env("MAKAI_FAKE_REQUEST_LOG", log.path().display().to_string())
+        .env("OAP_SDK_FAKE_REQUEST_LOG", log.path().display().to_string())
         .connect()
         .await
         .expect("connects");

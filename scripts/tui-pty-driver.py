@@ -2,7 +2,7 @@
 # PTY driver for the Makai TUI (#259): launches `makai --tui` inside a
 # pseudo-terminal, replays scripted scenarios, captures every rendered byte
 # stream with timestamps, and reports a performance baseline. Determinism
-# comes from MAKAI_TUI_FIXTURE (see zig/src/tui/fixture_provider.zig): the
+# comes from OAPX_TUI_FIXTURE (see zig/src/tui/fixture_provider.zig): the
 # env value is the canned assistant reply, so no API keys or network access
 # are involved.
 #
@@ -59,7 +59,7 @@ import termios
 import time
 import unicodedata
 
-FIXTURE_ENV_VAR = "MAKAI_TUI_FIXTURE"
+FIXTURE_ENV_VAR = "OAPX_TUI_FIXTURE"
 WELCOME_MARKER = b"Makai TUI"
 MODEL_PICKER_MARKER = b"Select model"
 SESSION_PICKER_MARKER = b"Sessions"
@@ -1235,7 +1235,7 @@ def scenario_approval_allow(args):
 def scenario_tool_loss_reconcile(args):
     home = tempfile.mkdtemp(prefix="makai-pty-home-tool-loss-")
     try:
-        sessions_dir = os.path.join(home, ".makai", "sessions")
+        sessions_dir = os.path.join(home, ".oapx", "sessions")
         os.makedirs(sessions_dir, exist_ok=True)
         meta = {
             "session_id": "tool-loss-reconcile",
@@ -1307,7 +1307,7 @@ def scenario_tool_loss_reconcile(args):
 def scenario_tool_loss_flush_release(args):
     home = tempfile.mkdtemp(prefix="makai-pty-home-flush-release-")
     try:
-        sessions_dir = os.path.join(home, ".makai", "sessions")
+        sessions_dir = os.path.join(home, ".oapx", "sessions")
         os.makedirs(sessions_dir, exist_ok=True)
         meta = {
             "session_id": "tool-loss-flush-release",
@@ -1427,7 +1427,7 @@ SCENARIOS = {
 
 def validate_core_loop_args(parser, args):
     if not args.fixture_text:
-        parser.error("--fixture-text must be non-empty: an empty MAKAI_TUI_FIXTURE disables fixture mode in the TUI and would let a submit reach real providers")
+        parser.error("--fixture-text must be non-empty: an empty OAPX_TUI_FIXTURE disables fixture mode in the TUI and would let a submit reach real providers")
     if args.fixture_text.startswith(("text:", "tool:", "error:")) or args.fixture_text == "hold":
         parser.error("--fixture-text must be a plain reply, not the scenario step encoding (text:/tool:/hold/error:): core-loop asserts the literal value, which a parsed step never emits verbatim")
     if any(ord(char) < 32 or 0x7F <= ord(char) <= 0x9F for char in args.prompt):

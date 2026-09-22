@@ -46,7 +46,7 @@ async function setupHarness(): Promise<Harness> {
   const client = new MakaiStdioClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
     handshakeTimeoutMs: 5000,
     logger,
   });
@@ -161,8 +161,8 @@ test("binary resolver logs resolution steps", async () => {
   const binaryPath = path.join(tempDir, process.platform === "win32" ? "makai.exe" : "makai");
   await fs.promises.writeFile(binaryPath, "fixture");
 
-  const prev = process.env.MAKAI_BINARY_PATH;
-  process.env.MAKAI_BINARY_PATH = binaryPath;
+  const prev = process.env.OAP_SDK_BINARY_PATH;
+  process.env.OAP_SDK_BINARY_PATH = binaryPath;
   try {
     await resolveMakaiBinary({ logger });
     const resolvingLog = logger.entries.find((e) => e.message === "binary: resolving from explicit path");
@@ -172,8 +172,8 @@ test("binary resolver logs resolution steps", async () => {
     const resolvedLog = logger.entries.find((e) => e.message === "binary: resolved from explicit path");
     assert.ok(resolvedLog, "expected 'binary: resolved from explicit path' log");
   } finally {
-    if (prev === undefined) delete process.env.MAKAI_BINARY_PATH;
-    else process.env.MAKAI_BINARY_PATH = prev;
+    if (prev === undefined) delete process.env.OAP_SDK_BINARY_PATH;
+    else process.env.OAP_SDK_BINARY_PATH = prev;
     await fs.promises.rm(tempDir, { recursive: true, force: true });
   }
 });
@@ -185,12 +185,12 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   const resolveModule = (specifier: string): string => {
     throw new Error(`Cannot find module '${specifier}'`);
   };
-  const prevPath = process.env.MAKAI_BINARY_PATH;
-  const prevUrl = process.env.MAKAI_BINARY_URL;
-  const prevChecksum = process.env.MAKAI_BINARY_SHA256;
-  delete process.env.MAKAI_BINARY_PATH;
-  delete process.env.MAKAI_BINARY_URL;
-  delete process.env.MAKAI_BINARY_SHA256;
+  const prevPath = process.env.OAP_SDK_BINARY_PATH;
+  const prevUrl = process.env.OAP_SDK_BINARY_URL;
+  const prevChecksum = process.env.OAP_SDK_BINARY_SHA256;
+  delete process.env.OAP_SDK_BINARY_PATH;
+  delete process.env.OAP_SDK_BINARY_URL;
+  delete process.env.OAP_SDK_BINARY_SHA256;
   const prevSearchPath = process.env.PATH;
   process.env.PATH = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-path-"));
   try {
@@ -215,12 +215,12 @@ test("binary resolver logs auto resolution candidate checks", async () => {
     assert.equal(fallbackLog.context?.binary, binaryNames[0]);
     assert.equal(resolved, "oapx");
   } finally {
-    if (prevPath === undefined) delete process.env.MAKAI_BINARY_PATH;
-    else process.env.MAKAI_BINARY_PATH = prevPath;
-    if (prevUrl === undefined) delete process.env.MAKAI_BINARY_URL;
-    else process.env.MAKAI_BINARY_URL = prevUrl;
-    if (prevChecksum === undefined) delete process.env.MAKAI_BINARY_SHA256;
-    else process.env.MAKAI_BINARY_SHA256 = prevChecksum;
+    if (prevPath === undefined) delete process.env.OAP_SDK_BINARY_PATH;
+    else process.env.OAP_SDK_BINARY_PATH = prevPath;
+    if (prevUrl === undefined) delete process.env.OAP_SDK_BINARY_URL;
+    else process.env.OAP_SDK_BINARY_URL = prevUrl;
+    if (prevChecksum === undefined) delete process.env.OAP_SDK_BINARY_SHA256;
+    else process.env.OAP_SDK_BINARY_SHA256 = prevChecksum;
     if (prevSearchPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevSearchPath;
     await fs.promises.rm(emptyCwd, { recursive: true, force: true });
@@ -238,15 +238,15 @@ test("binary resolver passes over a PATH entry that is not an executable file", 
   const resolveModule = (specifier: string): string => {
     throw new Error(`Cannot find module '${specifier}'`);
   };
-  const prevBinaryPath = process.env.MAKAI_BINARY_PATH;
+  const prevBinaryPath = process.env.OAP_SDK_BINARY_PATH;
   const prevSearchPath = process.env.PATH;
-  delete process.env.MAKAI_BINARY_PATH;
+  delete process.env.OAP_SDK_BINARY_PATH;
   process.env.PATH = [decoyDir, realDir].join(path.delimiter);
   try {
     assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), real);
   } finally {
-    if (prevBinaryPath === undefined) delete process.env.MAKAI_BINARY_PATH;
-    else process.env.MAKAI_BINARY_PATH = prevBinaryPath;
+    if (prevBinaryPath === undefined) delete process.env.OAP_SDK_BINARY_PATH;
+    else process.env.OAP_SDK_BINARY_PATH = prevBinaryPath;
     if (prevSearchPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevSearchPath;
     await fs.promises.rm(emptyCwd, { recursive: true, force: true });
@@ -263,19 +263,19 @@ test("binary resolver finds an install predating the rename on PATH", async () =
   const resolveModule = (specifier: string): string => {
     throw new Error(`Cannot find module '${specifier}'`);
   };
-  const prevBinaryPath = process.env.MAKAI_BINARY_PATH;
-  const prevBinaryUrl = process.env.MAKAI_BINARY_URL;
+  const prevBinaryPath = process.env.OAP_SDK_BINARY_PATH;
+  const prevBinaryUrl = process.env.OAP_SDK_BINARY_URL;
   const prevSearchPath = process.env.PATH;
-  delete process.env.MAKAI_BINARY_PATH;
-  delete process.env.MAKAI_BINARY_URL;
+  delete process.env.OAP_SDK_BINARY_PATH;
+  delete process.env.OAP_SDK_BINARY_URL;
   process.env.PATH = pathDir;
   try {
     assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), legacy);
   } finally {
-    if (prevBinaryPath === undefined) delete process.env.MAKAI_BINARY_PATH;
-    else process.env.MAKAI_BINARY_PATH = prevBinaryPath;
-    if (prevBinaryUrl === undefined) delete process.env.MAKAI_BINARY_URL;
-    else process.env.MAKAI_BINARY_URL = prevBinaryUrl;
+    if (prevBinaryPath === undefined) delete process.env.OAP_SDK_BINARY_PATH;
+    else process.env.OAP_SDK_BINARY_PATH = prevBinaryPath;
+    if (prevBinaryUrl === undefined) delete process.env.OAP_SDK_BINARY_URL;
+    else process.env.OAP_SDK_BINARY_URL = prevBinaryUrl;
     if (prevSearchPath === undefined) delete process.env.PATH;
     else process.env.PATH = prevSearchPath;
     await fs.promises.rm(emptyCwd, { recursive: true, force: true });
@@ -291,33 +291,33 @@ test("binary resolver logs resolution from the bundled package", async () => {
     specifiers.push(specifier);
     return bundledPath;
   };
-  const prevPath = process.env.MAKAI_BINARY_PATH;
-  const prevUrl = process.env.MAKAI_BINARY_URL;
-  const prevChecksum = process.env.MAKAI_BINARY_SHA256;
-  delete process.env.MAKAI_BINARY_PATH;
-  delete process.env.MAKAI_BINARY_URL;
-  delete process.env.MAKAI_BINARY_SHA256;
+  const prevPath = process.env.OAP_SDK_BINARY_PATH;
+  const prevUrl = process.env.OAP_SDK_BINARY_URL;
+  const prevChecksum = process.env.OAP_SDK_BINARY_SHA256;
+  delete process.env.OAP_SDK_BINARY_PATH;
+  delete process.env.OAP_SDK_BINARY_URL;
+  delete process.env.OAP_SDK_BINARY_SHA256;
   try {
     const resolved = await resolveMakaiBinary({ logger, resolveModule });
     assert.equal(resolved, bundledPath);
     assert.deepEqual(specifiers, [
-      `@makai/cli-${process.platform}-${process.arch}/bin/${process.platform === "win32" ? "oapx.exe" : "oapx"}`,
+      `@oap-sdk/cli-${process.platform}-${process.arch}/bin/${process.platform === "win32" ? "oapx.exe" : "oapx"}`,
     ]);
 
     const bundledLog = logger.entries.find((e) => e.message === "binary: resolved from bundled package");
     assert.ok(bundledLog, "expected 'binary: resolved from bundled package' log");
     assert.equal(bundledLog.context?.path, bundledPath);
-    assert.equal(bundledLog.context?.package, `@makai/cli-${process.platform}-${process.arch}`);
+    assert.equal(bundledLog.context?.package, `@oap-sdk/cli-${process.platform}-${process.arch}`);
 
     const candidateLogs = logger.entries.filter((e) => e.message === "binary: checking local candidate");
     assert.deepEqual(candidateLogs, [], "bundled package must short-circuit the local candidate search");
   } finally {
-    if (prevPath === undefined) delete process.env.MAKAI_BINARY_PATH;
-    else process.env.MAKAI_BINARY_PATH = prevPath;
-    if (prevUrl === undefined) delete process.env.MAKAI_BINARY_URL;
-    else process.env.MAKAI_BINARY_URL = prevUrl;
-    if (prevChecksum === undefined) delete process.env.MAKAI_BINARY_SHA256;
-    else process.env.MAKAI_BINARY_SHA256 = prevChecksum;
+    if (prevPath === undefined) delete process.env.OAP_SDK_BINARY_PATH;
+    else process.env.OAP_SDK_BINARY_PATH = prevPath;
+    if (prevUrl === undefined) delete process.env.OAP_SDK_BINARY_URL;
+    else process.env.OAP_SDK_BINARY_URL = prevUrl;
+    if (prevChecksum === undefined) delete process.env.OAP_SDK_BINARY_SHA256;
+    else process.env.OAP_SDK_BINARY_SHA256 = prevChecksum;
   }
 });
 
@@ -452,7 +452,7 @@ test("createMakaiAgentApiWithModels forwards logger to nested models API", async
   const client = new MakaiStdioClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: path.join(os.tmpdir(), "makai-agent-models-test.log") },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: path.join(os.tmpdir(), "makai-agent-models-test.log") },
     handshakeTimeoutMs: 5000,
     logger,
   });

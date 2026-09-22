@@ -4,7 +4,7 @@
 //! cargo run --example login -- anthropic
 //! ```
 
-use makai::{AuthEvent, AuthHandlers, AuthStatus, Client};
+use oap_sdk::{AuthEvent, AuthHandlers, AuthStatus, Client};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

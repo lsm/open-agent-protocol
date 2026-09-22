@@ -6,8 +6,8 @@
 //! tests drive it; downstream crates can too, by pointing
 //! `ClientBuilder::command` at it.
 //!
-//! Scenarios are selected with `MAKAI_FAKE_SCENARIO`; see [`Scenario`]. Frames it
-//! receives are appended to `MAKAI_FAKE_REQUEST_LOG` when that is set, one JSON
+//! Scenarios are selected with `OAP_SDK_FAKE_SCENARIO`; see [`Scenario`]. Frames it
+//! receives are appended to `OAP_SDK_FAKE_REQUEST_LOG` when that is set, one JSON
 //! document per line, so tests can assert on what the SDK actually sent.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -58,7 +58,7 @@ enum Scenario {
 
 impl Scenario {
     fn from_env() -> Self {
-        match std::env::var("MAKAI_FAKE_SCENARIO")
+        match std::env::var("OAP_SDK_FAKE_SCENARIO")
             .unwrap_or_default()
             .as_str()
         {
@@ -192,7 +192,7 @@ fn second_model_descriptor() -> Value {
 
 fn main() {
     let scenario = Scenario::from_env();
-    let log = std::env::var("MAKAI_FAKE_REQUEST_LOG")
+    let log = std::env::var("OAP_SDK_FAKE_REQUEST_LOG")
         .ok()
         .and_then(|path| {
             std::fs::OpenOptions::new()
@@ -204,7 +204,7 @@ fn main() {
 
     // Lets a test watch this exact process rather than counting every fake the
     // suite has running in parallel.
-    if let Ok(path) = std::env::var("MAKAI_FAKE_PID_FILE") {
+    if let Ok(path) = std::env::var("OAP_SDK_FAKE_PID_FILE") {
         let _ = std::fs::write(path, std::process::id().to_string());
     }
 
@@ -736,7 +736,7 @@ fn finish_agent_run(fake: &mut Fake, request: &Value, tool_result: Option<String
 
 fn handle_agent_stop(fake: &mut Fake, request: &Value) {
     let sequence = request.get("sequence").and_then(Value::as_u64).unwrap_or(0);
-    let expected: u64 = std::env::var("MAKAI_FAKE_EXPECTED_STOP_SEQUENCE")
+    let expected: u64 = std::env::var("OAP_SDK_FAKE_EXPECTED_STOP_SEQUENCE")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(sequence);

@@ -7,11 +7,11 @@ import path from "node:path";
 import test from "node:test";
 import { resolveMakaiBinary } from "../src";
 
-const ENV_BINARY_PATH = "MAKAI_BINARY_PATH";
-const ENV_BINARY_URL = "MAKAI_BINARY_URL";
-const ENV_BINARY_SHA256 = "MAKAI_BINARY_SHA256";
+const ENV_BINARY_PATH = "OAP_SDK_BINARY_PATH";
+const ENV_BINARY_URL = "OAP_SDK_BINARY_URL";
+const ENV_BINARY_SHA256 = "OAP_SDK_BINARY_SHA256";
 
-test("resolveMakaiBinary prefers MAKAI_BINARY_PATH override", async () => {
+test("resolveMakaiBinary prefers OAP_SDK_BINARY_PATH override", async () => {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "makai-bin-path-"));
   const binaryPath = path.join(tempDir, process.platform === "win32" ? "makai.exe" : "makai");
   await fs.writeFile(binaryPath, "fixture");

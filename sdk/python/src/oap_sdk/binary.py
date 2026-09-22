@@ -1,25 +1,25 @@
-"""Locating the ``makai`` runtime binary.
+"""Locating the ``oapx`` runtime binary.
 
 Resolution order mirrors ``typescript/src/binary_resolver.ts``:
 
-1. ``BinaryResolverOptions.binary_path``, or the ``MAKAI_BINARY_PATH``
+1. ``BinaryResolverOptions.binary_path``, or the ``OAP_SDK_BINARY_PATH``
    environment variable (the environment wins, as in the TypeScript SDK).
-2. ``binary_url`` / ``MAKAI_BINARY_URL``, which **requires** a SHA-256 checksum
-   (``checksum_sha256`` / ``MAKAI_BINARY_SHA256``). The download is cached and
+2. ``binary_url`` / ``OAP_SDK_BINARY_URL``, which **requires** a SHA-256 checksum
+   (``checksum_sha256`` / ``OAP_SDK_BINARY_SHA256``). The download is cached and
    re-verified on every resolve.
 3. ``./zig-out/bin/oapx`` relative to the current working directory.
 4. ``./zig/zig-out/bin/oapx``.
 5. ``oapx`` on ``PATH``.
 
 The TypeScript SDK has one extra step between 2 and 3: an optional
-``@makai/cli-<platform>-<arch>`` npm package. **That step is deliberately
+``@oap-sdk/cli-<platform>-<arch>`` npm package. **That step is deliberately
 omitted here.** npm's optional-dependency mechanism installs a per-platform
 package automatically; Python's closest equivalent would be publishing
-platform-specific wheels, and no such distribution exists for makai today.
-Inventing a ``makai-cli-<platform>`` import probe would be dead code that also
+platform-specific wheels, and no such distribution exists for oapx today.
+Inventing a ``oap-sdk-cli-<platform>`` import probe would be dead code that also
 silently outranks a local ``zig build`` -- the exact footgun CLAUDE.md warns
 about for the TypeScript resolver. If platform wheels are published later, this
-is the place to add the step; until then, set ``MAKAI_BINARY_PATH`` when you
+is the place to add the step; until then, set ``OAP_SDK_BINARY_PATH`` when you
 need to pin a specific binary.
 """
 
@@ -37,9 +37,9 @@ from typing import Optional
 
 __all__ = ["BinaryResolverOptions", "resolve_makai_binary"]
 
-ENV_BINARY_PATH = "MAKAI_BINARY_PATH"
-ENV_BINARY_URL = "MAKAI_BINARY_URL"
-ENV_BINARY_SHA256 = "MAKAI_BINARY_SHA256"
+ENV_BINARY_PATH = "OAP_SDK_BINARY_PATH"
+ENV_BINARY_URL = "OAP_SDK_BINARY_URL"
+ENV_BINARY_SHA256 = "OAP_SDK_BINARY_SHA256"
 
 _DOWNLOAD_TIMEOUT_S = 120.0
 

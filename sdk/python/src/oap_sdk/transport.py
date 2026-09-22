@@ -1,4 +1,4 @@
-"""Newline-delimited JSON transport over a ``makai --stdio`` child process.
+"""Newline-delimited JSON transport over a ``oapx --stdio`` child process.
 
 Framing
 -------
@@ -45,7 +45,7 @@ __all__ = ["Frame", "StdioTransport", "FrameRoute"]
 
 Frame = Dict[str, Any]
 
-logger = logging.getLogger("makai.transport")
+logger = logging.getLogger("oap_sdk.transport")
 
 DEFAULT_HANDSHAKE_TIMEOUT_S = 5.0
 DEFAULT_PROTOCOL_VERSION = "1"
@@ -174,7 +174,7 @@ class _RouteHandle:
 
 
 class StdioTransport:
-    """Owns the ``makai --stdio`` child process and its frame routing."""
+    """Owns the ``oapx --stdio`` child process and its frame routing."""
 
     def __init__(
         self,

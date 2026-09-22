@@ -107,7 +107,7 @@ pub fn deinitProviders(allocator: std.mem.Allocator, providers: []CustomProvider
 pub fn configPath(allocator: std.mem.Allocator) ![]u8 {
     const home = try compat_mod.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
-    return std.fs.path.join(allocator, &.{ home, ".makai", config_file_name });
+    return std.fs.path.join(allocator, &.{ home, ".oapx", config_file_name });
 }
 
 pub fn load(allocator: std.mem.Allocator, max_bytes: usize) ![]CustomProvider {

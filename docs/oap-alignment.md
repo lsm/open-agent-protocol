@@ -212,7 +212,7 @@ silent adapter-side compensation. None is compensated for in the code.
 4. **A submission needs a model the core has no place to carry.** OAP
    `session.open.request` has no model field, and makai cannot start a run
    without a `model_ref`. The endpoint takes a process default (`--oap --model`,
-   or `MAKAI_OAP_MODEL`) and reports it as `current_model_id`; a submission with
+   or `OAPX_OAP_MODEL`) and reports it as `current_model_id`; a submission with
    neither is refused `model_not_found`. Needs either an OAP session-level
    default-model control or acceptance that the default is endpoint
    configuration.
@@ -375,7 +375,7 @@ where its spec claims remain `[planned]`.
 
 Landed: #202 — server-side idle-TTL eviction (§13.2.6 rule 6) shipped with the
 30-minute default, `AgentProtocolServer.Options.session_idle_ttl_ms` +
-`MAKAI_AGENT_SESSION_IDLE_TTL_MS` knobs (`0` disables), and `agent_not_found`
+`OAPX_AGENT_SESSION_IDLE_TTL_MS` knobs (`0` disables), and `agent_not_found`
 semantics for evicted ids. The admission-vs-eviction race is closed server-side
 by construction: admission sets `.processing` synchronously, admission and the
 sweep run serialized on the host's single pump thread, and the stdio run pump
@@ -409,7 +409,7 @@ remain visible as deviations on our side are below.
 | Reasoning options | one object, three members | seven `StreamOptions` fields | The `thinking_*`/`reasoning_*` split is vendor vocabulary rather than two concepts. The carry is no longer a reasoning option: a request-level `encrypted_carry` needed a placement rule as soon as a conversation held two reasoning blocks, so the profile removed it and the carry now rides the `reasoning` and `tool_call` content parts in `messages[]`, symmetric with the `carry` on `inference.part.ended`. A request still naming `reasoning.encrypted_carry` is refused rather than ignored, and the refusal says where the carry moved: members inside a payload object are not policed the way payload members are, so without the explicit rule the removed member would decode away silently and the request would succeed with its carry dropped. |
 | Stop reasons | closed set of six | identical six | The one place "carried across whole" is demonstrated rather than asserted. |
 | Compatibility facts under a destination override | facts undefined while a destination is overridden; a suite must not check them | stated only behind a declared transparent proxy | A plain `*_BASE_URL` redirect says nothing about what answers at the new address, so makai asserts nothing; `*_BASE_URL_IS_PROXY` says the vendor is still behind it, so the vendor's facts hold and we publish them. Nothing in a URL reveals which redirect it is, which is why it takes an operator flag rather than detection — and why the profile cannot require the distinction without also specifying the out-of-band carrier it has just ruled off the wire. Without this, a conformance run against a local mock checks the vendor's claims against the mock's behaviour. |
-| Destination overrides | operator-set, out of band, never from the wire | `MAKAI_BASE_URL` and the per-provider vars | The only way to reach a controlled endpoint, so conformance testing depends on it. It stays off the wire because the destination is resolved before the credential is attached: a caller-supplied override would redirect a credentialed provider to an address it chose and have the host attach the vendor key. |
+| Destination overrides | operator-set, out of band, never from the wire | `OAPX_BASE_URL` and the per-provider vars | The only way to reach a controlled endpoint, so conformance testing depends on it. It stays off the wire because the destination is resolved before the credential is attached: a caller-supplied override would redirect a credentialed provider to an address it chose and have the host attach the vendor key. |
 
 Conformance status: every envelope is implementable and implemented. No compatibility fact has been
 observed against the vendor it describes, which needs a live credentialed endpoint and expires when

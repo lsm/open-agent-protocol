@@ -10,9 +10,9 @@ from typing import Any, List
 import pytest
 
 from conftest import FIXTURE_SERVER, FakeServerFactory, process_alive
-from makai._wire import build_stream_envelope
-from makai.errors import TIMEOUT_CODE, MakaiStreamError, is_timeout_error
-from makai.transport import StdioTransport
+from oap_sdk._wire import build_stream_envelope
+from oap_sdk.errors import TIMEOUT_CODE, MakaiStreamError, is_timeout_error
+from oap_sdk.transport import StdioTransport
 
 
 async def test_handshake_succeeds(fake: FakeServerFactory) -> None:
@@ -49,7 +49,7 @@ async def test_handshake_timeout_kills_the_child(fake: FakeServerFactory) -> Non
     transport = StdioTransport(
         command=sys.executable,
         args=[FIXTURE_SERVER],
-        env={"MAKAI_FAKE_CONFIG": fake.write_config({"handshake": "silent"}), "PATH": "/usr/bin"},
+        env={"OAP_SDK_FAKE_CONFIG": fake.write_config({"handshake": "silent"}), "PATH": "/usr/bin"},
         handshake_timeout=0.3,
     )
     with pytest.raises(MakaiStreamError):
@@ -235,7 +235,7 @@ async def test_invalid_json_after_handshake_is_skipped(fake: FakeServerFactory) 
 
 
 async def test_async_context_manager_closes(fake: FakeServerFactory) -> None:
-    env = {"MAKAI_FAKE_CONFIG": fake.write_config({}), "PATH": "/usr/bin"}
+    env = {"OAP_SDK_FAKE_CONFIG": fake.write_config({}), "PATH": "/usr/bin"}
     async with StdioTransport(command=sys.executable, args=[FIXTURE_SERVER], env=env) as transport:
         pid = transport.pid
         assert pid is not None
@@ -253,8 +253,8 @@ async def test_concurrent_connects_do_not_spawn_two_children(
     import os
 
     env = dict(os.environ)
-    env["MAKAI_FAKE_CONFIG"] = fake.write_config({})
-    env.pop("MAKAI_BINARY_PATH", None)
+    env["OAP_SDK_FAKE_CONFIG"] = fake.write_config({})
+    env.pop("OAP_SDK_BINARY_PATH", None)
     transport = StdioTransport(command=sys.executable, args=[FIXTURE_SERVER], env=env)
 
     results = await asyncio.gather(
@@ -282,7 +282,7 @@ async def test_an_oversized_frame_tears_the_transport_down(
     open reports ``connected`` while every later route waits for frames that
     can no longer arrive, with the child still running behind it.
     """
-    monkeypatch.setattr("makai.transport._MAX_LINE_BYTES", 4096)
+    monkeypatch.setattr("oap_sdk.transport._MAX_LINE_BYTES", 4096)
     transport = await fake.transport(
         {"ack": False, "handlers": {"probe": [{"raw": "x" * 16384}]}}
     )
@@ -336,8 +336,8 @@ async def test_close_during_connect_does_not_orphan_the_child(
     raised 'not connected' with the child still running.
     """
     env = dict(os.environ)
-    env["MAKAI_FAKE_CONFIG"] = fake.write_config({})
-    env.pop("MAKAI_BINARY_PATH", None)
+    env["OAP_SDK_FAKE_CONFIG"] = fake.write_config({})
+    env.pop("OAP_SDK_BINARY_PATH", None)
     transport = StdioTransport(command=sys.executable, args=[FIXTURE_SERVER], env=env)
 
     spawned: List[Any] = []

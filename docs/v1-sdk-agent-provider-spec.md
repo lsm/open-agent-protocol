@@ -499,7 +499,7 @@ SDK behavior:
 - `MakaiAuthApi.listProviders` and `MakaiAuthApi.login` must map to auth protocol envelopes over the active transport.
 - `login(...)` must maintain a single active auth flow, route prompt events to `onPrompt`, and publish all auth events to `onEvent`.
 - Handler resolution order for `login(...)` is normative: per-call handlers first, then `MakaiClientOptions.auth.handlers`, then none.
-- SDK must not read `~/.makai/auth.json` directly and must not return token material to callers.
+- SDK must not read `~/.oapx/auth.json` directly and must not return token material to callers.
 - CLI-subprocess auth wiring is prohibited in the V1 protocol-only implementation.
 - On `auth_required` from provider/agent calls:
   - `auth_retry_policy = "manual"` (default): SDK throws typed error containing `provider_id`.
@@ -1266,7 +1266,7 @@ server eviction (rule 6), and holds no transcript and no persistence.
    - Idle TTL `[current]`: the server evicts sessions idle longer than a
      configurable TTL with a defined non-zero default (30 minutes;
      `AgentProtocolServer.Options.session_idle_ttl_ms`, `0` disables; the stdio
-     host exposes it as `MAKAI_AGENT_SESSION_IDLE_TTL_MS`). Idleness is measured
+     host exposes it as `OAPX_AGENT_SESSION_IDLE_TTL_MS`). Idleness is measured
      from the session's last activity — inbound (`agent_message` acceptance,
      `agent_status` poll; stop removes the session outright) OR server-side run
      activity (`agent_event` or settlement publication) — and a session with an

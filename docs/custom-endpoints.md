@@ -1,6 +1,6 @@
 # Custom OpenAI- and Anthropic-compatible endpoints
 
-`~/.makai/providers.json` declares endpoints the runtime does not ship knowledge
+`~/.oapx/providers.json` declares endpoints the runtime does not ship knowledge
 of: a self-hosted vLLM or llama.cpp server, an aggregator such as OpenRouter, a
 corporate gateway that speaks the Anthropic wire format, or any vendor with an
 OpenAI-compatible API.
@@ -109,7 +109,7 @@ file. Listing them in the picker is not implemented yet.
 ## Model discovery
 
 Startup never touches the network. Loading the catalog reads
-`~/.makai/model_catalog/custom-<id>.json`, preferring a copy younger than 24
+`~/.oapx/model_catalog/custom-<id>.json`, preferring a copy younger than 24
 hours and still using an older one rather than nothing, and falls through to the
 declared `models` list when there is no cache at all. Keeping the network off
 the startup path is worth doing on its own, and the discovery fetch is now
@@ -263,12 +263,12 @@ client.
   and `openai-codex` to `https://chatgpt.com`. `github-copilot` is bound to any
   host under `githubcopilot.com`, which covers both the individual endpoint and
   an `api.<tenant>.githubcopilot.com` enterprise tenant.
-- Whatever the environment names for that provider: `MAKAI_BASE_URL`, and the
+- Whatever the environment names for that provider: `OAPX_BASE_URL`, and the
   per-provider variable where one exists (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`,
   `DEEPSEEK_BASE_URL`). An operator who can already route a vendor through a
   corporate proxy can still reach it; nothing new has to be configured, and no
   new variable was added to relax the check. Codex and Copilot have no
-  per-provider variable, so `MAKAI_BASE_URL` is their override here exactly as it
+  per-provider variable, so `OAPX_BASE_URL` is their override here exactly as it
   already is for routing.
 - The endpoint the credential itself recorded at login. GitHub Copilot writes the
   base URL it was issued into the credential's `provider_data`, so an enterprise

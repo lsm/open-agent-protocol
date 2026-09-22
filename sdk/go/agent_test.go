@@ -710,7 +710,7 @@ func TestAgentRunIgnoresUnprojectedEvents(t *testing.T) {
 }
 
 func TestMain_FakeHostIsNotTheRealRuntime(t *testing.T) {
-	// Guards the test harness itself: a stray MAKAI_BINARY_PATH must not
+	// Guards the test harness itself: a stray OAP_SDK_BINARY_PATH must not
 	// silently replace the fake host and make these tests hit a real binary.
 	if os.Getenv(envFakeHost) != "" {
 		t.Fatal("the test process should not be running as a fake host")

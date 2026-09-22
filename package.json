@@ -1,7 +1,7 @@
 {
-  "name": "makai",
+  "name": "oap-sdk",
   "version": "0.2.0",
-  "description": "TypeScript SDK for Makai stdio client transport",
+  "description": "TypeScript SDK for the Open Agent Protocol project's runtime, over its stdio protocol",
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "scripts": {
@@ -12,30 +12,24 @@
     "test": "npm run test:sdk"
   },
   "keywords": [
-    "makai",
+    "oap",
+    "open-agent-protocol",
     "sdk",
     "typescript",
     "stdio"
   ],
-  "author": "makai contributors",
+  "author": "Open Agent Protocol contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lsm/open-agent-protocol.git"
+  },
+  "homepage": "https://github.com/lsm/open-agent-protocol/tree/main/sdk/typescript",
   "license": "ISC",
   "type": "commonjs",
-  "bin": {
-    "makai": "bin/makai.js"
-  },
   "files": [
     "dist/src/**/*",
-    "bin/makai.js",
     "README.md"
   ],
-  "optionalDependencies": {
-    "@makai/cli-darwin-arm64": "*",
-    "@makai/cli-darwin-x64": "*",
-    "@makai/cli-linux-arm64": "*",
-    "@makai/cli-linux-x64": "*",
-    "@makai/cli-win32-x64": "*",
-    "@makai/cli-win32-arm64": "*"
-  },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.8.3"

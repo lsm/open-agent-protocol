@@ -4,12 +4,12 @@
 //   - emit a `ready` handshake (protocol_version "1") on startup.
 //   - on each line of stdin, parse it as a `models_request` envelope.
 //   - log the parsed request payload (one JSON line per request) to
-//     `MAKAI_TEST_REQUEST_LOG` if set (used by tests to assert what the
+//     `OAP_SDK_TEST_REQUEST_LOG` if set (used by tests to assert what the
 //     client put on the wire).
 //   - emit an `ack` envelope referencing the request's `message_id`.
 //   - emit a configured response: either `models_response` with a payload
-//     loaded from `MAKAI_TEST_RESPONSE_PATH`, or a `nack` with a payload
-//     loaded from `MAKAI_TEST_NACK_PATH`.
+//     loaded from `OAP_SDK_TEST_RESPONSE_PATH`, or a `nack` with a payload
+//     loaded from `OAP_SDK_TEST_NACK_PATH`.
 //   - exit cleanly when stdin closes.
 //
 // The same fixture is reused across the test scenarios by toggling env vars,
@@ -61,10 +61,10 @@ function buildAck(env) {
 
 emit({ type: "ready", protocol_version: "1" });
 
-const requestLog = process.env.MAKAI_TEST_REQUEST_LOG || "";
-const modelsResponse = loadJson(process.env.MAKAI_TEST_RESPONSE_PATH);
-const nackPayload = loadJson(process.env.MAKAI_TEST_NACK_PATH);
-const responseDelayMs = Number(process.env.MAKAI_TEST_RESPONSE_DELAY_MS || "0");
+const requestLog = process.env.OAP_SDK_TEST_REQUEST_LOG || "";
+const modelsResponse = loadJson(process.env.OAP_SDK_TEST_RESPONSE_PATH);
+const nackPayload = loadJson(process.env.OAP_SDK_TEST_NACK_PATH);
+const responseDelayMs = Number(process.env.OAP_SDK_TEST_RESPONSE_DELAY_MS || "0");
 
 function respond(env) {
   if (nackPayload) {
@@ -78,7 +78,7 @@ function respond(env) {
   }
 
   if (!modelsResponse) {
-    process.stderr.write("fixture: no MAKAI_TEST_RESPONSE_PATH or MAKAI_TEST_NACK_PATH set\n");
+    process.stderr.write("fixture: no OAP_SDK_TEST_RESPONSE_PATH or OAP_SDK_TEST_NACK_PATH set\n");
     process.exit(1);
   }
 

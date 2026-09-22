@@ -1,11 +1,11 @@
 //! End-to-end coverage against a real `makai --stdio` build.
 //!
-//! These need a runtime binary and skip when `MAKAI_BINARY_PATH` is unset, which
+//! These need a runtime binary and skip when `OAP_SDK_BINARY_PATH` is unset, which
 //! mirrors `typescript/test/makai_binary_smoke.test.ts`. Build one with:
 //!
 //! ```text
 //! zig build install --prefix /tmp/makai-rs
-//! MAKAI_BINARY_PATH=/tmp/makai-rs/bin/makai cargo test --test real_binary
+//! OAP_SDK_BINARY_PATH=/tmp/makai-rs/bin/makai cargo test --test real_binary
 //! ```
 //!
 //! Nothing here needs provider credentials. The paths that would are exercised
@@ -26,7 +26,7 @@ mod common;
 use std::time::Duration;
 
 use futures::StreamExt;
-use makai::{AuthEvent, AuthHandlers, Error, ExecutionRequest, ListModelsRequest};
+use oap_sdk::{AuthEvent, AuthHandlers, Error, ExecutionRequest, ListModelsRequest};
 
 #[tokio::test]
 async fn connects_to_the_real_runtime() {
@@ -185,7 +185,7 @@ async fn an_interactive_login_runs_end_to_end_against_the_real_runtime() {
         .expect("the fixture login succeeds");
     assert!(saw_url.load(std::sync::atomic::Ordering::SeqCst));
 
-    let auth_file = home.path().join(".makai").join("auth.json");
+    let auth_file = home.path().join(".oapx").join("auth.json");
     assert!(
         auth_file.exists(),
         "credentials were persisted by the runtime"
@@ -200,7 +200,7 @@ async fn an_interactive_login_runs_end_to_end_against_the_real_runtime() {
         .iter()
         .find(|provider| provider.id == "test-fixture")
         .expect("fixture provider");
-    assert_eq!(fixture.auth_status, makai::AuthStatus::Authenticated);
+    assert_eq!(fixture.auth_status, oap_sdk::AuthStatus::Authenticated);
 
     client.close().await;
 }
@@ -275,7 +275,7 @@ async fn a_prompt_handler_that_gives_up_cancels_the_real_flow() {
         "abandoning a flow must not wait out a long timeout"
     );
 
-    let auth_file = home.path().join(".makai").join("auth.json");
+    let auth_file = home.path().join(".oapx").join("auth.json");
     assert!(
         !auth_file.exists(),
         "an abandoned flow must not persist credentials"
@@ -401,7 +401,7 @@ async fn an_unauthenticated_agent_stream_emits_lifecycle_before_failing() {
 
     assert!(
         seen.iter()
-            .any(|event| matches!(event, makai::AgentEvent::TurnStart)),
+            .any(|event| matches!(event, oap_sdk::AgentEvent::TurnStart)),
         "the loop started a turn before failing: {seen:?}"
     );
     let failure = failure.expect("the run fails for lack of credentials");

@@ -58,21 +58,21 @@ async function setupHarness(opts: {
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    MAKAI_TEST_REQUEST_LOG: logPath,
+    OAP_SDK_TEST_REQUEST_LOG: logPath,
   };
   if (opts.responseDelayMs !== undefined) {
-    env.MAKAI_TEST_RESPONSE_DELAY_MS = String(opts.responseDelayMs);
+    env.OAP_SDK_TEST_RESPONSE_DELAY_MS = String(opts.responseDelayMs);
   }
 
   if (opts.nack) {
     fs.writeFileSync(nackPath, JSON.stringify(opts.nack));
-    env.MAKAI_TEST_NACK_PATH = nackPath;
+    env.OAP_SDK_TEST_NACK_PATH = nackPath;
   } else {
     fs.writeFileSync(
       responsePath,
       JSON.stringify(opts.response ?? makeResponse([makeDescriptor()])),
     );
-    env.MAKAI_TEST_RESPONSE_PATH = responsePath;
+    env.OAP_SDK_TEST_RESPONSE_PATH = responsePath;
   }
 
   const client = new MakaiStdioClient({

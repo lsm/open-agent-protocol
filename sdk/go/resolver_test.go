@@ -48,7 +48,7 @@ func chdir(t *testing.T, dir string) {
 }
 
 // isolateResolverEnv clears every resolver variable so a developer's own
-// MAKAI_BINARY_PATH cannot leak into these tests.
+// OAP_SDK_BINARY_PATH cannot leak into these tests.
 func isolateResolverEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv(EnvBinaryPath, "")
@@ -70,7 +70,7 @@ func TestResolveBinaryUsesTheExplicitPath(t *testing.T) {
 }
 
 func TestResolveBinaryEnvironmentOverridesTheOption(t *testing.T) {
-	// The environment deliberately wins, so one MAKAI_BINARY_PATH steers
+	// The environment deliberately wins, so one OAP_SDK_BINARY_PATH steers
 	// this SDK and the TypeScript SDK identically.
 	isolateResolverEnv(t)
 	dir := t.TempDir()

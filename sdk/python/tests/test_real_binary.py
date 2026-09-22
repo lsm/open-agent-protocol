@@ -1,11 +1,11 @@
-"""End-to-end coverage against a real ``makai --stdio`` host.
+"""End-to-end coverage against a real ``oapx --stdio`` host.
 
-Every test here needs ``MAKAI_BINARY_PATH`` and skips without it, so a green
+Every test here needs ``OAP_SDK_BINARY_PATH`` and skips without it, so a green
 ``pytest`` with the variable unset means **zero** real-runtime coverage. Build
 one first::
 
     zig build install --prefix /tmp/makai-py
-    MAKAI_BINARY_PATH=/tmp/makai-py/bin/makai pytest
+    OAP_SDK_BINARY_PATH=/tmp/makai-py/bin/makai pytest
 
 No provider credentials are needed: the model catalogue, envelope validation,
 frame routing, and process lifetime are all reachable without them.
@@ -14,7 +14,7 @@ The ``auth`` protocol is **not** exercised here by default. On macOS the login
 Keychain is the primary credential store, and an unsigned local build blocks on
 a Keychain access prompt that never surfaces from a non-interactive shell, so
 ``auth_providers_request`` never answers and the request hangs. Set
-``MAKAI_TEST_REAL_AUTH=1`` to opt in where the runtime can reach its store
+``OAP_SDK_TEST_REAL_AUTH=1`` to opt in where the runtime can reach its store
 without prompting (Linux CI, or a signed build with a granted ACL).
 """
 
@@ -26,10 +26,10 @@ import os
 import pytest
 
 from conftest import process_alive
-from makai._wire import build_stream_envelope
-from makai.client import MakaiClient
-from makai.errors import MakaiProtocolError, MakaiStreamError
-from makai.transport import StdioTransport
+from oap_sdk._wire import build_stream_envelope
+from oap_sdk.client import MakaiClient
+from oap_sdk.errors import MakaiProtocolError, MakaiStreamError
+from oap_sdk.transport import StdioTransport
 
 pytestmark = pytest.mark.real_binary
 
@@ -213,14 +213,14 @@ async def test_handshake_timeout_is_respected(real_binary: str) -> None:
 
 
 async def test_resolver_finds_the_binary_from_the_environment(real_binary: str) -> None:
-    from makai.binary import resolve_makai_binary
+    from oap_sdk.binary import resolve_makai_binary
 
     assert os.path.samefile(resolve_makai_binary(), real_binary)
 
 
 @pytest.mark.skipif(
-    not os.environ.get("MAKAI_TEST_REAL_AUTH"),
-    reason="set MAKAI_TEST_REAL_AUTH=1; on macOS an unsigned build blocks on a Keychain prompt",
+    not os.environ.get("OAP_SDK_TEST_REAL_AUTH"),
+    reason="set OAP_SDK_TEST_REAL_AUTH=1; on macOS an unsigned build blocks on a Keychain prompt",
 )
 async def test_auth_list_providers_against_the_real_host(real_binary: str) -> None:
     transport = await open_transport(real_binary)

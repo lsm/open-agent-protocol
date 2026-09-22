@@ -1,10 +1,10 @@
 [package]
-name = "makai"
+name = "oap-sdk"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-description = "Rust SDK for the Makai streaming AI runtime, spoken over the `makai --stdio` protocol"
-repository = "https://github.com/lsm/makai"
+description = "Rust SDK for the Open Agent Protocol project's runtime, spoken over the `oapx --stdio` protocol"
+repository = "https://github.com/lsm/open-agent-protocol"
 license = "MIT"
 readme = "README.md"
 keywords = ["ai", "llm", "streaming", "agent", "sdk"]
@@ -12,7 +12,7 @@ categories = ["api-bindings", "asynchronous"]
 
 [features]
 default = []
-# Enables downloading the runtime binary from `MAKAI_BINARY_URL` / `binary_url`.
+# Enables downloading the runtime binary from `OAP_SDK_BINARY_URL` / `binary_url`.
 # Without it a configured URL is only usable when the checksum-verified file is
 # already present in the cache directory.
 download = ["dep:reqwest"]

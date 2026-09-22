@@ -4,8 +4,8 @@ The ``fake`` fixture spawns ``fixtures/fake_server.py`` with a JSON config, so
 transport, framing, routing, sequencing, error mapping, and cancellation are
 all exercised without a runtime binary or any credentials.
 
-``real_binary`` points at a locally built ``makai`` and skips when
-``MAKAI_BINARY_PATH`` is unset, so the suite is green without one but never
+``real_binary`` points at a locally built ``oapx`` and skips when
+``OAP_SDK_BINARY_PATH`` is unset, so the suite is green without one but never
 silently claims real-runtime coverage.
 """
 
@@ -22,8 +22,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
 
-from makai.client import AuthOptions, MakaiClient
-from makai.transport import StdioTransport
+from oap_sdk.client import AuthOptions, MakaiClient
+from oap_sdk.transport import StdioTransport
 
 FIXTURE_SERVER = str(Path(__file__).parent / "fixtures" / "fake_server.py")
 
@@ -59,8 +59,8 @@ class FakeServerFactory:
         self, config: Optional[Dict[str, Any]] = None, **kwargs: Any
     ) -> StdioTransport:
         env = dict(os.environ)
-        env["MAKAI_FAKE_CONFIG"] = self.write_config(config or {})
-        env.pop("MAKAI_BINARY_PATH", None)
+        env["OAP_SDK_FAKE_CONFIG"] = self.write_config(config or {})
+        env.pop("OAP_SDK_BINARY_PATH", None)
         transport = StdioTransport(
             command=sys.executable,
             args=[FIXTURE_SERVER],
@@ -99,7 +99,7 @@ class FakeServerFactory:
 
 @pytest.fixture
 async def fake() -> AsyncIterator[FakeServerFactory]:
-    with tempfile.TemporaryDirectory(prefix="makai-py-tests-") as directory:
+    with tempfile.TemporaryDirectory(prefix="oap-sdk-py-tests-") as directory:
         factory = FakeServerFactory(Path(directory))
         try:
             yield factory
@@ -109,12 +109,12 @@ async def fake() -> AsyncIterator[FakeServerFactory]:
 
 @pytest.fixture(scope="session")
 def real_binary() -> str:
-    """Path to a locally built ``makai``, or skip the test."""
-    path = os.environ.get("MAKAI_BINARY_PATH")
+    """Path to a locally built ``oapx``, or skip the test."""
+    path = os.environ.get("OAP_SDK_BINARY_PATH")
     if not path:
-        pytest.skip("MAKAI_BINARY_PATH is not set; build with `zig build install --prefix ...`")
+        pytest.skip("OAP_SDK_BINARY_PATH is not set; build with `zig build install --prefix ...`")
     if not Path(path).exists():
-        pytest.skip(f"MAKAI_BINARY_PATH points at a missing file: {path}")
+        pytest.skip(f"OAP_SDK_BINARY_PATH points at a missing file: {path}")
     return path
 
 

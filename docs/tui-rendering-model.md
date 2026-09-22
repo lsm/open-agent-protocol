@@ -84,7 +84,7 @@ wrote; any other write to the terminal shifts the cursor and every later paint l
 in the wrong place (and, since paints rewrite only changed rows, stale rows of an
 earlier frame stay on screen). One stray line printed from the end of a full-width
 status row costs two rows: the wrap plus the newline. `tui_app.run` therefore
-redirects fd 2 to `~/.makai/tui-stderr.log` (append, mode 0600; `/dev/null` when the
+redirects fd 2 to `~/.oapx/tui-stderr.log` (append, mode 0600; `/dev/null` when the
 home directory is unavailable) for the whole session and restores it on exit, so
 `std.debug.print`/`std.log` output from libraries — the OAuth token exchange warns
 this way — is recorded instead of drawn. Never write to stdout or stderr from TUI
@@ -181,8 +181,8 @@ code paths; add a transcript row instead.
   by its code hash and every new build is a new application to securityd (a
   `partition_id` entry it adds for non-Apple-signed apps enforces this even when the
   ACL lists no applications). Expect one login-password prompt per new dev binary;
-  identical rebuilds do not re-prompt. `MAKAI_KEYCHAIN_SERVICE` overrides the service
-  name so tests can use an isolated item; the 0600 `~/.makai/auth.json` file remains
+  identical rebuilds do not re-prompt. `OAPX_KEYCHAIN_SERVICE` overrides the service
+  name so tests can use an isolated item; the 0600 `~/.oapx/auth.json` file remains
   the fallback only when the keychain is unavailable.
 - `/login` shows each provider's state: `✓ logged in` (OAuth), `✓ api key` (stored key),
   `✓ env key` (key in the environment), or `expired · login again`. The state is read
@@ -191,7 +191,7 @@ code paths; add a transcript row instead.
   `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` user sees `✓ env key` rather than nothing.
 - The model catalog lists Anthropic models whenever Anthropic credentials exist
   (OAuth in storage or `ANTHROPIC_API_KEY`): it fetches `/v1/models` with the stored
-  token, caches the response under `~/.makai/model_catalog/anthropic.json`, and falls
+  token, caches the response under `~/.oapx/model_catalog/anthropic.json`, and falls
   back to a static Claude list when the fetch fails. A cached response is reused at
   startup for 24 hours; after that startup fetches again and only falls back to the
   stale copy when the fetch fails, and `/model` always fetches. Prices come from a

@@ -11,12 +11,12 @@ from typing import Iterator
 
 import pytest
 
-from makai.binary import BinaryResolverOptions, resolve_makai_binary
+from oap_sdk.binary import BinaryResolverOptions, resolve_makai_binary
 
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("MAKAI_BINARY_PATH", "MAKAI_BINARY_URL", "MAKAI_BINARY_SHA256"):
+    for name in ("OAP_SDK_BINARY_PATH", "OAP_SDK_BINARY_URL", "OAP_SDK_BINARY_SHA256"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -37,7 +37,7 @@ def test_explicit_path_wins(tmp_path: Path) -> None:
 def test_env_path_overrides_option(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from_env = make_binary(tmp_path / "env")
     from_option = make_binary(tmp_path / "option")
-    monkeypatch.setenv("MAKAI_BINARY_PATH", str(from_env))
+    monkeypatch.setenv("OAP_SDK_BINARY_PATH", str(from_env))
     resolved = resolve_makai_binary(BinaryResolverOptions(binary_path=str(from_option)))
     assert resolved == str(from_env.resolve())
 

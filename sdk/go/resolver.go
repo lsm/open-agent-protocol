@@ -22,18 +22,18 @@ import (
 // over the equivalent [Options] field, matching the TypeScript SDK.
 const (
 	// EnvBinaryPath points at a specific runtime binary.
-	EnvBinaryPath = "MAKAI_BINARY_PATH"
+	EnvBinaryPath = "OAP_SDK_BINARY_PATH"
 	// EnvBinaryURL downloads the runtime from a URL.
-	EnvBinaryURL = "MAKAI_BINARY_URL"
+	EnvBinaryURL = "OAP_SDK_BINARY_URL"
 	// EnvBinarySHA256 is the required checksum for EnvBinaryURL.
-	EnvBinarySHA256 = "MAKAI_BINARY_SHA256"
+	EnvBinarySHA256 = "OAP_SDK_BINARY_SHA256"
 )
 
 // ResolveBinary locates the makai runtime, in this order:
 //
-//  1. MAKAI_BINARY_PATH, else [Options].BinaryPath.
-//  2. MAKAI_BINARY_URL (else [Options].BinaryURL), which requires a SHA-256
-//     checksum from MAKAI_BINARY_SHA256 or [Options].ChecksumSHA256. The
+//  1. OAP_SDK_BINARY_PATH, else [Options].BinaryPath.
+//  2. OAP_SDK_BINARY_URL (else [Options].BinaryURL), which requires a SHA-256
+//     checksum from OAP_SDK_BINARY_SHA256 or [Options].ChecksumSHA256. The
 //     binary is cached and its checksum verified on every use.
 //  3. ./zig-out/bin/oapx, then ./zig/zig-out/bin/oapx
 //  4. ./zig-out/bin/makai, then ./zig/zig-out/bin/makai
@@ -43,14 +43,14 @@ const (
 // oapx outranks a top-level makai. On Windows each name carries .exe.
 //
 // The TypeScript SDK has one more step between 2 and 3: an optional
-// @makai/cli-<platform>-<arch> npm package. That step is npm-specific and has
+// @oap-sdk/cli-<platform>-<arch> npm package. That step is npm-specific and has
 // no Go equivalent, so it is deliberately absent here. The practical effect
 // is that a local build under ./zig-out is picked up in Go where npm would
 // have preferred the packaged binary.
 //
 // Note that the environment variables win over the equivalent Options fields
 // rather than the other way around. This mirrors the TypeScript resolver, so
-// the same MAKAI_BINARY_PATH override steers both SDKs identically.
+// the same OAP_SDK_BINARY_PATH override steers both SDKs identically.
 func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 	if opts == nil {
 		opts = &Options{}

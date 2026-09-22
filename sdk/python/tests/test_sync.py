@@ -13,9 +13,9 @@ from typing import Any, Dict, Iterator, List
 import pytest
 
 from conftest import FIXTURE_SERVER, process_alive
-from makai.errors import MakaiProtocolError
-from makai.sync import SyncMakaiClient, connect_sync
-from makai.types import MessageEnd, TextDelta
+from oap_sdk.errors import MakaiProtocolError
+from oap_sdk.sync import SyncMakaiClient, connect_sync
+from oap_sdk.types import MessageEnd, TextDelta
 
 MODEL_REF = "anthropic/anthropic-messages@claude-sonnet-4-5"
 
@@ -80,8 +80,8 @@ def sync_client() -> Iterator[SyncMakaiClient]:
         config_path = Path(directory) / "config.json"
         config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
         env = dict(os.environ)
-        env["MAKAI_FAKE_CONFIG"] = str(config_path)
-        env.pop("MAKAI_BINARY_PATH", None)
+        env["OAP_SDK_FAKE_CONFIG"] = str(config_path)
+        env.pop("OAP_SDK_BINARY_PATH", None)
         client = connect_sync(command=sys.executable, args=[FIXTURE_SERVER], env=env)
         try:
             yield client
@@ -149,8 +149,8 @@ def test_close_terminates_the_child() -> None:
         config_path = Path(directory) / "config.json"
         config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
         env = dict(os.environ)
-        env["MAKAI_FAKE_CONFIG"] = str(config_path)
-        env.pop("MAKAI_BINARY_PATH", None)
+        env["OAP_SDK_FAKE_CONFIG"] = str(config_path)
+        env.pop("OAP_SDK_BINARY_PATH", None)
         client = connect_sync(command=sys.executable, args=[FIXTURE_SERVER], env=env)
         pid = client.transport.pid
         client.close()
@@ -163,8 +163,8 @@ def test_context_manager_closes() -> None:
         config_path = Path(directory) / "config.json"
         config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
         env = dict(os.environ)
-        env["MAKAI_FAKE_CONFIG"] = str(config_path)
-        env.pop("MAKAI_BINARY_PATH", None)
+        env["OAP_SDK_FAKE_CONFIG"] = str(config_path)
+        env.pop("OAP_SDK_BINARY_PATH", None)
         with connect_sync(command=sys.executable, args=[FIXTURE_SERVER], env=env) as client:
             pid = client.transport.pid
             assert client.models.list().models
@@ -178,8 +178,8 @@ def test_close_is_idempotent() -> None:
         config_path = Path(directory) / "config.json"
         config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
         env = dict(os.environ)
-        env["MAKAI_FAKE_CONFIG"] = str(config_path)
-        env.pop("MAKAI_BINARY_PATH", None)
+        env["OAP_SDK_FAKE_CONFIG"] = str(config_path)
+        env.pop("OAP_SDK_BINARY_PATH", None)
         with connect_sync(command=sys.executable, args=[FIXTURE_SERVER], env=env) as client:
             pid = client.transport.pid
             client.close()
@@ -194,8 +194,8 @@ def test_an_abandoned_stream_does_not_raise_after_the_client_is_closed() -> None
         config_path = Path(directory) / "config.json"
         config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
         env = dict(os.environ)
-        env["MAKAI_FAKE_CONFIG"] = str(config_path)
-        env.pop("MAKAI_BINARY_PATH", None)
+        env["OAP_SDK_FAKE_CONFIG"] = str(config_path)
+        env.pop("OAP_SDK_BINARY_PATH", None)
         client = connect_sync(command=sys.executable, args=[FIXTURE_SERVER], env=env)
         stream = client.provider.stream(
             model_ref=MODEL_REF, messages=[{"role": "user", "content": "hi"}]

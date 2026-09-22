@@ -1,29 +1,25 @@
-# Makai TypeScript SDK
+# OAP TypeScript SDK
 
-TypeScript SDK for Makai's stdio protocol. The SDK starts or connects to a `makai --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
+TypeScript SDK published as `oap-sdk`. It starts or connects to an `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs, auth flows, and model discovery.
+
+The wire it speaks today is the makai stdio protocol, not OAP. The package name is where this is going, not where it is.
 
 ## Installation
 
-The current package name is `makai`:
-
 ```bash
-npm install makai
+npm install oap-sdk
 ```
 
-If you are consuming a scoped release, install the scope published by your registry instead, for example:
+No release has been published yet; until one is, install from a checkout of this repository.
 
-```bash
-npm install @anthropic/makai
-```
-
-You also need access to the Makai runtime binary. By default the SDK prefers the installed `@makai/cli-<platform>-<arch>` optional dependency, then a local build under `zig-out/bin/makai` or `zig/zig-out/bin/makai`, then `makai` on `PATH`. See [Configuration](#configuration) for explicit binary resolver options.
+The package is a library and ships no executable, so you also need the runtime binary. By default the SDK prefers an installed `@oap-sdk/cli-<platform>-<arch>` package, then a local build under `zig-out/bin/oapx` or `zig/zig-out/bin/oapx`, then `oapx` on `PATH`; the pre-rename `makai` is tried after `oapx` at each step. See [Configuration](#configuration) for explicit binary resolver options.
 
 ## Quick start
 
 Create a client, resolve a model, send one chat message, and print the assistant response.
 
 ```ts
-import { createMakaiClient } from "makai";
+import { createMakaiClient } from "oap-sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -59,7 +55,7 @@ main().catch((error: unknown) => {
 Use `client.provider.stream(...)` for provider-level streaming. It is the SDK's streaming form of `complete`; each `text_delta` contains newly generated text.
 
 ```ts
-import { createMakaiClient } from "makai";
+import { createMakaiClient } from "oap-sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -105,14 +101,14 @@ async function main(): Promise<void> {
 void main();
 ```
 
-If you are migrating from an API that used `client.complete({ stream: true })`, the equivalent Makai SDK call is `client.provider.stream(request)`; non-streaming calls use `client.provider.complete(request)`.
+If you are migrating from an API that used `client.complete({ stream: true })`, the equivalent call is `client.provider.stream(request)`; non-streaming calls use `client.provider.complete(request)`.
 
 ## Agent loop with tools
 
 Use `client.agent.run(...)` when you want the Makai agent loop to manage provider turns and tool execution lifecycle. Tool definitions are JSON Schema strings. Tool execution runs in your client code: when the runtime requests a tool call, the SDK invokes that tool's `execute(args, context)` callback and sends the result back to the runtime. Tools without an `execute` callback — and callbacks that throw — are reported to the model as error tool results. When using `agent.stream(...)`, you also receive streaming lifecycle events; the iteration ends with `agent_end` on success, or with an `error` event / a thrown `MakaiStreamError` on failure.
 
 ```ts
-import { createMakaiClient, type ToolDefinition } from "makai";
+import { createMakaiClient, type ToolDefinition } from "oap-sdk";
 
 const tools: ToolDefinition[] = [
   {
@@ -178,7 +174,7 @@ Prefer `client.models` when you only need model discovery. Use `client.agent.mod
 Use `client.auth.listProviders()` to inspect auth state, and `client.auth.login(providerId, handlers)` to start an interactive login flow. Token material is owned by the runtime and is not exposed by the SDK.
 
 ```ts
-import { createMakaiClient, type MakaiAuthEvent } from "makai";
+import { createMakaiClient, type MakaiAuthEvent } from "oap-sdk";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
@@ -217,7 +213,7 @@ void main();
 You can also configure automatic one-shot auth retry for `provider` and `agent` calls:
 
 ```ts
-import { createMakaiClient } from "makai";
+import { createMakaiClient } from "oap-sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
@@ -227,7 +223,7 @@ async function main(): Promise<void> {
         onEvent: (event) => {
           if (event.type === "auth_url") console.log(`Open ${event.url}`);
         },
-        onPrompt: async (prompt) => prompt.allow_empty ? "" : process.env.MAKAI_AUTH_CODE ?? "",
+        onPrompt: async (prompt) => prompt.allow_empty ? "" : process.env.OAPX_AUTH_CODE ?? "",
       },
     },
   });
@@ -247,7 +243,7 @@ void main();
 Models are discovered through `client.models`. Use `model_ref` from the returned descriptor in completion and agent requests. Treat `model_ref` as opaque; do not parse or construct it in application code.
 
 ```ts
-import { createMakaiClient } from "makai";
+import { createMakaiClient } from "oap-sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
@@ -287,12 +283,12 @@ void main();
 ### Explicit binary path
 
 ```ts
-import { createMakaiClient } from "makai";
+import { createMakaiClient } from "oap-sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
     resolver: {
-      binaryPath: "/opt/makai/bin/makai",
+      binaryPath: "/opt/oapx/bin/oapx",
     },
   });
 
@@ -306,19 +302,19 @@ async function main(): Promise<void> {
 void main();
 ```
 
-You can also set `MAKAI_BINARY_PATH=/opt/makai/bin/makai`.
+You can also set `OAP_SDK_BINARY_PATH=/opt/oapx/bin/oapx`.
 
 ### Download from URL with checksum
 
 ```ts
-import { createMakaiClient } from "makai";
+import { createMakaiClient } from "oap-sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
     resolver: {
-      binaryUrl: "https://example.com/releases/makai-darwin-arm64",
+      binaryUrl: "https://example.com/releases/oapx-darwin-arm64",
       checksumSha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      cacheDir: "/tmp/makai-bin-cache",
+      cacheDir: "/tmp/oapx-bin-cache",
     },
   });
 
@@ -332,30 +328,33 @@ async function main(): Promise<void> {
 void main();
 ```
 
-Environment variable equivalents are `MAKAI_BINARY_URL` and `MAKAI_BINARY_SHA256`.
+Environment variable equivalents are `OAP_SDK_BINARY_URL` and `OAP_SDK_BINARY_SHA256`.
 
 ### PATH lookup and local builds
 
-With no resolver options, Makai checks, in order:
+With no resolver options, the SDK checks, in order:
 
-1. The `@makai/cli-<platform>-<arch>` optional dependency, when it is installed
-2. `./zig-out/bin/makai` (or `makai.exe` on Windows)
-3. `./zig/zig-out/bin/makai`
-4. `makai` on `PATH`
+1. The `@oap-sdk/cli-<platform>-<arch>` package, when it is installed
+2. `./zig-out/bin/oapx`, then `./zig/zig-out/bin/oapx`
+3. `./zig-out/bin/makai`, then `./zig/zig-out/bin/makai`
+4. `oapx` on `PATH`, then `makai` on `PATH`
 
-Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. Set `MAKAI_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
+`oapx` is tried in every location before `makai` is tried in any, so a nested
+`oapx` outranks a top-level `makai`. On Windows each name carries `.exe`.
+
+Step 1 outranks both local build paths, so an installed platform package wins over a fresh `zig build`. It is no longer an optional dependency of `oap-sdk`, so it is only consulted when you install it yourself. Set `OAP_SDK_BINARY_PATH` (or `resolver.binaryPath`) to pin an exact binary.
 
 `handshakeTimeoutMs` bounds the `ready` handshake in `connect()`; a failed handshake terminates the spawned runtime process. `responseTimeoutMs` bounds each `provider`, `agent`, and `models` frame wait. `frameTimeoutMs` bounds each `auth` frame wait, and is also the fallback for `responseTimeoutMs` when that is unset. Setting only `responseTimeoutMs` leaves `client.auth` on its 30s default.
 
 ```ts
-import { createMakaiClient } from "makai";
+import { createMakaiClient } from "oap-sdk";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient({
     // Optional transport settings:
     args: ["--stdio"],
     cwd: process.cwd(),
-    env: { ...process.env, MAKAI_LOG: "info" },
+    env: { ...process.env, OAPX_LOG: "info" },
     handshakeTimeoutMs: 2_000,
     responseTimeoutMs: 30_000,
     frameTimeoutMs: 30_000,
@@ -384,7 +383,7 @@ async function closeClient(client: { close(): Promise<void> }): Promise<void> {
 Pass an `AbortSignal` as `options.signal` to cancel a `provider` or `agent` call. `client.auth.login(providerId, handlers, { signal })` takes one too. Aborting rejects the call with an `Error` whose `name` is `"AbortError"` — use the exported `isAbortError(error)` guard rather than `instanceof`, because it is not a `MakaiStreamError`.
 
 ```ts
-import { createMakaiClient, isAbortError } from "makai";
+import { createMakaiClient, isAbortError } from "oap-sdk";
 
 const controller = new AbortController();
 setTimeout(() => controller.abort(), 5_000);
@@ -421,7 +420,7 @@ import {
   MakaiProtocolError,
   MakaiStreamError,
   createMakaiClient,
-} from "makai";
+} from "oap-sdk";
 
 async function run(): Promise<void> {
   const client = await createMakaiClient();
@@ -489,7 +488,7 @@ import type {
   TextContentPart,
   ToolDefinition,
   UsageSummary,
-} from "makai";
+} from "oap-sdk";
 ```
 
 Most requests share this shape:

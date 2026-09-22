@@ -1,6 +1,6 @@
 """The top-level client: one transport, four namespaces.
 
-``MakaiClient`` owns a single ``makai --stdio`` child process and exposes
+``MakaiClient`` owns a single ``oapx --stdio`` child process and exposes
 ``auth``, ``models``, ``provider``, and ``agent`` over it. The protocols
 multiplex, so concurrent calls on one client are fine; ordering is guaranteed
 only within a stream or session.
@@ -29,7 +29,7 @@ class AuthOptions:
     ``auth_retry_policy="auto_once"`` lets ``provider`` and ``agent`` calls run
     one login automatically when they hit ``auth_required``. Interactive
     providers need ``handlers`` for that to succeed; without them the call
-    fails fast with :class:`~makai.errors.MakaiAuthRequiredError` rather than
+    fails fast with :class:`~oap_sdk.errors.MakaiAuthRequiredError` rather than
     hanging (spec §3.7).
     """
 
@@ -42,7 +42,7 @@ class MakaiClient:
 
     Prefer :func:`connect`, or use this class as an async context manager::
 
-        async with makai.connect() as client:
+        async with oap_sdk.connect() as client:
             models = await client.models.list()
 
     Always :meth:`close` a client you created without a ``with`` block --
@@ -187,17 +187,17 @@ def connect(
     frame_timeout: Optional[float] = None,
     handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT_S,
 ) -> _ClientConnector:
-    """Start a ``makai --stdio`` runtime and return a connected client.
+    """Start a ``oapx --stdio`` runtime and return a connected client.
 
     Usable both ways::
 
-        client = await makai.connect()      # remember to close() it
-        async with makai.connect() as c:    # closed for you
+        client = await oap_sdk.connect()      # remember to close() it
+        async with oap_sdk.connect() as c:    # closed for you
             ...
 
     Args:
         command: Explicit binary to run. Defaults to
-            :func:`~makai.binary.resolve_makai_binary`.
+            :func:`~oap_sdk.binary.resolve_makai_binary`.
         args: Process arguments. Defaults to ``["--stdio"]``.
         cwd: Working directory for the child process.
         env: Environment for the child process. Defaults to the parent's.

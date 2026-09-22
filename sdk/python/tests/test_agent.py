@@ -11,10 +11,10 @@ from typing import Any, Dict, List
 import pytest
 
 from conftest import FakeServerFactory, read_log
-from makai._ids import new_nano_id
-from makai.execution import _probe_stop_sequences, _stop_agent_with_sequence_probe
-from makai.errors import TIMEOUT_CODE, MakaiAuthRequiredError, MakaiStreamError
-from makai.types import (
+from oap_sdk._ids import new_nano_id
+from oap_sdk.execution import _probe_stop_sequences, _stop_agent_with_sequence_probe
+from oap_sdk.errors import TIMEOUT_CODE, MakaiAuthRequiredError, MakaiStreamError
+from oap_sdk.types import (
     AgentEnd,
     AgentStart,
     AgentStreamEvent,

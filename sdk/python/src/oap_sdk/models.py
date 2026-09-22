@@ -21,7 +21,7 @@ from .types import ListModelsResponse, ModelCapability, ModelDescriptor, Reasoni
 
 __all__ = ["ModelsApi"]
 
-logger = logging.getLogger("makai.models")
+logger = logging.getLogger("oap_sdk.models")
 
 DEFAULT_RESPONSE_TIMEOUT_S = 5.0
 DEFAULT_CACHE_MAX_AGE_MS = 300_000
@@ -110,7 +110,7 @@ class ModelsApi:
         """Resolve exactly one model and return its descriptor.
 
         Unlike the TypeScript SDK, which returns ``{model}``, this returns the
-        :class:`~makai.types.ModelDescriptor` directly -- the wrapper carries
+        :class:`~oap_sdk.types.ModelDescriptor` directly -- the wrapper carries
         no extra information in Python.
 
         Raises:

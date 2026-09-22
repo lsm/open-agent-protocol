@@ -1,7 +1,7 @@
-//! Rust SDK for [Makai](https://github.com/lsm/makai), a Zig-first streaming AI
-//! runtime.
+//! Rust SDK for the [Open Agent Protocol](https://github.com/lsm/open-agent-protocol) project's `oapx`, a
+//! Zig-first streaming AI runtime.
 //!
-//! The SDK starts a `makai --stdio` process and speaks its newline-delimited
+//! The SDK starts an `oapx --stdio` process and speaks its newline-delimited
 //! JSON protocol, exposing four namespaces that mirror the TypeScript SDK:
 //!
 //! * [`Client::auth`] — list provider auth state, run interactive logins;
@@ -12,9 +12,9 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use makai::{Client, ExecutionRequest};
+//! use oap_sdk::{Client, ExecutionRequest};
 //!
-//! # async fn run() -> makai::Result<()> {
+//! # async fn run() -> oap_sdk::Result<()> {
 //! let client = Client::connect().await?;
 //!
 //! let model = client
@@ -45,9 +45,9 @@
 //!
 //! ```no_run
 //! use futures::StreamExt;
-//! use makai::{Client, ExecutionRequest, ProviderEvent};
+//! use oap_sdk::{Client, ExecutionRequest, ProviderEvent};
 //!
-//! # async fn run() -> makai::Result<()> {
+//! # async fn run() -> oap_sdk::Result<()> {
 //! # let client = Client::connect().await?;
 //! # let model_ref = String::new();
 //! let mut events = Box::pin(

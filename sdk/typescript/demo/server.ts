@@ -149,7 +149,7 @@ function cleanupSessions(sessions: Map<string, AuthSession>): void {
 export function createDemoServer(options: DemoServerOptions = {}): Server {
   const authSessions = new Map<string, AuthSession>();
   const homeDir = options.homeDir ?? process.env.HOME ?? "";
-  const binaryPath = options.binaryPath ?? process.env.MAKAI_BINARY_PATH;
+  const binaryPath = options.binaryPath ?? process.env.OAP_SDK_BINARY_PATH;
 
   function clientOptions(extra?: Partial<CreateMakaiClientOptions>): CreateMakaiClientOptions {
     const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}), ...(homeDir ? { HOME: homeDir } : {}) };
@@ -430,7 +430,7 @@ if (require.main === module) {
     host: process.env.DEMO_HOST ?? "127.0.0.1",
     port: Number(process.env.DEMO_PORT ?? "8787"),
     homeDir: process.env.HOME,
-    binaryPath: process.env.MAKAI_BINARY_PATH,
+    binaryPath: process.env.OAP_SDK_BINARY_PATH,
   })
     .then(({ url }) => {
       process.stdout.write(`Makai TS SDK demo running at ${url}\n`);

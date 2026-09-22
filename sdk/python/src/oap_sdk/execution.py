@@ -7,7 +7,7 @@
 ``agent_start`` (sequence 1) -> ``agent_started`` -> ``agent_message``
 (sequence 2) -> run output -> ``agent_stop`` (sequence 3). When the loop wants
 a tool, the runtime publishes ``tool_execute`` and the SDK runs the matching
-:class:`~makai.types.ToolDefinition.execute` callback **in your process**,
+:class:`~oap_sdk.types.ToolDefinition.execute` callback **in your process**,
 replying with a correlated ``tool_result``.
 
 Sequencing is per session and starts at 1 (spec §13.1). ``session_id`` is a
@@ -73,7 +73,7 @@ from .types import (
 
 __all__ = ["ProviderApi", "AgentApi"]
 
-logger = logging.getLogger("makai.execution")
+logger = logging.getLogger("oap_sdk.execution")
 
 DEFAULT_RESPONSE_TIMEOUT_S = 30.0
 MAX_MODEL_REF_LENGTH = 4096
@@ -210,7 +210,7 @@ class ProviderApi(_ExecutionBase):
     ) -> AsyncGenerator[ProviderStreamEvent, None]:
         """Stream one completion.
 
-        Yields :class:`~makai.types.ProviderStreamEvent` values and ends after
+        Yields :class:`~oap_sdk.types.ProviderStreamEvent` values and ends after
         exactly one terminal event (``message_end`` or ``error``, spec §3.5).
         Breaking out of the loop or cancelling the task sends an
         ``abort_request`` for the stream.
@@ -932,7 +932,7 @@ def _model_from_ref(model_ref: str) -> Dict[str, Any]:
     """Build the provider protocol's ``model`` object from a ``model_ref``.
 
     The provider protocol carries a resolved ``ai_types.Model``, not a ref, so
-    the SDK has to reconstruct one. See :mod:`makai._model_ref`: application
+    the SDK has to reconstruct one. See :mod:`oap_sdk._model_ref`: application
     code must still treat ``model_ref`` as opaque.
     """
     parsed = _split_model_ref(model_ref)

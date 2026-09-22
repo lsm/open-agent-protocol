@@ -9,10 +9,10 @@ from typing import Any, Dict, List
 
 import pytest
 
-from makai._wire import number_or
+from oap_sdk._wire import number_or
 from conftest import FakeServerFactory, read_log
-from makai.errors import TIMEOUT_CODE, MakaiAuthRequiredError, MakaiProtocolError, MakaiStreamError
-from makai.types import (
+from oap_sdk.errors import TIMEOUT_CODE, MakaiAuthRequiredError, MakaiProtocolError, MakaiStreamError
+from oap_sdk.types import (
     MessageEnd,
     MessageStart,
     ProviderStreamEvent,

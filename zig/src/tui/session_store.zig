@@ -145,7 +145,7 @@ pub const Store = struct {
             else => return err,
         };
         defer allocator.free(home);
-        const base = try std.fs.path.join(allocator, &.{ home, ".makai", "sessions" });
+        const base = try std.fs.path.join(allocator, &.{ home, ".oapx", "sessions" });
         defer allocator.free(base);
         return init(allocator, base);
     }

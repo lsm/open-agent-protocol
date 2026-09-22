@@ -1,9 +1,9 @@
-"""A configurable fake ``makai --stdio`` host.
+"""A configurable fake ``oapx --stdio`` host.
 
 Plays the role of ``typescript/test/fixtures/*.js``: one script driven by a
 JSON config so the matrix of scenarios does not need a file each.
 
-The config path comes from ``MAKAI_FAKE_CONFIG``. Recognised keys:
+The config path comes from ``OAP_SDK_FAKE_CONFIG``. Recognised keys:
 
 ``handshake``
     ``"ready"`` (default), ``"error"``, ``"bad_version"``, ``"silent"``, or
@@ -63,7 +63,7 @@ def emit(frame: Dict[str, Any]) -> None:
 
 
 def load_config() -> Dict[str, Any]:
-    path = os.environ.get("MAKAI_FAKE_CONFIG")
+    path = os.environ.get("OAP_SDK_FAKE_CONFIG")
     if not path:
         return {}
     with open(path, encoding="utf-8") as handle:

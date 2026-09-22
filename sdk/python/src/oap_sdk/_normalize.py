@@ -4,7 +4,7 @@ The runtime publishes the same logical event under several wire shapes: as a
 top-level frame type, nested under ``payload.event``, or JSON-encoded in
 ``agent_event.event_json``. Provider-native naming also differs (``reasoning``
 vs ``thinking``). Everything is funnelled through here so the ``provider`` and
-``agent`` namespaces only ever see the typed events from :mod:`makai.types`.
+``agent`` namespaces only ever see the typed events from :mod:`oap_sdk.types`.
 """
 
 from __future__ import annotations

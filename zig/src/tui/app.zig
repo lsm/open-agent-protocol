@@ -366,7 +366,7 @@ const SavedModelRef = struct {
     }
 };
 
-pub const fixture_env_var = "MAKAI_TUI_FIXTURE";
+pub const fixture_env_var = "OAPX_TUI_FIXTURE";
 
 const fixture_step_separator = '|';
 const fixture_step_escape = '\\';
@@ -2472,7 +2472,7 @@ const StderrRedirect = struct {
 };
 
 pub fn stderrLogPath(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
-    return std.fs.path.join(allocator, &.{ home, ".makai", "tui-stderr.log" });
+    return std.fs.path.join(allocator, &.{ home, ".oapx", "tui-stderr.log" });
 }
 
 fn redirectStderrToLog(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) StderrRedirect {
@@ -2497,7 +2497,7 @@ fn redirectStderrToLog(allocator: std.mem.Allocator, environ_map: *const std.pro
 fn openStderrLog(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map) !std.posix.fd_t {
     const home = environ_map.get("HOME") orelse return error.HomeNotFound;
     if (home.len == 0) return error.HomeNotFound;
-    const dir = try std.fs.path.join(allocator, &.{ home, ".makai" });
+    const dir = try std.fs.path.join(allocator, &.{ home, ".oapx" });
     defer allocator.free(dir);
     try compat.fs.createDir(compat.fs.getCwd(), dir);
     const path = try stderrLogPath(allocator, home);
@@ -2512,7 +2512,7 @@ fn openDevNull() !std.posix.fd_t {
 test "stderr log path lives under the makai home directory" {
     const path = try stderrLogPath(std.testing.allocator, "/tmp/home");
     defer std.testing.allocator.free(path);
-    try std.testing.expectEqualStrings("/tmp/home/.makai/tui-stderr.log", path);
+    try std.testing.expectEqualStrings("/tmp/home/.oapx/tui-stderr.log", path);
 }
 
 fn tuiProgramOptions() zz.Options {
@@ -2645,7 +2645,7 @@ test "App only offers an api-key login for a declared custom provider" {
     defer app.deinit();
     try std.testing.expect(!app.isDeclaredCustomProvider("gateway"));
 
-    const makai_dir = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".makai" });
+    const makai_dir = try std.fs.path.join(std.testing.allocator, &.{ env.home, ".oapx" });
     defer std.testing.allocator.free(makai_dir);
     try compat.fs.createDir(compat.fs.getCwd(), makai_dir);
     const config_path = try std.fs.path.join(std.testing.allocator, &.{ makai_dir, "providers.json" });

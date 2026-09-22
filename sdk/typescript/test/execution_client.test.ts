@@ -34,7 +34,7 @@ async function setupHarness(envOverrides: NodeJS.ProcessEnv = {}): Promise<Harne
   const client = new MakaiStdioClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, ...envOverrides },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, ...envOverrides },
     handshakeTimeoutMs: 5000,
   });
   await client.connect();
@@ -165,7 +165,7 @@ test("client.provider.complete maps system prompts and tool messages into provid
 });
 
 test("provider.complete timeout includes actionable diagnostics", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_SUPPRESS_COMPLETE_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_SUPPRESS_COMPLETE_RESPONSE: "1" });
   try {
     const provider = createMakaiProviderApi(harness.client, { responseTimeoutMs: 20 });
     await assert.rejects(
@@ -225,7 +225,7 @@ test("client.agent.run resolves with correct AgentRunResponse", async () => {
       stop_reason: "tool_use",
     }],
   }));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const result = await agent.run(request());
@@ -303,7 +303,7 @@ test("client.agent.run executes tool_execute frames and continues awaiting resul
 });
 
 test("agent.run timeout includes actionable diagnostics", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 20 });
     await assert.rejects(
@@ -382,7 +382,7 @@ test("client.agent.run accepts valid NanoID session IDs", async () => {
       stop_reason: "end_turn",
     }],
   }));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const nanoId = "abcABC123xyzXYZ789mno";
@@ -443,7 +443,7 @@ test("client.agent.run event fallback returns only final assistant turn content"
     { type: "turn_end", stop_reason: "end_turn" },
     { type: "agent_end", usage: { input: 7, output: 9 }, stop_reason: "end_turn" },
   ]));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const result = await agent.run(request());
@@ -468,7 +468,7 @@ test("client.agent.stream surfaces provider error details on turn_end and agent_
     { type: "turn_end", stop_reason: "error", error_message: "fixture stream failure" },
     { type: "agent_end", stop_reason: "error", error_message: "fixture stream failure" },
   ]));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const events = await collect(agent.stream(request()));
@@ -496,7 +496,7 @@ test("client.agent.run surfaces provider error details from event fallback", asy
     { type: "turn_end", stop_reason: "error", error_message: "fixture stream failure" },
     { type: "agent_end", stop_reason: "error", error_message: "fixture stream failure" },
   ]));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const result = await agent.run(request());
@@ -525,7 +525,7 @@ test("client.agent.run surfaces provider error details from agent_result", async
     content: [],
     error_message: "invalid anthropic URL",
   }));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const result = await agent.run(request());
@@ -554,7 +554,7 @@ test("client.agent.run translates auth_required provider failures into MakaiAuth
     content: [],
     error_message: "auth_required",
   }));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -580,7 +580,7 @@ test("client.agent.stream yields turn_end detail then throws retryable auth erro
     { type: "turn_end", stop_reason: "error", error_message: "auth_required" },
     { type: "agent_end", stop_reason: "error", error_message: "auth_required" },
   ]));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const events: AgentStreamEvent[] = [];
@@ -658,7 +658,7 @@ test("client.agent.stream auto_once retries after yielded auth lifecycle events"
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AGENT_EVENTS_PATH: eventsPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -806,7 +806,7 @@ test("client.agent.run matches human-readable auth failure messages", async () =
     content: [],
     error_message: "Authentication required for provider fixture",
   }));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -872,7 +872,7 @@ test("client.agent.run event fallback applies API-scoped auth via terminal agent
     { type: "turn_end", stop_reason: "error", error_message: "permission_error: scope denied" },
     { type: "agent_end", stop_reason: "error", error_message: "permission_error: scope denied", provider_id: "anthropic", api: "anthropic-messages" },
   ]));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -896,7 +896,7 @@ test("client.provider.stream buffers incremental tool calls into one tool_call e
     { type: "toolcall_end", content_index: 0 },
     { type: "message_end", usage: { input: 3, output: 5 }, stop_reason: "tool_use" },
   ]));
-  const harness = await setupHarness({ MAKAI_TEST_PROVIDER_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_PROVIDER_EVENTS_PATH: eventsPath });
   try {
     const provider = createMakaiProviderApi(harness.client);
     const events = await collect(provider.stream(request()));
@@ -928,7 +928,7 @@ test("stream error paths emit one terminal error event", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-exec-error-test-"));
   const eventsPath = path.join(tmpDir, "events.json");
   fs.writeFileSync(eventsPath, JSON.stringify([{ type: "message_start" }, { type: "error", message: "boom", code: "provider_error" }]));
-  const harness = await setupHarness({ MAKAI_TEST_PROVIDER_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_PROVIDER_EVENTS_PATH: eventsPath });
   try {
     const provider = createMakaiProviderApi(harness.client);
     const events = await collect(provider.stream(request()));
@@ -944,7 +944,7 @@ test("provider stream_error frames preserve MakaiStreamError code", async () => 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-stream-error-code-test-"));
   const eventsPath = path.join(tmpDir, "events.json");
   fs.writeFileSync(eventsPath, JSON.stringify([{ type: "stream_error", message: "login required", code: "auth_required" }]));
-  const harness = await setupHarness({ MAKAI_TEST_PROVIDER_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_PROVIDER_EVENTS_PATH: eventsPath });
   try {
     const provider = createMakaiProviderApi(harness.client);
     await assert.rejects(
@@ -961,7 +961,7 @@ test("agent stream error paths emit one terminal error event", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-agent-error-test-"));
   const eventsPath = path.join(tmpDir, "events.json");
   fs.writeFileSync(eventsPath, JSON.stringify([{ type: "agent_start" }, { type: "error", message: "agent boom", code: "provider_error" }]));
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_EVENTS_PATH: eventsPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const events = await collect(agent.stream(request()));
@@ -975,7 +975,7 @@ test("agent stream error paths emit one terminal error event", async () => {
 });
 
 test("client.agent.run throws MakaiStreamError on malformed result_json", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_MALFORMED_RESULT_JSON: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_MALFORMED_RESULT_JSON: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -988,7 +988,7 @@ test("client.agent.run throws MakaiStreamError on malformed result_json", async 
 });
 
 test("client.agent.stream throws MakaiStreamError on malformed event_json", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_MALFORMED_EVENT_JSON: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_MALFORMED_EVENT_JSON: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -1006,7 +1006,7 @@ test("createMakaiClient wires all namespaces correctly", async () => {
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1038,7 +1038,7 @@ test("client.provider.stream normalizes top-level start frame to message_start",
     { type: "text_delta", delta: "hello" },
     { type: "done", usage: { input: 3, output: 5 }, stop_reason: "end_turn" },
   ]));
-  const harness = await setupHarness({ MAKAI_TEST_PROVIDER_EVENTS_PATH: eventsPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_PROVIDER_EVENTS_PATH: eventsPath });
   try {
     const provider = createMakaiProviderApi(harness.client);
     const events = await collect(provider.stream(request()));
@@ -1059,7 +1059,7 @@ test("client.provider.complete auto_once retries on auth_required nack and succe
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1086,7 +1086,7 @@ test("client.provider.stream auto_once retries on auth_required nack and yields 
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1111,7 +1111,7 @@ test("client.provider.complete auto_once retries at most once when auth_required
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ALWAYS: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1136,7 +1136,7 @@ test("client.provider.stream auto_once retries at most once when auth_required p
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ALWAYS: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1173,7 +1173,7 @@ test("client.agent.run auto_once retries on auth_required nack and succeeds", as
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AGENT_RESULT_PATH: resultPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1198,7 +1198,7 @@ test("client.agent.run auto_once retries at most once when auth_required persist
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ALWAYS: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1235,7 +1235,7 @@ test("client.agent.run auto_once uses fresh session_id on retry", async () => {
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AGENT_RESULT_PATH: resultPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1262,7 +1262,7 @@ test("manual auth_retry_policy does not retry on auth_required", async () => {
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "manual" },
@@ -1289,7 +1289,7 @@ test("auto_once normalizes login failure to auth_required with partial handlers"
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRES_PROMPT: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRES_PROMPT: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once", handlers: { onEvent: () => undefined } },
@@ -1316,7 +1316,7 @@ test("manual policy backfills provider_id on auth_required nack missing provider
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "manual" },
@@ -1341,7 +1341,7 @@ test("manual policy backfills provider_id on auth_required stream nack missing p
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "manual" },
@@ -1369,7 +1369,7 @@ test("manual policy backfills provider_id on agent run auth_required nack missin
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "manual" },
@@ -1394,7 +1394,7 @@ test("manual policy backfills provider_id on agent stream auth_required nack mis
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "manual" },
@@ -1422,7 +1422,7 @@ test("manual policy backfills provider_id for non-canonical model_ref on auth_re
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "manual" },
@@ -1450,7 +1450,7 @@ test("client.agent.stream auto_once retries on auth_required nack and yields eve
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1475,7 +1475,7 @@ test("client.agent.stream auto_once uses fresh session_id on retry", async () =>
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1502,7 +1502,7 @@ test("client.agent.stream auto_once retries at most once when auth_required pers
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ALWAYS: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1527,7 +1527,7 @@ test("per-request manual auth_retry_policy overrides client auto_once", async ()
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1552,7 +1552,7 @@ test("per-request auto_once auth_retry_policy overrides client manual", async ()
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "manual" },
@@ -1575,7 +1575,7 @@ test("client.provider.complete auto_once retries when error lacks provider_id", 
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1598,7 +1598,7 @@ test("client.provider.stream auto_once retries when error lacks provider_id", as
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1633,7 +1633,7 @@ test("client.agent.run auto_once retries when error lacks provider_id", async ()
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1", MAKAI_TEST_AGENT_RESULT_PATH: resultPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1656,7 +1656,7 @@ test("client.agent.stream auto_once retries when error lacks provider_id", async
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1679,7 +1679,7 @@ test("client.provider.complete auto_once retries for non-canonical model_ref whe
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1707,7 +1707,7 @@ test("client.provider.stream auto_once retries for non-canonical model_ref when 
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1747,7 +1747,7 @@ test("client.agent.run auto_once retries for non-canonical model_ref when error 
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1", MAKAI_TEST_AGENT_RESULT_PATH: resultPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1775,7 +1775,7 @@ test("client.agent.stream auto_once retries for non-canonical model_ref when err
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AUTH_REQUIRED_NO_PROVIDER_ID: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -1836,10 +1836,10 @@ test("acceptance: OAuth, model discovery, and provider execution share provider-
     args: [fixtureScript],
     env: {
       ...process.env,
-      MAKAI_TEST_REQUEST_LOG: logPath,
-      MAKAI_TEST_AUTH_STATE_PATH: authStatePath,
-      MAKAI_TEST_AUTH_REQUIRES_PROMPT: "1",
-      MAKAI_TEST_MODELS_RESPONSE_PATH: modelsPath,
+      OAP_SDK_TEST_REQUEST_LOG: logPath,
+      OAP_SDK_TEST_AUTH_STATE_PATH: authStatePath,
+      OAP_SDK_TEST_AUTH_REQUIRES_PROMPT: "1",
+      OAP_SDK_TEST_MODELS_RESPONSE_PATH: modelsPath,
     },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
@@ -1887,7 +1887,7 @@ test("acceptance: provider and agent model lists have identical output shape", a
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_MODELS_RESPONSE_PATH: modelsPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_MODELS_RESPONSE_PATH: modelsPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
   });
@@ -1918,7 +1918,7 @@ test("acceptance: provider and agent execution accept the same model_ref", async
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AGENT_RESULT_PATH: resultPath },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
   });
@@ -2164,7 +2164,7 @@ test("client.provider.complete surfaces error_message from error results", async
   const resultPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "makai-err-result-")), "result.json");
   fs.writeFileSync(resultPath, JSON.stringify(errorResult));
 
-  const harness = await setupHarness({ MAKAI_TEST_PROVIDER_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_PROVIDER_RESULT_PATH: resultPath });
   try {
     const provider = createMakaiProviderApi(harness.client);
     const result = await provider.complete(request());
@@ -2191,7 +2191,7 @@ test("client.agent.run surfaces error_message from error agent results", async (
   const resultPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "makai-agent-err-result-")), "result.json");
   fs.writeFileSync(resultPath, JSON.stringify(errorResult));
 
-  const harness = await setupHarness({ MAKAI_TEST_AGENT_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const result = await agent.run(request());
@@ -2203,7 +2203,7 @@ test("client.agent.run surfaces error_message from error agent results", async (
 });
 
 test("client.agent.run tears down the session so the same session_id can be reused", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const first = await agent.run(request());
@@ -2228,7 +2228,7 @@ test("client.agent.run sends agent_stop when the run fails and the id stays reus
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-agent-stop-error-"));
   const errorPath = path.join(tmpDir, "agent-error.json");
   fs.writeFileSync(errorPath, JSON.stringify({ code: "provider_error", message: "fixture agent failure" }));
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_AGENT_ERROR_PATH: errorPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_AGENT_ERROR_PATH: errorPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -2258,7 +2258,7 @@ test("client.agent.run sends agent_stop when the run fails and the id stays reus
 });
 
 test("client.agent.run probes both counter states when an uncorrelated runtime error may be an admission failure (#210 gap 7)", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_ADMISSION_RUNTIME_ERROR: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_ADMISSION_RUNTIME_ERROR: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -2277,7 +2277,7 @@ test("client.agent.run probes both counter states when an uncorrelated runtime e
 });
 
 test("client.agent.stream tears down the session when the consumer closes the iterator early", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const events: AgentStreamEvent[] = [];
@@ -2304,7 +2304,7 @@ test("client.agent.stream tears down the session when the consumer closes the it
 });
 
 test("client.agent.run does not stop a session owned by another run after agent_busy", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 500 });
     const first = agent.run(request());
@@ -2329,7 +2329,7 @@ test("client.agent.run does not stop a session owned by another run after agent_
 });
 
 test("concurrent client.agent.run on one session id: duplicate is rejected, established run completes", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 5000 });
     const establishedRun = agent.run(request());
@@ -2352,7 +2352,7 @@ test("concurrent client.agent.run on one session id: duplicate is rejected, esta
 });
 
 test("concurrent client.agent.run duplicate receives the agent_error-shaped agent_busy rejection", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_AGENT_BUSY_AS_ERROR: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_AGENT_BUSY_AS_ERROR: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 5000 });
     const establishedRun = agent.run(request());
@@ -2375,7 +2375,7 @@ test("concurrent client.agent.run duplicate receives the agent_error-shaped agen
 });
 
 test("concurrent client.agent.stream on one session id: duplicate is rejected, established stream completes", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 5000 });
     const establishedStream = collect(agent.stream(request()));
@@ -2416,7 +2416,7 @@ test("client.agent.run auth retry stops the abandoned session", async () => {
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_AGENT_RESULT_PATH: resultPath, MAKAI_TEST_TRACK_AGENT_SESSIONS: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath, OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 5000,
     auth: { auth_retry_policy: "auto_once" },
@@ -2459,7 +2459,7 @@ test("client.agent.stream tears down the session and drains the trailing termina
       stop_reason: "end_turn",
     }],
   }));
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_AGENT_RESULT_PATH: resultPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_AGENT_RESULT_PATH: resultPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     const events = await collect(agent.stream(request()));
@@ -2484,7 +2484,7 @@ test("client.agent.stream tears down the session and drains the trailing termina
 });
 
 test("client.agent.run does not stop a caller-supplied session when the start outcome is unknown (§6.1, #205)", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_SUPPRESS_AGENT_START_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_SUPPRESS_AGENT_START_RESPONSE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 300 });
     await assert.rejects(
@@ -2511,7 +2511,7 @@ test("client.agent.run does not stop a caller-supplied session when the start ou
 });
 
 test("client.agent.run still stops a client-generated session when the start outcome is unknown (#205)", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_SUPPRESS_AGENT_START_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_SUPPRESS_AGENT_START_RESPONSE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 300 });
     await assert.rejects(
@@ -2533,7 +2533,7 @@ test("client.agent.run still stops a client-generated session when the start out
 });
 
 test("client.agent.stream does not stop a caller-supplied session when the start outcome is unknown (#205)", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_SUPPRESS_AGENT_START_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_SUPPRESS_AGENT_START_RESPONSE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 300 });
     await assert.rejects(
@@ -2555,7 +2555,7 @@ test("client.agent.run auth-retry attempt with a lost start reply still stops it
   const handle = await createMakaiClient({
     command: process.execPath,
     args: [fixtureScript],
-    env: { ...process.env, MAKAI_TEST_REQUEST_LOG: logPath, MAKAI_TEST_AUTH_REQUIRED_ONCE: "1", MAKAI_TEST_SUPPRESS_AGENT_START_RESPONSE: "1", MAKAI_TEST_TRACK_AGENT_SESSIONS: "1" },
+    env: { ...process.env, OAP_SDK_TEST_REQUEST_LOG: logPath, OAP_SDK_TEST_AUTH_REQUIRED_ONCE: "1", OAP_SDK_TEST_SUPPRESS_AGENT_START_RESPONSE: "1", OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1" },
     handshakeTimeoutMs: 5000,
     responseTimeoutMs: 300,
     auth: { auth_retry_policy: "auto_once" },
@@ -2609,7 +2609,7 @@ test("client.agent.run drains the failure pair's settlement before the error sur
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "makai-agent-failure-pair-"));
   const pairPath = path.join(tmpDir, "failure-pair.json");
   fs.writeFileSync(pairPath, JSON.stringify({ code: "internal_error", message: "fixture loop failure" }));
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_AGENT_FAILURE_PAIR_PATH: pairPath });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_AGENT_FAILURE_PAIR_PATH: pairPath });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -2639,7 +2639,7 @@ test("client.agent.run drains the failure pair's settlement before the error sur
 });
 
 test("client.agent.run rolls the sequence tracker back on a correlated agent_message rejection and retries with the right sequence (#210 gap 7)", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_REJECT_FIRST_AGENT_MESSAGE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_REJECT_FIRST_AGENT_MESSAGE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client);
     await assert.rejects(
@@ -2668,7 +2668,7 @@ test("client.agent.run rolls the sequence tracker back on a correlated agent_mes
 });
 
 test("client.agent.run probes both counter states after an unknown message outcome, so timeout-then-retry on a caller-supplied id works (#210 gap 7)", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 300 });
     await assert.rejects(
@@ -2693,7 +2693,7 @@ test("client.agent.run probes both counter states after an unknown message outco
 });
 
 test("client.agent.stream probes both counter states after an unknown message outcome (#210 gap 7)", async () => {
-  const harness = await setupHarness({ MAKAI_TEST_TRACK_AGENT_SESSIONS: "1", MAKAI_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
+  const harness = await setupHarness({ OAP_SDK_TEST_TRACK_AGENT_SESSIONS: "1", OAP_SDK_TEST_SUPPRESS_AGENT_MESSAGE_RESPONSE: "1" });
   try {
     const agent = createMakaiAgentApi(harness.client, { responseTimeoutMs: 300 });
     await assert.rejects(

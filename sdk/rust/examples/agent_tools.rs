@@ -5,7 +5,7 @@
 //! ```
 
 use futures::StreamExt;
-use makai::{AgentEvent, Client, ExecutionRequest, Tool};
+use oap_sdk::{AgentEvent, Client, ExecutionRequest, Tool};
 use serde::Deserialize;
 
 #[derive(Deserialize)]

@@ -1,7 +1,7 @@
 const std = @import("std");
 const types = @import("oap_provider_types");
 
-pub const MAKAI_API_NAMES = [_][]const u8{
+pub const OAPX_API_NAMES = [_][]const u8{
     "anthropic-messages",
     "openai-completions",
     "openai-responses",
@@ -57,7 +57,7 @@ pub fn hasNamedWire(api: []const u8) bool {
 
 fn unnamedWireApis(buffer: [][]const u8) [][]const u8 {
     var count: usize = 0;
-    for (MAKAI_API_NAMES) |api| {
+    for (OAPX_API_NAMES) |api| {
         if (hasNamedWire(api)) continue;
         buffer[count] = api;
         count += 1;
@@ -67,7 +67,7 @@ fn unnamedWireApis(buffer: [][]const u8) [][]const u8 {
 
 test "every registered api is describable and five earn a named wire" {
     var named: usize = 0;
-    for (MAKAI_API_NAMES) |api| {
+    for (OAPX_API_NAMES) |api| {
         try std.testing.expect(isExpressible(api));
         if (hasNamedWire(api)) named += 1;
     }
@@ -75,7 +75,7 @@ test "every registered api is describable and five earn a named wire" {
 }
 
 test "the three that name no wire are the ones no second implementer speaks" {
-    var buffer: [MAKAI_API_NAMES.len][]const u8 = undefined;
+    var buffer: [OAPX_API_NAMES.len][]const u8 = undefined;
     const unnamed = unnamedWireApis(&buffer);
 
     try std.testing.expectEqual(@as(usize, 3), unnamed.len);
@@ -96,7 +96,7 @@ test "two endpoints share the responses wire and are told apart by provider" {
 
 test "ndjson is reachable now that an unnamed wire can carry it" {
     var ndjson_sources: usize = 0;
-    for (MAKAI_API_NAMES) |api| {
+    for (OAPX_API_NAMES) |api| {
         const mapping = mapApiToWire(api) orelse continue;
         if (mapping.framing == .ndjson) ndjson_sources += 1;
     }

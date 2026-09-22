@@ -7,8 +7,8 @@ from typing import Any, Dict, List
 import pytest
 
 from conftest import FakeServerFactory, read_log
-from makai.errors import TIMEOUT_CODE, MakaiProtocolError
-from makai.models import DEFAULT_CACHE_MAX_AGE_MS, _parse_models_response
+from oap_sdk.errors import TIMEOUT_CODE, MakaiProtocolError
+from oap_sdk.models import DEFAULT_CACHE_MAX_AGE_MS, _parse_models_response
 
 MODEL = {
     "model_ref": "anthropic/anthropic-messages@claude-sonnet-4-5",

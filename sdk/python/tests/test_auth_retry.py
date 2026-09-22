@@ -7,9 +7,9 @@ from typing import Any, Dict, List
 import pytest
 
 from conftest import FakeServerFactory, read_log
-from makai.client import AuthOptions
-from makai.errors import MakaiAuthRequiredError
-from makai.types import AuthFlowHandlers, RunOptions, TextDelta
+from oap_sdk.client import AuthOptions
+from oap_sdk.errors import MakaiAuthRequiredError
+from oap_sdk.types import AuthFlowHandlers, RunOptions, TextDelta
 
 MODEL_REF = "anthropic/anthropic-messages@claude-sonnet-4-5"
 

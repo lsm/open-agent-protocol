@@ -398,15 +398,15 @@ jobs:
       - name: Publish main package
         run: |
           set -euo pipefail
-          if OUTPUT=$(cd dist/npm/makai && npm publish --access public 2>&1); then
+          if OUTPUT=$(cd dist/npm/oap-sdk && npm publish --access public 2>&1); then
             echo "$OUTPUT"
-            echo "makai published successfully"
+            echo "oap-sdk published successfully"
           else
             echo "$OUTPUT"
             if echo "$OUTPUT" | grep -qiE "previously published|cannot publish over|EPUBLISHCONFLICT"; then
-              echo "::warning::makai already published, skipping"
+              echo "::warning::oap-sdk already published, skipping"
             else
-              echo "::error::Failed to publish makai"
+              echo "::error::Failed to publish oap-sdk"
               exit 1
             fi
           fi

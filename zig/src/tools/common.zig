@@ -302,13 +302,13 @@ pub const TestArtifactRoot = struct {
 
 pub fn storeArtifact(allocator: std.mem.Allocator, key: []const u8, data: []const u8) ![]u8 {
     const root = artifactRoot();
-    root.createDirPath(defaultIo(), ".makai/tool-artifacts") catch |err| switch (err) {
+    root.createDirPath(defaultIo(), ".oapx/tool-artifacts") catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
     const safe = try sanitizeKey(allocator, key);
     defer allocator.free(safe);
-    const path = try std.fmt.allocPrint(allocator, ".makai/tool-artifacts/{s}.txt", .{safe});
+    const path = try std.fmt.allocPrint(allocator, ".oapx/tool-artifacts/{s}.txt", .{safe});
     errdefer allocator.free(path);
     try root.writeFile(defaultIo(), .{ .sub_path = path, .data = data });
     return path;
@@ -316,13 +316,13 @@ pub fn storeArtifact(allocator: std.mem.Allocator, key: []const u8, data: []cons
 
 pub fn cleanupArtifacts() !void {
     const root = artifactRoot();
-    if (root.access(defaultIo(), ".makai/tool-artifacts", .{})) {
-        try root.deleteTree(defaultIo(), ".makai/tool-artifacts");
+    if (root.access(defaultIo(), ".oapx/tool-artifacts", .{})) {
+        try root.deleteTree(defaultIo(), ".oapx/tool-artifacts");
     } else |_| {}
 }
 
 pub fn retrieveArtifact(allocator: std.mem.Allocator, reference: []const u8, max_bytes: usize) ![]u8 {
-    if (!std.mem.startsWith(u8, reference, ".makai/tool-artifacts/")) return error.InvalidArtifactReference;
+    if (!std.mem.startsWith(u8, reference, ".oapx/tool-artifacts/")) return error.InvalidArtifactReference;
     if (hasParentTraversal(reference) or std.Io.Dir.path.isAbsolute(reference)) return error.InvalidArtifactReference;
     const root = artifactRoot();
     const st = try root.statFile(defaultIo(), reference, .{ .follow_symlinks = false });
@@ -456,9 +456,9 @@ fn summarizeArtifactBackedOutput(allocator: std.mem.Allocator, text: []const u8,
 }
 
 test "artifact-backed summary points the model at capped retrieval modes" {
-    const summary = try summarizeArtifactBackedOutput(std.testing.allocator, "line 1\nline 2\n", "", ".makai/tool-artifacts/test.txt");
+    const summary = try summarizeArtifactBackedOutput(std.testing.allocator, "line 1\nline 2\n", "", ".oapx/tool-artifacts/test.txt");
     defer std.testing.allocator.free(summary);
-    try std.testing.expect(std.mem.indexOf(u8, summary, "artifact_reference: .makai/tool-artifacts/test.txt") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "artifact_reference: .oapx/tool-artifacts/test.txt") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "mode \"preview\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "full_for_context") != null);
     try std.testing.expect(std.mem.indexOf(u8, summary, "retrieve_full_output") == null);
@@ -606,13 +606,13 @@ test "artifact retrieval rejects symlink targets" {
     var artifact_root = TestArtifactRoot.init();
     defer artifact_root.deinit();
     const root = artifactRoot();
-    root.createDirPath(defaultIo(), ".makai/tool-artifacts") catch |err| switch (err) {
+    root.createDirPath(defaultIo(), ".oapx/tool-artifacts") catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
     defer cleanupArtifacts() catch {};
-    try root.writeFile(defaultIo(), .{ .sub_path = ".makai/artifact-outside.txt", .data = "secret" });
-    defer root.deleteFile(defaultIo(), ".makai/artifact-outside.txt") catch {};
-    try root.symLink(defaultIo(), "../artifact-outside.txt", ".makai/tool-artifacts/link.txt", .{ .is_directory = false });
-    try std.testing.expectError(error.InvalidArtifactReference, retrieveArtifact(std.testing.allocator, ".makai/tool-artifacts/link.txt", 1024));
+    try root.writeFile(defaultIo(), .{ .sub_path = ".oapx/artifact-outside.txt", .data = "secret" });
+    defer root.deleteFile(defaultIo(), ".oapx/artifact-outside.txt") catch {};
+    try root.symLink(defaultIo(), "../artifact-outside.txt", ".oapx/tool-artifacts/link.txt", .{ .is_directory = false });
+    try std.testing.expectError(error.InvalidArtifactReference, retrieveArtifact(std.testing.allocator, ".oapx/tool-artifacts/link.txt", 1024));
 }

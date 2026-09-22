@@ -13,7 +13,7 @@ pub fn defaultBaseUrlForRefWithRegion(
     api: []const u8,
     stored_kimi_region: ?[]const u8,
 ) ![]const u8 {
-    const global = try envOwnedOrNull(allocator, "MAKAI_BASE_URL");
+    const global = try envOwnedOrNull(allocator, "OAPX_BASE_URL");
     defer if (global) |g| allocator.free(g);
     const anthropic = try envOwnedOrNull(allocator, "ANTHROPIC_BASE_URL");
     defer if (anthropic) |v| allocator.free(v);
@@ -258,7 +258,7 @@ pub fn oauthOriginAllowed(
     if (trimmed.len == 0) return true;
     if (storedCredentialIsApiKeyShaped(refresh) and oauthOriginPolicyFor(provider_id) == null) return true;
 
-    const global = envOwnedOrNull(allocator, "MAKAI_BASE_URL") catch null;
+    const global = envOwnedOrNull(allocator, "OAPX_BASE_URL") catch null;
     defer if (global) |value| allocator.free(value);
 
     const provider_override: ?[]const u8 = blk: {
@@ -290,12 +290,12 @@ pub const ProxyCompatFlags = struct {
 };
 
 pub fn proxyCompatFlagsFromEnv(allocator: std.mem.Allocator) !ProxyCompatFlags {
-    const global_base = try envOwnedOrNull(allocator, "MAKAI_BASE_URL");
+    const global_base = try envOwnedOrNull(allocator, "OAPX_BASE_URL");
     defer if (global_base) |value| allocator.free(value);
 
     return .{
         .global_base_set = global_base != null,
-        .global_proxy = try envFlag(allocator, "MAKAI_BASE_URL_IS_PROXY"),
+        .global_proxy = try envFlag(allocator, "OAPX_BASE_URL_IS_PROXY"),
         .openai_proxy = try envFlag(allocator, "OPENAI_BASE_URL_IS_PROXY"),
         .deepseek_proxy = try envFlag(allocator, "DEEPSEEK_BASE_URL_IS_PROXY"),
         .anthropic_proxy = try envFlag(allocator, "ANTHROPIC_BASE_URL_IS_PROXY"),

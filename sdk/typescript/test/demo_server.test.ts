@@ -7,7 +7,7 @@ import test from "node:test";
 import { startDemoServer } from "../demo/server";
 import { createMakaiClient, MakaiAuthError } from "../src";
 
-const binaryPath = process.env.MAKAI_BINARY_PATH;
+const binaryPath = process.env.OAP_SDK_BINARY_PATH;
 const sourceFixturesDir = path.resolve(__dirname, "../../sdk/typescript/test/fixtures");
 const executionFixture = path.join(sourceFixturesDir, "execution-server.js");
 
@@ -16,9 +16,9 @@ function fixtureServerOptions(tempHome: string, requestLog?: string) {
     command: process.execPath,
     args: [executionFixture],
     env: {
-      MAKAI_TEST_AUTH_REQUIRES_PROMPT: "1",
-      MAKAI_TEST_AUTH_STATE_PATH: path.join(tempHome, "auth-state.json"),
-      ...(requestLog ? { MAKAI_TEST_REQUEST_LOG: requestLog } : {}),
+      OAP_SDK_TEST_AUTH_REQUIRES_PROMPT: "1",
+      OAP_SDK_TEST_AUTH_STATE_PATH: path.join(tempHome, "auth-state.json"),
+      ...(requestLog ? { OAP_SDK_TEST_REQUEST_LOG: requestLog } : {}),
     },
     homeDir: tempHome,
   };
@@ -115,7 +115,7 @@ test("demo: fixture chat works without configured Makai runtime", async () => {
     port: 0,
     homeDir: tempHome,
     binaryPath: "",
-    env: { MAKAI_BINARY_PATH: undefined },
+    env: { OAP_SDK_BINARY_PATH: undefined },
   });
   try {
     const response = await fetch(`${running.url}/api/chat`, {
@@ -142,7 +142,7 @@ test("demo: auth-required chat response is client error", async () => {
     port: 0,
     command: process.execPath,
     args: [executionFixture],
-    env: { MAKAI_TEST_AUTH_REQUIRED_ALWAYS: "1" },
+    env: { OAP_SDK_TEST_AUTH_REQUIRED_ALWAYS: "1" },
     homeDir: tempHome,
   });
   try {
@@ -169,7 +169,7 @@ test("demo: auth fixture flow reaches cancelled terminal state", async () => {
   const client = await createMakaiClient({
     command: process.execPath,
     args: [executionFixture],
-    env: { ...process.env, HOME: tempHome, MAKAI_TEST_AUTH_REQUIRES_PROMPT: "1" },
+    env: { ...process.env, HOME: tempHome, OAP_SDK_TEST_AUTH_REQUIRES_PROMPT: "1" },
     frameTimeoutMs: 5000,
   });
   try {
@@ -190,7 +190,7 @@ test("demo: oauth fixture flow persists auth credentials", async () => {
     port: 0,
     homeDir: tempHome,
     binaryPath,
-    env: { MAKAI_TEST_REQUEST_LOG: logPath },
+    env: { OAP_SDK_TEST_REQUEST_LOG: logPath },
   } : {
     port: 0,
     ...fixtureServerOptions(tempHome, logPath),
@@ -218,7 +218,7 @@ test("demo: oauth fixture flow persists auth credentials", async () => {
     await waitForAuthStatus(running.url, created.sessionId, "success");
 
     if (binaryPath) {
-      const authRaw = await fs.readFile(path.join(tempHome, ".makai", "auth.json"), "utf8");
+      const authRaw = await fs.readFile(path.join(tempHome, ".oapx", "auth.json"), "utf8");
       const auth = JSON.parse(authRaw) as Record<string, { access?: string; refresh?: string }>;
       assert.equal(typeof auth["test-fixture"]?.access, "string");
       assert.equal(typeof auth["test-fixture"]?.refresh, "string");
