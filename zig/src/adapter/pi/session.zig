@@ -1182,6 +1182,43 @@ fn expectExtensionRefusal(request: []const u8, code: []const u8) !void {
     try std.testing.expectEqualStrings(code, raised);
 }
 
+test "a message payload that is not an object is refused the way an undecodable one is" {
+    const message_end = [_][]const u8{
+        "{\"type\":\"message_end\",\"message\":null}",
+        "{\"type\":\"message_end\",\"message\":\"not an object\"}",
+        "{\"type\":\"message_end\",\"message\":[]}",
+        "{\"type\":\"message_end\",\"message\":7}",
+    };
+    for (message_end) |line| {
+        try expectRefusal(&.{line}, "pi_invalid_message_end");
+    }
+
+    const message_update = [_][]const u8{
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":null}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":\"x\"}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":[]}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":7}",
+    };
+    for (message_update) |line| {
+        try expectRefusal(&.{line}, "pi_invalid_message_update");
+    }
+}
+
+test "the members the oracle carries untyped still take anything" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const carried = [_][]const u8{
+        "{\"type\":\"message_update\",\"usage\":\"x\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}}",
+        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"args\":\"x\"}",
+    };
+    for (carried) |line| {
+        var reducer = try started(a);
+        try apply(&reducer, try parse(a, line));
+        try std.testing.expect(lastFailure(&reducer) == null);
+    }
+}
+
 test "a select extension offering no options is refused" {
     try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[]}", "pi_invalid_extension");
 }
