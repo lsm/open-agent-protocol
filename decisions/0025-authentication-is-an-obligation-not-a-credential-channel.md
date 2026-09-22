@@ -3,8 +3,9 @@
 Status: proposed
 Date: 2026-09-22
 Protocol: `open-agent-protocol` version `0.1`
-Profile: `open-agent-protocol.agent-control-core`, with one member added to
-`open-agent-protocol.model-provider-core`
+Profile: `open-agent-protocol.agent-control-core`, relocating one enum
+`open-agent-protocol.model-provider-core` references; no member is added to
+either
 Unit: `auth` (claim term `+auth`)
 Extends: [Decision 0017](0017-provider-provisioning.md), applying its credential
 rule to a channel it did not anticipate
