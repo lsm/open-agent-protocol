@@ -20,27 +20,28 @@ const streamCapacity = 64
 var errTerminalWon = errors.New("pi adapter: terminal already selected")
 
 type Session struct {
-	mu           sync.Mutex
-	reduceMu     sync.Mutex
-	commandMu    sync.Mutex
-	client       Client
-	inbound      <-chan rpc.Inbound
-	clock        base.Clock
-	ids          base.IDGenerator
-	capacity     int
-	nativeID     string
-	participant  protocol.ParticipantID
-	state        protocol.SessionState
-	nativeState  native.SessionState
-	closed       bool
-	unusable     bool
-	active       *runState
-	runs         map[protocol.RunID]*runState
-	tools        map[string]*toolState
-	interactions map[protocol.InteractionID]*inputState
-	journal      []protocol.Envelope
-	stop         chan struct{}
-	stopOnce     sync.Once
+	mu                 sync.Mutex
+	reduceMu           sync.Mutex
+	commandMu          sync.Mutex
+	client             Client
+	inbound            <-chan rpc.Inbound
+	clock              base.Clock
+	ids                base.IDGenerator
+	capacity           int
+	nativeID           string
+	participant        protocol.ParticipantID
+	state              protocol.SessionState
+	nativeState        native.SessionState
+	closed             bool
+	unusable           bool
+	active             *runState
+	runs               map[protocol.RunID]*runState
+	tools              map[string]*toolState
+	interactions       map[protocol.InteractionID]*inputState
+	interactionsOpened uint64
+	journal            []protocol.Envelope
+	stop               chan struct{}
+	stopOnce           sync.Once
 }
 type runState struct {
 	id           protocol.RunID
@@ -90,6 +91,7 @@ type inputState struct {
 	respondedBy protocol.ParticipantID
 	questions   []protocol.InputQuestion
 	phase       interactionPhase
+	opened      uint64
 }
 
 type eventHeader struct {
@@ -1048,7 +1050,8 @@ func (s *Session) applyExtension(r native.ExtensionUIRequest) {
 		question.Prompt = r.Message
 		question.Options = []protocol.InputOption{{ID: "yes", Label: "Yes"}, {ID: "no", Label: "No"}}
 	}
-	binding := &inputState{id: id, nativeID: r.ID, run: run, method: r.Method, requestedBy: endpointID, respondedBy: s.participant, questions: []protocol.InputQuestion{question}}
+	s.interactionsOpened++
+	binding := &inputState{id: id, nativeID: r.ID, run: run, method: r.Method, requestedBy: endpointID, respondedBy: s.participant, questions: []protocol.InputQuestion{question}, opened: s.interactionsOpened}
 	s.interactions[id] = binding
 	run.status = protocol.RunWaitingForInput
 	s.state.Status = protocol.SessionWaitingForInput
@@ -1098,16 +1101,36 @@ func (s *Session) Resolve(ctx context.Context, res base.InteractionResolution) e
 	}
 	binding.phase = interactionResolved
 	_ = s.emit(binding.run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: binding.requestedBy, RespondedBy: binding.respondedBy, SessionID: s.state.SessionID, RunID: binding.run.id, Status: protocol.InputSubmitted, Answers: request.Answers}, false)
+	status, pending := protocol.RunRunning, protocol.InteractionID("")
+	if next := s.oldestPendingInput(binding.run); next != nil {
+		status, pending = protocol.RunWaitingForInput, next.id
+	}
 	s.mu.Lock()
 	if !binding.run.terminal {
-		binding.run.status = protocol.RunRunning
+		binding.run.status = status
 		s.state.Status = protocol.SessionRunning
+		if status == protocol.RunWaitingForInput {
+			s.state.Status = protocol.SessionWaitingForInput
+		}
 	}
 	s.mu.Unlock()
-	_ = s.emit(binding.run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: binding.run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+	_ = s.emit(binding.run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: binding.run.id, Status: status, PendingUserInputID: pending, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	s.reduceMu.Unlock()
 	return nil
 }
+func (s *Session) oldestPendingInput(run *runState) *inputState {
+	var oldest *inputState
+	for _, binding := range s.interactions {
+		if binding.run != run || binding.phase == interactionResolved {
+			continue
+		}
+		if oldest == nil || binding.opened < oldest.opened {
+			oldest = binding
+		}
+	}
+	return oldest
+}
+
 func extensionResponse(b *inputState, r protocol.UserInputResolveRequest) (native.ExtensionUIResponse, error) {
 	if len(r.Answers) != 1 || len(b.questions) != 1 {
 		return native.ExtensionUIResponse{}, base.ErrInvalidResolution
