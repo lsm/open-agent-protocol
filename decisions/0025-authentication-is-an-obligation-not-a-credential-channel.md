@@ -101,6 +101,17 @@ interaction is that they completed the step, or that they could not. It is
 never a token, and an endpoint that would need one in the answer has not
 implemented this unit.
 
+A violation is `credential_in_trace` — the code the provider validator already
+emits for the same claim, that a credential appeared in a trace. It is declared
+in `go/validation/provider.go` today because only that validator had a rule
+needing it, and `diagnostic.go`'s fifty-five codes carry no credential case at
+all. `+auth` gives the agent-control validator one, so the code is hoisted to
+where both can cite it rather than copied into a second name. Two codes naming
+one defect is the shape of
+[#177](https://github.com/lsm/open-agent-protocol/issues/177), which is what the
+provider profile carrying its own `ProtocolError` already cost — and the same
+argument that moves `authStatus` in this record.
+
 ### RFC 8628 has two codes, and only one of them may be displayed
 
 [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628) §3.2 returns both a
@@ -198,6 +209,14 @@ Verified against this tree at `68168956`:
   `go/validation/provider_test.go:147`, which refuses a trace carrying
   `"value":"sk-abc"`. Caught in review; both statements are now scoped to the
   agent-control-core envelope set.
+- Both mistakes in this record ran the same way, and the direction is the useful
+  part. "The code is what a human types, so it is not a credential" and "no
+  envelope has a member that would hold one" both *sound* structural, and a
+  structural claim reads as self-evident, so it is the kind that does not get
+  checked. The second was one `rg` away from either confirmed or refuted. The
+  rule worth carrying out of this: a security claim of the form "there is no X"
+  names where it was checked and what it is scoped to, or it is an assertion
+  nobody ran.
 
 ## Consequences
 
