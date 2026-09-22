@@ -988,12 +988,24 @@ func TestRespondFailureDoesNotProjectSubmitted(t *testing.T) {
 		t.Fatal("expired respond projected as submitted")
 	}
 	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
-	events := drain(t, (<-ch).stream)
+	admitted := <-ch
+	events := drain(t, admitted.stream)
 	for _, envelope := range events {
-		if envelope.Type == protocol.TypeUserInputResolved {
-			t.Fatal("failed resolution emitted user.input.resolved")
+		if envelope.Type != protocol.TypeUserInputResolved {
+			continue
+		}
+		var resolved protocol.UserInputResolvedPayload
+		if err := envelope.DecodePayload(&resolved); err != nil {
+			t.Fatal(err)
+		}
+		if resolved.Status == protocol.InputSubmitted {
+			t.Fatal("failed resolution projected as submitted")
+		}
+		if resolved.Status != protocol.InputCancelled {
+			t.Fatalf("resolution status = %q, want %q", resolved.Status, protocol.InputCancelled)
 		}
 	}
+	validateWithCapabilities(t, admitted.response, events)
 }
 
 func (f *fakeClient) transportClose() {
@@ -1077,4 +1089,75 @@ func TestTransportDeathAfterAcceptanceProjectsTheOpenedTurn(t *testing.T) {
 	}
 	t.Run("reducer settles the failure before the reply lands", func(t *testing.T) { run(t, true) })
 	t.Run("reply lands before the transport closes", func(t *testing.T) { run(t, false) })
+}
+
+func TestRunSettlesItsOpenChildrenBeforeItsTerminal(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventToolStart, 2, `{"tool_id":"t1","name":"read","context":"read"}`)
+	f.event(native.EventClarifyRequest, 3, `{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}`)
+	f.event(native.EventMessageComplete, 4, settleFrame("complete", ""))
+	admitted := <-ch
+	events := drain(t, admitted.stream)
+
+	terminal := -1
+	resolved := -1
+	failed := -1
+	for i, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeRunCompleted:
+			terminal = i
+		case protocol.TypeUserInputResolved:
+			resolved = i
+		case protocol.TypeActionCallFailed:
+			failed = i
+		}
+	}
+	if resolved < 0 {
+		t.Fatal("the open gate was never resolved")
+	}
+	if failed < 0 {
+		t.Fatal("the unfinished tool was never settled")
+	}
+	if terminal < 0 {
+		t.Fatal("the run never terminated")
+	}
+	if resolved > terminal || failed > terminal {
+		t.Fatalf("children settled after the terminal: resolved=%d failed=%d terminal=%d", resolved, failed, terminal)
+	}
+	validateWithCapabilities(t, admitted.response, events)
+}
+
+func TestFailedRunSettlesItsOpenChildrenToo(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventToolStart, 2, `{"tool_id":"t1","name":"read","context":"read"}`)
+	f.event(native.EventClarifyRequest, 3, `{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}`)
+	f.event(native.EventMessageComplete, 4, settleFrame("", ""))
+	admitted := <-ch
+	events := drain(t, admitted.stream)
+
+	terminal := -1
+	resolved := -1
+	failed := -1
+	for i, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeRunFailed:
+			terminal = i
+		case protocol.TypeUserInputResolved:
+			resolved = i
+		case protocol.TypeActionCallFailed:
+			failed = i
+		}
+	}
+	if terminal < 0 {
+		t.Fatal("the run never failed")
+	}
+	if resolved < 0 || resolved > terminal {
+		t.Fatalf("the gate was not resolved before the terminal: resolved=%d terminal=%d", resolved, terminal)
+	}
+	if failed < 0 || failed > terminal {
+		t.Fatalf("the tool was not settled before the terminal: failed=%d terminal=%d", failed, terminal)
+	}
+	validateWithCapabilities(t, admitted.response, events)
 }
