@@ -209,6 +209,12 @@ pub const Reducer = struct {
         return id;
     }
 
+    pub fn refuseSubmission(self: *Reducer) void {
+        const run = self.run orelse return;
+        if (run.started) return;
+        self.run = null;
+    }
+
     pub fn observe(self: *Reducer, message: rpc.Message, parsed: std.json.Value) !void {
         if (message.kind == .request) return self.disown("reverse request");
         if (message.kind != .notification) return;
