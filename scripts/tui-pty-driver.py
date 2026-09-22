@@ -16,7 +16,7 @@
 # reply. A literal `|` or `\` inside a step payload is escaped as `\|` / `\\`.
 #
 # Usage:
-#   zig build install -Doptimize=ReleaseFast --prefix /tmp/makai-pty
+#   zig build install -Doptimize=ReleaseFast --prefix /tmp/oapx-pty
 #   python3 scripts/tui-pty-driver.py --binary /tmp/oapx-pty/bin/oapx \
 #       --output-dir tui-pty-out
 #   python3 scripts/tui-pty-driver.py --binary ... --scenario all

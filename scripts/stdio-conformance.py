@@ -13,7 +13,7 @@
 # are deliberately absent.
 #
 # Usage:
-#   zig build install --prefix /tmp/makai-stdio-test
+#   zig build install --prefix /tmp/oapx-stdio-test
 #   python3 scripts/stdio-conformance.py --binary /tmp/oapx-stdio-test/bin/oapx
 #   python3 scripts/stdio-conformance.py --group envelope --verbose
 #   python3 scripts/stdio-conformance.py --json > report.json
@@ -50,9 +50,6 @@ ULID_LEAD = "01234567"
 
 DEFAULT_BINARY_CANDIDATES = (
     os.environ.get("OAP_SDK_BINARY_PATH", ""),
-    "zig-out/bin/oapx",
-    "zig/zig-out/bin/oapx",
-    "/tmp/makai-stdio-test/bin/oapx",
     "zig-out/bin/oapx",
     "zig/zig-out/bin/oapx",
     "/tmp/oapx-stdio-test/bin/oapx",
@@ -1311,7 +1308,7 @@ def main():
     if not binary:
         sys.stderr.write(
             "no oapx binary found; pass --binary or set OAP_SDK_BINARY_PATH\n"
-            "build one with: zig build install --prefix /tmp/makai-stdio-test\n")
+            "build one with: zig build install --prefix /tmp/oapx-stdio-test\n")
         return 2
 
     selected = args.group or sorted(GROUPS)
