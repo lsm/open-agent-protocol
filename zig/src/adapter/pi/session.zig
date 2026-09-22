@@ -1182,6 +1182,52 @@ fn expectExtensionRefusal(request: []const u8, code: []const u8) !void {
     try std.testing.expectEqualStrings(code, raised);
 }
 
+test "a message payload that is not an object is refused the way an undecodable one is" {
+    const message_end = [_][]const u8{
+        "{\"type\":\"message_end\",\"message\":null}",
+        "{\"type\":\"message_end\",\"message\":\"not an object\"}",
+        "{\"type\":\"message_end\",\"message\":[]}",
+        "{\"type\":\"message_end\",\"message\":7}",
+    };
+    for (message_end) |line| {
+        try expectRefusal(&.{line}, "pi_invalid_message_end");
+    }
+
+    const message_update = [_][]const u8{
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":null}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":\"x\"}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":[]}",
+        "{\"type\":\"message_update\",\"usage\":{},\"assistantMessageEvent\":7}",
+    };
+    for (message_update) |line| {
+        try expectRefusal(&.{line}, "pi_invalid_message_update");
+    }
+}
+
+test "the usage, args, partialResult and result members take a value of any type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const anything = [_][]const u8{ "\"x\"", "7", "true", "[]", "{}", "null" };
+    for (anything) |value| {
+        const usage = try std.fmt.allocPrint(a, "{{\"type\":\"message_update\",\"usage\":{s},\"assistantMessageEvent\":{{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}}}}", .{value});
+        const start = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_start\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"args\":{s}}}", .{value});
+        const update = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_update\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"partialResult\":{s}}}", .{value});
+        const end = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_end\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"result\":{s},\"isError\":false}}", .{value});
+        const traces = [_][]const []const u8{
+            &.{usage},
+            &.{start},
+            &.{ start, update },
+            &.{ start, end },
+        };
+        for (traces) |lines| {
+            var reducer = try started(a);
+            for (lines) |line| try apply(&reducer, try parse(a, line));
+            try std.testing.expect(lastFailure(&reducer) == null);
+        }
+    }
+}
+
 test "a select extension offering no options is refused" {
     try expectExtensionRefusal("{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"select\",\"title\":\"Pick\",\"options\":[]}", "pi_invalid_extension");
 }
