@@ -227,6 +227,34 @@ test("binary resolver logs auto resolution candidate checks", async () => {
   }
 });
 
+test("binary resolver passes over a PATH entry that is not an executable file", async () => {
+  const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
+  const decoyDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-decoy-"));
+  const realDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-real-"));
+  const binaryName = process.platform === "win32" ? "oapx.exe" : "oapx";
+  await fs.promises.mkdir(path.join(decoyDir, binaryName));
+  const real = path.join(realDir, binaryName);
+  await fs.promises.writeFile(real, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const resolveModule = (specifier: string): string => {
+    throw new Error(`Cannot find module '${specifier}'`);
+  };
+  const prevBinaryPath = process.env.MAKAI_BINARY_PATH;
+  const prevSearchPath = process.env.PATH;
+  delete process.env.MAKAI_BINARY_PATH;
+  process.env.PATH = [decoyDir, realDir].join(path.delimiter);
+  try {
+    assert.equal(await resolveMakaiBinary({ cwd: emptyCwd, resolveModule }), real);
+  } finally {
+    if (prevBinaryPath === undefined) delete process.env.MAKAI_BINARY_PATH;
+    else process.env.MAKAI_BINARY_PATH = prevBinaryPath;
+    if (prevSearchPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevSearchPath;
+    await fs.promises.rm(emptyCwd, { recursive: true, force: true });
+    await fs.promises.rm(decoyDir, { recursive: true, force: true });
+    await fs.promises.rm(realDir, { recursive: true, force: true });
+  }
+});
+
 test("binary resolver finds an install predating the rename on PATH", async () => {
   const emptyCwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-empty-cwd-"));
   const pathDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "makai-path-"));

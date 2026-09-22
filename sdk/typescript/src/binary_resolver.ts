@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getNoopLogger, type MakaiLogger } from "./logger";
@@ -51,6 +51,17 @@ function binaryNamesForPlatform(platform = process.platform): string[] {
 
 async function ensureFileExists(filePath: string): Promise<void> {
   await fs.access(filePath);
+}
+
+async function isExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    if (!stats.isFile()) return false;
+    await fs.access(filePath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
@@ -188,7 +199,7 @@ export async function resolveMakaiBinary(options: BinaryResolverOptions = {}): P
   ]);
   for (const candidate of localCandidates) {
     logger.debug("binary: checking local candidate", { path: candidate });
-    if (await fileExists(candidate)) {
+    if (await isExecutableFile(candidate)) {
       logger.debug("binary: resolved from local candidate", { path: candidate });
       return candidate;
     }
@@ -212,7 +223,7 @@ async function findOnPath(name: string): Promise<string | undefined> {
   for (const dir of raw.split(path.delimiter)) {
     if (dir.length === 0) continue;
     const candidate = path.join(dir, name);
-    if (await fileExists(candidate)) return candidate;
+    if (await isExecutableFile(candidate)) return candidate;
   }
   return undefined;
 }
