@@ -1204,18 +1204,27 @@ test "a message payload that is not an object is refused the way an undecodable 
     }
 }
 
-test "the members the oracle carries untyped still take anything" {
+test "the usage, args, partialResult and result members take a value of any type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const carried = [_][]const u8{
-        "{\"type\":\"message_update\",\"usage\":\"x\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}}",
-        "{\"type\":\"tool_execution_start\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"args\":\"x\"}",
-    };
-    for (carried) |line| {
-        var reducer = try started(a);
-        try apply(&reducer, try parse(a, line));
-        try std.testing.expect(lastFailure(&reducer) == null);
+    const anything = [_][]const u8{ "\"x\"", "7", "true", "[]", "{}", "null" };
+    for (anything) |value| {
+        const usage = try std.fmt.allocPrint(a, "{{\"type\":\"message_update\",\"usage\":{s},\"assistantMessageEvent\":{{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"hi\"}}}}", .{value});
+        const start = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_start\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"args\":{s}}}", .{value});
+        const update = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_update\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"partialResult\":{s}}}", .{value});
+        const end = try std.fmt.allocPrint(a, "{{\"type\":\"tool_execution_end\",\"toolCallId\":\"t2\",\"toolName\":\"read\",\"result\":{s},\"isError\":false}}", .{value});
+        const traces = [_][]const []const u8{
+            &.{usage},
+            &.{start},
+            &.{ start, update },
+            &.{ start, end },
+        };
+        for (traces) |lines| {
+            var reducer = try started(a);
+            for (lines) |line| try apply(&reducer, try parse(a, line));
+            try std.testing.expect(lastFailure(&reducer) == null);
+        }
     }
 }
 
