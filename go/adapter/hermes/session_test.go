@@ -1161,3 +1161,92 @@ func TestFailedRunSettlesItsOpenChildrenToo(t *testing.T) {
 	}
 	validateWithCapabilities(t, admitted.response, events)
 }
+
+func TestAGateNobodyCanAnswerIsRefused(t *testing.T) {
+	for _, frame := range []struct {
+		name  string
+		event string
+	}{
+		{"no prompt", `{"request_id":"aaaa1111","question":"","choices":["a","b"]}`},
+		{"an empty choice", `{"request_id":"aaaa1111","question":"which?","choices":[""]}`},
+		{"an empty choice in a batch", `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"pick","choices":[""]}]}`},
+	} {
+		t.Run(frame.name, func(t *testing.T) { assertGateRefused(t, frame.event) })
+	}
+}
+
+func assertGateRefused(t *testing.T, frame string) {
+	t.Helper()
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventClarifyRequest, 2, frame)
+	got := <-ch
+	events := drain(t, got.stream)
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeUserInputRequested {
+			t.Fatal("a question with no prompt was offered to a responder")
+		}
+	}
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeRunFailed {
+			continue
+		}
+		var failed protocol.RunFailedPayload
+		if err := envelope.DecodePayload(&failed); err != nil {
+			t.Fatal(err)
+		}
+		if failed.Error.Code != "hermes_invalid_event" || failed.Error.Message != "gate with a question nobody can answer" {
+			t.Fatalf("refusal = %q/%q", failed.Error.Code, failed.Error.Message)
+		}
+		return
+	}
+	t.Fatal("the gate was not refused")
+}
+
+func TestAClarifyWithNoChoicesIsFreeTextRatherThanUnanswerable(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"which?","choices":[]}`)
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	admitted := <-ch
+	events := drain(t, admitted.stream)
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeUserInputRequested {
+			continue
+		}
+		var requested protocol.UserInputRequestedPayload
+		if err := envelope.DecodePayload(&requested); err != nil {
+			t.Fatal(err)
+		}
+		if len(requested.Questions) != 1 || requested.Questions[0].Kind != protocol.InputText {
+			t.Fatalf("questions = %+v, want one text question", requested.Questions)
+		}
+		return
+	}
+	t.Fatal("the gate was never opened")
+}
+
+func TestEveryQuestionAnswerableStatesWhatTheSchemaRequires(t *testing.T) {
+	options := []protocol.InputOption{{ID: "a", Label: "a"}}
+	for _, test := range []struct {
+		name     string
+		question protocol.InputQuestion
+		want     bool
+	}{
+		{"a choice question with options", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice, Options: options}, true},
+		{"a choice question with none", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice}, false},
+		{"a multi choice with none", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputMultiChoice}, false},
+		{"a text question needs none", protocol.InputQuestion{ID: "q", Prompt: "say?", Kind: protocol.InputText}, true},
+		{"no id", protocol.InputQuestion{Prompt: "which?", Kind: protocol.InputText}, false},
+		{"no prompt", protocol.InputQuestion{ID: "q", Kind: protocol.InputText}, false},
+		{"an option with no id", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice, Options: []protocol.InputOption{{Label: "a"}}}, false},
+		{"an option with no label", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice, Options: []protocol.InputOption{{ID: "a"}}}, false},
+		{"one option of several with no id", protocol.InputQuestion{ID: "q", Prompt: "which?", Kind: protocol.InputSingleChoice, Options: []protocol.InputOption{{ID: "a", Label: "a"}, {Label: "b"}}}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := everyQuestionAnswerable([]protocol.InputQuestion{test.question}); got != test.want {
+				t.Fatalf("everyQuestionAnswerable = %v, want %v", got, test.want)
+			}
+		})
+	}
+}

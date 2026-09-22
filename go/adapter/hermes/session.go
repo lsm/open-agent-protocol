@@ -574,6 +574,10 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 		s.failRun(run, "hermes_invalid_event", "gate without request_id")
 		return
 	}
+	if !everyQuestionAnswerable(binding.questions) {
+		s.failRun(run, "hermes_invalid_event", "gate with a question nobody can answer")
+		return
+	}
 	s.interactions[id] = binding
 	requestedEnvelope, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: binding.questions, AllowCancel: true}, false, "")
 	if emitErr != nil {
@@ -581,6 +585,26 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 	}
 	binding.requested = requestedEnvelope.ID
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunWaitingForInput, PendingUserInputID: id, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+}
+
+func everyQuestionAnswerable(questions []protocol.InputQuestion) bool {
+	for _, question := range questions {
+		if question.ID == "" || question.Prompt == "" {
+			return false
+		}
+		if question.Kind == protocol.InputText {
+			continue
+		}
+		if len(question.Options) == 0 {
+			return false
+		}
+		for _, option := range question.Options {
+			if option.ID == "" || option.Label == "" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func decodeRequestID(payload json.RawMessage) string {
