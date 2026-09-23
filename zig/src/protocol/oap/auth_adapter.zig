@@ -620,7 +620,13 @@ test "auth adapter cancels local login on disconnect and ignores other profiles"
         const root = parsed.value.object;
         if (!std.mem.eql(u8, try requiredString(root, "type"), "auth.login.completed")) continue;
         const payload = (root.get("payload") orelse return error.MissingPayload).object;
-        try std.testing.expectEqualStrings("failed", try requiredString(payload, "status"));
+        const status = try requiredString(payload, "status");
+        if (std.mem.eql(u8, status, "failed")) {
+            const failure = (payload.get("error") orelse return error.MissingAuthError).object;
+            try std.testing.expectEqualStrings("auth_input_unavailable", try requiredString(failure, "code"));
+        } else {
+            try std.testing.expectEqualStrings("cancelled", status);
+        }
         terminals += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), terminals);
