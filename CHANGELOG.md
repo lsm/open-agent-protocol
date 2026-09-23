@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `oapx serve provider --http 127.0.0.1:<port>` serves the same `model-provider-core` catalog and inference operations over HTTP/SSE, including concurrent inference streams and separately correlated cancellation. The listener binds only to loopback; cross-Pod exposure requires an operator-managed TLS/mTLS proxy. It advertises provider-managed credentials and does not accept credential grants over HTTP.
 
+- The HTTP provider endpoint returns the provider profile's JSON error envelope with HTTP 200 when an OAP envelope fails decoding, preserving its correlation id, error code, and message instead of replacing it with an empty HTTP 400 response.
+
 - Drafted the `model-provider-core` HTTP/SSE binding and added client-side remote-provider support to `oapx serve agent`. An operator can set `OAPX_PROVIDER_SERVICE_URL` and `OAPX_PROVIDER_SERVICE_SECURITY` (`loopback`, `tls`, or `mesh_proxy`); startup validates the service profile, managed-credential posture, and model catalog before the agent routes inference over HTTP/SSE. Caller-held credential grants are refused. Live `session.provider.attach` is not yet implemented.
 
 - Bounded remote-provider HTTP operations: unary calls and the first streamed envelope have a 30-second deadline, and an active SSE stream has a 120-second idle deadline that SSE traffic, including comment heartbeats, refreshes. A timed-out connection is shut down, repeated or skipped inference sequences are rejected, and a cancel acknowledgment is consumed outside the bounded inference-event queue so cancellation cannot wait on that queue when it is full. SSE events are delivered as bytes arrive, rather than waiting for a 4 KiB read or connection close.

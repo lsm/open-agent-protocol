@@ -8025,6 +8025,14 @@ fn cancelHttpProviderInference(runtime: *HttpProviderRuntime, inference_id: []co
     runtime.dispatch(null) catch {};
 }
 
+fn httpProviderDecodeError(runtime: *HttpProviderRuntime, body: []const u8) ![]const u8 {
+    runtime.mutex.lockUncancelable(httpProviderIo());
+    defer runtime.mutex.unlock(httpProviderIo());
+    try runtime.dispatch(null);
+    try runtime.server.handleLine(body);
+    return runtime.server.popOutbound() orelse error.MissingHttpProviderResponse;
+}
+
 fn handleHttpProviderConnection(runtime: *HttpProviderRuntime, connection: compat.net.Connection) void {
     defer _ = runtime.workers.fetchSub(1, .acq_rel);
     var conn = connection;
@@ -8040,7 +8048,18 @@ fn handleHttpProviderConnectionFallible(runtime: *HttpProviderRuntime, stream: *
     };
     defer allocator.free(body);
     var request = oap_provider_envelope.deserializeEnvelope(body, allocator) catch {
-        try writeHttpProviderStatus(stream, "400 Bad Request");
+        var parsed_json = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+            try writeHttpProviderStatus(stream, "400 Bad Request");
+            return;
+        };
+        defer parsed_json.deinit();
+        if (parsed_json.value != .object) {
+            try writeHttpProviderStatus(stream, "400 Bad Request");
+            return;
+        }
+        const answer = try httpProviderDecodeError(runtime, body);
+        defer allocator.free(answer);
+        try writeHttpProviderJson(stream, answer);
         return;
     };
     defer request.deinit(allocator);
@@ -8191,6 +8210,29 @@ test "HTTP provider routes same-id requests to their current exchange" {
     try std.testing.expectEqual(@as(usize, 0), first.frames.items.len);
     try std.testing.expectEqual(@as(usize, 1), second.frames.items.len);
     try std.testing.expect(second.frames.items[0].terminal);
+}
+
+test "HTTP provider returns OAP errors for decode-failed envelopes" {
+    const allocator = std.testing.allocator;
+    var runtime = try HttpProviderRuntime.init(allocator);
+    defer runtime.deinit();
+    const requests = [_][]const u8{
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"provider.describe.request\",\"id\":\"wrong-profile\",\"payload\":{}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"unknown.request\",\"id\":\"unknown-type\",\"payload\":{}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.create.request\",\"id\":\"missing-field\",\"payload\":{}}",
+    };
+    const ids = [_][]const u8{ "wrong-profile", "unknown-type", "missing-field" };
+    const codes = [_]oap_provider_types.ErrorCode{ .protocol_violation, .invalid_request, .invalid_request };
+    for (requests, ids, codes) |request, id, code| {
+        const answer = try httpProviderDecodeError(&runtime, request);
+        defer allocator.free(answer);
+        var parsed = try oap_provider_envelope.deserializeEnvelope(answer, allocator);
+        defer parsed.deinit(allocator);
+        try std.testing.expectEqualStrings(id, parsed.in_reply_to.?);
+        try std.testing.expect(parsed.payload == .protocol_error);
+        try std.testing.expectEqual(code, parsed.payload.protocol_error.err.code);
+        try std.testing.expect(parsed.payload.protocol_error.err.message.len > 0);
+    }
 }
 
 fn runOapProviderMode(
