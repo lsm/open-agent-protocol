@@ -683,7 +683,12 @@ absent members:
   absent member and a JSON null is a present one.
 - Params that are an array, which the codec admits, are
   `json: cannot unmarshal array into Go value of type
-  native.SessionStatusNotification`; params that are absent are `EOF`. The
+  native.SessionStatusNotification`; params that are absent are `EOF`. No
+  other kind reaches the decode at all: `ParseMessage` refuses a `null`,
+  string, number or boolean `params` first, with `deepseek rpc: invalid
+  JSON-RPC message: params must be an object or array`, so that is the text the
+  reducer reports when it is handed one directly. The corpus driver never hands
+  it one, since every frame it replays passes through `rpc.Decoder` first. The
   corpus harness used to skip a notification with no params; it now hands the
   absence to the reducer. No pinned case carries one, so no expectation moved.
 - Only the first error is reported and it is the first in document order:

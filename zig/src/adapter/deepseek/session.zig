@@ -769,11 +769,13 @@ const Refusal = union(enum) {
     member: []const u8,
     mistyped: struct { go_struct: []const u8, name: []const u8, value: []const u8, go_type: []const u8 },
     whole: struct { go_struct: []const u8, value: []const u8 },
+    envelope,
 };
 
 fn paramsRefusal(shape: ParamShape, maybe_params: ?std.json.Value) ?Refusal {
     const params = maybe_params orelse return .{ .said = "EOF" };
-    if (params != .object) return .{ .whole = .{ .go_struct = shape.go_struct, .value = goKind(params) } };
+    if (params == .array) return .{ .whole = .{ .go_struct = shape.go_struct, .value = goKind(params) } };
+    if (params != .object) return .envelope;
     var names = params.object.iterator();
     while (names.next()) |entry| {
         const member = paramMember(shape, entry.key_ptr.*) orelse return .{ .member = entry.key_ptr.* };
@@ -844,6 +846,7 @@ pub fn observeNotification(reducer: *Reducer, method: []const u8, maybe_params: 
                 const said = try std.fmt.allocPrint(reducer.arena, "json: cannot unmarshal {s} into Go value of type native.{s}", .{ found.value, found.go_struct });
                 try invalidNotification(reducer, said);
             },
+            .envelope => try transportFailed(reducer, "deepseek rpc: invalid JSON-RPC message: params must be an object or array"),
         }
         return;
     }
@@ -2191,4 +2194,25 @@ test "a params member is matched the way encoding/json matches a tag, and the la
     var reducer = try admittedRun(arena.allocator());
     try notify(&reducer, arena.allocator(), "session.status", "{\"SessionId\":\"elsewhere\",\"status\":\"idle\"}");
     try std.testing.expectEqualStrings("deepseek_session_mismatch", lastFailure(&reducer) orelse return error.NoRefusal);
+}
+
+test "params the codec refuses are refused with the codec's text, and only an array reaches the decode" {
+    const refused = [_][]const u8{ "null", "\"x\"", "5", "true" };
+    for (refused) |params| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var reducer = try admittedRun(arena.allocator());
+        try notify(&reducer, arena.allocator(), "session.status", params);
+        try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&reducer) orelse return error.NoRefusal);
+        try std.testing.expectEqualStrings("deepseek rpc: invalid JSON-RPC message: params must be an object or array", failureMessage(&reducer) orelse return error.NoRefusal);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try notify(&reducer, arena.allocator(), "session.status", "[]");
+    try std.testing.expectEqualStrings(
+        "deepseek native: invalid pinned message: json: cannot unmarshal array into Go value of type native.SessionStatusNotification",
+        failureMessage(&reducer) orelse return error.NoRefusal,
+    );
 }
