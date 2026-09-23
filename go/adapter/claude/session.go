@@ -56,6 +56,7 @@ type Session struct {
 	pending      *runState
 	active       *runState
 	runs         map[protocol.RunID]*runState
+	ended        map[protocol.RunID]uint64
 	tools        map[string]*toolState
 	interactions map[protocol.InteractionID]*gateState
 	children     map[string]*childState
@@ -1060,11 +1061,60 @@ func (s *Session) State(ctx context.Context) (protocol.SessionState, error) {
 	return s.state, nil
 }
 
-func (s *Session) Resume(ctx context.Context, _ base.ResumeRequest) (base.Recovery, base.EventStream, error) {
+func (s *Session) Resume(ctx context.Context, request base.ResumeRequest) (base.Recovery, base.EventStream, error) {
 	if err := ctx.Err(); err != nil {
 		return base.Recovery{}, nil, err
 	}
-	return base.Recovery{}, nil, errUnavailable
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return base.Recovery{}, nil, base.ErrSessionClosed
+	}
+	run := s.runs[request.RunID]
+	latest, ended := s.ended[request.RunID]
+	switch {
+	case run != nil:
+		latest = run.next - 1
+	case !ended:
+		return base.Recovery{}, nil, base.ErrRunNotFound
+	}
+	if request.AfterSequence > latest {
+		return base.Recovery{}, nil, base.ErrReplayCursorFuture
+	}
+	var oldest uint64
+	var suffix []protocol.Envelope
+	for _, envelope := range s.journal {
+		if envelope.RunID != request.RunID || envelope.Sequence == nil {
+			continue
+		}
+		if oldest == 0 {
+			oldest = *envelope.Sequence
+		}
+		if *envelope.Sequence > request.AfterSequence {
+			suffix = append(suffix, envelope)
+		}
+	}
+	recovery := base.Recovery{State: s.state, RunID: request.RunID, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
+	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
+	if request.AfterSequence < latest && (oldest == 0 || request.AfterSequence+1 < oldest) {
+		recovery.ReplayGap = &base.ReplayGap{RequestedAfter: request.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
+		recovery.ReplayedFrom, recovery.ReplayedThrough = 0, 0
+		close(stream)
+		return recovery, stream, recovery.ReplayGap
+	}
+	if len(suffix) > 0 {
+		recovery.ReplayedFrom = *suffix[0].Sequence
+		recovery.ReplayedThrough = *suffix[len(suffix)-1].Sequence
+	}
+	for _, envelope := range suffix {
+		stream <- base.Result{Envelope: cloneEnvelope(envelope)}
+	}
+	if run != nil {
+		run.subscribers = append(run.subscribers, stream)
+	} else {
+		close(stream)
+	}
+	return recovery, stream, nil
 }
 
 func (s *Session) Close(ctx context.Context) error {
@@ -1214,7 +1264,7 @@ func (s *Session) emitWith(run *runState, t protocol.EnvelopeType, p any, termin
 		_ = json.Unmarshal(e.Payload, &payload)
 		e.ToolCallID = payload.ToolCallID
 	}
-	s.journal = append(s.journal, e)
+	s.journal = append(s.journal, cloneEnvelope(e))
 	if len(s.journal) > s.capacity {
 		s.journal = append([]protocol.Envelope(nil), s.journal[len(s.journal)-s.capacity:]...)
 	}
@@ -1234,6 +1284,10 @@ func (s *Session) emitWith(run *runState, t protocol.EnvelopeType, p any, termin
 			s.active = nil
 		}
 		delete(s.runs, run.id)
+		if s.ended == nil {
+			s.ended = map[protocol.RunID]uint64{}
+		}
+		s.ended[run.id] = seq
 		s.state.Status = protocol.SessionIdle
 		s.state.ActiveRunID = ""
 	}
@@ -1273,5 +1327,33 @@ func (s *Session) allSubscribersLocked() []chan base.Result {
 }
 
 func cloneRaw(v json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), v...) }
+
+func cloneEnvelope(e protocol.Envelope) protocol.Envelope {
+	cloned := e
+	if e.Payload != nil {
+		cloned.Payload = cloneRaw(e.Payload)
+	}
+	if e.Sequence != nil {
+		sequence := *e.Sequence
+		cloned.Sequence = &sequence
+	}
+	if e.TimestampMS != nil {
+		timestamp := *e.TimestampMS
+		cloned.TimestampMS = &timestamp
+	}
+	cloned.Extensions = cloneRawMap(e.Extensions)
+	return cloned
+}
+
+func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
+	if m == nil {
+		return nil
+	}
+	cloned := make(map[string]json.RawMessage, len(m))
+	for key, value := range m {
+		cloned[key] = cloneRaw(value)
+	}
+	return cloned
+}
 
 var _ base.Session = (*Session)(nil)

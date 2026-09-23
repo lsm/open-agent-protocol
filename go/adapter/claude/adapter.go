@@ -19,7 +19,7 @@ import (
 const (
 	endpointID             = "claude-code.cli"
 	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "claude-code-2.1.280-oap-v1"
+	CapabilityRevision     = "claude-code-2.1.280-oap-v2"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
@@ -235,8 +235,8 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		"run.streaming":                  {Level: protocol.SupportNative, Reason: "stream_event deltas with --include-partial-messages always on"},
 		"run.status":                     {Level: protocol.SupportEmulated},
 		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "interrupt intent; settlement only via terminal_reason aborted_*"},
-		"run.resume":                     {Level: protocol.SupportUnavailable, Reason: "conversation-level resume inputs are not OAP run replay"},
-		"run.replay":                     {Level: protocol.SupportUnavailable, Reason: "transcript persistence is not event replay"},
+		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "native conversation resume is not exercised; OAP resume replays the adapter journal"},
+		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; gaps are explicit and transcript persistence is not event replay"},
 		"run.reconciliation":             {Level: protocol.SupportDegraded, Reason: "system/init and session state frames corroborate"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool_use/tool_result projection; started synthesized; tool_progress observed-only"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the CLI executes tools internally"},
@@ -252,7 +252,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		return base.Descriptor{}, err
 	}
 	features := advertisedFeatures()
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
