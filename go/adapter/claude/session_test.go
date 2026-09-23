@@ -1062,8 +1062,13 @@ func readUntilClosed(t *testing.T, stream base.EventStream) ([]protocol.Envelope
 
 func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
 	session, peer := openWireWithJournal(t, 256)
-	result, uuid := startTextRun(t, session, peer, 2*streamCapacity)
-	peer.awaitDrain()
+	result, uuid := startTextRun(t, session, peer, 0)
+	for index := range 2 * streamCapacity {
+		peer.send(textDelta(uuid, strconv.Itoa(index)))
+		if index%16 == 15 {
+			peer.awaitDrain()
+		}
+	}
 	prefix, streamErr := readUntilClosed(t, result.stream)
 	if !errors.Is(streamErr, base.ErrEventStreamOverflow) || len(prefix) != streamCapacity {
 		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
