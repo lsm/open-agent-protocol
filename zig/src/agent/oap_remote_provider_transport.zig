@@ -183,7 +183,27 @@ fn sendLine(context: ?*anyopaque, line: []const u8) !void {
     }
     const answer = try state.client.postUnary(line);
     defer state.allocator.free(answer);
-    try state.enqueue(answer);
+    try validateCancelAnswer(state.allocator, line, answer);
+}
+
+fn validateCancelAnswer(allocator: std.mem.Allocator, request_line: []const u8, answer_line: []const u8) !void {
+    var request = try provider_envelope.deserializeEnvelope(request_line, allocator);
+    defer request.deinit(allocator);
+    if (request.payload != .inference_cancel_request) return error.UnexpectedProviderControl;
+    var answer = try provider_envelope.deserializeEnvelope(answer_line, allocator);
+    defer answer.deinit(allocator);
+    if (!std.mem.eql(u8, answer.in_reply_to orelse "", request.id)) return error.InvalidProviderServiceResponse;
+    switch (answer.payload) {
+        .inference_cancel_response => {},
+        .protocol_error => return error.ProviderServiceCancelRefused,
+        else => return error.InvalidProviderServiceResponse,
+    }
+}
+
+test "cancel response is consumed without joining the bounded inference queue" {
+    const request = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.cancel.request\",\"id\":\"bridge.cancel\",\"inference_id\":\"i1\",\"payload\":{}}";
+    const answer = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.cancel.response\",\"id\":\"answer\",\"in_reply_to\":\"bridge.cancel\",\"inference_id\":\"i1\",\"payload\":{\"accepted\":true}}";
+    try validateCancelAnswer(std.testing.allocator, request, answer);
 }
 
 fn pump(context: ?*anyopaque) !void {

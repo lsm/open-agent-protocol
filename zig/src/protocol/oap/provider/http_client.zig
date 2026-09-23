@@ -14,6 +14,8 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     base_url: []u8,
     security: policy.Security,
+    request_timeout_ms: u64 = 30_000,
+    stream_idle_timeout_ms: u64 = 120_000,
 
     pub fn init(allocator: std.mem.Allocator, base_url: []const u8, security: policy.Security) !Client {
         _ = try policy.validateBaseUrl(base_url, security);
@@ -30,6 +32,15 @@ pub const Client = struct {
     }
 
     pub fn postUnary(self: *Client, body: []const u8) ![]u8 {
+        const job = try TimedJob.create(self, body, .unary);
+        defer job.release();
+        try job.start();
+        try job.waitUnary(self.request_timeout_ms);
+        const answer = job.answer orelse return error.ProviderServiceIncompleteResponse;
+        return self.allocator.dupe(u8, answer);
+    }
+
+    fn postUnaryBlocking(self: *Client, body: []const u8, job: *TimedJob) ![]u8 {
         _ = try policy.validateBaseUrl(self.base_url, self.security);
         const trimmed = std.mem.trimEnd(u8, self.base_url, "/");
         const endpoint = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ trimmed, policy.ENDPOINT_PATH });
@@ -45,7 +56,11 @@ pub const Client = struct {
             },
             .keep_alive = false,
         });
-        defer request.deinit();
+        job.setSocket(request.connection.?.stream_reader.stream);
+        defer {
+            job.clearSocket();
+            request.deinit();
+        }
         try compat.http.sendRequest(&request, body);
         var redirect_buffer: [4096]u8 = undefined;
         var response = try compat.http.receiveResponse(&request, &redirect_buffer);
@@ -66,6 +81,17 @@ pub const Client = struct {
         context: ?*anyopaque,
         on_envelope: *const fn (?*anyopaque, []const u8) anyerror!void,
     ) !void {
+        const job = try TimedJob.create(self, body, .stream);
+        defer job.release();
+        try job.start();
+        return job.waitStream(self.request_timeout_ms, self.stream_idle_timeout_ms, context, on_envelope);
+    }
+
+    fn postStreamBlocking(
+        self: *Client,
+        body: []const u8,
+        job: *TimedJob,
+    ) !void {
         _ = try policy.validateBaseUrl(self.base_url, self.security);
         const trimmed = std.mem.trimEnd(u8, self.base_url, "/");
         const endpoint = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ trimmed, policy.ENDPOINT_PATH });
@@ -81,7 +107,11 @@ pub const Client = struct {
             },
             .keep_alive = false,
         });
-        defer request.deinit();
+        job.setSocket(request.connection.?.stream_reader.stream);
+        defer {
+            job.clearSocket();
+            request.deinit();
+        }
         try compat.http.sendRequest(&request, body);
         var redirect_buffer: [4096]u8 = undefined;
         var response = try compat.http.receiveResponse(&request, &redirect_buffer);
@@ -96,7 +126,7 @@ pub const Client = struct {
         if (!is_stream) {
             const answer = try compat.http.allocRemainingResponse(self.allocator, reader, MAX_RESPONSE_BYTES);
             defer self.allocator.free(answer);
-            try on_envelope(context, answer);
+            try TimedJob.collect(job, answer);
             return;
         }
 
@@ -110,7 +140,164 @@ pub const Client = struct {
             const n = try compat.http.readResponse(reader, &buffer);
             if (n == 0) break;
             const events = try parser.feed(buffer[0..n]);
-            for (events) |event| try on_envelope(context, event.data);
+            for (events) |event| try TimedJob.collect(job, event.data);
+        }
+    }
+};
+
+const TimedJob = struct {
+    const Kind = enum { unary, stream };
+    const arena = std.heap.page_allocator;
+
+    refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(2),
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    mutex: std.Io.Mutex = .init,
+    cancelled: bool = false,
+    socket: ?std.Io.net.Stream = null,
+    pending: std.ArrayList([]u8) = .empty,
+    answer: ?[]u8 = null,
+    failure: ?anyerror = null,
+    base_url: []u8,
+    body: []u8,
+    security: policy.Security,
+    kind: Kind,
+
+    fn io() std.Io {
+        return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
+    }
+
+    fn create(client: *const Client, body: []const u8, kind: Kind) !*TimedJob {
+        const job = try arena.create(TimedJob);
+        errdefer arena.destroy(job);
+        const url = try arena.dupe(u8, client.base_url);
+        errdefer arena.free(url);
+        const request = try arena.dupe(u8, body);
+        job.* = .{ .base_url = url, .body = request, .security = client.security, .kind = kind };
+        return job;
+    }
+
+    fn release(self: *TimedJob) void {
+        if (self.refs.fetchSub(1, .acq_rel) != 1) return;
+        for (self.pending.items) |line| arena.free(line);
+        self.pending.deinit(arena);
+        if (self.answer) |answer| arena.free(answer);
+        arena.free(self.base_url);
+        arena.free(self.body);
+        arena.destroy(self);
+    }
+
+    fn setSocket(self: *TimedJob, socket: std.Io.net.Stream) void {
+        self.mutex.lockUncancelable(io());
+        defer self.mutex.unlock(io());
+        self.socket = socket;
+        if (self.cancelled) socket.shutdown(io(), .both) catch {};
+    }
+
+    fn clearSocket(self: *TimedJob) void {
+        self.mutex.lockUncancelable(io());
+        self.socket = null;
+        self.mutex.unlock(io());
+    }
+
+    fn cancel(self: *TimedJob) void {
+        self.mutex.lockUncancelable(io());
+        defer self.mutex.unlock(io());
+        self.cancelled = true;
+        if (self.socket) |socket| socket.shutdown(io(), .both) catch {};
+    }
+
+    fn collect(context: ?*anyopaque, line: []const u8) !void {
+        const self: *TimedJob = @ptrCast(@alignCast(context));
+        const copy = try arena.dupe(u8, line);
+        errdefer arena.free(copy);
+        while (true) {
+            self.mutex.lockUncancelable(io());
+            if (self.cancelled) {
+                self.mutex.unlock(io());
+                return error.ProviderServiceCancelled;
+            }
+            if (self.pending.items.len < 128) {
+                defer self.mutex.unlock(io());
+                try self.pending.append(arena, copy);
+                return;
+            }
+            self.mutex.unlock(io());
+            compat.time.sleepMs(1);
+        }
+    }
+
+    fn run(self: *TimedJob) void {
+        defer self.release();
+        var client = Client.init(arena, self.base_url, self.security) catch |err| {
+            self.failure = err;
+            self.done.store(true, .release);
+            return;
+        };
+        defer client.deinit();
+        const result: anyerror!void = switch (self.kind) {
+            .unary => blk: {
+                self.answer = client.postUnaryBlocking(self.body, self) catch |err| break :blk err;
+                break :blk {};
+            },
+            .stream => client.postStreamBlocking(self.body, self),
+        };
+        if (result) |_| {} else |err| self.failure = err;
+        self.done.store(true, .release);
+    }
+
+    fn start(self: *TimedJob) !void {
+        const thread = std.Thread.spawn(.{}, run, .{self}) catch |err| {
+            self.release();
+            return err;
+        };
+        thread.detach();
+    }
+
+    fn waitUnary(self: *TimedJob, timeout_ms: u64) !void {
+        const start_ms = try compat.time.monotonicMillis();
+        while (!self.done.load(.acquire)) {
+            if (try compat.time.monotonicMillis() - start_ms >= timeout_ms) {
+                self.cancel();
+                return error.ProviderServiceTimeout;
+            }
+            compat.time.sleepMs(1);
+        }
+        if (self.failure) |err| return err;
+    }
+
+    fn waitStream(
+        self: *TimedJob,
+        request_timeout_ms: u64,
+        idle_timeout_ms: u64,
+        context: ?*anyopaque,
+        on_envelope: *const fn (?*anyopaque, []const u8) anyerror!void,
+    ) !void {
+        var last_progress_ms = try compat.time.monotonicMillis();
+        var saw_envelope = false;
+        while (true) {
+            self.mutex.lockUncancelable(io());
+            const line = if (self.pending.items.len > 0) self.pending.orderedRemove(0) else null;
+            self.mutex.unlock(io());
+            if (line) |owned| {
+                defer arena.free(owned);
+                on_envelope(context, owned) catch |err| {
+                    self.cancel();
+                    return err;
+                };
+                saw_envelope = true;
+                last_progress_ms = try compat.time.monotonicMillis();
+                continue;
+            }
+            if (self.done.load(.acquire)) {
+                if (self.failure) |err| return err;
+                return;
+            }
+            const limit = if (saw_envelope) idle_timeout_ms else request_timeout_ms;
+            if (try compat.time.monotonicMillis() - last_progress_ms >= limit) {
+                self.cancel();
+                return error.ProviderServiceTimeout;
+            }
+            compat.time.sleepMs(1);
         }
     }
 };
@@ -128,6 +315,8 @@ const MockUnaryServer = struct {
     saw_provider_path: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     response_type: []const u8 = "application/json",
     response_body: []const u8 = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"provider.describe.response\",\"id\":\"answer\",\"in_reply_to\":\"request\",\"capability_revision\":\"r1\",\"payload\":{\"providers\":[]}}",
+    response_delay_ms: u64 = 0,
+    hold_open_ms: u64 = 0,
 
     fn start(self: *MockUnaryServer) !void {
         self.thread = try std.Thread.spawn(.{}, serve, .{self});
@@ -162,10 +351,23 @@ const MockUnaryServer = struct {
             if (n == 0) return;
             remaining -= n;
         }
+        if (self.response_delay_ms > 0) compat.time.sleepMs(self.response_delay_ms);
         var header: [160]u8 = undefined;
-        const response = std.fmt.bufPrint(&header, "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ self.response_type, self.response_body.len }) catch return;
+        const response = if (self.hold_open_ms > 0)
+            std.fmt.bufPrint(&header, "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n", .{self.response_type}) catch return
+        else
+            std.fmt.bufPrint(&header, "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ self.response_type, self.response_body.len }) catch return;
         conn.stream.writeAll(response) catch return;
-        conn.stream.writeAll(self.response_body) catch return;
+        if (self.hold_open_ms > 0) {
+            var chunk_header: [24]u8 = undefined;
+            const chunk = std.fmt.bufPrint(&chunk_header, "{x}\r\n", .{self.response_body.len}) catch return;
+            conn.stream.writeAll(chunk) catch return;
+            conn.stream.writeAll(self.response_body) catch return;
+            conn.stream.writeAll("\r\n") catch return;
+        } else {
+            conn.stream.writeAll(self.response_body) catch return;
+        }
+        if (self.hold_open_ms > 0) compat.time.sleepMs(self.hold_open_ms);
     }
 };
 
@@ -213,4 +415,42 @@ test "remote provider client consumes SSE envelopes" {
     try client.postStream("{\"type\":\"inference.create.request\"}", &collector, FrameCollector.collect);
     try std.testing.expectEqual(@as(usize, 2), collector.count);
     try std.testing.expectEqualStrings("{\"type\":\"inference.create.response\"}", collector.first.?);
+}
+
+test "remote provider unary request times out on a silent response head" {
+    const address = try compat.net.resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = MockUnaryServer{
+        .server = try compat.net.tcpListen(address, .{ .reuse_address = true }),
+        .response_delay_ms = 100,
+    };
+    try server.start();
+    defer server.stop();
+    const url = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&server.server).getPort()});
+    defer std.testing.allocator.free(url);
+    var client = try Client.init(std.testing.allocator, url, .loopback);
+    defer client.deinit();
+    client.request_timeout_ms = 10;
+    try std.testing.expectError(error.ProviderServiceTimeout, client.postUnary("{}"));
+}
+
+test "remote provider streaming request times out after SSE becomes idle" {
+    const address = try compat.net.resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = MockUnaryServer{
+        .server = try compat.net.tcpListen(address, .{ .reuse_address = true }),
+        .response_type = "text/event-stream",
+        .response_body = "data: {\"type\":\"inference.create.response\"}\n\n",
+        .hold_open_ms = 500,
+    };
+    try server.start();
+    defer server.stop();
+    const url = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&server.server).getPort()});
+    defer std.testing.allocator.free(url);
+    var client = try Client.init(std.testing.allocator, url, .loopback);
+    defer client.deinit();
+    client.request_timeout_ms = 500;
+    client.stream_idle_timeout_ms = 50;
+    var collector = FrameCollector{};
+    defer if (collector.first) |line| std.testing.allocator.free(line);
+    try std.testing.expectError(error.ProviderServiceTimeout, client.postStream("{}", &collector, FrameCollector.collect));
+    try std.testing.expectEqual(@as(usize, 1), collector.count);
 }

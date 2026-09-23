@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Drafted the `model-provider-core` HTTP/SSE binding and added client-side remote-provider support to `oapx serve agent`. An operator can set `OAPX_PROVIDER_SERVICE_URL` and `OAPX_PROVIDER_SERVICE_SECURITY` (`loopback`, `tls`, or `mesh_proxy`); startup validates the service profile, managed-credential posture, and model catalog before the agent routes inference over HTTP/SSE. Caller-held credential grants are refused. This does not add an HTTP server role or live `session.provider.attach` yet.
 
+- Bounded remote-provider HTTP operations: unary calls and the first streamed envelope have a 30-second deadline, and an active SSE stream has a 120-second idle deadline. A timed-out connection is shut down, and a cancel acknowledgment is consumed outside the bounded inference-event queue so cancellation cannot wait on that queue when it is full. SSE events are delivered as bytes arrive, rather than waiting for a 4 KiB read or connection close.
+
 ### Changed
 
 - A prerelease tag (one with a hyphen, such as `v0.1.0-alpha.2`) publishes its npm packages under the `next` dist-tag and marks its GitHub release as a prerelease. Before, the release workflow published every tag as npm `latest` and as a full GitHub release, so an alpha would have become the version `npm install oap-sdk` resolves.
