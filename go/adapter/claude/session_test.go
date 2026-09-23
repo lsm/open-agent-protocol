@@ -442,6 +442,34 @@ func TestBufferedObservationsReplayInWireOrder(t *testing.T) {
 	}
 }
 
+func TestSubmittedTurnIsClientComposedUnlessPromptsExpand(t *testing.T) {
+	for _, expand := range []bool{false, true} {
+		peer := newWirePeer(t)
+		implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return peer.client, nil }), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64, ExpandPrompts: expand})
+		if err != nil {
+			t.Fatal(err)
+		}
+		session := adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}})
+		outcome := submit(session)
+		frame := peer.writtenUser()
+		composed, present := frame["client_composed"]
+		if expand == present || (!expand && composed != true) {
+			t.Fatalf("ExpandPrompts=%v wrote client_composed=%v, present=%v", expand, composed, present)
+		}
+		uuid := turnUUIDOf(t, frame)
+		peer.send(streamEcho(uuid))
+		result := awaitSubmit(t, outcome)
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+		assertValidTrace(t, result.admission, adaptertest.Drain(t, result.stream, 5*time.Second))
+		if err := session.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func admit(t *testing.T, session base.Session, peer *wirePeer) (string, submitOutcome) {
 	t.Helper()
 	outcome := submit(session)

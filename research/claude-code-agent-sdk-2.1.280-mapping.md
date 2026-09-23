@@ -118,9 +118,8 @@ The Python SDK's changes are the `verbatim_prompts` option, a custom
 system-prompt form, and a `systemPromptSnapshot` initialize member. Its message
 parser is byte-identical. `verbatim_prompts` marks each user frame
 `client_composed`, which stops Claude Code expanding `@path` mentions and
-dispatching slash commands in that text. This adapter does not set it, so text
-a host submits is still expanded, which matters to a host that submits
-third-party text such as a diff. Recorded as a surface; not adopted here.
+dispatching slash commands in that text. This adapter now sets it by default;
+see *Submitted text is delivered verbatim* below.
 
 ## Live verification at 2.1.280
 
@@ -180,6 +179,51 @@ adapter's, including the caller args a review host passes
   completes with the final text and usage, and the provider saw the appended
   prompt and only the three tools. Against the previous argv the same test
   fails at once on the opened gate.
+
+## Submitted text is delivered verbatim
+
+Probed against the pinned binary with this adapter's argv, hermetic as above.
+Without `client_composed`, Claude Code treats a submitted turn as text typed at
+its own prompt:
+
+- An `@` mention is read and inlined before the model call, as a synthetic
+  `Read` result, with no permission ask. An absolute path outside the working
+  directory was read too: `@/…/outside/secret.txt` put the file's contents in
+  the first provider request. A relative mention resolved against the working
+  directory. The review posture, `AllowTools("Read", "Grep", "Glob")`, does not
+  prevent it.
+- A leading slash command runs as a harness command instead of reaching the
+  model. `/cost` and `/context` were answered locally in the `result`, the
+  latter after its own analysis requests. `/compact` compacted the session and
+  settled with `local_command: "compact"`, no model turn and no
+  `terminal_reason`.
+- The turn-start attachment pass runs. The first request carries environment,
+  model identity, agent and skill listings, and a token budget, as
+  `<system-reminder>` blocks.
+
+With `"client_composed": true` on the frame, the mention stays text and no file
+is read, and the slash commands reach the model as written. The turn-start pass
+is skipped: the first request carries only the date and attribution reminders.
+The environment and model-identity reminders then arrive appended to the first
+tool result, as the Python SDK documents, so a turn that calls no tool is
+answered without them. A `CLAUDE.md` in the working directory reached the
+provider in neither mode, because `--setting-sources=` loads no project
+settings.
+
+The adapter now marks every submitted turn `client_composed` unless
+`Config.ExpandPrompts` is set. An OAP submit is a message, and the trace
+records its text. Expansion let the model see a file the trace never names,
+and a slash command produced a harness result with no model turn at all. A
+host submitting text it did not write, such as a review host submitting a diff,
+could otherwise have any readable file pulled into context without an ask.
+`ExpandPrompts` restores the CLI's own handling, for a host that submits only
+its own text and wants the turn-start context on the first call. The Zig port's
+`expand_prompts` matches, and the corpus's expected turns carry the member.
+
+`TestClaudeProcessMentionReachesTheProviderOnlyWhenPromptsExpand` drives both
+settings against the pinned binary under the review posture. The mentioned
+file reaches the provider only when prompts expand, and the submitted text
+reaches it as written either way.
 
 ## Issue #232
 

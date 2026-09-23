@@ -240,7 +240,7 @@ func TestCanUseToolRequestDecode(t *testing.T) {
 }
 
 func TestHostWriteShapes(t *testing.T) {
-	frame, err := NewUserTurn(turnUUID, "hello one")
+	frame, err := NewUserTurn(turnUUID, "hello one", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,8 +248,19 @@ func TestHostWriteShapes(t *testing.T) {
 	if err := json.Unmarshal(frame, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded["session_id"] != "default" || decoded["uuid"] != turnUUID {
+	if decoded["session_id"] != "default" || decoded["uuid"] != turnUUID || decoded["client_composed"] != true {
 		t.Fatalf("frame = %s", frame)
+	}
+	expanding, err := NewUserTurn(turnUUID, "hello one", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var open map[string]any
+	if err := json.Unmarshal(expanding, &open); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := open["client_composed"]; present {
+		t.Fatalf("a turn the CLI may expand still carries client_composed: %s", expanding)
 	}
 	origin, ok := decoded["origin"].(map[string]any)
 	if !ok || origin["kind"] != "human" {
