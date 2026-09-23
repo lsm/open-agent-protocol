@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -17,7 +19,7 @@ import (
 const (
 	endpointID             = "claude-code.cli"
 	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "claude-code-2.1.263-oap-v3"
+	CapabilityRevision     = "claude-code-2.1.280-oap-v1"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
@@ -88,6 +90,9 @@ func (p ToolPosture) validate() error {
 		if name == "" {
 			return errors.New("claude: claude.AllowTools names an empty tool")
 		}
+		if toolOf(name) == "" {
+			return fmt.Errorf("claude: claude.AllowTools rule %q names no tool", name)
+		}
 	}
 	return nil
 }
@@ -96,7 +101,18 @@ func (p ToolPosture) argv() []string {
 	if p.unrestricted {
 		return nil
 	}
-	return append([]string{"--allowedTools"}, p.allowed...)
+	var surface []string
+	for _, rule := range p.allowed {
+		if tool := toolOf(rule); !slices.Contains(surface, tool) {
+			surface = append(surface, tool)
+		}
+	}
+	return append([]string{"--tools", strings.Join(surface, ","), "--allowedTools"}, p.allowed...)
+}
+
+func toolOf(rule string) string {
+	tool, _, _ := strings.Cut(rule, "(")
+	return strings.TrimSpace(tool)
 }
 
 type Config struct {

@@ -44,6 +44,17 @@ type Config struct {
 	AnthropicKey string
 }
 
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+type step struct {
+	scenario Case
+	call     ToolCall
+}
+
 type Request struct {
 	API    API
 	Method string
@@ -62,7 +73,7 @@ type Server struct {
 	*httptest.Server
 	mu       sync.Mutex
 	config   Config
-	queues   map[API][]Case
+	queues   map[API][]step
 	requests []Request
 	gates    map[API]*gate
 }
@@ -71,7 +82,7 @@ func New(t testing.TB, config Config) *Server {
 	t.Helper()
 	server := &Server{
 		config: config,
-		queues: make(map[API][]Case),
+		queues: make(map[API][]step),
 		gates: map[API]*gate{
 			OpenAIResponses:      {ch: make(chan struct{})},
 			AnthropicMessages:    {ch: make(chan struct{})},
@@ -94,7 +105,15 @@ func (server *Server) AnthropicBaseURL() string { return server.URL }
 func (server *Server) Enqueue(api API, cases ...Case) {
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	server.queues[api] = append(server.queues[api], cases...)
+	for _, scenario := range cases {
+		server.queues[api] = append(server.queues[api], step{scenario: scenario, call: ToolCall{Name: FixtureToolName, Arguments: FixtureToolArguments}})
+	}
+}
+
+func (server *Server) EnqueueToolCall(api API, call ToolCall) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	server.queues[api] = append(server.queues[api], step{scenario: Tool, call: call})
 }
 
 func (server *Server) Release(api API) {
@@ -157,16 +176,16 @@ func (server *Server) serveHTTP(writer http.ResponseWriter, request *http.Reques
 		http.Error(writer, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	scenario, gate := server.next(api)
-	if scenario == "" {
+	current, gate := server.next(api)
+	if current.scenario == "" {
 		http.Error(writer, "providertest: no queued case", http.StatusInternalServerError)
 		return
 	}
-	switch scenario {
+	switch current.scenario {
 	case Error:
 		server.writeError(writer, api)
 	case Success, Tool, Malformed, Slow:
-		server.writeStream(writer, request, api, scenario, model, gate)
+		server.writeStream(writer, request, api, current, model, gate)
 	default:
 		http.Error(writer, "providertest: unknown case", http.StatusInternalServerError)
 	}
@@ -215,16 +234,16 @@ func (server *Server) record(request Request) {
 	server.requests = append(server.requests, cloneRequest(request))
 }
 
-func (server *Server) next(api API) (Case, *gate) {
+func (server *Server) next(api API) (step, *gate) {
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	queue := server.queues[api]
 	if len(queue) == 0 {
-		return "", server.gates[api]
+		return step{}, server.gates[api]
 	}
-	scenario := queue[0]
-	server.queues[api] = append([]Case(nil), queue[1:]...)
-	return scenario, server.gates[api]
+	current := queue[0]
+	server.queues[api] = append([]step(nil), queue[1:]...)
+	return current, server.gates[api]
 }
 
 func cloneRequest(request Request) Request {
@@ -244,7 +263,7 @@ func (server *Server) writeError(writer http.ResponseWriter, api API) {
 	_, _ = io.WriteString(writer, `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"fixture rate limit"}}`)
 }
 
-func (server *Server) writeStream(writer http.ResponseWriter, request *http.Request, api API, scenario Case, model string, current *gate) {
+func (server *Server) writeStream(writer http.ResponseWriter, request *http.Request, api API, current step, model string, release *gate) {
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-cache")
 	write := func(frame string) bool {
@@ -253,17 +272,21 @@ func (server *Server) writeStream(writer http.ResponseWriter, request *http.Requ
 		}
 		return http.NewResponseController(writer).Flush() == nil
 	}
-	frames := streamFrames(api, scenario == Tool, model)
+	var call *ToolCall
+	if current.scenario == Tool {
+		call = &current.call
+	}
+	frames := streamFrames(api, call, model)
 	if len(frames) == 0 || !write(frames[0]) {
 		return
 	}
-	if scenario == Malformed {
+	if current.scenario == Malformed {
 		_, _ = io.WriteString(writer, "data: {\"type\":\n\n")
 		return
 	}
-	if scenario == Slow {
+	if current.scenario == Slow {
 		select {
-		case <-current.ch:
+		case <-release.ch:
 		case <-request.Context().Done():
 			return
 		}
@@ -275,14 +298,14 @@ func (server *Server) writeStream(writer http.ResponseWriter, request *http.Requ
 	}
 }
 
-func streamFrames(api API, tool bool, model string) []string {
+func streamFrames(api API, call *ToolCall, model string) []string {
 	switch api {
 	case OpenAIResponses:
-		return responsesFrames(tool, model)
+		return responsesFrames(call, model)
 	case AnthropicMessages:
-		return messagesFrames(tool, model)
+		return messagesFrames(call, model)
 	case OpenAIChatCompletion:
-		return chatFrames(tool, model)
+		return chatFrames(call, model)
 	default:
 		return nil
 	}
@@ -295,17 +318,19 @@ func sse(event, data string) string {
 	return "event: " + event + "\ndata: " + data + "\n\n"
 }
 
-func responsesFrames(tool bool, model string) []string {
+func responsesFrames(call *ToolCall, model string) []string {
 	created := sse("response.created", fmt.Sprintf(`{"type":"response.created","sequence_number":0,"response":{"id":"resp_fixture","object":"response","status":"in_progress","model":%q,"output":[]}}`, model))
-	if tool {
-		item := fmt.Sprintf(`{"id":"fc_fixture","type":"function_call","call_id":"call_fixture","name":%q,"arguments":""}`, FixtureToolName)
+	if call != nil {
+		id, name, arguments := jsonString(callID(call, "call_fixture")), jsonString(call.Name), jsonString(call.Arguments)
+		item := `{"id":"fc_fixture","type":"function_call","call_id":` + id + `,"name":` + name + `,"arguments":""}`
+		done := `{"id":"fc_fixture","type":"function_call","call_id":` + id + `,"name":` + name + `,"arguments":` + arguments + `}`
 		return []string{
 			created,
 			sse("response.output_item.added", `{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":`+item+`}`),
-			sse("response.function_call_arguments.delta", `{"type":"response.function_call_arguments.delta","sequence_number":2,"output_index":0,"item_id":"fc_fixture","delta":"{\"value\":\"fixture\"}"}`),
-			sse("response.function_call_arguments.done", `{"type":"response.function_call_arguments.done","sequence_number":3,"output_index":0,"item_id":"fc_fixture","arguments":"{\"value\":\"fixture\"}"}`),
-			sse("response.output_item.done", `{"type":"response.output_item.done","sequence_number":4,"output_index":0,"item":{"id":"fc_fixture","type":"function_call","call_id":"call_fixture","name":"fixture_tool","arguments":"{\"value\":\"fixture\"}"}}`),
-			sse("response.completed", fmt.Sprintf(`{"type":"response.completed","sequence_number":5,"response":{"id":"resp_fixture","object":"response","status":"completed","model":%q,"output":[{"id":"fc_fixture","type":"function_call","call_id":"call_fixture","name":"fixture_tool","arguments":"{\"value\":\"fixture\"}"}]}}`, model)),
+			sse("response.function_call_arguments.delta", `{"type":"response.function_call_arguments.delta","sequence_number":2,"output_index":0,"item_id":"fc_fixture","delta":`+arguments+`}`),
+			sse("response.function_call_arguments.done", `{"type":"response.function_call_arguments.done","sequence_number":3,"output_index":0,"item_id":"fc_fixture","arguments":`+arguments+`}`),
+			sse("response.output_item.done", `{"type":"response.output_item.done","sequence_number":4,"output_index":0,"item":`+done+`}`),
+			sse("response.completed", fmt.Sprintf(`{"type":"response.completed","sequence_number":5,"response":{"id":"resp_fixture","object":"response","status":"completed","model":%q,"output":[%s]}}`, model, done)),
 		}
 	}
 	item := `{"id":"msg_fixture","type":"message","role":"assistant","status":"in_progress","content":[]}`
@@ -322,13 +347,13 @@ func responsesFrames(tool bool, model string) []string {
 	}
 }
 
-func messagesFrames(tool bool, model string) []string {
+func messagesFrames(call *ToolCall, model string) []string {
 	start := sse("message_start", fmt.Sprintf(`{"type":"message_start","message":{"id":"msg_fixture","type":"message","role":"assistant","model":%q,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}`, model))
-	if tool {
+	if call != nil {
 		return []string{
 			start,
-			sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_fixture","name":"fixture_tool","input":{}}}`),
-			sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"value\":\"fixture\"}"}}`),
+			sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":`+jsonString(callID(call, "toolu_fixture"))+`,"name":`+jsonString(call.Name)+`,"input":{}}}`),
+			sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":`+jsonString(call.Arguments)+`}}`),
 			sse("content_block_stop", `{"type":"content_block_stop","index":0}`),
 			sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":1}}`),
 			sse("message_stop", `{"type":"message_stop"}`),
@@ -344,14 +369,14 @@ func messagesFrames(tool bool, model string) []string {
 	}
 }
 
-func chatFrames(tool bool, model string) []string {
+func chatFrames(call *ToolCall, model string) []string {
 	chunk := func(delta, finish string) string {
 		return sse("", fmt.Sprintf(`{"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":%q,"choices":[{"index":0,"delta":%s,"finish_reason":%s}]}`, model, delta, finish))
 	}
-	if tool {
+	if call != nil {
 		return []string{
 			chunk(`{"role":"assistant","content":null}`, "null"),
-			chunk(`{"tool_calls":[{"index":0,"id":"call_fixture","type":"function","function":{"name":"fixture_tool","arguments":"{\"value\":\"fixture\"}"}}]}`, "null"),
+			chunk(`{"tool_calls":[{"index":0,"id":`+jsonString(callID(call, "call_fixture"))+`,"type":"function","function":{"name":`+jsonString(call.Name)+`,"arguments":`+jsonString(call.Arguments)+`}}]}`, "null"),
 			chunk(`{}`, `"tool_calls"`),
 			sse("", "[DONE]"),
 		}
@@ -374,4 +399,16 @@ func EventNames(data string) []string {
 		}
 	}
 	return names
+}
+
+func callID(call *ToolCall, fallback string) string {
+	if call.ID == "" {
+		return fallback
+	}
+	return call.ID
+}
+
+func jsonString(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
 }

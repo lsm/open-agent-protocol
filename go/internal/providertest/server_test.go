@@ -77,6 +77,32 @@ func TestToolStreams(t *testing.T) {
 	}
 }
 
+func TestScriptedToolCallsStreamTheirOwnIDNameAndArguments(t *testing.T) {
+	server := New(t, Config{OpenAIKey: openAIKey, AnthropicKey: anthropicKey})
+	for _, test := range []struct {
+		api     API
+		path    string
+		headers map[string]string
+	}{
+		{OpenAIResponses, ResponsesPath, map[string]string{"Authorization": "Bearer " + openAIKey}},
+		{AnthropicMessages, MessagesPath, map[string]string{"x-api-key": anthropicKey, "anthropic-version": "2023-06-01"}},
+		{OpenAIChatCompletion, ChatCompletionPath, map[string]string{"Authorization": "Bearer " + openAIKey}},
+	} {
+		server.EnqueueToolCall(test.api, ToolCall{ID: "scripted_id", Name: "Read", Arguments: `{"file_path":"/w/a \"b\".md"}`})
+		response := post(t, server.URL+test.path, "fixture-model", test.headers)
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		for _, want := range []string{`"scripted_id"`, `"name":"Read"`, `\"file_path\":\"/w/a \\\"b\\\".md\"`} {
+			if response.StatusCode != http.StatusOK || !strings.Contains(string(body), want) {
+				t.Fatalf("%s scripted tool stream lacks %s: status=%d body=%s", test.api, want, response.StatusCode, body)
+			}
+		}
+		if strings.Contains(string(body), FixtureToolName) {
+			t.Fatalf("%s scripted tool stream still names the fixture tool: %s", test.api, body)
+		}
+	}
+}
+
 func TestErrorAndScenarioQueue(t *testing.T) {
 	server := New(t, Config{OpenAIKey: openAIKey})
 	server.Enqueue(OpenAIResponses, Error, Success)
