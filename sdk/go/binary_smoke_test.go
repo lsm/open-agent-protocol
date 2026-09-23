@@ -24,6 +24,10 @@ import (
 // newSmokeClient starts a client against the real runtime, with its
 // credential storage isolated from the developer's own.
 func newSmokeClient(t *testing.T) *Client {
+	return newSmokeClientWithClosePolicy(t, false)
+}
+
+func newSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client {
 	t.Helper()
 	binary := os.Getenv(EnvBinaryPath)
 	if binary == "" {
@@ -52,7 +56,7 @@ func newSmokeClient(t *testing.T) *Client {
 		t.Fatalf("New against the real runtime: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(); err != nil && !allowNonzeroExit {
 			t.Errorf("Close: %v", err)
 		}
 	})
@@ -371,14 +375,9 @@ func TestSmokeAgentRunWithoutCredentials(t *testing.T) {
 		t.Skip("the runtime lists no anthropic models")
 	}
 
-	// Without credentials the run cannot reach a provider, but getting a
-	// clean failure proves the whole session exchange works against the real
-	// server: agent_start, the correlated agent_started, agent_message on
-	// sequence 2, and a settled failure instead of a hang.
 	_, err = client.Agent.Run(ctx, AgentRequest{
 		ModelRef: models.Models[0].ModelRef,
 		Messages: []Message{UserMessage("hello")},
-		Options:  &RunOptions{MaxTokens: MaxTokens(16)},
 	})
 	if err == nil {
 		t.Skip("the runtime completed the run, so credentials were available after all")
@@ -399,20 +398,24 @@ func TestSmokeAgentRunWithoutCredentials(t *testing.T) {
 	}
 }
 
-func TestSmokeIgnoresMalformedInboundFrames(t *testing.T) {
-	client := newSmokeClient(t)
+func TestSmokeRejectsMalformedInboundFrames(t *testing.T) {
+	client := newSmokeClientWithClosePolicy(t, true)
 	ctx := testContext(t)
 
-	// A line the runtime cannot parse must not wedge the session.
 	if _, err := client.transport.stdin.Write([]byte("this is not a frame\n")); err != nil {
 		t.Fatalf("writing junk: %v", err)
 	}
-	if _, err := client.transport.stdin.Write([]byte("{\"type\":\"nonsense_frame\"}\n")); err != nil {
-		t.Fatalf("writing an unknown frame: %v", err)
-	}
 
-	if _, err := client.Models.List(ctx, ListModelsRequest{}); err != nil {
-		t.Fatalf("List after malformed input: %v", err)
+	_, err := client.Models.List(ctx, ListModelsRequest{})
+	if err == nil {
+		t.Fatal("List after malformed input unexpectedly succeeded")
+	}
+	var streamErr *StreamError
+	if !errors.As(err, &streamErr) || streamErr.Kind != KindTransportError {
+		t.Fatalf("expected a transport failure after malformed input, got %T: %v", err, err)
+	}
+	if err := client.Close(); err == nil {
+		t.Fatal("runtime accepted malformed input without an error exit")
 	}
 }
 
