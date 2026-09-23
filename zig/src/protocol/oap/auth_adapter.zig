@@ -58,7 +58,10 @@ pub const Adapter = struct {
     }
 
     pub fn handleLine(self: *Self, line: []const u8) !bool {
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch return false;
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{}) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            return false;
+        };
         defer parsed.deinit();
         if (parsed.value != .object) return false;
         const root = parsed.value.object;
@@ -125,7 +128,7 @@ pub const Adapter = struct {
         const before = self.outbox.items.len;
         while (self.server.popOutbound()) |native| {
             var owned = native;
-            defer owned.deinit(self.allocator);
+            defer owned.deinit(self.server.allocator);
             try self.translateNative(owned);
         }
         return self.outbox.items.len - before;
@@ -151,7 +154,7 @@ pub const Adapter = struct {
             };
             if (try self.server.handleEnvelope(native)) |ack| {
                 var owned = ack;
-                defer owned.deinit(self.allocator);
+                defer owned.deinit(self.server.allocator);
                 if (owned.payload == .nack) return error.AuthDisconnectCancellationRejected;
             }
             flow.next_inbound += 1;
@@ -209,7 +212,7 @@ pub const Adapter = struct {
         };
         if (try self.server.handleEnvelope(native)) |ack| {
             var owned = ack;
-            defer owned.deinit(self.allocator);
+            defer owned.deinit(self.server.allocator);
             if (owned.payload == .nack) {
                 const removed = self.queries.fetchRemove(message_id).?;
                 var value = removed.value;
@@ -232,7 +235,7 @@ pub const Adapter = struct {
         };
         if (try self.server.handleEnvelope(native)) |ack| {
             var owned = ack;
-            defer owned.deinit(self.allocator);
+            defer owned.deinit(self.server.allocator);
             if (owned.payload == .nack) return self.emitNack(request_id, owned.payload.nack);
         }
         try self.flows.put(flow_id, .{});
@@ -259,7 +262,7 @@ pub const Adapter = struct {
         };
         if (try self.server.handleEnvelope(native)) |ack| {
             var owned = ack;
-            defer owned.deinit(self.allocator);
+            defer owned.deinit(self.server.allocator);
             if (owned.payload == .nack) return self.emitNack(request_id, owned.payload.nack);
         }
         flow.next_inbound += 1;
@@ -322,7 +325,7 @@ pub const Adapter = struct {
                 };
                 if (try self.server.handleEnvelope(cancel_request)) |ack| {
                     var owned = ack;
-                    defer owned.deinit(self.allocator);
+                    defer owned.deinit(self.server.allocator);
                     if (owned.payload == .nack) return error.AuthInputCancellationRejected;
                 }
                 flow.next_inbound += 1;
@@ -670,4 +673,60 @@ test "auth adapter rejects stale revisions and requests after disconnect" {
     const closed_error = ((parsed_closed.value.object.get("payload") orelse return error.MissingPayload).object.get("error") orelse return error.MissingError).object;
     try std.testing.expectEqualStrings("invalid_request", try requiredString(closed_error, "code"));
     try std.testing.expectEqual(@as(usize, 0), native.activeFlowCount());
+}
+
+fn authProvidersAllocationProbe(allocator: std.mem.Allocator) !void {
+    var native = auth_server.AuthProtocolServer.init(std.testing.allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer native.deinit();
+    var adapter = Adapter.init(allocator, &native);
+    defer adapter.deinit();
+    adapter.setCapabilityRevision("current-revision");
+
+    const line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.providers.request","id":"providers-oom","capability_revision":"current-revision","payload":{}}
+    ;
+    try std.testing.expect(try adapter.handleLine(line));
+    while (adapter.popOutbound()) |outbound| allocator.free(outbound);
+}
+
+fn authFlowAllocationProbe(allocator: std.mem.Allocator) !void {
+    var native = auth_server.AuthProtocolServer.init(std.testing.allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer native.deinit();
+    var adapter = Adapter.init(allocator, &native);
+    defer adapter.deinit();
+    adapter.setCapabilityRevision("current-revision");
+
+    const start_line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-oom","capability_revision":"current-revision","payload":{"provider_id":"test-fixture"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(start_line));
+    const response = adapter.popOutbound() orelse return error.MissingStartResponse;
+    defer allocator.free(response);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response, .{});
+    defer parsed.deinit();
+    const payload = (parsed.value.object.get("payload") orelse return error.MissingPayload).object;
+    const flow_id = try requiredString(payload, "flow_id");
+    const cancel_line = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"cancel-oom\",\"capability_revision\":\"current-revision\",\"payload\":{{\"flow_id\":\"{s}\"}}}}",
+        .{flow_id},
+    );
+    defer std.testing.allocator.free(cancel_line);
+    try std.testing.expect(try adapter.handleLine(cancel_line));
+    try adapter.cancelAllOnDisconnect();
+    while (adapter.popOutbound()) |outbound| allocator.free(outbound);
+}
+
+test "auth providers translation survives allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, authProvidersAllocationProbe, .{});
+}
+
+test "auth login, cancellation, and disconnect survive allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, authFlowAllocationProbe, .{});
 }

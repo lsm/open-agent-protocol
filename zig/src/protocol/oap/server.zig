@@ -784,37 +784,42 @@ pub const Server = struct {
         }
 
         const next_model = try self.allocator.dupe(u8, payload.model_id);
+        var model_adopted = false;
+        errdefer if (!model_adopted) self.allocator.free(next_model);
         const previous = entry.current_model_id;
         const changed = if (previous) |value| !std.mem.eql(u8, value, payload.model_id) else true;
+        const updated_at_ms = if (changed) compat.time.nowMillis() else entry.updated_at_ms;
+        {
+            const id = try self.newUlidString();
+            errdefer self.allocator.free(id);
+            const reply = try self.allocator.dupe(u8, env.id);
+            errdefer self.allocator.free(reply);
+            const scope_id = try self.allocator.dupe(u8, entry.session_id);
+            errdefer self.allocator.free(scope_id);
+            const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
+            errdefer self.allocator.free(revision);
+            const response_session = try self.allocator.dupe(u8, entry.session_id);
+            errdefer self.allocator.free(response_session);
+            const response_model = try self.allocator.dupe(u8, next_model);
+            errdefer self.allocator.free(response_model);
+            const response_previous = if (previous) |value| try self.allocator.dupe(u8, value) else null;
+            errdefer if (response_previous) |value| self.allocator.free(value);
+            try self.pushEnvelope(.{
+                .id = id,
+                .in_reply_to = reply,
+                .session_id = scope_id,
+                .capability_revision = revision,
+                .timestamp_ms = updated_at_ms,
+                .payload = .{ .session_model_switch_response = .{
+                    .session_id = response_session,
+                    .model_id = response_model,
+                    .previous_model_id = response_previous,
+                } },
+            });
+        }
         entry.current_model_id = next_model;
-        if (changed) entry.updated_at_ms = compat.time.nowMillis();
-
-        const id = try self.newUlidString();
-        errdefer self.allocator.free(id);
-        const reply = try self.allocator.dupe(u8, env.id);
-        errdefer self.allocator.free(reply);
-        const scope_id = try self.allocator.dupe(u8, entry.session_id);
-        errdefer self.allocator.free(scope_id);
-        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
-        errdefer self.allocator.free(revision);
-        const response_session = try self.allocator.dupe(u8, entry.session_id);
-        errdefer self.allocator.free(response_session);
-        const response_model = try self.allocator.dupe(u8, next_model);
-        errdefer self.allocator.free(response_model);
-        const response_previous = if (previous) |value| try self.allocator.dupe(u8, value) else null;
-        errdefer if (response_previous) |value| self.allocator.free(value);
-        try self.pushEnvelope(.{
-            .id = id,
-            .in_reply_to = reply,
-            .session_id = scope_id,
-            .capability_revision = revision,
-            .timestamp_ms = entry.updated_at_ms,
-            .payload = .{ .session_model_switch_response = .{
-                .session_id = response_session,
-                .model_id = response_model,
-                .previous_model_id = response_previous,
-            } },
-        });
+        entry.updated_at_ms = updated_at_ms;
+        model_adopted = true;
         if (previous) |value| self.allocator.free(value);
         if (changed) try self.publishSessionState(entry);
     }
@@ -1960,6 +1965,52 @@ test "a same-model switch is idempotent without a state update" {
     try std.testing.expectEqualStrings("switch-same", response.in_reply_to.?);
     try std.testing.expectEqualStrings("anthropic/anthropic-messages@first", response.payload.session_model_switch_response.model_id);
     try std.testing.expect(server.popOutbound() == null);
+}
+
+fn modelSwitchAllocationProbe(allocator: std.mem.Allocator) !void {
+    var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@first" });
+    defer server.deinit();
+    try server.addModel("anthropic/anthropic-messages@second");
+    try openTestSession(&server, allocator, "sess-1");
+
+    server.handleEnvelope(.{
+        .id = "switch-oom",
+        .session_id = "sess-1",
+        .payload = .{ .session_model_switch_request = .{
+            .session_id = "sess-1",
+            .model_id = "anthropic/anthropic-messages@second",
+        } },
+    }) catch |err| {
+        if (err == error.OutOfMemory and server.outbound.items.len == 0) {
+            try std.testing.expectEqualStrings(
+                "anthropic/anthropic-messages@first",
+                server.sessions.getPtr("sess-1").?.current_model_id.?,
+            );
+        }
+        return err;
+    };
+    drainOutbound(&server, allocator);
+}
+
+test "model switching preserves ownership and state across allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelSwitchAllocationProbe, .{});
+}
+
+fn modelsAllocationProbe(allocator: std.mem.Allocator) !void {
+    var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@first" });
+    defer server.deinit();
+    try server.addModel("anthropic/anthropic-messages@second");
+    try openTestSession(&server, allocator, "sess-1");
+    try server.handleEnvelope(.{
+        .id = "models-oom",
+        .session_id = "sess-1",
+        .payload = .{ .models_request = .{ .session_id = "sess-1" } },
+    });
+    drainOutbound(&server, allocator);
+}
+
+test "model listing preserves ownership across allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, modelsAllocationProbe, .{});
 }
 
 test "a core model switch refuses a model outside the catalog" {
