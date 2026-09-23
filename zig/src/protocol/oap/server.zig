@@ -794,6 +794,8 @@ pub const Server = struct {
         errdefer self.allocator.free(reply);
         const scope_id = try self.allocator.dupe(u8, entry.session_id);
         errdefer self.allocator.free(scope_id);
+        const revision = try self.allocator.dupe(u8, self.descriptor.capability_revision);
+        errdefer self.allocator.free(revision);
         const response_session = try self.allocator.dupe(u8, entry.session_id);
         errdefer self.allocator.free(response_session);
         const response_model = try self.allocator.dupe(u8, next_model);
@@ -804,6 +806,7 @@ pub const Server = struct {
             .id = id,
             .in_reply_to = reply,
             .session_id = scope_id,
+            .capability_revision = revision,
             .timestamp_ms = entry.updated_at_ms,
             .payload = .{ .session_model_switch_response = .{
                 .session_id = response_session,
@@ -1909,6 +1912,7 @@ test "a core model switch changes the session default without a run" {
     try server.handleEnvelope(.{
         .id = "switch-1",
         .session_id = "sess-1",
+        .capability_revision = server.descriptor.capability_revision,
         .payload = .{ .session_model_switch_request = .{
             .session_id = "sess-1",
             .model_id = "anthropic/anthropic-messages@second",
@@ -1918,6 +1922,7 @@ test "a core model switch changes the session default without a run" {
     var response = try nextEnvelope(&server, allocator);
     defer response.deinit(allocator);
     try std.testing.expectEqualStrings("switch-1", response.in_reply_to.?);
+    try std.testing.expectEqualStrings(server.descriptor.capability_revision, response.capability_revision.?);
     try std.testing.expectEqualStrings("anthropic/anthropic-messages@first", response.payload.session_model_switch_response.previous_model_id.?);
     try std.testing.expectEqualStrings("anthropic/anthropic-messages@second", response.payload.session_model_switch_response.model_id);
 

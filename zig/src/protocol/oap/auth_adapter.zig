@@ -17,11 +17,21 @@ const Flow = struct {
     }
 };
 
+const PendingQuery = struct {
+    request_id: []u8,
+    capability_revision: ?[]u8,
+
+    fn deinit(self: *PendingQuery, allocator: std.mem.Allocator) void {
+        allocator.free(self.request_id);
+        if (self.capability_revision) |revision| allocator.free(revision);
+    }
+};
+
 pub const Adapter = struct {
     allocator: std.mem.Allocator,
     server: *auth_server.AuthProtocolServer,
     outbox: std.ArrayList([]u8) = .empty,
-    queries: std.AutoHashMap(auth_types.Ulid, []u8),
+    queries: std.AutoHashMap(auth_types.Ulid, PendingQuery),
     flows: std.AutoHashMap(auth_types.Ulid, Flow),
     expected_capability_revision: ?[]const u8 = null,
     disconnected: bool = false,
@@ -32,7 +42,7 @@ pub const Adapter = struct {
         return .{
             .allocator = allocator,
             .server = server,
-            .queries = std.AutoHashMap(auth_types.Ulid, []u8).init(allocator),
+            .queries = std.AutoHashMap(auth_types.Ulid, PendingQuery).init(allocator),
             .flows = std.AutoHashMap(auth_types.Ulid, Flow).init(allocator),
         };
     }
@@ -41,7 +51,7 @@ pub const Adapter = struct {
         for (self.outbox.items) |line| self.allocator.free(line);
         self.outbox.deinit(self.allocator);
         var queries = self.queries.valueIterator();
-        while (queries.next()) |id| self.allocator.free(id.*);
+        while (queries.next()) |pending| pending.deinit(self.allocator);
         self.queries.deinit();
         var flows = self.flows.valueIterator();
         while (flows.next()) |flow| flow.deinit(self.allocator);
@@ -84,11 +94,21 @@ pub const Adapter = struct {
             }
             if (self.expected_capability_revision) |expected| {
                 if (!std.mem.eql(u8, revision_value.string, expected)) {
-                    try self.emitError(request_id, "stale_capabilities", "request pinned a capability revision this endpoint no longer serves");
+                    try self.emit("error.response", request_id, null, null, .{
+                        .@"error" = .{
+                            .code = "stale_capabilities",
+                            .message = "request pinned a capability revision this endpoint no longer serves",
+                            .details = .{
+                                .expected_revision = revision_value.string,
+                                .current_revision = expected,
+                            },
+                        },
+                    });
                     return true;
                 }
             }
         }
+        const response_revision = stringField(root, "capability_revision") orelse self.expected_capability_revision;
         const payload_value = root.get("payload") orelse {
             try self.emitError(request_id, "invalid_request", "missing auth payload");
             return true;
@@ -99,7 +119,7 @@ pub const Adapter = struct {
         }
 
         _ = try self.pump();
-        self.dispatch(type_value.string, request_id, payload_value.object) catch |err| {
+        self.dispatch(type_value.string, request_id, response_revision, payload_value.object) catch |err| {
             if (err == error.OutOfMemory) return err;
             const code = if (err == error.UnknownAuthFlow) "flow_not_found" else "invalid_request";
             try self.emitError(request_id, code, "authentication request was rejected");
@@ -151,16 +171,16 @@ pub const Adapter = struct {
         return self.outbox.orderedRemove(0);
     }
 
-    fn dispatch(self: *Self, type_name: []const u8, request_id: []const u8, payload: std.json.ObjectMap) !void {
+    fn dispatch(self: *Self, type_name: []const u8, request_id: []const u8, response_revision: ?[]const u8, payload: std.json.ObjectMap) !void {
         if (std.mem.eql(u8, type_name, "auth.providers.request")) {
             if (payload.count() != 0) return error.InvalidAuthPayload;
-            return self.providers(request_id);
+            return self.providers(request_id, response_revision);
         }
         if (std.mem.eql(u8, type_name, "auth.login.start.request")) {
             if (payload.count() != 1) return error.InvalidAuthPayload;
             const provider_id = try requiredString(payload, "provider_id");
             if (provider_id.len == 0) return error.InvalidAuthPayload;
-            return self.start(request_id, provider_id);
+            return self.start(request_id, response_revision, provider_id);
         }
         if (std.mem.eql(u8, type_name, "auth.login.reply.request")) {
             if (payload.count() != 3) return error.InvalidAuthPayload;
@@ -168,25 +188,32 @@ pub const Adapter = struct {
             const prompt_id = try requiredString(payload, "prompt_id");
             const answer = try requiredString(payload, "answer");
             if (answer.len > 4096) return error.InvalidAuthPayload;
-            return self.reply(request_id, flow_id, prompt_id, answer);
+            return self.reply(request_id, response_revision, flow_id, prompt_id, answer);
         }
         if (std.mem.eql(u8, type_name, "auth.login.cancel.request")) {
             if (payload.count() != 1) return error.InvalidAuthPayload;
             const flow_id = try requiredString(payload, "flow_id");
-            return self.cancel(request_id, flow_id);
+            return self.cancel(request_id, response_revision, flow_id);
         }
         return error.InvalidAuthPayload;
     }
 
-    fn providers(self: *Self, request_id: []const u8) !void {
+    fn providers(self: *Self, request_id: []const u8, response_revision: ?[]const u8) !void {
         const scope = auth_types.generateUlid();
         const message_id = auth_types.generateUlid();
-        const copied_id = try self.allocator.dupe(u8, request_id);
+        var pending: PendingQuery = .{
+            .request_id = try self.allocator.dupe(u8, request_id),
+            .capability_revision = null,
+        };
         var transferred = false;
-        errdefer if (!transferred) self.allocator.free(copied_id);
-        try self.queries.put(message_id, copied_id);
+        errdefer if (!transferred) pending.deinit(self.allocator);
+        if (response_revision) |revision| pending.capability_revision = try self.allocator.dupe(u8, revision);
+        try self.queries.put(message_id, pending);
         transferred = true;
-        errdefer if (self.queries.fetchRemove(message_id)) |removed| self.allocator.free(removed.value);
+        errdefer if (self.queries.fetchRemove(message_id)) |removed| {
+            var value = removed.value;
+            value.deinit(self.allocator);
+        };
         const native: auth_types.Envelope = .{
             .stream_id = scope,
             .message_id = message_id,
@@ -199,7 +226,8 @@ pub const Adapter = struct {
             defer owned.deinit(self.allocator);
             if (owned.payload == .nack) {
                 const removed = self.queries.fetchRemove(message_id).?;
-                defer self.allocator.free(removed.value);
+                var value = removed.value;
+                defer value.deinit(self.allocator);
                 try self.emitNack(request_id, owned.payload.nack);
                 return;
             }
@@ -207,7 +235,7 @@ pub const Adapter = struct {
         _ = try self.pump();
     }
 
-    fn start(self: *Self, request_id: []const u8, provider_id: []const u8) !void {
+    fn start(self: *Self, request_id: []const u8, response_revision: ?[]const u8, provider_id: []const u8) !void {
         const flow_id = auth_types.generateUlid();
         const native: auth_types.Envelope = .{
             .stream_id = flow_id,
@@ -224,15 +252,15 @@ pub const Adapter = struct {
         try self.flows.put(flow_id, .{});
         const flow_text = try auth_types.ulidToString(flow_id, self.allocator);
         defer self.allocator.free(flow_text);
-        try self.emit("auth.login.start.response", request_id, null, .{ .flow_id = flow_text });
+        try self.emit("auth.login.start.response", request_id, null, response_revision, .{ .flow_id = flow_text });
         _ = try self.pump();
     }
 
-    fn reply(self: *Self, request_id: []const u8, flow_text: []const u8, prompt_id: []const u8, answer: []const u8) !void {
+    fn reply(self: *Self, request_id: []const u8, response_revision: ?[]const u8, flow_text: []const u8, prompt_id: []const u8, answer: []const u8) !void {
         const flow_id = auth_types.parseUlid(flow_text) orelse return error.UnknownAuthFlow;
         const flow = self.flows.getPtr(flow_id) orelse return error.UnknownAuthFlow;
         if (flow.prompt_id == null or !std.mem.eql(u8, flow.prompt_id.?, prompt_id)) {
-            return self.emit("auth.login.reply.response", request_id, null, .{
+            return self.emit("auth.login.reply.response", request_id, null, response_revision, .{
                 .flow_id = flow_text,
                 .prompt_id = prompt_id,
                 .accepted = false,
@@ -257,7 +285,7 @@ pub const Adapter = struct {
         flow.next_inbound += 1;
         if (flow.prompt_id) |old| self.allocator.free(old);
         flow.prompt_id = null;
-        try self.emit("auth.login.reply.response", request_id, null, .{
+        try self.emit("auth.login.reply.response", request_id, null, response_revision, .{
             .flow_id = flow_text,
             .prompt_id = prompt_id,
             .accepted = true,
@@ -265,10 +293,10 @@ pub const Adapter = struct {
         _ = try self.pump();
     }
 
-    fn cancel(self: *Self, request_id: []const u8, flow_text: []const u8) !void {
+    fn cancel(self: *Self, request_id: []const u8, response_revision: ?[]const u8, flow_text: []const u8) !void {
         const flow_id = auth_types.parseUlid(flow_text) orelse return error.UnknownAuthFlow;
         const flow = self.flows.getPtr(flow_id) orelse {
-            return self.emit("auth.login.cancel.response", request_id, null, .{
+            return self.emit("auth.login.cancel.response", request_id, null, response_revision, .{
                 .flow_id = flow_text,
                 .accepted = false,
             });
@@ -286,7 +314,7 @@ pub const Adapter = struct {
             if (owned.payload == .nack) return self.emitNack(request_id, owned.payload.nack);
         }
         flow.next_inbound += 1;
-        try self.emit("auth.login.cancel.response", request_id, null, .{
+        try self.emit("auth.login.cancel.response", request_id, null, response_revision, .{
             .flow_id = flow_text,
             .accepted = true,
         });
@@ -298,8 +326,9 @@ pub const Adapter = struct {
             .auth_providers_response => |response| {
                 const reply_id = native.in_reply_to orelse return;
                 const pending = self.queries.fetchRemove(reply_id) orelse return;
-                defer self.allocator.free(pending.value);
-                try self.emitProviders(pending.value, response);
+                var value = pending.value;
+                defer value.deinit(self.allocator);
+                try self.emitProviders(value.request_id, value.capability_revision, response);
             },
             .auth_event => |event| try self.translateEvent(event),
             .auth_login_result => |result| try self.translateResult(result),
@@ -320,7 +349,7 @@ pub const Adapter = struct {
         defer self.allocator.free(flow_text);
         const sequence = flow.next_event;
         switch (event) {
-            .auth_url => |value| try self.emit("auth.login.event", null, sequence, .{
+            .auth_url => |value| try self.emit("auth.login.event", null, sequence, null, .{
                 .flow_id = flow_text,
                 .provider_id = value.provider_id.slice(),
                 .kind = "url",
@@ -331,7 +360,7 @@ pub const Adapter = struct {
                 const copied = try self.allocator.dupe(u8, value.prompt_id.slice());
                 if (flow.prompt_id) |old| self.allocator.free(old);
                 flow.prompt_id = copied;
-                try self.emit("auth.login.event", null, sequence, .{
+                try self.emit("auth.login.event", null, sequence, null, .{
                     .flow_id = flow_text,
                     .provider_id = value.provider_id.slice(),
                     .kind = "prompt",
@@ -340,7 +369,7 @@ pub const Adapter = struct {
                     .allow_empty = value.allow_empty,
                 });
             },
-            .progress => |value| try self.emit("auth.login.event", null, sequence, .{
+            .progress => |value| try self.emit("auth.login.event", null, sequence, null, .{
                 .flow_id = flow_text,
                 .provider_id = value.provider_id.slice(),
                 .kind = "progress",
@@ -358,14 +387,14 @@ pub const Adapter = struct {
         const flow_text = try auth_types.ulidToString(result.flow_id, self.allocator);
         defer self.allocator.free(flow_text);
         if (result.status == .failed) {
-            try self.emit("auth.login.completed", null, flow.next_event, .{
+            try self.emit("auth.login.completed", null, flow.next_event, null, .{
                 .flow_id = flow_text,
                 .provider_id = result.provider_id.slice(),
                 .status = @tagName(result.status),
                 .@"error" = .{ .code = "auth_failed", .message = "provider login failed" },
             });
         } else {
-            try self.emit("auth.login.completed", null, flow.next_event, .{
+            try self.emit("auth.login.completed", null, flow.next_event, null, .{
                 .flow_id = flow_text,
                 .provider_id = result.provider_id.slice(),
                 .status = @tagName(result.status),
@@ -373,7 +402,7 @@ pub const Adapter = struct {
         }
     }
 
-    fn emitProviders(self: *Self, reply_id: []const u8, response: auth_types.AuthProvidersResponse) !void {
+    fn emitProviders(self: *Self, reply_id: []const u8, response_revision: ?[]const u8, response: auth_types.AuthProvidersResponse) !void {
         var payload = std.ArrayList(u8).empty;
         defer payload.deinit(self.allocator);
         var writer = json_writer.JsonWriter.init(&payload, self.allocator);
@@ -390,7 +419,7 @@ pub const Adapter = struct {
         }
         try writer.endArray();
         try writer.endObject();
-        try self.emitRaw("auth.providers.response", reply_id, null, payload.items);
+        try self.emitRaw("auth.providers.response", reply_id, null, response_revision, payload.items);
     }
 
     fn emitNack(self: *Self, request_id: []const u8, nack: auth_types.Nack) !void {
@@ -399,18 +428,18 @@ pub const Adapter = struct {
     }
 
     fn emitError(self: *Self, request_id: []const u8, code: []const u8, message: []const u8) !void {
-        try self.emit("error.response", request_id, null, .{
+        try self.emit("error.response", request_id, null, null, .{
             .@"error" = .{ .code = code, .message = message },
         });
     }
 
-    fn emit(self: *Self, type_name: []const u8, in_reply_to: ?[]const u8, sequence: ?u64, payload: anytype) !void {
+    fn emit(self: *Self, type_name: []const u8, in_reply_to: ?[]const u8, sequence: ?u64, capability_revision: ?[]const u8, payload: anytype) !void {
         const payload_json = try std.json.Stringify.valueAlloc(self.allocator, payload, .{});
         defer self.allocator.free(payload_json);
-        try self.emitRaw(type_name, in_reply_to, sequence, payload_json);
+        try self.emitRaw(type_name, in_reply_to, sequence, capability_revision, payload_json);
     }
 
-    fn emitRaw(self: *Self, type_name: []const u8, in_reply_to: ?[]const u8, sequence: ?u64, payload_json: []const u8) !void {
+    fn emitRaw(self: *Self, type_name: []const u8, in_reply_to: ?[]const u8, sequence: ?u64, capability_revision: ?[]const u8, payload_json: []const u8) !void {
         var line = std.ArrayList(u8).empty;
         errdefer line.deinit(self.allocator);
         var writer = json_writer.JsonWriter.init(&line, self.allocator);
@@ -424,6 +453,7 @@ pub const Adapter = struct {
         try writer.writeStringField("id", id);
         if (in_reply_to) |reply_id| try writer.writeStringField("in_reply_to", reply_id);
         if (sequence) |value| try writer.writeIntField("sequence", value);
+        if (capability_revision) |revision| try writer.writeStringField("capability_revision", revision);
         try writer.writeIntField("timestamp_ms", compat.time.nowMillis());
         try writer.writeKey("payload");
         try writer.writeRawJson(payload_json);
@@ -459,9 +489,10 @@ test "OAP auth adapter starts and answers a local prompt without echoing the ans
     defer native.deinit();
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
+    adapter.setCapabilityRevision("current-revision");
 
     const start_line =
-        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-1","payload":{"provider_id":"test-fixture"}}
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-1","capability_revision":"current-revision","payload":{"provider_id":"test-fixture"}}
     ;
     try std.testing.expect(try adapter.handleLine(start_line));
 
@@ -472,6 +503,7 @@ test "OAP auth adapter starts and answers a local prompt without echoing the ans
     const start = parsed_start.value.object;
     try std.testing.expectEqualStrings("auth.login.start.response", try requiredString(start, "type"));
     try std.testing.expectEqualStrings("start-1", try requiredString(start, "in_reply_to"));
+    try std.testing.expectEqualStrings("current-revision", try requiredString(start, "capability_revision"));
     const flow_id = try allocator.dupe(u8, try requiredString((start.get("payload") orelse return error.MissingPayload).object, "flow_id"));
     defer allocator.free(flow_id);
 
@@ -500,7 +532,7 @@ test "OAP auth adapter starts and answers a local prompt without echoing the ans
 
     const reply_line = try std.fmt.allocPrint(
         allocator,
-        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.reply.request\",\"id\":\"reply-1\",\"payload\":{{\"flow_id\":\"{s}\",\"prompt_id\":\"{s}\",\"answer\":\"ok\"}}}}",
+        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.reply.request\",\"id\":\"reply-1\",\"capability_revision\":\"current-revision\",\"payload\":{{\"flow_id\":\"{s}\",\"prompt_id\":\"{s}\",\"answer\":\"ok\"}}}}",
         .{ flow_id, prompt_id.? },
     );
     defer allocator.free(reply_line);
@@ -511,6 +543,7 @@ test "OAP auth adapter starts and answers a local prompt without echoing the ans
     var parsed_ack = try std.json.parseFromSlice(std.json.Value, allocator, ack, .{});
     defer parsed_ack.deinit();
     try std.testing.expectEqualStrings("auth.login.reply.response", try requiredString(parsed_ack.value.object, "type"));
+    try std.testing.expectEqualStrings("current-revision", try requiredString(parsed_ack.value.object, "capability_revision"));
 
     var completed = false;
     while (!completed and compat.time.nowMillis() < deadline) {
@@ -534,6 +567,63 @@ test "OAP auth adapter starts and answers a local prompt without echoing the ans
         if (!completed) compat.time.sleepNs(std.time.ns_per_ms);
     }
     try std.testing.expect(completed);
+}
+
+test "auth adapter repeats the admitted revision on providers and cancel responses" {
+    const allocator = std.testing.allocator;
+    var native = auth_server.AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer native.deinit();
+    var adapter = Adapter.init(allocator, &native);
+    defer adapter.deinit();
+    adapter.setCapabilityRevision("current-revision");
+
+    const providers_line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.providers.request","id":"providers-1","capability_revision":"current-revision","payload":{}}
+    ;
+    try std.testing.expect(try adapter.handleLine(providers_line));
+    const providers_response = adapter.popOutbound() orelse return error.MissingProvidersResponse;
+    defer allocator.free(providers_response);
+    var parsed_providers = try std.json.parseFromSlice(std.json.Value, allocator, providers_response, .{});
+    defer parsed_providers.deinit();
+    const providers = parsed_providers.value.object;
+    try std.testing.expectEqualStrings("auth.providers.response", try requiredString(providers, "type"));
+    try std.testing.expectEqualStrings("providers-1", try requiredString(providers, "in_reply_to"));
+    try std.testing.expectEqualStrings("current-revision", try requiredString(providers, "capability_revision"));
+
+    const start_line =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-2","capability_revision":"current-revision","payload":{"provider_id":"test-fixture"}}
+    ;
+    try std.testing.expect(try adapter.handleLine(start_line));
+    const start_response = adapter.popOutbound() orelse return error.MissingStartResponse;
+    defer allocator.free(start_response);
+    var parsed_start = try std.json.parseFromSlice(std.json.Value, allocator, start_response, .{});
+    defer parsed_start.deinit();
+    const start = parsed_start.value.object;
+    try std.testing.expectEqualStrings("auth.login.start.response", try requiredString(start, "type"));
+    try std.testing.expectEqualStrings("current-revision", try requiredString(start, "capability_revision"));
+    const flow_id = try requiredString((start.get("payload") orelse return error.MissingPayload).object, "flow_id");
+    const cancel_line = try std.fmt.allocPrint(
+        allocator,
+        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"cancel-1\",\"capability_revision\":\"current-revision\",\"payload\":{{\"flow_id\":\"{s}\"}}}}",
+        .{flow_id},
+    );
+    defer allocator.free(cancel_line);
+    try std.testing.expect(try adapter.handleLine(cancel_line));
+    var found_cancel = false;
+    while (adapter.popOutbound()) |line| {
+        defer allocator.free(line);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
+        defer parsed.deinit();
+        const root = parsed.value.object;
+        if (!std.mem.eql(u8, try requiredString(root, "type"), "auth.login.cancel.response")) continue;
+        try std.testing.expectEqualStrings("cancel-1", try requiredString(root, "in_reply_to"));
+        try std.testing.expectEqualStrings("current-revision", try requiredString(root, "capability_revision"));
+        found_cancel = true;
+    }
+    try std.testing.expect(found_cancel);
 }
 
 test "auth adapter rejects undeclared secret fields without reflecting them" {
@@ -622,6 +712,9 @@ test "auth adapter rejects stale revisions and requests after disconnect without
     defer parsed_stale.deinit();
     const stale_error = ((parsed_stale.value.object.get("payload") orelse return error.MissingPayload).object.get("error") orelse return error.MissingError).object;
     try std.testing.expectEqualStrings("stale_capabilities", try requiredString(stale_error, "code"));
+    const stale_details = (stale_error.get("details") orelse return error.MissingErrorDetails).object;
+    try std.testing.expectEqualStrings("old-revision", try requiredString(stale_details, "expected_revision"));
+    try std.testing.expectEqualStrings("current-revision", try requiredString(stale_details, "current_revision"));
 
     try adapter.cancelAllOnDisconnect();
     const closed =

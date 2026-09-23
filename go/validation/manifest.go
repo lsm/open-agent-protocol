@@ -190,6 +190,7 @@ func diagnosticCodes() map[string]bool {
 		CodeWrongToolOwner, CodeUndisclosedProvideLimit, CodeResolutionPayloadMismatch,
 		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
 		CodeUnmatchedProvider, CodeDuplicateProvider,
+		CodeAuthFlowOrder, CodeAuthPromptMismatch, CodeMissingAuthTerminal,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {
@@ -223,7 +224,7 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 	paths := map[string]bool{}
 	knownCodes := diagnosticCodes()
 	knownLoadErrors := loadErrorCodes()
-	knownUnits := map[string]bool{"core": true, "tools": true, "permissions": true, "user-input": true, "recovery": true, "capabilities": true, "extensions": true}
+	knownUnits := map[string]bool{"core": true, "tools": true, "permissions": true, "user-input": true, "recovery": true, "capabilities": true, "extensions": true, "auth": true}
 	extensionUnits := map[string]bool{}
 	for _, pack := range opts.Packs {
 		extensionUnits[pack.Unit()] = true

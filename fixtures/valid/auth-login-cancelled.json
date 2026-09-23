@@ -1,0 +1,49 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.login.start.request",
+    "id": "start-req",
+    "payload": { "provider_id": "example" }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.login.start.response",
+    "id": "start-resp",
+    "in_reply_to": "start-req",
+    "payload": { "flow_id": "flow-1" }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.login.cancel.request",
+    "id": "cancel-req",
+    "payload": { "flow_id": "flow-1" }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.login.cancel.response",
+    "id": "cancel-resp",
+    "in_reply_to": "cancel-req",
+    "payload": { "flow_id": "flow-1", "accepted": true }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.login.completed",
+    "id": "completed",
+    "sequence": 1,
+    "payload": {
+      "flow_id": "flow-1",
+      "provider_id": "example",
+      "status": "cancelled"
+    }
+  }
+]

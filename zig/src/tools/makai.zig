@@ -8036,7 +8036,7 @@ fn runOapMode(
                     continue;
                 }
             }
-            if (oap.initialized and try auth_adapter.handleLine(line)) {
+            if (try auth_adapter.handleLine(line)) {
                 did_work = true;
                 continue;
             }

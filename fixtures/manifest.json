@@ -9169,6 +9169,86 @@
       ],
       "profile": "model-provider-core",
       "scope": "trace"
+    },
+    {
+      "id": "auth-login-interactive",
+      "path": "valid/auth-login-interactive.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["core", "auth"],
+      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+    },
+    {
+      "id": "auth-login-cancelled",
+      "path": "valid/auth-login-cancelled.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["core", "auth"],
+      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+    },
+    {
+      "id": "auth-event-before-start",
+      "path": "semantic-invalid/auth-event-before-start.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["auth_flow_order"],
+      "units": ["core", "auth"],
+      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+    },
+    {
+      "id": "auth-missing-terminal",
+      "path": "semantic-invalid/auth-missing-terminal.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["missing_auth_terminal"],
+      "units": ["core", "auth"],
+      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+    },
+    {
+      "id": "model-switch-live",
+      "path": "valid/model-switch-live.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["core", "models"],
+      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+    },
+    {
+      "id": "model-switch-unlisted",
+      "path": "semantic-invalid/model-switch-unlisted.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["model_not_in_catalog"],
+      "units": ["core", "models"],
+      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+    },
+    {
+      "id": "provider-attach-live",
+      "path": "valid/provider-attach-live.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["core", "models"],
+      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+    },
+    {
+      "id": "provider-attach-conflicting-alias",
+      "path": "semantic-invalid/provider-attach-conflicting-alias.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["duplicate_provider"],
+      "units": ["core", "models"],
+      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
     }
   ]
 }
