@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Zig DeepSeek adapter validates `subagent.finished` `lastAssistantMessage` the way the Go oracle does: each content block's member set per kind, Go's absent-versus-null rules, and the oracle's error text for mistyped or unknown block members. It previously checked only that the member was an array, so `[{"type":"bogus"}]` was admitted (#143).
+
 - OAP model switching now retains the previous session model until its response is queued, so an allocation failure cannot silently switch the model or leak the old value. Allocation-failure probes cover model switching and listing, plus auth provider listing, login, cancellation, and disconnect. The auth adapter now propagates parsing OOM and releases native auth replies with their owning server allocator.
 
 - Aligned core model-switch validation across Go and Zig, including degraded opt-in, switch-anchored model snapshots, unrelated refusals, and idempotent same-model updates. Agent-profile Go, Python, and Rust SDK requests now cite the discovered capability revision; successful auth responses are held to the same revision-repeat rule as other responses.

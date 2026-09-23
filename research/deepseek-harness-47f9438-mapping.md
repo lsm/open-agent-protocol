@@ -708,12 +708,10 @@ absent members:
   error and keeps decoding. The gate walks the members in the order they
   arrived for the same reason.
 
-What the gate still does not reach is the inside of `event` and of
-`lastAssistantMessage`, whose members the reducer still reads by their exact
-names. `Event.Validate` decides the event vocabulary and each
-kind's shape, and `validBlocksRaw` the content blocks; both are deferred below
-and with #143. Two consequences follow, and both are divergences rather than
-coverage:
+What the gate still does not reach is the inside of `event`, whose members the
+reducer still reads by their exact names. `Event.Validate` decides the event
+vocabulary and each kind's shape, and it is deferred with #143. Two
+consequences follow, and both are divergences rather than coverage:
 
 - An `event` object whose contents are malformed is refused by the reducer
   with the reducer's code once a turn is open. Before admission the admission
@@ -733,13 +731,29 @@ One more claimed an unknown notification is refused and asserted
 its refusal is in the codec and not in the reducer, so that test now asserts
 `deepseek_process_exit` and the method-naming text.
 
-What is not ported: `lastAssistantMessage`. The oracle runs it through
-`validBlocksRaw`, which decides per block kind on a member-exclusivity matrix
-whose Go semantics turn on the difference between an absent member and a null
-one, and that difference is per target type — `json.RawMessage` takes a null as
-four bytes while a slice takes it as nil. `[{"type":"bogus"}]` is admitted here
-and refused there, confirmed by running both. Porting it means porting that
-matrix, not the kind list, and it wants its own change.
+`lastAssistantMessage` is now ported in both of the oracle's layers, each
+checked by running `DecodeNotification` and asserting its text verbatim:
+
+- The struct decode into `[]native.ContentBlock`, walked in document order with
+  the params: an unknown block member, a mistyped one, and a non-object element
+  each report Go's own error, whose path carries the element index and the key
+  as the frame spelled it (`lastAssistantMessage.0.TEXT`). A non-object
+  element drops `Go struct field` from the text; a null element is not an error.
+- `validBlocksRaw`, reported as `invalid subagent.finished
+  lastAssistantMessage` after the identity, status and stopReason rules. It
+  runs only when the exact key `lastAssistantMessage` is present, so a
+  case-folded key reaches the struct but escapes the matrix, and a null is
+  refused where an absent member is not. Inside a block the exact-keyed checks
+  (`type`, the required members, the attachment, a tool result's content) and
+  the folded struct checks both apply, and the struct follows Go's null rules
+  per target type: a null string member leaves the earlier value, a null
+  `isError` or `content` clears it, and a null `attachment` or `offloaded` is
+  present. Case-folded `content` members decode into the earlier elements
+  rather than replacing them, as `encoding/json` reuses a slice's backing.
+  Tool-call `arguments` must be exactly one JSON value with no duplicate key,
+  lone surrogates folding to U+FFFD first as Go's decoder does.
+
+`[{"type":"bogus"}]` is now refused here as there.
 
 The direction of the gap is worth recording because it is the opposite of the
 pi port's. pi carries a hand-written member validator, so its defects have been
