@@ -61,3 +61,4 @@ venv/
 python/build/
 python/dist/
 
+/go/nocomment
