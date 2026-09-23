@@ -22,12 +22,12 @@ type AuthLoginStartResponse struct {
 }
 
 type AuthLoginEvent struct {
-	FlowID       AuthFlowID   `json:"flow_id"`
-	ProviderID   string       `json:"provider_id"`
-	Kind         string       `json:"kind"`
-	URL          string       `json:"url,omitempty"`
-	Instructions string       `json:"instructions,omitempty"`
-	Message      string       `json:"message,omitempty"`
+	FlowID       AuthFlowID `json:"flow_id"`
+	ProviderID   string     `json:"provider_id"`
+	Kind         string     `json:"kind"`
+	URL          string     `json:"url,omitempty"`
+	Instructions string     `json:"instructions,omitempty"`
+	Message      string     `json:"message,omitempty"`
 }
 
 type AuthLoginCancelRequest struct {
