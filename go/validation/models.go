@@ -45,9 +45,11 @@ type modelCatalog struct {
 	revision string
 	known    bool
 
-	binding bool
-	ids     map[string]bool
-	models  map[string]protocol.ModelDescriptor
+	binding     bool
+	ids         map[string]bool
+	providerIDs map[string]bool
+	models      map[string]protocol.ModelDescriptor
+	providers   map[string]protocol.ProviderDescriptor
 }
 
 func (c *modelCatalog) binds(revision string) bool {
@@ -192,17 +194,31 @@ func (s *state) modelsResponse(i, line int, e protocol.Envelope, p protocol.Mode
 
 	level := s.features[protocol.FeatureModelsList]
 	binding := level == protocol.SupportNative || level == protocol.SupportEmulated
-	served := &modelCatalog{revision: string(e.CapabilityRevision), known: true, binding: binding, ids: ids, models: map[string]protocol.ModelDescriptor{}}
+	served := &modelCatalog{revision: string(e.CapabilityRevision), known: true, binding: binding, ids: ids, providerIDs: map[string]bool{}, models: map[string]protocol.ModelDescriptor{}, providers: map[string]protocol.ProviderDescriptor{}}
+	for _, provider := range p.Providers {
+		served.providerIDs[provider.ID] = true
+		served.providers[provider.ID] = provider
+	}
 	for _, model := range p.Models {
 		served.models[model.ID] = model
+		if model.ProviderID != "" {
+			served.providerIDs[model.ProviderID] = true
+		}
 	}
 
 	if served.revision == "" || served.revision != s.currentCapability || s.capabilitiesStale {
 		return
 	}
-	if binding && st.catalog != nil && st.catalog.known && st.catalog.binding && st.catalog.revision == served.revision && !sameCatalog(st.catalog.models, served.models) {
-
-		s.addExpected(CodeUnannouncedCatalogChange, i, line, e, "/payload/models", "catalog changed under one capability revision without a capabilities.updated", "the catalog served under "+served.revision, "a different catalog")
+	if binding && st.catalog != nil && st.catalog.known && st.catalog.binding && st.catalog.revision == served.revision {
+		modelsChanged := !sameCatalog(st.catalog.models, served.models)
+		providersChanged := !sameCatalog(st.catalog.providers, served.providers)
+		if modelsChanged || providersChanged {
+			pointer := "/payload/providers"
+			if modelsChanged {
+				pointer = "/payload/models"
+			}
+			s.addExpected(CodeUnannouncedCatalogChange, i, line, e, pointer, "catalog changed under one capability revision without a capabilities.updated", "the catalog served under "+served.revision, "a different catalog")
+		}
 	}
 	st.catalog = served
 	s.reconcileUnjudgedModels(st, served)
@@ -227,7 +243,7 @@ func (s *state) checkProviders(i, line int, e protocol.Envelope, p protocol.Mode
 	}
 }
 
-func sameCatalog(a, b map[string]protocol.ModelDescriptor) bool {
+func sameCatalog[T any](a, b map[string]T) bool {
 	left, leftErr := json.Marshal(a)
 	right, rightErr := json.Marshal(b)
 	if leftErr != nil || rightErr != nil {

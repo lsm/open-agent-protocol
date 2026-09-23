@@ -52,6 +52,7 @@ const keywords = [_]Keyword{
     .{ .name = "if", .shape = .schema },
     .{ .name = "items", .shape = .schema },
     .{ .name = "maxItems", .shape = .count },
+    .{ .name = "maxLength", .shape = .count },
     .{ .name = "minItems", .shape = .count },
     .{ .name = "minLength", .shape = .count },
     .{ .name = "minimum", .shape = .number },
@@ -583,8 +584,12 @@ pub const Validator = struct {
     }
 
     fn checkString(self: *Validator, object: std.json.ObjectMap, text: []const u8, pointer: *Pointer) Error!void {
+        const length = std.unicode.utf8CountCodepoints(text) catch return error.InvalidSchema;
         if (object.get("minLength")) |limit| {
-            if (text.len < try countOf(limit)) try self.record(pointer, "minLength");
+            if (length < try countOf(limit)) try self.record(pointer, "minLength");
+        }
+        if (object.get("maxLength")) |limit| {
+            if (length > try countOf(limit)) try self.record(pointer, "maxLength");
         }
         if (object.get("pattern")) |expression| {
             if (expression != .string) return error.InvalidSchema;
@@ -901,6 +906,31 @@ test "a failure survives the branch validations that follow it" {
     try std.testing.expect(failure.pointer.len == 0 or failure.pointer[0] == '/');
     for (failure.pointer) |c| try std.testing.expect(c != 0xaa);
     try std.testing.expect(failure.keyword.len > 0);
+}
+
+test "string length bounds count Unicode code points" {
+    const allocator = std.testing.allocator;
+    var registry = Registry{ .allocator = allocator };
+    defer registry.deinit();
+    try registry.addDocument("length-test", "{\"type\":\"string\",\"minLength\":2,\"maxLength\":2}");
+    var validator = Validator.init(allocator, &registry);
+    defer validator.deinit();
+
+    for ([_]struct { value: []const u8, keyword: ?[]const u8 }{
+        .{ .value = "a", .keyword = "minLength" },
+        .{ .value = "ab", .keyword = null },
+        .{ .value = "abc", .keyword = "maxLength" },
+        .{ .value = "é😀", .keyword = null },
+        .{ .value = "é😀a", .keyword = "maxLength" },
+    }) |case| {
+        const failure = try validator.validate("length-test", .{ .string = case.value });
+        if (case.keyword) |keyword| {
+            try std.testing.expect(failure != null);
+            try std.testing.expectEqualStrings(keyword, failure.?.keyword);
+        } else {
+            try std.testing.expect(failure == null);
+        }
+    }
 }
 
 test "a pack branch does not excuse an envelope from the root the profile requires" {

@@ -37,6 +37,10 @@ func (s *state) modelSwitchResponse(i, line int, e protocol.Envelope) {
 	}
 	var requested protocol.SessionModelSwitchRequest
 	_ = req.envelope.DecodePayload(&requested)
+	if p.SessionID != requested.SessionID {
+		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "model switch response changed the requested session", string(requested.SessionID), string(p.SessionID), string(e.InReplyTo))
+		return
+	}
 	if p.ModelID != requested.ModelID {
 		s.addExpected(CodeUnappliedControl, i, line, e, "/payload/model_id", "model switch response did not apply the requested model", requested.ModelID, p.ModelID, string(e.InReplyTo))
 		return
@@ -99,6 +103,10 @@ func (s *state) providerAttachResponse(i, line int, e protocol.Envelope) {
 	}
 	var requested protocol.SessionProviderAttachRequest
 	_ = req.envelope.DecodePayload(&requested)
+	if p.SessionID != requested.SessionID {
+		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/session_id", "provider attach response changed the requested session", string(requested.SessionID), string(p.SessionID), string(e.InReplyTo))
+		return
+	}
 	if p.ProviderID != requested.Provider.ID {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/provider_id", "attach response must name the session-local provider alias the caller requested", requested.Provider.ID, p.ProviderID, string(e.InReplyTo))
 		return
@@ -119,6 +127,10 @@ func (s *state) providerAttachResponse(i, line int, e protocol.Envelope) {
 		if old != requested.Provider {
 			s.addExpected(CodeDuplicateProvider, i, line, e, "/payload/provider_id", "attach reused a provider alias for a different OAP service/provider", "the original binding", "a conflicting binding", p.ProviderID)
 		}
+		return
+	}
+	if st.catalog.binds(s.currentCapability) && st.catalog.providerIDs[p.ProviderID] {
+		s.addExpected(CodeDuplicateProvider, i, line, e, "/payload/provider_id", "attach reused an alias already served by the session catalog", "a fresh provider alias", p.ProviderID)
 		return
 	}
 	st.attachedProviders[p.ProviderID] = requested.Provider
