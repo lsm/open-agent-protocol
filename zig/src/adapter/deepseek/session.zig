@@ -978,8 +978,10 @@ fn singleUniqueValue(arena: std.mem.Allocator, text: []const u8) error{OutOfMemo
         var closed = false;
         switch (token) {
             .end_of_document => return true,
-            .object_begin => try stack.append(arena, .{ .is_object = true, .expect_key = true }),
-            .array_begin => try stack.append(arena, .{ .is_object = false }),
+            .object_begin, .array_begin => {
+                if (stack.items.len >= gojson.nesting_limit) return false;
+                try stack.append(arena, .{ .is_object = token == .object_begin, .expect_key = token == .object_begin });
+            },
             .object_end, .array_end => {
                 _ = stack.pop();
                 closed = true;
@@ -2569,6 +2571,7 @@ test "lastAssistantMessage blocks the oracle refuses are refused here with its w
         .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"ID\":\"i\",\"name\":\"n\",\"arguments\":\"{}\"}]}", .said = "invalid subagent.finished lastAssistantMessage" },
         .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"TOOLCALLID\":\"t\",\"content\":[]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
         .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"Content\":[]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"CONTENT\":[{\"type\":\"text\",\"text\":\"a\"},{\"type\":\"text\",\"text\":\"b\",\"id\":\"i\"}],\"Content\":[{\"type\":\"text\",\"text\":\"c\"}],\"content\":[{\"type\":\"text\",\"text\":\"d\"},{\"type\":\"text\",\"text\":\"e\"}]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
     };
     for (cases) |case| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2645,6 +2648,28 @@ test "lastAssistantMessage blocks the oracle admits are admitted here" {
         if (lastFailure(&reducer)) |code| {
             std.debug.print("{s}: {s}\n", .{ params, failureMessage(&reducer) orelse code });
             return error.Refused;
+        }
+    }
+}
+
+test "tool-call arguments nest as deep as the oracle decodes and no deeper" {
+    const cases = [_]struct { depth: usize, admitted: bool }{ .{ .depth = 10000, .admitted = true }, .{ .depth = 10001, .admitted = false } };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const opens = try a.alloc(u8, case.depth);
+        @memset(opens, '[');
+        const closes = try a.alloc(u8, case.depth);
+        @memset(closes, ']');
+        const params = try std.fmt.allocPrint(a, "{{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"{s}{s}\"}}]}}", .{ opens, closes });
+        var reducer = try admittedRun(a);
+        try notify(&reducer, a, "subagent.started", "{\"parentSessionId\":\"session\",\"childSessionId\":\"c\"}");
+        try notify(&reducer, a, "subagent.finished", params);
+        if (case.admitted) {
+            try std.testing.expect(lastFailure(&reducer) == null);
+        } else {
+            try std.testing.expectEqualStrings("deepseek native: invalid pinned message: invalid subagent.finished lastAssistantMessage", failureMessage(&reducer) orelse return error.NoRefusal);
         }
     }
 }
