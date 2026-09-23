@@ -42,6 +42,8 @@ explicit opt-in through `allow_degraded_features` under the ordinary gate.
 `model_not_found` is truthful only for an id absent from that session's
 effective catalog. A fixed-model endpoint must expose only its fixed model in
 that catalog; it must not list an unswitchable model and then call it missing.
+Refusals for unrelated reasons, such as an evicted session, retain their own
+codes even when the requested model is absent from a previously served catalog.
 If the endpoint cannot enforce this boundary, it does not conform to core
 model switching.
 

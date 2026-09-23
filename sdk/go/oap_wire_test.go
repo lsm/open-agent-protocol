@@ -20,11 +20,19 @@ func runOAPHost() {
 		if err != nil {
 			return
 		}
+		if request.Profile == oapAgent && request.Type != "protocol.initialize.request" && request.Type != "capabilities.request" && request.CapabilityRevision != "fake-rev-1" {
+			fakeEmit(oapFakeReply(request, "error.response", map[string]any{"error": map[string]any{"code": "stale_capabilities", "message": "missing capability revision"}}))
+			continue
+		}
 		switch request.Type {
 		case "protocol.initialize.request":
 			fakeEmit(oapFakeReply(request, "protocol.initialize.response", map[string]any{
 				"protocol_version": "0.1", "profile": oapAgent, "endpoint": map[string]any{"id": "fake"},
 			}))
+		case "capabilities.request":
+			response := oapFakeReply(request, "capabilities.response", map[string]any{"features": map[string]any{}})
+			response.CapabilityRevision = "fake-rev-1"
+			fakeEmit(response)
 		case "provider.models.list.request":
 			fakeEmit(oapFakeReply(request, "provider.models.list.response", map[string]any{"models": []map[string]any{{
 				"model_ref": "fixture/other:test@ok", "model_id": "ok", "provider_id": "fixture", "wire": "other",

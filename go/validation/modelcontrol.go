@@ -45,6 +45,9 @@ func (s *state) modelSwitchResponse(i, line int, e protocol.Envelope) {
 		s.addExpected(CodeUnappliedControl, i, line, e, "/payload/model_id", "model switch response did not apply the requested model", requested.ModelID, p.ModelID, string(e.InReplyTo))
 		return
 	}
+	if s.features[protocol.FeatureSessionModelSwitch] == protocol.SupportDegraded && !requested.AllowsDegraded(protocol.FeatureSessionModelSwitch) {
+		s.addExpected(CodeDegradedWithoutOptin, i, line, e, "/type", "degraded core model switch accepted without opt-in", protocol.FeatureSessionModelSwitch+" in allow_degraded_features", string(e.Type), string(e.InReplyTo))
+	}
 	st := s.track(p.SessionID)
 	if st.catalog.binds(s.currentCapability) && !st.catalog.ids[p.ModelID] {
 		s.addExpected(CodeModelNotInCatalog, i, line, e, "/payload/model_id", "model switch accepted an id absent from the session catalog", "a listed model id", p.ModelID, string(e.InReplyTo))
@@ -154,9 +157,9 @@ func (s *state) settleModelControlRefusal(i, line int, e protocol.Envelope) {
 			if st.catalog.ids[requested.ModelID] && refusal.Error.Code == errorModelNotFound {
 				s.addExpected(CodeModelNotInCatalog, i, line, e, "/payload/error", "switch refused a model that the session catalog lists", "a successful switch", describeRefusal(refusal.Error), requested.ModelID)
 			}
-			if !st.catalog.ids[requested.ModelID] {
+			if !st.catalog.ids[requested.ModelID] && refusal.Error.Code == errorModelNotFound {
 				id, ok := refusal.Error.Details["model_id"].(string)
-				if refusal.Error.Code != errorModelNotFound || !ok || id != requested.ModelID {
+				if !ok || id != requested.ModelID {
 					s.addExpected(CodeModelNotInCatalog, i, line, e, "/payload/error", "switch refusal for an unlisted model must identify the missing id", errorModelNotFound+" model_id="+requested.ModelID, describeRefusal(refusal.Error), requested.ModelID)
 				}
 			}

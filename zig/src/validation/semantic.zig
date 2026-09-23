@@ -201,12 +201,19 @@ const SwitchObservation = struct {
     response_index: usize = 0,
 };
 
+const ModelAnchor = struct {
+    request: []const u8,
+    model: []const u8,
+    index: usize,
+};
+
 const Session = struct {
     active: []const u8 = "",
     provided: std.ArrayList([]const u8) = .empty,
     attached: std.StringArrayHashMapUnmanaged(void) = .empty,
     attached_providers: std.StringArrayHashMapUnmanaged(ProviderBinding) = .empty,
     switches: std.StringArrayHashMapUnmanaged(SwitchObservation) = .empty,
+    model_anchors: std.ArrayList(ModelAnchor) = .empty,
     unjudged: std.ArrayList(Unjudged) = .empty,
     order: std.ArrayList([]const u8) = .empty,
     current_model: []const u8 = "",
@@ -414,6 +421,7 @@ pub const Machine = struct {
             holder.attached.deinit(self.allocator);
             holder.attached_providers.deinit(self.allocator);
             holder.switches.deinit(self.allocator);
+            holder.model_anchors.deinit(self.allocator);
             holder.unjudged.deinit(self.allocator);
         }
         self.sessions.deinit(self.allocator);
@@ -618,7 +626,6 @@ pub const Machine = struct {
             return;
         }
         if (std.mem.eql(u8, declared, "session.model.switch.request")) {
-            try self.gatedRequest(index, envelope, payload, feature_model_switch, "/payload/model_id");
             const holder = try self.sessionFor(memberString(payload, "session_id"));
             const model_id = memberString(payload, "model_id");
             try holder.switches.put(self.allocator, field(envelope, "id"), .{
@@ -1173,6 +1180,11 @@ pub const Machine = struct {
             try self.add(code_unapplied_control, index);
             return;
         }
+        if (std.mem.eql(u8, self.features.get(feature_model_switch) orelse "", "degraded") and
+            !allowsDegraded(request.payload, feature_model_switch))
+        {
+            try self.add(code_degraded_without_optin, index);
+        }
         if (self.catalogs.get(session_id)) |served| {
             if (served.binds(self.current_capability) and served.ids.get(selected) == null) {
                 try self.add(code_model_not_in_catalog, index);
@@ -1269,6 +1281,17 @@ pub const Machine = struct {
         const current = memberString(payload, "current_model_id");
         if (current.len != 0 and ids.get(current) == null) {
             try self.add(code_model_not_in_catalog, index);
+        }
+        if (member(payload, "as_of_model_event")) |position| {
+            const switch_id = memberString(position, "switch_request_id");
+            if (switch_id.len != 0) {
+                const holder = try self.sessionFor(memberString(payload, "session_id"));
+                try holder.model_anchors.append(self.allocator, .{
+                    .request = switch_id,
+                    .model = current,
+                    .index = index,
+                });
+            }
         }
 
         const revision = field(envelope, "capability_revision");
@@ -2479,7 +2502,21 @@ pub const Machine = struct {
     }
 
     pub fn close(self: *Machine) !void {
-        for (self.sessions.values()) |holder| {
+        for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
+            for (holder.model_anchors.items) |anchor| {
+                const request = self.requests.get(anchor.request) orelse continue;
+                if (!std.mem.eql(u8, request.declared, "session.model.switch.request")) continue;
+                if (!std.mem.eql(u8, memberString(request.payload, "session_id"), session_id)) {
+                    try self.add(code_scope_mismatch, anchor.index);
+                    continue;
+                }
+                const observed = holder.switches.get(anchor.request) orelse continue;
+                if (observed.accepted and anchor.model.len != 0 and
+                    !std.mem.eql(u8, observed.model, anchor.model))
+                {
+                    try self.add(code_session_state_mismatch, anchor.index);
+                }
+            }
             for (holder.switches.values()) |observed| {
                 if (observed.accepted and !observed.seen) {
                     try self.add(code_session_state_mismatch, observed.response_index);
@@ -4197,6 +4234,30 @@ test "accepted model switches require matching canonical updates but unchanged s
         \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
         \\{"session_id":"s","model_id":"m1"}}]
     , &.{});
+}
+
+test "core model switch needs no optional capability gate" {
+    try expectCodes(
+        \\[{"type":"session.open.response","id":"o1","payload":{"session_id":"s","current_model_id":"m1"}},
+        \\{"type":"session.model.switch.request","id":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m1"}},
+        \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m1"}}]
+    , &.{});
+}
+
+test "switch anchored catalog checks the named model and session" {
+    const prefix =
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"session.open.response","id":"o1","payload":{"session_id":"s","current_model_id":"m1"}},
+        \\{"type":"session.model.switch.request","id":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m2"}},
+        \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m2"}},
+        \\{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","current_model_id":"m2"}},
+    ;
+    try expectCodes(prefix ++
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"session_id":"s","current_model_id":"m1","as_of_model_event":{"switch_request_id":"q1"},"models":[{"id":"m1"},{"id":"m2"}]}}]
+    , &.{"session_state_mismatch"});
+    try expectCodes(prefix ++
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"session_id":"other","current_model_id":"m2","as_of_model_event":{"switch_request_id":"q1"},"models":[{"id":"m1"},{"id":"m2"}]}}]
+    , &.{"scope_mismatch"});
 }
 
 test "provider attachment protects existing aliases and licenses catalog expansion" {

@@ -9221,8 +9221,48 @@
       "provenance": ["decisions/0029-authentication-over-agent-control.md"]
     },
     {
+      "id": "auth-revision-not-repeated",
+      "path": "semantic-invalid/auth-revision-not-repeated.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["stale_capability_revision"],
+      "units": ["core", "auth"],
+      "provenance": ["drafts/conformance.md", "decisions/0029-authentication-over-agent-control.md"]
+    },
+    {
       "id": "model-switch-live",
       "path": "valid/model-switch-live.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["core", "models"],
+      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+    },
+    {
+      "id": "model-switch-core-no-capabilities",
+      "path": "valid/model-switch-core-no-capabilities.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": ["core", "models"],
+      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+    },
+    {
+      "id": "model-switch-degraded-no-optin",
+      "path": "semantic-invalid/model-switch-degraded-no-optin.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": ["degraded_without_optin"],
+      "units": ["core", "models"],
+      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+    },
+    {
+      "id": "model-switch-unrelated-refusal",
+      "path": "valid/model-switch-unrelated-refusal.json",
       "kind": "positive",
       "valid": true,
       "phase": "",

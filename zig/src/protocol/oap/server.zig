@@ -785,8 +785,9 @@ pub const Server = struct {
 
         const next_model = try self.allocator.dupe(u8, payload.model_id);
         const previous = entry.current_model_id;
+        const changed = if (previous) |value| !std.mem.eql(u8, value, payload.model_id) else true;
         entry.current_model_id = next_model;
-        entry.updated_at_ms = compat.time.nowMillis();
+        if (changed) entry.updated_at_ms = compat.time.nowMillis();
 
         const id = try self.newUlidString();
         errdefer self.allocator.free(id);
@@ -815,7 +816,7 @@ pub const Server = struct {
             } },
         });
         if (previous) |value| self.allocator.free(value);
-        try self.publishSessionState(entry);
+        if (changed) try self.publishSessionState(entry);
     }
 
     const StateKind = enum { open, state };
@@ -1939,6 +1940,26 @@ test "a core model switch changes the session default without a run" {
     var state = try nextEnvelope(&server, allocator);
     defer state.deinit(allocator);
     try std.testing.expectEqualStrings("anthropic/anthropic-messages@second", state.payload.session_state_response.current_model_id.?);
+}
+
+test "a same-model switch is idempotent without a state update" {
+    const allocator = std.testing.allocator;
+    var server = try Server.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@first" });
+    defer server.deinit();
+    try openTestSession(&server, allocator, "sess-1");
+    try server.handleEnvelope(.{
+        .id = "switch-same",
+        .session_id = "sess-1",
+        .payload = .{ .session_model_switch_request = .{
+            .session_id = "sess-1",
+            .model_id = "anthropic/anthropic-messages@first",
+        } },
+    });
+    var response = try nextEnvelope(&server, allocator);
+    defer response.deinit(allocator);
+    try std.testing.expectEqualStrings("switch-same", response.in_reply_to.?);
+    try std.testing.expectEqualStrings("anthropic/anthropic-messages@first", response.payload.session_model_switch_response.model_id);
+    try std.testing.expect(server.popOutbound() == null);
 }
 
 test "a core model switch refuses a model outside the catalog" {

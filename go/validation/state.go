@@ -576,7 +576,7 @@ func (s *state) response(i, line int, e protocol.Envelope) bool {
 	}
 	req.responded = true
 
-	if e.Type != protocol.TypeErrorResponse && req.typ != protocol.TypeProtocolInitializeRequest && req.typ != protocol.TypeCapabilitiesRequest && !strings.HasPrefix(string(req.typ), "auth.") && req.capabilityRevision != "" && string(e.CapabilityRevision) != req.capabilityRevision {
+	if e.Type != protocol.TypeErrorResponse && req.typ != protocol.TypeProtocolInitializeRequest && req.typ != protocol.TypeCapabilitiesRequest && req.capabilityRevision != "" && string(e.CapabilityRevision) != req.capabilityRevision {
 		s.addExpected(CodeStaleCapabilityRevision, i, line, e, "/capability_revision", "successful response must repeat the request capability revision", req.capabilityRevision, string(e.CapabilityRevision), string(e.InReplyTo))
 	}
 	if e.Type == protocol.TypeErrorResponse {

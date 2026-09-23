@@ -336,6 +336,7 @@ struct Inner {
     writer: Mutex<Option<JoinHandle<()>>>,
     closing: AtomicBool,
     oap: bool,
+    agent_revision: Mutex<Option<String>>,
 }
 
 impl Drop for Inner {
@@ -485,6 +486,7 @@ impl Transport {
             writer: Mutex::new(Some(writer)),
             closing: AtomicBool::new(false),
             oap,
+            agent_revision: Mutex::new(None),
         });
         let transport = Self { inner };
 
@@ -524,6 +526,37 @@ impl Transport {
                 Some("protocol_mismatch"),
             ));
         }
+        let capabilities = self
+            .request_oap(
+                AGENT_PROFILE,
+                "capabilities.request",
+                json!({}),
+                None,
+                options.handshake_timeout,
+            )
+            .await?;
+        let revision = capabilities
+            .raw
+            .get("capability_revision")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                Error::protocol(
+                    "OAP capabilities omitted capability_revision",
+                    Some("malformed_response"),
+                )
+            })?;
+        if capabilities.kind != "capabilities.response" {
+            return Err(Error::protocol(
+                "OAP agent capabilities failed",
+                Some("protocol_mismatch"),
+            ));
+        }
+        *self
+            .inner
+            .agent_revision
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(revision.to_owned());
         let describe = self
             .request_oap(
                 PROVIDER_PROFILE,
@@ -587,6 +620,22 @@ impl Transport {
         scope: Option<(&str, &str)>,
     ) -> Result<()> {
         let mut envelope = json!({ "protocol": OAP_PROTOCOL, "version": OAP_VERSION, "profile": profile, "type": kind, "id": id, "payload": payload });
+        if profile == AGENT_PROFILE
+            && kind != "protocol.initialize.request"
+            && kind != "capabilities.request"
+        {
+            if let Some(revision) = self
+                .inner
+                .agent_revision
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                if let Some(fields) = envelope.as_object_mut() {
+                    fields.insert("capability_revision".to_owned(), json!(revision));
+                }
+            }
+        }
         if let Some((key, value)) = scope {
             if let Some(fields) = envelope.as_object_mut() {
                 fields.insert(key.to_owned(), Value::String(value.to_owned()));

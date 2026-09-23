@@ -18,20 +18,21 @@ const envelopeVersion = 1
 // fields at the top level rather than under "payload", so the payload is kept
 // as raw JSON and interpreted by each namespace.
 type frame struct {
-	Protocol    string          `json:"protocol,omitempty"`
-	Profile     string          `json:"profile,omitempty"`
-	ID          string          `json:"id,omitempty"`
-	InferenceID string          `json:"inference_id,omitempty"`
-	Type        string          `json:"type"`
-	StreamID    string          `json:"stream_id,omitempty"`
-	SessionID   string          `json:"session_id,omitempty"`
-	RunID       string          `json:"run_id,omitempty"`
-	MessageID   string          `json:"message_id,omitempty"`
-	Sequence    int64           `json:"sequence,omitempty"`
-	Timestamp   int64           `json:"timestamp,omitempty"`
-	Version     any             `json:"version"`
-	InReplyTo   string          `json:"in_reply_to,omitempty"`
-	Payload     json.RawMessage `json:"payload,omitempty"`
+	Protocol           string          `json:"protocol,omitempty"`
+	Profile            string          `json:"profile,omitempty"`
+	ID                 string          `json:"id,omitempty"`
+	InferenceID        string          `json:"inference_id,omitempty"`
+	Type               string          `json:"type"`
+	StreamID           string          `json:"stream_id,omitempty"`
+	SessionID          string          `json:"session_id,omitempty"`
+	RunID              string          `json:"run_id,omitempty"`
+	MessageID          string          `json:"message_id,omitempty"`
+	Sequence           int64           `json:"sequence,omitempty"`
+	Timestamp          int64           `json:"timestamp,omitempty"`
+	Version            any             `json:"version"`
+	InReplyTo          string          `json:"in_reply_to,omitempty"`
+	CapabilityRevision string          `json:"capability_revision,omitempty"`
+	Payload            json.RawMessage `json:"payload,omitempty"`
 
 	// ProtocolVersion appears on the "ready" handshake frame only.
 	ProtocolVersion string `json:"protocol_version,omitempty"`

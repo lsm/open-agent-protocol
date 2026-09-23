@@ -23,9 +23,16 @@ for line in sys.stdin:
     assert request["protocol"] == "open-agent-protocol"
     assert request["version"] == "0.1"
     kind, rid = request["type"], request["id"]
+    if request["profile"] == A and kind not in ("protocol.initialize.request", "capabilities.request"):
+        assert request.get("capability_revision") == "fixture-rev-1"
     if kind == "protocol.initialize.request":
         emit(A, "protocol.initialize.response", rid, payload={"protocol_version":"0.1", "profile":A,
              "endpoint":{"id":"fixture"}})
+    elif kind == "capabilities.request":
+        message = {"protocol":"open-agent-protocol", "version":"0.1", "profile":A,
+                   "type":"capabilities.response", "id":"host-capabilities", "in_reply_to":rid,
+                   "capability_revision":"fixture-rev-1", "payload":{"features":{}}}
+        print(json.dumps(message), flush=True)
     elif kind == "provider.models.list.request":
         emit(P, "provider.models.list.response", rid, payload={"models":[{
              "model_ref":"fixture/other:test@ok", "model_id":"ok", "provider_id":"fixture",
@@ -65,6 +72,10 @@ for line in sys.stdin:
         sid=request["payload"]["session_id"]
         emit(A, "session.model.switch.response", rid, {"session_id":sid},
              {"session_id":sid,"model_id":request["payload"]["model_id"]})
+    elif kind == "models.request":
+        sid=request["payload"]["session_id"]
+        emit(A, "models.response", rid, {"session_id":sid},
+             {"session_id":sid,"models":[{"id":"fixture/other:test@ok"}]})
     elif kind == "session.message.submit.request":
         sid=request["payload"]["session_id"]
         scope={"session_id":sid,"run_id":"run-1"}
@@ -162,6 +173,8 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
                              ["message_start", "text_delta", "message_end"])
             opened = await client.agent.open_session("session-1")
             self.assertEqual(opened["session_id"], "session-1")
+            available = await client.agent.available_models("session-1")
+            self.assertEqual(available["models"][0]["id"], "fixture/other:test@ok")
             switched = await client.agent.switch_model("session-1", "fixture/other:test@ok")
             self.assertEqual(switched["model_id"], "fixture/other:test@ok")
             agent_response = await client.agent.run(

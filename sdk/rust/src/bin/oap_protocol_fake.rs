@@ -42,6 +42,13 @@ fn main() {
         if request.get("protocol").and_then(Value::as_str) != Some("open-agent-protocol") {
             break;
         }
+        if profile == AGENT
+            && kind != "protocol.initialize.request"
+            && kind != "capabilities.request"
+            && request.get("capability_revision").and_then(Value::as_str) != Some("fixture-rev-1")
+        {
+            break;
+        }
         let data = &request["payload"];
         match (profile, kind) {
             (AGENT, "protocol.initialize.request") => emit(
@@ -52,6 +59,13 @@ fn main() {
                     "protocol_version": "0.1", "profile": AGENT, "endpoint": { "id": "fixture" }
                 }),
                 json!({}),
+            ),
+            (AGENT, "capabilities.request") => emit(
+                profile,
+                "capabilities.response",
+                Some(id),
+                json!({ "features": {} }),
+                json!({ "capability_revision": "fixture-rev-1" }),
             ),
             (AGENT, "auth.providers.request") => emit(
                 profile,

@@ -46,6 +46,7 @@ func (k routeKind) String() string {
 // slow or abandoned call cannot stall another call's frames.
 type transport struct {
 	legacyWire    bool
+	agentRevision string
 	cmd           *exec.Cmd
 	stdin         io.WriteCloser
 	logger        *slog.Logger
@@ -133,6 +134,20 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	if err := t.awaitHandshake(ctx, handshake, opts); err != nil {
 		_ = t.close()
 		return nil, err
+	}
+	if !opts.LegacyWire {
+		request := oapFrame(oapAgent, "capabilities.request", map[string]any{})
+		sub := t.subscribeStream(request.ID)
+		response, err := oapRequest(ctx, t, sub, opts.handshakeTimeout(), request)
+		sub.close()
+		if err != nil || response.Type != "capabilities.response" || response.CapabilityRevision == "" {
+			_ = t.close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "OAP capabilities response omitted capability_revision"}
+		}
+		t.agentRevision = response.CapabilityRevision
 	}
 	return t, nil
 }
@@ -298,6 +313,9 @@ func (t *transport) promoteSessionLocked(sessionID string, sub *subscription) {
 // send writes one envelope to the runtime. Writes are serialized so frames
 // never interleave on the pipe.
 func (t *transport) send(f *frame) error {
+	if f.Profile == oapAgent && f.Type != "protocol.initialize.request" && f.Type != "capabilities.request" {
+		f.CapabilityRevision = t.agentRevision
+	}
 	encoded := mustMarshal(f)
 	line := make([]byte, 0, len(encoded)+1)
 	line = append(line, encoded...)

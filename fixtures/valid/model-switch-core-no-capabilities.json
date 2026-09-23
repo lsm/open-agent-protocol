@@ -1,0 +1,6 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"open-req","session_id":"s1","payload":{"session_id":"s1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"open-resp","in_reply_to":"open-req","session_id":"s1","payload":{"session_id":"s1","status":"idle","current_model_id":"m1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.model.switch.request","id":"switch-req","session_id":"s1","payload":{"session_id":"s1","model_id":"m1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.model.switch.response","id":"switch-resp","in_reply_to":"switch-req","session_id":"s1","payload":{"session_id":"s1","model_id":"m1","previous_model_id":"m1"}}
+]

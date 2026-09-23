@@ -190,6 +190,7 @@ class StdioTransport:
         self._inference_routes: Dict[str, FrameRoute] = {}
         self._auth_flow_routes: Dict[str, FrameRoute] = {}
         self._handshake: Optional[asyncio.Future[None]] = None
+        self._agent_revision: Optional[str] = None
         self._closed = False
         self._write_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -296,6 +297,22 @@ class StdioTransport:
         except BaseException:
             await self.close()
             raise
+        if not self._legacy_wire:
+            from ._ids import new_ulid
+            capability_id = new_ulid()
+            try:
+                async with self.route(request_id=capability_id) as route:
+                    await self.send({"protocol": "open-agent-protocol", "version": "0.1",
+                                     "profile": "open-agent-protocol.agent-control-core",
+                                     "type": "capabilities.request", "id": capability_id, "payload": {}})
+                    capabilities = await route.next_frame(self._handshake_timeout)
+                revision = capabilities.get("capability_revision")
+                if capabilities.get("type") != "capabilities.response" or not isinstance(revision, str) or not revision:
+                    raise MakaiStreamError("OAP capabilities response omitted capability_revision", kind="transport_error")
+                self._agent_revision = revision
+            except BaseException:
+                await self.close()
+                raise
         logger.debug("handshake complete (pid=%s)", process.pid)
 
     async def send(self, frame: Frame) -> None:
@@ -303,6 +320,10 @@ class StdioTransport:
         process = self._process
         if process is None or process.stdin is None or self._closed:
             raise MakaiStreamError("transport is not connected", kind="transport_error")
+        if (frame.get("profile") == "open-agent-protocol.agent-control-core"
+                and frame.get("type") not in ("protocol.initialize.request", "capabilities.request")
+                and self._agent_revision):
+            frame["capability_revision"] = self._agent_revision
         line = (json.dumps(frame, separators=(",", ":")) + "\n").encode()
         async with self._write_lock:
             try:
