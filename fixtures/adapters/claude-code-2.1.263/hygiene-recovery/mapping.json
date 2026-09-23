@@ -83,7 +83,7 @@
     "direction": "harness-control",
     "classification": "mapped",
     "fidelity": "synthesized",
-    "oap": "run.resume unavailable"
+    "oap": "run.resume replays the adapter journal"
   },
   {
     "index": 12,

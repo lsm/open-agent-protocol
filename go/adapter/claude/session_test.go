@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1009,15 +1011,194 @@ func TestCancelUnknownRunRejected(t *testing.T) {
 	}
 }
 
-func TestUnavailableOperations(t *testing.T) {
-	_, session, peer := openWire(t)
-	if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: "run"}); err == nil || stream != nil {
-		t.Fatal("resume available")
+func openWireWithJournal(t *testing.T, capacity int) (base.Session, *wirePeer) {
+	t.Helper()
+	peer := newWirePeer(t)
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) { return peer.client, nil }), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: capacity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return adaptertest.AssertInitialState(t, implementation, base.OpenRequest{SessionID: "session", Participant: protocol.Participant{ID: "user"}}), peer
+}
+
+func startTextRun(t *testing.T, session base.Session, peer *wirePeer, deltas int) (submitOutcome, string) {
+	t.Helper()
+	outcome := submit(session)
+	uuid := turnUUIDOf(t, peer.writtenUser())
+	peer.send(streamEcho(uuid))
+	result := awaitSubmit(t, outcome)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	for index := range deltas {
+		peer.send(textDelta(uuid, strconv.Itoa(index)))
+	}
+	return result, uuid
+}
+
+func readUntilClosed(t *testing.T, stream base.EventStream) ([]protocol.Envelope, error) {
+	t.Helper()
+	var envelopes []protocol.Envelope
+	var streamErr error
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case result, ok := <-stream:
+			if !ok {
+				return envelopes, streamErr
+			}
+			if result.Error != nil {
+				streamErr = result.Error
+				continue
+			}
+			envelopes = append(envelopes, result.Envelope)
+		case <-timer.C:
+			t.Fatal("event stream did not close")
+			return nil, nil
+		}
+	}
+}
+
+func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
+	session, peer := openWireWithJournal(t, 256)
+	result, uuid := startTextRun(t, session, peer, 0)
+	for index := range 2 * streamCapacity {
+		peer.send(textDelta(uuid, strconv.Itoa(index)))
+		if index%16 == 15 {
+			peer.awaitDrain()
+		}
+	}
+	prefix, streamErr := readUntilClosed(t, result.stream)
+	if !errors.Is(streamErr, base.ErrEventStreamOverflow) || len(prefix) != streamCapacity {
+		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
+	}
+	cursor := *prefix[len(prefix)-1].Sequence
+	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: cursor})
+	if err != nil || recovery.ReplayGap != nil || recovery.RequestedAfter != cursor || recovery.ReplayedFrom != cursor+1 {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := append(prefix, adaptertest.Drain(t, resumed, 5*time.Second)...)
+	deltas := 0
+	for index, event := range events {
+		if event.Sequence == nil || *event.Sequence != uint64(index+1) {
+			t.Fatalf("event %d carries sequence %v", index, event.Sequence)
+		}
+		if event.Type == protocol.TypeContentDelta {
+			deltas++
+		}
+	}
+	if deltas != 2*streamCapacity || terminalOf(events).Type != protocol.TypeRunCompleted {
+		t.Fatalf("resumed run delivered %d deltas and ended with %s", deltas, terminalOf(events).Type)
+	}
+	assertValidTrace(t, result.admission, events)
+}
+
+func TestResumeReplaysAnEndedRunFromADetachedJournal(t *testing.T) {
+	session, peer := openWireWithJournal(t, 256)
+	result, uuid := startTextRun(t, session, peer, 3)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, result.stream, 5*time.Second)
+	if len(terminalOf(events).Extensions) == 0 {
+		t.Fatal("the terminal carries no extensions to detach")
+	}
+	last := *terminalOf(events).Sequence
+	want, err := json.Marshal(events[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	vandalize := func(envelopes []protocol.Envelope) {
+		for _, envelope := range envelopes {
+			envelope.Payload[0] = 'X'
+			*envelope.Sequence += 1000
+			*envelope.TimestampMS += 1000
+			for _, value := range envelope.Extensions {
+				value[0] = 'X'
+			}
+		}
+	}
+	vandalize(events)
+	for range 2 {
+		recovery, replay, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: 1})
+		if err != nil || recovery.ReplayedFrom != 2 || recovery.ReplayedThrough != last {
+			t.Fatalf("resume = %+v, %v", recovery, err)
+		}
+		replayed := adaptertest.Drain(t, replay, 5*time.Second)
+		got, err := json.Marshal(replayed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("replay = %s, want %s", got, want)
+		}
+		vandalize(replayed)
+	}
+}
+
+func TestResumeReportsAGapOnceTheJournalEvictsTheCursor(t *testing.T) {
+	session, peer := openWireWithJournal(t, 4)
+	result, uuid := startTextRun(t, session, peer, 6)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	latest := *terminalOf(adaptertest.Drain(t, result.stream, 5*time.Second)).Sequence
+	oldest := latest - 3
+	recovery, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: oldest - 2})
+	var gap *base.ReplayGap
+	if !errors.As(err, &gap) || *gap != (base.ReplayGap{RequestedAfter: oldest - 2, OldestAvailable: oldest, LatestAvailable: latest}) || recovery.ReplayGap != gap || recovery.ReplayedFrom != 0 || recovery.State.Status != protocol.SessionIdle {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	if replayed, _ := readUntilClosed(t, stream); len(replayed) != 0 {
+		t.Fatalf("a gap replayed %d envelopes", len(replayed))
+	}
+	_, stream, err = session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: oldest - 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed := adaptertest.Drain(t, stream, 5*time.Second); len(replayed) != 4 || *replayed[0].Sequence != oldest {
+		t.Fatalf("boundary replay = %v", eventTypes(replayed))
+	}
+}
+
+func TestResumeOfALiveRunRefusesAFutureCursorAndFollowsItToTheTerminal(t *testing.T) {
+	session, peer := openWireWithJournal(t, 256)
+	result, uuid := startTextRun(t, session, peer, 1)
+	var latest uint64
+	for latest == 0 {
+		if event := adaptertest.Next(t, result.stream, 5*time.Second); event.Type == protocol.TypeContentDelta {
+			latest = *event.Sequence
+		}
+	}
+	if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: latest + 1}); !errors.Is(err, base.ErrReplayCursorFuture) || stream != nil {
+		t.Fatalf("future cursor on a live run = %v", err)
+	}
+	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: latest})
+	if err != nil || recovery.ReplayedFrom != latest || recovery.ReplayedThrough != latest {
+		t.Fatalf("resume at the head = %+v, %v", recovery, err)
+	}
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	followed := adaptertest.Drain(t, resumed, 5*time.Second)
+	if len(followed) == 0 || *followed[0].Sequence != latest+1 || terminalOf(followed).Type != protocol.TypeRunCompleted {
+		t.Fatalf("resumed live run delivered %v", eventTypes(followed))
+	}
+}
+
+func TestResumeRefusesAFutureCursorAnUnknownRunAndAClosedSession(t *testing.T) {
+	session, peer := openWireWithJournal(t, 256)
+	result, uuid := startTextRun(t, session, peer, 1)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	latest := *terminalOf(adaptertest.Drain(t, result.stream, 5*time.Second)).Sequence
+	if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: latest + 1}); !errors.Is(err, base.ErrReplayCursorFuture) || stream != nil {
+		t.Fatalf("future cursor = %v", err)
+	}
+	if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: "run-unknown"}); !errors.Is(err, base.ErrRunNotFound) || stream != nil {
+		t.Fatalf("unknown run = %v", err)
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	_ = peer
+	if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID}); !errors.Is(err, base.ErrSessionClosed) || stream != nil {
+		t.Fatalf("closed session = %v", err)
+	}
 }
 
 func TestSubmitRejectsInvalidSurfaces(t *testing.T) {

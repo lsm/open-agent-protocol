@@ -233,3 +233,48 @@ run before its first `can_use_tool`. That ask was ask-gated `Bash`, available
 because `AllowTools` did not bound the surface. On 2.1.280 the echo precedes
 any ask, and with the surface bounded no call under a read-only posture can
 ask at all.
+
+## Issue #238: resume replays the adapter journal
+
+`run.resume` and `run.replay` move from `unavailable` to `degraded`, and the
+journal's replay with them; the capability revision is now
+`claude-code-2.1.280-oap-v2`. The 2.1.263 ledger's finding stands: the CLI has
+no cursor, no redelivery contract and no gap semantics, and its resume, fork
+and transcript persistence are conversation-level. What changes is that
+`Session.Resume` no longer defers to the CLI. It replays the envelopes the
+adapter itself emitted, from the bounded process-memory journal every session
+already kept, as the ACP, Codex, OpenCode, Pi and memory adapters do.
+
+Why it matters: `ErrEventStreamOverflow` tells a consumer to resume from its
+last sequence, and `Resume` answered `unavailable` unconditionally. An
+in-process consumer whose drain loop stalled for longer than the 64-slot stream
+lost the run. That was hyperneo-review's reviewbot, stalling while it resolved
+an interaction synchronously. The daemon's `?after=` reconnect drives the same
+`Resume`, so it could not resume a claude session either.
+
+- A cursor inside the journal replays the suffix, detached from the journal,
+  then follows the live run. A run that has ended replays its retained tail and
+  closes; the adapter keeps each ended run's last sequence so that a resume
+  racing the terminal still finds it.
+- A cursor older than the journal returns `*adapter.ReplayGap` with the retained
+  bounds, and a cursor past the run returns `ErrReplayCursorFuture`. Neither is
+  papered over.
+- A native session UUID is not an OAP run: resuming one is `ErrRunNotFound`.
+  The `hygiene-recovery` case now executes both labels this way.
+  `no-implied-replay` replays a delivered run and requires the replay to equal
+  what its stream delivered. `resume-fork` resumes by the native session id and
+  requires the refusal.
+
+Live at 2.1.280, through a loopback provider streaming N text deltas, with the
+consumer stalled 3s before reading. At `e0301b9a` the run overflowed after
+sequence 64 and `Resume` returned `operation unavailable`, #238's exact error.
+With this change, N=300 and the default 256-entry journal replayed 65–302, and
+the run completed with contiguous sequences and the text intact. N=1000 with
+the same journal returned a `ReplayGap`: the stall outran what the journal
+kept. With a 2048-entry journal it replayed 65–1002 and completed. So
+`JournalCapacity` should cover the events of the longest stall a consumer can
+have.
+
+The Zig port has no per-subscriber stream or journal, so it has no `Resume`.
+Its corpus harness skips `resume` ops, and only its capability revision
+follows this change.

@@ -146,6 +146,7 @@ type ccControl struct {
 	Decision string `json:"decision,omitempty"`
 	Status   string `json:"status,omitempty"`
 	Expect   string `json:"expect,omitempty"`
+	RunID    string `json:"run_id,omitempty"`
 
 	Catalog *protocol.ToolsListResponse `json:"catalog,omitempty"`
 }
@@ -482,10 +483,33 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 				execution.assertStates = append(execution.assertStates, control.Status)
 				execution.modelIDs = append(execution.modelIDs, state.CurrentModelID)
 			case "resume":
-				if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: "run"}); !errors.Is(err, errUnavailable) || stream != nil {
+				if control.Expect == "run-not-found" {
+					if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: protocol.RunID(control.RunID)}); !errors.Is(err, base.ErrRunNotFound) || stream != nil {
+						t.Fatalf("frame %d: resume error = %v", i+1, err)
+					}
+					execution.resumeRefused++
+					break
+				}
+				if len(execution.runs) == 0 || len(execution.runs[len(execution.runs)-1]) == 0 {
+					t.Fatalf("frame %d: no delivered run to replay", i+1)
+				}
+				delivered := execution.runs[len(execution.runs)-1]
+				recovery, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: delivered[0].RunID})
+				if err != nil || recovery.ReplayGap != nil {
 					t.Fatalf("frame %d: resume error = %v", i+1, err)
 				}
-				execution.resumeUnavailable++
+				want, err := json.Marshal(delivered)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := json.Marshal(adaptertest.Drain(t, stream, 5*time.Second))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("frame %d: replay %s differs from delivery %s", i+1, got, want)
+				}
+				execution.resumeReplayed++
 			case "close":
 				recordPending()
 				if err := session.Close(context.Background()); err != nil {
@@ -522,22 +546,23 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 }
 
 type ccExecution struct {
-	descriptor        base.Descriptor
-	admissions        []protocol.MessageSubmitResponse
-	submitErrors      []error
-	envelopes         []protocol.Envelope
-	runs              [][]protocol.Envelope
-	userWrites        int
-	lastUserUUID      string
-	controlWrites     map[string]int
-	initializeShape   bool
-	initializeReply   bool
-	cancelAccepted    bool
-	cancelsIssued     int
-	resumeUnavailable int
-	assertStates      []string
-	modelIDs          []string
-	catalogs          []protocol.ToolsListResponse
+	descriptor      base.Descriptor
+	admissions      []protocol.MessageSubmitResponse
+	submitErrors    []error
+	envelopes       []protocol.Envelope
+	runs            [][]protocol.Envelope
+	userWrites      int
+	lastUserUUID    string
+	controlWrites   map[string]int
+	initializeShape bool
+	initializeReply bool
+	cancelAccepted  bool
+	cancelsIssued   int
+	resumeReplayed  int
+	resumeRefused   int
+	assertStates    []string
+	modelIDs        []string
+	catalogs        []protocol.ToolsListResponse
 
 	servedRequest protocol.ToolsListRequest
 	served        *base.ToolCatalog
@@ -662,7 +687,11 @@ func ccLoadFrames(t *testing.T, filename string) ([]ccFrame, []ccDecodedFrame) {
 					if control.Catalog == nil {
 						t.Fatalf("frame %d assert-catalog declares no catalog", i+1)
 					}
-				case "resume", "close":
+				case "resume":
+					if (control.Expect != "replay" || control.RunID != "") && (control.Expect != "run-not-found" || control.RunID == "") {
+						t.Fatalf("frame %d invalid resume expectation", i+1)
+					}
+				case "close":
 				default:
 					t.Fatalf("frame %d invalid oap control op %q", i+1, control.Op)
 				}
@@ -1397,11 +1426,12 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 				ccEnvelopeCount(*execution, protocol.TypeRunCompleted) > 0
 		case "no-implied-replay":
 			feature, advertised := execution.descriptor.Capabilities.Features["run.replay"]
-			ok = execution.resumeUnavailable >= 1 && advertised && feature.Level == protocol.SupportUnavailable &&
-				execution.descriptor.Journal.Replay == protocol.SupportUnavailable
+			journal := execution.descriptor.Journal
+			ok = execution.resumeReplayed >= 1 && advertised && feature.Level == protocol.SupportDegraded &&
+				journal.Replay == protocol.SupportDegraded && journal.Persistence == "process_memory"
 		case "resume-fork":
 			feature, advertised := execution.descriptor.Capabilities.Features["run.resume"]
-			ok = execution.resumeUnavailable >= 2 && advertised && feature.Level == protocol.SupportUnavailable
+			ok = execution.resumeRefused >= 1 && advertised && feature.Level == protocol.SupportDegraded
 		default:
 			t.Fatalf("ledger label %q has no evidence rule", label)
 		}
