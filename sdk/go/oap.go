@@ -821,7 +821,6 @@ func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers 
 		}
 	}()
 	nextSequence := int64(1)
-	cancelledLocally := false
 	for {
 		f, err := sub.next(ctx, s.timeout, "OAP auth login")
 		if err != nil {
@@ -852,9 +851,6 @@ func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers 
 			case "cancelled":
 				failure := p.obj("error")
 				message := failure.strOrDefault("auth login cancelled", "message")
-				if cancelledLocally {
-					message = "auth login cancelled: no OnPrompt handler is configured"
-				}
 				return &AuthError{Kind: AuthKindCancelled, Code: failure.str("code"), Message: message, ProviderID: providerID, FlowID: flowID}
 			case "failed":
 				failure := p.obj("error")
@@ -873,43 +869,12 @@ func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers 
 			event.Type = AuthEventProgress
 			event.Message = p.str("message")
 		case "prompt":
-			event.Type = AuthEventPrompt
-			event.PromptID = p.str("prompt_id")
-			event.Message = p.str("message")
-			event.AllowEmpty, _ = p.boolean("allow_empty")
+			return &AuthError{Kind: AuthKindProviderError, Code: "auth_input_unavailable", ProviderID: providerID, FlowID: flowID, Message: "manual login input cannot be sent over OAP"}
 		default:
 			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: "unknown OAP auth event kind"}
 		}
 		if handlers.OnEvent != nil {
 			handlers.OnEvent(event)
-		}
-		if event.Type != AuthEventPrompt {
-			continue
-		}
-		if handlers.OnPrompt == nil {
-			cancelledLocally = true
-			s.oapCancelFlow(flowID)
-			continue
-		}
-		answer, err := handlers.OnPrompt(ctx, AuthPrompt{FlowID: flowID, PromptID: event.PromptID, ProviderID: providerID, Message: event.Message, AllowEmpty: event.AllowEmpty})
-		if err != nil {
-			return &AuthError{Kind: AuthKindProviderError, ProviderID: providerID, FlowID: flowID, Message: "auth prompt handler failed: " + err.Error(), err: err}
-		}
-		if len(answer) > 4096 || (answer == "" && !event.AllowEmpty) {
-			return &AuthError{Kind: AuthKindProviderError, Code: CodeInvalidRequest, ProviderID: providerID, FlowID: flowID, Message: "auth prompt answer violates endpoint limits"}
-		}
-		reply := oapFrame(oapAgent, "auth.login.reply.request", map[string]any{"flow_id": flowID, "prompt_id": event.PromptID, "answer": answer})
-		replySub := s.transport.subscribeStream(reply.ID)
-		ack, err := oapRequest(ctx, s.transport, replySub, s.timeout, reply)
-		replySub.close()
-		if err != nil {
-			return authErrorFrom(err, providerID, flowID)
-		}
-		if ack.Type != "auth.login.reply.response" {
-			return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, FlowID: flowID, Message: "expected auth.login.reply.response"}
-		}
-		if accepted, _ := ack.payload().boolean("accepted"); !accepted {
-			return &AuthError{Kind: AuthKindProviderError, Code: CodeInvalidRequest, ProviderID: providerID, FlowID: flowID, Message: "auth prompt answer was refused"}
 		}
 	}
 }

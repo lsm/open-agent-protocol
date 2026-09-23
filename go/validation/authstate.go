@@ -7,7 +7,6 @@ import (
 type authFlow struct {
 	provider string
 	next     uint64
-	prompt   protocol.AuthPromptID
 	terminal bool
 	start    protocol.Envelope
 	index    int
@@ -46,42 +45,6 @@ func (s *state) authEvent(i, line int, e protocol.Envelope) {
 	s.authSequence(i, line, e, flow)
 	if p.ProviderID != flow.provider {
 		s.addExpected(CodeScopeMismatch, i, line, e, "/payload/provider_id", "auth event names a different provider", flow.provider, p.ProviderID)
-	}
-	if p.Kind == "prompt" {
-		if flow.prompt != "" {
-			s.add(CodeAuthFlowOrder, i, line, e, "/payload/prompt_id", "flow has an unanswered prompt")
-		}
-		flow.prompt = p.PromptID
-	}
-}
-
-func (s *state) authReplyRequest(i, line int, e protocol.Envelope) {
-	var p protocol.AuthLoginReplyRequest
-	_ = e.DecodePayload(&p)
-	flow := s.authFlowFor(i, line, e, p.FlowID)
-	if flow == nil {
-		return
-	}
-	if flow.prompt == "" || flow.prompt != p.PromptID {
-		s.addExpected(CodeAuthPromptMismatch, i, line, e, "/payload/prompt_id", "auth reply does not answer the pending prompt", string(flow.prompt), string(p.PromptID))
-	}
-}
-
-func (s *state) authReplyResponse(i, line int, e protocol.Envelope) {
-	var p protocol.AuthLoginReplyResponse
-	_ = e.DecodePayload(&p)
-	req := s.requests[e.InReplyTo]
-	if req == nil || req.typ != protocol.TypeAuthLoginReplyRequest {
-		return
-	}
-	var requested protocol.AuthLoginReplyRequest
-	_ = req.envelope.DecodePayload(&requested)
-	if p.FlowID != requested.FlowID || p.PromptID != requested.PromptID {
-		s.add(CodeAuthPromptMismatch, i, line, e, "/payload", "auth reply response changed the flow or prompt id")
-		return
-	}
-	if flow := s.authFlows[p.FlowID]; flow != nil && p.Accepted && flow.prompt == p.PromptID {
-		flow.prompt = ""
 	}
 }
 

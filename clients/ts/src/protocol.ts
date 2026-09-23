@@ -26,8 +26,6 @@ export const EnvelopeType = {
   AuthLoginStartRequest: 'auth.login.start.request',
   AuthLoginStartResponse: 'auth.login.start.response',
   AuthLoginEvent: 'auth.login.event',
-  AuthLoginReplyRequest: 'auth.login.reply.request',
-  AuthLoginReplyResponse: 'auth.login.reply.response',
   AuthLoginCancelRequest: 'auth.login.cancel.request',
   AuthLoginCancelResponse: 'auth.login.cancel.response',
   AuthLoginCompleted: 'auth.login.completed',

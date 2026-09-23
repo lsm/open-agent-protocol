@@ -125,32 +125,49 @@ func runOAPHost() {
 			}}}))
 		case "auth.login.start.request":
 			fakeEmit(oapFakeReply(request, "auth.login.start.response", map[string]any{"flow_id": "flow-1"}))
+			providerID := request.payload().str("provider_id")
 			for index, eventPayload := range []map[string]any{
-				{"flow_id": "flow-1", "provider_id": "fixture", "kind": "url", "url": "https://example.invalid/auth"},
-				{"flow_id": "flow-1", "provider_id": "fixture", "kind": "prompt", "prompt_id": "prompt-1", "message": "Enter code", "allow_empty": false},
+				{"flow_id": "flow-1", "provider_id": providerID, "kind": "url", "url": "https://example.invalid/auth"},
+				{"flow_id": "flow-1", "provider_id": providerID, "kind": "progress", "message": "Login completed in browser"},
 			} {
+				if providerID == "manual" && index == 1 {
+					eventPayload = map[string]any{"flow_id": "flow-1", "provider_id": providerID, "kind": "prompt", "prompt_id": "prompt-1", "message": "Enter code", "allow_empty": false}
+				}
 				event := oapFrame(oapAgent, "auth.login.event", eventPayload)
 				event.Sequence = int64(index + 1)
 				fakeEmit(event)
 			}
-		case "auth.login.reply.request":
-			if request.payload().str("answer") != "test-code" {
-				return
+			if providerID == "manual" {
+				continue
 			}
-			fakeEmit(oapFakeReply(request, "auth.login.reply.response", map[string]any{
-				"flow_id": "flow-1", "prompt_id": "prompt-1", "accepted": true,
-			}))
 			terminal := oapFrame(oapAgent, "auth.login.completed", map[string]any{
 				"flow_id": "flow-1", "provider_id": "fixture", "status": "success",
 			})
 			terminal.Sequence = 3
 			fakeEmit(terminal)
+		case "auth.login.reply.request":
+			return
 		case "auth.login.cancel.request":
 			fakeEmit(oapFakeReply(request, "auth.login.cancel.response", map[string]any{"flow_id": "flow-1", "accepted": true}))
 		case "run.cancel.request", "inference.cancel.request":
 		default:
 			fakeEmit(oapFakeReply(request, "error.response", map[string]any{"error": map[string]any{"code": "unsupported_feature", "message": request.Type}}))
 		}
+	}
+}
+
+func TestOAPManualAuthNeverSendsAnAnswer(t *testing.T) {
+	client := newTestClient(t, scenarioOAP)
+	called := false
+	err := client.Auth.Login(context.Background(), "manual", LoginHandlers{
+		OnPrompt: func(context.Context, AuthPrompt) (string, error) {
+			called = true
+			return "SENSITIVE_TEST_CODE", nil
+		},
+	})
+	var auth *AuthError
+	if !errors.As(err, &auth) || auth.Code != "auth_input_unavailable" || called {
+		t.Fatalf("manual OAP login = %v, prompt callback called=%v", err, called)
 	}
 }
 
@@ -238,12 +255,12 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 	var events []AuthEventType
 	err = client.Auth.Login(ctx, "fixture", LoginHandlers{
 		OnEvent:  func(event AuthEvent) { events = append(events, event.Type) },
-		OnPrompt: func(context.Context, AuthPrompt) (string, error) { return "test-code", nil },
+		OnPrompt: func(context.Context, AuthPrompt) (string, error) { t.Fatal("unexpected OAP prompt"); return "", nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 3 || events[0] != AuthEventURL || events[1] != AuthEventPrompt || events[2] != AuthEventSuccess {
+	if len(events) != 3 || events[0] != AuthEventURL || events[1] != AuthEventProgress || events[2] != AuthEventSuccess {
 		t.Fatalf("auth events: %+v", events)
 	}
 }

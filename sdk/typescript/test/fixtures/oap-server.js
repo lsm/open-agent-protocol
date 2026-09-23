@@ -34,12 +34,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     case `${agent}:auth.login.start.request`:
       send(request, "auth.login.start.response", { flow_id: "flow-1" });
       event(agent, "auth.login.event", { flow_id: "flow-1", provider_id: request.payload.provider_id, kind: "url", url: "https://example.invalid/login" }, { sequence: 1 });
-      event(agent, "auth.login.event", { flow_id: "flow-1", provider_id: request.payload.provider_id, kind: "prompt", prompt_id: "prompt-1", message: "Enter code", allow_empty: false }, { sequence: 2 });
-      break;
-    case `${agent}:auth.login.reply.request`:
-      send(request, "auth.login.reply.response", { flow_id: request.payload.flow_id, prompt_id: request.payload.prompt_id, accepted: true });
-      authenticated = request.payload.answer === "code";
-      event(agent, "auth.login.completed", { flow_id: request.payload.flow_id, provider_id: "fixture", status: authenticated ? "success" : "failed", ...(!authenticated ? { error: { code: "bad_code", message: "wrong code" } } : {}) }, { sequence: 3 });
+      if (request.payload.provider_id === "manual") {
+        event(agent, "auth.login.event", { flow_id: "flow-1", provider_id: "manual", kind: "prompt", prompt_id: "prompt-1", message: "Enter code", allow_empty: false }, { sequence: 2 });
+        break;
+      }
+      event(agent, "auth.login.event", { flow_id: "flow-1", provider_id: request.payload.provider_id, kind: "progress", message: "Login completed in browser" }, { sequence: 2 });
+      authenticated = true;
+      event(agent, "auth.login.completed", { flow_id: "flow-1", provider_id: "fixture", status: "success" }, { sequence: 3 });
       break;
     case `${agent}:auth.login.cancel.request`:
       send(request, "auth.login.cancel.response", { flow_id: request.payload.flow_id, accepted: true });

@@ -3,7 +3,7 @@
 import sys
 import unittest
 
-from oap_sdk import AuthFlowHandlers, AuthOptions, MakaiProtocolError, MakaiStreamError, RunOptions, ToolDefinition, connect
+from oap_sdk import AuthFlowHandlers, AuthOptions, AuthPromptEvent, MakaiAuthError, MakaiProtocolError, MakaiStreamError, RunOptions, ToolDefinition, connect
 from oap_sdk._oap import _messages
 
 
@@ -87,15 +87,16 @@ for line in sys.stdin:
     elif kind == "auth.login.start.request":
         emit(A, "auth.login.start.response", rid, payload={"flow_id":"flow-1"})
         emit(A, "auth.login.event", scope={"sequence":1}, payload={
-             "flow_id":"flow-1","provider_id":"fixture","kind":"url","url":"https://example.invalid/auth"})
+             "flow_id":"flow-1","provider_id":request["payload"]["provider_id"],"kind":"url","url":"https://example.invalid/auth"})
+        if request["payload"]["provider_id"] == "manual":
+            emit(A, "auth.login.event", scope={"sequence":2}, payload={
+                 "flow_id":"flow-1","provider_id":"manual","kind":"prompt",
+                 "prompt_id":"prompt-1","message":"Enter code","allow_empty":False})
+            continue
         emit(A, "auth.login.event", scope={"sequence":2}, payload={
-             "flow_id":"flow-1","provider_id":"fixture","kind":"prompt",
-             "prompt_id":"prompt-1","message":"Enter code","allow_empty":False})
-    elif kind == "auth.login.reply.request":
-        assert request["payload"]["answer"] == "test-code"
+             "flow_id":"flow-1","provider_id":"fixture","kind":"progress",
+             "message":"Login completed in browser"})
         auth_ready = True
-        emit(A, "auth.login.reply.response", rid, payload={
-             "flow_id":"flow-1","prompt_id":"prompt-1","accepted":True})
         emit(A, "auth.login.completed", scope={"sequence":3}, payload={
              "flow_id":"flow-1","provider_id":"fixture","status":"success"})
     elif kind == "auth.login.cancel.request":
@@ -111,6 +112,18 @@ for line in sys.stdin:
 
 
 class OAPWireTests(unittest.IsolatedAsyncioTestCase):
+    async def test_manual_oap_prompt_never_calls_answer_handler(self) -> None:
+        called = []
+        def answer(_: AuthPromptEvent) -> str:
+            called.append("called")
+            return "SENSITIVE_TEST_CODE"
+        async with connect(command=sys.executable, args=["-u", "-c", HOST], legacy_wire=False) as client:
+            with self.assertRaises(MakaiAuthError) as failure:
+                await client.auth.login("manual", AuthFlowHandlers(
+                    on_prompt=answer))
+            self.assertEqual(failure.exception.code, "auth_input_unavailable")
+            self.assertEqual(called, [])
+
     async def test_combined_profile_models_provider_and_agent(self) -> None:
         async with connect(command=sys.executable, args=["-u", "-c", HOST], legacy_wire=False) as client:
             models = await client.models.list()
@@ -174,7 +187,7 @@ class OAPWireTests(unittest.IsolatedAsyncioTestCase):
             await client.auth.login("fixture", AuthFlowHandlers(
                 on_event=lambda event: received.append(event.type),
                 on_prompt=lambda _: "test-code"))
-            self.assertEqual(received, ["auth_url", "prompt", "success"])
+            self.assertEqual(received, ["auth_url", "progress", "success"])
 
     async def test_auto_once_retries_only_typed_auth_failure(self) -> None:
         handlers = AuthFlowHandlers(on_prompt=lambda _: "test-code")

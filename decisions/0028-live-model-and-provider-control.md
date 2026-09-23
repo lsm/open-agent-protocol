@@ -39,6 +39,12 @@ session default unchanged. When a catalog is available, the target must be a
 model in that session's effective catalog. A degraded capability requires
 explicit opt-in through `allow_degraded_features` under the ordinary gate.
 
+`model_not_found` is truthful only for an id absent from that session's
+effective catalog. A fixed-model endpoint must expose only its fixed model in
+that catalog; it must not list an unswitchable model and then call it missing.
+If the endpoint cannot enforce this boundary, it does not conform to core
+model switching.
+
 The switch affects run starts after its response, including promotion of
 previously queued submissions that specified no `model_id`. A running run
 keeps the model it started with. A queued submission with an explicit

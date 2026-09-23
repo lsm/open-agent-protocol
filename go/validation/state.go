@@ -311,10 +311,6 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.authStartResponse(i, line, e)
 	case protocol.TypeAuthLoginEvent:
 		s.authEvent(i, line, e)
-	case protocol.TypeAuthLoginReplyRequest:
-		s.authReplyRequest(i, line, e)
-	case protocol.TypeAuthLoginReplyResponse:
-		s.authReplyResponse(i, line, e)
 	case protocol.TypeAuthLoginCancelRequest:
 		s.authCancelRequest(i, line, e)
 	case protocol.TypeAuthLoginCancelResponse:

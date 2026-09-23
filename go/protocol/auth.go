@@ -1,7 +1,6 @@
 package protocol
 
 type AuthFlowID string
-type AuthPromptID string
 
 type AuthProvider struct {
 	ID         string `json:"id"`
@@ -28,20 +27,7 @@ type AuthLoginEvent struct {
 	Kind         string       `json:"kind"`
 	URL          string       `json:"url,omitempty"`
 	Instructions string       `json:"instructions,omitempty"`
-	PromptID     AuthPromptID `json:"prompt_id,omitempty"`
 	Message      string       `json:"message,omitempty"`
-	AllowEmpty   *bool        `json:"allow_empty,omitempty"`
-}
-
-type AuthLoginReplyRequest struct {
-	FlowID   AuthFlowID   `json:"flow_id"`
-	PromptID AuthPromptID `json:"prompt_id"`
-	Answer   string       `json:"answer"`
-}
-type AuthLoginReplyResponse struct {
-	FlowID   AuthFlowID   `json:"flow_id"`
-	PromptID AuthPromptID `json:"prompt_id"`
-	Accepted bool         `json:"accepted"`
 }
 
 type AuthLoginCancelRequest struct {

@@ -439,32 +439,13 @@ impl AuthApi {
                             })?,
                             instructions: frame.payload_str("instructions").map(str::to_owned),
                         },
-                        Some("prompt") => AuthEvent::Prompt(AuthPrompt {
-                            flow_id: flow_id.clone(),
-                            provider_id: provider_id.to_owned(),
-                            prompt_id: frame.payload_non_empty("prompt_id").ok_or_else(|| {
-                                Error::protocol(
-                                    "auth prompt_id is missing",
-                                    Some("malformed_response"),
-                                )
-                            })?,
-                            message: frame.payload_non_empty("message").ok_or_else(|| {
-                                Error::protocol(
-                                    "auth prompt message is missing",
-                                    Some("malformed_response"),
-                                )
-                            })?,
-                            allow_empty: frame
-                                .payload()
-                                .get("allow_empty")
-                                .and_then(serde_json::Value::as_bool)
-                                .ok_or_else(|| {
-                                    Error::protocol(
-                                        "auth prompt allow_empty is missing",
-                                        Some("malformed_response"),
-                                    )
-                                })?,
-                        }),
+                        Some("prompt") => {
+                            return Err(Error::auth(
+                                AuthErrorKind::ProviderError,
+                                "manual login input cannot be sent over OAP",
+                                Some("auth_input_unavailable".to_owned()),
+                            ));
+                        }
                         Some("progress") => AuthEvent::Progress {
                             flow_id: flow_id.clone(),
                             provider_id: provider_id.to_owned(),
@@ -484,44 +465,6 @@ impl AuthApi {
                     };
                     if let Some(callback) = &handlers.on_event {
                         callback(event.clone());
-                    }
-                    if let AuthEvent::Prompt(prompt) = event {
-                        let Some(handler) = &handlers.on_prompt else {
-                            return Err(Error::auth(
-                                AuthErrorKind::Cancelled,
-                                "auth login cancelled (no prompt handler configured)",
-                                None,
-                            ));
-                        };
-                        let answer = handler(prompt.clone()).await.map_err(|message| {
-                            Error::auth(AuthErrorKind::Unknown, message, None)
-                        })?;
-                        if answer.len() > 4096 || (!prompt.allow_empty && answer.is_empty()) {
-                            return Err(Error::auth(
-                                AuthErrorKind::Unknown,
-                                "invalid auth prompt answer",
-                                None,
-                            ));
-                        }
-                        let reply = self.transport.request_oap(
-                            AGENT_PROFILE, "auth.login.reply.request",
-                            json!({ "flow_id": flow_id, "prompt_id": prompt.prompt_id, "answer": answer }),
-                            None, self.frame_timeout,
-                        ).await?;
-                        if reply.kind != "auth.login.reply.response"
-                            || reply.payload_str("flow_id") != Some(flow_id.as_str())
-                            || reply.payload_str("prompt_id") != Some(prompt.prompt_id.as_str())
-                            || reply
-                                .payload()
-                                .get("accepted")
-                                .and_then(serde_json::Value::as_bool)
-                                != Some(true)
-                        {
-                            return Err(Error::protocol(
-                                "OAP auth prompt answer was not accepted",
-                                Some("malformed_response"),
-                            ));
-                        }
                     }
                 }
                 "auth.login.completed" => {

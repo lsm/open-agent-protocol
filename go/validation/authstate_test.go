@@ -32,14 +32,8 @@ func authTrace() []map[string]any {
 		authEnvelope("auth.login.event", "url-ev", "", 1, map[string]any{
 			"flow_id": "flow-1", "provider_id": "anthropic", "kind": "url", "url": "https://example.invalid/login",
 		}),
-		authEnvelope("auth.login.event", "prompt-ev", "", 2, map[string]any{
-			"flow_id": "flow-1", "provider_id": "anthropic", "kind": "prompt", "prompt_id": "prompt-1", "message": "Code?", "allow_empty": false,
-		}),
-		authEnvelope("auth.login.reply.request", "reply-req", "", 0, map[string]any{
-			"flow_id": "flow-1", "prompt_id": "prompt-1", "answer": "sensitive-test-value",
-		}),
-		authEnvelope("auth.login.reply.response", "reply-resp", "reply-req", 0, map[string]any{
-			"flow_id": "flow-1", "prompt_id": "prompt-1", "accepted": true,
+		authEnvelope("auth.login.event", "progress-ev", "", 2, map[string]any{
+			"flow_id": "flow-1", "provider_id": "anthropic", "kind": "progress", "message": "Complete login in the host",
 		}),
 		authEnvelope("auth.login.completed", "terminal", "", 3, map[string]any{
 			"flow_id": "flow-1", "provider_id": "anthropic", "status": "success",
@@ -56,7 +50,7 @@ func validateAuthTrace(t *testing.T, trace []map[string]any) Result {
 	return MustNew().ValidateBytes(data, t.Name())
 }
 
-func TestAuthFlowHasStandaloneStatusPromptReplyAndTerminal(t *testing.T) {
+func TestAuthFlowHasStandaloneStatusEventsAndTerminal(t *testing.T) {
 	if result := validateAuthTrace(t, authTrace()); !result.Valid() {
 		t.Fatalf("valid auth flow diagnosed: %+v", result.Diagnostics)
 	}
@@ -92,12 +86,14 @@ func TestAuthFlowRequiresContiguousSequenceAndOneTerminal(t *testing.T) {
 	}
 }
 
-func TestAuthPromptMismatchNeverPrintsAnswer(t *testing.T) {
+func TestAuthAnswerRequestIsRejectedWithoutPrintingAnswer(t *testing.T) {
 	trace := authTrace()
-	trace[6]["payload"].(map[string]any)["prompt_id"] = "wrong-prompt"
+	trace = append(trace[:len(trace)-1], authEnvelope("auth.login.reply.request", "reply-req", "", 0, map[string]any{
+		"flow_id": "flow-1", "prompt_id": "prompt-1", "answer": "sensitive-test-value",
+	}), trace[len(trace)-1])
 	result := validateAuthTrace(t, trace)
-	if !result.HasCode(CodeAuthPromptMismatch) {
-		t.Fatalf("wrong prompt not diagnosed: %+v", result.Diagnostics)
+	if !result.HasCode(CodeSchemaInvalid) {
+		t.Fatalf("auth answer envelope was not rejected: %+v", result.Diagnostics)
 	}
 	for _, diagnostic := range result.Diagnostics {
 		if strings.Contains(diagnostic.Error(), "sensitive-test-value") || strings.Contains(diagnostic.Actual, "sensitive-test-value") {

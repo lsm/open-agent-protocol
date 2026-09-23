@@ -25,22 +25,21 @@ to begin a human flow, but does not receive a usable token.
 
 ## Decision
 
-`+auth` adds ten envelope types to `agent-control-core`:
+`+auth` adds eight envelope types to `agent-control-core`:
 
 | Request or event | Response or effect |
 | --- | --- |
 | `auth.providers.request` | `auth.providers.response` with provider ID, name, status, and optional last error |
 | `auth.login.start.request` with `provider_id` | `auth.login.start.response` with a new `flow_id` |
-| `auth.login.event` | URL, prompt, or progress for one flow |
-| `auth.login.reply.request` with `flow_id`, `prompt_id`, `answer` | `auth.login.reply.response` acknowledging that answer |
+| `auth.login.event` | URL or progress for one flow |
 | `auth.login.cancel.request` with `flow_id` | `auth.login.cancel.response` acknowledging cancellation |
 | `auth.login.completed` | Exactly one terminal with success, failure, or cancellation |
 
 The endpoint advertises `auth.providers` and `auth.login` separately. The
-second key includes prompt reply and cancellation, not just starting a flow.
-When a key is not advertised, the request receives a correlated
-`unsupported_feature` refusal. An implementation never accepts a login start
-and then silently ignores a prompt reply or cancel.
+second key includes cancellation, not just starting a flow. When a key is not
+advertised, the request receives a correlated `unsupported_feature` refusal.
+An implementation never accepts a login start and then silently ignores a
+cancel.
 
 The start response is emitted before any event for its flow. Events and the
 terminal carry `flow_id` in the payload and a positive, contiguous `sequence`
@@ -59,26 +58,25 @@ provider became usable.
 
 ### Credential boundary
 
-An API key, access token, refresh token, or provider credential reference is
-never a field in this unit. A manual OAuth authorization code or domain answer
-may be needed to finish a browser flow. `auth.login.reply.request.answer` is
-the one deliberately sensitive value: it is accepted only over a trusted
-locally spawned stdio binding, is passed to the authentication manager once,
-and is neither logged nor retained in a trace. Trace collectors must redact
-that member before persistence or export; implementations must not echo it in
-responses, events, errors, or diagnostics. An endpoint that cannot provide
-those safeguards must not advertise prompt-capable `auth.login`.
+No API key, access token, refresh token, authorization code, device code,
+manual login answer, or provider credential reference travels in an OAP auth
+envelope. In particular, `auth.login.reply.request` and its `answer` field do
+not exist. The authentication manager must collect a manual code within its
+own host boundary, such as a browser callback or a host-owned terminal prompt.
+If that path is unavailable, a flow that needs manual input fails with a
+terminal `auth_input_unavailable` error; it must not wait for an OAP answer or
+claim success. A login that needs no manual answer remains available.
 
 This does not authorize credential-bearing provider attachments or general
 secret passage in agent messages. Remote HTTP provider transport and remote
-auth answer transport require their own security binding; neither is defined
-by this decision.
+authentication input require separate security decisions; neither is defined
+here. Legacy Makai auth frames are not an OAP fallback.
 
 ### SDK behavior
 
 An SDK's `listProviders()` maps to the providers pair. `login()` starts a flow,
-delivers URL/prompt/progress callbacks, answers prompts, and waits for the
-terminal. Auto-once retry may invoke that same flow after a typed
+delivers URL/progress callbacks, and waits for the terminal. It never sends a
+manual answer through OAP. Auto-once retry may invoke that same flow after a typed
 authentication-required failure, then retry the original call once. It must
 not retry on an arbitrary provider error or continue after cancelled login.
 No SDK silently falls back to the Makai v1 wire when `+auth` is unavailable.

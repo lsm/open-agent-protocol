@@ -66,7 +66,7 @@ async fn combined_oap_connection_runs_both_profiles() {
 }
 
 #[tokio::test]
-async fn oap_auth_discovery_prompt_reply_and_completion() {
+async fn oap_auth_discovery_progress_and_completion() {
     let client = ClientBuilder::new()
         .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
         .args([] as [&str; 0])
@@ -79,10 +79,7 @@ async fn oap_auth_discovery_prompt_reply_and_completion() {
     let seen_events = Arc::clone(&seen);
     let handlers = AuthHandlers::new()
         .on_event(move |event| seen_events.lock().expect("lock").push(event))
-        .on_prompt(|prompt| async move {
-            assert_eq!(prompt.prompt_id, "prompt-1");
-            Ok("code".to_owned())
-        });
+        .on_prompt(|_| async move { panic!("unexpected OAP prompt") });
     client
         .auth()
         .login("fixture", Some(&handlers))
@@ -129,18 +126,32 @@ async fn oap_auto_once_retries_provider_and_agent_after_auth_rejection() {
 }
 
 #[tokio::test]
-async fn oap_login_without_prompt_handler_cancels() {
+async fn oap_browser_login_needs_no_prompt_handler() {
     let client = ClientBuilder::new()
         .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
         .args([] as [&str; 0])
         .connect()
         .await
         .expect("connects");
+    client.auth().login("fixture", None).await.expect("login");
+    client.close().await;
+}
+
+#[tokio::test]
+async fn oap_manual_prompt_never_calls_answer_handler() {
+    let client = ClientBuilder::new()
+        .command(env!("CARGO_BIN_EXE_oap-protocol-fake"))
+        .args([] as [&str; 0])
+        .connect()
+        .await
+        .expect("connects");
+    let handlers = AuthHandlers::new()
+        .on_prompt(|_| async move { panic!("OAP must not call the answer handler") });
     let error = client
         .auth()
-        .login("fixture", None)
+        .login("manual", Some(&handlers))
         .await
-        .expect_err("prompt requires a handler");
+        .expect_err("manual prompt fails");
     assert!(matches!(error, Error::Auth { .. }));
     client.close().await;
 }

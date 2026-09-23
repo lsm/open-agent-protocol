@@ -474,32 +474,14 @@ class OapAuthApi implements MakaiAuthApi {
           let event: MakaiAuthEvent;
           if (data.kind === "url" && str(data.url)) {
             event = { type: "auth_url", flow_id: flowId, provider_id: providerId, url: str(data.url), ...(typeof data.instructions === "string" ? { instructions: data.instructions } : {}) };
-          } else if (data.kind === "prompt" && str(data.prompt_id) && str(data.message) && typeof data.allow_empty === "boolean") {
-            event = { type: "prompt", flow_id: flowId, provider_id: providerId, prompt_id: str(data.prompt_id), message: str(data.message), allow_empty: data.allow_empty };
+          } else if (data.kind === "prompt") {
+            throw new MakaiAuthError("manual login input cannot be sent over OAP", { kind: "provider_error", code: "auth_input_unavailable" });
           } else if (data.kind === "progress" && str(data.message)) {
             event = { type: "progress", flow_id: flowId, provider_id: providerId, message: str(data.message) };
           } else {
             throw new MakaiProtocolError("invalid auth.login.event", "malformed_response");
           }
           notify(event);
-          if (event.type === "prompt") {
-            if (!effective?.onPrompt) throw new MakaiAuthError("auth login cancelled (no onPrompt handler configured)", { kind: "cancelled" });
-            let answer: string;
-            try { answer = await raceWithAbort(Promise.resolve(effective.onPrompt(event)), signal, "auth login aborted during prompt"); }
-            catch (error) {
-              if (isAbortError(error)) throw new MakaiAuthError("auth login aborted", { kind: "cancelled" });
-              throw new MakaiAuthError(error instanceof Error ? error.message : String(error), { kind: "unknown" });
-            }
-            if (typeof answer !== "string" || answer.length > 4096 || (!event.allow_empty && !answer.length)) {
-              throw new MakaiAuthError("invalid auth prompt answer", { kind: "unknown" });
-            }
-            const reply = await raceWithAbort(this.transport.request(OAP_AGENT_PROFILE, "auth.login.reply.request", {
-              flow_id: flowId, prompt_id: event.prompt_id, answer,
-            }), signal, "auth login aborted during prompt reply");
-            if (reply.type !== "auth.login.reply.response" || reply.payload.accepted !== true || reply.payload.flow_id !== flowId || reply.payload.prompt_id !== event.prompt_id) {
-              throw new MakaiProtocolError("auth prompt answer was not accepted", "malformed_response");
-            }
-          }
           continue;
         }
         if (frame.type !== "auth.login.completed") throw new MakaiProtocolError(`unexpected auth flow frame: ${frame.type}`, "malformed_response");

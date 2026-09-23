@@ -37,8 +37,6 @@ const (
 	TypeAuthLoginStartRequest           EnvelopeType = "auth.login.start.request"
 	TypeAuthLoginStartResponse          EnvelopeType = "auth.login.start.response"
 	TypeAuthLoginEvent                  EnvelopeType = "auth.login.event"
-	TypeAuthLoginReplyRequest           EnvelopeType = "auth.login.reply.request"
-	TypeAuthLoginReplyResponse          EnvelopeType = "auth.login.reply.response"
 	TypeAuthLoginCancelRequest          EnvelopeType = "auth.login.cancel.request"
 	TypeAuthLoginCancelResponse         EnvelopeType = "auth.login.cancel.response"
 	TypeAuthLoginCompleted              EnvelopeType = "auth.login.completed"

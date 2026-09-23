@@ -9191,6 +9191,16 @@
       "provenance": ["decisions/0029-authentication-over-agent-control.md"]
     },
     {
+      "id": "auth-answer-on-wire",
+      "path": "schema-invalid/auth-answer-on-wire.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": ["schema_invalid"],
+      "units": ["core", "auth"],
+      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+    },
+    {
       "id": "auth-event-before-start",
       "path": "semantic-invalid/auth-event-before-start.json",
       "kind": "semantic-invalid",

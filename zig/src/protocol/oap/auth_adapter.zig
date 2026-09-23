@@ -10,11 +10,7 @@ const OwnedSlice = auth_types.OwnedSlice;
 const Flow = struct {
     next_inbound: u64 = 2,
     next_event: u64 = 1,
-    prompt_id: ?[]u8 = null,
-
-    fn deinit(self: *Flow, allocator: std.mem.Allocator) void {
-        if (self.prompt_id) |id| allocator.free(id);
-    }
+    input_unavailable: bool = false,
 };
 
 const PendingQuery = struct {
@@ -53,8 +49,6 @@ pub const Adapter = struct {
         var queries = self.queries.valueIterator();
         while (queries.next()) |pending| pending.deinit(self.allocator);
         self.queries.deinit();
-        var flows = self.flows.valueIterator();
-        while (flows.next()) |flow| flow.deinit(self.allocator);
         self.flows.deinit();
         self.* = undefined;
     }
@@ -182,14 +176,6 @@ pub const Adapter = struct {
             if (provider_id.len == 0) return error.InvalidAuthPayload;
             return self.start(request_id, response_revision, provider_id);
         }
-        if (std.mem.eql(u8, type_name, "auth.login.reply.request")) {
-            if (payload.count() != 3) return error.InvalidAuthPayload;
-            const flow_id = try requiredString(payload, "flow_id");
-            const prompt_id = try requiredString(payload, "prompt_id");
-            const answer = try requiredString(payload, "answer");
-            if (answer.len > 4096) return error.InvalidAuthPayload;
-            return self.reply(request_id, response_revision, flow_id, prompt_id, answer);
-        }
         if (std.mem.eql(u8, type_name, "auth.login.cancel.request")) {
             if (payload.count() != 1) return error.InvalidAuthPayload;
             const flow_id = try requiredString(payload, "flow_id");
@@ -253,43 +239,6 @@ pub const Adapter = struct {
         const flow_text = try auth_types.ulidToString(flow_id, self.allocator);
         defer self.allocator.free(flow_text);
         try self.emit("auth.login.start.response", request_id, null, response_revision, .{ .flow_id = flow_text });
-        _ = try self.pump();
-    }
-
-    fn reply(self: *Self, request_id: []const u8, response_revision: ?[]const u8, flow_text: []const u8, prompt_id: []const u8, answer: []const u8) !void {
-        const flow_id = auth_types.parseUlid(flow_text) orelse return error.UnknownAuthFlow;
-        const flow = self.flows.getPtr(flow_id) orelse return error.UnknownAuthFlow;
-        if (flow.prompt_id == null or !std.mem.eql(u8, flow.prompt_id.?, prompt_id)) {
-            return self.emit("auth.login.reply.response", request_id, null, response_revision, .{
-                .flow_id = flow_text,
-                .prompt_id = prompt_id,
-                .accepted = false,
-            });
-        }
-        const native: auth_types.Envelope = .{
-            .stream_id = flow_id,
-            .message_id = auth_types.generateUlid(),
-            .sequence = flow.next_inbound,
-            .timestamp = compat.time.nowMillis(),
-            .payload = .{ .auth_prompt_response = .{
-                .flow_id = flow_id,
-                .prompt_id = OwnedSlice(u8).initBorrowed(prompt_id),
-                .answer = OwnedSlice(u8).initBorrowed(answer),
-            } },
-        };
-        if (try self.server.handleEnvelope(native)) |ack| {
-            var owned = ack;
-            defer owned.deinit(self.allocator);
-            if (owned.payload == .nack) return self.emitNack(request_id, owned.payload.nack);
-        }
-        flow.next_inbound += 1;
-        if (flow.prompt_id) |old| self.allocator.free(old);
-        flow.prompt_id = null;
-        try self.emit("auth.login.reply.response", request_id, null, response_revision, .{
-            .flow_id = flow_text,
-            .prompt_id = prompt_id,
-            .accepted = true,
-        });
         _ = try self.pump();
     }
 
@@ -357,17 +306,26 @@ pub const Adapter = struct {
                 .instructions = value.instructions.slice(),
             }),
             .prompt => |value| {
-                const copied = try self.allocator.dupe(u8, value.prompt_id.slice());
-                if (flow.prompt_id) |old| self.allocator.free(old);
-                flow.prompt_id = copied;
+                flow.input_unavailable = true;
                 try self.emit("auth.login.event", null, sequence, null, .{
                     .flow_id = flow_text,
                     .provider_id = value.provider_id.slice(),
-                    .kind = "prompt",
-                    .prompt_id = value.prompt_id.slice(),
-                    .message = value.message.slice(),
-                    .allow_empty = value.allow_empty,
+                    .kind = "progress",
+                    .message = "manual login input is unavailable over OAP",
                 });
+                const cancel_request: auth_types.Envelope = .{
+                    .stream_id = flow_id,
+                    .message_id = auth_types.generateUlid(),
+                    .sequence = flow.next_inbound,
+                    .timestamp = compat.time.nowMillis(),
+                    .payload = .{ .auth_cancel = .{ .flow_id = flow_id } },
+                };
+                if (try self.server.handleEnvelope(cancel_request)) |ack| {
+                    var owned = ack;
+                    defer owned.deinit(self.allocator);
+                    if (owned.payload == .nack) return error.AuthInputCancellationRejected;
+                }
+                flow.next_inbound += 1;
             },
             .progress => |value| try self.emit("auth.login.event", null, sequence, null, .{
                 .flow_id = flow_text,
@@ -382,11 +340,17 @@ pub const Adapter = struct {
 
     fn translateResult(self: *Self, result: auth_types.AuthLoginResult) !void {
         const removed = self.flows.fetchRemove(result.flow_id) orelse return;
-        var flow = removed.value;
-        defer flow.deinit(self.allocator);
+        const flow = removed.value;
         const flow_text = try auth_types.ulidToString(result.flow_id, self.allocator);
         defer self.allocator.free(flow_text);
-        if (result.status == .failed) {
+        if (flow.input_unavailable) {
+            try self.emit("auth.login.completed", null, flow.next_event, null, .{
+                .flow_id = flow_text,
+                .provider_id = result.provider_id.slice(),
+                .status = "failed",
+                .@"error" = .{ .code = "auth_input_unavailable", .message = "manual login input is unavailable over OAP" },
+            });
+        } else if (result.status == .failed) {
             try self.emit("auth.login.completed", null, flow.next_event, null, .{
                 .flow_id = flow_text,
                 .provider_id = result.provider_id.slice(),
@@ -467,7 +431,6 @@ pub const Adapter = struct {
 fn isAuthRequest(type_name: []const u8) bool {
     return std.mem.eql(u8, type_name, "auth.providers.request") or
         std.mem.eql(u8, type_name, "auth.login.start.request") or
-        std.mem.eql(u8, type_name, "auth.login.reply.request") or
         std.mem.eql(u8, type_name, "auth.login.cancel.request");
 }
 
@@ -480,7 +443,7 @@ fn requiredString(obj: std.json.ObjectMap, key: []const u8) ![]const u8 {
     return stringField(obj, key) orelse error.InvalidAuthPayload;
 }
 
-test "OAP auth adapter starts and answers a local prompt without echoing the answer" {
+test "OAP auth adapter fails a manual prompt without carrying an answer" {
     const allocator = std.testing.allocator;
     var native = auth_server.AuthProtocolServer.init(allocator, .{
         .persist_credentials = false,
@@ -504,48 +467,10 @@ test "OAP auth adapter starts and answers a local prompt without echoing the ans
     try std.testing.expectEqualStrings("auth.login.start.response", try requiredString(start, "type"));
     try std.testing.expectEqualStrings("start-1", try requiredString(start, "in_reply_to"));
     try std.testing.expectEqualStrings("current-revision", try requiredString(start, "capability_revision"));
-    const flow_id = try allocator.dupe(u8, try requiredString((start.get("payload") orelse return error.MissingPayload).object, "flow_id"));
-    defer allocator.free(flow_id);
-
-    var prompt_id: ?[]u8 = null;
     var last_sequence: u64 = 0;
-    defer if (prompt_id) |id| allocator.free(id);
     const deadline = compat.time.nowMillis() + 5_000;
-    while (prompt_id == null and compat.time.nowMillis() < deadline) {
-        _ = try adapter.pump();
-        while (adapter.popOutbound()) |line| {
-            defer allocator.free(line);
-            var parsed = try std.json.parseFromSlice(std.json.Value, allocator, line, .{});
-            defer parsed.deinit();
-            const root = parsed.value.object;
-            if (!std.mem.eql(u8, try requiredString(root, "type"), "auth.login.event")) continue;
-            const sequence = (root.get("sequence") orelse return error.MissingSequence).integer;
-            try std.testing.expectEqual(last_sequence + 1, @as(u64, @intCast(sequence)));
-            last_sequence += 1;
-            const payload = (root.get("payload") orelse return error.MissingPayload).object;
-            if (!std.mem.eql(u8, try requiredString(payload, "kind"), "prompt")) continue;
-            prompt_id = try allocator.dupe(u8, try requiredString(payload, "prompt_id"));
-        }
-        if (prompt_id == null) compat.time.sleepNs(std.time.ns_per_ms);
-    }
-    try std.testing.expect(prompt_id != null);
-
-    const reply_line = try std.fmt.allocPrint(
-        allocator,
-        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.reply.request\",\"id\":\"reply-1\",\"capability_revision\":\"current-revision\",\"payload\":{{\"flow_id\":\"{s}\",\"prompt_id\":\"{s}\",\"answer\":\"ok\"}}}}",
-        .{ flow_id, prompt_id.? },
-    );
-    defer allocator.free(reply_line);
-    try std.testing.expect(try adapter.handleLine(reply_line));
-    const ack = adapter.popOutbound() orelse return error.MissingReplyResponse;
-    defer allocator.free(ack);
-    try std.testing.expect(std.mem.indexOf(u8, ack, "\"answer\"") == null);
-    var parsed_ack = try std.json.parseFromSlice(std.json.Value, allocator, ack, .{});
-    defer parsed_ack.deinit();
-    try std.testing.expectEqualStrings("auth.login.reply.response", try requiredString(parsed_ack.value.object, "type"));
-    try std.testing.expectEqualStrings("current-revision", try requiredString(parsed_ack.value.object, "capability_revision"));
-
     var completed = false;
+    var progress_seen = false;
     while (!completed and compat.time.nowMillis() < deadline) {
         _ = try adapter.pump();
         while (adapter.popOutbound()) |line| {
@@ -559,14 +484,26 @@ test "OAP auth adapter starts and answers a local prompt without echoing the ans
             const sequence = (root.get("sequence") orelse return error.MissingSequence).integer;
             try std.testing.expectEqual(last_sequence + 1, @as(u64, @intCast(sequence)));
             last_sequence += 1;
-            if (!std.mem.eql(u8, type_name, "auth.login.completed")) continue;
             const payload = (root.get("payload") orelse return error.MissingPayload).object;
-            try std.testing.expectEqualStrings("success", try requiredString(payload, "status"));
+            if (std.mem.eql(u8, type_name, "auth.login.event")) {
+                const kind = try requiredString(payload, "kind");
+                try std.testing.expect(!std.mem.eql(u8, kind, "prompt"));
+                if (std.mem.eql(u8, kind, "progress")) progress_seen = true;
+                continue;
+            }
+            try std.testing.expectEqualStrings("failed", try requiredString(payload, "status"));
+            const failure = (payload.get("error") orelse return error.MissingAuthError).object;
+            try std.testing.expectEqualStrings("auth_input_unavailable", try requiredString(failure, "code"));
             completed = true;
         }
         if (!completed) compat.time.sleepNs(std.time.ns_per_ms);
     }
     try std.testing.expect(completed);
+    try std.testing.expect(progress_seen);
+    const forbidden =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.reply.request","id":"reply-1","payload":{"flow_id":"f","prompt_id":"p","answer":"SENSITIVE_TEST_CODE"}}
+    ;
+    try std.testing.expect(!try adapter.handleLine(forbidden));
 }
 
 test "auth adapter repeats the admitted revision on providers and cancel responses" {
@@ -683,14 +620,14 @@ test "auth adapter cancels local login on disconnect and ignores other profiles"
         const root = parsed.value.object;
         if (!std.mem.eql(u8, try requiredString(root, "type"), "auth.login.completed")) continue;
         const payload = (root.get("payload") orelse return error.MissingPayload).object;
-        try std.testing.expectEqualStrings("cancelled", try requiredString(payload, "status"));
+        try std.testing.expectEqualStrings("failed", try requiredString(payload, "status"));
         terminals += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), terminals);
     try std.testing.expectEqual(@as(usize, 0), native.activeFlowCount());
 }
 
-test "auth adapter rejects stale revisions and requests after disconnect without leaking answers" {
+test "auth adapter rejects stale revisions and requests after disconnect" {
     const allocator = std.testing.allocator;
     var native = auth_server.AuthProtocolServer.init(allocator, .{
         .persist_credentials = false,
@@ -702,12 +639,11 @@ test "auth adapter rejects stale revisions and requests after disconnect without
     adapter.setCapabilityRevision("current-revision");
 
     const stale =
-        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.reply.request","id":"stale-reply","capability_revision":"old-revision","payload":{"flow_id":"f","prompt_id":"p","answer":"SENSITIVE_AUTH_ANSWER"}}
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.providers.request","id":"stale-request","capability_revision":"old-revision","payload":{}}
     ;
     try std.testing.expect(try adapter.handleLine(stale));
     const stale_response = adapter.popOutbound() orelse return error.MissingErrorResponse;
     defer allocator.free(stale_response);
-    try std.testing.expect(std.mem.indexOf(u8, stale_response, "SENSITIVE_AUTH_ANSWER") == null);
     var parsed_stale = try std.json.parseFromSlice(std.json.Value, allocator, stale_response, .{});
     defer parsed_stale.deinit();
     const stale_error = ((parsed_stale.value.object.get("payload") orelse return error.MissingPayload).object.get("error") orelse return error.MissingError).object;
@@ -718,12 +654,11 @@ test "auth adapter rejects stale revisions and requests after disconnect without
 
     try adapter.cancelAllOnDisconnect();
     const closed =
-        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.reply.request","id":"closed-reply","capability_revision":"current-revision","payload":{"flow_id":"f","prompt_id":"p","answer":"SENSITIVE_AUTH_ANSWER"}}
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.providers.request","id":"closed-request","capability_revision":"current-revision","payload":{}}
     ;
     try std.testing.expect(try adapter.handleLine(closed));
     const closed_response = adapter.popOutbound() orelse return error.MissingErrorResponse;
     defer allocator.free(closed_response);
-    try std.testing.expect(std.mem.indexOf(u8, closed_response, "SENSITIVE_AUTH_ANSWER") == null);
     var parsed_closed = try std.json.parseFromSlice(std.json.Value, allocator, closed_response, .{});
     defer parsed_closed.deinit();
     const closed_error = ((parsed_closed.value.object.get("payload") orelse return error.MissingPayload).object.get("error") orelse return error.MissingError).object;

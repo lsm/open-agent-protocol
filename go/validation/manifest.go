@@ -190,7 +190,7 @@ func diagnosticCodes() map[string]bool {
 		CodeWrongToolOwner, CodeUndisclosedProvideLimit, CodeResolutionPayloadMismatch,
 		CodeModelNotInCatalog, CodeAmbiguousDefaultModel, CodeDuplicateModelID, CodeUnannouncedCatalogChange,
 		CodeUnmatchedProvider, CodeDuplicateProvider,
-		CodeAuthFlowOrder, CodeAuthPromptMismatch, CodeMissingAuthTerminal,
+		CodeAuthFlowOrder, CodeMissingAuthTerminal,
 	}
 	result := make(map[string]bool, len(codes))
 	for _, code := range codes {

@@ -560,6 +560,68 @@ func TestSubmitAppliesModelPerRun(t *testing.T) {
 	}
 }
 
+func TestSwitchModelChangesTheSessionDefaultWithoutRewritingAnAdmittedRun(t *testing.T) {
+	session := newTestSession(t, 64)
+	switcher, ok := session.(adapter.ModelSwitcher)
+	if !ok {
+		t.Fatal("memory session has no model switch operation")
+	}
+	ctx := context.Background()
+	request := protocol.SessionModelSwitchRequest{SessionID: "session-1", ModelID: adapter.ModelPrimary}
+	first, state, err := switcher.SwitchModel(ctx, request)
+	if err != nil || first.PreviousModelID != "" || state.CurrentModelID != adapter.ModelPrimary {
+		t.Fatalf("first switch = %+v state=%+v err=%v", first, state, err)
+	}
+	repeat, _, err := switcher.SwitchModel(ctx, request)
+	if err != nil || repeat.PreviousModelID != adapter.ModelPrimary {
+		t.Fatalf("idempotent switch = %+v err=%v", repeat, err)
+	}
+	_, _, err = switcher.SwitchModel(ctx, protocol.SessionModelSwitchRequest{SessionID: "session-1", ModelID: "missing"})
+	var missing *adapter.ModelNotFoundError
+	if !errors.As(err, &missing) || missing.ModelID != "missing" {
+		t.Fatalf("missing model refusal = %v", err)
+	}
+	admission, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	})
+	if err != nil || admission.ModelID != adapter.ModelPrimary {
+		t.Fatalf("admission = %+v err=%v", admission, err)
+	}
+	second, state, err := switcher.SwitchModel(ctx, protocol.SessionModelSwitchRequest{SessionID: "session-1", ModelID: adapter.ModelSecondary})
+	if err != nil || second.PreviousModelID != adapter.ModelPrimary || state.CurrentModelID != adapter.ModelSecondary {
+		t.Fatalf("second switch = %+v state=%+v err=%v", second, state, err)
+	}
+	if admission.ModelID != adapter.ModelPrimary {
+		t.Fatalf("admitted run model changed to %q", admission.ModelID)
+	}
+}
+
+func TestSwitchModelAppliesToAQueuedRunWhenItStarts(t *testing.T) {
+	session := newTestSession(t, 64)
+	ctx := context.Background()
+	first, firstStream := submitAdmission(t, session)
+	firstEvents := drainAvailable(firstStream)
+	queued, queuedStream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryQueue,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("after switch")}},
+	})
+	if err != nil || queued.Admission != protocol.AdmissionQueued {
+		t.Fatalf("queued admission = %+v, err=%v", queued, err)
+	}
+	switcher := session.(adapter.ModelSwitcher)
+	_, _, err = switcher.SwitchModel(ctx, protocol.SessionModelSwitchRequest{SessionID: "session-1", ModelID: adapter.ModelSecondary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolveScriptedGates(t, session, first.RunID, firstStream, firstEvents)
+	started := envelopeOfType(t, drainAvailable(queuedStream), protocol.TypeRunStarted)
+	var payload protocol.RunStartedPayload
+	if err := started.DecodePayload(&payload); err != nil || payload.ModelID != adapter.ModelSecondary {
+		t.Fatalf("queued run started with model %q, err=%v", payload.ModelID, err)
+	}
+}
+
 func TestSubmitJudgesEveryControl(t *testing.T) {
 	message := []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}
 	for name, testCase := range map[string]struct {

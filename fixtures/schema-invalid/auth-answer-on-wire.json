@@ -1,0 +1,14 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "auth.login.reply.request",
+    "id": "forbidden-auth-answer",
+    "payload": {
+      "flow_id": "flow-1",
+      "prompt_id": "prompt-1",
+      "answer": "SENSITIVE_TEST_CODE"
+    }
+  }
+]

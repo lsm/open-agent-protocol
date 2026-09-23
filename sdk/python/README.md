@@ -55,17 +55,16 @@ The current OAP agent host does not advertise client-executed `+control-tools`. 
 
 ## Authentication
 
-`client.auth.list_providers()` and `.login()` use agent-profile `+auth` on the trusted local stdio connection. The runtime owns credentials; the SDK receives no token. A prompt answer may be a short-lived OAuth code, so applications must not log it.
+`client.auth.list_providers()` and `.login()` use agent-profile `+auth` on the local stdio connection. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`.
 
 ```python
 handlers = oap_sdk.AuthFlowHandlers(
     on_event=lambda event: print(event.url) if isinstance(event, oap_sdk.AuthUrlEvent) else None,
-    on_prompt=lambda prompt: input(f"{prompt.message} "),
 )
 await client.auth.login("anthropic", handlers)
 ```
 
-A missing prompt handler cancels the flow. `AuthOptions(auth_retry_policy="auto_once", handlers=handlers)` enables one login and retry after a typed `auth_required` or `credential_*` failure; arbitrary provider-error text never triggers login. For a stream that already emitted user-visible output, the SDK does not replay the call.
+`on_prompt` is only used with explicit Makai V1 compatibility mode, never OAP. `AuthOptions(auth_retry_policy="auto_once", handlers=handlers)` enables one login and retry after a typed `auth_required` or `credential_*` failure; arbitrary provider-error text never triggers login. For a stream that already emitted user-visible output, the SDK does not replay the call.
 
 ## Configuration and errors
 

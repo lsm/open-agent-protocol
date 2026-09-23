@@ -152,7 +152,7 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 
 func containsAuthReply(raw []byte) bool {
 	return bytes.Contains(raw, []byte("auth.login.reply.request")) ||
-		declaredType(raw) == string(protocol.TypeAuthLoginReplyRequest)
+		declaredType(raw) == "auth.login.reply.request"
 }
 
 func redactAuthReplyDiagnostics(diagnostics []Diagnostic) {
@@ -536,10 +536,6 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.AuthLoginStartResponse{}
 	case protocol.TypeAuthLoginEvent:
 		return &protocol.AuthLoginEvent{}
-	case protocol.TypeAuthLoginReplyRequest:
-		return &protocol.AuthLoginReplyRequest{}
-	case protocol.TypeAuthLoginReplyResponse:
-		return &protocol.AuthLoginReplyResponse{}
 	case protocol.TypeAuthLoginCancelRequest:
 		return &protocol.AuthLoginCancelRequest{}
 	case protocol.TypeAuthLoginCancelResponse:

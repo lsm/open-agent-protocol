@@ -179,6 +179,11 @@ func (r *runner) drive() {
 	} else {
 		r.pass("capabilities.response carries a capability revision")
 	}
+	if support, ok := r.descriptor.Features[protocol.FeatureSessionModelSwitch]; !ok || support.Level == "" || support.Level == protocol.SupportUnavailable {
+		r.fail("core session.model.switch is advertised", "the endpoint did not advertise the core model switch capability")
+	} else {
+		r.pass("core session.model.switch is advertised")
+	}
 
 	opened, err := r.request(protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{SessionID: r.session}, "", r.revision)
 	if !r.record("session.open.request is answered", err) {
@@ -194,14 +199,19 @@ func (r *runner) drive() {
 	} else {
 		r.pass("the open names the session it was asked for")
 	}
+	selected := r.electModel(state.CurrentModelID)
+	if selected == "" {
+		selected = state.CurrentModelID
+	}
+	switched := r.exerciseModelSwitch(selected, state.CurrentModelID)
 
 	submission := protocol.MessageSubmitRequest{
 		SessionID: r.session,
 		Delivery:  protocol.DeliveryAuto,
 		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("drive one scripted run")}},
 	}
-	if model := r.electModel(); model != "" {
-		submission.ModelID = protocol.ControlValue(model)
+	if !switched && selected != "" {
+		submission.ModelID = protocol.ControlValue(selected)
 	}
 	admitted, err := r.request(protocol.TypeSessionMessageSubmitRequest, submission, "", r.revision)
 	if !r.record("session.message.submit.request is answered", err) {
@@ -218,6 +228,13 @@ func (r *runner) drive() {
 	}
 	r.pass("the submission is admitted and names its run")
 	r.runID = admission.RunID
+	if switched {
+		if admission.ModelID != selected {
+			r.fail("the switched model is used by the next run", fmt.Sprintf("admission used %q, want %q", admission.ModelID, selected))
+		} else {
+			r.pass("the switched model is used by the next run")
+		}
+	}
 
 	const delivery = "the admission repeats requested_delivery and reports a concrete effective_delivery"
 	switch {
@@ -242,6 +259,72 @@ func (r *runner) drive() {
 	r.refuseStaleRevision()
 	r.answerCancel()
 	r.refuseAddressableEnvelope()
+}
+
+func (r *runner) exerciseModelSwitch(model, previous string) bool {
+	const name = "session.model.switch changes the session default"
+	if model == "" {
+		r.fail(name, "no model is named by --model, the session state, or a model catalog")
+		return false
+	}
+	answer, err := r.request(protocol.TypeSessionModelSwitchRequest, protocol.SessionModelSwitchRequest{
+		SessionID: r.session, ModelID: model,
+	}, "", r.revision)
+	if err != nil {
+		r.fail(name, err.Error())
+		return false
+	}
+	if answer.Type != protocol.TypeSessionModelSwitchResponse {
+		r.fail(name, fmt.Sprintf("answer type is %q", answer.Type))
+		return false
+	}
+	var switched protocol.SessionModelSwitchResponse
+	if err := answer.DecodePayload(&switched); err != nil {
+		r.fail(name, err.Error())
+		return false
+	}
+	if switched.SessionID != r.session || switched.ModelID != model || switched.PreviousModelID != previous {
+		r.fail(name, fmt.Sprintf("response session=%q model=%q previous=%q", switched.SessionID, switched.ModelID, switched.PreviousModelID))
+		return false
+	}
+	if model != previous {
+		updated, err := r.client.Event()
+		if err != nil {
+			r.fail("session.model.switch publishes canonical state", err.Error())
+			return false
+		}
+		var state protocol.SessionState
+		if updated.Type != protocol.TypeSessionStateUpdated || updated.DecodePayload(&state) != nil || state.SessionID != r.session || state.CurrentModelID != model {
+			r.fail("session.model.switch publishes canonical state", fmt.Sprintf("event type=%q session=%q model=%q", updated.Type, state.SessionID, state.CurrentModelID))
+			return false
+		}
+		r.pass("session.model.switch publishes canonical state")
+	}
+	stateAnswer, err := r.request(protocol.TypeSessionStateRequest, protocol.SessionStateRequest{SessionID: r.session}, "", r.revision)
+	if err != nil {
+		r.fail(name, err.Error())
+		return false
+	}
+	var state protocol.SessionState
+	if err := stateAnswer.DecodePayload(&state); err != nil || state.CurrentModelID != model {
+		r.fail(name, fmt.Sprintf("state after switch has model %q, want %q: %v", state.CurrentModelID, model, err))
+		return false
+	}
+	r.pass(name)
+
+	const missingName = "session.model.switch refuses a missing model with its id"
+	missing := "conformance-no-such-model-" + string(r.next("missing"))
+	refusal, _ := r.request(protocol.TypeSessionModelSwitchRequest, protocol.SessionModelSwitchRequest{
+		SessionID: r.session, ModelID: missing,
+	}, "", r.revision)
+	var failure protocol.ErrorResponse
+	if refusal.Type != protocol.TypeErrorResponse || refusal.DecodePayload(&failure) != nil ||
+		failure.Error.Code != "model_not_found" || failure.Error.Details["model_id"] != missing {
+		r.fail(missingName, fmt.Sprintf("answer type=%q code=%q details=%v", refusal.Type, failure.Error.Code, failure.Error.Details))
+	} else {
+		r.pass(missingName)
+	}
+	return true
 }
 
 func (r *runner) refuseAddressableEnvelope() {
@@ -369,7 +452,7 @@ func (r *runner) answerCancel() {
 	r.pass(name)
 }
 
-func (r *runner) electModel() string {
+func (r *runner) electModel(current string) string {
 	if r.model != "" {
 		return r.model
 	}
@@ -383,6 +466,11 @@ func (r *runner) electModel() string {
 	var catalog protocol.ModelsResponse
 	if err := answer.DecodePayload(&catalog); err != nil || len(catalog.Models) == 0 {
 		return ""
+	}
+	for _, model := range catalog.Models {
+		if model.ID != current {
+			return model.ID
+		}
 	}
 	for _, model := range catalog.Models {
 		if model.Default {

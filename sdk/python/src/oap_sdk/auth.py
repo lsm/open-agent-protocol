@@ -129,8 +129,8 @@ class AuthApi:
         flow_id = new_ulid()
         sequence = 1
         last_error: Optional[Dict[str, Optional[str]]] = None
-        cancelled_locally = False
         settled = False
+        cancelled_locally = False
 
         logger.info("auth login provider_id=%s flow_id=%s", provider_id, flow_id)
         context = TimeoutContext(
@@ -269,7 +269,6 @@ class AuthApi:
         flow_id: Optional[str] = None
         settled = False
         expected_sequence = 1
-        cancelled_locally = False
         async with self._transport.route(request_id=start["id"]) as flow:
             try:
                 await self._transport.send(start)
@@ -306,8 +305,6 @@ class AuthApi:
                         raw_error = payload.get("error")
                         error = raw_error if isinstance(raw_error, dict) else {}
                         message = error.get("message") or ("auth login cancelled" if status == "cancelled" else "auth login failed")
-                        if cancelled_locally and status == "cancelled":
-                            message = "auth login cancelled: no on_prompt handler is configured"
                         raise MakaiAuthError(str(message), kind="cancelled" if status == "cancelled" else "provider_error",
                                              code=error.get("code") if isinstance(error.get("code"), str) else None)
 
@@ -319,30 +316,11 @@ class AuthApi:
                         event = AuthProgressEvent(flow_id=flow_id, provider_id=provider_id,
                                                   message=str(payload.get("message", "")))
                     elif event_kind == "prompt":
-                        event = AuthPromptEvent(flow_id=flow_id, provider_id=provider_id,
-                            prompt_id=str(payload.get("prompt_id", "")), message=str(payload.get("message", "")),
-                            allow_empty=payload.get("allow_empty") is True)
+                        raise MakaiAuthError("manual login input cannot be sent over OAP",
+                                             kind="provider_error", code="auth_input_unavailable")
                     else:
                         raise MakaiAuthError("unknown OAP auth event kind", kind="transport_error")
                     await self._emit(effective, event)
-                    if isinstance(event, AuthPromptEvent):
-                        if effective is None or effective.on_prompt is None:
-                            cancelled_locally = True
-                            await self._transport.send_best_effort(envelope(
-                                AGENT, "auth.login.cancel.request", {"flow_id": flow_id}))
-                            continue
-                        answer = await self._ask(effective, event)
-                        if len(answer) > 4096 or (not answer and not event.allow_empty):
-                            raise MakaiAuthError("auth prompt answer violates endpoint limits", kind="provider_error", code="invalid_request")
-                        reply = envelope(AGENT, "auth.login.reply.request", {
-                            "flow_id": flow_id, "prompt_id": event.prompt_id, "answer": answer})
-                        async with self._transport.route(request_id=reply["id"]) as answer_route:
-                            await self._transport.send(reply)
-                            acknowledgement = await answer_route.next_frame(self._frame_timeout)
-                        if acknowledgement.get("type") == "error.response":
-                            raise _oap_auth_error(acknowledgement)
-                        if acknowledgement.get("type") != "auth.login.reply.response" or not _require_payload(acknowledgement).get("accepted"):
-                            raise MakaiAuthError("auth prompt answer was not accepted", kind="provider_error", code="invalid_request")
             except BaseException:
                 if flow_id and not settled:
                     await self._transport.send_best_effort(envelope(

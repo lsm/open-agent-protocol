@@ -120,7 +120,7 @@ For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrappe
 
 ## Auth
 
-`auth().list_providers()` inspects auth state; `auth().login(...)` runs an interactive flow. Token material is owned by the runtime and is never exposed by the SDK.
+`auth().list_providers()` inspects auth state; `auth().login(...)` runs a browser flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`.
 
 ```rust
 use oap_sdk::{AuthEvent, AuthHandlers, AuthStatus, Client};
@@ -138,12 +138,6 @@ if needs_login {
             if let AuthEvent::AuthUrl { url, .. } = event {
                 println!("Open {url}");
             }
-        })
-        .on_prompt(|prompt| async move {
-            println!("{}", prompt.message);
-            let mut answer = String::new();
-            std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-            Ok(answer.trim().to_owned())
         });
 
     client.auth().login("anthropic", Some(&handlers)).await?;
@@ -152,7 +146,7 @@ if needs_login {
 # }
 ```
 
-A flow that reaches a prompt with no `on_prompt` handler is cancelled rather than left hanging. Dropping the login future sends `auth.login.cancel.request`, so the runtime does not leave an OAuth listener running.
+`on_prompt` is only used with explicit Makai V1 compatibility mode, never OAP. Dropping the login future sends `auth.login.cancel.request`, so the runtime does not leave an OAuth listener running.
 
 You can also configure one-shot automatic retry for `provider` and `agent` calls:
 
@@ -162,9 +156,6 @@ use oap_sdk::{AuthHandlers, AuthRetryPolicy, Client};
 # async fn run() -> oap_sdk::Result<()> {
 let client = Client::builder()
     .auth_retry_policy(AuthRetryPolicy::AutoOnce)
-    .auth_handlers(AuthHandlers::new().on_prompt(|_| async move {
-        Ok(std::env::var("OAPX_AUTH_CODE").unwrap_or_default())
-    }))
     .connect()
     .await?;
 # let _ = client;
@@ -172,7 +163,7 @@ let client = Client::builder()
 # }
 ```
 
-With `AutoOnce`, a call that hits `auth_required` logs in once and retries. With no handlers configured and interactive auth required, it fails fast with the typed error rather than hanging.
+With `AutoOnce`, a call that hits `auth_required` logs in once and retries. If manual input is required but unavailable to the host, it fails with `auth_input_unavailable` rather than hanging.
 
 ## Models
 

@@ -94,6 +94,20 @@ func TestRunnerAcceptsTheReferenceEndpoint(t *testing.T) {
 	if !report.Passed {
 		t.Fatal("the reference endpoint is reported non-conformant")
 	}
+	seen := map[string]bool{}
+	for _, check := range report.Checks {
+		seen[check.Name] = true
+	}
+	for _, name := range []string{
+		"session.model.switch changes the session default",
+		"session.model.switch publishes canonical state",
+		"session.model.switch refuses a missing model with its id",
+		"the switched model is used by the next run",
+	} {
+		if !seen[name] {
+			t.Errorf("conformance did not exercise %q", name)
+		}
+	}
 }
 
 func TestRunnerRejectsAnEndpointThatSettlesTwice(t *testing.T) {

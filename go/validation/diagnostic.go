@@ -79,7 +79,6 @@ const (
 	CodeUnannouncedCatalogChange = "unannounced_catalog_change"
 
 	CodeAuthFlowOrder       = "auth_flow_order"
-	CodeAuthPromptMismatch  = "auth_prompt_mismatch"
 	CodeMissingAuthTerminal = "missing_auth_terminal"
 )
 

@@ -55,16 +55,16 @@ test("unrepresented client tools fail explicitly before a legacy frame is sent",
   }
 });
 
-test("OAP auth discovery, URL, prompt answer, and terminal completion", async () => {
+test("OAP auth discovery, URL, progress, and terminal completion", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture] });
   try {
     assert.equal((await client.auth.listProviders())[0]?.auth_status, "login_required");
     const seen: string[] = [];
     await client.auth.login("fixture", {
       onEvent: (event) => seen.push(event.type),
-      onPrompt: (prompt) => { assert.equal(prompt.prompt_id, "prompt-1"); return "code"; },
+      onPrompt: () => { throw new Error("unexpected OAP prompt"); },
     });
-    assert.deepEqual(seen, ["auth_url", "prompt", "success"]);
+    assert.deepEqual(seen, ["auth_url", "progress", "success"]);
     assert.equal((await client.auth.listProviders())[0]?.auth_status, "authenticated");
   } finally {
     await client.close();
@@ -87,10 +87,23 @@ test("OAP provider and agent auto-once login retry only after auth rejection", a
   }
 });
 
-test("OAP login without prompt handler cancels instead of hanging", async () => {
+test("OAP browser login needs no prompt handler", async () => {
   const client = await createOapClient({ command: process.execPath, args: [fixture] });
   try {
-    await assert.rejects(() => client.auth.login("fixture"), (error: unknown) => error instanceof Error && error.message.includes("no onPrompt"));
+    await client.auth.login("fixture");
+  } finally {
+    await client.close();
+  }
+});
+
+test("OAP manual prompt never calls an answer handler", async () => {
+  const client = await createOapClient({ command: process.execPath, args: [fixture] });
+  try {
+    let called = false;
+    await assert.rejects(() => client.auth.login("manual", {
+      onPrompt: () => { called = true; return "SENSITIVE_TEST_CODE"; },
+    }), (error: unknown) => error instanceof Error && "code" in error && error.code === "auth_input_unavailable");
+    assert.equal(called, false);
   } finally {
     await client.close();
   }

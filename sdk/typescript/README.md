@@ -161,16 +161,13 @@ Prefer `client.models` when you only need model discovery. Use `client.agent.mod
 
 ## Auth
 
-Use `client.auth.listProviders()` to inspect auth state, and `client.auth.login(providerId, handlers)` to start an interactive login flow. Token material is owned by the runtime and is not exposed by the SDK.
+Use `client.auth.listProviders()` to inspect auth state, and `client.auth.login(providerId, handlers)` to start a browser login flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`.
 
 ```ts
 import { createMakaiClient, type MakaiAuthEvent } from "oap-sdk";
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 
 async function main(): Promise<void> {
   const client = await createMakaiClient();
-  const rl = createInterface({ input, output });
 
   try {
     const providers = await client.auth.listProviders();
@@ -186,13 +183,9 @@ async function main(): Promise<void> {
             console.log(event.message);
           }
         },
-        async onPrompt(prompt): Promise<string> {
-          return rl.question(`${prompt.message} `);
-        },
       });
     }
   } finally {
-    rl.close();
     await client.close();
   }
 }
@@ -213,7 +206,6 @@ async function main(): Promise<void> {
         onEvent: (event) => {
           if (event.type === "auth_url") console.log(`Open ${event.url}`);
         },
-        onPrompt: async (prompt) => prompt.allow_empty ? "" : process.env.OAPX_AUTH_CODE ?? "",
       },
     },
   });

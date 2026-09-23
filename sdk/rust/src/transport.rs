@@ -739,8 +739,7 @@ impl Transport {
     }
 
     fn send_line(&self, line: String) -> Result<()> {
-        // auth.login.reply.request can carry a one-time OAuth code. Never log
-        // raw outbound JSON, even at trace level.
+        // Never log raw outbound JSON, even at trace level.
         tracing::trace!("sending protocol frame");
         let guard = self
             .inner

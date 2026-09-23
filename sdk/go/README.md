@@ -69,20 +69,17 @@ The current OAP agent endpoint does not advertise client-executed `+control-tool
 
 ## Authentication
 
-`client.Auth.ListProviders(ctx)` and `client.Auth.Login(ctx, providerID, handlers)` use agent-profile `+auth` on the same trusted local stdio connection. URL, progress, and prompt events reach the handlers; prompt answers may contain short-lived OAuth codes and must not be logged. The runtime owns credentials and never returns them to the SDK.
+`client.Auth.ListProviders(ctx)` and `client.Auth.Login(ctx, providerID, handlers)` use agent-profile `+auth` on the same local stdio connection. URL and progress events reach the handlers. The runtime owns credentials; no login code or prompt answer travels in an OAP envelope. A manual-code flow without host-owned input fails with `auth_input_unavailable`.
 
 ```go
 err := client.Auth.Login(ctx, "anthropic", makai.LoginHandlers{
     OnEvent: func(event makai.AuthEvent) {
         if event.Type == makai.AuthEventURL { fmt.Println(event.URL) }
     },
-    OnPrompt: func(ctx context.Context, prompt makai.AuthPrompt) (string, error) {
-        return readCodeFromUser(prompt.Message)
-    },
 })
 ```
 
-A missing prompt handler cancels the flow. Go uses manual retry: a typed `*AuthRequiredError` from provider or agent calls can be followed by `Login` and one new call. Only typed `auth_required` and `credential_*` failures are classified this way; arbitrary provider errors are not.
+`OnPrompt` is only used with explicit Makai V1 compatibility mode, never OAP. Go uses manual retry: a typed `*AuthRequiredError` from provider or agent calls can be followed by `Login` and one new call. Only typed `auth_required` and `credential_*` failures are classified this way; arbitrary provider errors are not.
 
 ## Configuration and compatibility
 

@@ -148,6 +148,29 @@ func (s *Session) Models(ctx context.Context, request protocol.ModelsRequest) (b
 	return catalog, nil
 }
 
+func (s *Session) SwitchModel(ctx context.Context, request protocol.SessionModelSwitchRequest) (protocol.SessionModelSwitchResponse, protocol.SessionState, error) {
+	if request.SessionID != s.id {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}
+	}
+	switcher, ok := s.session.(base.ModelSwitcher)
+	if !ok {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, &base.UnsupportedControlError{
+			Feature: protocol.FeatureSessionModelSwitch, Reason: base.ControlUnadvertised,
+		}
+	}
+	response, state, err := switcher.SwitchModel(ctx, request)
+	if errors.Is(err, base.ErrSessionClosed) {
+		s.markClosed()
+	}
+	if err != nil {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, err
+	}
+	if response.SessionID != s.id || state.SessionID != s.id || response.ModelID != state.CurrentModelID {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, fmt.Errorf("serve: adapter reported a model switch outside session %q", s.id)
+	}
+	return response, state, nil
+}
+
 func (s *Session) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, error) {
 	if request.SessionID != s.id {
 		return protocol.MessageSubmitResponse{}, &ScopeMismatchError{Payload: request.SessionID, Addressed: s.id}

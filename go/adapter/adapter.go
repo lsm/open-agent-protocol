@@ -34,6 +34,10 @@ type ModelLister interface {
 	Models(context.Context, protocol.ModelsRequest) (Catalog, error)
 }
 
+type ModelSwitcher interface {
+	SwitchModel(context.Context, protocol.SessionModelSwitchRequest) (protocol.SessionModelSwitchResponse, protocol.SessionState, error)
+}
+
 type EventStream <-chan Result
 
 type Result struct {

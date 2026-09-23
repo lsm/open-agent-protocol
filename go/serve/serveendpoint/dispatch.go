@@ -100,6 +100,8 @@ func (s *Server) serve(ctx context.Context, streams context.Context, e protocol.
 		return plain(s.open(ctx, e))
 	case protocol.TypeSessionStateRequest:
 		return plain(s.state(ctx, e))
+	case protocol.TypeSessionModelSwitchRequest:
+		return s.switchModel(ctx, streams, e)
 	case protocol.TypeSessionMessageSubmitRequest:
 		return s.submit(ctx, streams, e)
 	case protocol.TypeRunCancelRequest:
@@ -229,6 +231,44 @@ func (s *Server) state(ctx context.Context, e protocol.Envelope) (protocol.Envel
 	answer.SessionID = entry.ID()
 	answer.CapabilityRevision = e.CapabilityRevision
 	return answer, nil
+}
+
+func (s *Server) switchModel(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {
+	entry, err := s.session(e)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	var request protocol.SessionModelSwitchRequest
+	if err := e.DecodePayload(&request); err != nil {
+		return protocol.Envelope{}, nil, &refusal{code: "invalid_payload", message: err.Error()}
+	}
+	response, state, err := entry.SwitchModel(ctx, request)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeSessionModelSwitchResponse, s.nextID("response"), response)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	answer.InReplyTo = e.ID
+	answer.SessionID = entry.ID()
+	answer.CapabilityRevision = e.CapabilityRevision
+	if response.PreviousModelID == response.ModelID {
+		return answer, nil, nil
+	}
+	updated, err := protocol.NewEnvelope(protocol.TypeSessionStateUpdated, s.nextID("event"), state)
+	if err != nil {
+		return protocol.Envelope{}, nil, err
+	}
+	updated.SessionID = entry.ID()
+	updated.CapabilityRevision = e.CapabilityRevision
+	sequence := s.nextStateSequence(entry.ID())
+	updated.Sequence = &sequence
+	return answer, func() {
+		if err := s.write(streams, updated); err != nil {
+			s.logger.Printf("serveendpoint: publishing model switch state: %v", err)
+		}
+	}, nil
 }
 
 func (s *Server) submit(ctx context.Context, streams context.Context, e protocol.Envelope) (protocol.Envelope, func(), error) {

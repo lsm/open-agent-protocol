@@ -39,38 +39,15 @@
       "properties": {
         "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
         "provider_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "kind": { "enum": ["url", "prompt", "progress"] },
+        "kind": { "enum": ["url", "progress"] },
         "url": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
         "instructions": { "type": "string" },
-        "prompt_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
-        "message": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
-        "allow_empty": { "type": "boolean" }
+        "message": { "$ref": "common.schema.json#/$defs/nonEmptyString" }
       },
       "allOf": [
         { "if": { "properties": { "kind": { "const": "url" } } }, "then": { "required": ["url"] } },
-        { "if": { "properties": { "kind": { "const": "prompt" } } }, "then": { "required": ["prompt_id", "message", "allow_empty"] } },
         { "if": { "properties": { "kind": { "const": "progress" } } }, "then": { "required": ["message"] } }
       ],
-      "additionalProperties": false
-    },
-    "loginReplyRequest": {
-      "type": "object",
-      "required": ["flow_id", "prompt_id", "answer"],
-      "properties": {
-        "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
-        "prompt_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
-        "answer": { "type": "string", "maxLength": 4096 }
-      },
-      "additionalProperties": false
-    },
-    "loginReplyResponse": {
-      "type": "object",
-      "required": ["flow_id", "prompt_id", "accepted"],
-      "properties": {
-        "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
-        "prompt_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
-        "accepted": { "type": "boolean" }
-      },
       "additionalProperties": false
     },
     "loginCancelRequest": {

@@ -56,40 +56,13 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "auth.login.event",
-    "id": "prompt-event",
+    "id": "progress-event",
     "sequence": 2,
     "payload": {
       "flow_id": "flow-1",
       "provider_id": "example",
-      "kind": "prompt",
-      "prompt_id": "prompt-1",
-      "message": "Press Enter to continue",
-      "allow_empty": true
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "auth.login.reply.request",
-    "id": "reply-req",
-    "payload": {
-      "flow_id": "flow-1",
-      "prompt_id": "prompt-1",
-      "answer": ""
-    }
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "auth.login.reply.response",
-    "id": "reply-resp",
-    "in_reply_to": "reply-req",
-    "payload": {
-      "flow_id": "flow-1",
-      "prompt_id": "prompt-1",
-      "accepted": true
+      "kind": "progress",
+      "message": "Complete login in the host"
     }
   },
   {

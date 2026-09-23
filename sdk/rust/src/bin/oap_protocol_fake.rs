@@ -75,33 +75,29 @@ fn main() {
                     json!({ "flow_id": "flow-1", "provider_id": data["provider_id"], "kind": "url", "url": "https://example.invalid/login" }),
                     json!({ "sequence": 1 }),
                 );
+                if data["provider_id"] == "manual" {
+                    emit(
+                        profile,
+                        "auth.login.event",
+                        None,
+                        json!({ "flow_id": "flow-1", "provider_id": "manual", "kind": "prompt", "prompt_id": "prompt-1", "message": "Enter code", "allow_empty": false }),
+                        json!({ "sequence": 2 }),
+                    );
+                    continue;
+                }
                 emit(
                     profile,
                     "auth.login.event",
                     None,
-                    json!({ "flow_id": "flow-1", "provider_id": data["provider_id"], "kind": "prompt", "prompt_id": "prompt-1", "message": "Enter code", "allow_empty": false }),
+                    json!({ "flow_id": "flow-1", "provider_id": data["provider_id"], "kind": "progress", "message": "Login completed in browser" }),
                     json!({ "sequence": 2 }),
                 );
-            }
-            (AGENT, "auth.login.reply.request") => {
-                emit(
-                    profile,
-                    "auth.login.reply.response",
-                    Some(id),
-                    json!({ "flow_id": data["flow_id"], "prompt_id": data["prompt_id"], "accepted": true }),
-                    json!({}),
-                );
-                authenticated = data["answer"] == "code";
-                let completed = if authenticated {
-                    json!({ "flow_id": data["flow_id"], "provider_id": "fixture", "status": "success" })
-                } else {
-                    json!({ "flow_id": data["flow_id"], "provider_id": "fixture", "status": "failed", "error": { "code": "bad_code", "message": "wrong code" } })
-                };
+                authenticated = true;
                 emit(
                     profile,
                     "auth.login.completed",
                     None,
-                    completed,
+                    json!({ "flow_id": "flow-1", "provider_id": "fixture", "status": "success" }),
                     json!({ "sequence": 3 }),
                 );
             }
