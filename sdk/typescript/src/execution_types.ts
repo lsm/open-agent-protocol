@@ -36,6 +36,7 @@ export type ToolCallContentPart = {
   tool_call_id: string;
   name: string;
   arguments_json: string;
+  carry?: string;
 };
 
 export type ToolResultContentPart = {
@@ -112,13 +113,13 @@ export type ProviderStreamEvent =
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
   | { type: "tool_call"; name: string; arguments_json: string; tool_call_id: string }
-  | { type: "message_end"; usage?: UsageSummary; stop_reason?: StopReason; error_message?: string }
+  | { type: "message_end"; usage?: UsageSummary; stop_reason?: StopReason; error_message?: string; message?: { role: "assistant"; content: string | ContentPart[] } }
   | { type: "error"; message: string; code?: string; provider_id?: string };
 
 export type AgentStreamEvent =
   | ProviderStreamEvent
   | { type: "agent_start"; session_id?: string }
-  | { type: "agent_end"; stop_reason?: StopReason; usage?: UsageSummary; error_message?: string; provider_id?: ProviderId; api?: ApiId }
+  | { type: "agent_end"; stop_reason?: StopReason; usage?: UsageSummary; error_message?: string; provider_id?: ProviderId; api?: ApiId; model_id?: string; message?: { role: "assistant"; content: string | ContentPart[] } }
   | { type: "turn_start" }
   | { type: "turn_end"; stop_reason?: StopReason; error_message?: string }
   | { type: "tool_execution_start"; tool_call_id: string; tool_name: string }
@@ -136,6 +137,9 @@ export type ProviderCompleteResponse = CompletionResponse;
 export interface MakaiAgentApi {
   run(request: AgentRunRequest): Promise<AgentRunResponse>;
   stream(request: AgentRunRequest): AsyncIterable<AgentStreamEvent>;
+  switchModel(sessionId: string, modelId: string): Promise<void>;
+  runSelected(sessionId: string, messages: ChatMessage[]): Promise<AgentRunResponse>;
+  streamSelected(sessionId: string, messages: ChatMessage[]): AsyncIterable<AgentStreamEvent>;
 }
 
 export interface MakaiProviderApi {

@@ -1,10 +1,10 @@
 # OAP Rust SDK
 
-Rust SDK published as `oap-sdk`. It starts an `oapx --stdio` runtime and exposes high-level namespaces for provider completions, streaming, agent runs with client-side tools, auth flows, and model discovery.
+Rust SDK published as `oap-sdk`. By default it starts `oapx serve agent,provider --stdio` and speaks OAP v0.1 on both profiles. Provider inference and catalog discovery use `model-provider-core`; agent sessions and authentication use `agent-control-core`.
 
 It mirrors the [TypeScript SDK](../typescript/README.md): same protocol, same namespaces, same error taxonomy.
 
-The wire it speaks today is the makai stdio protocol, not OAP. The package name is where this is going, not where it is.
+The old Makai v1 wire is available only with the explicit `Client::builder().legacy_wire()` opt-in. There is no automatic fallback.
 
 ## Installation
 
@@ -92,36 +92,18 @@ Exactly one terminal event ends the stream — `MessageEnd` or `Error`. Failures
 
 **Cancellation.** Dropping the stream cancels the work: the SDK sends `abort_request` for a provider stream and `agent_stop` for an agent run, so the runtime stops rather than finishing into a queue nobody is reading. Dropping the whole `Client` terminates and reaps the child process.
 
-## Agent loop with tools
+## Agent runs and model switching
 
-`agent().run(...)` and `agent().stream(...)` drive the runtime's agent loop. Tool schemas are JSON Schema documents in a string; tools with a handler **execute in your process** — the runtime publishes `tool_execute` and waits for the correlated `tool_result`.
+`agent().run(...)` and `agent().stream(...)` drive an OAP agent session. `switch_model(session_id, model_ref)` changes the selected model mid-session; `run_selected(session_id, messages)` uses that selection. Client-executed tools (`Tool::on_call`) are not yet exposed by the OAP endpoint: agent requests containing tools and direct provider requests containing executable callbacks fail explicitly with `unsupported_feature`. Direct provider calls can still pass declaration-only tool schemas. The old callback path is available only under `legacy_wire()`.
 
 ```rust
-use oap_sdk::{Client, ExecutionRequest, Tool};
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct WeatherArgs {
-    city: String,
-}
+use oap_sdk::{Client, ExecutionRequest};
 
 # async fn run(client: &oap_sdk::Client, model_ref: &str) -> oap_sdk::Result<()> {
-let weather = Tool::new(
-    "get_weather",
-    "Get the current weather for a city.",
-    r#"{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}"#,
-)
-.on_call(|invocation| async move {
-    let args: WeatherArgs = invocation.args().map_err(|err| err.to_string())?;
-    Ok(format!("It is 18C and raining in {}.", args.city))
-});
-
 let response = client
     .agent()
     .run(
-        ExecutionRequest::prompt(model_ref, "Should I bring an umbrella in San Francisco?")
-            .with_tool(weather)
-            .with_max_tokens(512),
+        ExecutionRequest::prompt(model_ref, "Say hello."),
     )
     .await?;
 
@@ -130,17 +112,15 @@ println!("{}", response.text());
 # }
 ```
 
-A `Tool` without a handler is declaration-only: if the loop asks for it, the SDK answers with an error result rather than stalling.
-
-For streaming, iterate `agent().stream(request)` and handle `AgentStart`, `TurnStart`, `ToolExecutionStart`, `ToolExecutionEnd`, the wrapped provider deltas, and the terminal `AgentEnd`.
+For streaming, iterate `agent().stream(request)` and handle `AgentStart`, wrapped provider deltas, and terminal `AgentEnd`. Per-run agent sampling controls (`max_tokens`, `temperature`, `reasoning_effort`) also fail explicitly until represented on the OAP agent profile; these controls remain supported for direct provider inference.
 
 ### Agent model discovery
 
-`client.agent().models()` returns the same `ModelsApi` as `client.models()`, over the same transport, for chaining discovery with a run.
+`client.agent().models()` is a compatibility alias for the provider model catalog on the same OAP connection.
 
 ## Auth
 
-`auth().list_providers()` inspects auth state; `auth().login(...)` runs an interactive flow. Token material is owned by the runtime and is never exposed by the SDK.
+`auth().list_providers()` inspects auth state; `auth().login(...)` runs a browser flow. Token material and manual-code answers stay within the runtime; no answer travels in an OAP envelope. A flow requiring manual input without a host-owned input path fails with `auth_input_unavailable`.
 
 ```rust
 use oap_sdk::{AuthEvent, AuthHandlers, AuthStatus, Client};
@@ -158,12 +138,6 @@ if needs_login {
             if let AuthEvent::AuthUrl { url, .. } = event {
                 println!("Open {url}");
             }
-        })
-        .on_prompt(|prompt| async move {
-            println!("{}", prompt.message);
-            let mut answer = String::new();
-            std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
-            Ok(answer.trim().to_owned())
         });
 
     client.auth().login("anthropic", Some(&handlers)).await?;
@@ -172,7 +146,7 @@ if needs_login {
 # }
 ```
 
-A flow that reaches a prompt with no `on_prompt` handler is cancelled rather than left hanging. Dropping the login future sends `auth_cancel`, so the runtime does not leave an OAuth listener running.
+`on_prompt` is only used with explicit Makai V1 compatibility mode, never OAP. Dropping the login future sends `auth.login.cancel.request`, so the runtime does not leave an OAuth listener running.
 
 You can also configure one-shot automatic retry for `provider` and `agent` calls:
 
@@ -182,9 +156,6 @@ use oap_sdk::{AuthHandlers, AuthRetryPolicy, Client};
 # async fn run() -> oap_sdk::Result<()> {
 let client = Client::builder()
     .auth_retry_policy(AuthRetryPolicy::AutoOnce)
-    .auth_handlers(AuthHandlers::new().on_prompt(|_| async move {
-        Ok(std::env::var("OAPX_AUTH_CODE").unwrap_or_default())
-    }))
     .connect()
     .await?;
 # let _ = client;
@@ -192,7 +163,7 @@ let client = Client::builder()
 # }
 ```
 
-With `AutoOnce`, a call that hits `auth_required` logs in once and retries. With no handlers configured and interactive auth required, it fails fast with the typed error rather than hanging.
+With `AutoOnce`, a call that hits `auth_required` logs in once and retries. If manual input is required but unavailable to the host, it fails with `auth_input_unavailable` rather than hanging.
 
 ## Models
 
@@ -222,7 +193,7 @@ for model in &response.models {
 
 ## Sessions
 
-`RunOptions::session_id` is a **correlation key, not a resume handle**. Sessions are not resumable: on interruption, resend the full context under a fresh id. The SDK generates one per run when you do not supply it, and under `AuthRetryPolicy::AutoOnce` the retried attempt always uses a fresh id, because the first attempt's session is stopped on the way out.
+`RunOptions::session_id` identifies an OAP session. Sessions can retain their selected model across runs; use `switch_model` then `run_selected` to change it. Legacy-wire sessions retain their earlier correlation-only behavior.
 
 ## Configuration
 
@@ -304,7 +275,7 @@ match error {
 ```bash
 cargo run --example complete
 cargo run --example stream
-cargo run --example agent_tools
+cargo run --example agent_tools  # explicitly uses legacy_wire() for callbacks
 cargo run --example login -- anthropic
 ```
 
@@ -316,7 +287,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
-`cargo test` needs no credentials and no runtime binary: the integration tests drive `makai-protocol-fake`, a scriptable stand-in for `oapx --stdio` that ships with the crate. You can test your own code against it the same way, by pointing `ClientBuilder::command` at the built binary:
+`cargo test` needs no credentials and no runtime binary: the OAP integration tests drive `oap-protocol-fake`, and explicit legacy tests drive `makai-protocol-fake`. You can point `ClientBuilder::command` at either built binary to test your own code:
 
 ```rust
 # fn build(fake: std::path::PathBuf) -> oap_sdk::ClientBuilder {
@@ -324,14 +295,14 @@ oap_sdk::ClientBuilder::new()
     .command(fake)
     .args(Vec::<String>::new())
     .env_clear()
-    .env("OAP_SDK_FAKE_SCENARIO", "ok")
+    // Add `.legacy_wire()` when targeting makai-protocol-fake.
 # }
 ```
 
 Inside this crate, `tests/common/mod.rs` gets that path from
-`env!("CARGO_BIN_EXE_makai-protocol-fake")`. Cargo defines that variable only for
+`env!("CARGO_BIN_EXE_oap-protocol-fake")`. Cargo defines that variable only for
 a crate's own integration tests, so from another crate it does not exist: build
-the binary with `cargo build --bin makai-protocol-fake` and pass the path
+the binary with `cargo build --bin oap-protocol-fake` and pass the path
 yourself.
 
 To also exercise a real runtime:

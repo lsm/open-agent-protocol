@@ -1,14 +1,22 @@
 # Stability Commitment: Open Agent Protocol v0.1 Core
 
-Status: in force
+Status: pre-release draft; binding begins with the first tagged v0.1 release
 Date: 2026-09-17
+Revised: 2026-09-22, before any tagged release, for the composed-profile and
+live session-control design in Decisions 0027 and 0028
 Applies to: profile `open-agent-protocol.agent-control-core`, protocol version
 `0.1`
 
 This document is for people implementing OAP natively — writing an endpoint
 that speaks these envelopes, rather than an adapter this repository maintains.
-It says what will not change under you, what happens if it must, and what you
-are owed before it does.
+It says what will not change under you **after v0.1 is first tagged**, what
+happens if it must, and what you are owed before it does. No v0.1 release has
+been tagged yet and the native implementer register is empty. The previous
+`in force` label prematurely locked a pre-release draft. Before the first tag,
+the schema, conformance rules, and accepted decisions are the current working
+contract and may be amended in v0.1 by an explicit decision and matching
+implementation. The first tag freezes the surface actually shipped then;
+none of the no-change promises below are retroactive to earlier drafts.
 
 Every statement here is written so that a later change could be shown to have
 broken it. Where a commitment cannot bind yet, it says so and names the
@@ -19,8 +27,8 @@ promises nothing.
 
 The **v0.1 core surface** is exactly three things:
 
-1. The envelope types defined by `schema/v0.1/envelope.schema.json` — 41 of
-   them today — together with the payload schemas they reference. Section 1
+1. The envelope types defined by `schema/v0.1/envelope.schema.json` at the
+   first v0.1 tag, together with the payload schemas they reference. Section 1
    says what is fixed about them, and on what condition the set may grow.
 2. The lifecycle rules those envelopes obey, as decided in
    [Decision 0001](decisions/0001-agent-control-v0.1-executable-core.md) and
@@ -69,9 +77,9 @@ position this project may still change.
 
 ---
 
-## 1. Existing envelopes never change, and the set grows only for units you have adopted
+## 1. Released envelopes never change, and the set grows only for units you have adopted
 
-**Binding: now.**
+**Binding: from the first tagged v0.1 release.**
 
 Every envelope type in the bundle today keeps its name, its required members,
 and its meaning for the life of `0.1`. None is removed or renamed.
@@ -122,7 +130,7 @@ process in section 5:
 
 ## 2. Conformance is defined in writing, and artifacts answer it
 
-**Binding: now.**
+**Binding: from the first tagged v0.1 release.**
 
 An endpoint is conformant to the core profile when it satisfies the Core
 Profile Requirements in [the conformance draft](drafts/conformance.md) and its
@@ -173,7 +181,7 @@ from a third-party endpoint. Neither of these changes any rule above.
 
 ## 3. Capability keys are additive, and an unknown key is ignored
 
-**Binding: now.**
+**Binding: from the first tagged v0.1 release.**
 
 Capability keys are only added. An existing key will not be removed within
 `0.1`, and will not change meaning.
@@ -219,8 +227,7 @@ A deprecation is never announced and acted on in the same release.
 
 ## 5. A breaking change follows a named process
 
-**Binding: from the first tagged release**, for the release-counted parts; the
-round trip in section 6 binds now regardless.
+**Binding: from the first tagged release.**
 
 There is no procedure by which a breaking change is made to `0.1` core. If one
 becomes necessary, it is made by versioning, not by mutation:
@@ -243,7 +250,7 @@ by not moving is access to whatever `0.2` adds — not your conformance claim.
 
 ## 6. A breaking change requires a round trip with native implementers first
 
-**Binding: now.**
+**Binding: from the first tagged v0.1 release.**
 
 No breaking change to `0.1` core lands until every native implementer on the
 register below has been sent the proposal and given **at least 30 days** to
@@ -282,12 +289,10 @@ Stated plainly, so the covered surface stays meaningful:
   deltas are staged for nothing, having none. An endpoint that has these today
   names them in an extension pack.
 - **Anything outside the agent-control boundary.** Direct model inference is
-  excluded by design, not pending: the core draft's "What This Protocol Is Not"
-  says why, and says the consequence — a harness whose wire carries both agent
-  control and direct provider access cannot move entirely onto OAP. Transport
-  authentication is a binding concern. Provider credential acquisition is
-  neither settled nor covered, and the same section records what a unit
-  covering it would have to answer.
+  the separate `model-provider-core` profile, not an agent-control envelope.
+  The profiles may share stdio under Decision 0027 while retaining distinct
+  semantics. Transport authentication remains a binding concern; provider
+  credential acquisition is addressed separately by the `+auth` design.
 
   This is listed here rather than only in the draft because this document is
   the one a native implementer reads, and a boundary they discover late is

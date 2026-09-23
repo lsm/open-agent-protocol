@@ -181,6 +181,11 @@ phase gives no rules, is `undisclosed_selection_modes` too.
 
 ### A per-run selection does not move the session default
 
+This rule remains distinct from core `session.model.switch` after
+[Decision 0028](0028-live-model-and-provider-control.md). A successful switch
+persists a new session default without creating a run; a per-submit
+`model_id` in `per_run` mode still changes only that run.
+
 An admitted `model_id` under `mode: "per_run"` is authoritative for its run and
 for nothing else. `current_model_id` — the model the next `auto` submission
 without a `model_id` would use — stays what it was, and stays so after the run's

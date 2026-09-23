@@ -5,8 +5,8 @@ import "context"
 // Role identifies the author of a [Message].
 type Role string
 
-// Message roles. System and developer messages are folded into the request's
-// system prompt by the runtime rather than appearing in the message list.
+// Message roles. Makai V1 folds system and developer messages into a system
+// prompt; OAP preserves their roles in the message list.
 const (
 	RoleSystem    Role = "system"
 	RoleDeveloper Role = "developer"
@@ -42,14 +42,17 @@ type ContentPart struct {
 	Thinking          string `json:"thinking,omitempty"`
 	ThinkingSignature string `json:"thinking_signature,omitempty"`
 
-	// Data and MimeType apply to PartImage. Data is base64-encoded.
+	// Data/MimeType or ImageURL apply to PartImage. Data is base64-encoded.
 	Data     string `json:"data,omitempty"`
 	MimeType string `json:"mime_type,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
 
 	// ToolCallID, Name and ArgumentsJSON apply to PartToolCall.
 	ToolCallID    string `json:"tool_call_id,omitempty"`
 	Name          string `json:"name,omitempty"`
 	ArgumentsJSON string `json:"arguments_json,omitempty"`
+	// ToolCallCarry preserves an opaque OAP provider continuation value.
+	ToolCallCarry string `json:"tool_call_carry,omitempty"`
 
 	// ToolName, Content, IsError and DetailsJSON apply to PartToolResult.
 	ToolName    string        `json:"tool_name,omitempty"`
@@ -113,7 +116,9 @@ type ToolInvocation struct {
 // passed to [AgentService.Run] or [AgentService.Stream].
 type ToolFunc func(ctx context.Context, call ToolInvocation) (string, error)
 
-// Tool is a tool definition offered to the model.
+// Tool is a tool definition offered to the model. Direct OAP provider calls
+// return tool calls to the caller; OAP agent calls currently reject client
+// tools until +control-tools is supported.
 type Tool struct {
 	// Name is the identifier the model calls.
 	Name string
@@ -151,13 +156,10 @@ type RunOptions struct {
 	// Metadata is passed through to the runtime.
 	Metadata map[string]string
 
-	// SessionID sets the correlation key for an agent run's session. It must
-	// be a 21-character alphanumeric NanoID. Leave it empty to have the SDK
-	// generate one.
-	//
-	// It is not a resume handle: sessions are not resumable, and reusing the
-	// id of a live run is rejected with [CodeAgentBusy]. Supplying an id only
-	// makes the run's frames easier to correlate with runtime logs.
+	// SessionID identifies an OAP agent session, using an opaque nonempty string.
+	// Leave it empty for the SDK to create a session id. On explicit Makai V1,
+	// this remains a one-run correlation key with the old 21-character NanoID
+	// format and cannot resume a previous run.
 	SessionID string
 }
 

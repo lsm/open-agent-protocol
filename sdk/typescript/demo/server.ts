@@ -154,6 +154,7 @@ export function createDemoServer(options: DemoServerOptions = {}): Server {
   function clientOptions(extra?: Partial<CreateMakaiClientOptions>): CreateMakaiClientOptions {
     const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env ?? {}), ...(homeDir ? { HOME: homeDir } : {}) };
     return {
+      wireProtocol: "legacy",
       ...(options.command ? { command: options.command, args: options.args, env } : binaryPath ? { resolver: { binaryPath }, env } : { env, resolver: { binaryPath: "" } }),
       ...extra,
     };

@@ -30,7 +30,8 @@ type Client struct {
 // New resolves the oapx runtime, starts it as a stdio protocol host, and
 // completes the protocol handshake.
 //
-// A nil opts uses the defaults: automatic binary resolution, `oapx --stdio`,
+// A nil opts uses the defaults: automatic binary resolution,
+// `oapx serve agent,provider --stdio`,
 // and the default timeouts. See [ResolveBinary] for the resolution order.
 //
 // ctx bounds startup and the handshake only. It does not bound the client's

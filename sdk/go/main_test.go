@@ -43,6 +43,9 @@ func newTestClientWithOptions(t *testing.T, opts *Options) (*Client, error) {
 	if opts.Args == nil {
 		opts.Args = []string{}
 	}
+	if !strings.Contains(strings.Join(opts.Env, " "), envFakeHost+"="+scenarioOAP) {
+		opts.LegacyWire = true
+	}
 	if opts.HandshakeTimeout == 0 {
 		opts.HandshakeTimeout = 5 * time.Second
 	}

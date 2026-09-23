@@ -64,24 +64,40 @@ func MustNew() *Validator {
 }
 
 func (v *Validator) Validate(r io.Reader, fixture string) Result {
-	raw, parseDiag := parseTrace(r, fixture)
+	input, readErr := io.ReadAll(r)
+	if readErr != nil {
+		return Result{Diagnostics: []Diagnostic{{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Message: "could not read trace"}}}
+	}
+	raw, parseDiag := parseTrace(bytes.NewReader(input), fixture)
 	if parseDiag != nil {
+		if containsAuthReply(input) {
+			parseDiag.Message = "malformed auth reply trace (sensitive answer redacted)"
+		}
 		return Result{Diagnostics: []Diagnostic{*parseDiag}}
 	}
 	var envelopes []protocol.Envelope
 	lines := make([]int, 0, len(raw))
 	var diagnostics []Diagnostic
 	for i, item := range raw {
+		sensitive := containsAuthReply(item.raw)
 		var value any
 		dec := json.NewDecoder(bytes.NewReader(item.raw))
 		dec.UseNumber()
 		if err := dec.Decode(&value); err != nil {
-			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: item.line, Message: err.Error()})
+			message := err.Error()
+			if sensitive {
+				message = "malformed auth reply (sensitive answer redacted)"
+			}
+			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: item.line, Message: message})
 			continue
 		}
 
 		if key, duplicate := duplicateKey(item.raw); duplicate {
-			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeDuplicateKey, Index: i, Line: item.line, Message: fmt.Sprintf("duplicate object key %q", key)})
+			message := fmt.Sprintf("duplicate object key %q", key)
+			if sensitive {
+				message = "duplicate key in auth reply (sensitive answer redacted)"
+			}
+			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeDuplicateKey, Index: i, Line: item.line, Message: message})
 			continue
 		}
 		if err := v.validateSchema(value); err != nil {
@@ -91,17 +107,29 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 				prefix = member.pointer
 			}
 
-			diagnostics = append(diagnostics, schemaDiagnosticsFor(err, fixture, i, item.line, prefix, declaredType(item.raw))...)
+			found := schemaDiagnosticsFor(err, fixture, i, item.line, prefix, declaredType(item.raw))
+			if sensitive {
+				redactAuthReplyDiagnostics(found)
+			}
+			diagnostics = append(diagnostics, found...)
 			continue
 		}
 		env, err := protocol.ParseEnvelope(item.raw)
 		if err != nil {
-			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: item.line, Message: err.Error()})
+			message := err.Error()
+			if sensitive {
+				message = "malformed auth reply envelope (sensitive answer redacted)"
+			}
+			diagnostics = append(diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: item.line, Message: message})
 			continue
 		}
 		if dst := payloadTarget(env.Type); dst != nil {
 			if err := env.DecodePayload(dst); err != nil {
-				diagnostics = append(diagnostics, baseDiagnostic(fixture, PhaseSemantic, CodePayloadDecode, i, item.line, env, "/payload", err.Error()))
+				message := err.Error()
+				if sensitive {
+					message = "invalid auth reply payload (sensitive answer redacted)"
+				}
+				diagnostics = append(diagnostics, baseDiagnostic(fixture, PhaseSemantic, CodePayloadDecode, i, item.line, env, "/payload", message))
 				continue
 			}
 		}
@@ -120,6 +148,19 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 	}
 	sortDiagnostics(diagnostics)
 	return Result{Diagnostics: diagnostics}
+}
+
+func containsAuthReply(raw []byte) bool {
+	return bytes.Contains(raw, []byte("auth.login.reply.request")) ||
+		declaredType(raw) == "auth.login.reply.request"
+}
+
+func redactAuthReplyDiagnostics(diagnostics []Diagnostic) {
+	for i := range diagnostics {
+		diagnostics[i].Message = "invalid auth reply (sensitive answer redacted)"
+		diagnostics[i].Expected = ""
+		diagnostics[i].Actual = ""
+	}
 }
 
 func (v *Validator) ValidateBytes(data []byte, fixture string) Result {
@@ -485,6 +526,22 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.ModelsRequest{}
 	case protocol.TypeModelsResponse:
 		return &protocol.ModelsResponse{}
+	case protocol.TypeAuthProvidersRequest:
+		return &protocol.AuthProvidersRequest{}
+	case protocol.TypeAuthProvidersResponse:
+		return &protocol.AuthProvidersResponse{}
+	case protocol.TypeAuthLoginStartRequest:
+		return &protocol.AuthLoginStartRequest{}
+	case protocol.TypeAuthLoginStartResponse:
+		return &protocol.AuthLoginStartResponse{}
+	case protocol.TypeAuthLoginEvent:
+		return &protocol.AuthLoginEvent{}
+	case protocol.TypeAuthLoginCancelRequest:
+		return &protocol.AuthLoginCancelRequest{}
+	case protocol.TypeAuthLoginCancelResponse:
+		return &protocol.AuthLoginCancelResponse{}
+	case protocol.TypeAuthLoginCompleted:
+		return &protocol.AuthLoginCompleted{}
 	case protocol.TypeSessionOpenRequest:
 		return &protocol.SessionOpenRequest{}
 	case protocol.TypeSessionOpenResponse:
@@ -493,6 +550,14 @@ func payloadTarget(t protocol.EnvelopeType) any {
 		return &protocol.SessionStateRequest{}
 	case protocol.TypeSessionStateResponse, protocol.TypeSessionStateUpdated:
 		return &protocol.SessionState{}
+	case protocol.TypeSessionModelSwitchRequest:
+		return &protocol.SessionModelSwitchRequest{}
+	case protocol.TypeSessionModelSwitchResponse:
+		return &protocol.SessionModelSwitchResponse{}
+	case protocol.TypeSessionProviderAttachRequest:
+		return &protocol.SessionProviderAttachRequest{}
+	case protocol.TypeSessionProviderAttachResponse:
+		return &protocol.SessionProviderAttachResponse{}
 	case protocol.TypeSessionMessageSubmitRequest:
 		return &protocol.MessageSubmitRequest{}
 	case protocol.TypeSessionMessageSubmitResponse:

@@ -46,12 +46,13 @@ implemented one has implemented the other.
   correlated error and not fatal, and an envelope with no `id` is fatal because
   nothing can carry its answer.
 
-Every envelope on this binding carries
-`profile: "open-agent-protocol.model-provider-core"`. An implementation that
-serves both profiles on one binary serves them on **separate spawns**, not
-interleaved on one pipe: the profiles have disjoint envelope sets and separate
-scope domains, and a single stream carrying both would oblige every consumer to
-implement both to route anything.
+Every provider envelope on this binding carries
+`profile: "open-agent-protocol.model-provider-core"`. A binary may serve this
+profile alone or compose it with agent control on one stdio pipe, as specified
+by [Decision 0027](../decisions/0027-composed-stdio-profiles.md). A combined
+host routes on `profile` before profile-specific decode. A caller may use only
+the provider profile; the co-hosted agent profile does not change provider
+envelope semantics or require the caller to initialize agent control.
 
 ## Correlation and ordering
 
@@ -69,9 +70,9 @@ implement both to route anything.
 
 ## Concurrency
 
-One connection carries **many inferences at once**, and this is the substantive
-difference from the endpoint binding, where one pipe is one agent loop with one
-nonterminal run.
+One provider profile on a connection carries **many inferences at once**. On a
+composed connection, agent runs may be active concurrently with those
+inferences, but they have separate scope and sequence domains.
 
 - A caller may have any number of inferences in flight, bounded by what the
   implementation advertises.
@@ -232,7 +233,8 @@ is the shape the close-without-write rule exists to remove.
 The endpoint binding's contract, with inferences in place of runs.
 
 - **stdin EOF** is the close. The implementation stops accepting requests,
-  settles every inference it has accepted, flushes stdout, exits **0**.
+  settles every inference it has accepted, flushes stdout, exits **0** after
+  every co-hosted profile has also completed clean shutdown.
 - **SIGINT / SIGTERM** behave as EOF.
 - Settling means a terminal per accepted inference. An implementation that
   cannot deliver the terminals it owes, within a bounded window, exits

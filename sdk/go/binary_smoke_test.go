@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -16,14 +15,13 @@ import (
 //	zig build install --prefix /tmp/oapx-go
 //	OAP_SDK_BINARY_PATH=/tmp/oapx-go/bin/oapx go test -race ./...
 //
-// Everything covered here works without provider credentials: model
-// discovery falls back to the runtime's static catalog, auth listing reports
-// login state without touching tokens, and the runtime's own test-fixture
-// provider completes an offline login flow.
-
 // newSmokeClient starts a client against the real runtime, with its
 // credential storage isolated from the developer's own.
 func newSmokeClient(t *testing.T) *Client {
+	return newSmokeClientWithClosePolicy(t, false)
+}
+
+func newSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client {
 	t.Helper()
 	binary := os.Getenv(EnvBinaryPath)
 	if binary == "" {
@@ -52,7 +50,7 @@ func newSmokeClient(t *testing.T) *Client {
 		t.Fatalf("New against the real runtime: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(); err != nil && !allowNonzeroExit {
 			t.Errorf("Close: %v", err)
 		}
 	})
@@ -187,114 +185,36 @@ func requireFixtureAuthProvider(t *testing.T, client *Client) {
 	t.Skip("the runtime does not offer the test-fixture auth provider")
 }
 
-func TestSmokeAuthLoginWithTheFixtureProvider(t *testing.T) {
-	if runtime.GOOS == "darwin" {
-		// A successful login persists credentials, and on macOS the runtime
-		// writes them to the login keychain. Adding an item under a fresh
-		// service name from an unsigned local build raises a keychain
-		// authorization prompt that a test process cannot answer, so the
-		// call blocks. The flow itself is covered on every platform by
-		// TestSmokeAuthLoginRetriesAnInvalidFixtureCode, which exercises the
-		// same prompt round trip without reaching the save.
-		t.Skip("a macOS keychain write needs interactive authorization")
-	}
+func TestSmokeAuthManualCodeFailsClosed(t *testing.T) {
 	client := newSmokeClient(t)
 	requireFixtureAuthProvider(t, client)
-
-	// The runtime's fixture provider runs a complete login flow offline: it
-	// emits an auth URL, prompts for a code, and accepts "ok".
 	var events []AuthEventType
-	var promptMessage string
+	called := false
 	err := client.Auth.Login(testContext(t), "test-fixture", LoginHandlers{
 		OnEvent: func(event AuthEvent) { events = append(events, event.Type) },
 		OnPrompt: func(ctx context.Context, prompt AuthPrompt) (string, error) {
-			promptMessage = prompt.Message
-			return "ok", nil
+			called = true
+			return "SENSITIVE_TEST_CODE", nil
 		},
 	})
-	if err != nil {
-		t.Fatalf("Login: %v", err)
+	var authErr *AuthError
+	if !errors.As(err, &authErr) || authErr.Kind != AuthKindProviderError || authErr.Code != "auth_input_unavailable" {
+		t.Fatalf("manual login should fail closed: %v", err)
 	}
-	if promptMessage == "" {
-		t.Error("expected the fixture flow to prompt for a code")
+	if called {
+		t.Fatal("OAP invoked the answer handler")
 	}
-	var sawURL, sawSuccess bool
+	var sawURL, sawProgress bool
 	for _, event := range events {
 		switch event {
 		case AuthEventURL:
 			sawURL = true
-		case AuthEventSuccess:
-			sawSuccess = true
+		case AuthEventProgress:
+			sawProgress = true
 		}
 	}
-	if !sawURL || !sawSuccess {
-		t.Errorf("events = %v; expected an auth_url and a success", events)
-	}
-}
-
-func TestSmokeAuthLoginRetriesAnInvalidFixtureCode(t *testing.T) {
-	client := newSmokeClient(t)
-	requireFixtureAuthProvider(t, client)
-
-	// The fixture provider re-prompts after a wrong code. Answering wrong
-	// once and then failing the handler exercises the whole prompt round
-	// trip -- event delivery, the answer going back on the flow's sequence,
-	// and the runtime reacting to it -- without completing a login, so no
-	// credentials are written.
-	sentinel := errors.New("no more answers")
-	var events []AuthEventType
-	var prompts, progress int
-
-	err := client.Auth.Login(testContext(t), "test-fixture", LoginHandlers{
-		OnEvent: func(event AuthEvent) {
-			events = append(events, event.Type)
-			if event.Type == AuthEventProgress {
-				progress++
-			}
-		},
-		OnPrompt: func(ctx context.Context, prompt AuthPrompt) (string, error) {
-			prompts++
-			if prompts == 1 {
-				if prompt.Message == "" || prompt.PromptID == "" {
-					t.Errorf("incomplete prompt: %+v", prompt)
-				}
-				return "definitely-not-ok", nil
-			}
-			return "", sentinel
-		},
-	})
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("expected the handler error to be wrapped, got %v", err)
-	}
-	if prompts < 2 {
-		t.Errorf("got %d prompts, want at least 2: the wrong code should be rejected and re-prompted", prompts)
-	}
-	if progress == 0 {
-		t.Errorf("expected a progress event after the wrong code; events = %v", events)
-	}
-	// The runtime may emit progress before the URL, so look for the URL
-	// anywhere rather than pinning it to the first position.
-	var sawURL bool
-	for _, event := range events {
-		if event == AuthEventURL {
-			sawURL = true
-		}
-	}
-	if !sawURL {
-		t.Errorf("events = %v; the flow should publish an auth_url", events)
-	}
-}
-
-func TestSmokeAuthLoginCancelsWithoutAPromptHandler(t *testing.T) {
-	client := newSmokeClient(t)
-
-	err := client.Auth.Login(testContext(t), "test-fixture", LoginHandlers{})
-	var authErr *AuthError
-	if !errors.As(err, &authErr) {
-		t.Fatalf("expected *AuthError, got %T: %v", err, err)
-	}
-	if authErr.Kind != AuthKindCancelled {
-		t.Errorf("Kind = %q, want %q (message %q)", authErr.Kind, AuthKindCancelled, authErr.Message)
+	if !sawURL || !sawProgress {
+		t.Errorf("events = %v; expected URL and progress before refusal", events)
 	}
 }
 
@@ -371,14 +291,9 @@ func TestSmokeAgentRunWithoutCredentials(t *testing.T) {
 		t.Skip("the runtime lists no anthropic models")
 	}
 
-	// Without credentials the run cannot reach a provider, but getting a
-	// clean failure proves the whole session exchange works against the real
-	// server: agent_start, the correlated agent_started, agent_message on
-	// sequence 2, and a settled failure instead of a hang.
 	_, err = client.Agent.Run(ctx, AgentRequest{
 		ModelRef: models.Models[0].ModelRef,
 		Messages: []Message{UserMessage("hello")},
-		Options:  &RunOptions{MaxTokens: MaxTokens(16)},
 	})
 	if err == nil {
 		t.Skip("the runtime completed the run, so credentials were available after all")
@@ -399,20 +314,24 @@ func TestSmokeAgentRunWithoutCredentials(t *testing.T) {
 	}
 }
 
-func TestSmokeIgnoresMalformedInboundFrames(t *testing.T) {
-	client := newSmokeClient(t)
+func TestSmokeRejectsMalformedInboundFrames(t *testing.T) {
+	client := newSmokeClientWithClosePolicy(t, true)
 	ctx := testContext(t)
 
-	// A line the runtime cannot parse must not wedge the session.
 	if _, err := client.transport.stdin.Write([]byte("this is not a frame\n")); err != nil {
 		t.Fatalf("writing junk: %v", err)
 	}
-	if _, err := client.transport.stdin.Write([]byte("{\"type\":\"nonsense_frame\"}\n")); err != nil {
-		t.Fatalf("writing an unknown frame: %v", err)
-	}
 
-	if _, err := client.Models.List(ctx, ListModelsRequest{}); err != nil {
-		t.Fatalf("List after malformed input: %v", err)
+	_, err := client.Models.List(ctx, ListModelsRequest{})
+	if err == nil {
+		t.Fatal("List after malformed input unexpectedly succeeded")
+	}
+	var streamErr *StreamError
+	if !errors.As(err, &streamErr) || streamErr.Kind != KindTransportError {
+		t.Fatalf("expected a transport failure after malformed input, got %T: %v", err, err)
+	}
+	if err := client.Close(); err == nil {
+		t.Fatal("runtime accepted malformed input without an error exit")
 	}
 }
 

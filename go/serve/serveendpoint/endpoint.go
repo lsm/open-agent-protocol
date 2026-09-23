@@ -51,6 +51,8 @@ type Server struct {
 
 	participantMu sync.Mutex
 	participant   protocol.ParticipantID
+	stateMu       sync.Mutex
+	stateSequence map[protocol.SessionID]uint64
 
 	lines chan []byte
 
@@ -83,7 +85,14 @@ func New(hub *serve.Hub, options Options) (*Server, error) {
 	if stall <= 0 {
 		stall = DefaultWriteStall
 	}
-	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, writeStall: stall, logger: logger}, nil
+	return &Server{hub: hub, adapter: options.Adapter, frameLimit: limit, shutdown: shutdown, writeStall: stall, logger: logger, stateSequence: make(map[protocol.SessionID]uint64)}, nil
+}
+
+func (s *Server) nextStateSequence(id protocol.SessionID) uint64 {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.stateSequence[id]++
+	return s.stateSequence[id]
 }
 
 func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {

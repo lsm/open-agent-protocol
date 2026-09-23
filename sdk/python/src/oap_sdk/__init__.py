@@ -1,7 +1,7 @@
-"""Makai Python SDK.
+"""OAP Python SDK with source-compatible Makai class names.
 
-Starts a ``oapx --stdio`` runtime and exposes four namespaces over its
-newline-delimited JSON protocol:
+Starts ``oapx serve agent,provider --stdio`` by default and exposes four
+namespaces over profiled OAP 0.1 newline-delimited JSON:
 
 ``client.auth``
     List auth providers and run interactive logins. Token material stays in
@@ -12,8 +12,8 @@ newline-delimited JSON protocol:
 ``client.provider``
     Direct provider completions (``complete``) and streaming (``stream``).
 ``client.agent``
-    The runtime's agent loop (``run`` / ``stream``), with tools executed in
-    your process through :class:`~oap_sdk.types.ToolDefinition` callbacks.
+    Agent sessions and runs. Client-executed tools are rejected explicitly
+    until the OAP endpoint offers ``+control-tools``.
 
 Quick start::
 
@@ -76,6 +76,7 @@ from .types import (
     Content,
     ContentPart,
     ImageContentPart,
+    UrlImageContentPart,
     ListModelsResponse,
     MessageEnd,
     MessageStart,
@@ -144,6 +145,7 @@ __all__ = [
     "TextContentPart",
     "ThinkingContentPart",
     "ImageContentPart",
+    "UrlImageContentPart",
     "ToolCallContentPart",
     "ToolResultContentPart",
     "ToolDefinition",

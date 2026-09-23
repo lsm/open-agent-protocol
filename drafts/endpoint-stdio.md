@@ -6,6 +6,13 @@ Profile: `open-agent-protocol.agent-control-core`
 Reference implementation: `oap endpoint`
 Conformance runner: `oap conformance`
 
+This profile may also share one stdio connection with
+`open-agent-protocol.model-provider-core`. In that composed mode the host
+routes on the envelope's `profile` before decoding either profile's payload;
+the two retain independent correlation, scope, and sequence domains. See
+[Decision 0027](../decisions/0027-composed-stdio-profiles.md). The agent-only
+binding below remains valid without a provider profile.
+
 ## What this binding is for
 
 An *endpoint* is one agent loop that speaks OAP natively. It is the role a
@@ -95,7 +102,8 @@ There is no `session.close.request` envelope in v0.1. On this binding the pipe
 is the session's lifetime:
 
 - **stdin EOF** is the close. The endpoint stops accepting requests, settles
-  what it already admitted, flushes stdout, and exits **0**.
+  what it already admitted, flushes stdout, and exits **0** after every
+  co-hosted profile has also completed clean shutdown.
 - **SIGINT / SIGTERM** behave as EOF.
 - A teardown that cannot deliver what the endpoint already admitted, within a
   bounded window, exits **non-zero**. This is the hung-up host: one that closed

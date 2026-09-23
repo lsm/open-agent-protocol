@@ -1,0 +1,8 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"caps-req","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"caps-resp","in_reply_to":"caps-req","capability_revision":"rev-1","payload":{"endpoint":{"id":"fixture"},"features":{"session.model.switch":{"level":"degraded"}}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"open-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"open-resp","in_reply_to":"open-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1","status":"idle","current_model_id":"m1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.model.switch.request","id":"switch-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1","model_id":"m1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.model.switch.response","id":"switch-resp","in_reply_to":"switch-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1","model_id":"m1","previous_model_id":"m1"}}
+]

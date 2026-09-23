@@ -18,15 +18,21 @@ const envelopeVersion = 1
 // fields at the top level rather than under "payload", so the payload is kept
 // as raw JSON and interpreted by each namespace.
 type frame struct {
-	Type      string          `json:"type"`
-	StreamID  string          `json:"stream_id,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	MessageID string          `json:"message_id,omitempty"`
-	Sequence  int64           `json:"sequence"`
-	Timestamp int64           `json:"timestamp"`
-	Version   int             `json:"version"`
-	InReplyTo string          `json:"in_reply_to,omitempty"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
+	Protocol           string          `json:"protocol,omitempty"`
+	Profile            string          `json:"profile,omitempty"`
+	ID                 string          `json:"id,omitempty"`
+	InferenceID        string          `json:"inference_id,omitempty"`
+	Type               string          `json:"type"`
+	StreamID           string          `json:"stream_id,omitempty"`
+	SessionID          string          `json:"session_id,omitempty"`
+	RunID              string          `json:"run_id,omitempty"`
+	MessageID          string          `json:"message_id,omitempty"`
+	Sequence           int64           `json:"sequence,omitempty"`
+	Timestamp          int64           `json:"timestamp,omitempty"`
+	Version            any             `json:"version"`
+	InReplyTo          string          `json:"in_reply_to,omitempty"`
+	CapabilityRevision string          `json:"capability_revision,omitempty"`
+	Payload            json.RawMessage `json:"payload,omitempty"`
 
 	// ProtocolVersion appears on the "ready" handshake frame only.
 	ProtocolVersion string `json:"protocol_version,omitempty"`
@@ -34,6 +40,19 @@ type frame struct {
 	// raw is the full envelope as received. It backs the fallback for
 	// frames whose fields sit at the top level instead of under "payload".
 	raw json.RawMessage
+}
+
+func (f *frame) UnmarshalJSON(data []byte) error {
+	type plain frame
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*f = frame(decoded)
+	if legacyVersion, ok := f.Version.(float64); ok {
+		f.Version = int(legacyVersion)
+	}
+	return nil
 }
 
 // payload returns the frame's payload object, falling back to the whole
@@ -206,6 +225,9 @@ func (fr *frameReader) next() (*frame, error) {
 	var f frame
 	if err := json.Unmarshal(line, &f); err != nil {
 		return nil, errMalformedFrame
+	}
+	if legacyVersion, ok := f.Version.(float64); ok {
+		f.Version = int(legacyVersion)
 	}
 	f.raw = json.RawMessage(append([]byte(nil), line...))
 	return &f, nil

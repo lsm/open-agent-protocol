@@ -520,6 +520,7 @@ pub(crate) fn response_from_events(events: &[AgentEvent]) -> crate::types::Compl
                     tool_call_id: tool_call_id.clone(),
                     name: name.clone(),
                     arguments_json: arguments_json.clone(),
+                    carry: None,
                 });
             }
             _ => {}

@@ -1,12 +1,14 @@
 # Decision 0017: Provider Provisioning
 
-Status: proposed, held — see
-[PF-12](../research/protocol-feedback-2026-09.md). No pinned harness has a
+Status: superseded before graduation by [Decision 0028](0028-live-model-and-provider-control.md)
+Evidence: the old proposal was held under
+[PF-12](../research/protocol-feedback-2026-09.md): no pinned harness has a
 provider-introduction operation, so Decision 0003's native-evidence step has
-nothing to execute. The design stands and is not withdrawn; it becomes
-graduable when a harness gains the operation. Do not begin the schema,
-validator or adapter work on the strength of the composition table alone,
-which is what this note exists to stop
+nothing to execute. Decision 0028 replaces the shape of the optional attach
+unit, but does not claim it has graduated or lift that evidence gate. Its
+schema and validator describe a proposed optional operation; no endpoint may
+advertise attachment on the strength of the composition table or that shape
+alone.
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -27,6 +29,13 @@ whatever the loop speaks downward
 Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 Design: [the composition draft](../drafts/composition.md), section "The shape
 the missing row should take"
+
+This record preserves the earlier open-only, vendor-destination proposal for
+its scoping and security analysis. It is **not** the current wire design:
+`session.open.request.providers[]` was never added to the v0.1 schema. The
+current optional operation is live `session.provider.attach`, targeting an
+OAP `model-provider-core` service, with core `session.model.switch` for
+persistent selection. See Decision 0028 before implementing this unit.
 
 ## Context
 

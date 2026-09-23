@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "auth.schema.json",
+  "title": "Open Agent Protocol agent-control authentication payloads",
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "required": ["id", "name", "auth_status"],
+      "properties": {
+        "id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "name": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "auth_status": { "$ref": "common.schema.json#/$defs/authStatus" },
+        "last_error": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "providersRequest": { "type": "object", "additionalProperties": false },
+    "providersResponse": {
+      "type": "object",
+      "required": ["providers"],
+      "properties": { "providers": { "type": "array", "items": { "$ref": "#/$defs/provider" } } },
+      "additionalProperties": false
+    },
+    "loginStartRequest": {
+      "type": "object",
+      "required": ["provider_id"],
+      "properties": { "provider_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" } },
+      "additionalProperties": false
+    },
+    "loginStartResponse": {
+      "type": "object",
+      "required": ["flow_id"],
+      "properties": { "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" } },
+      "additionalProperties": false
+    },
+    "loginEvent": {
+      "type": "object",
+      "required": ["flow_id", "provider_id", "kind"],
+      "properties": {
+        "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
+        "provider_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "kind": { "enum": ["url", "progress"] },
+        "url": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "instructions": { "type": "string" },
+        "message": { "$ref": "common.schema.json#/$defs/nonEmptyString" }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "url" } } }, "then": { "required": ["url"] } },
+        { "if": { "properties": { "kind": { "const": "progress" } } }, "then": { "required": ["message"] } }
+      ],
+      "additionalProperties": false
+    },
+    "loginCancelRequest": {
+      "type": "object",
+      "required": ["flow_id"],
+      "properties": { "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" } },
+      "additionalProperties": false
+    },
+    "loginCancelResponse": {
+      "type": "object",
+      "required": ["flow_id", "accepted"],
+      "properties": {
+        "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
+        "accepted": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "loginCompleted": {
+      "type": "object",
+      "required": ["flow_id", "provider_id", "status"],
+      "properties": {
+        "flow_id": { "$ref": "common.schema.json#/$defs/opaqueID" },
+        "provider_id": { "$ref": "common.schema.json#/$defs/nonEmptyString" },
+        "status": { "enum": ["success", "failed", "cancelled"] },
+        "error": { "$ref": "common.schema.json#/$defs/protocolError" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

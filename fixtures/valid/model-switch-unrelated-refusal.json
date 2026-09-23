@@ -1,0 +1,10 @@
+[
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"caps-req","payload":{}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.response","id":"caps-resp","in_reply_to":"caps-req","capability_revision":"rev-1","payload":{"endpoint":{"id":"fixture"},"features":{"models.list":{"level":"native"}}}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"open-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.response","id":"open-resp","in_reply_to":"open-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1","status":"idle","current_model_id":"m1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"models.request","id":"models-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"models.response","id":"models-resp","in_reply_to":"models-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1","current_model_id":"m1","models":[{"id":"m1"}]}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.model.switch.request","id":"switch-req","capability_revision":"rev-1","session_id":"s1","payload":{"session_id":"s1","model_id":"m2"}},
+  {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"error.response","id":"switch-error","in_reply_to":"switch-req","session_id":"s1","payload":{"error":{"code":"session_not_found","message":"the session was evicted"}}}
+]

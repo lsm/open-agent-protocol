@@ -64,6 +64,9 @@ pub enum ContentPart {
         name: String,
         /// The arguments, as a JSON document in a string.
         arguments_json: String,
+        /// Opaque provider state to replay with this call on a subsequent turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        carry: Option<String>,
     },
     /// The outcome of a tool call.
     ToolResult {
@@ -594,6 +597,7 @@ fn normalize_loose_content_part(item: &Value) -> ContentPart {
             tool_call_id: opt_string_any(item, &["tool_call_id", "id"]).unwrap_or_default(),
             name: str_or_empty(item, "name"),
             arguments_json: str_or_empty(item, "arguments_json"),
+            carry: opt_string(item, "carry"),
         },
         Some("thinking") => ContentPart::Thinking {
             thinking: str_or_empty(item, "thinking"),

@@ -1,12 +1,12 @@
-// Package makai is a Go SDK for the Makai stdio protocol.
+// Package makai is a Go SDK for OAP 0.1 with a source-compatible package name.
 //
-// The SDK spawns (or connects to) an `oapx --stdio` runtime and exposes four
-// namespaces over its newline-delimited JSON framing:
+// By default the SDK spawns `oapx serve agent,provider --stdio` and exposes
+// four namespaces over profiled newline-delimited OAP envelopes:
 //
 //   - [Client.Auth] lists auth providers and drives interactive login flows.
 //   - [Client.Models] lists and resolves models.
 //   - [Client.Provider] runs direct provider completions, buffered or streamed.
-//   - [Client.Agent] runs the agent loop, with tools executed in client code.
+//   - [Client.Agent] opens sessions, switches models, and runs the agent loop.
 //
 // Every call that performs I/O takes a [context.Context] as its first
 // argument. Cancelling that context stops the call promptly, sends a
@@ -43,12 +43,17 @@
 // provider or model identity from their text. Obtain them from
 // [ModelsService.List] or [ModelsService.Resolve].
 //
-// # Sessions are not resumable
+// # Agent sessions
 //
-// An agent run's session id is a correlation key for one run's frames. It is
-// not a resume handle: a finished or interrupted run cannot be continued by
-// reusing its id, and reusing a live id is rejected by the runtime. Callers
-// that need to continue a conversation resend the full message history.
+// Session IDs are opaque nonempty strings. [AgentService.SwitchModel] changes
+// the session's default model for future runs. [AgentService.AttachProvider]
+// sends the optional provider-attachment request; unsupported endpoints refuse
+// it explicitly. Client-executed agent tools and per-run agent sampling/token
+// options are not represented by the current OAP endpoint and are refused
+// with unsupported_feature, not silently ignored.
+//
+// Set [Options.LegacyWire] only to connect to an old Makai V1 runtime. There
+// is no automatic fallback from OAP to the legacy wire.
 //
 // # Errors
 //

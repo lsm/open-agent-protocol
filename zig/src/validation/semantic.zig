@@ -21,6 +21,10 @@ pub const code_unapplied_control = "unapplied_control";
 pub const code_duplicate_tool_name = "duplicate_tool_name";
 pub const code_model_not_in_catalog = "model_not_in_catalog";
 pub const code_duplicate_model_id = "duplicate_model_id";
+pub const code_duplicate_provider = "duplicate_provider";
+pub const code_scope_mismatch = "scope_mismatch";
+pub const code_session_state_mismatch = "session_state_mismatch";
+pub const code_unmatched_provider = "unmatched_provider";
 pub const code_ambiguous_default_model = "ambiguous_default_model";
 pub const code_unannounced_catalog_change = "unannounced_catalog_change";
 pub const code_undisclosed_attach_modes = "undisclosed_attach_modes";
@@ -47,6 +51,7 @@ pub const implemented = [_][]const u8{
     code_duplicate_tool_name,
     code_model_not_in_catalog,
     code_duplicate_model_id,
+    code_duplicate_provider,
     code_ambiguous_default_model,
     code_unannounced_catalog_change,
     code_undisclosed_attach_modes,
@@ -184,10 +189,31 @@ const Unjudged = struct {
     refusal: std.json.Value,
 };
 
+const ProviderBinding = struct {
+    provider_id: []const u8,
+    service_id: []const u8,
+};
+
+const SwitchObservation = struct {
+    model: []const u8,
+    seen: bool,
+    accepted: bool = false,
+    response_index: usize = 0,
+};
+
+const ModelAnchor = struct {
+    request: []const u8,
+    model: []const u8,
+    index: usize,
+};
+
 const Session = struct {
     active: []const u8 = "",
     provided: std.ArrayList([]const u8) = .empty,
     attached: std.StringArrayHashMapUnmanaged(void) = .empty,
+    attached_providers: std.StringArrayHashMapUnmanaged(ProviderBinding) = .empty,
+    switches: std.StringArrayHashMapUnmanaged(SwitchObservation) = .empty,
+    model_anchors: std.ArrayList(ModelAnchor) = .empty,
     unjudged: std.ArrayList(Unjudged) = .empty,
     order: std.ArrayList([]const u8) = .empty,
     current_model: []const u8 = "",
@@ -270,7 +296,9 @@ const ModelCatalog = struct {
     known: bool = false,
     binding: bool = false,
     models: ?std.json.Value = null,
+    provider_descriptors: ?std.json.Value = null,
     ids: std.StringArrayHashMapUnmanaged(void) = .empty,
+    providers: std.StringArrayHashMapUnmanaged(void) = .empty,
 
     fn binds(self: *const ModelCatalog, revision: []const u8) bool {
         return self.known and self.binding and revision.len != 0 and
@@ -391,6 +419,9 @@ pub const Machine = struct {
             holder.order.deinit(self.allocator);
             holder.provided.deinit(self.allocator);
             holder.attached.deinit(self.allocator);
+            holder.attached_providers.deinit(self.allocator);
+            holder.switches.deinit(self.allocator);
+            holder.model_anchors.deinit(self.allocator);
             holder.unjudged.deinit(self.allocator);
         }
         self.sessions.deinit(self.allocator);
@@ -594,6 +625,27 @@ pub const Machine = struct {
             try self.modelsResponse(index, envelope, payload);
             return;
         }
+        if (std.mem.eql(u8, declared, "session.model.switch.request")) {
+            const holder = try self.sessionFor(memberString(payload, "session_id"));
+            const model_id = memberString(payload, "model_id");
+            try holder.switches.put(self.allocator, field(envelope, "id"), .{
+                .model = model_id,
+                .seen = holder.current_known and std.mem.eql(u8, holder.current_model, model_id),
+            });
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.model.switch.response")) {
+            try self.modelSwitchResponse(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.provider.attach.request")) {
+            try self.gatedRequest(index, envelope, payload, feature_providers_attach, "/payload/provider");
+            return;
+        }
+        if (std.mem.eql(u8, declared, "session.provider.attach.response")) {
+            try self.providerAttachResponse(index, envelope, payload);
+            return;
+        }
         if (std.mem.eql(u8, declared, "session.open.request")) {
             if (member(payload, "message")) |message| {
                 try self.openSubmitWindow(index, envelope, message, memberString(payload, "session_id"), false);
@@ -643,7 +695,7 @@ pub const Machine = struct {
         if (std.mem.eql(u8, declared, "session.state.response") or
             std.mem.eql(u8, declared, "session.state.updated"))
         {
-            try self.stateDocument(index, payload);
+            try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
         if (std.mem.eql(u8, declared, "run.cancel.response")) {
@@ -702,11 +754,16 @@ pub const Machine = struct {
     }
 
     fn checkAttachModes(self: *Machine, index: usize) !void {
-        const key = feature_tool_sources_attach;
-        const level = self.features.get(key) orelse return;
-        if (!affirmative(level)) return;
-        if (self.disclosedMode(key, mode_session_open)) return;
-        try self.add(code_undisclosed_attach_modes, index);
+        if (self.features.get(feature_tool_sources_attach)) |level| {
+            if (affirmative(level) and !self.disclosedMode(feature_tool_sources_attach, mode_session_open)) {
+                try self.add(code_undisclosed_attach_modes, index);
+            }
+        }
+        if (self.features.get(feature_providers_attach)) |level| {
+            if (affirmative(level) and !self.disclosedMode(feature_providers_attach, mode_session_live)) {
+                try self.add(code_undisclosed_attach_modes, index);
+            }
+        }
     }
 
     fn collectFeatures(self: *Machine, payload: std.json.Value) !void {
@@ -1106,6 +1163,80 @@ pub const Machine = struct {
         if (self.submits.get(field(envelope, "id"))) |query| query.model_query = true;
     }
 
+    fn modelSwitchResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        try self.gatedResponse(index, envelope, .control);
+        const request = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+        if (!std.mem.eql(u8, request.declared, "session.model.switch.request")) return;
+        const session_id = memberString(payload, "session_id");
+        if (!std.mem.eql(u8, session_id, memberString(request.payload, "session_id")) or
+            (field(envelope, "session_id").len != 0 and !std.mem.eql(u8, field(envelope, "session_id"), session_id)))
+        {
+            try self.add(code_scope_mismatch, index);
+            return;
+        }
+        const requested = memberString(request.payload, "model_id");
+        const selected = memberString(payload, "model_id");
+        if (!std.mem.eql(u8, selected, requested)) {
+            try self.add(code_unapplied_control, index);
+            return;
+        }
+        if (std.mem.eql(u8, self.features.get(feature_model_switch) orelse "", "degraded") and
+            !allowsDegraded(request.payload, feature_model_switch))
+        {
+            try self.add(code_degraded_without_optin, index);
+        }
+        if (self.catalogs.get(session_id)) |served| {
+            if (served.binds(self.current_capability) and served.ids.get(selected) == null) {
+                try self.add(code_model_not_in_catalog, index);
+            }
+        }
+        const holder = try self.sessionFor(session_id);
+        if (holder.switches.getPtr(field(envelope, "in_reply_to"))) |observed| {
+            observed.accepted = true;
+            observed.response_index = index;
+        }
+        holder.current_model = selected;
+        holder.current_known = true;
+        holder.guard_default = false;
+    }
+
+    fn providerAttachResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        try self.gatedResponse(index, envelope, .control);
+        const request = self.requests.get(field(envelope, "in_reply_to")) orelse return;
+        if (!std.mem.eql(u8, request.declared, "session.provider.attach.request")) return;
+        const attachment = member(request.payload, "provider") orelse return;
+        const alias = memberString(attachment, "id");
+        const session_id = memberString(payload, "session_id");
+        if (!std.mem.eql(u8, session_id, memberString(request.payload, "session_id")) or
+            (field(envelope, "session_id").len != 0 and !std.mem.eql(u8, field(envelope, "session_id"), session_id)) or
+            !std.mem.eql(u8, memberString(payload, "provider_id"), alias))
+        {
+            try self.add(code_scope_mismatch, index);
+            return;
+        }
+        const holder = try self.sessionFor(session_id);
+        const binding = ProviderBinding{
+            .provider_id = memberString(attachment, "provider_id"),
+            .service_id = memberString(attachment, "service_id"),
+        };
+        if (holder.attached_providers.get(alias)) |earlier| {
+            if (!std.mem.eql(u8, earlier.provider_id, binding.provider_id) or
+                !std.mem.eql(u8, earlier.service_id, binding.service_id))
+            {
+                try self.add(code_duplicate_provider, index);
+            }
+            return;
+        }
+        if (self.catalogs.get(session_id)) |served| {
+            if (served.binds(self.current_capability) and served.providers.get(alias) != null) {
+                try self.add(code_duplicate_provider, index);
+                return;
+            }
+        }
+        try holder.attached_providers.put(self.allocator, alias, binding);
+        if (self.catalogs.get(session_id)) |served| served.known = false;
+    }
+
     fn modelsResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
         try self.featureKeys(index, envelope, &.{feature_models_list});
         if (self.submits.get(field(envelope, "in_reply_to"))) |query| {
@@ -1129,9 +1260,38 @@ pub const Machine = struct {
         if (duplicate) try self.add(code_duplicate_model_id, index);
         if (defaults > 1) try self.add(code_ambiguous_default_model, index);
 
+        var providers: std.StringArrayHashMapUnmanaged(void) = .empty;
+        const provider_list = member(payload, "providers") orelse std.json.Value{ .null = {} };
+        if (provider_list == .array) {
+            for (provider_list.array.items) |provider| {
+                const id = memberString(provider, "id");
+                if (providers.get(id) != null) try self.add(code_duplicate_provider, index);
+                try providers.put(self.arena.allocator(), id, {});
+            }
+        }
+        if (listed == .array) {
+            for (listed.array.items) |model| {
+                const provider_id = memberString(model, "provider_id");
+                if (provider_id.len != 0 and providers.get(provider_id) == null) {
+                    try providers.put(self.arena.allocator(), provider_id, {});
+                }
+            }
+        }
+
         const current = memberString(payload, "current_model_id");
         if (current.len != 0 and ids.get(current) == null) {
             try self.add(code_model_not_in_catalog, index);
+        }
+        if (member(payload, "as_of_model_event")) |position| {
+            const switch_id = memberString(position, "switch_request_id");
+            if (switch_id.len != 0) {
+                const holder = try self.sessionFor(memberString(payload, "session_id"));
+                try holder.model_anchors.append(self.allocator, .{
+                    .request = switch_id,
+                    .model = current,
+                    .index = index,
+                });
+            }
         }
 
         const revision = field(envelope, "capability_revision");
@@ -1141,12 +1301,35 @@ pub const Machine = struct {
             return;
         }
         const session_id = memberString(payload, "session_id");
+        if (self.sessions.get(session_id)) |holder| {
+            for (holder.attached_providers.keys()) |alias| {
+                var present = false;
+                if (provider_list == .array) {
+                    for (provider_list.array.items) |provider| {
+                        if (std.mem.eql(u8, memberString(provider, "id"), alias)) {
+                            present = true;
+                            break;
+                        }
+                    }
+                }
+                if (!present) try self.add(code_unmatched_provider, index);
+            }
+        }
         const served = try self.arena.allocator().create(ModelCatalog);
-        served.* = .{ .revision = revision, .known = true, .binding = binding, .models = listed, .ids = ids };
+        served.* = .{
+            .revision = revision,
+            .known = true,
+            .binding = binding,
+            .models = listed,
+            .provider_descriptors = member(payload, "providers"),
+            .ids = ids,
+            .providers = providers,
+        };
         if (binding) {
             if (self.catalogs.get(session_id)) |held| {
                 if (held.known and held.binding and std.mem.eql(u8, held.revision, revision) and
-                    !sameCatalog(held.models, served.models))
+                    (!sameCatalog(held.models, served.models) or
+                        !sameOptionalCatalog(held.provider_descriptors, served.provider_descriptors)))
                 {
                     try self.add(code_unannounced_catalog_change, index);
                 }
@@ -2164,13 +2347,18 @@ pub const Machine = struct {
         try self.refreshQueueWindows(session_id);
     }
 
-    fn stateDocument(self: *Machine, index: usize, payload: std.json.Value) !void {
+    fn stateDocument(self: *Machine, index: usize, payload: std.json.Value, updated: bool) !void {
         const session_id = memberString(payload, "session_id");
         {
             const holder = try self.sessionFor(session_id);
             const reported = memberString(payload, "current_model_id");
             if (holder.guard_default and !std.mem.eql(u8, reported, holder.expected_default)) {
                 try self.add(code_unapplied_control, index);
+            }
+            if (updated) {
+                for (holder.switches.values()) |*observed| {
+                    if (std.mem.eql(u8, observed.model, reported)) observed.seen = true;
+                }
             }
             holder.current_model = reported;
             holder.current_known = true;
@@ -2314,6 +2502,27 @@ pub const Machine = struct {
     }
 
     pub fn close(self: *Machine) !void {
+        for (self.sessions.keys(), self.sessions.values()) |session_id, holder| {
+            for (holder.model_anchors.items) |anchor| {
+                const request = self.requests.get(anchor.request) orelse continue;
+                if (!std.mem.eql(u8, request.declared, "session.model.switch.request")) continue;
+                if (!std.mem.eql(u8, memberString(request.payload, "session_id"), session_id)) {
+                    try self.add(code_scope_mismatch, anchor.index);
+                    continue;
+                }
+                const observed = holder.switches.get(anchor.request) orelse continue;
+                if (observed.accepted and anchor.model.len != 0 and
+                    !std.mem.eql(u8, observed.model, anchor.model))
+                {
+                    try self.add(code_session_state_mismatch, anchor.index);
+                }
+            }
+            for (holder.switches.values()) |observed| {
+                if (observed.accepted and !observed.seen) {
+                    try self.add(code_session_state_mismatch, observed.response_index);
+                }
+            }
+        }
         for (self.runs.values()) |run| {
             if (run.admitted and !run.started and !run.terminal) {
                 try self.add(code_missing_run_started, run.last_index);
@@ -2332,9 +2541,12 @@ pub const feature_delivery_queue = "session.message.delivery.queue";
 const output_schema_document = "output-schema";
 const feature_model_selection = "run.model_selection";
 const feature_models_list = "models.list";
+const feature_model_switch = "session.model.switch";
+const feature_providers_attach = "action.providers.attach";
 const feature_tools_list = "action.tools.list";
 const feature_tool_sources_attach = "action.tool_sources.attach";
 const mode_session_open = "session_open";
+const mode_session_live = "session_live";
 const feature_tools_provide = "action.tools.provide";
 const feature_open_subscribe = "session.open.subscribe";
 const feature_instructions = "run.instructions";
@@ -2387,6 +2599,12 @@ fn sameCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
         if (!valueEql(mine, theirs)) return false;
     }
     return true;
+}
+
+fn sameOptionalCatalog(a: ?std.json.Value, b: ?std.json.Value) bool {
+    if (a == null) return b == null or (b.? == .array and b.?.array.items.len == 0);
+    if (b == null) return a.? == .array and a.?.array.items.len == 0;
+    return sameCatalog(a, b);
 }
 
 fn sameBound(a: ?i64, b: ?i64) bool {
@@ -3467,8 +3685,15 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
             \\{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}
         , .{});
         defer bounded.deinit();
-        const found = try jsonschema.schemaDefect(std.testing.allocator, bounded.value, bounded.value);
-        try std.testing.expectEqualStrings("maxLength", found.?);
+        try std.testing.expect(try jsonschema.schemaDefect(std.testing.allocator, bounded.value, bounded.value) == null);
+    }
+    {
+        var unsupported = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+            \\{"type":"object","maxProperties":2}
+        , .{});
+        defer unsupported.deinit();
+        const found = try jsonschema.schemaDefect(std.testing.allocator, unsupported.value, unsupported.value);
+        try std.testing.expectEqualStrings("maxProperties", found.?);
     }
 
     const declared =
@@ -3488,6 +3713,14 @@ test "a schema this interpreter cannot fully evaluate is refused, not waved thro
         \\,
         \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
         \\"delivery":"auto","output_schema":{"type":"object","properties":{"n":{"type":"string","maxLength":2}}}}},
+    ++ tail, &.{"unapplied_control"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.message.submit.request","id":"q1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"delivery":"auto","output_schema":{"type":"object","maxProperties":2}}},
     ++ tail, &.{"unsatisfiable_control"});
 
     try expectCodes(
@@ -3968,4 +4201,101 @@ test "a catalog is compared by the ids it resolves, not the rows it printed" {
         \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"models":[{"id":"a"},{"id":"a"}]}},
         \\{"type":"models.response","id":"m2","capability_revision":"v1","payload":{"models":[{"id":"a"}]}}]
     , &.{"duplicate_model_id"});
+}
+
+test "accepted model switches require matching canonical updates but unchanged switches are idempotent" {
+    const advertised =
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"session.model.switch":{"level":"native"}}}},
+        \\{"type":"session.open.response","id":"o1","capability_revision":"v1","payload":
+        \\{"session_id":"s","current_model_id":"m1"}},
+    ;
+    const switch_request =
+        \\{"type":"session.model.switch.request","id":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","model_id":"m2"}},
+    ;
+    const switch_response =
+        \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","model_id":"m2"}}
+    ;
+    try expectCodes(advertised ++ switch_request ++ switch_response ++
+        \\,{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","current_model_id":"m1"}}]
+    , &.{"session_state_mismatch"});
+    try expectCodes(advertised ++ switch_request ++ switch_response ++
+        \\,{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","current_model_id":"m2"}}]
+    , &.{});
+    try expectCodes(advertised ++ switch_request ++
+        \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"other","payload":
+        \\{"session_id":"other","model_id":"m2"}}]
+    , &.{"scope_mismatch"});
+    try expectCodes(advertised ++
+        \\{"type":"session.model.switch.request","id":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","model_id":"m1"}},
+        \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","model_id":"m1"}}]
+    , &.{});
+}
+
+test "core model switch needs no optional capability gate" {
+    try expectCodes(
+        \\[{"type":"session.open.response","id":"o1","payload":{"session_id":"s","current_model_id":"m1"}},
+        \\{"type":"session.model.switch.request","id":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m1"}},
+        \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m1"}}]
+    , &.{});
+}
+
+test "switch anchored catalog checks the named model and session" {
+    const prefix =
+        \\[{"type":"capabilities.response","id":"c1","capability_revision":"v1","payload":{"features":{"models.list":{"level":"native"}}}},
+        \\{"type":"session.open.response","id":"o1","payload":{"session_id":"s","current_model_id":"m1"}},
+        \\{"type":"session.model.switch.request","id":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m2"}},
+        \\{"type":"session.model.switch.response","id":"r1","in_reply_to":"q1","session_id":"s","payload":{"session_id":"s","model_id":"m2"}},
+        \\{"type":"session.state.updated","id":"u1","session_id":"s","payload":{"session_id":"s","current_model_id":"m2"}},
+    ;
+    try expectCodes(prefix ++
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"session_id":"s","current_model_id":"m1","as_of_model_event":{"switch_request_id":"q1"},"models":[{"id":"m1"},{"id":"m2"}]}}]
+    , &.{"session_state_mismatch"});
+    try expectCodes(prefix ++
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"session_id":"other","current_model_id":"m2","as_of_model_event":{"switch_request_id":"q1"},"models":[{"id":"m1"},{"id":"m2"}]}}]
+    , &.{"scope_mismatch"});
+}
+
+test "provider attachment protects existing aliases and licenses catalog expansion" {
+    const advertised =
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"models.list":{"level":"native"},"action.providers.attach":{"level":"native","modes":["session_live"]}}}},
+        \\{"type":"models.response","id":"m1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"models":[{"id":"m1","provider_id":"p1"}],"providers":[{"id":"p1"}]}},
+    ;
+    const expanded =
+        \\{"type":"models.response","id":"m2","capability_revision":"v1","payload":{"session_id":"s",
+        \\"models":[{"id":"m1","provider_id":"p1"}],"providers":[{"id":"p1"},{"id":"p2"}]}}]
+    ;
+    try expectCodes(advertised ++ expanded, &.{"unannounced_catalog_change"});
+    try expectCodes(advertised ++
+        \\{"type":"session.provider.attach.request","id":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider":{"id":"p2","provider_id":"upstream"}}},
+        \\{"type":"session.provider.attach.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider_id":"p2"}},
+    ++ expanded, &.{});
+    try expectCodes(advertised ++
+        \\{"type":"session.provider.attach.request","id":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider":{"id":"p2","provider_id":"upstream"}}},
+        \\{"type":"session.provider.attach.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider_id":"p2"}},
+        \\{"type":"models.response","id":"m2","capability_revision":"v1","payload":{"session_id":"s",
+        \\"models":[{"id":"m1","provider_id":"p1"}],"providers":[{"id":"p1"}]}}]
+    , &.{"unmatched_provider"});
+    try expectCodes(advertised ++
+        \\{"type":"session.provider.attach.request","id":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider":{"id":"p1","provider_id":"upstream"}}},
+        \\{"type":"session.provider.attach.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider_id":"p1"}}]
+    , &.{"duplicate_provider"});
+    try expectCodes(advertised ++
+        \\{"type":"session.provider.attach.request","id":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider":{"id":"p2","provider_id":"upstream"}}},
+        \\{"type":"session.provider.attach.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
+        \\{"session_id":"s","provider_id":"different"}}]
+    , &.{"scope_mismatch"});
 }

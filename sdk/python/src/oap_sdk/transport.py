@@ -1,30 +1,11 @@
-"""Newline-delimited JSON transport over a ``oapx --stdio`` child process.
+"""Profiled OAP 0.1 newline-delimited stdio transport.
 
-Framing
--------
-Every frame is one JSON object on one line. The child emits a ``ready``
-handshake frame (``protocol_version: "1"``) before anything else; a
-``version_mismatch`` or an ``error`` frame in its place fails the connect.
-
-Routing
--------
-A single reader task owns the child's stdout and dispatches each frame to a
-*route*. Routes are keyed by ``stream_id`` (provider, models, auth) or
-``session_id`` (agent). Callers open a route with :meth:`route` **before**
-sending the request that will produce frames for it, so no frame can arrive
-before its consumer exists -- which is why this implementation needs none of
-the TypeScript SDK's TTL-buffered orphan queues.
-
-Frames for a route nobody holds open are dropped and counted
-(:attr:`StdioTransport.dropped_frames`); that is the correct fate for stale
-output published after a session was torn down.
-
-Lifetime
---------
-:meth:`close` closes stdin, waits briefly for a clean exit, then escalates to
-``terminate()`` and finally ``kill()``. If the child dies on its own, the
-reader task fails every open route with a :class:`MakaiStreamError` so no
-caller is left waiting on a process that is gone.
+The default connection sends ``protocol.initialize.request`` to a combined
+``oapx serve agent,provider --stdio`` host; explicit legacy mode waits for
+the Makai V1 ``ready`` frame. One reader routes correlated replies and
+session, inference, and auth-flow events to registered consumers. Unroutable
+late frames are dropped. Closing the transport reaps its child process and
+fails all pending consumers.
 """
 
 from __future__ import annotations
@@ -48,7 +29,7 @@ Frame = Dict[str, Any]
 logger = logging.getLogger("oap_sdk.transport")
 
 DEFAULT_HANDSHAKE_TIMEOUT_S = 5.0
-DEFAULT_PROTOCOL_VERSION = "1"
+DEFAULT_PROTOCOL_VERSION = "0.1"
 _EXIT_GRACE_S = 0.5
 _TERMINATE_GRACE_S = 1.0
 _MAX_LINE_BYTES = 64 * 1024 * 1024
@@ -174,7 +155,7 @@ class _RouteHandle:
 
 
 class StdioTransport:
-    """Owns the ``oapx --stdio`` child process and its frame routing."""
+    """Owns the combined OAP (or explicit legacy) child process and routes."""
 
     def __init__(
         self,
@@ -187,9 +168,12 @@ class StdioTransport:
         expected_protocol_version: str = DEFAULT_PROTOCOL_VERSION,
         handshake_timeout: float = DEFAULT_HANDSHAKE_TIMEOUT_S,
         stderr_to: Optional[int] = None,
+        legacy_wire: Optional[bool] = None,
     ) -> None:
         self._command = command
-        self._args = list(args) if args is not None else ["--stdio"]
+        self._legacy_wire = (os.environ.get("OAP_SDK_LEGACY_WIRE") == "1") if legacy_wire is None else legacy_wire
+        self._args = list(args) if args is not None else (
+            ["--stdio"] if self._legacy_wire else ["serve", "agent,provider", "--stdio"])
         self._cwd = cwd
         self._env = dict(env) if env is not None else None
         self._resolver = resolver
@@ -202,7 +186,11 @@ class StdioTransport:
         self._teardown_task: Optional[asyncio.Task[None]] = None
         self._stream_routes: Dict[str, FrameRoute] = {}
         self._session_routes: Dict[str, FrameRoute] = {}
+        self._request_routes: Dict[str, FrameRoute] = {}
+        self._inference_routes: Dict[str, FrameRoute] = {}
+        self._auth_flow_routes: Dict[str, FrameRoute] = {}
         self._handshake: Optional[asyncio.Future[None]] = None
+        self._agent_revision: Optional[str] = None
         self._closed = False
         self._write_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -214,11 +202,16 @@ class StdioTransport:
         return self._process is not None and not self._closed
 
     @property
+    def legacy_wire(self) -> bool:
+        """Whether this connection explicitly uses the pre-OAP Makai wire."""
+        return self._legacy_wire
+
+    @property
     def pid(self) -> Optional[int]:
         return self._process.pid if self._process is not None else None
 
     async def connect(self) -> None:
-        """Spawn the child process and complete the ``ready`` handshake.
+        """Spawn the child and complete initialize or the legacy ready handshake.
 
         Serialized: the first suspension point used to be the spawn itself, so
         two concurrent calls could both pass the connected check, both spawn a
@@ -272,7 +265,26 @@ class StdioTransport:
         self._process = process
         loop = asyncio.get_running_loop()
         self._handshake = loop.create_future()
-        self._reader_task = asyncio.create_task(self._read_loop(), name="makai-stdio-reader")
+        self._reader_task = asyncio.create_task(self._read_loop(), name="oap-stdio-reader")
+
+        # OAP does not emit a spontaneous ready frame. Initialize the agent
+        # profile over the same connection used for subsequent requests.
+        from ._ids import new_ulid
+
+        if not self._legacy_wire:
+            initialize_id = new_ulid()
+            self._initialize_id = initialize_id
+            await self.send({
+                "protocol": "open-agent-protocol",
+                "version": "0.1",
+                "profile": "open-agent-protocol.agent-control-core",
+                "type": "protocol.initialize.request",
+                "id": initialize_id,
+                "payload": {
+                    "protocol_versions": ["0.1"],
+                    "profiles": ["open-agent-protocol.agent-control-core"],
+                },
+            })
 
         try:
             await asyncio.wait_for(self._handshake, self._handshake_timeout)
@@ -285,6 +297,22 @@ class StdioTransport:
         except BaseException:
             await self.close()
             raise
+        if not self._legacy_wire:
+            from ._ids import new_ulid
+            capability_id = new_ulid()
+            try:
+                async with self.route(request_id=capability_id) as route:
+                    await self.send({"protocol": "open-agent-protocol", "version": "0.1",
+                                     "profile": "open-agent-protocol.agent-control-core",
+                                     "type": "capabilities.request", "id": capability_id, "payload": {}})
+                    capabilities = await route.next_frame(self._handshake_timeout)
+                revision = capabilities.get("capability_revision")
+                if capabilities.get("type") != "capabilities.response" or not isinstance(revision, str) or not revision:
+                    raise MakaiStreamError("OAP capabilities response omitted capability_revision", kind="transport_error")
+                self._agent_revision = revision
+            except BaseException:
+                await self.close()
+                raise
         logger.debug("handshake complete (pid=%s)", process.pid)
 
     async def send(self, frame: Frame) -> None:
@@ -292,6 +320,10 @@ class StdioTransport:
         process = self._process
         if process is None or process.stdin is None or self._closed:
             raise MakaiStreamError("transport is not connected", kind="transport_error")
+        if (frame.get("profile") == "open-agent-protocol.agent-control-core"
+                and frame.get("type") not in ("protocol.initialize.request", "capabilities.request")
+                and self._agent_revision):
+            frame["capability_revision"] = self._agent_revision
         line = (json.dumps(frame, separators=(",", ":")) + "\n").encode()
         async with self._write_lock:
             try:
@@ -311,21 +343,26 @@ class StdioTransport:
         with contextlib.suppress(Exception):
             await self.send(frame)
 
-    def route(self, *, stream_id: Optional[str] = None, session_id: Optional[str] = None) -> _RouteHandle:
-        """Open a frame route for ``stream_id`` or ``session_id``.
+    def route(self, *, stream_id: Optional[str] = None, session_id: Optional[str] = None,
+              request_id: Optional[str] = None, inference_id: Optional[str] = None) -> _RouteHandle:
+        """Open a frame route for an OAP request or scoped event stream.
 
         Use as ``async with transport.route(stream_id=...) as route:`` and send
         the request inside the block.
         """
-        if (stream_id is None) == (session_id is None):
-            raise ValueError("exactly one of stream_id or session_id is required")
+        if sum(value is not None for value in (stream_id, session_id, request_id, inference_id)) != 1:
+            raise ValueError("exactly one route key is required")
+        if request_id is not None:
+            return _RouteHandle(self, "request", request_id)
+        if inference_id is not None:
+            return _RouteHandle(self, "inference", inference_id)
         if stream_id is not None:
             return _RouteHandle(self, "stream", stream_id)
         assert session_id is not None
         return _RouteHandle(self, "session", session_id)
 
     def _open_route(self, kind: str, key: str) -> FrameRoute:
-        routes = self._stream_routes if kind == "stream" else self._session_routes
+        routes = self._route_table(kind)
         existing = routes.get(key)
         if existing is not None:
             raise MakaiStreamError(
@@ -337,9 +374,16 @@ class StdioTransport:
         return route
 
     def _close_route(self, kind: str, key: str, route: Optional[FrameRoute]) -> None:
-        routes = self._stream_routes if kind == "stream" else self._session_routes
+        routes = self._route_table(kind)
         if routes.get(key) is route:
             del routes[key]
+        if kind == "request" and route is not None:
+            for inference_id, owner in list(self._inference_routes.items()):
+                if owner is route:
+                    del self._inference_routes[inference_id]
+            for flow_id, owner in list(self._auth_flow_routes.items()):
+                if owner is route:
+                    del self._auth_flow_routes[flow_id]
 
     async def close(self) -> None:
         """Terminate the child process and release every route.
@@ -374,6 +418,14 @@ class StdioTransport:
                 await task
 
         self._fail_all(MakaiStreamError("transport closed", kind="transport_error"))
+
+    def _route_table(self, kind: str) -> Dict[str, FrameRoute]:
+        return {
+            "stream": self._stream_routes,
+            "session": self._session_routes,
+            "request": self._request_routes,
+            "inference": self._inference_routes,
+        }[kind]
 
     async def __aenter__(self) -> "StdioTransport":
         await self.connect()
@@ -410,10 +462,10 @@ class StdioTransport:
                 try:
                     frame = json.loads(text)
                 except json.JSONDecodeError:
-                    self._on_invalid_line(text)
+                    self._on_invalid_line(len(line), "invalid_json")
                     continue
                 if not isinstance(frame, dict):
-                    self._on_invalid_line(text)
+                    self._on_invalid_line(len(line), "non_object_json")
                     continue
                 self._dispatch(frame)
         except asyncio.CancelledError:
@@ -433,13 +485,17 @@ class StdioTransport:
             )
         )
 
-    def _on_invalid_line(self, text: str) -> None:
-        preview = text if len(text) <= 200 else text[:200] + "..."
-        logger.warning("discarding invalid JSON frame: %s", preview)
+    def _on_invalid_line(self, byte_count: int, category: str) -> None:
+        # Auth prompt answers can be sensitive. Never log or return raw pipe
+        # bytes, including when the endpoint emits malformed JSON.
+        logger.warning("discarding invalid JSON frame category=%s bytes=%d", category, byte_count)
         handshake = self._handshake
         if handshake is not None and not handshake.done():
             handshake.set_exception(
-                MakaiStreamError(f"invalid JSON frame: {preview}", kind="transport_error")
+                MakaiStreamError(
+                    f"invalid JSON frame (category={category}, bytes={byte_count})",
+                    kind="transport_error",
+                )
             )
 
     def _dispatch(self, frame: Frame) -> None:
@@ -448,6 +504,35 @@ class StdioTransport:
             self._settle_handshake(handshake, frame)
             return
 
+        reply_to = frame.get("in_reply_to")
+        if isinstance(reply_to, str):
+            route = self._request_routes.get(reply_to)
+            if route is not None:
+                if frame.get("type") == "inference.create.response":
+                    inference_id = frame.get("inference_id")
+                    if isinstance(inference_id, str) and inference_id:
+                        self._inference_routes[inference_id] = route
+                if frame.get("type") == "auth.login.start.response":
+                    payload = frame.get("payload")
+                    flow_id = payload.get("flow_id") if isinstance(payload, dict) else None
+                    if isinstance(flow_id, str) and flow_id:
+                        self._auth_flow_routes[flow_id] = route
+                route._push(frame)
+                return
+        if frame.get("type") in ("auth.login.event", "auth.login.completed"):
+            payload = frame.get("payload")
+            flow_id = payload.get("flow_id") if isinstance(payload, dict) else None
+            if isinstance(flow_id, str):
+                route = self._auth_flow_routes.get(flow_id)
+                if route is not None:
+                    route._push(frame)
+                    return
+        inference_id = frame.get("inference_id")
+        if isinstance(inference_id, str):
+            route = self._inference_routes.get(inference_id)
+            if route is not None:
+                route._push(frame)
+                return
         stream_id = frame.get("stream_id")
         if isinstance(stream_id, str):
             route = self._stream_routes.get(stream_id)
@@ -480,24 +565,40 @@ class StdioTransport:
 
     def _settle_handshake(self, handshake: "asyncio.Future[None]", frame: Frame) -> None:
         frame_type = frame.get("type")
-        if frame_type == "error":
-            code = frame.get("code")
+        if self._legacy_wire and frame_type == "ready":
+            version = str(frame.get("protocol_version", ""))
+            if version != "1":
+                handshake.set_exception(MakaiStreamError(
+                    f"protocol version mismatch (expected 1, got {version})",
+                    kind="transport_error", code="version_mismatch"))
+            else:
+                handshake.set_result(None)
+            return
+        if frame_type in ("error", "error.response"):
+            raw_payload = frame.get("payload")
+            payload = raw_payload if isinstance(raw_payload, dict) else frame
+            nested_error = payload.get("error")
+            if isinstance(nested_error, dict):
+                payload = nested_error
+            code = payload.get("code")
             handshake.set_exception(
                 MakaiStreamError(
-                    str(frame.get("message") or "stdio handshake failed"),
+                    str(payload.get("message") or "stdio initialization failed"),
                     kind="transport_error",
                     code=code if isinstance(code, str) else None,
                 )
             )
             return
-        if frame_type != "ready":
+        if frame.get("in_reply_to") != getattr(self, "_initialize_id", None) or frame_type != "protocol.initialize.response":
             handshake.set_exception(
                 MakaiStreamError(
                     f"unexpected handshake frame type: {frame_type}", kind="transport_error"
                 )
             )
             return
-        version = str(frame.get("protocol_version", ""))
+        raw_payload = frame.get("payload")
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        version = str(payload.get("protocol_version", ""))
         if version != self._expected_protocol_version:
             handshake.set_exception(
                 MakaiStreamError(
@@ -534,5 +635,7 @@ class StdioTransport:
         handshake = self._handshake
         if handshake is not None and not handshake.done():
             handshake.set_exception(error)
-        for route in list(self._stream_routes.values()) + list(self._session_routes.values()):
+        for route in (list(self._stream_routes.values()) + list(self._session_routes.values())
+                      + list(self._request_routes.values()) + list(self._inference_routes.values())
+                      + list(self._auth_flow_routes.values())):
             route._fail(error)

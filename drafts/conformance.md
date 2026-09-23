@@ -31,6 +31,7 @@ Conformance units are additive:
 - `+tool-sources`
 - `+control-tools`
 - `+models`
+- `+provider-attach`
 - `+queue`
 - `+compound-open`
 - `+steer`
@@ -104,29 +105,41 @@ satisfies all of the following:
 4. Supports `session.open.request` and `session.open.response`.
 5. Supports `session.state.request`, `session.state.response`, and
    `session.state.updated`.
-6. Accepts `session.message.submit.request` and returns
+6. Supports `session.model.switch.request` and
+   `session.model.switch.response`: an accepted switch changes only that
+   session's default model, is reflected in canonical state, and leaves an
+   already-running run on its admitted model. A missing model is refused with
+   `model_not_found` and `details.model_id`.
+7. Accepts `session.message.submit.request` and returns
    `session.message.submit.response`.
-7. Emits `run.status.updated` for meaningful run lifecycle changes.
-8. Streams assistant-visible output through `content.delta`.
-9. Emits exactly one terminal run event for every accepted run:
+8. Emits `run.status.updated` for meaningful run lifecycle changes.
+9. Streams assistant-visible output through `content.delta`.
+10. Emits exactly one terminal run event for every accepted run:
    `run.completed`, `run.failed`, or `run.cancelled`.
-10. Supports `run.cancel.request`, or declares cancellation as unavailable in
+11. Supports `run.cancel.request`, or declares cancellation as unavailable in
     capabilities and returns a correlated `error.response` with a typed
     unsupported-feature error if called.
-11. Returns correlated `error.response` envelopes for unsupported commands and
+12. Returns correlated `error.response` envelopes for unsupported commands and
     invalid requests.
-12. Enables feature gating through capabilities and degradation records rather
+13. Enables feature gating through capabilities and degradation records rather
     than implementation names.
-13. Rejects any request carrying a non-current `capability_revision` with a
+14. Rejects any request carrying a non-current `capability_revision` with a
     correlated `error.response` whose code is `stale_capabilities`, except that
     `protocol.initialize.request` and `capabilities.request` ignore the field so
     discovery cannot be blocked by a stale revision.
-14. Repeats the admitted `capability_revision` on every successful response to
+15. Repeats the admitted `capability_revision` on every successful response to
     a request that supplied one.
 
 Core conformance does not require persistence, tools, permissions, user-input
 prompts, model listing, queue/steer/btw delivery, checkpointing, artifacts,
 auth flows, or a specific transport.
+
+`session.model.switch` is a core operation even when `+models` listing and
+per-submit `+run-controls` are absent. A fixed-model endpoint can accept a
+switch to the same current model and reject another id; it cannot acknowledge
+a switch it did not apply. A successful response is a barrier for later
+submits, while concurrently pipelined requests may be admitted in either
+order. See [Decision 0028](../decisions/0028-live-model-and-provider-control.md).
 
 Core conformance requires `auto` message delivery. An implementation that
 receives an explicit unsupported delivery mode such as `queue`, `steer`, or
@@ -505,7 +518,10 @@ An implementation:
   is part of the capability snapshot: a change with no `capabilities.updated`
   is `unannounced_catalog_change` (`models-catalog-mutates-within-revision`,
   `models-catalog-metadata-mutates-within-revision`). A `degraded` catalog
-  discloses out-of-band refresh and is exempt;
+  discloses out-of-band refresh and is exempt. An accepted
+  `session.provider.attach` is the other explicit exception: it invalidates
+  the catalog of its own session, even when the endpoint capability revision
+  does not change;
 - admits a `model_id` the catalog lists and refuses one it omits with
   `model_not_found` and `details.model_id` (`models-list-then-select`,
   `models-unlisted-selection-refused`). Admitting an unlisted id
@@ -528,6 +544,20 @@ catalog can be served by an endpoint that applies no per-submit selection.
 
 Model resolution, aliases, pricing, cache refresh, and provider auth state are
 outside this unit unless a richer profile defines them.
+
+### `+provider-attach`
+
+An implementation conforms to optional `+provider-attach` if it advertises
+`action.providers.attach` with `session_live` mode and accepts
+`session.provider.attach.request` for a provider offered by a co-hosted or
+operator-configured `model-provider-core` service. Its session-local alias
+must be unique, the request is atomic, and success must expand that session's
+next model catalog without changing its default model or an active run. An
+unknown service/provider or a conflicting alias is refused with a typed
+error; an unadvertised operation is refused with `unsupported_feature` and
+`details.feature: "action.providers.attach"`. No caller-provided vendor
+URL, wire, command, header, or credential is admitted. See
+[Decision 0028](../decisions/0028-live-model-and-provider-control.md).
 
 ### `+queue`
 

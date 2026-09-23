@@ -153,7 +153,8 @@ func (m *Memory) Probe(context.Context) (Descriptor, error) {
 		"action.permissions":              {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 		"user_input":                      {Level: protocol.SupportEmulated, Reason: "the reference adapter exposes an interactive scripted gate"},
 
-		protocol.FeatureModelSelection: {Level: protocol.SupportEmulated, Scope: protocol.ScopeRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
+		protocol.FeatureModelSelection:     {Level: protocol.SupportEmulated, Scope: protocol.ScopeRun, Reason: "the reference adapter runs no model; it echoes a selection from a fixed catalog for one run"},
+		protocol.FeatureSessionModelSwitch: {Level: protocol.SupportEmulated, Reason: "the reference adapter changes the session default within its fixed catalog"},
 
 		protocol.FeatureModelsList:   {Level: protocol.SupportNative, Reason: "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits"},
 		protocol.FeatureInstructions: {Level: protocol.SupportEmulated, Reason: "instructions are prepended to the scripted text so their effect is observable"},
@@ -433,6 +434,9 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		s.mu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, ErrRunActive
 	}
+	if !busy && request.Delivery != protocol.DeliveryQueue && controls.model == "" {
+		controls.model = s.state.CurrentModelID
+	}
 	run := &memoryRun{
 		id: protocol.RunID(s.ids.NewID("run")), status: protocol.RunRunning,
 		nextSequence: 1, stage: stagePermission, controls: controls,
@@ -592,11 +596,12 @@ func acknowledgedInteractions(run *memoryRun) []protocol.InteractionID {
 
 func (s *memorySession) emitInitial(run *memoryRun) error {
 
+	s.mu.Lock()
 	model := run.controls.model
 	if model == "" {
 		model = s.state.CurrentModelID
 	}
-	s.mu.Lock()
+	run.controls.model = model
 	run.started = true
 	run.status = protocol.RunRunning
 	s.mu.Unlock()
@@ -706,6 +711,29 @@ func (s *memorySession) Models(ctx context.Context, request protocol.ModelsReque
 			Providers:      providerCatalog(),
 		},
 	}, nil
+}
+
+func (s *memorySession) SwitchModel(ctx context.Context, request protocol.SessionModelSwitchRequest) (protocol.SessionModelSwitchResponse, protocol.SessionState, error) {
+	if err := ctx.Err(); err != nil {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, ErrSessionClosed
+	}
+	if request.SessionID != s.state.SessionID {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, fmt.Errorf("%w: switch names session %q", ErrInvalidSubmission, request.SessionID)
+	}
+	if request.ModelID != ModelPrimary && request.ModelID != ModelSecondary {
+		return protocol.SessionModelSwitchResponse{}, protocol.SessionState{}, &ModelNotFoundError{ModelID: request.ModelID}
+	}
+	previous := s.state.CurrentModelID
+	s.state.CurrentModelID = request.ModelID
+	s.state.UpdatedAtMS = s.clock.Now().UnixMilli()
+	return protocol.SessionModelSwitchResponse{
+		SessionID: s.state.SessionID, ModelID: request.ModelID, PreviousModelID: previous,
+	}, s.cloneStateLocked(), nil
 }
 
 func (s *memorySession) catalog() []string {

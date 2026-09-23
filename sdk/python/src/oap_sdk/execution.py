@@ -314,15 +314,29 @@ class AgentApi(_ExecutionBase):
         separate instance from ``client.models``, not the same object.
         """
 
+    async def open_session(self, session_id: Optional[str] = None) -> Mapping[str, Any]:
+        raise MakaiProtocolError("live OAP sessions require the OAP wire", "unsupported_feature")
+
+    async def available_models(self, session_id: str) -> Mapping[str, Any]:
+        raise MakaiProtocolError("session model discovery requires the OAP wire", "unsupported_feature")
+
+    async def switch_model(self, session_id: str, model_ref: str) -> Mapping[str, Any]:
+        raise MakaiProtocolError("live model switch requires the OAP wire", "unsupported_feature")
+
+    async def attach_provider(self, session_id: str, provider: Mapping[str, Any]) -> Mapping[str, Any]:
+        raise MakaiProtocolError("live provider attachment requires the OAP wire", "unsupported_feature")
+
     async def run(
         self,
         *,
-        model_ref: str,
+        model_ref: Optional[str] = None,
         messages: Sequence[ChatMessage],
         tools: Optional[Sequence[ToolDefinition]] = None,
         options: Optional[RunOptions] = None,
     ) -> CompletionResponse:
         """Run the agent loop to completion and return the final message."""
+        if model_ref is None:
+            raise MakaiProtocolError("Makai V1 agent runs require model_ref", "invalid_request")
         policy = self._policy(options)
         fallback_provider_id = _provider_id_from_ref(model_ref)
         progress: Dict[str, bool] = {"tools_executed": False}
@@ -399,7 +413,7 @@ class AgentApi(_ExecutionBase):
     async def stream(
         self,
         *,
-        model_ref: str,
+        model_ref: Optional[str] = None,
         messages: Sequence[ChatMessage],
         tools: Optional[Sequence[ToolDefinition]] = None,
         options: Optional[RunOptions] = None,
@@ -410,6 +424,8 @@ class AgentApi(_ExecutionBase):
         ``agent_end`` carries aggregate usage summed over the run's provider
         turns.
         """
+        if model_ref is None:
+            raise MakaiProtocolError("Makai V1 agent runs require model_ref", "invalid_request")
         policy = self._policy(options)
         fallback_provider_id = _provider_id_from_ref(model_ref)
         attempt = 0

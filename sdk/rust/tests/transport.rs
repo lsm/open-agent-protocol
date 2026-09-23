@@ -420,6 +420,7 @@ async fn the_builder_controls_the_child_environment() {
     // `env_clear` plus one variable is what the fake sees; if the builder leaked
     // the parent environment, an ambient OAP_SDK_FAKE_SCENARIO would win.
     let client = ClientBuilder::new()
+        .legacy_wire()
         .command(common::fake_binary())
         .args(Vec::<String>::new())
         .env_clear()

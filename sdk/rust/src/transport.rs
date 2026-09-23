@@ -36,13 +36,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::error::{Error, Result};
-use crate::wire::{Envelope, Frame};
+use crate::wire::{Envelope, Frame, AGENT_PROFILE, OAP_PROTOCOL, OAP_VERSION, PROVIDER_PROFILE};
 
 /// How long a closing transport waits for the child to exit on its own after
 /// stdin is closed, before killing it.
@@ -52,6 +53,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum RouteKey {
     Stream(String),
+    Inference(String),
     Session(String),
     Reply(String),
 }
@@ -60,6 +62,9 @@ enum RouteKey {
 struct RouterState {
     handshake: Option<oneshot::Sender<Frame>>,
     streams: HashMap<String, mpsc::UnboundedSender<Frame>>,
+    orphaned_flows: HashMap<String, Vec<Frame>>,
+    inferences: HashMap<String, mpsc::UnboundedSender<Frame>>,
+    orphaned_inferences: HashMap<String, Vec<Frame>>,
     sessions: HashMap<String, mpsc::UnboundedSender<Frame>>,
     replies: HashMap<String, mpsc::UnboundedSender<Frame>>,
     closed: Option<String>,
@@ -116,6 +121,41 @@ impl Router {
             }
         }
 
+        if frame.profile.as_deref() == Some(AGENT_PROFILE) {
+            if let Some(flow_id) = frame.payload_str("flow_id").map(str::to_owned) {
+                if let Some(sender) = state.streams.get(&flow_id) {
+                    let _ = sender.send(frame);
+                    return;
+                }
+                if state.orphaned_flows.len() < 64 || state.orphaned_flows.contains_key(&flow_id) {
+                    let buffered = state.orphaned_flows.entry(flow_id).or_default();
+                    if buffered.len() < 256 {
+                        buffered.push(frame);
+                    }
+                }
+                return;
+            }
+        }
+
+        if let Some(inference_id) = frame.inference_id.as_deref() {
+            if let Some(sender) = state.inferences.get(inference_id) {
+                let _ = sender.send(frame);
+                return;
+            }
+            if state.orphaned_inferences.len() < 64
+                || state.orphaned_inferences.contains_key(inference_id)
+            {
+                let buffered = state
+                    .orphaned_inferences
+                    .entry(inference_id.to_owned())
+                    .or_default();
+                if buffered.len() < 256 {
+                    buffered.push(frame);
+                }
+            }
+            return;
+        }
+
         if let Some(session_id) = frame.session_id.as_deref() {
             if let Some(sender) = state.sessions.get(session_id) {
                 let _ = sender.send(frame);
@@ -140,6 +180,9 @@ impl Router {
         }
         state.handshake = None;
         state.streams.clear();
+        state.orphaned_flows.clear();
+        state.inferences.clear();
+        state.orphaned_inferences.clear();
         state.sessions.clear();
         state.replies.clear();
         drop(state);
@@ -156,6 +199,9 @@ impl Router {
             match key {
                 RouteKey::Stream(id) => {
                     state.streams.remove(id);
+                }
+                RouteKey::Inference(id) => {
+                    state.inferences.remove(id);
                 }
                 RouteKey::Session(id) => {
                     state.sessions.remove(id);
@@ -289,6 +335,8 @@ struct Inner {
     reader: Mutex<Option<JoinHandle<()>>>,
     writer: Mutex<Option<JoinHandle<()>>>,
     closing: AtomicBool,
+    oap: bool,
+    agent_revision: Mutex<Option<String>>,
 }
 
 impl Drop for Inner {
@@ -322,6 +370,7 @@ fn take<T>(slot: &Mutex<Option<T>>) -> Option<T> {
 pub(crate) struct TransportOptions {
     pub command: std::path::PathBuf,
     pub args: Vec<String>,
+    pub legacy_wire: bool,
     pub cwd: Option<std::path::PathBuf>,
     pub env: Vec<(String, String)>,
     pub env_clear: bool,
@@ -371,8 +420,11 @@ impl Transport {
             .ok_or_else(|| Error::transport("child stdout was not piped"))?;
 
         let router = Arc::new(Router::new());
+        let oap = !options.legacy_wire;
         let (handshake_tx, handshake_rx) = oneshot::channel();
-        router.lock().handshake = Some(handshake_tx);
+        if !oap {
+            router.lock().handshake = Some(handshake_tx);
+        }
 
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<String>();
         let writer = tokio::spawn(async move {
@@ -433,17 +485,199 @@ impl Transport {
             reader: Mutex::new(Some(reader)),
             writer: Mutex::new(Some(writer)),
             closing: AtomicBool::new(false),
+            oap,
+            agent_revision: Mutex::new(None),
         });
         let transport = Self { inner };
 
-        transport
-            .complete_handshake(handshake_rx, &options)
-            .await
-            .inspect_err(|_| {
-                // A failed handshake must not leave the child running.
-                transport.begin_shutdown();
-            })?;
+        let initialized = if oap {
+            transport.initialize_oap(&options).await
+        } else {
+            transport.complete_handshake(handshake_rx, &options).await
+        };
+        initialized.inspect_err(|_| transport.begin_shutdown())?;
         Ok(transport)
+    }
+
+    pub(crate) fn is_oap(&self) -> bool {
+        self.inner.oap
+    }
+
+    async fn initialize_oap(&self, options: &TransportOptions) -> Result<()> {
+        let response = self
+            .request_oap(
+                AGENT_PROFILE,
+                "protocol.initialize.request",
+                json!({
+                    "protocol_versions": [options.expected_protocol_version],
+                    "profiles": [AGENT_PROFILE], "participant": { "id": "rust-sdk" }
+                }),
+                None,
+                options.handshake_timeout,
+            )
+            .await?;
+        if response.kind != "protocol.initialize.response"
+            || response.payload_str("protocol_version")
+                != Some(options.expected_protocol_version.as_str())
+            || response.payload_str("profile") != Some(AGENT_PROFILE)
+        {
+            return Err(Error::protocol(
+                "OAP agent initialization failed",
+                Some("protocol_mismatch"),
+            ));
+        }
+        let capabilities = self
+            .request_oap(
+                AGENT_PROFILE,
+                "capabilities.request",
+                json!({}),
+                None,
+                options.handshake_timeout,
+            )
+            .await?;
+        let revision = capabilities
+            .raw
+            .get("capability_revision")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                Error::protocol(
+                    "OAP capabilities omitted capability_revision",
+                    Some("malformed_response"),
+                )
+            })?;
+        if capabilities.kind != "capabilities.response" {
+            return Err(Error::protocol(
+                "OAP agent capabilities failed",
+                Some("protocol_mismatch"),
+            ));
+        }
+        *self
+            .inner
+            .agent_revision
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(revision.to_owned());
+        let describe = self
+            .request_oap(
+                PROVIDER_PROFILE,
+                "provider.describe.request",
+                json!({}),
+                None,
+                options.handshake_timeout,
+            )
+            .await?;
+        if describe.kind != "provider.describe.response" {
+            return Err(Error::protocol(
+                "OAP provider description failed",
+                Some("protocol_mismatch"),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn request_oap(
+        &self,
+        profile: &str,
+        kind: &str,
+        payload: Value,
+        scope: Option<(&str, &str)>,
+        timeout: Duration,
+    ) -> Result<Frame> {
+        let id = crate::ids::new_ulid();
+        let mut subscription = self.subscribe_reply(&id);
+        self.send_oap(profile, kind, &id, payload, scope)?;
+        let response = subscription.next_within(timeout, kind).await?;
+        if response.profile.as_deref() != Some(profile)
+            || response.raw.get("protocol").and_then(Value::as_str) != Some(OAP_PROTOCOL)
+            || response.raw.get("version").and_then(Value::as_str) != Some(OAP_VERSION)
+        {
+            return Err(Error::protocol(
+                "response is not on the requested OAP profile and version",
+                Some("protocol_mismatch"),
+            ));
+        }
+        if response.kind == "error.response" || response.kind == "protocol.error" {
+            let err = response
+                .payload()
+                .get("error")
+                .unwrap_or(response.payload());
+            return Err(Error::protocol(
+                err.get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("OAP request failed"),
+                err.get("code").and_then(Value::as_str),
+            ));
+        }
+        Ok(response)
+    }
+
+    pub(crate) fn send_oap(
+        &self,
+        profile: &str,
+        kind: &str,
+        id: &str,
+        payload: Value,
+        scope: Option<(&str, &str)>,
+    ) -> Result<()> {
+        let mut envelope = json!({ "protocol": OAP_PROTOCOL, "version": OAP_VERSION, "profile": profile, "type": kind, "id": id, "payload": payload });
+        if profile == AGENT_PROFILE
+            && kind != "protocol.initialize.request"
+            && kind != "capabilities.request"
+        {
+            if let Some(revision) = self
+                .inner
+                .agent_revision
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                if let Some(fields) = envelope.as_object_mut() {
+                    fields.insert("capability_revision".to_owned(), json!(revision));
+                }
+            }
+        }
+        if let Some((key, value)) = scope {
+            if let Some(fields) = envelope.as_object_mut() {
+                fields.insert(key.to_owned(), Value::String(value.to_owned()));
+            }
+        }
+        self.send_line(envelope.to_string())
+    }
+
+    fn subscribe_reply(&self, id: &str) -> Subscription {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.inner
+            .router
+            .lock()
+            .replies
+            .insert(id.to_owned(), sender.clone());
+        Subscription {
+            router: Arc::clone(&self.inner.router),
+            sender,
+            receiver,
+            keys: vec![RouteKey::Reply(id.to_owned())],
+            closed: self.inner.router.closed_rx.clone(),
+            owns_session: true,
+        }
+    }
+
+    pub(crate) fn subscribe_inference(&self, id: &str) -> Subscription {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        {
+            let mut state = self.inner.router.lock();
+            state.inferences.insert(id.to_owned(), sender.clone());
+            for frame in state.orphaned_inferences.remove(id).unwrap_or_default() {
+                let _ = sender.send(frame);
+            }
+        }
+        Subscription {
+            router: Arc::clone(&self.inner.router),
+            sender,
+            receiver,
+            keys: vec![RouteKey::Inference(id.to_owned())],
+            closed: self.inner.router.closed_rx.clone(),
+            owns_session: true,
+        }
     }
 
     async fn complete_handshake(
@@ -502,6 +736,9 @@ impl Transport {
         {
             let mut state = self.inner.router.lock();
             state.streams.insert(stream_id.to_owned(), sender.clone());
+            for frame in state.orphaned_flows.remove(stream_id).unwrap_or_default() {
+                let _ = sender.send(frame);
+            }
         }
         Subscription {
             router: Arc::clone(&self.inner.router),
@@ -547,7 +784,12 @@ impl Transport {
     /// from a `Drop` impl that needs to emit a best-effort cancellation.
     pub(crate) fn send(&self, envelope: &Envelope) -> Result<()> {
         let line = envelope.to_line();
-        tracing::trace!(frame = %line, "sending frame");
+        self.send_line(line)
+    }
+
+    fn send_line(&self, line: String) -> Result<()> {
+        // Never log raw outbound JSON, even at trace level.
+        tracing::trace!("sending protocol frame");
         let guard = self
             .inner
             .outbound

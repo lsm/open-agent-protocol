@@ -10,8 +10,7 @@ Amends: nothing. Extends
 [Decision 0006](0006-models-catalog.md) additively: one optional member on an
 existing payload, whose absence means exactly what the catalog meant before it
 existed. Caller-supplied provider provisioning is not part of this record; it
-is an attachment at session open, symmetric to tool sources, and is deferred to
-its own decision
+is a live session attachment defined by Decision 0028
 Gated by: [Decision 0003](0003-staged-unit-graduation.md)
 
 ## Context
@@ -60,9 +59,18 @@ reaches directly from one reached through a gateway or proxy. `endpoint` is
 the destination the endpoint reaches, published so a client can tell a direct
 provider from a gateway.
 
+After [Decision 0028](0028-live-model-and-provider-control.md), `id` is the
+agent session's provider alias, while `service_id` and
+`upstream_provider_id`, when present, identify the OAP model-provider service
+and its provider entry behind that alias. `wire` is optional downstream
+metadata, **not** a wire format the `oapx` agent loop speaks. The loop uses
+`model-provider-core` for inference even when that service itself calls an
+OpenAI- or Anthropic-shaped vendor endpoint. The earlier paragraph describes
+the original descriptor design, not a requirement for the agent loop to call
+vendor APIs directly.
+
 It is read-only, and a caller does not supply one. Provisioning a provider is
-an attachment at session open, symmetric to `tool_sources`, and belongs in its
-own decision — see [the composition draft](../drafts/composition.md). Putting a
+a live session attachment under Decision 0028, not a writable descriptor. Putting a
 writable destination on a descriptor, as an earlier version of this record did,
 conflated two different things: a descriptor is what an endpoint publishes
 about itself and is fixed for a capability revision, while an attachment is
@@ -99,7 +107,7 @@ passes them to the adapter. A deployment policy was cited as a protocol
 decision.
 
 The correction is that provisioning is expressible and belongs in a different
-shape from this one. It is an attachment at session open beside `tool_sources`,
+shape from this one. It is a live session attachment under Decision 0028,
 inheriting that unit's rules — gated on a capability key, whole or nothing,
 refusals naming the entry at fault, the daemon governing the destination
 through operator configuration rather than accepting one from the wire, and
