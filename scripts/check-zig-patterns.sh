@@ -160,7 +160,6 @@ zig/src/transports/transport_retry.zig|        var prng = std.Random.DefaultPrng
 zig/src/utils/oauth/storage.zig|    const tmp_name = try std.fmt.allocPrint(allocator, "{s}{d}.{x}", .{ auth_temp_prefix, compat.time.nowMillis(), compat.random.int(u64) });
 zig/src/utils/retry.zig|            const rand = prng.random().float(f32);
 zig/src/utils/retry.zig|            var prng = std.Random.DefaultPrng.init(seed);
-zig/src/utils/tool_utils.zig|    return generateMistralToolCallIdWithRandom(allocator, compat.random.fillRandomBytes);
 SITES
 )"
 

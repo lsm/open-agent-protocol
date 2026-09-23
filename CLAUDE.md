@@ -182,14 +182,6 @@ Rules the source will not tell you:
   CI job. A module with no `addTest` is invisible to this rule.
 - A relative `@import` does not mean a file has no module. Decide from
   `build.zig` and the importers, never from the import syntax.
-- Four files are compiled by nothing: `zig/src/utils/` `streaming_json.zig`
-  (a different, larger file than the live top-level one), `message_transform.zig`,
-  `tool_utils.zig` and `tokens.zig` have no module, no importer and no build
-  step, so nothing type-checks them and they rot silently. Do not copy their
-  wiring as a pattern, and note that `tool_utils.zig` still holds a declared
-  entry in `check-zig-patterns.sh`'s `expected_ordinary_entropy_sites` — a
-  security exemption for code that never runs, which cannot be removed while the
-  file stays, and deleting the file without the entry fails the guardrail.
 - `EventStream.owns_events` is an **ownership** flag, not a cloning switch:
   `push` deep-copies only when `clone_event_fn` is also set, and setting
   `owns_events` without cloning before push is a use-after-free. A stream ends
