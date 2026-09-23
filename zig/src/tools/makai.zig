@@ -7809,6 +7809,8 @@ const HttpProviderFrame = struct {
     terminal: bool,
 };
 
+const HTTP_PROVIDER_MAX_WORKERS: usize = 128;
+
 const HttpProviderExchange = struct {
     request_id: []const u8,
     inference_id: ?[]u8 = null,
@@ -8127,7 +8129,14 @@ fn runOapProviderHttpMode(allocator: std.mem.Allocator, bind: []const u8) !void 
     }
     while (true) {
         const connection = try compat.net.accept(&listener);
-        _ = runtime.workers.fetchAdd(1, .acq_rel);
+        const existing = runtime.workers.fetchAdd(1, .acq_rel);
+        if (existing >= HTTP_PROVIDER_MAX_WORKERS) {
+            _ = runtime.workers.fetchSub(1, .acq_rel);
+            var rejected = connection;
+            writeHttpProviderStatus(&rejected.stream, "503 Service Unavailable") catch {};
+            rejected.stream.close();
+            continue;
+        }
         const thread = std.Thread.spawn(.{}, handleHttpProviderConnection, .{ &runtime, connection }) catch |err| {
             _ = runtime.workers.fetchSub(1, .acq_rel);
             var failed = connection;
