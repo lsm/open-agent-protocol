@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- Drafted the `model-provider-core` HTTP/SSE binding and added client-side remote-provider support to `oapx serve agent`. An operator can set `OAPX_PROVIDER_SERVICE_URL` and `OAPX_PROVIDER_SERVICE_SECURITY` (`loopback`, `tls`, or `mesh_proxy`); startup validates the service profile, managed-credential posture, and model catalog before the agent routes inference over HTTP/SSE. Caller-held credential grants are refused. This does not add an HTTP server role or live `session.provider.attach` yet.
+
+- Bounded remote-provider HTTP operations: unary calls and the first streamed envelope have a 30-second deadline, and an active SSE stream has a 120-second idle deadline that SSE traffic, including comment heartbeats, refreshes. A timed-out connection is shut down, repeated or skipped inference sequences are rejected, and a cancel acknowledgment is consumed outside the bounded inference-event queue so cancellation cannot wait on that queue when it is full. SSE events are delivered as bytes arrive, rather than waiting for a 4 KiB read or connection close.
+
 ### Changed
 
 - The Claude Code adapter's `Session.Resume` replays the adapter's own bounded journal instead of answering `unavailable`, so a consumer that overflows its event stream can resume from its last sequence, as `ErrEventStreamOverflow` tells it to. A cursor inside the journal replays the suffix and then follows the live run, and a run that has ended replays its retained tail. A cursor older than the journal returns `*adapter.ReplayGap`, and one past the run returns `ErrReplayCursorFuture`. `run.resume` and `run.replay` are now `degraded` (capability revision `claude-code-2.1.280-oap-v2`). Against the pinned 2.1.280, a consumer stalled past the 64-slot stream now completes the run where it failed with `operation unavailable` before (#238). `claude.Config.JournalCapacity` should cover the events of the longest stall. The daemon's `?after=` reconnect drives the same `Resume`. Recorded in [`research/claude-code-agent-sdk-2.1.280-mapping.md`](research/claude-code-agent-sdk-2.1.280-mapping.md).

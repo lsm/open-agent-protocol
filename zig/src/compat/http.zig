@@ -77,7 +77,11 @@ pub const ResponseReader = opaque {};
 
 pub fn readResponse(reader: *ResponseReader, buffer: []u8) !usize {
     const inner: *std.Io.Reader = @ptrCast(@alignCast(reader));
-    return inner.readSliceShort(buffer);
+    var slices = [_][]u8{buffer};
+    return inner.readVec(&slices) catch |err| switch (err) {
+        error.EndOfStream => 0,
+        else => |failure| return failure,
+    };
 }
 
 pub fn readAllResponse(reader: *ResponseReader, buffer: []u8) !void {
