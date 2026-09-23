@@ -64,6 +64,7 @@ pub const AuthProtocolServer = struct {
     pub const Options = struct {
         persist_credentials: bool = true,
         enable_real_oauth: bool = true,
+        spawn_login_workers: bool = true,
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) Self {
@@ -233,10 +234,12 @@ pub const AuthProtocolServer = struct {
         errdefer self.allocator.destroy(flow);
         flow.* = try FlowState.init(self.allocator, env.stream_id, request.provider_id.slice());
         errdefer flow.deinit(self.allocator);
+        flow.worker_done = !self.options.spawn_login_workers;
 
         const ack = self.makeAckLocked(env.stream_id, env.message_id);
 
         try self.flows.put(env.stream_id, flow);
+        if (!self.options.spawn_login_workers) return ack;
 
         const thread = std.Thread.spawn(.{}, loginWorkerMain, .{ self, flow }) catch |spawn_err| {
             _ = self.flows.remove(env.stream_id);
@@ -1002,4 +1005,49 @@ test "AuthProtocolServer fixture login waits for prompt response" {
     }.isLoginResult, 30_000);
     defer result_env.deinit(allocator);
     try std.testing.expectEqual(auth_types.AuthLoginStatus.success, result_env.payload.auth_login_result.status);
+}
+
+test "AuthProtocolServer without login workers keeps a login silent until cancelled" {
+    const allocator = std.testing.allocator;
+    var server = AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+        .spawn_login_workers = false,
+    });
+    defer server.deinit();
+
+    const flow_id = auth_types.generateUlid();
+    var start_env = auth_types.Envelope{
+        .stream_id = flow_id,
+        .message_id = auth_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .auth_login_start = .{
+            .provider_id = OwnedSlice(u8).initOwned(try allocator.dupe(u8, "test-fixture")),
+        } },
+    };
+    defer start_env.deinit(allocator);
+
+    var ack = (try server.handleEnvelope(start_env)).?;
+    defer ack.deinit(allocator);
+    try std.testing.expect(ack.payload == .ack);
+    try std.testing.expect((server.flows.get(flow_id) orelse return error.MissingFlow).thread == null);
+    try std.testing.expect(server.popOutbound() == null);
+    try std.testing.expectEqual(@as(usize, 1), server.activeFlowCount());
+
+    const cancel_env = auth_types.Envelope{
+        .stream_id = flow_id,
+        .message_id = auth_types.generateUlid(),
+        .sequence = 2,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .auth_cancel = .{ .flow_id = flow_id } },
+    };
+    var cancel_ack = (try server.handleEnvelope(cancel_env)).?;
+    defer cancel_ack.deinit(allocator);
+    try std.testing.expect(cancel_ack.payload == .ack);
+
+    var result_env = server.popOutbound() orelse return error.MissingLoginResult;
+    defer result_env.deinit(allocator);
+    try std.testing.expectEqual(auth_types.AuthLoginStatus.cancelled, result_env.payload.auth_login_result.status);
+    try std.testing.expectEqual(@as(usize, 0), server.flows.count());
 }

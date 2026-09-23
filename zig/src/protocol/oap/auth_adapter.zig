@@ -692,6 +692,68 @@ fn authProvidersAllocationProbe(allocator: std.mem.Allocator) !void {
     while (adapter.popOutbound()) |outbound| allocator.free(outbound);
 }
 
+const AuthProbeOutcome = struct {
+    flow_id: ?[]u8 = null,
+    accepted: ?bool = null,
+    cancelled: usize = 0,
+    input_unavailable: usize = 0,
+
+    fn deinit(self: *AuthProbeOutcome) void {
+        if (self.flow_id) |flow_id| std.testing.allocator.free(flow_id);
+        self.* = undefined;
+    }
+};
+
+fn submitAuthProbeLogin(adapter: *Adapter, request_id: []const u8) !void {
+    const line = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.start.request\",\"id\":\"{s}\",\"capability_revision\":\"current-revision\",\"payload\":{{\"provider_id\":\"test-fixture\"}}}}",
+        .{request_id},
+    );
+    defer std.testing.allocator.free(line);
+    try std.testing.expect(try adapter.handleLine(line));
+}
+
+fn submitAuthProbeCancel(adapter: *Adapter, request_id: []const u8, flow_id: []const u8) !void {
+    const line = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"{s}\",\"capability_revision\":\"current-revision\",\"payload\":{{\"flow_id\":\"{s}\"}}}}",
+        .{ request_id, flow_id },
+    );
+    defer std.testing.allocator.free(line);
+    try std.testing.expect(try adapter.handleLine(line));
+}
+
+fn drainAuthProbe(adapter: *Adapter, allocator: std.mem.Allocator) !AuthProbeOutcome {
+    var outcome: AuthProbeOutcome = .{};
+    errdefer outcome.deinit();
+    while (adapter.popOutbound()) |line| {
+        defer allocator.free(line);
+        var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+        defer parsed.deinit();
+        const root = parsed.value.object;
+        const type_name = try requiredString(root, "type");
+        const payload = (root.get("payload") orelse return error.MissingPayload).object;
+        if (std.mem.eql(u8, type_name, "auth.login.start.response")) {
+            if (outcome.flow_id != null) return error.UnexpectedStartResponse;
+            outcome.flow_id = try std.testing.allocator.dupe(u8, try requiredString(payload, "flow_id"));
+        } else if (std.mem.eql(u8, type_name, "auth.login.cancel.response")) {
+            outcome.accepted = (payload.get("accepted") orelse return error.MissingAccepted).bool;
+        } else if (std.mem.eql(u8, type_name, "auth.login.completed")) {
+            const status = try requiredString(payload, "status");
+            if (std.mem.eql(u8, status, "cancelled")) {
+                outcome.cancelled += 1;
+                continue;
+            }
+            try std.testing.expectEqualStrings("failed", status);
+            const failure = (payload.get("error") orelse return error.MissingAuthError).object;
+            try std.testing.expectEqualStrings("auth_input_unavailable", try requiredString(failure, "code"));
+            outcome.input_unavailable += 1;
+        }
+    }
+    return outcome;
+}
+
 fn authFlowAllocationProbe(allocator: std.mem.Allocator) !void {
     var native = auth_server.AuthProtocolServer.init(std.testing.allocator, .{
         .persist_credentials = false,
@@ -702,25 +764,38 @@ fn authFlowAllocationProbe(allocator: std.mem.Allocator) !void {
     defer adapter.deinit();
     adapter.setCapabilityRevision("current-revision");
 
-    const start_line =
-        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"auth.login.start.request","id":"start-oom","capability_revision":"current-revision","payload":{"provider_id":"test-fixture"}}
-    ;
-    try std.testing.expect(try adapter.handleLine(start_line));
-    const response = adapter.popOutbound() orelse return error.MissingStartResponse;
-    defer allocator.free(response);
-    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, response, .{});
-    defer parsed.deinit();
-    const payload = (parsed.value.object.get("payload") orelse return error.MissingPayload).object;
-    const flow_id = try requiredString(payload, "flow_id");
-    const cancel_line = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"auth.login.cancel.request\",\"id\":\"cancel-oom\",\"capability_revision\":\"current-revision\",\"payload\":{{\"flow_id\":\"{s}\"}}}}",
-        .{flow_id},
-    );
-    defer std.testing.allocator.free(cancel_line);
-    try std.testing.expect(try adapter.handleLine(cancel_line));
+    try submitAuthProbeLogin(&adapter, "start-prompted");
+    const deadline = compat.time.nowMillis() + 5_000;
+    while (adapter.flows.count() != 0) {
+        if (compat.time.nowMillis() >= deadline) return error.PromptedLoginDidNotSettle;
+        if ((try adapter.pump()) == 0) compat.time.sleepNs(std.time.ns_per_ms);
+    }
+    var prompted = try drainAuthProbe(&adapter, allocator);
+    defer prompted.deinit();
+    try std.testing.expectEqual(@as(usize, 1), prompted.input_unavailable);
+    try submitAuthProbeCancel(&adapter, "cancel-settled", prompted.flow_id orelse return error.MissingStartResponse);
+    var settled = try drainAuthProbe(&adapter, allocator);
+    defer settled.deinit();
+    try std.testing.expectEqual(@as(?bool, false), settled.accepted);
+
+    native.options.spawn_login_workers = false;
+    try submitAuthProbeLogin(&adapter, "start-idle");
+    var idle = try drainAuthProbe(&adapter, allocator);
+    defer idle.deinit();
+    try submitAuthProbeCancel(&adapter, "cancel-idle", idle.flow_id orelse return error.MissingStartResponse);
+    var cancelled = try drainAuthProbe(&adapter, allocator);
+    defer cancelled.deinit();
+    try std.testing.expectEqual(@as(?bool, true), cancelled.accepted);
+    try std.testing.expectEqual(@as(usize, 1), cancelled.cancelled);
+
+    try submitAuthProbeLogin(&adapter, "start-live");
+    var live = try drainAuthProbe(&adapter, allocator);
+    defer live.deinit();
+    try std.testing.expectEqual(@as(usize, 1), adapter.flows.count());
     try adapter.cancelAllOnDisconnect();
-    while (adapter.popOutbound()) |outbound| allocator.free(outbound);
+    var disconnected = try drainAuthProbe(&adapter, allocator);
+    defer disconnected.deinit();
+    try std.testing.expectEqual(@as(usize, 1), disconnected.cancelled);
 }
 
 test "auth providers translation survives allocation failures" {
