@@ -658,12 +658,21 @@ not a list of rules read off it, because the oracle's refusals are a decode's
 refusals and come in a decode's order. Probed over mistyped, unknown, null and
 absent members:
 
+- A member is matched to its field the way `encoding/json` matches a tag:
+  case-insensitively, with the two Unicode folds that reach ASCII letters, so
+  `sessionid`, `SESSIONID` and `ſessionId` are all `sessionId`, while a
+  member's *value* is never folded and `"IDLE"` stays an invalid status. The
+  gate had matched names exactly, so a spelling Go decodes killed the session
+  here as an unknown field. When several spellings of one field arrive, the
+  last one that is not `null` decides, because Go assigns them in order and a
+  `null` assigns nothing; the reducer reads that value under the canonical name.
 - A member outside the pinned struct is `json: unknown field "extra"`, since
   `DecodeStrict` sets `DisallowUnknownFields`.
 - A member whose JSON kind its Go field cannot take is
   `json: cannot unmarshal number into Go struct field
   SessionEventNotification.sessionId of type string` — the kind, the struct,
-  the wire name and the Go type, where the port had been falling through to the
+  the member as it was spelled on the wire rather than as the tag spells it,
+  and the Go type, where the port had been falling through to the
   rule text (`session.event sessionId is required`) because its accessors read a
   mistyped member as empty. `event` takes an object and `lastAssistantMessage`
   an array, with `native.Event` and `[]native.ContentBlock` as their types.
@@ -684,7 +693,8 @@ absent members:
   arrived for the same reason.
 
 What the gate still does not reach is the inside of `event` and of
-`lastAssistantMessage`. `Event.Validate` decides the event vocabulary and each
+`lastAssistantMessage`, whose members the reducer still reads by their exact
+names. `Event.Validate` decides the event vocabulary and each
 kind's shape, and `validBlocksRaw` the content blocks; both are deferred below
 and with #143. Two consequences follow, and both are divergences rather than
 coverage:

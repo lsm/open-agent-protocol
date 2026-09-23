@@ -1,5 +1,6 @@
 const std = @import("std");
 const goquote = @import("goquote");
+const gojson = @import("gojson");
 
 pub const capability_revision = "deepseek-harness-47f9438-oap-v1";
 pub const endpoint_id = "deepseek.harness";
@@ -730,7 +731,7 @@ fn paramShape(method: []const u8) ?ParamShape {
 
 fn paramMember(shape: ParamShape, name: []const u8) ?ParamMember {
     for (shape.members) |member| {
-        if (std.mem.eql(u8, member.name, name)) return member;
+        if (gojson.foldEql(member.name, name)) return member;
     }
     return null;
 }
@@ -768,7 +769,6 @@ const Refusal = union(enum) {
     member: []const u8,
     mistyped: struct { go_struct: []const u8, name: []const u8, value: []const u8, go_type: []const u8 },
     whole: struct { go_struct: []const u8, value: []const u8 },
-    unknown_method,
 };
 
 fn paramsRefusal(shape: ParamShape, maybe_params: ?std.json.Value) ?Refusal {
@@ -778,41 +778,58 @@ fn paramsRefusal(shape: ParamShape, maybe_params: ?std.json.Value) ?Refusal {
     while (names.next()) |entry| {
         const member = paramMember(shape, entry.key_ptr.*) orelse return .{ .member = entry.key_ptr.* };
         if (!decodes(member.kind, entry.value_ptr.*)) {
-            return .{ .mistyped = .{ .go_struct = shape.go_struct, .name = member.name, .value = goKind(entry.value_ptr.*), .go_type = goType(member.kind) } };
+            return .{ .mistyped = .{ .go_struct = shape.go_struct, .name = entry.key_ptr.*, .value = goKind(entry.value_ptr.*), .go_type = goType(member.kind) } };
         }
     }
     return null;
 }
 
-fn notificationRefusal(method: []const u8, maybe_params: ?std.json.Value) ?Refusal {
-    const shape = paramShape(method) orelse return .unknown_method;
-    if (paramsRefusal(shape, maybe_params)) |refusal| return refusal;
-    const params = maybe_params.?;
+fn canonicalParams(reducer: *Reducer, shape: ParamShape, params: std.json.Value) !std.json.Value {
+    const canonical = try reducer.object();
+    for (shape.members) |member| {
+        var found: ?std.json.Value = null;
+        var entries = params.object.iterator();
+        while (entries.next()) |entry| {
+            if (!gojson.foldEql(entry.key_ptr.*, member.name)) continue;
+            if (entry.value_ptr.* == .null and found != null) continue;
+            found = entry.value_ptr.*;
+        }
+        if (found) |value| try canonical.put(reducer.arena, member.name, value);
+    }
+    return .{ .object = canonical.* };
+}
+
+fn ruleRefusal(method: []const u8, params: std.json.Value) ?[]const u8 {
     if (std.mem.eql(u8, method, "session.event")) {
-        if (!carriesText(params, "sessionId")) return .{ .said = "session.event sessionId is required" };
-        const event = memberOf(params, "event") orelse return .{ .said = "invalid event envelope" };
-        if (event == .null) return .{ .said = "invalid event envelope" };
+        if (!carriesText(params, "sessionId")) return "session.event sessionId is required";
+        const event = memberOf(params, "event") orelse return "invalid event envelope";
+        if (event == .null) return "invalid event envelope";
         return null;
     }
     if (std.mem.eql(u8, method, "session.status")) {
-        if (!carriesText(params, "sessionId") or !oneOf(&.{ "idle", "running" }, textOf(params, "status"))) return .{ .said = "invalid session.status" };
+        if (!carriesText(params, "sessionId") or !oneOf(&.{ "idle", "running" }, textOf(params, "status"))) return "invalid session.status";
         return null;
     }
     if (std.mem.eql(u8, method, "subagent.started")) {
-        if (!carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) return .{ .said = "invalid subagent.started" };
+        if (!carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) return "invalid subagent.started";
         return null;
     }
     if (!carriesText(params, "provider") or !carriesText(params, "agentId") or !carriesText(params, "parentSessionId") or !carriesText(params, "childSessionId")) {
-        return .{ .said = "invalid subagent.finished identity" };
+        return "invalid subagent.finished identity";
     }
-    if (!oneOf(&.{ "ok", "error" }, textOf(params, "status"))) return .{ .said = "invalid subagent status" };
-    if (!oneOf(&.{ "completed", "aborted", "error", "max-tokens", "refusal" }, textOf(params, "stopReason"))) return .{ .said = "invalid subagent stopReason" };
+    if (!oneOf(&.{ "ok", "error" }, textOf(params, "status"))) return "invalid subagent status";
+    if (!oneOf(&.{ "completed", "aborted", "error", "max-tokens", "refusal" }, textOf(params, "stopReason"))) return "invalid subagent stopReason";
     return null;
 }
 
 pub fn observeNotification(reducer: *Reducer, method: []const u8, maybe_params: ?std.json.Value) !void {
     if (reducer.closed) return Error.SessionClosed;
-    if (notificationRefusal(method, maybe_params)) |refusal| {
+    const shape = paramShape(method) orelse {
+        const quoted = try std.fmt.allocPrint(reducer.arena, "unknown notification {s}", .{goquote.quote(reducer.arena, method)});
+        try invalidNotification(reducer, quoted);
+        return;
+    };
+    if (paramsRefusal(shape, maybe_params)) |refusal| {
         switch (refusal) {
             .said => |what| try invalidNotification(reducer, what),
             .member => |name| {
@@ -827,14 +844,14 @@ pub fn observeNotification(reducer: *Reducer, method: []const u8, maybe_params: 
                 const said = try std.fmt.allocPrint(reducer.arena, "json: cannot unmarshal {s} into Go value of type native.{s}", .{ found.value, found.go_struct });
                 try invalidNotification(reducer, said);
             },
-            .unknown_method => {
-                const quoted = try std.fmt.allocPrint(reducer.arena, "unknown notification {s}", .{goquote.quote(reducer.arena, method)});
-                try invalidNotification(reducer, quoted);
-            },
         }
         return;
     }
-    const params = maybe_params.?;
+    const params = try canonicalParams(reducer, shape, maybe_params.?);
+    if (ruleRefusal(method, params)) |what| {
+        try invalidNotification(reducer, what);
+        return;
+    }
     if (!reducer.reserved or reducer.terminal) {
         const own_status = std.mem.eql(u8, method, "session.status") and
             std.mem.eql(u8, textOf(params, "sessionId"), reducer.session_id);
@@ -1693,6 +1710,31 @@ test "the notification params the oracle refuses are refused here, with its text
             .said = "json: cannot unmarshal number into Go struct field SubagentStartedNotification.parentSessionId of type string",
         },
         .{
+            .method = "session.status",
+            .params = "{\"sessionId\":\"session\",\"K\":1}",
+            .said = "json: unknown field \"K\"",
+        },
+        .{
+            .method = "session.status",
+            .params = "{\"sessionId\":\"session\",\"sessionid\":\"\",\"status\":\"idle\"}",
+            .said = "invalid session.status",
+        },
+        .{
+            .method = "session.status",
+            .params = "{\"sessionId\":\"session\",\"status\":\"IDLE\"}",
+            .said = "invalid session.status",
+        },
+        .{
+            .method = "session.status",
+            .params = "{\"sessionid\":5,\"status\":\"idle\"}",
+            .said = "json: cannot unmarshal number into Go struct field SessionStatusNotification.sessionid of type string",
+        },
+        .{
+            .method = "session.event",
+            .params = "{\"SessionID\":\"session\",\"EVENT\":null}",
+            .said = "invalid event envelope",
+        },
+        .{
             .method = "subagent.finished",
             .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":\"x\"}",
             .said = "json: cannot unmarshal string into Go struct field SubagentFinishedNotification.lastAssistantMessage of type []native.ContentBlock",
@@ -2125,4 +2167,28 @@ test "an event that is null or not an object ends the session before admission a
         try std.testing.expect(reducer.unusable);
         try std.testing.expectEqual(@as(usize, 0), reducer.emitted.items.len);
     }
+}
+
+test "a params member is matched the way encoding/json matches a tag, and the last spelling that is not null decides" {
+    const admitted = [_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = "session.status", .params = "{\"sessionid\":\"session\",\"status\":\"idle\"}" },
+        .{ .method = "session.status", .params = "{\"SESSIONID\":\"session\",\"STATUS\":\"idle\"}" },
+        .{ .method = "session.status", .params = "{\"\u{17f}essionId\":\"session\",\"status\":\"idle\"}" },
+        .{ .method = "session.status", .params = "{\"sessionid\":\"\",\"sessionId\":\"session\",\"status\":\"idle\"}" },
+        .{ .method = "session.status", .params = "{\"sessionId\":\"session\",\"sessionid\":null,\"status\":\"idle\"}" },
+        .{ .method = "subagent.started", .params = "{\"parentsessionid\":\"session\",\"CHILDSESSIONID\":\"c-9\"}" },
+    };
+    for (admitted) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var reducer = try admittedRun(arena.allocator());
+        try notify(&reducer, arena.allocator(), case.method, case.params);
+        try std.testing.expect(lastFailure(&reducer) == null);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var reducer = try admittedRun(arena.allocator());
+    try notify(&reducer, arena.allocator(), "session.status", "{\"SessionId\":\"elsewhere\",\"status\":\"idle\"}");
+    try std.testing.expectEqualStrings("deepseek_session_mismatch", lastFailure(&reducer) orelse return error.NoRefusal);
 }
