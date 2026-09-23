@@ -7,6 +7,10 @@ interrupt probes; findings recorded in "Live-binary verification"). This is an
 implementation input, not an interoperability claim about other Claude Code
 surfaces.
 
+The pin has since moved to 2.1.280: [the 2.1.280 ledger](claude-code-agent-sdk-2.1.280-mapping.md)
+restates what that move changed or settled, including the tool-flag reading
+this ledger left open, and everything below it does not restate still holds.
+
 ## Provenance
 
 Three pinned surfaces are mapped together because they are one product

@@ -2,8 +2,11 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,21 +25,22 @@ const (
 
 func verifiedClaudeCLI(t *testing.T) string {
 	t.Helper()
-	binary := adaptertest.VerifiedBinary(t, "OAP_CLAUDE_BIN", "OAP_CLAUDE_SHA256", "the pinned claude binary (2.1.263)")
+	binary := adaptertest.VerifiedBinary(t, "OAP_CLAUDE_BIN", "OAP_CLAUDE_SHA256", "the pinned claude binary (2.1.280)")
 	return binary
 }
 
-func newPinnedClaude(t *testing.T, environment []string, workDir string) *Adapter {
+func newPinnedClaude(t *testing.T, environment []string, workDir string, tools ToolPosture, args ...string) *Adapter {
 	t.Helper()
 	if err := os.MkdirAll(workDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	implementation, err := New(Config{
 		Executable:       verifiedClaudeCLI(t),
+		Args:             args,
 		Environment:      environment,
 		WorkingDirectory: workDir,
 		Model:            claudeLoopbackModel,
-		Tools:            UnrestrictedTools(),
+		Tools:            tools,
 		ExitTimeout:      15 * time.Second,
 	})
 	if err != nil {
@@ -47,10 +51,10 @@ func newPinnedClaude(t *testing.T, environment []string, workDir string) *Adapte
 
 func TestClaudeProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_CLAUDE_SMOKE") != "1" {
-		t.Skip("set OAP_CLAUDE_SMOKE=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.263 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_SMOKE=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	root := t.TempDir()
-	implementation := newPinnedClaude(t, claudeEnvironment(t, root, ""), filepath.Join(root, "work"))
+	implementation := newPinnedClaude(t, claudeEnvironment(t, root, ""), filepath.Join(root, "work"), UnrestrictedTools())
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	session, err := implementation.Open(ctx, base.OpenRequest{
@@ -85,12 +89,12 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 		t.Skip("skipping opt-in Claude Code process integration in short mode")
 	}
 	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
-		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.263 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	mock := providertest.New(t, providertest.Config{AnthropicKey: claudeMockSecret})
 	mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
 	root := t.TempDir()
-	implementation := newPinnedClaude(t, claudeEnvironment(t, root, mock.AnthropicBaseURL()), filepath.Join(root, "work"))
+	implementation := newPinnedClaude(t, claudeEnvironment(t, root, mock.AnthropicBaseURL()), filepath.Join(root, "work"), UnrestrictedTools())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -173,6 +177,151 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 	}
 	if err := session.Close(ctx); err != nil {
 		t.Fatalf("close claude integration session: %v", err)
+	}
+	closed = true
+}
+
+func TestClaudeProcessReadOnlyReviewCompletesWithoutAGate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Claude Code process integration in short mode")
+	}
+	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	root := t.TempDir()
+	work := filepath.Join(root, "work")
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const reviewed = "a line the review has to read"
+	if err := os.WriteFile(filepath.Join(work, "CHANGES.md"), []byte(reviewed+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	written := filepath.Join(work, "written-by-an-unlisted-tool")
+	readArguments, err := json.Marshal(map[string]string{"file_path": filepath.Join(work, "CHANGES.md")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bashArguments, err := json.Marshal(map[string]string{"command": "touch " + written, "description": "write a file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mock := providertest.New(t, providertest.Config{AnthropicKey: claudeMockSecret})
+	mock.EnqueueToolCall(providertest.AnthropicMessages, providertest.ToolCall{ID: "toolu_review_read", Name: "Read", Arguments: string(readArguments)})
+	mock.EnqueueToolCall(providertest.AnthropicMessages, providertest.ToolCall{ID: "toolu_review_bash", Name: "Bash", Arguments: string(bashArguments)})
+	mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
+	const systemPrompt = "You review changes by reading files and never modify them."
+	implementation := newPinnedClaude(t, claudeEnvironment(t, root, mock.AnthropicBaseURL()), work,
+		AllowTools("Read", "Grep", "Glob"), "--append-system-prompt", systemPrompt, "--no-session-persistence")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	session, err := implementation.Open(ctx, base.OpenRequest{
+		SessionID:   "claude-review-session",
+		Participant: protocol.Participant{ID: "integration-user"},
+	})
+	if err != nil {
+		t.Fatalf("open pinned CLI (spawn + initialize exchange): %v", err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = session.Close(context.Background())
+		}
+	}()
+	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "claude-review-session", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Review CHANGES.md.")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []protocol.Envelope
+	for settled := false; !settled; {
+		event := adaptertest.Next(t, stream, 60*time.Second)
+		if event.Type == protocol.TypeUserInputRequested {
+			t.Fatalf("a permission gate opened on an allowlisted review: %s", event.Payload)
+		}
+		events = append(events, event)
+		settled = event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed || event.Type == protocol.TypeRunCancelled
+	}
+	if trailing := adaptertest.Drain(t, stream, 10*time.Second); len(trailing) != 0 {
+		t.Fatalf("events after the terminal: %v", trailing)
+	}
+	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
+
+	var read, bash *protocol.ActionCallPayload
+	for _, event := range events {
+		switch event.Type {
+		case protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed:
+			var payload protocol.ActionCallPayload
+			if err := event.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case payload.Name == "Read" && event.Type == protocol.TypeActionCallCompleted:
+				read = &payload
+			case payload.Name == "Bash" && event.Type == protocol.TypeActionCallFailed:
+				bash = &payload
+			default:
+				t.Fatalf("unexpected %s for %s", event.Type, payload.Name)
+			}
+		}
+	}
+	if read == nil || !strings.Contains(string(read.Result), reviewed) {
+		t.Fatalf("the allowlisted Read did not complete with the file's content: %+v", read)
+	}
+	if bash == nil || bash.Error == nil {
+		t.Fatalf("the unlisted Bash was not refused: %+v", bash)
+	}
+	if _, err := os.Stat(written); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the unlisted Bash ran: stat %s: %v", written, err)
+	}
+
+	terminal := events[len(events)-1]
+	if terminal.Type != protocol.TypeRunCompleted {
+		t.Fatalf("terminal=%s", terminal.Type)
+	}
+	var completed protocol.RunCompletedPayload
+	if err := terminal.DecodePayload(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if text, ok := completed.FinalResponse.Content.Text(); !ok || !strings.Contains(text, providertest.FixtureText) {
+		t.Fatalf("final response=%s", completed.FinalResponse.Content)
+	}
+	if completed.Usage == nil || completed.Usage.InputTokens == 0 || completed.Usage.OutputTokens == 0 {
+		t.Fatalf("run.completed carries no usage: %+v", completed.Usage)
+	}
+
+	requests := mock.RequestsFor(providertest.AnthropicMessages)
+	if len(requests) != 3 {
+		t.Fatalf("loopback provider saw %d messages requests, want the Read turn, the Bash turn and the answer", len(requests))
+	}
+	for _, request := range requests {
+		var body struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(request.Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		var offered []string
+		for _, tool := range body.Tools {
+			offered = append(offered, tool.Name)
+		}
+		slices.Sort(offered)
+		if !slices.Equal(offered, []string{"Glob", "Grep", "Read"}) {
+			t.Fatalf("the provider was offered %v, want only the allowlist", offered)
+		}
+		if !strings.Contains(string(request.Body), systemPrompt) {
+			t.Fatal("the appended system prompt did not reach the provider")
+		}
+	}
+
+	if err := session.Close(ctx); err != nil {
+		t.Fatalf("close claude review session: %v", err)
 	}
 	closed = true
 }

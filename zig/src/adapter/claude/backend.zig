@@ -48,11 +48,18 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
     }
     switch (posture) {
         .unrestricted => {},
-        .allowed => |names| {
-            if (names.len == 0) return Error.ToolAllowlistEmpty;
-            for (names) |name| if (name.len == 0) return Error.ToolNameEmpty;
+        .allowed => |rules| {
+            if (rules.len == 0) return Error.ToolAllowlistEmpty;
+            var surface = std.ArrayList([]const u8).empty;
+            for (rules) |rule| {
+                const tool = toolOf(rule);
+                if (tool.len == 0) return Error.ToolNameEmpty;
+                if (!containsTool(surface.items, tool)) try surface.append(arena, tool);
+            }
+            try argv.append(arena, "--tools");
+            try argv.append(arena, try std.mem.join(arena, ",", surface.items));
             try argv.append(arena, "--allowedTools");
-            try argv.appendSlice(arena, names);
+            try argv.appendSlice(arena, rules);
         },
     }
     try argv.appendSlice(arena, config.args);
@@ -65,6 +72,16 @@ pub fn spawnFor(arena: std.mem.Allocator, config: Config) !process.Spawn {
         .frame_limit = config.frame_limit,
         .exit_grace_ns = config.exit_grace_ns,
     };
+}
+
+fn toolOf(rule: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, rule, '(') orelse rule.len;
+    return std.mem.trim(u8, rule[0..end], &std.ascii.whitespace);
+}
+
+fn containsTool(tools: []const []const u8, tool: []const u8) bool {
+    for (tools) |listed| if (std.mem.eql(u8, listed, tool)) return true;
+    return false;
 }
 
 pub fn validateTurnUUID(uuid: []const u8) !void {
@@ -228,16 +245,37 @@ test "a model and a tool allowlist follow the fixed argv, in that order" {
         .args = &.{"--extra"},
     });
     const tail = spawn.args[fixed_argv.len..];
-    const want = [_][]const u8{ "--model", "claude-opus-5", "--allowedTools", "Read", "Grep", "--extra" };
+    const want = [_][]const u8{ "--model", "claude-opus-5", "--tools", "Read,Grep", "--allowedTools", "Read", "Grep", "--extra" };
     try std.testing.expectEqual(want.len, tail.len);
     for (want, tail) |expected, got| try std.testing.expectEqualStrings(expected, got);
+}
+
+test "a permission rule reaches --allowedTools whole and --tools as the tool it names, once" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const spawn = try spawnFor(arena.allocator(), .{
+        .executable = "/bin/claude",
+        .tools = .{ .allowed = &.{ "Bash(git diff:*)", "Read", "Bash(git log:*)" } },
+    });
+    const tail = spawn.args[fixed_argv.len..];
+    const want = [_][]const u8{ "--tools", "Bash,Read", "--allowedTools", "Bash(git diff:*)", "Read", "Bash(git log:*)" };
+    try std.testing.expectEqual(want.len, tail.len);
+    for (want, tail) |expected, got| try std.testing.expectEqualStrings(expected, got);
+
+    try std.testing.expectError(Error.ToolNameEmpty, spawnFor(arena.allocator(), .{
+        .executable = "/bin/claude",
+        .tools = .{ .allowed = &.{ "Read", "(git *)" } },
+    }));
 }
 
 test "an unrestricted posture passes no allowlist, and an empty allowlist is refused rather than meaning one" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const unrestricted = try spawnFor(arena.allocator(), .{ .executable = "/bin/claude", .tools = .unrestricted });
-    for (unrestricted.args) |arg| try std.testing.expect(!std.mem.eql(u8, arg, "--allowedTools"));
+    for (unrestricted.args) |arg| {
+        try std.testing.expect(!std.mem.eql(u8, arg, "--allowedTools"));
+        try std.testing.expect(!std.mem.eql(u8, arg, "--tools"));
+    }
 
     try std.testing.expectError(Error.ToolAllowlistEmpty, spawnFor(arena.allocator(), .{
         .executable = "/bin/claude",

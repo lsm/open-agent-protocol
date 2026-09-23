@@ -1,7 +1,7 @@
 const std = @import("std");
 const rpc = @import("rpc");
 
-pub const capability_revision = "claude-code-2.1.263-oap-v3";
+pub const capability_revision = "claude-code-2.1.280-oap-v1";
 pub const cost_extension = "com.anthropic.claude-code.cost";
 const protocol_name = "open-agent-protocol";
 pub const protocol_version = "0.1";

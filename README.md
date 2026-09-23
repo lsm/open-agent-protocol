@@ -614,7 +614,7 @@ Research:
 - [Pinned Pi coding-agent mapping](research/pi-v0.85.1-mapping.md)
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.8.31-mapping.md)
-- [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
+- [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.280-mapping.md), over the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
 - [Protocol feedback from eight adapter tranches](research/protocol-feedback-2026-09.md)
 
@@ -709,11 +709,14 @@ stdin EOF, matching the pinned gateway, which has no shutdown RPC. Set
 artifact provenance is required.
 
 Claude Code real-process checks follow the same opt-in gate. Provide an
-absolute path to the pinned claude 2.1.263 binary in `OAP_CLAUDE_BIN`, then
+absolute path to the pinned claude 2.1.280 binary in `OAP_CLAUDE_BIN`, then
 set `OAP_CLAUDE_SMOKE=1` for the credential-free spawn/initialize/EOF-teardown
-check or `OAP_CLAUDE_INTEGRATION=1` for the loopback-provider path (streaming
+check or `OAP_CLAUDE_INTEGRATION=1` for the loopback-provider paths (streaming
 Anthropic Messages against an in-process mock, test-owned key only;
-structural request assertions only, per the mapping pin). The gates never
+structural request assertions only, per the mapping pin). The integration
+gate also drives a read-only review posture, `AllowTools("Read", "Grep",
+"Glob")` with an appended system prompt, and fails if any permission gate
+opens. The gates never
 download anything and pass no ambient credentials; readiness is the
 initialize control exchange, and teardown evidence is stdin EOF. Set
 `OAP_CLAUDE_SHA256` to the expected 64-character binary digest when exact

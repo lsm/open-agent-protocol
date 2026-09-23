@@ -1489,6 +1489,9 @@ func TestToolPostureMustBeStated(t *testing.T) {
 	if _, err := New(Config{Executable: "/bin/claude", Tools: AllowTools("Read", "")}); err == nil {
 		t.Fatal("an allowlist naming an empty tool was accepted")
 	}
+	if _, err := New(Config{Executable: "/bin/claude", Tools: AllowTools("Read", "(git *)")}); err == nil {
+		t.Fatal("an allowlist rule naming no tool was accepted")
+	}
 }
 
 func TestToolPostureIsNotRequiredOfACallerSuppliedFactory(t *testing.T) {
@@ -1501,12 +1504,17 @@ func TestToolPostureIsNotRequiredOfACallerSuppliedFactory(t *testing.T) {
 func TestToolPostureReachesTheSpawn(t *testing.T) {
 	restricted := spawnArgv(t, Config{Tools: AllowTools("Read", "Grep", "Glob")})
 	joined := strings.Join(restricted, " ")
-	if !strings.Contains(joined, "--allowedTools Read Grep Glob") {
-		t.Fatalf("the allowlist did not reach the spawn: %v", restricted)
+	if !strings.Contains(joined, "--tools Read,Grep,Glob --allowedTools Read Grep Glob") {
+		t.Fatalf("the allowlist did not reach the spawn as both the surface and the pre-approval: %v", restricted)
+	}
+
+	rules := spawnArgv(t, Config{Tools: AllowTools("Bash(git diff:*)", "Read", "Bash(git log:*)")})
+	if !strings.Contains(strings.Join(rules, " "), "--tools Bash,Read --allowedTools Bash(git diff:*) Read Bash(git log:*)") {
+		t.Fatalf("permission rules must reach --allowedTools whole and --tools as the tool each names, once: %v", rules)
 	}
 
 	unrestricted := spawnArgv(t, Config{Tools: UnrestrictedTools()})
-	if strings.Contains(strings.Join(unrestricted, " "), "--allowedTools") {
+	if slices.Contains(unrestricted, "--allowedTools") || slices.Contains(unrestricted, "--tools") {
 		t.Fatalf("an unrestricted posture still restricted the spawn: %v", unrestricted)
 	}
 
