@@ -2072,6 +2072,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_bridge", .module = protocol_oap_bridge_mod },
             .{ .name = "oap_auth_adapter", .module = protocol_oap_auth_adapter_mod },
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
+            .{ .name = "oap_provider_envelope", .module = protocol_oap_provider_envelope_mod },
             .{ .name = "oap_provider_server", .module = protocol_oap_provider_server_mod },
             .{ .name = "oap_provider_catalog", .module = protocol_oap_provider_catalog_mod },
             .{ .name = "agent_oap_provider_bridge", .module = agent_oap_provider_bridge_mod },

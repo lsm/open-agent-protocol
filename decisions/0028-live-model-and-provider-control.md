@@ -130,5 +130,6 @@ implementation to stop using a vendor SDK internally.
 
 The provider profile's remote [HTTP binding](../drafts/provider-http.md) has
 an `oapx` client implementation for a single operator-configured service at
-startup. This decision defines live attachment identity and session behavior;
-the HTTP server role and live attachment are not yet implemented.
+startup and a loopback-only provider server role. This decision defines live
+attachment identity and session behavior; live attachment is not yet
+implemented.

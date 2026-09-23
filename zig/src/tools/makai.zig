@@ -34,6 +34,7 @@ const pre_transform = @import("pre_transform");
 const semantic = @import("semantic");
 const provider_semantic = @import("provider_semantic");
 const oap_provider_types = @import("oap_provider_types");
+const oap_provider_envelope = @import("oap_provider_envelope");
 const oap_provider_server = @import("oap_provider_server");
 const oap_provider_catalog = @import("oap_provider_catalog");
 const oap_provider_runtime = @import("oap_provider_runtime");
@@ -2372,16 +2373,34 @@ fn runServeProvider(
     stderr: std.Io.File,
 ) !void {
     var answers_specimens = false;
-    for (args) |arg| {
+    var http_bind: ?[]const u8 = null;
+    var stdio_selected = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (std.mem.eql(u8, arg, "--specimens")) {
             answers_specimens = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--stdio")) continue;
+        if (std.mem.eql(u8, arg, "--stdio")) {
+            stdio_selected = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--http")) {
+            if (http_bind != null) return error.InvalidServeOption;
+            index += 1;
+            if (index >= args.len) return error.MissingHttpBind;
+            http_bind = args[index];
+            continue;
+        }
         var buf: [256]u8 = undefined;
-        const msg = try std.fmt.bufPrint(&buf, "serve provider takes only --stdio or --specimens: {s}\n\n", .{arg});
+        const msg = try std.fmt.bufPrint(&buf, "invalid serve provider option: {s}\n\n", .{arg});
         try compat.stdio.writeAll(stderr, msg);
         return error.InvalidServeOption;
+    }
+    if (http_bind) |bind| {
+        if (answers_specimens or stdio_selected) return error.InvalidServeOption;
+        return runOapProviderHttpMode(allocator, bind);
     }
     return runOapProviderMode(allocator, stdin, stdout, stderr, answers_specimens);
 }
@@ -2479,6 +2498,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
         \\  oapx serve provider [--stdio] [--specimens]
+        \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx validate <trace.json>...
         \\  oapx auth providers [--json]
@@ -2499,6 +2519,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
+        \\                   Use --http for a loopback-only HTTP/SSE endpoint.
         \\  serve agent,provider  Serve both OAP profiles over one stdio connection
         \\  validate         Run the semantic validator over one or more traces
         \\  auth providers   List oauth-capable providers
@@ -7781,6 +7802,437 @@ fn oapSpecimenRequestId(line: []const u8, allocator: std.mem.Allocator) !?[]cons
     const id = parsed.value.object.get("id") orelse return try allocator.dupe(u8, "");
     if (id != .string) return try allocator.dupe(u8, "");
     return try allocator.dupe(u8, id.string);
+}
+
+const HttpProviderFrame = struct {
+    line: []const u8,
+    terminal: bool,
+};
+
+const HTTP_PROVIDER_MAX_WORKERS: usize = 128;
+
+const HttpProviderExchange = struct {
+    request_id: []const u8,
+    inference_id: ?[]u8 = null,
+    frames: std.ArrayList(HttpProviderFrame) = .empty,
+
+    fn deinit(self: *HttpProviderExchange, allocator: std.mem.Allocator) void {
+        if (self.inference_id) |id| allocator.free(id);
+        for (self.frames.items) |frame| allocator.free(frame.line);
+        self.frames.deinit(allocator);
+    }
+};
+
+const HttpProviderRuntime = struct {
+    allocator: std.mem.Allocator,
+    mutex: std.Io.Mutex = .init,
+    registry: api_registry.ApiRegistry,
+    server: oap_provider_server.Server,
+    running: std.ArrayList(RunningOapInference) = .empty,
+    exchanges: std.ArrayList(*HttpProviderExchange) = .empty,
+    idle_ttl_ms: i64,
+    workers: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    stopping: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    fn init(allocator: std.mem.Allocator) !HttpProviderRuntime {
+        var runtime = HttpProviderRuntime{
+            .allocator = allocator,
+            .registry = api_registry.ApiRegistry.init(allocator),
+            .server = oap_provider_server.Server.init(allocator, .{
+                .capability_revision = VERSION,
+                .grant_channel = .unsupported,
+                .accepts_inference = true,
+                .resolves_own_credentials = true,
+                .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+            }),
+            .idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator),
+        };
+        errdefer runtime.deinit();
+        try register_builtins.registerBuiltInApiProviders(&runtime.registry);
+        try populateOapProviderCatalog(allocator, &runtime.server);
+        for (runtime.server.providers.items) |*provider| {
+            const empty = try allocator.alloc(oap_provider_types.GrantKind, 0);
+            provider.credential_grant = .none;
+            allocator.free(provider.grant_kinds);
+            provider.grant_kinds = empty;
+        }
+        return runtime;
+    }
+
+    fn deinit(self: *HttpProviderRuntime) void {
+        for (self.running.items) |*entry| entry.deinit(self.allocator);
+        self.running.deinit(self.allocator);
+        self.exchanges.deinit(self.allocator);
+        self.server.deinit();
+        self.registry.deinit();
+    }
+
+    fn dispatch(self: *HttpProviderRuntime, current: ?*HttpProviderExchange) !void {
+        while (self.server.popOutbound()) |line| {
+            var delivered = false;
+            defer if (!delivered) self.allocator.free(line);
+            var env = try oap_provider_envelope.deserializeEnvelope(line, self.allocator);
+            defer env.deinit(self.allocator);
+            var target: ?*HttpProviderExchange = null;
+            if (env.in_reply_to) |request_id| {
+                if (current) |exchange| {
+                    if (std.mem.eql(u8, exchange.request_id, request_id)) target = exchange;
+                }
+            }
+            if (target == null) if (env.in_reply_to) |request_id| {
+                for (self.exchanges.items) |exchange| {
+                    if (std.mem.eql(u8, exchange.request_id, request_id)) {
+                        target = exchange;
+                        break;
+                    }
+                }
+            };
+            if (target == null) if (env.inference_id) |inference_id| {
+                for (self.exchanges.items) |exchange| {
+                    if (exchange.inference_id) |owned_id| {
+                        if (std.mem.eql(u8, owned_id, inference_id)) {
+                            target = exchange;
+                            break;
+                        }
+                    }
+                }
+            };
+            const exchange = target orelse continue;
+            if (env.payload == .inference_create_response and env.payload.inference_create_response.accepted) {
+                if (exchange.inference_id == null) exchange.inference_id = try self.allocator.dupe(u8, env.inference_id orelse return error.MissingInferenceId);
+            }
+            const terminal = switch (env.payload) {
+                .inference_completed, .inference_failed, .protocol_error => true,
+                .inference_create_response => |answer| !answer.accepted,
+                else => false,
+            };
+            try exchange.frames.append(self.allocator, .{ .line = line, .terminal = terminal });
+            delivered = true;
+        }
+    }
+};
+
+fn httpProviderIo() std.Io {
+    return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
+}
+
+fn readHttpProviderBody(allocator: std.mem.Allocator, stream: *compat.net.Stream) ![]u8 {
+    var header: std.ArrayList(u8) = .empty;
+    defer header.deinit(allocator);
+    var byte: [1]u8 = undefined;
+    while (header.items.len < 16 * 1024) {
+        const n = try stream.read(&byte);
+        if (n == 0) return error.IncompleteHttpRequest;
+        try header.append(allocator, byte[0]);
+        if (std.mem.endsWith(u8, header.items, "\r\n\r\n")) break;
+    }
+    if (!std.mem.endsWith(u8, header.items, "\r\n\r\n")) return error.HttpHeadersTooLarge;
+    var lines = std.mem.splitSequence(u8, header.items, "\r\n");
+    const request_line = lines.next() orelse return error.InvalidHttpRequest;
+    if (!std.mem.startsWith(u8, request_line, "POST ")) return error.HttpMethodNotAllowed;
+    if (!std.mem.eql(u8, request_line, "POST /oap/v0.1/provider HTTP/1.1")) return error.HttpNotFound;
+    var content_length: ?usize = null;
+    var json_content_type = false;
+    while (lines.next()) |line| {
+        if (line.len == 0) break;
+        if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
+            if (content_length != null) return error.InvalidHttpRequest;
+            content_length = std.fmt.parseInt(usize, std.mem.trim(u8, line["content-length:".len..], " \t"), 10) catch return error.InvalidHttpRequest;
+        } else if (std.ascii.startsWithIgnoreCase(line, "content-type:")) {
+            const value = std.mem.trim(u8, line["content-type:".len..], " \t");
+            json_content_type = std.mem.eql(u8, value, "application/json") or std.mem.startsWith(u8, value, "application/json;");
+        } else if (std.ascii.startsWithIgnoreCase(line, "transfer-encoding:")) {
+            return error.UnsupportedHttpTransferEncoding;
+        }
+    }
+    if (!json_content_type) return error.UnsupportedHttpMediaType;
+    const length = content_length orelse return error.InvalidHttpRequest;
+    if (length > 1024 * 1024) return error.HttpBodyTooLarge;
+    const body = try allocator.alloc(u8, length);
+    errdefer allocator.free(body);
+    var filled: usize = 0;
+    while (filled < body.len) {
+        const n = try stream.read(body[filled..]);
+        if (n == 0) return error.IncompleteHttpRequest;
+        filled += n;
+    }
+    return body;
+}
+
+fn writeHttpProviderStatus(stream: *compat.net.Stream, status: []const u8) !void {
+    var buffer: [160]u8 = undefined;
+    const header = try std.fmt.bufPrint(&buffer, "HTTP/1.1 {s}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", .{status});
+    try stream.writeAll(header);
+}
+
+fn writeHttpProviderJson(stream: *compat.net.Stream, body: []const u8) !void {
+    var buffer: [160]u8 = undefined;
+    const header = try std.fmt.bufPrint(&buffer, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{body.len});
+    try stream.writeAll(header);
+    try stream.writeAll(body);
+}
+
+fn httpProviderRequestErrorStatus(err: anyerror) []const u8 {
+    return switch (err) {
+        error.HttpMethodNotAllowed => "405 Method Not Allowed",
+        error.HttpNotFound => "404 Not Found",
+        error.HttpHeadersTooLarge, error.HttpBodyTooLarge => "413 Content Too Large",
+        error.UnsupportedHttpMediaType => "415 Unsupported Media Type",
+        else => "400 Bad Request",
+    };
+}
+
+fn unregisterHttpProviderExchange(runtime: *HttpProviderRuntime, exchange: *HttpProviderExchange) void {
+    runtime.mutex.lockUncancelable(httpProviderIo());
+    defer runtime.mutex.unlock(httpProviderIo());
+    for (runtime.exchanges.items, 0..) |candidate, index| {
+        if (candidate == exchange) {
+            _ = runtime.exchanges.orderedRemove(index);
+            return;
+        }
+    }
+}
+
+fn popHttpProviderFrame(runtime: *HttpProviderRuntime, exchange: *HttpProviderExchange) !?HttpProviderFrame {
+    runtime.mutex.lockUncancelable(httpProviderIo());
+    defer runtime.mutex.unlock(httpProviderIo());
+    try runtime.dispatch(null);
+    if (exchange.frames.items.len == 0) return null;
+    return exchange.frames.orderedRemove(0);
+}
+
+fn pumpHttpProvider(runtime: *HttpProviderRuntime) void {
+    while (!runtime.stopping.load(.acquire)) {
+        runtime.mutex.lockUncancelable(httpProviderIo());
+        _ = pumpOapInferences(runtime.allocator, &runtime.server, &runtime.running, runtime.idle_ttl_ms) catch {};
+        runtime.dispatch(null) catch {};
+        runtime.mutex.unlock(httpProviderIo());
+        compat.time.sleepMs(1);
+    }
+}
+
+fn cancelHttpProviderInference(runtime: *HttpProviderRuntime, inference_id: []const u8) void {
+    const cancel: oap_provider_types.Envelope = .{
+        .id = "http-abandon",
+        .inference_id = inference_id,
+        .payload = .{ .inference_cancel_request = .{ .reason = "HTTP stream closed" } },
+    };
+    const line = oap_provider_envelope.serializeEnvelope(cancel, runtime.allocator) catch return;
+    defer runtime.allocator.free(line);
+    runtime.mutex.lockUncancelable(httpProviderIo());
+    defer runtime.mutex.unlock(httpProviderIo());
+    runtime.server.handleLine(line) catch return;
+    runtime.dispatch(null) catch {};
+}
+
+fn httpProviderDecodeError(runtime: *HttpProviderRuntime, body: []const u8) ![]const u8 {
+    runtime.mutex.lockUncancelable(httpProviderIo());
+    defer runtime.mutex.unlock(httpProviderIo());
+    try runtime.dispatch(null);
+    try runtime.server.handleLine(body);
+    return runtime.server.popOutbound() orelse error.MissingHttpProviderResponse;
+}
+
+fn handleHttpProviderConnection(runtime: *HttpProviderRuntime, connection: compat.net.Connection) void {
+    defer _ = runtime.workers.fetchSub(1, .acq_rel);
+    var conn = connection;
+    defer conn.stream.close();
+    handleHttpProviderConnectionFallible(runtime, &conn.stream) catch {};
+}
+
+fn handleHttpProviderConnectionFallible(runtime: *HttpProviderRuntime, stream: *compat.net.Stream) !void {
+    const allocator = runtime.allocator;
+    const body = readHttpProviderBody(allocator, stream) catch |err| {
+        try writeHttpProviderStatus(stream, httpProviderRequestErrorStatus(err));
+        return;
+    };
+    defer allocator.free(body);
+    var request = oap_provider_envelope.deserializeEnvelope(body, allocator) catch {
+        var parsed_json = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+            try writeHttpProviderStatus(stream, "400 Bad Request");
+            return;
+        };
+        defer parsed_json.deinit();
+        if (parsed_json.value != .object) {
+            try writeHttpProviderStatus(stream, "400 Bad Request");
+            return;
+        }
+        const answer = try httpProviderDecodeError(runtime, body);
+        defer allocator.free(answer);
+        try writeHttpProviderJson(stream, answer);
+        return;
+    };
+    defer request.deinit(allocator);
+    const is_stream = request.payload == .inference_create_request;
+    var exchange = HttpProviderExchange{ .request_id = request.id };
+    defer exchange.deinit(allocator);
+    runtime.mutex.lockUncancelable(httpProviderIo());
+    runtime.exchanges.append(allocator, &exchange) catch |err| {
+        runtime.mutex.unlock(httpProviderIo());
+        return err;
+    };
+    runtime.server.handleLine(body) catch |err| {
+        runtime.mutex.unlock(httpProviderIo());
+        unregisterHttpProviderExchange(runtime, &exchange);
+        return err;
+    };
+    while (runtime.server.popPendingStart()) |inference_id| {
+        defer allocator.free(inference_id);
+        startOapInference(allocator, &runtime.registry, &runtime.server, &runtime.running, inference_id, &.{}, null) catch |err| {
+            runtime.mutex.unlock(httpProviderIo());
+            unregisterHttpProviderExchange(runtime, &exchange);
+            return err;
+        };
+    }
+    runtime.dispatch(&exchange) catch |err| {
+        runtime.mutex.unlock(httpProviderIo());
+        unregisterHttpProviderExchange(runtime, &exchange);
+        return err;
+    };
+    runtime.mutex.unlock(httpProviderIo());
+    defer unregisterHttpProviderExchange(runtime, &exchange);
+
+    if (!is_stream) {
+        const frame = (try popHttpProviderFrame(runtime, &exchange)) orelse {
+            try writeHttpProviderStatus(stream, "500 Internal Server Error");
+            return;
+        };
+        defer allocator.free(frame.line);
+        try writeHttpProviderJson(stream, frame.line);
+        return;
+    }
+
+    var settled = false;
+    defer if (!settled) {
+        if (exchange.inference_id) |inference_id| cancelHttpProviderInference(runtime, inference_id);
+    };
+    try stream.writeAll("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n");
+    var last_progress_ms = compat.time.nowMillis();
+    while (true) {
+        const frame = try popHttpProviderFrame(runtime, &exchange);
+        if (frame) |value| {
+            defer allocator.free(value.line);
+            try stream.writeAll("data: ");
+            try stream.writeAll(value.line);
+            try stream.writeAll("\n\n");
+            last_progress_ms = compat.time.nowMillis();
+            if (value.terminal) {
+                settled = true;
+                break;
+            }
+        } else {
+            if (runtime.idle_ttl_ms > 0 and compat.time.nowMillis() - last_progress_ms > runtime.idle_ttl_ms) return error.HttpProviderStreamTimedOut;
+            compat.time.sleepMs(1);
+        }
+    }
+}
+
+fn runOapProviderHttpMode(allocator: std.mem.Allocator, bind: []const u8) !void {
+    const separator = std.mem.lastIndexOfScalar(u8, bind, ':') orelse return error.InvalidHttpBind;
+    if (!std.mem.eql(u8, bind[0..separator], "127.0.0.1")) return error.HttpProviderMustBindLoopback;
+    const port = std.fmt.parseInt(u16, bind[separator + 1 ..], 10) catch return error.InvalidHttpBind;
+    if (port == 0) return error.InvalidHttpBind;
+    const address = try compat.net.resolveAddress(allocator, "127.0.0.1", port);
+    var listener = try compat.net.tcpListen(address, .{ .reuse_address = true });
+    defer compat.net.closeServer(&listener);
+    var runtime = try HttpProviderRuntime.init(allocator);
+    const pump_thread = std.Thread.spawn(.{}, pumpHttpProvider, .{&runtime}) catch |err| {
+        runtime.deinit();
+        return err;
+    };
+    defer {
+        while (runtime.workers.load(.acquire) > 0) compat.time.sleepMs(1);
+        runtime.stopping.store(true, .release);
+        pump_thread.join();
+        runtime.deinit();
+    }
+    while (true) {
+        const connection = try compat.net.accept(&listener);
+        const existing = runtime.workers.fetchAdd(1, .acq_rel);
+        if (existing >= HTTP_PROVIDER_MAX_WORKERS) {
+            _ = runtime.workers.fetchSub(1, .acq_rel);
+            var rejected = connection;
+            writeHttpProviderStatus(&rejected.stream, "503 Service Unavailable") catch {};
+            rejected.stream.close();
+            continue;
+        }
+        const thread = std.Thread.spawn(.{}, handleHttpProviderConnection, .{ &runtime, connection }) catch |err| {
+            _ = runtime.workers.fetchSub(1, .acq_rel);
+            var failed = connection;
+            failed.stream.close();
+            return err;
+        };
+        thread.detach();
+    }
+}
+
+test "HTTP provider listener requires a literal loopback bind" {
+    try std.testing.expectError(error.HttpProviderMustBindLoopback, runOapProviderHttpMode(std.testing.allocator, "0.0.0.0:8080"));
+    try std.testing.expectError(error.HttpProviderMustBindLoopback, runOapProviderHttpMode(std.testing.allocator, "provider.default.svc:8080"));
+    try std.testing.expectError(error.InvalidHttpBind, runOapProviderHttpMode(std.testing.allocator, "127.0.0.1:0"));
+}
+
+test "HTTP provider runtime advertises managed credentials and routes discovery" {
+    const allocator = std.testing.allocator;
+    var runtime = try HttpProviderRuntime.init(allocator);
+    defer runtime.deinit();
+    const request = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"provider.describe.request\",\"id\":\"http-test-describe\",\"payload\":{}}";
+    var exchange = HttpProviderExchange{ .request_id = "http-test-describe" };
+    defer exchange.deinit(allocator);
+    try runtime.exchanges.append(allocator, &exchange);
+    defer runtime.exchanges.clearRetainingCapacity();
+    try runtime.server.handleLine(request);
+    try runtime.dispatch(&exchange);
+    try std.testing.expectEqual(@as(usize, 1), exchange.frames.items.len);
+    var response = try oap_provider_envelope.deserializeEnvelope(exchange.frames.items[0].line, allocator);
+    defer response.deinit(allocator);
+    try std.testing.expectEqualStrings("http-test-describe", response.in_reply_to.?);
+    try std.testing.expect(response.payload == .provider_describe_response);
+    for (response.payload.provider_describe_response.providers) |provider| {
+        try std.testing.expectEqual(oap_provider_types.CredentialGrantChannel.none, provider.credential_grant);
+    }
+}
+
+test "HTTP provider routes same-id requests to their current exchange" {
+    const allocator = std.testing.allocator;
+    var runtime = try HttpProviderRuntime.init(allocator);
+    defer runtime.deinit();
+    var first = HttpProviderExchange{ .request_id = "reused" };
+    defer first.deinit(allocator);
+    var second = HttpProviderExchange{ .request_id = "reused" };
+    defer second.deinit(allocator);
+    try runtime.exchanges.append(allocator, &first);
+    try runtime.exchanges.append(allocator, &second);
+    defer runtime.exchanges.clearRetainingCapacity();
+    const request = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.create.request\",\"id\":\"reused\",\"payload\":{\"model_ref\":\"missing/other:test@m\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}}";
+    try runtime.server.handleLine(request);
+    try runtime.dispatch(&second);
+    try std.testing.expectEqual(@as(usize, 0), first.frames.items.len);
+    try std.testing.expectEqual(@as(usize, 1), second.frames.items.len);
+    try std.testing.expect(second.frames.items[0].terminal);
+}
+
+test "HTTP provider returns OAP errors for decode-failed envelopes" {
+    const allocator = std.testing.allocator;
+    var runtime = try HttpProviderRuntime.init(allocator);
+    defer runtime.deinit();
+    const requests = [_][]const u8{
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"provider.describe.request\",\"id\":\"wrong-profile\",\"payload\":{}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"unknown.request\",\"id\":\"unknown-type\",\"payload\":{}}",
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.create.request\",\"id\":\"missing-field\",\"payload\":{}}",
+    };
+    const ids = [_][]const u8{ "wrong-profile", "unknown-type", "missing-field" };
+    const codes = [_]oap_provider_types.ErrorCode{ .protocol_violation, .invalid_request, .invalid_request };
+    for (requests, ids, codes) |request, id, code| {
+        const answer = try httpProviderDecodeError(&runtime, request);
+        defer allocator.free(answer);
+        var parsed = try oap_provider_envelope.deserializeEnvelope(answer, allocator);
+        defer parsed.deinit(allocator);
+        try std.testing.expectEqualStrings(id, parsed.in_reply_to.?);
+        try std.testing.expect(parsed.payload == .protocol_error);
+        try std.testing.expectEqual(code, parsed.payload.protocol_error.err.code);
+        try std.testing.expect(parsed.payload.protocol_error.err.message.len > 0);
+    }
 }
 
 fn runOapProviderMode(
