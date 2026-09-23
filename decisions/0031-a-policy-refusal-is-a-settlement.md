@@ -72,9 +72,10 @@ the call's settlement:
 - A call to an excluded tool that settles as `failed` with `refused_by_policy`
   is valid. The control was applied.
 - A call to an excluded tool that settles any other way is `unapplied_control`,
-  reported at the settling envelope. That covers `completed`, and also a
-  `failed` with any other code: the tool ran, or was stopped for a reason that
-  is not the policy.
+  reported at the settling envelope. That covers `completed`, `cancelled`, and
+  a `failed` with any other code. The tool ran, or was stopped for a reason
+  that is not the policy. A call cancelled with its run was admitted, not
+  refused.
 - A call to an excluded tool still unsettled when its run reaches a terminal is
   `unapplied_control`, reported at the terminal.
 - A call to a permitted tool that settles with `refused_by_policy` is
@@ -89,16 +90,21 @@ tool error would hide a control that was really ignored.
 ### `emulated` means enforcement by refusal
 
 For `run.tool_selection`, `native` means the harness constrains the model
-before it acts, and `emulated` means the endpoint refuses excluded calls and
-settles them `refused_by_policy`. An endpoint that can do neither advertises
-`unavailable`. `memory`'s election is `native` under this reading, and nothing
-about it changes.
+before it acts. `emulated` means the endpoint enforces the filter itself, around
+a harness that does not. It either elects only permitted tools or refuses
+excluded calls and settles them `refused_by_policy`. An endpoint that can do
+none of these advertises `unavailable`.
+
+`memory` stays `emulated`, with no descriptor or revision change. It runs no
+model, and its election from the permitted set is the endpoint enforcing the
+filter, not a harness constraint.
 
 ## Consequences
 
 - **Validator.** The check leaves the `requested` branch and becomes a settler
-  that arbitrates at `action.call.failed` and `action.call.completed`, plus a
-  sweep at the run terminal for unsettled excluded calls.
+  that arbitrates at every call settlement, `action.call.completed`,
+  `action.call.failed` and `action.call.cancelled`, plus a sweep at the run
+  terminal for excluded calls still unsettled.
 - **Fixtures.** `semantic-invalid/controls-tool-choice-ignored.json` stays
   invalid, with its diagnostic moving to the settling envelope. It gains three
   siblings:
