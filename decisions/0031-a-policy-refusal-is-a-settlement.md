@@ -87,7 +87,7 @@ because the check runs before the settlement it would need to consult, and
 without a code "refused by policy" collapses into "failed at all". Then any
 tool error would hide a control that was really ignored.
 
-### `emulated` means enforcement by refusal
+### `emulated` means the endpoint enforces the filter
 
 For `run.tool_selection`, `native` means the harness constrains the model
 before it acts. `emulated` means the endpoint enforces the filter itself, around
