@@ -155,8 +155,7 @@ const Driver = struct {
                 return .handled;
             }
             const method = corpus.stringMember(item.raw.object, "method") orelse return .handled;
-            const params = item.raw.object.get("params") orelse return .handled;
-            try session.observeNotification(reducer, method, params);
+            try session.observeNotification(reducer, method, item.raw.object.get("params"));
             return .handled;
         }
         return .unhandled;

@@ -653,19 +653,77 @@ shape rules and their texts were taken by running `DecodeNotification` over
 each frame rather than by reading it, and the port asserts the oracle's message
 verbatim.
 
-Two classes needed naming rather than assuming. `DecodeStrict` sets
-`DisallowUnknownFields`, so a param object carrying any member outside its
-pinned struct kills the transport — `{"sessionId":"s","status":"idle","extra":1}`
-is refused, not mapped — and each of the four methods is now closed over its own
-member set, reporting Go's own `json: unknown field "extra"`. A `session.event`
-carrying no `event` member is likewise a codec refusal rather than an unknown
-event downstream, and now reports the oracle's `invalid event envelope`.
+The params gate is a port of what `DecodeStrict` does to the params object,
+not a list of rules read off it, because the oracle's refusals are a decode's
+refusals and come in a decode's order. Probed over mistyped, unknown, null and
+absent members:
 
-What the params gate still does not reach is the event payload's *contents*.
-`Event.Validate` decides the event vocabulary and its per-kind shape, which is
-the same body of rules `validBlocksRaw` needs and is deferred with it below. So
-a `session.event` whose `event` is present but malformed is refused here by the
-reducer, with the reducer's code, rather than by the codec with the oracle's.
+- A member is matched to its field the way `encoding/json` matches a tag:
+  case-insensitively, with the two Unicode folds that reach ASCII letters, so
+  `sessionid`, `SESSIONID` and `ſessionId` are all `sessionId`, while a
+  member's *value* is never folded and `"IDLE"` stays an invalid status. The
+  gate had matched names exactly, so a spelling Go decodes killed the session
+  here as an unknown field. When several spellings of one field arrive, the
+  last one that is not `null` decides, because Go assigns them in order and a
+  `null` assigns nothing; the reducer reads that value under the canonical name.
+- A member outside the pinned struct is `json: unknown field "extra"`, since
+  `DecodeStrict` sets `DisallowUnknownFields`.
+- A member whose JSON kind its Go field cannot take is
+  `json: cannot unmarshal number into Go struct field
+  SessionEventNotification.sessionId of type string` — the kind, the struct,
+  the member as it was spelled on the wire rather than as the tag spells it,
+  and the Go type, where the port had been falling through to the
+  rule text (`session.event sessionId is required`) because its accessors read a
+  mistyped member as empty. `event` takes an object and `lastAssistantMessage`
+  an array, with `native.Event` and `[]native.ContentBlock` as their types.
+- That spelling is a property of the Go release, not of the decoder's contract,
+  and it was measured rather than read from `decode.go`. Go 1.25's legacy
+  decoder names a folded member as its tag spells it (`sessionId`). The
+  implementation built on `encoding/json/v2`, which Go 1.27 compiles by
+  default and which is what CI pins, names it as the wire spelled it
+  (`sessionid`). Go 1.25 under `GOEXPERIMENT=jsonv2` does the same, with
+  different wording. The port matches the toolchain CI runs, and
+  `TestAMistypedMemberIsNamedAsTheWireSpelledIt` pins that text in the oracle,
+  so a toolchain that changes it fails on the Go side instead of leaving this
+  port's text silently stale. `go.mod`'s `go 1.26` floor would admit an oracle
+  whose text differs; 1.26 itself was not measured.
+- A JSON `null` is the no-op Go makes of it, so `{"sessionId":null,...}` reaches
+  the rules and draws `invalid session.status`, and `"event":null` draws
+  `invalid event envelope` — which the gate as first written let through to the
+  reducer, whose code is `deepseek_unknown_event`, because it tested for an
+  absent member and a JSON null is a present one.
+- Params that are an array, which the codec admits, are
+  `json: cannot unmarshal array into Go value of type
+  native.SessionStatusNotification`; params that are absent are `EOF`. No
+  other kind reaches the decode at all: `ParseMessage` refuses a `null`,
+  string, number or boolean `params` first, with `deepseek rpc: invalid
+  JSON-RPC message: params must be an object or array`, so that is the text the
+  reducer reports when it is handed one directly. The corpus driver never hands
+  it one, since every frame it replays passes through `rpc.Decoder` first. The
+  corpus harness used to skip a notification with no params; it now hands the
+  absence to the reducer. No pinned case carries one, so no expectation moved.
+- Only the first error is reported and it is the first in document order:
+  `{"sessionId":5,"extra":1}` is the unmarshal error and `{"extra":1,
+  "sessionId":5}` the unknown field, because `encoding/json` saves the first
+  error and keeps decoding. The gate walks the members in the order they
+  arrived for the same reason.
+
+What the gate still does not reach is the inside of `event` and of
+`lastAssistantMessage`, whose members the reducer still reads by their exact
+names. `Event.Validate` decides the event vocabulary and each
+kind's shape, and `validBlocksRaw` the content blocks; both are deferred below
+and with #143. Two consequences follow, and both are divergences rather than
+coverage:
+
+- An `event` object whose contents are malformed is refused by the reducer
+  with the reducer's code once a turn is open. Before admission the admission
+  scan skips an event it does not recognise, so the same frame draws no
+  refusal at all, where the oracle kills the transport and the submission with
+  it. A null or non-object `event` is not in this class: the gate now refuses
+  it before admission as after.
+- An error inside `event` competes for first place with an error in a later
+  params member. The oracle reports whichever comes first in the document; the
+  port, which does not decode inside `event`, reports the params member.
 
 Three of this port's own tests were sending `subagent.finished` frames without
 `provider`, `agentId` or `stopReason` — frames the oracle's codec refuses, so
