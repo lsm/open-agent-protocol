@@ -23,6 +23,7 @@ pub const Config = struct {
     working_directory: ?[]const u8 = null,
     model: []const u8 = "",
     tools: ?ToolPosture = null,
+    expand_prompts: bool = false,
     frame_limit: usize = process.default_frame_limit,
     exit_grace_ns: u64 = process.default_exit_grace_ns,
 };
@@ -122,12 +123,12 @@ fn goJSONString(arena: std.mem.Allocator, value: []const u8) ![]const u8 {
     return out.toOwnedSlice(arena);
 }
 
-pub fn userTurn(arena: std.mem.Allocator, uuid: []const u8, text: []const u8) ![]const u8 {
+pub fn userTurn(arena: std.mem.Allocator, uuid: []const u8, text: []const u8, composed: bool) ![]const u8 {
     try validateTurnUUID(uuid);
     const content = try goJSONString(arena, text);
     const turn = try goJSONString(arena, uuid);
     return std.mem.concat(arena, u8, &.{
-        "{\"message\":{\"content\":",
+        if (composed) "{\"client_composed\":true,\"message\":{\"content\":" else "{\"message\":{\"content\":",
         content,
         ",\"role\":\"user\"},\"origin\":{\"kind\":\"human\"},\"parent_tool_use_id\":null,\"session_id\":\"default\",\"type\":\"user\",\"uuid\":",
         turn,
@@ -141,13 +142,16 @@ pub const Backend = struct {
     reducer: session.Reducer,
     settled: bool = false,
     closed: bool = false,
+    expand_prompts: bool = false,
 
     pub fn open(
         arena: *std.heap.ArenaAllocator,
         config: Config,
         options: session.Options,
     ) !Backend {
-        return openWith(arena, try spawnFor(arena.allocator(), config), options);
+        var backend = try openWith(arena, try spawnFor(arena.allocator(), config), options);
+        backend.expand_prompts = config.expand_prompts;
+        return backend;
     }
 
     pub fn openWith(
@@ -163,7 +167,7 @@ pub const Backend = struct {
     }
 
     pub fn submit(self: *Backend, uuid: []const u8, text: []const u8, identity: session.Identity) !void {
-        const frame = try userTurn(self.arena.allocator(), uuid, text);
+        const frame = try userTurn(self.arena.allocator(), uuid, text, !self.expand_prompts);
         try self.reducer.submitAs(uuid, identity);
         self.transport.write(frame) catch |err| {
             self.settled = true;
@@ -306,18 +310,24 @@ test "a turn uuid is alphanumeric with hyphens and at most 128 bytes" {
 test "the user turn is the frame the pinned marshal produces, key order included" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const frame = try userTurn(arena.allocator(), "turn-1", "fix the test");
+    const composed = try userTurn(arena.allocator(), "turn-1", "fix the test", true);
+    try std.testing.expectEqualStrings(
+        "{\"client_composed\":true,\"message\":{\"content\":\"fix the test\",\"role\":\"user\"},\"origin\":{\"kind\":\"human\"}," ++
+            "\"parent_tool_use_id\":null,\"session_id\":\"default\",\"type\":\"user\",\"uuid\":\"turn-1\"}",
+        composed,
+    );
+    const expanding = try userTurn(arena.allocator(), "turn-1", "fix the test", false);
     try std.testing.expectEqualStrings(
         "{\"message\":{\"content\":\"fix the test\",\"role\":\"user\"},\"origin\":{\"kind\":\"human\"}," ++
             "\"parent_tool_use_id\":null,\"session_id\":\"default\",\"type\":\"user\",\"uuid\":\"turn-1\"}",
-        frame,
+        expanding,
     );
 }
 
 test "prompt text is escaped the way encoding/json escapes it, HTML and line separators included" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const frame = try userTurn(arena.allocator(), "turn-1", "a<b&c>d\u{2028}e\u{2029}f");
+    const frame = try userTurn(arena.allocator(), "turn-1", "a<b&c>d\u{2028}e\u{2029}f", false);
     try std.testing.expectEqualStrings(
         "{\"message\":{\"content\":\"a\\u003cb\\u0026c\\u003ed\\u2028e\\u2029f\",\"role\":\"user\"}," ++
             "\"origin\":{\"kind\":\"human\"},\"parent_tool_use_id\":null,\"session_id\":\"default\"," ++
@@ -329,13 +339,13 @@ test "prompt text is escaped the way encoding/json escapes it, HTML and line sep
 test "a turn refuses its uuid before it builds a frame" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectError(Error.InvalidTurnUUID, userTurn(arena.allocator(), "turn_1", "hi"));
+    try std.testing.expectError(Error.InvalidTurnUUID, userTurn(arena.allocator(), "turn_1", "hi", true));
 }
 
 test "prompt text is escaped by the encoder rather than concatenated" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const frame = try userTurn(arena.allocator(), "turn-1", "a\"b\\c\nd");
+    const frame = try userTurn(arena.allocator(), "turn-1", "a\"b\\c\nd", true);
     try std.testing.expect(std.mem.indexOf(u8, frame, "\"content\":\"a\\\"b\\\\c\\nd\"") != null);
 }
 
@@ -517,5 +527,18 @@ test "the turn the seam writes is the turn the child reads" {
     try backend.submit("turn-1", "hello", .{ .run_id = "run-1", .submission_id = "sub-1" });
     const echoed = try backend.transport.next();
     try std.testing.expect(echoed != null);
-    try std.testing.expectEqualStrings(try userTurn(arena.allocator(), "turn-1", "hello"), echoed.?);
+    try std.testing.expectEqualStrings(try userTurn(arena.allocator(), "turn-1", "hello", true), echoed.?);
+}
+
+test "a backend whose prompts expand writes the turn without client_composed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try shellBackend(&arena, "cat");
+    defer backend.close();
+    backend.expand_prompts = true;
+
+    try backend.submit("turn-1", "hello", .{ .run_id = "run-1", .submission_id = "sub-1" });
+    const echoed = try backend.transport.next();
+    try std.testing.expect(echoed != null);
+    try std.testing.expectEqualStrings(try userTurn(arena.allocator(), "turn-1", "hello", false), echoed.?);
 }

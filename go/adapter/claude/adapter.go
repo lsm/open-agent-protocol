@@ -124,6 +124,7 @@ type Config struct {
 	WorkingDirectory string
 	Model            string
 	Tools            ToolPosture
+	ExpandPrompts    bool
 	Clock            base.Clock
 	IDs              base.IDGenerator
 	JournalCapacity  int
@@ -275,7 +276,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	s := &Session{client: client, clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	if a.initializeAtOpen {
 

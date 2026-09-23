@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,20 +30,15 @@ func verifiedClaudeCLI(t *testing.T) string {
 	return binary
 }
 
-func newPinnedClaude(t *testing.T, environment []string, workDir string, tools ToolPosture, args ...string) *Adapter {
+func newPinnedClaude(t *testing.T, config Config) *Adapter {
 	t.Helper()
-	if err := os.MkdirAll(workDir, 0o700); err != nil {
+	if err := os.MkdirAll(config.WorkingDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	implementation, err := New(Config{
-		Executable:       verifiedClaudeCLI(t),
-		Args:             args,
-		Environment:      environment,
-		WorkingDirectory: workDir,
-		Model:            claudeLoopbackModel,
-		Tools:            tools,
-		ExitTimeout:      15 * time.Second,
-	})
+	config.Executable = verifiedClaudeCLI(t)
+	config.Model = claudeLoopbackModel
+	config.ExitTimeout = 15 * time.Second
+	implementation, err := New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +50,7 @@ func TestClaudeProcessSmoke(t *testing.T) {
 		t.Skip("set OAP_CLAUDE_SMOKE=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	root := t.TempDir()
-	implementation := newPinnedClaude(t, claudeEnvironment(t, root, ""), filepath.Join(root, "work"), UnrestrictedTools())
+	implementation := newPinnedClaude(t, Config{Environment: claudeEnvironment(t, root, ""), WorkingDirectory: filepath.Join(root, "work"), Tools: UnrestrictedTools()})
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	session, err := implementation.Open(ctx, base.OpenRequest{
@@ -94,7 +90,7 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 	mock := providertest.New(t, providertest.Config{AnthropicKey: claudeMockSecret})
 	mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
 	root := t.TempDir()
-	implementation := newPinnedClaude(t, claudeEnvironment(t, root, mock.AnthropicBaseURL()), filepath.Join(root, "work"), UnrestrictedTools())
+	implementation := newPinnedClaude(t, Config{Environment: claudeEnvironment(t, root, mock.AnthropicBaseURL()), WorkingDirectory: filepath.Join(root, "work"), Tools: UnrestrictedTools()})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -212,8 +208,10 @@ func TestClaudeProcessReadOnlyReviewCompletesWithoutAGate(t *testing.T) {
 	mock.EnqueueToolCall(providertest.AnthropicMessages, providertest.ToolCall{ID: "toolu_review_bash", Name: "Bash", Arguments: string(bashArguments)})
 	mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
 	const systemPrompt = "You review changes by reading files and never modify them."
-	implementation := newPinnedClaude(t, claudeEnvironment(t, root, mock.AnthropicBaseURL()), work,
-		AllowTools("Read", "Grep", "Glob"), "--append-system-prompt", systemPrompt, "--no-session-persistence")
+	implementation := newPinnedClaude(t, Config{
+		Environment: claudeEnvironment(t, root, mock.AnthropicBaseURL()), WorkingDirectory: work,
+		Tools: AllowTools("Read", "Grep", "Glob"), Args: []string{"--append-system-prompt", systemPrompt, "--no-session-persistence"},
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -324,6 +322,86 @@ func TestClaudeProcessReadOnlyReviewCompletesWithoutAGate(t *testing.T) {
 		t.Fatalf("close claude review session: %v", err)
 	}
 	closed = true
+}
+
+func TestClaudeProcessMentionReachesTheProviderOnlyWhenPromptsExpand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Claude Code process integration in short mode")
+	}
+	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	for _, expand := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ExpandPrompts=%v", expand), func(t *testing.T) {
+			root := t.TempDir()
+			const secret = "a line no submitted text may pull in"
+			outside := filepath.Join(root, "outside", "secret.txt")
+			if err := os.MkdirAll(filepath.Dir(outside), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(outside, []byte(secret+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			mock := providertest.New(t, providertest.Config{AnthropicKey: claudeMockSecret})
+			mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
+			implementation := newPinnedClaude(t, Config{
+				Environment: claudeEnvironment(t, root, mock.AnthropicBaseURL()), WorkingDirectory: filepath.Join(root, "work"),
+				Tools: AllowTools("Read", "Grep", "Glob"), ExpandPrompts: expand,
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			session, err := implementation.Open(ctx, base.OpenRequest{
+				SessionID:   "claude-mention-session",
+				Participant: protocol.Participant{ID: "integration-user"},
+			})
+			if err != nil {
+				t.Fatalf("open pinned CLI (spawn + initialize exchange): %v", err)
+			}
+			closed := false
+			defer func() {
+				if !closed {
+					_ = session.Close(context.Background())
+				}
+			}()
+			text := "Summarize @" + outside + " for the review."
+			admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+				SessionID: "claude-mention-session", Delivery: protocol.DeliveryAuto,
+				Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent(text)}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := adaptertest.Drain(t, stream, 60*time.Second)
+			adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
+			if terminal := events[len(events)-1]; terminal.Type != protocol.TypeRunCompleted {
+				t.Fatalf("terminal=%s", terminal.Type)
+			}
+
+			requests := mock.RequestsFor(providertest.AnthropicMessages)
+			if len(requests) == 0 {
+				t.Fatal("loopback provider received no messages request")
+			}
+			var sent strings.Builder
+			for _, request := range requests {
+				sent.Write(request.Body)
+			}
+			quoted, err := json.Marshal(text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(sent.String(), strings.Trim(string(quoted), `"`)) {
+				t.Fatal("the submitted text did not reach the provider as written")
+			}
+			if reached := strings.Contains(sent.String(), secret); reached != expand {
+				t.Fatalf("with ExpandPrompts=%v the mentioned file reached the provider: %v", expand, reached)
+			}
+			if err := session.Close(ctx); err != nil {
+				t.Fatalf("close claude mention session: %v", err)
+			}
+			closed = true
+		})
+	}
 }
 
 func claudeEnvironment(t *testing.T, root, loopbackBaseURL string) []string {

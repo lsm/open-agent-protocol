@@ -727,7 +727,9 @@ Anthropic Messages against an in-process mock, test-owned key only;
 structural request assertions only, per the mapping pin). The integration
 gate also drives a read-only review posture, `AllowTools("Read", "Grep",
 "Glob")` with an appended system prompt, and fails if any permission gate
-opens. The gates never
+opens. It also submits an `@` mention of a file outside the working directory
+and checks that the file reaches the provider only when `Config.ExpandPrompts`
+is set. The gates never
 download anything and pass no ambient credentials; readiness is the
 initialize control exchange, and teardown evidence is stdin EOF. Set
 `OAP_CLAUDE_SHA256` to the expected 64-character binary digest when exact

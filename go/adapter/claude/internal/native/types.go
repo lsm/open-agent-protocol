@@ -529,7 +529,7 @@ type PermissionDeny struct {
 	Interrupt bool   `json:"interrupt,omitempty"`
 }
 
-func NewUserTurn(uuid, text string) (json.RawMessage, error) {
+func NewUserTurn(uuid, text string, composed bool) (json.RawMessage, error) {
 	frame := map[string]any{
 		"type":               TypeUser,
 		"message":            map[string]any{"role": "user", "content": text},
@@ -537,6 +537,9 @@ func NewUserTurn(uuid, text string) (json.RawMessage, error) {
 		"session_id":         "default",
 		"uuid":               uuid,
 		"origin":             map[string]string{"kind": "human"},
+	}
+	if composed {
+		frame["client_composed"] = true
 	}
 	data, err := json.Marshal(frame)
 	if err != nil {

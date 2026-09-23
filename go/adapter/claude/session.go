@@ -37,6 +37,8 @@ type Session struct {
 	ids      base.IDGenerator
 	capacity int
 
+	expandPrompts bool
+
 	nativeSessionID string
 	participant     protocol.ParticipantID
 	state           protocol.SessionState
@@ -156,7 +158,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.promptMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	frame, err := native.NewUserTurn(submissionUUID, text)
+	frame, err := native.NewUserTurn(submissionUUID, text, !s.expandPrompts)
 	if err != nil {
 		s.mu.Unlock()
 		s.reduceMu.Unlock()
