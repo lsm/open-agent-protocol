@@ -28,6 +28,8 @@ const provider_base_url = @import("provider_base_url");
 const oap_server = @import("oap_server");
 const oap_auth_adapter = @import("oap_auth_adapter");
 const agent_oap_provider_bridge = @import("agent_oap_provider_bridge");
+const oap_remote_provider_transport = @import("oap_remote_provider_transport");
+const oap_provider_http_policy = @import("oap_provider_http_policy");
 const pre_transform = @import("pre_transform");
 const semantic = @import("semantic");
 const provider_semantic = @import("provider_semantic");
@@ -2493,6 +2495,8 @@ fn printUsage(file: std.Io.File) !void {
         \\                   Use --model <id> to pick the model
         \\                   (default kimi-k2.7-code).
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
+        \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
+        \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\  serve agent,provider  Serve both OAP profiles over one stdio connection
@@ -7941,7 +7945,22 @@ fn runOapMode(
 
     var stdio_loop = try StdioProtocolLoop.initWithBuiltins(allocator);
     defer stdio_loop.deinit();
-    stdio_loop.useOapProviderCore();
+    const remote_url = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_URL");
+    defer if (remote_url) |value| allocator.free(value);
+    const remote_security_text = try provider_base_url.envOwnedOrNull(allocator, "OAPX_PROVIDER_SERVICE_SECURITY");
+    defer if (remote_security_text) |value| allocator.free(value);
+    if (serve_provider and remote_url != null) return error.RemoteProviderRequiresAgentRole;
+    var remote_config: ?oap_remote_provider_transport.Config = null;
+    if (remote_url) |url| {
+        const security_text = remote_security_text orelse return error.ProviderServiceSecurityRequired;
+        const security = std.meta.stringToEnum(oap_provider_http_policy.Security, security_text) orelse return error.InvalidProviderServiceSecurity;
+        _ = try oap_provider_http_policy.validateBaseUrl(url, security);
+        remote_config = .{ .base_url = url, .security = security };
+        stdio_loop.oap_provider_bridge = agent_oap_provider_bridge.InProcessOapProviderBridge.init(remote_config.?.factory());
+    } else {
+        if (remote_security_text != null) return error.ProviderServiceUrlRequired;
+        stdio_loop.useOapProviderCore();
+    }
 
     var oap = try oap_server.Server.init(allocator, .{
         .endpoint_version = VERSION,
@@ -7987,7 +8006,16 @@ fn runOapMode(
     const provider_idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator);
     try register_builtins.registerBuiltInApiProviders(&provider_registry);
     try populateOapProviderCatalog(allocator, &provider_server);
-    for (provider_server.models.items) |model| try oap.addModel(model.model_ref);
+    if (remote_config) |*config| {
+        const remote_models = try oap_remote_provider_transport.discoverModels(allocator, config);
+        defer {
+            for (remote_models) |model| allocator.free(model);
+            allocator.free(remote_models);
+        }
+        for (remote_models) |model| try oap.addModel(model);
+    } else {
+        for (provider_server.models.items) |model| try oap.addModel(model.model_ref);
+    }
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);

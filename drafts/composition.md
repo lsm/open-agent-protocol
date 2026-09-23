@@ -40,8 +40,10 @@ it; most pinned harnesses do. `oapx` uses a separate provider layer: its agent
 loop speaks `model-provider-core` to local or operator-configured provider
 services and does not speak OpenAI or Anthropic wire formats directly. The
 provider layer owns those vendor differences. The lower boundary is specified
-in [the model-provider-core draft](model-provider-core.md). The remote HTTP
-binding for it remains follow-up work.
+in [the model-provider-core draft](model-provider-core.md). The remote
+[HTTP binding](provider-http.md) has a client implementation for one
+operator-configured service at agent startup. The HTTP provider server and
+live service attachment remain future work.
 
 ## What a client may choose
 

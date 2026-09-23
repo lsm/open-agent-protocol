@@ -108,8 +108,13 @@ fn push(stream: *event_stream.AssistantMessageEventStream, event: ai_types.Assis
 
 fn modelRef(allocator: std.mem.Allocator, model: ai_types.Model) ![]const u8 {
     if (provider_types.parseModelRef(model.id) != null) return model.id;
-    const mapping = provider_catalog.mapApiToWire(model.api) orelse return error.UnsupportedProviderWire;
-    return provider_catalog.buildModelRef(allocator, model.provider, mapping.wire, mapping.wire_id, model.id);
+    if (provider_catalog.mapApiToWire(model.api)) |mapping| {
+        return provider_catalog.buildModelRef(allocator, model.provider, mapping.wire, mapping.wire_id, model.id);
+    }
+    const wire = provider_types.parseWireComponent(model.api) orelse return error.UnsupportedProviderWire;
+    const wire_id = provider_types.wireIdComponent(model.api);
+    if (wire == .other and wire_id == null) return error.UnsupportedProviderWire;
+    return provider_catalog.buildModelRef(allocator, model.provider, wire, wire_id, model.id);
 }
 
 fn toolResultJson(allocator: std.mem.Allocator, result: ai_types.ToolResultMessage) ![]const u8 {
@@ -489,7 +494,18 @@ fn runThreadFallible(ctx: *ThreadContext) !void {
     var cancel_sent = false;
     var last_progress_ms = compat.time.nowMillis();
     while (!state.terminal) {
-        if (ctx.stream.completed.load(.acquire)) return;
+        if (ctx.stream.completed.load(.acquire)) {
+            if (!cancel_sent and state.inference_id != null) {
+                const cancel: provider_types.Envelope = .{
+                    .id = "bridge.cancel",
+                    .inference_id = state.inference_id,
+                    .payload = .{ .inference_cancel_request = .{ .reason = "agent stream closed" } },
+                };
+                const line = try provider_envelope.serializeEnvelope(cancel, arena);
+                try transport.send_line_fn(transport.ctx, line);
+            }
+            return;
+        }
         try transport.pump_fn(transport.ctx);
         var had_line = false;
         while (try transport.recv_line_fn(transport.ctx, ctx.allocator)) |line| {
@@ -533,6 +549,24 @@ test "canonical model reference uses OAP wire, not legacy API name" {
     const ref = try modelRef(std.testing.allocator, model);
     defer std.testing.allocator.free(ref);
     try std.testing.expectEqualStrings("openai/openai-chat-completions@gpt-test", ref);
+}
+
+test "opaque remote wire model reference survives agent model conversion" {
+    const model: ai_types.Model = .{
+        .id = "sample",
+        .name = "sample",
+        .api = "other:mock",
+        .provider = "remote",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 128,
+    };
+    const ref = try modelRef(std.testing.allocator, model);
+    defer std.testing.allocator.free(ref);
+    try std.testing.expectEqualStrings("remote/other:mock@sample", ref);
 }
 
 test "bridge sends OAP inference and yields streamed provider events" {

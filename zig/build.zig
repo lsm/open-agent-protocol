@@ -662,7 +662,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-
     const ollama_api_mod = b.createModule(.{
         .root_source_file = b.path("src/providers/ollama_api.zig"),
         .target = target,
@@ -1050,6 +1049,23 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const protocol_oap_provider_http_policy_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/oap/provider/http_policy.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const protocol_oap_provider_http_client_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/oap/provider/http_client.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "sse_parser", .module = sse_parser_mod },
+            .{ .name = "oap_provider_http_policy", .module = protocol_oap_provider_http_policy_mod },
+        },
+    });
+
     const protocol_oap_provider_runtime_mod = b.createModule(.{
         .root_source_file = b.path("src/protocol/oap/provider/runtime.zig"),
         .target = target,
@@ -1296,6 +1312,21 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "oap_provider_envelope", .module = protocol_oap_provider_envelope_mod },
             .{ .name = "oap_provider_catalog", .module = protocol_oap_provider_catalog_mod },
+        },
+    });
+
+    const agent_oap_remote_provider_transport_mod = b.createModule(.{
+        .root_source_file = b.path("src/agent/oap_remote_provider_transport.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
+            .{ .name = "agent_oap_provider_bridge", .module = agent_oap_provider_bridge_mod },
+            .{ .name = "oap_provider_http_client", .module = protocol_oap_provider_http_client_mod },
+            .{ .name = "oap_provider_http_policy", .module = protocol_oap_provider_http_policy_mod },
+            .{ .name = "oap_provider_envelope", .module = protocol_oap_provider_envelope_mod },
+            .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
         },
     });
 
@@ -1889,6 +1920,8 @@ pub fn build(b: *std.Build) void {
     const protocol_oap_provider_server_test = b.addTest(.{ .root_module = protocol_oap_provider_server_mod });
     const protocol_oap_provider_catalog_test = b.addTest(.{ .root_module = protocol_oap_provider_catalog_mod });
     const protocol_oap_provider_grant_channel_test = b.addTest(.{ .root_module = protocol_oap_provider_grant_channel_mod });
+    const protocol_oap_provider_http_policy_test = b.addTest(.{ .root_module = protocol_oap_provider_http_policy_mod });
+    const protocol_oap_provider_http_client_test = b.addTest(.{ .root_module = protocol_oap_provider_http_client_mod });
     const protocol_oap_provider_runtime_test = b.addTest(.{ .root_module = protocol_oap_provider_runtime_mod });
     const protocol_oap_envelope_test = b.addTest(.{ .root_module = protocol_oap_envelope_mod });
     const protocol_oap_server_test = b.addTest(.{ .root_module = protocol_oap_server_mod });
@@ -1914,6 +1947,7 @@ pub fn build(b: *std.Build) void {
 
     const agent_provider_protocol_bridge_test = b.addTest(.{ .root_module = agent_provider_protocol_bridge_mod });
     const agent_oap_provider_bridge_test = b.addTest(.{ .root_module = agent_oap_provider_bridge_mod });
+    const agent_oap_remote_provider_transport_test = b.addTest(.{ .root_module = agent_oap_remote_provider_transport_mod });
     const tui_session_test = b.addTest(.{ .root_module = tui_session_mod });
     const tui_config_test = b.addTest(.{ .root_module = tui_config_mod });
     const tui_runtime_test = b.addTest(.{ .root_module = tui_runtime_mod });
@@ -2041,6 +2075,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_provider_server", .module = protocol_oap_provider_server_mod },
             .{ .name = "oap_provider_catalog", .module = protocol_oap_provider_catalog_mod },
             .{ .name = "agent_oap_provider_bridge", .module = agent_oap_provider_bridge_mod },
+            .{ .name = "oap_remote_provider_transport", .module = agent_oap_remote_provider_transport_mod },
+            .{ .name = "oap_provider_http_policy", .module = protocol_oap_provider_http_policy_mod },
             .{ .name = "oap_provider_grant_channel", .module = protocol_oap_provider_grant_channel_mod },
             .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "oap_provider_runtime", .module = protocol_oap_provider_runtime_mod },
@@ -2204,6 +2240,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(agent_mod_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_oap_provider_bridge_test).step);
+    test_step.dependOn(&b.addRunArtifact(agent_oap_remote_provider_transport_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_session_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_config_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
@@ -2236,6 +2273,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_catalog_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_grant_channel_test).step);
+    test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_http_policy_test).step);
+    test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_http_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_provider_runtime_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
@@ -2322,6 +2361,8 @@ pub fn build(b: *std.Build) void {
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_catalog_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_grant_channel_test).step);
+    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_http_policy_test).step);
+    test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_http_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_provider_runtime_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_envelope_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_oap_server_test).step);
@@ -2415,6 +2456,7 @@ pub fn build(b: *std.Build) void {
     const test_unit_agent_bridge_step = b.step("test-unit-agent-bridge", "Run agent bridge unit tests");
     test_unit_agent_bridge_step.dependOn(&b.addRunArtifact(agent_provider_protocol_bridge_test).step);
     test_unit_agent_bridge_step.dependOn(&b.addRunArtifact(agent_oap_provider_bridge_test).step);
+    test_unit_agent_bridge_step.dependOn(&b.addRunArtifact(agent_oap_remote_provider_transport_test).step);
 
     const test_unit_agent_unit_step = b.step("test-unit-agent-unit", "Run agent unit test file");
     test_unit_agent_unit_step.dependOn(&b.addRunArtifact(agent_test).step);

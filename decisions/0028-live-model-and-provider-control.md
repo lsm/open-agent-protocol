@@ -128,6 +128,7 @@ Other OAP agent implementations may implement their loops in other ways. The
 `model-provider-core`; this decision does not require every agent-control
 implementation to stop using a vendor SDK internally.
 
-The provider profile's remote HTTP binding is follow-up work. This decision
-defines the attachment identity and session behavior without claiming that
-remote HTTP transport already ships.
+The provider profile's remote [HTTP binding](../drafts/provider-http.md) has
+an `oapx` client implementation for a single operator-configured service at
+startup. This decision defines live attachment identity and session behavior;
+the HTTP server role and live attachment are not yet implemented.

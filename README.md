@@ -35,8 +35,17 @@ oapx serve agent,provider --stdio
 The four SDKs in `sdk/` use this OAP mode by default. The agent's selected
 model can be changed mid-session with `session.model.switch`, and local
 authentication flows use the optional `+auth` unit. Dynamic provider
-attachment is specified but optional; remote provider transport is follow-up
-work. Client-executed agent tools and agent sampling options are not yet
+attachment is specified but optional; a remote HTTP provider binding is
+specified in [the HTTP binding](drafts/provider-http.md). `oapx` can use an
+operator-configured remote provider for agent inference by setting
+`OAPX_PROVIDER_SERVICE_URL` and `OAPX_PROVIDER_SERVICE_SECURITY` to `loopback`,
+`tls`, or `mesh_proxy`; the remote service must expose
+`POST /oap/v0.1/provider`. Use this with `oapx serve agent --stdio`; the
+combined `agent,provider` role refuses a remote-service setting rather than
+exposing a different, local provider profile. This is client-side support: `oapx serve provider`
+still serves stdio, and live `session.provider.attach` is not yet implemented.
+Client-executed
+agent tools and agent sampling options are not yet
 represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
 the default path; the old Makai wire is available only by explicit opt-in.
 
@@ -48,6 +57,8 @@ notice of proposed breaking changes add themselves to
 [IMPLEMENTERS.md](IMPLEMENTERS.md).
 
 Current drafts:
+
+- [Provider HTTP Binding](drafts/provider-http.md)
 
 - [Conformance Draft](drafts/conformance.md)
 - [Presentation Control Profile](drafts/presentation-control-profile.md)
