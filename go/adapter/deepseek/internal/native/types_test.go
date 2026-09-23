@@ -274,3 +274,19 @@ func TestWorkspaceChangesIsObservedOnlyAndImageOffloadIsNot(t *testing.T) {
 		t.Fatal("image/offload rewrites the projected message, so it cannot be skipped unmapped")
 	}
 }
+
+func TestAMistypedMemberIsNamedAsTheWireSpelledIt(t *testing.T) {
+	for _, testCase := range []struct{ params, want string }{
+		{`{"sessionId":5,"status":"idle"}`, "json: cannot unmarshal number into Go struct field SessionStatusNotification.sessionId of type string"},
+		{`{"sessionid":5,"status":"idle"}`, "json: cannot unmarshal number into Go struct field SessionStatusNotification.sessionid of type string"},
+		{`{"SESSIONID":5,"status":"idle"}`, "json: cannot unmarshal number into Go struct field SessionStatusNotification.SESSIONID of type string"},
+	} {
+		_, err := DecodeNotification(NotifySessionStatus, []byte(testCase.params))
+		if err == nil {
+			t.Fatalf("%s decoded", testCase.params)
+		}
+		if !strings.HasSuffix(err.Error(), testCase.want) {
+			t.Fatalf("%s: error %q, want it to end %q", testCase.params, err, testCase.want)
+		}
+	}
+}

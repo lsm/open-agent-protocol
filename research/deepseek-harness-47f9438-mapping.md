@@ -676,6 +676,17 @@ absent members:
   rule text (`session.event sessionId is required`) because its accessors read a
   mistyped member as empty. `event` takes an object and `lastAssistantMessage`
   an array, with `native.Event` and `[]native.ContentBlock` as their types.
+- That spelling is a property of the Go release, not of the decoder's contract,
+  and it was measured rather than read from `decode.go`. Go 1.25's legacy
+  decoder names a folded member as its tag spells it (`sessionId`). The
+  implementation built on `encoding/json/v2`, which Go 1.27 compiles by
+  default and which is what CI pins, names it as the wire spelled it
+  (`sessionid`). Go 1.25 under `GOEXPERIMENT=jsonv2` does the same, with
+  different wording. The port matches the toolchain CI runs, and
+  `TestAMistypedMemberIsNamedAsTheWireSpelledIt` pins that text in the oracle,
+  so a toolchain that changes it fails on the Go side instead of leaving this
+  port's text silently stale. `go.mod`'s `go 1.26` floor would admit an oracle
+  whose text differs; 1.26 itself was not measured.
 - A JSON `null` is the no-op Go makes of it, so `{"sessionId":null,...}` reaches
   the rules and draws `invalid session.status`, and `"event":null` draws
   `invalid event envelope` — which the gate as first written let through to the
