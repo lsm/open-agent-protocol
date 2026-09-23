@@ -87,10 +87,13 @@ const State = struct {
     closing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     failure: ?anyerror = null,
     request_line: ?[]u8 = null,
+    inference_id: ?[]u8 = null,
+    next_sequence: u64 = 1,
     abandoned: bool = false,
 
     fn destroy(self: *State) void {
         if (self.request_line) |line| self.allocator.free(line);
+        if (self.inference_id) |id| self.allocator.free(id);
         for (self.pending.items) |line| self.allocator.free(line);
         self.pending.deinit(self.allocator);
         self.client.deinit();
@@ -145,6 +148,16 @@ fn onEnvelope(context: ?*anyopaque, line: []const u8) !void {
     const state: *State = @ptrCast(@alignCast(context));
     var envelope = try provider_envelope.deserializeEnvelope(line, state.allocator);
     defer envelope.deinit(state.allocator);
+    if (envelope.sequence) |sequence| {
+        const inference_id = envelope.inference_id orelse return error.InvalidProviderEventSequence;
+        if (state.inference_id) |active_id| {
+            if (!std.mem.eql(u8, active_id, inference_id)) return error.InvalidProviderEventSequence;
+        } else {
+            state.inference_id = try state.allocator.dupe(u8, inference_id);
+        }
+        if (sequence != state.next_sequence) return error.InvalidProviderEventSequence;
+        state.next_sequence = std.math.add(u64, sequence, 1) catch return error.InvalidProviderEventSequence;
+    }
     try state.enqueue(line);
     switch (envelope.payload) {
         .inference_completed, .inference_failed, .protocol_error => return error.RemoteStreamTerminal,
@@ -204,6 +217,21 @@ test "cancel response is consumed without joining the bounded inference queue" {
     const request = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.cancel.request\",\"id\":\"bridge.cancel\",\"inference_id\":\"i1\",\"payload\":{}}";
     const answer = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.cancel.response\",\"id\":\"answer\",\"in_reply_to\":\"bridge.cancel\",\"inference_id\":\"i1\",\"payload\":{\"accepted\":true}}";
     try validateCancelAnswer(std.testing.allocator, request, answer);
+}
+
+test "remote provider rejects repeated and skipped inference sequence" {
+    const allocator = std.testing.allocator;
+    var state = try allocator.create(State);
+    state.* = .{
+        .allocator = allocator,
+        .client = try http_client.Client.init(allocator, "http://127.0.0.1:1", .loopback),
+    };
+    defer state.destroy();
+    const first = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.started\",\"id\":\"event-1\",\"inference_id\":\"inf-1\",\"sequence\":1,\"payload\":{\"model_ref\":\"remote/other:mock@test\",\"started_at_ms\":1}}";
+    const skipped = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.part.started\",\"id\":\"event-3\",\"inference_id\":\"inf-1\",\"sequence\":3,\"payload\":{\"part_index\":0,\"part_kind\":\"text\"}}";
+    try onEnvelope(state, first);
+    try std.testing.expectError(error.InvalidProviderEventSequence, onEnvelope(state, first));
+    try std.testing.expectError(error.InvalidProviderEventSequence, onEnvelope(state, skipped));
 }
 
 fn pump(context: ?*anyopaque) !void {

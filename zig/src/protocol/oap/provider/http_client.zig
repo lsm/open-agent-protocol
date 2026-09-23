@@ -139,6 +139,7 @@ pub const Client = struct {
         while (true) {
             const n = try compat.http.readResponse(reader, &buffer);
             if (n == 0) break;
+            job.noteProgress();
             const events = try parser.feed(buffer[0..n]);
             for (events) |event| try TimedJob.collect(job, event.data);
         }
@@ -149,8 +150,9 @@ const TimedJob = struct {
     const Kind = enum { unary, stream };
     const arena = std.heap.page_allocator;
 
-    refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(2),
+    refs: std.atomic.Value(u32) = std.atomic.Value(u32).init(1),
     done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    progress_ms: std.atomic.Value(i64) = std.atomic.Value(i64).init(0),
     mutex: std.Io.Mutex = .init,
     cancelled: bool = false,
     socket: ?std.Io.net.Stream = null,
@@ -206,6 +208,11 @@ const TimedJob = struct {
         if (self.socket) |socket| socket.shutdown(io(), .both) catch {};
     }
 
+    fn noteProgress(self: *TimedJob) void {
+        const now = compat.time.monotonicMillis() catch return;
+        self.progress_ms.store(now, .release);
+    }
+
     fn collect(context: ?*anyopaque, line: []const u8) !void {
         const self: *TimedJob = @ptrCast(@alignCast(context));
         const copy = try arena.dupe(u8, line);
@@ -246,6 +253,7 @@ const TimedJob = struct {
     }
 
     fn start(self: *TimedJob) !void {
+        _ = self.refs.fetchAdd(1, .acq_rel);
         const thread = std.Thread.spawn(.{}, run, .{self}) catch |err| {
             self.release();
             return err;
@@ -292,6 +300,7 @@ const TimedJob = struct {
                 if (self.failure) |err| return err;
                 return;
             }
+            last_progress_ms = @max(last_progress_ms, self.progress_ms.load(.acquire));
             const limit = if (saw_envelope) idle_timeout_ms else request_timeout_ms;
             if (try compat.time.monotonicMillis() - last_progress_ms >= limit) {
                 self.cancel();
@@ -316,6 +325,10 @@ const MockUnaryServer = struct {
     response_type: []const u8 = "application/json",
     response_body: []const u8 = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"provider.describe.response\",\"id\":\"answer\",\"in_reply_to\":\"request\",\"capability_revision\":\"r1\",\"payload\":{\"providers\":[]}}",
     response_delay_ms: u64 = 0,
+    middle_delay_ms: u64 = 0,
+    middle_body: []const u8 = "",
+    tail_delay_ms: u64 = 0,
+    tail_body: []const u8 = "",
     hold_open_ms: u64 = 0,
 
     fn start(self: *MockUnaryServer) !void {
@@ -353,21 +366,31 @@ const MockUnaryServer = struct {
         }
         if (self.response_delay_ms > 0) compat.time.sleepMs(self.response_delay_ms);
         var header: [160]u8 = undefined;
-        const response = if (self.hold_open_ms > 0)
+        const chunked = self.hold_open_ms > 0 or self.middle_body.len > 0 or self.tail_body.len > 0;
+        const response = if (chunked)
             std.fmt.bufPrint(&header, "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n", .{self.response_type}) catch return
         else
             std.fmt.bufPrint(&header, "HTTP/1.1 200 OK\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ self.response_type, self.response_body.len }) catch return;
         conn.stream.writeAll(response) catch return;
-        if (self.hold_open_ms > 0) {
-            var chunk_header: [24]u8 = undefined;
-            const chunk = std.fmt.bufPrint(&chunk_header, "{x}\r\n", .{self.response_body.len}) catch return;
-            conn.stream.writeAll(chunk) catch return;
-            conn.stream.writeAll(self.response_body) catch return;
-            conn.stream.writeAll("\r\n") catch return;
+        if (chunked) {
+            writeChunk(&conn.stream, self.response_body) catch return;
+            if (self.middle_delay_ms > 0) compat.time.sleepMs(self.middle_delay_ms);
+            if (self.middle_body.len > 0) writeChunk(&conn.stream, self.middle_body) catch return;
+            if (self.tail_delay_ms > 0) compat.time.sleepMs(self.tail_delay_ms);
+            if (self.tail_body.len > 0) writeChunk(&conn.stream, self.tail_body) catch return;
         } else {
             conn.stream.writeAll(self.response_body) catch return;
         }
         if (self.hold_open_ms > 0) compat.time.sleepMs(self.hold_open_ms);
+        if (chunked) conn.stream.writeAll("0\r\n\r\n") catch return;
+    }
+
+    fn writeChunk(stream: *compat.net.Stream, body: []const u8) !void {
+        var chunk_header: [24]u8 = undefined;
+        const chunk = try std.fmt.bufPrint(&chunk_header, "{x}\r\n", .{body.len});
+        try stream.writeAll(chunk);
+        try stream.writeAll(body);
+        try stream.writeAll("\r\n");
     }
 };
 
@@ -453,4 +476,29 @@ test "remote provider streaming request times out after SSE becomes idle" {
     defer if (collector.first) |line| std.testing.allocator.free(line);
     try std.testing.expectError(error.ProviderServiceTimeout, client.postStream("{}", &collector, FrameCollector.collect));
     try std.testing.expectEqual(@as(usize, 1), collector.count);
+}
+
+test "SSE heartbeat resets the remote provider idle deadline" {
+    const address = try compat.net.resolveAddress(std.testing.allocator, "127.0.0.1", 0);
+    var server = MockUnaryServer{
+        .server = try compat.net.tcpListen(address, .{ .reuse_address = true }),
+        .response_type = "text/event-stream",
+        .response_body = "data: {\"type\":\"inference.create.response\"}\n\n",
+        .middle_delay_ms = 40,
+        .middle_body = ": keepalive\n\n",
+        .tail_delay_ms = 40,
+        .tail_body = "data: {\"type\":\"inference.completed\"}\n\n",
+    };
+    try server.start();
+    defer server.stop();
+    const url = try std.fmt.allocPrint(std.testing.allocator, "http://127.0.0.1:{d}", .{compat.net.listenAddress(&server.server).getPort()});
+    defer std.testing.allocator.free(url);
+    var client = try Client.init(std.testing.allocator, url, .loopback);
+    defer client.deinit();
+    client.request_timeout_ms = 100;
+    client.stream_idle_timeout_ms = 60;
+    var collector = FrameCollector{};
+    defer if (collector.first) |line| std.testing.allocator.free(line);
+    try client.postStream("{}", &collector, FrameCollector.collect);
+    try std.testing.expectEqual(@as(usize, 2), collector.count);
 }

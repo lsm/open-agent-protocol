@@ -673,6 +673,80 @@ test "bridge sends OAP inference and yields streamed provider events" {
     try std.testing.expectEqual(@as(u64, 3), result.usage.input);
 }
 
+test "bridge sends provider cancellation when its stream completes early" {
+    const Mock = struct {
+        saw_create: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        saw_cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        response_sent: bool = false,
+        pump_count: usize = 0,
+        ready_to_cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+        fn open(raw: ?*anyopaque, _: std.mem.Allocator, _: ai_types.Model, _: ?[]const u8) !Transport {
+            return .{
+                .ctx = raw,
+                .send_line_fn = send,
+                .pump_fn = pump,
+                .recv_line_fn = recv,
+                .close_fn = close,
+            };
+        }
+
+        fn send(raw: ?*anyopaque, line: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            var env = try provider_envelope.deserializeEnvelope(line, std.testing.allocator);
+            defer env.deinit(std.testing.allocator);
+            switch (env.payload) {
+                .inference_create_request => self.saw_create.store(true, .release),
+                .inference_cancel_request => self.saw_cancel.store(true, .release),
+                else => return error.UnexpectedProviderControl,
+            }
+        }
+
+        fn pump(raw: ?*anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            self.pump_count += 1;
+            if (self.pump_count >= 2) self.ready_to_cancel.store(true, .release);
+        }
+
+        fn recv(raw: ?*anyopaque, allocator: std.mem.Allocator) !?[]u8 {
+            const self: *@This() = @ptrCast(@alignCast(raw));
+            if (!self.saw_create.load(.acquire) or self.response_sent) return null;
+            self.response_sent = true;
+            const line = try allocator.dupe(u8, "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.model-provider-core\",\"type\":\"inference.create.response\",\"id\":\"response\",\"in_reply_to\":\"bridge.create\",\"inference_id\":\"inf-1\",\"payload\":{\"accepted\":true}}");
+            return @as(?[]u8, line);
+        }
+
+        fn close(_: ?*anyopaque) void {}
+    };
+
+    var mock = Mock{};
+    var bridge = InProcessOapProviderBridge.init(.{ .ctx = &mock, .open_fn = Mock.open });
+    const protocol = bridge.protocolClient();
+    const model: ai_types.Model = .{
+        .id = "test-model",
+        .name = "test",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 128,
+    };
+    const context: ai_types.Context = .{ .messages = &.{.{ .user = .{
+        .content = .{ .text = "hi" },
+        .timestamp = 0,
+    } }} };
+    const stream = try protocol.stream(model, context, .{}, std.testing.allocator);
+    var waited: usize = 0;
+    while (!mock.ready_to_cancel.load(.acquire) and waited < 1000) : (waited += 1) compat.time.sleepMs(1);
+    try std.testing.expect(mock.ready_to_cancel.load(.acquire));
+    try std.testing.expect(stream.cancelAndJoinThread(1000));
+    try std.testing.expect(mock.saw_cancel.load(.acquire));
+    try std.testing.expect(stream.deinitAndDestroy());
+}
+
 test "bridge retains terminal tool calls and typed credential failures" {
     const allocator = std.testing.allocator;
     const model: ai_types.Model = .{
