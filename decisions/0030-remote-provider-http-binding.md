@@ -60,6 +60,12 @@ the application itself to terminate TLS when an authenticated proxy does it.
 Transport authentication is configured out of band and never serialized into
 OAP envelopes or traces.
 
+The `oapx` HTTP server binds only to literal loopback. A cross-Pod deployment
+must put an operator-managed proxy in front of that listener; the proxy must
+authorize callers as well as authenticate and encrypt its outbound leg. The
+direct HTTPS client mode validates the server identity but does not itself
+provide a client certificate or authorization header.
+
 ## Failure and lifetime
 
 The SSE response is the lifetime of a streaming inference's observations.

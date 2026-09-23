@@ -40,10 +40,12 @@ specified in [the HTTP binding](drafts/provider-http.md). `oapx` can use an
 operator-configured remote provider for agent inference by setting
 `OAPX_PROVIDER_SERVICE_URL` and `OAPX_PROVIDER_SERVICE_SECURITY` to `loopback`,
 `tls`, or `mesh_proxy`; the remote service must expose
-`POST /oap/v0.1/provider`. Use this with `oapx serve agent --stdio`; the
-combined `agent,provider` role refuses a remote-service setting rather than
-exposing a different, local provider profile. This is client-side support: `oapx serve provider`
-still serves stdio, and live `session.provider.attach` is not yet implemented.
+`POST /oap/v0.1/provider`. An `oapx` provider can serve that endpoint with
+`oapx serve provider --http 127.0.0.1:8080`; a sidecar or reverse proxy must
+provide authenticated cross-Pod exposure. Use the remote-service settings with
+`oapx serve agent --stdio`; the combined `agent,provider` role refuses them
+rather than exposing a different, local provider profile. Live
+`session.provider.attach` is not yet implemented.
 Client-executed
 agent tools and agent sampling options are not yet
 represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on

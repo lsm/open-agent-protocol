@@ -10,6 +10,12 @@ change the provider profile's envelope schema or turn a provider into an agent.
 All envelopes on this binding carry
 `profile: "open-agent-protocol.model-provider-core"`.
 
+`oapx serve provider --http 127.0.0.1:<port>` implements the server side on a
+literal loopback address. For Kubernetes cross-Pod traffic, place an
+operator-managed authenticated TLS/mTLS proxy in front of that listener; do
+not bind the application directly to a Pod or Service address. The proxy is
+responsible for authorizing clients as well as protecting transport traffic.
+
 ## Endpoint and framing
 
 The service exposes `POST /oap/v0.1/provider` with exactly one UTF-8 JSON OAP

@@ -41,9 +41,9 @@ loop speaks `model-provider-core` to local or operator-configured provider
 services and does not speak OpenAI or Anthropic wire formats directly. The
 provider layer owns those vendor differences. The lower boundary is specified
 in [the model-provider-core draft](model-provider-core.md). The remote
-[HTTP binding](provider-http.md) has a client implementation for one
-operator-configured service at agent startup. The HTTP provider server and
-live service attachment remain future work.
+[HTTP binding](provider-http.md) has an agent-side client for one
+operator-configured service at startup and a loopback-only provider server.
+Live service attachment remains future work.
 
 ## What a client may choose
 
