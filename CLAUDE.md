@@ -110,14 +110,16 @@ A strict stack; lower layers never import higher ones.
 | Package | Role |
 | --- | --- |
 | `protocol` | Envelope, typed ID domains, payload structs, `Type*` constants |
-| `schema` | Embeds `schema/v0.1/*.json` (JSON Schema 2020-12) |
+| `schema` (repo root, `schema/embed.go`) | Embeds `schema/v0.1/*.json` (JSON Schema 2020-12) |
 | `validation` | Decode (duplicate keys), schema, semantic state machine (`state.go`), typed diagnostic codes |
 | `adapter` | `Adapter`/`Session`/`EventStream`, error sentinels, `ValidateInputAnswer`, and `Memory` |
 | `adapter/adaptertest` | `Next`/`Drain`, `AssertProtocolValid*` |
 | `adapter/{acp,claude,codex/appserver,deepseek,hermes,opencode,pi}` | One per pinned upstream harness |
 | `serve` | Registry + multi-session hub, bounded fan-out, cursor replay; adds no semantics, never validates |
 | `serve/{servehttp,servestdio}` | HTTP+SSE and newline-JSON over one hub; `parity_test.go` enforces the mirror |
+| `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
+| `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no `model-provider-core` oracle yet |
 | `cmd/oap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 
 `endpoint` and `conformance` are the endpoint-role pair, a different layer from
@@ -136,8 +138,9 @@ raw OAP envelopes, one per line, per `drafts/endpoint-stdio.md`.
 (wrappers over Zig 0.16 `std.Io`). `zig/src/adapter/` is the adapter port, run
 against the same corpora as Go.
 
-`oapx serve agent` serves `agent-control-core` and `oapx serve provider` serves
-`model-provider-core`. Each refuses the other's profile at decode and names the
+`oapx serve agent` serves `agent-control-core` over stdio and `oapx serve
+provider` serves `model-provider-core` over stdio or loopback HTTP+SSE
+(`--http`, decision 0030). Each refuses the other's profile at decode and names the
 one it serves. They share the base envelope and vocabulary but not
 `ProtocolError` — the code sets are disjoint. A role is a noun, so `serve` takes
 an argument rather than a flag (decision 0019). State lives under `~/.oapx`; on
