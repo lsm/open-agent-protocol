@@ -848,9 +848,9 @@ pub const Machine = struct {
         self.supports.clearRetainingCapacity();
         self.catalog.clearRetainingCapacity();
         try self.collectFeatures(payload);
-        try self.collectCatalog(payload);
+        const published = try self.collectCatalog(payload);
         try self.collectSources(payload);
-        self.catalog_known = true;
+        self.catalog_known = published;
         self.limits = readLimits(member(payload, "limits"));
         try self.checkQueueLimits(index);
         try self.checkAttachModes(index);
@@ -1741,7 +1741,8 @@ pub const Machine = struct {
         if (duplicateSourceId(published).len != 0) try self.add(code_duplicate_tool_source, index);
     }
 
-    fn collectCatalog(self: *Machine, payload: std.json.Value) !void {
+    fn collectCatalog(self: *Machine, payload: std.json.Value) !bool {
+        var published = member(payload, "tools") != null;
         try self.absorbTools(member(payload, "tools"));
         if (member(payload, "layers")) |layers| {
             if (layers == .object) {
@@ -1751,10 +1752,13 @@ pub const Machine = struct {
                 while (layer.next()) |entry| try names.append(self.allocator, entry.key_ptr.*);
                 std.mem.sort([]const u8, names.items, {}, lessThanName);
                 for (names.items) |name| {
-                    try self.absorbTools(member(layers.object.get(name).?, "tools"));
+                    const declared = member(layers.object.get(name).?, "tools");
+                    if (declared != null) published = true;
+                    try self.absorbTools(declared);
                 }
             }
         }
+        return published;
     }
 
     fn absorbTools(self: *Machine, declared: ?std.json.Value) !void {
