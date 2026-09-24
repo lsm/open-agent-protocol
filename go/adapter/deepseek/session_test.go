@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -157,8 +159,13 @@ func TestBlocksContentEmptyUsesEmptyText(t *testing.T) {
 
 func openTest(t *testing.T) (base.Session, *fakeClient) {
 	t.Helper()
+	return openWithJournal(t, 64)
+}
+
+func openWithJournal(t *testing.T, capacity int) (base.Session, *fakeClient) {
+	t.Helper()
 	f := newFake()
-	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return f, "deepseek-chat", nil }), Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	a, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return f, "deepseek-chat", nil }), Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: capacity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,13 +212,18 @@ func submitAsync(s base.Session) <-chan struct {
 }
 func admission(t *testing.T, s base.Session, f *fakeClient, id string) (protocol.MessageSubmitResponse, base.EventStream) {
 	t.Helper()
+	return admitTurn(t, s, f, id, 1, 1)
+}
+
+func admitTurn(t *testing.T, s base.Session, f *fakeClient, id string, turn, seq int64) (protocol.MessageSubmitResponse, base.EventStream) {
+	t.Helper()
 	ch := submitAsync(s)
 	<-f.started
 	f.prompts <- promptReply{id: id}
-	f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: id, Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")}}})
-	f.ev(2, "turn/start", native.TurnStart{Turn: 1})
-	f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
-	f.ev(4, "user/message", native.UserMessage{ID: id, Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")})
+	f.ev(seq, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: id, Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")}}})
+	f.ev(seq+1, "turn/start", native.TurnStart{Turn: turn})
+	f.ev(seq+2, "step/start", native.StepBoundary{Turn: turn, Step: 1})
+	f.ev(seq+3, "user/message", native.UserMessage{ID: id, Role: "user", Content: []native.ContentBlock{{Type: "text", Text: "hello"}}, Source: source("user")})
 	select {
 	case got := <-ch:
 		if got.err != nil {
@@ -244,15 +256,22 @@ func drain(t *testing.T, st base.EventStream) []protocol.Envelope {
 	}
 }
 
-func TestDescriptorIsConservative(t *testing.T) {
+func TestDescriptorOffersJournalReplayAndNoCancel(t *testing.T) {
 	a, _ := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return newFake(), "m", nil })})
 	d, err := a.Probe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	adaptertest.AssertDescriptor(t, d)
-	if d.Capabilities.Features["run.cancel"].Level != protocol.SupportUnavailable || d.Capabilities.Features["run.resume"].Level != protocol.SupportUnavailable {
-		t.Fatal("unsupported control advertised")
+	features := d.Capabilities.Features
+	if features["run.cancel"].Level != protocol.SupportUnavailable || d.CancellationTarget != "none" {
+		t.Fatal("cancellation advertised")
+	}
+	if features["run.resume"].Level != protocol.SupportDegraded || features["run.replay"].Level != protocol.SupportDegraded {
+		t.Fatalf("resume = %+v, replay = %+v", features["run.resume"], features["run.replay"])
+	}
+	if d.Journal != (base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: defaultJournalCapacity}) {
+		t.Fatalf("journal = %+v", d.Journal)
 	}
 }
 func TestAdmissionWaitsForExactDirectUserProof(t *testing.T) {
@@ -394,9 +413,6 @@ func TestUnsupportedControlsHaveNoNativeSideEffects(t *testing.T) {
 		t.Fatal(e)
 	}
 	if e := s.Resolve(context.Background(), base.InteractionResolution{}); !errors.Is(e, errUnavailable) {
-		t.Fatal(e)
-	}
-	if _, _, e := s.Resume(context.Background(), base.ResumeRequest{}); !errors.Is(e, errUnavailable) {
 		t.Fatal(e)
 	}
 	f.mu.Lock()
@@ -1267,4 +1283,280 @@ func TestARunningAfterTheIdleDisarmsSettlement(t *testing.T) {
 		client.notify(&native.SessionStatusNotification{SessionID: "session", Status: "running"})
 	})
 	assertSettled(t, events, false)
+}
+
+func awaitReduced(t *testing.T, f *fakeClient) {
+	t.Helper()
+	done := make(chan struct{})
+	f.in <- rpc.InboundMessage{Barrier: done}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("the reducer did not reach the barrier")
+	}
+}
+
+func numbered(n int) []string {
+	texts := make([]string, n)
+	for index := range texts {
+		texts[index] = strconv.Itoa(index)
+	}
+	return texts
+}
+
+func streamTexts(f *fakeClient, turn, seq int64, texts []string) {
+	record, _ := json.Marshal(map[string]any{"type": "text-chunks", "time0": seq, "index": 0, "dt": make([]int64, len(texts)-1), "texts": texts})
+	f.ev(seq, "assistant/message", assistantMessage(turn, 1, "a", []native.ContentBlock{{Type: "text", Text: strings.Join(texts, "")}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, "["+string(record)+"]", nil))
+}
+
+func finishTurn(f *fakeClient, turn, seq int64) {
+	f.ev(seq, "step/end", native.StepBoundary{Turn: turn, Step: 1})
+	f.ev(seq+1, "turn/end", native.TurnEnd{Turn: turn, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+}
+
+func readUntilClosed(t *testing.T, stream base.EventStream) ([]protocol.Envelope, error) {
+	t.Helper()
+	var envelopes []protocol.Envelope
+	var streamErr error
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case result, ok := <-stream:
+			if !ok {
+				return envelopes, streamErr
+			}
+			if result.Error != nil {
+				streamErr = result.Error
+				continue
+			}
+			envelopes = append(envelopes, result.Envelope)
+		case <-timer.C:
+			t.Fatal("event stream did not close")
+			return nil, nil
+		}
+	}
+}
+
+func overflowedPrefix(t *testing.T, f *fakeClient, stream base.EventStream, texts []string) []protocol.Envelope {
+	t.Helper()
+	streamTexts(f, 1, 5, texts)
+	awaitReduced(t, f)
+	prefix, streamErr := readUntilClosed(t, stream)
+	if !errors.Is(streamErr, base.ErrEventStreamOverflow) || len(prefix) != streamCapacity {
+		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
+	}
+	return prefix
+}
+
+func lastSequence(t *testing.T, events []protocol.Envelope) uint64 {
+	t.Helper()
+	if len(events) == 0 {
+		t.Fatal("no events")
+	}
+	return *events[len(events)-1].Sequence
+}
+
+func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
+	session, client := openWithJournal(t, defaultJournalCapacity)
+	admitted, stream := admission(t, session, client, "receipt")
+	texts := numbered(2 * streamCapacity)
+	prefix := overflowedPrefix(t, client, stream, texts)
+	cursor := lastSequence(t, prefix)
+	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: cursor})
+	if err != nil || recovery.ReplayGap != nil || recovery.RequestedAfter != cursor || recovery.ReplayedFrom != cursor+1 || recovery.ReplayedThrough != uint64(1+len(texts)) {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	finishTurn(client, 1, 6)
+	events := append(prefix, drain(t, resumed)...)
+	var text strings.Builder
+	for index, event := range events {
+		if *event.Sequence != uint64(index+1) {
+			t.Fatalf("event %d carries sequence %d", index, *event.Sequence)
+		}
+		if event.Type == protocol.TypeContentDelta {
+			var payload protocol.ContentDeltaPayload
+			if err := event.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			text.WriteString(payload.Part.Text)
+		}
+	}
+	if text.String() != strings.Join(texts, "") || events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("resumed run delivered %q and ended with %s", text.String(), events[len(events)-1].Type)
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), events)
+}
+
+func TestResumeAfterTheProcessDiesStillDeliversTheRunsFailure(t *testing.T) {
+	session, client := openWithJournal(t, defaultJournalCapacity)
+	admitted, stream := admission(t, session, client, "receipt")
+	prefix := overflowedPrefix(t, client, stream, numbered(2*streamCapacity))
+	cursor := lastSequence(t, prefix)
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for _, err := session.State(context.Background()); !errors.Is(err, base.ErrSessionClosed); _, err = session.State(context.Background()) {
+		if time.Now().After(deadline) {
+			t.Fatal("the session outlived its process")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	recovery, replay, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: cursor})
+	if err != nil || recovery.ReplayGap != nil || recovery.ReplayedFrom != cursor+1 {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	events := append(prefix, drain(t, replay)...)
+	assertFailedWith(t, events, "deepseek_process_exit", "EOF")
+	var failed protocol.RunFailedPayload
+	if err := events[len(events)-1].DecodePayload(&failed); err != nil || failed.SettledBy != protocol.SettledByInferred {
+		t.Fatalf("failure = %+v, %v", failed, err)
+	}
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), events)
+}
+
+func TestResumeAfterAStallLongerThanTheJournalReportsAGap(t *testing.T) {
+	const journal = 16
+	session, client := openWithJournal(t, journal)
+	admitted, stream := admission(t, session, client, "receipt")
+	texts := numbered(2 * streamCapacity)
+	cursor := lastSequence(t, overflowedPrefix(t, client, stream, texts))
+	latest := uint64(1 + len(texts))
+	oldest := latest - journal + 1
+	recovery, gapped, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: cursor})
+	var gap *base.ReplayGap
+	if !errors.As(err, &gap) || *gap != (base.ReplayGap{RequestedAfter: cursor, OldestAvailable: oldest, LatestAvailable: latest}) || recovery.ReplayGap != gap || recovery.ReplayedFrom != 0 || recovery.ReplayedThrough != 0 || recovery.State.Status != protocol.SessionRunning {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	if replayed, _ := readUntilClosed(t, gapped); len(replayed) != 0 {
+		t.Fatalf("a gap replayed %d envelopes", len(replayed))
+	}
+	_, boundary, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: oldest - 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finishTurn(client, 1, 6)
+	tail := drain(t, boundary)
+	if len(tail) != journal+1 || *tail[0].Sequence != oldest || tail[journal].Type != protocol.TypeRunCompleted {
+		t.Fatalf("boundary replay delivered %d envelopes from %d", len(tail), *tail[0].Sequence)
+	}
+}
+
+func TestResumeOfARunTheJournalNoLongerHoldsReportsAGap(t *testing.T) {
+	session, client := openWithJournal(t, 4)
+	first, stream := admission(t, session, client, "first")
+	streamTexts(client, 1, 5, []string{"one"})
+	finishTurn(client, 1, 6)
+	latest := lastSequence(t, drain(t, stream))
+	_, second := admitTurn(t, session, client, "second", 2, 8)
+	streamTexts(client, 2, 12, numbered(4))
+	finishTurn(client, 2, 13)
+	drain(t, second)
+	recovery, replay, err := session.Resume(context.Background(), base.ResumeRequest{RunID: first.RunID})
+	var gap *base.ReplayGap
+	if !errors.As(err, &gap) || *gap != (base.ReplayGap{RequestedAfter: 0, OldestAvailable: 0, LatestAvailable: latest}) || recovery.ReplayGap != gap {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	if replayed, _ := readUntilClosed(t, replay); len(replayed) != 0 {
+		t.Fatalf("an evicted run replayed %d envelopes", len(replayed))
+	}
+}
+
+func TestResumeReplaysAnEndedRunFromADetachedJournal(t *testing.T) {
+	session, client := openWithJournal(t, defaultJournalCapacity)
+	admitted, stream := admission(t, session, client, "receipt")
+	streamTexts(client, 1, 5, numbered(3))
+	finishTurn(client, 1, 6)
+	events := drain(t, stream)
+	last := lastSequence(t, events)
+	want, err := json.Marshal(events[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	vandalize := func(envelopes []protocol.Envelope) {
+		for _, envelope := range envelopes {
+			envelope.Payload[0] = 'X'
+			*envelope.Sequence += 1000
+			*envelope.TimestampMS += 1000
+		}
+	}
+	vandalize(events)
+	for range 2 {
+		recovery, replay, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: 1})
+		if err != nil || recovery.ReplayedFrom != 2 || recovery.ReplayedThrough != last {
+			t.Fatalf("resume = %+v, %v", recovery, err)
+		}
+		replayed := drain(t, replay)
+		got, err := json.Marshal(replayed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("replay = %s, want %s", got, want)
+		}
+		vandalize(replayed)
+	}
+}
+
+func TestResumeOfALiveRunRefusesAFutureCursorAndFollowsItToTheTerminal(t *testing.T) {
+	session, client := openWithJournal(t, defaultJournalCapacity)
+	admitted, stream := admission(t, session, client, "receipt")
+	streamTexts(client, 1, 5, []string{"hi"})
+	var latest uint64
+	for latest == 0 {
+		if event := adaptertest.Next(t, stream, time.Second); event.Type == protocol.TypeContentDelta {
+			latest = *event.Sequence
+		}
+	}
+	if _, future, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: latest + 1}); !errors.Is(err, base.ErrReplayCursorFuture) || future != nil {
+		t.Fatalf("future cursor on a live run = %v", err)
+	}
+	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: latest})
+	if err != nil || recovery.ReplayedFrom != latest || recovery.ReplayedThrough != latest || recovery.State.Status != protocol.SessionRunning {
+		t.Fatalf("resume at the head = %+v, %v", recovery, err)
+	}
+	finishTurn(client, 1, 6)
+	followed := drain(t, resumed)
+	if len(followed) != 1 || *followed[0].Sequence != latest+1 || followed[0].Type != protocol.TypeRunCompleted {
+		t.Fatalf("resumed live run delivered %+v", followed)
+	}
+}
+
+func TestResumeOfAnEndedRunReplaysNothingFromItsEndAndRefusesPastIt(t *testing.T) {
+	session, client := openWithJournal(t, defaultJournalCapacity)
+	admitted, stream := admission(t, session, client, "receipt")
+	streamTexts(client, 1, 5, []string{"hi"})
+	finishTurn(client, 1, 6)
+	latest := lastSequence(t, drain(t, stream))
+	recovery, atEnd, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: latest})
+	if err != nil || recovery.ReplayGap != nil || recovery.ReplayedFrom != latest || recovery.ReplayedThrough != latest || recovery.State.Status != protocol.SessionIdle {
+		t.Fatalf("resume at the end = %+v, %v", recovery, err)
+	}
+	if replayed, _ := readUntilClosed(t, atEnd); len(replayed) != 0 {
+		t.Fatalf("resume at the end replayed %d envelopes", len(replayed))
+	}
+	if _, future, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: latest + 1}); !errors.Is(err, base.ErrReplayCursorFuture) || future != nil {
+		t.Fatalf("future cursor on an ended run = %v", err)
+	}
+}
+
+func TestResumeRefusesAnUnknownRunAReceiptAndAClosedSession(t *testing.T) {
+	session, client := openWithJournal(t, defaultJournalCapacity)
+	admitted, stream := admission(t, session, client, "receipt")
+	streamTexts(client, 1, 5, []string{"hi"})
+	finishTurn(client, 1, 6)
+	drain(t, stream)
+	for _, run := range []protocol.RunID{"run-unknown", protocol.RunID(admitted.SubmissionID)} {
+		if _, refused, err := session.Resume(context.Background(), base.ResumeRequest{RunID: run}); !errors.Is(err, base.ErrRunNotFound) || refused != nil {
+			t.Fatalf("resume of %q = %v", run, err)
+		}
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, closed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID}); !errors.Is(err, base.ErrSessionClosed) || closed != nil {
+		t.Fatalf("resume on a closed session = %v", err)
+	}
 }

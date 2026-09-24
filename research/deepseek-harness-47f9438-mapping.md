@@ -371,13 +371,18 @@ The Harness session subsystem has persisted event logs, seed boundaries, and
 surface provenance, but the selected SDK wire has no query, cursor, resume, or
 replay method. Internal persistence therefore supports the synchronous inbox
 observation and native implementation semantics; it does not create an OAP
-wire-recovery capability. OAP replay is limited to any explicitly bounded
-adapter journal and is degraded, not native reconstruction.
+wire-recovery capability. OAP replay is limited to the adapter's own bounded
+process-memory journal and is degraded, not native reconstruction:
+`Session.Resume` replays the envelopes the adapter emitted, and a cursor the
+journal no longer holds is an explicit `ReplayGap` (see Issue #237 below).
 
 There is no native cancellation request at this boundary. OAP cancellation is
-`unavailable`; killing the process is transport failure, not cancellation.
-There is likewise no selected-wire steer, queue-control, interaction/permission,
-model-catalog, transcript, fork, or session-resume operation.
+`unavailable`: `Session.Cancel` answers `operation unavailable` and writes
+nothing to the harness, and killing the process is transport failure, not
+cancellation. There is likewise no selected-wire steer, queue-control,
+interaction/permission, model-catalog, transcript, fork, or session-resume
+operation. With no interaction channel no interaction is ever raised, and
+`Session.Resolve` answers `operation unavailable` the same way.
 
 ## Final advertised capability matrix
 
@@ -395,10 +400,10 @@ unavailable.
 | tool lifecycle | `degraded` | call/result only; no native started or progress event |
 | child/subagent lifecycle | `degraded` | local children only; terminal waits for owned child settlement |
 | reconciliation | `degraded` | live status corroboration only; no query/snapshot request |
-| replay/resume | `degraded` | bounded adapter journal only; no native SDK replay/resume |
-| cancellation | `unavailable` | no SDK request; teardown is not cancel |
+| replay/resume | `degraded` | bounded process-memory adapter journal only; evicted cursors are an explicit `ReplayGap`; no native SDK replay/resume |
+| cancellation | `unavailable` | no SDK request; `Session.Cancel` refuses; teardown is not cancel |
 | delivery `queue`, `steer`, or `btw` | `unavailable` | overlapping native followups are deliberately outside the contract |
-| interactions / permissions | `unavailable` | no reverse interaction channel on selected wire |
+| interactions / permissions | `unavailable` | no reverse interaction channel on selected wire; `Session.Resolve` refuses |
 | model catalog or model change | `unavailable` | provider/model frozen at adapter initialization |
 | transcript reconstruction | `unavailable` | internal session persistence is not exposed on SDK wire |
 | fork / branch / session replacement | `unavailable` | no selected-wire operations |
@@ -762,3 +767,58 @@ and refused again when that object was merely incomplete, where the oracle
 decodes both into a zero-valued `wireToolCallContent` without error. This port
 cannot fail that way, because it asserts nothing about a payload's member set.
 A port's failure modes follow from which of the oracle's layers it reproduced.
+
+## Issue #237: resume replays the adapter journal
+
+This ledger has classified replay/resume `degraded`, a bounded adapter journal,
+since it was frozen. The adapter advertised `unavailable` for `run.resume`,
+`run.replay` and the journal's replay, and `Session.Resume` answered
+`operation unavailable` unconditionally, although every session already kept
+the journal. Code and ledger now agree: all three are `degraded`, and the
+capability revision is `deepseek-harness-47f9438-oap-v2`. The pin and the
+revision prefix do not move; only the suffix does, because the descriptor did.
+
+Why it matters: `ErrEventStreamOverflow` tells a consumer to resume from its
+last sequence. An in-process consumer that stalled past the 64-slot event
+stream lost the rest of the run, and the daemon's `?after=` reconnect, which
+drives the same `Resume`, could not resume a deepseek session either. The
+Claude Code adapter had the same stub and was fixed the same way in #239.
+
+- A cursor inside the journal replays the suffix, as copies detached from the
+  journal, then follows the live run to its terminal.
+- A run that has ended replays its retained tail and closes. Runs leave the
+  session's registry at their terminal, so the adapter keeps each ended run's
+  last sequence. That is also what lets a consumer that overflowed collect the
+  synthesized `run.failed` after the process died.
+- A cursor older than the journal returns `*adapter.ReplayGap` with the
+  retained bounds. A run whose envelopes were all evicted is a gap with
+  `OldestAvailable` 0, not an empty replay. A cursor past the run returns
+  `ErrReplayCursorFuture`.
+- A run the session never admitted is `ErrRunNotFound`, and so is the prompt
+  receipt: `messageId` is a submission identity, not a run.
+- Resume writes nothing to the harness. There is still no native request it
+  could write.
+
+`Config.JournalCapacity` (default 256, shared by the session's runs) bounds
+what a stalled consumer can recover. A stall that outruns it gets a gap, not a
+silent hole.
+
+The corpus executes it. `unsupported-controls` scripted resume as
+`unavailable`; it now keeps only cancel and resolve, with the
+`no-native-cancel` label. The new `journal-replay` case replays the pinned
+`streaming-chunks` frames and carries `no-implied-replay`: the replay must
+equal what the run's stream delivered, the receipt must be refused as a run id,
+and neither may write a native request. Each case's `advertised_capabilities`
+is now checked against the descriptor, as the Claude Code and Hermes corpora
+already were; twelve cases claimed `run.replay: unavailable`.
+
+Not verified against a live runtime: none was available, and the process gates
+are opt-in. The in-process tests stall a consumer over 128 streamed deltas and
+resume it to a complete, contiguous run.
+
+The Zig port keeps no journal and declares no `resume`, so it cannot execute
+the two `journal-replay` resume steps. Its corpus harness skips them explicitly
+(`skipResume`), only in the two shapes the Go harness executes, and refuses to
+skip once the port declares `resume`. The case's recorded envelopes are the
+delivered run, which the port does reproduce. Only its capability revision
+follows this change; a Zig journal and `Resume` are separate, later work.

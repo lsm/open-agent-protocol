@@ -1,12 +1,12 @@
 {
   "advertised_capabilities": {
-    "run.cancel": "unavailable",
     "run.replay": "degraded",
+    "run.resume": "degraded",
     "run.streaming": "native",
     "session.message.submit": "degraded"
   },
   "expected_oap": "expected-oap.json",
-  "id": "owned-start-completed",
+  "id": "journal-replay",
   "identity_map": {
     "child.sessionId": "adapter_child_settlement_identity",
     "native.callId": "oap.tool_call_id",

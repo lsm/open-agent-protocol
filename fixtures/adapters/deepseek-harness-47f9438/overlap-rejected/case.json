@@ -1,7 +1,7 @@
 {
   "advertised_capabilities": {
     "run.cancel": "unavailable",
-    "run.replay": "unavailable",
+    "run.replay": "degraded",
     "run.streaming": "native",
     "session.message.submit": "degraded"
   },
