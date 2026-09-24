@@ -6,7 +6,7 @@ const backend = @import("backend");
 const session = @import("session");
 const rpc = @import("rpc");
 const compat = @import("compat");
-const jsonencode = @import("jsonencode");
+const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = "claude-code-2.1.280-oapx-v1";
@@ -259,7 +259,7 @@ pub const Session = struct {
         if (request != .object) return;
         const input = rpc.lookupRaw(request.object, "input") orelse std.json.Value.null;
         try self.asks.ensureUnusedCapacity(self.gpa, 1);
-        const input_json = try jsonencode.valueAlloc(self.gpa, input);
+        const input_json = try json_encode.valueAlloc(self.gpa, input);
         errdefer self.gpa.free(input_json);
         const request_id = try self.gpa.dupe(u8, message.request_id);
         self.asks.appendAssumeCapacity(.{ .request_id = request_id, .input_json = input_json });
@@ -530,7 +530,7 @@ fn appendEvents(allocator: std.mem.Allocator, emitted: []const std.json.Value, o
         out.shrinkRetainingCapacity(first);
     }
     for (emitted) |value| {
-        const line = try jsonencode.valueAlloc(allocator, value);
+        const line = try json_encode.valueAlloc(allocator, value);
         errdefer allocator.free(line);
         const run_id = try allocator.dupe(u8, value.object.get("run_id").?.string);
         const sequence: u64 = @intCast(value.object.get("sequence").?.integer);
@@ -817,7 +817,7 @@ test "a tool input nested past 256 levels reaches the call, the prompt and the c
         if (std.mem.eql(u8, parsed.object.get("type").?.string, "action.call.requested")) requested = parsed;
     }
     const arguments = requested.?.object.get("payload").?.object.get("arguments_json").?;
-    try testing.expectEqualStrings(input, try jsonencode.valueAlloc(scratch, arguments));
+    try testing.expectEqualStrings(input, try json_encode.valueAlloc(scratch, arguments));
 
     const prompt = (try std.json.parseFromSliceLeaky(std.json.Value, scratch, asked.line, .{})).object.get("payload").?.object.get("questions").?.array.items[0].object.get("prompt").?.string;
     try testing.expectEqualStrings("Bash " ++ input, prompt);

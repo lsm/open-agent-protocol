@@ -200,6 +200,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const json_encode_mod = b.createModule(.{
+        .root_source_file = b.path("src/json/encode.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const json_encode_test = b.addTest(.{ .root_module = json_encode_mod });
 
     const owned_slice_mod = b.createModule(.{
         .root_source_file = b.path("src/owned_slice.zig"),
@@ -256,12 +262,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const adapter_gojson_test = b.addTest(.{ .root_module = adapter_gojson_mod });
-    const adapter_jsonencode_mod = b.createModule(.{
-        .root_source_file = b.path("src/adapter/jsonencode.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const adapter_jsonencode_test = b.addTest(.{ .root_module = adapter_jsonencode_mod });
     const adapter_process_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/process.zig"),
         .target = target,
@@ -325,7 +325,7 @@ pub fn build(b: *std.Build) void {
     claude_rpc_mod.addImport("goquote", adapter_goquote_mod);
     claude_rpc_mod.addImport("gojson", adapter_gojson_mod);
     claude_session_mod.addImport("rpc", claude_rpc_mod);
-    claude_session_mod.addImport("jsonencode", adapter_jsonencode_mod);
+    claude_session_mod.addImport("json_encode", json_encode_mod);
     const claude_session_test = b.addTest(.{ .root_module = claude_session_mod });
 
     const oap_endpoint_client_mod = b.createModule(.{
@@ -1098,7 +1098,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "session", .module = claude_session_mod },
             .{ .name = "rpc", .module = claude_rpc_mod },
             .{ .name = "compat", .module = compat_mod },
-            .{ .name = "jsonencode", .module = adapter_jsonencode_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
     const claude_adapter_test = b.addTest(.{ .root_module = claude_adapter_mod });
@@ -2313,6 +2313,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(string_builder_test).step);
     test_step.dependOn(&b.addRunArtifact(hive_array_test).step);
     test_step.dependOn(&b.addRunArtifact(compat_test).step);
+    test_step.dependOn(&b.addRunArtifact(json_encode_test).step);
     test_step.dependOn(&b.addRunArtifact(artifact_store_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_base_url_test).step);
     test_step.dependOn(&b.addRunArtifact(event_stream_test).step);
@@ -2420,8 +2421,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_gojson_test).step);
-    test_step.dependOn(&b.addRunArtifact(adapter_jsonencode_test).step);
-    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_jsonencode_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_process_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_process_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_rpc_test).step);
@@ -2475,6 +2474,7 @@ pub fn build(b: *std.Build) void {
     test_unit_core_step.dependOn(&b.addRunArtifact(string_builder_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(hive_array_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(compat_test).step);
+    test_unit_core_step.dependOn(&b.addRunArtifact(json_encode_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(artifact_store_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(counting_allocator_test).step);
     test_unit_core_step.dependOn(&b.addRunArtifact(bench_compare_test).step);
