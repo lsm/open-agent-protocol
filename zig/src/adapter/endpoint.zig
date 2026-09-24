@@ -640,23 +640,46 @@ pub const Endpoint = struct {
 
     fn pushEvent(self: *Endpoint, entry: *Entry, event: contract.Event) !void {
         const cursor = try self.cursorFor(entry, event.run_id);
-        if (cursor.lost) return;
-        if (event.line.len + 1 > self.frame_limit) {
+        const fits = event.line.len + 1 <= self.frame_limit;
+        if (cursor.lost) {
+            if (fits and try settlesRun(self.allocator, event.line)) try self.deliver(cursor, event);
+            return;
+        }
+        if (!fits) {
             cursor.lost = true;
             return self.writeControl(.{
                 .control = "stream.lost",
                 .run_id = cursor.run_id,
                 .after = cursor.delivered,
                 .code = "frame_limit",
-                .message = "this run's events stopped reaching the host; replay from after to continue",
+                .message = if (entry.session.vtable.replay != null)
+                    "this run's events stopped reaching the host; replay from after to continue"
+                else
+                    "this run's events after this point are dropped except its terminal; this backend keeps no journal to replay them",
             });
         }
+        try self.deliver(cursor, event);
+    }
+
+    fn deliver(self: *Endpoint, cursor: *Cursor, event: contract.Event) !void {
         const line = try self.allocator.dupe(u8, event.line);
         errdefer self.allocator.free(line);
         try self.outbound.append(self.allocator, line);
         cursor.delivered = event.sequence;
     }
 };
+
+fn settlesRun(allocator: std.mem.Allocator, line: []const u8) !bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return false,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const kind = parsed.value.object.get("type") orelse return false;
+    if (kind != .string) return false;
+    return listed(&.{ "run.completed", "run.failed", "run.cancelled" }, kind.string);
+}
 
 const Mapped = struct { code: []const u8, fallback: []const u8 };
 
@@ -1350,7 +1373,7 @@ test "a backend that offers models, switching and tools is answered through them
     try testing.expectEqualStrings("action.tools.list.response", field(listed_tools[0], &.{"type"}));
 }
 
-test "an event past the frame limit is reported lost once and the run's later events are dropped" {
+test "an event past the frame limit is reported lost once, later events are dropped, and the terminal still settles the run" {
     var harness: Harness = undefined;
     harness.init(testing.allocator, .{ .frame_limit = 800 });
     defer harness.deinit();
@@ -1358,11 +1381,13 @@ test "an event past the frame limit is reported lost once and the run's later ev
     harness.fake.oversized_event = true;
 
     const answered = try harness.send(framed("session.message.submit.request", "s-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
-    try testing.expectEqual(@as(usize, 3), answered.len);
+    try testing.expectEqual(@as(usize, 4), answered.len);
     try testing.expectEqualStrings("run.started", field(answered[1], &.{"type"}));
     try testing.expectEqualStrings("stream.lost", field(answered[2], &.{"control"}));
     try testing.expectEqualStrings("frame_limit", field(answered[2], &.{"code"}));
     try testing.expectEqual(@as(i64, 1), answered[2].object.get("after").?.integer);
+    try testing.expect(std.mem.indexOf(u8, field(answered[2], &.{"message"}), "replay from after") == null);
+    try testing.expectEqualStrings("run.completed", field(answered[3], &.{"type"}));
 }
 
 test "an unavailable backend answers every request unavailable, naming itself" {

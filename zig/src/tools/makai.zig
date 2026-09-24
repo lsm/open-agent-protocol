@@ -9063,9 +9063,8 @@ fn runBackendMode(
         }
         if (endpoint.sessionCount() > 0) {
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
-        } else if (!did_work) {
-            compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
         }
+        if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
         _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
     }
     try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
