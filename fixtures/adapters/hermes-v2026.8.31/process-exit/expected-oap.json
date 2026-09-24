@@ -16,7 +16,7 @@
     "timestamp_ms": 3,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -37,7 +37,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -58,6 +58,6 @@
     "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   }
 ]

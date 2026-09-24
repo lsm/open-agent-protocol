@@ -87,7 +87,11 @@ jobs:
         run: |
           set -euo pipefail
           OUT_ROOT="$GITHUB_WORKSPACE/dist-root/${{ matrix.os_name }}-${{ matrix.arch_name }}"
-          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe --prefix "$OUT_ROOT"
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          zig build --build-file zig/build.zig install -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe -Dversion="$VERSION" --prefix "$OUT_ROOT"
 
       # Secret names and formats match lsm/hyperneo so one set of values serves both
       # repos: APPLE_CERTIFICATE is the base64 .p12, APPLE_API_PRIVATE_KEY is the raw

@@ -1,7 +1,7 @@
 {
   "advertised_capabilities": {
     "run.reconciliation": "degraded",
-    "run.replay": "unavailable"
+    "run.replay": "degraded"
   },
   "expected_oap": "expected-oap.json",
   "id": "replay-epoch",
@@ -17,6 +17,7 @@
     "task_id (btw_*/bg_*)": "side-channel correlation, not projected in v1",
     "tool_id": "tool_call_id correlation"
   },
+  "journal_capacity": 1,
   "mapping": "mapping.json",
   "native": "native.jsonl",
   "omissions": "omissions.json",

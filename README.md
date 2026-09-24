@@ -758,7 +758,10 @@ is set. The gates never
 download anything and pass no ambient credentials; readiness is the
 initialize control exchange, and teardown evidence is stdin EOF. Set
 `OAP_CLAUDE_SHA256` to the expected 64-character binary digest when exact
-artifact provenance is required.
+artifact provenance is required. `OAP_CLAUDE_CAPTURE_DIR`, an absolute
+directory outside the repository, records the corpus probes' raw stream-json
+in both directions into that directory; it is how
+`fixtures/adapters/claude-code-2.1.280` was recorded.
 
 ACP real-process checks follow the same opt-in gate, driven against an
 independent open-source ACP agent rather than a Devin product. Provide an
@@ -789,7 +792,7 @@ download anything.
 | pi | `OAP_PI_SMOKE` / `OAP_PI_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 | DeepSeek Harness | `OAP_DEEPSEEK_HARNESS_SMOKE` / `_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 | Hermes | `OAP_HERMES_SMOKE` / `OAP_HERMES_INTEGRATION`, `_BIN`, `_ROOT`, `_SHA256` | skipped |
-| Claude Code | `OAP_CLAUDE_SMOKE` / `OAP_CLAUDE_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
+| Claude Code | `OAP_CLAUDE_SMOKE` / `OAP_CLAUDE_INTEGRATION` / `OAP_CLAUDE_CAPTURE_DIR`, `_BIN`, `_SHA256` | skipped |
 | ACP (docker/cagent) | `OAP_ACP_SMOKE` / `OAP_ACP_INTEGRATION`, `_BIN`, `_SHA256` | skipped |
 
 Each adapter additionally has a hermetic corpus that runs in CI: it decodes

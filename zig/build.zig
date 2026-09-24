@@ -3,6 +3,17 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const manifest: struct {
+        name: @TypeOf(.makai),
+        version: []const u8,
+        dependencies: struct { zigzag: struct { path: []const u8 } },
+        paths: []const []const u8,
+        fingerprint: u64,
+    } = @import("build.zig.zon");
+    const version = b.option([]const u8, "version", "The version oapx reports; defaults to build.zig.zon's") orelse manifest.version;
+    const version_options = b.addOptions();
+    version_options.addOption([]const u8, "version", version);
+    const version_module = version_options.createModule();
     const zigzag_dep = b.dependency("zigzag", .{
         .target = target,
         .optimize = optimize,
@@ -1425,9 +1436,7 @@ pub fn build(b: *std.Build) void {
     const tools_hashline_mod = b.createModule(.{ .root_source_file = b.path("src/tools/hashline.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "protocol_tool_types", .module = protocol_tool_types_mod } } });
     const tools_search_mod = b.createModule(.{ .root_source_file = b.path("src/tools/search.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_workspace_mod = b.createModule(.{ .root_source_file = b.path("src/tools/workspace.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "tools/process_runner", .module = tools_process_runner_mod } } });
-    const mcp_build_options = b.addOptions();
-    mcp_build_options.addOption([]const u8, "version", "0.2.0");
-    const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = mcp_build_options.createModule() } } });
+    const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module } } });
     const tools_registry_mod = b.createModule(.{ .root_source_file = b.path("src/tools/registry.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/shell", .module = tools_shell_mod }, .{ .name = "tools/file", .module = tools_file_mod }, .{ .name = "tools/edit", .module = tools_edit_mod }, .{ .name = "tools/hashline", .module = tools_hashline_mod }, .{ .name = "tools/search", .module = tools_search_mod }, .{ .name = "tools/workspace", .module = tools_workspace_mod }, .{ .name = "tools/artifact", .module = tools_artifact_mod }, .{ .name = "tools/mcp_bridge", .module = tools_mcp_bridge_mod } } });
 
     const tui_runtime_mod = b.createModule(.{
@@ -2149,6 +2158,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "semantic", .module = semantic_mod },
             .{ .name = "provider_semantic", .module = provider_semantic_mod },
             .{ .name = "packs", .module = packs_mod },
+            .{ .name = "jsonschema", .module = jsonschema_mod },
+            .{ .name = "version_options", .module = version_module },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
             .{ .name = "adapter_contract", .module = adapter_contract_mod },
             .{ .name = "adapter_config", .module = adapter_config_mod },

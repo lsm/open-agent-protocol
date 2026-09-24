@@ -16,7 +16,7 @@ import (
 const (
 	endpointID             = "hermes.gateway"
 	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "hermes-v2026.8.31-oap-v1"
+	CapabilityRevision     = "hermes-v2026.8.31-oap-v2"
 	defaultJournalCapacity = 256
 	relayCapacity          = 256
 )
@@ -217,15 +217,15 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"run.streaming":                  {Level: protocol.SupportNative, Reason: "immediate frames on stdio; post-scrubber provenance disclosed"},
 		"run.status":                     {Level: protocol.SupportEmulated},
 		"run.cancel":                     {Level: protocol.SupportDegraded, Reason: "session.interrupt intent; settlement via message.complete interrupted"},
-		"run.resume":                     {Level: protocol.SupportUnavailable, Reason: "recovery family not exposed in v1"},
+		"run.resume":                     {Level: protocol.SupportDegraded, Reason: "the native recovery family is not exercised; OAP resume replays the adapter journal"},
 		"run.reconciliation":             {Level: protocol.SupportDegraded, Reason: "session.info running/turn_started_at corroboration"},
-		"run.replay":                     {Level: protocol.SupportUnavailable, Reason: "bounded native replay not exposed in v1"},
+		"run.replay":                     {Level: protocol.SupportDegraded, Reason: "bounded adapter journal; gaps are explicit and the native events.since ring is not consulted"},
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool.start/complete only; started synthesized; failures ride in result without a pinned discriminator"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the gateway executes tools internally"},
 		"action.permissions":             {Level: protocol.SupportDegraded, Reason: "approval gates surface as input interactions"},
 		"user_input":                     {Level: protocol.SupportNative, Reason: "approval/clarify/sudo/secret gates with expire siblings"},
 	}
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Hermes Gateway Adapter", Version: PinnedVersion, Adapter: "hermes-tui-gateway"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportUnavailable, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "session.interrupt"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Hermes Gateway Adapter", Version: PinnedVersion, Adapter: "hermes-tui-gateway"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "session.interrupt"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -254,7 +254,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: nativeID, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*inputState{}, stop: make(chan struct{})}
+	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: nativeID, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, ended: map[protocol.RunID]uint64{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*inputState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
 }
