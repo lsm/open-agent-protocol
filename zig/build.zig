@@ -1248,6 +1248,37 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const deepseek_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "process", .module = adapter_process_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "gojson", .module = adapter_gojson_mod },
+            .{ .name = "goquote", .module = adapter_goquote_mod },
+        },
+    });
+    const deepseek_adapter_test = b.addTest(.{ .root_module = deepseek_adapter_mod });
+
+    const deepseek_endpoint_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/unit/deepseek_endpoint.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "endpoint", .module = adapter_endpoint_mod },
+                .{ .name = "deepseek_adapter", .module = deepseek_adapter_mod },
+                .{ .name = "semantic", .module = semantic_mod },
+                .{ .name = "jsonschema", .module = jsonschema_mod },
+                .{ .name = "compat", .module = compat_mod },
+            },
+        }),
+    });
+
     const opencode_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/opencode/adapter.zig"),
         .target = target,
@@ -2407,8 +2438,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "claude_adapter", .module = claude_adapter_mod },
             .{ .name = "codex_adapter", .module = codex_adapter_mod },
             .{ .name = "acp_adapter", .module = acp_adapter_mod },
-            .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
+            .{ .name = "deepseek_adapter", .module = deepseek_adapter_mod },
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
+            .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
         },
     });
 
@@ -2501,6 +2533,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(codex_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(acp_endpoint_test).step);
+    test_step.dependOn(&b.addRunArtifact(deepseek_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_adapter_test).step);
+    test_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(hermes_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_endpoint_test).step);
@@ -2659,12 +2695,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
-    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
-    test_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
+    test_step.dependOn(&b.addRunArtifact(opencode_client_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
     test_step.dependOn(&b.addRunArtifact(opencode_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_corpus_test).step);
