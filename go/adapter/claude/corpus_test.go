@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -294,7 +295,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, error) {
 		initializeErr = make(chan error, 1)
 		go func() {
-			initializeErr <- peer.client.Call(context.Background(), native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: nil}, &struct{}{})
+			initializeErr <- peer.client.Call(context.Background(), native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: native.ToolSelectionHooks()}, &struct{}{})
 		}()
 		return peer.client, nil
 	}), Model: "claude-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
@@ -388,7 +389,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 					var envelope struct {
 						Request native.InitializeRequest `json:"request"`
 					}
-					if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Request.Subtype != native.ControlInitialize || envelope.Request.Hooks != nil {
+					if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Request.Subtype != native.ControlInitialize || !ccHooksRegisterToolSelection(envelope.Request.Hooks) {
 						t.Fatalf("frame %d: initialize shape = %s", i+1, raw)
 					}
 					execution.initializeShape = true
@@ -1684,4 +1685,17 @@ func TestClaudeCurrentCorpusRecordsThePinnedVersion(t *testing.T) {
 	if inits == 0 {
 		t.Fatal("the current corpus carries no system/init frame")
 	}
+}
+
+func ccHooksRegisterToolSelection(hooks any) bool {
+	got, err := json.Marshal(hooks)
+	if err != nil {
+		return false
+	}
+	want, err := json.Marshal(native.ToolSelectionHooks())
+	if err != nil {
+		return false
+	}
+	var gotValue, wantValue any
+	return json.Unmarshal(got, &gotValue) == nil && json.Unmarshal(want, &wantValue) == nil && reflect.DeepEqual(gotValue, wantValue)
 }
