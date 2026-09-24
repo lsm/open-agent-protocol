@@ -150,7 +150,7 @@ go run ./go/cmd/goap conformance --command "your-endpoint"     # drive your endp
 over the stdio binding in [drafts/endpoint-stdio.md](drafts/endpoint-stdio.md),
 assembles what crossed the pipe into a trace, and hands that trace to the same
 validator `goap validate` uses. Because it spawns a process rather than linking
-a library, it does not care what language you wrote your endpoint in. `oap
+a library, it does not care what language you wrote your endpoint in. `goap
 endpoint` is a reference endpoint in this repository that it is developed
 against, so the harness has a known-good target and you can see what one
 conformant implementation looks like.

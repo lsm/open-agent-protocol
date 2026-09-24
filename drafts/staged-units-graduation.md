@@ -5128,7 +5128,7 @@ every later unit relies on:
   client's dev-mode validation and by `goap validate` when it is asked
   for it. Which mode applies has to be a choice the caller makes, not
   one inferred from the input: `runValidate` takes file operands only
-  (`cmd/oap/main.go:65-90`), and a live envelope saved to a file is
+  (`go/cmd/goap/main.go`), and a live envelope saved to a file is
   indistinguishable from a fixture, so inferring would either weaken the
   typo-catching the fixture path exists for or fail the
   forward-compatibility the live path needs. `goap validate` therefore
