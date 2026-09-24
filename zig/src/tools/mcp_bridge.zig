@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const agent = @import("agent");
@@ -212,7 +213,7 @@ const McpServerSession = struct {
     fn sendResponse(self: *McpServerSession, allocator: std.mem.Allocator, id: std.json.Value, result_json: []const u8) !void {
         if (self.mock_response != null) return;
         const child = &(self.child orelse return error.McpServerNotRunning);
-        const id_json = try std.json.Stringify.valueAlloc(allocator, id, .{});
+        const id_json = try json_encode.valueAlloc(allocator, id);
         defer allocator.free(id_json);
         const response = try std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}\n", .{ id_json, result_json });
         defer allocator.free(response);
@@ -222,7 +223,7 @@ const McpServerSession = struct {
     fn sendError(self: *McpServerSession, allocator: std.mem.Allocator, id: std.json.Value, code: i64, message: []const u8) !void {
         if (self.mock_response != null) return;
         const child = &(self.child orelse return error.McpServerNotRunning);
-        const id_json = try std.json.Stringify.valueAlloc(allocator, id, .{});
+        const id_json = try json_encode.valueAlloc(allocator, id);
         defer allocator.free(id_json);
         const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
         defer allocator.free(message_json);
@@ -334,7 +335,7 @@ pub const McpBridge = struct {
             const mcp_name = getString(obj, "name") orelse return error.InvalidMcpResponse;
             const desc = getString(obj, "description") orelse "MCP tool";
             const schema = if (obj.get("inputSchema")) |schema_value|
-                try std.json.Stringify.valueAlloc(self.allocator, schema_value, .{})
+                try json_encode.valueAlloc(self.allocator, schema_value)
             else
                 try self.allocator.dupe(u8, "{\"type\":\"object\"}");
             defer self.allocator.free(schema);
@@ -384,7 +385,7 @@ pub const McpBridge = struct {
         defer allocator.free(escaped_tool);
         var parsed_args = try std.json.parseFromSlice(std.json.Value, allocator, args_json, .{});
         defer parsed_args.deinit();
-        const compact_args = try std.json.Stringify.valueAlloc(allocator, parsed_args.value, .{});
+        const compact_args = try json_encode.valueAlloc(allocator, parsed_args.value);
         defer allocator.free(compact_args);
         const params = try std.fmt.allocPrint(allocator, "{{\"name\":{s},\"arguments\":{s}}}", .{ escaped_tool, compact_args });
         defer allocator.free(params);
@@ -540,11 +541,11 @@ fn resultFromMcp(allocator: std.mem.Allocator, result: std.json.ObjectMap) !agen
     }
     if (text.items.len == 0) {
         if (result.get("structuredContent")) |structured| {
-            const structured_json = try std.json.Stringify.valueAlloc(allocator, structured, .{});
+            const structured_json = try json_encode.valueAlloc(allocator, structured);
             defer allocator.free(structured_json);
             try text.appendSlice(allocator, structured_json);
         } else {
-            const result_json = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = result }, .{});
+            const result_json = try json_encode.valueAlloc(allocator, std.json.Value{ .object = result });
             defer allocator.free(result_json);
             try text.appendSlice(allocator, result_json);
         }

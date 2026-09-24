@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const tui_state = @import("tui_state");
 const tui_theme = @import("tui_theme");
 const tui_text = @import("tui_text");
@@ -124,10 +125,7 @@ fn jsonValueText(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
         .float => |f| std.fmt.allocPrint(allocator, "{d}", .{f}),
         .number_string => |n| allocator.dupe(u8, n),
         .array, .object => blk: {
-            var out: std.Io.Writer.Allocating = .init(allocator);
-            errdefer out.deinit();
-            try std.json.Stringify.value(value, .{}, &out.writer);
-            const raw = try out.toOwnedSlice();
+            const raw = try json_encode.valueAlloc(allocator, value);
             defer allocator.free(raw);
             break :blk try sanitizeOneLine(allocator, raw);
         },
@@ -293,4 +291,14 @@ test "approval falls back to raw args when the payload is not an object" {
     defer std.testing.allocator.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "Args: ") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "[1,2,3]") != null);
+}
+
+test "an argument nested past 256 levels renders as its whole encoding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const nested = ("[" ** 400) ++ "1" ++ ("]" ** 400);
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), nested, .{});
+    const text = try jsonValueText(std.testing.allocator, value);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings(nested, text);
 }

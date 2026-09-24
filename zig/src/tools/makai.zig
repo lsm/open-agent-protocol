@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const api_registry = @import("api_registry");
@@ -1389,7 +1390,7 @@ fn parseToolSchemaJson(allocator: std.mem.Allocator, obj: std.json.ObjectMap) ![
         obj.get("schema");
 
     if (schema_value) |schema| {
-        return try std.json.Stringify.valueAlloc(allocator, schema, .{});
+        return try json_encode.valueAlloc(allocator, schema);
     }
 
     return try allocator.dupe(u8, "{}");
@@ -1794,7 +1795,7 @@ fn parseAssistantContentBlock(allocator: std.mem.Allocator, value: std.json.Valu
         const args_json = if (getStringField(obj, "arguments_json")) |args|
             try allocator.dupe(u8, args)
         else if (obj.get("arguments")) |args_value|
-            try std.json.Stringify.valueAlloc(allocator, args_value, .{})
+            try json_encode.valueAlloc(allocator, args_value)
         else
             try allocator.dupe(u8, "{}");
         errdefer allocator.free(args_json);

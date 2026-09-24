@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const gojson = @import("gojson");
 const goquote = @import("goquote");
 const gomarshal = @import("gomarshal");
@@ -874,7 +875,7 @@ pub fn historyOf(arena: std.mem.Allocator, document: std.json.Value, diag: *Diag
     if (data != .array) return .{ .has_more = has_more };
     const events = try arena.alloc(Event, data.array.items.len);
     for (data.array.items, events) |item, *slot| {
-        slot.* = try decodeEvent(arena, try std.json.Stringify.valueAlloc(arena, item, .{}), diag);
+        slot.* = try decodeEvent(arena, try json_encode.valueAlloc(arena, item), diag);
     }
     return .{ .events = events, .has_more = has_more };
 }
@@ -1152,4 +1153,17 @@ fn decodeEveryShape(allocator: std.mem.Allocator) !void {
 
 test "decoding propagates every allocation failure and leaks nothing" {
     try testing.checkAllAllocationFailures(testing.allocator, decodeEveryShape, .{});
+}
+
+test "a history item whose data nests past 256 levels is decoded, not aborted on" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const nested = ("[" ** 300) ++ "1" ++ ("]" ** 300);
+    const page = "{\"data\":[{\"id\":\"evt_1\",\"type\":\"session.next.text.ended\",\"durable\":{\"aggregateID\":\"ses_a\",\"seq\":1,\"version\":1},\"data\":{\"text\":\"a\",\"extra\":" ++ nested ++ "}}],\"hasMore\":false}";
+    const document = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), page, .{});
+    var diag = Diagnostic{};
+    const history = try historyOf(arena.allocator(), document, &diag);
+    try testing.expectEqual(@as(usize, 1), history.events.len);
+    try testing.expectEqualStrings("evt_1", history.events[0].id);
+    try testing.expect(std.mem.indexOf(u8, history.events[0].data, nested) != null);
 }
