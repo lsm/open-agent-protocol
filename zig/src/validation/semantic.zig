@@ -2513,11 +2513,13 @@ pub const Machine = struct {
                     }
                 }
             }
-            if (member(payload, "sources")) |published| {
-                var adopted = holder.attached_sources.iterator();
-                while (adopted.next()) |entry| {
-                    if (sourceWithId(published, entry.key_ptr.*)) |described| {
-                        if (describesSource(entry.value_ptr.*, described)) entry.value_ptr.* = described;
+            if (!attachment_refused) {
+                if (member(payload, "sources")) |published| {
+                    var adopted = holder.attached_sources.iterator();
+                    while (adopted.next()) |entry| {
+                        if (sourceWithId(published, entry.key_ptr.*)) |described| {
+                            if (describesSource(entry.value_ptr.*, described)) entry.value_ptr.* = described;
+                        }
                     }
                 }
             }

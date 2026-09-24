@@ -3391,6 +3391,24 @@
       ]
     },
     {
+      "id": "tools-catalog-ignores-refused-open-sources",
+      "path": "semantic-invalid/tools-catalog-ignores-refused-open-sources.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch",
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "descriptor-leaks-attachment-fields",
       "path": "semantic-invalid/descriptor-leaks-attachment-fields.json",
       "kind": "semantic-invalid",
