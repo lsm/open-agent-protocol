@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `oapx serve agent` no longer aborts when a client request nests JSON more than 256 levels deep, for example a provided tool's `input_schema` at `session.open`: the envelope decoder re-encoded such members with `std.json.Stringify`, which checks nesting against a fixed 256-level stack in safety builds. The same encoder, `zig/src/json/encode.zig`, now also re-encodes model tool arguments in the agent loop, MCP schemas, arguments and results, content-part arguments in `oapx`, the TUI approval view and adapter configuration.
+
 - `oapx serve agent --backend claude` no longer panics on a tool input nested more than 256 levels deep. `std.json.Stringify` checks nesting against a fixed 256-level stack in safety builds, which releases are, while the Claude line decoder admits 10000. The emitted envelopes, the permission prompt and the input echoed back on allow now go through an iterative encoder, `zig/src/json/encode.zig`, whose output is byte-identical to Stringify's minified form.
 
 - A Zig adapter corpus driver now fails when its case list and its corpus `manifest.json` disagree in either direction — a manifest case neither replayed nor excluded by name, a replayed case the manifest lacks, a case read from another path, or a stale exclusion. Before, dropping a case from a driver's list left the build green. Claude's `process-exit` is the one named exclusion: its own test replays it and allows the single Go-runtime message it quotes.

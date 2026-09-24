@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const json_writer = @import("json_writer");
 const oap_types = @import("oap_types");
 
@@ -662,7 +663,7 @@ pub fn decodeEnumList(
 
 pub fn ownedRawJson(value: std.json.Value, allocator: std.mem.Allocator) ![]const u8 {
     if (value == .string) return allocator.dupe(u8, value.string);
-    return std.json.Stringify.valueAlloc(allocator, value, .{});
+    return json_encode.valueAlloc(allocator, value);
 }
 
 pub fn optionalRawJson(obj: std.json.ObjectMap, key: []const u8, allocator: std.mem.Allocator) !?[]const u8 {
@@ -2206,6 +2207,16 @@ test "an open elects tools and tool sources only when it names at least one" {
 
     try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(prefix ++ "{\"tools\":{}}}", allocator));
     try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(prefix ++ "{\"message\":[]}}", allocator));
+}
+
+test "an open whose provided tool schema nests past 256 levels keeps it whole" {
+    const allocator = std.testing.allocator;
+    const schema = ("{\"items\":" ** 400) ++ "{}" ++ ("}" ** 400);
+    const tools = "[{\"name\":\"t\",\"input_schema\":" ++ schema ++ "}]";
+    var opened = try deserializeEnvelope("{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+        "\",\"type\":\"session.open.request\",\"id\":\"o\",\"payload\":{\"session_id\":\"s\",\"tools\":" ++ tools ++ "}}", allocator);
+    defer opened.deinit(allocator);
+    try std.testing.expectEqualStrings(tools, opened.payload.session_open_request.tools_json.?);
 }
 
 test "a capabilities response carries the tool sources it declares" {
