@@ -2149,7 +2149,102 @@
       ],
       "provenance": [
         "drafts/staged-units-graduation.md",
-        "decisions/0005-run-controls.md"
+        "decisions/0005-run-controls.md",
+        "decisions/0031-a-policy-refusal-is-a-settlement.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-refused-by-policy",
+      "path": "valid/controls-tool-choice-refused-by-policy.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0031-a-policy-refusal-is-a-settlement.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-refused-other-code",
+      "path": "semantic-invalid/controls-tool-choice-refused-other-code.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0031-a-policy-refusal-is-a-settlement.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-permitted-refused",
+      "path": "semantic-invalid/controls-tool-choice-permitted-refused.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0031-a-policy-refusal-is-a-settlement.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-excluded-cancelled",
+      "path": "semantic-invalid/controls-tool-choice-excluded-cancelled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0031-a-policy-refusal-is-a-settlement.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-excluded-unsettled",
+      "path": "semantic-invalid/controls-tool-choice-excluded-unsettled.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "pending_tool_at_terminal",
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0031-a-policy-refusal-is-a-settlement.md"
       ]
     },
     {

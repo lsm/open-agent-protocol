@@ -1190,13 +1190,20 @@ No new envelope types. Changes to
   `run.completed` under an admitted `output_schema`
   lacks `result`, or carries a `result` that does not validate against the
   admitted schema (the validator compiles the schema with the same
-  `jsonschema` engine it already uses for the bundle); an
-  `action.call.requested` in a run whose admitted `tool_choice` excludes
-  that tool (`mode: "none"`, filtered out by `allowed` or `disallowed`,
-  `named` naming another tool, or outside the effective catalog the policy is
+  `jsonschema` engine it already uses for the bundle); a call in a run whose
+  admitted `tool_choice` excludes its tool that is not settled
+  `action.call.failed` with `error.code` `refused_by_policy`, reported at the
+  settling envelope, or at the run terminal if the call is still unsettled
+  there ([Decision 0031](../decisions/0031-a-policy-refusal-is-a-settlement.md):
+  the request itself is not judged, since an endpoint that can only refuse a
+  call after the model makes it must still project the attempt); a call to a
+  permitted tool settled with `refused_by_policy`, which claims a refusal the
+  policy does not support. A tool counts as excluded under `mode: "none"`,
+  when filtered out by `allowed` or `disallowed`, under `named` naming
+  another tool, or outside the effective catalog the policy is
   judged against — the filter runs over the catalog and the mode over the
   filtered set, so the permitted set never reaches past the catalog and a
-  plain `auto` or `required` policy would otherwise govern nothing),
+  plain `auto` or `required` policy would otherwise govern nothing,
   whichever participant owns the call; and,
   at `run.completed`, a run admitted with `mode: "required"` that emitted
   no `action.call.requested`, or with `mode: "named"` that emitted none

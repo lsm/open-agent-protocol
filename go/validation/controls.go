@@ -107,7 +107,12 @@ type admittedControls struct {
 	schemaRaw    json.RawMessage
 	fixedResult  json.RawMessage
 	mode         string
-	calls        map[string]bool
+	calls        map[protocol.ToolCallID]callChoice
+}
+
+type callChoice struct {
+	name     string
+	excluded bool
 }
 
 type pendingSubmit struct {
@@ -541,22 +546,60 @@ func (s *state) checkCompletedControls(i, line int, e protocol.Envelope, r *runS
 	}
 }
 
-func (s *state) checkCallAgainstChoice(i, line int, e protocol.Envelope, r *runState) {
-	if !r.controls.present {
-		return
-	}
+const refusedByPolicy = "refused_by_policy"
+
+func (s *state) recordCallChoice(e protocol.Envelope, r *runState) {
 	var p protocol.ActionCallPayload
 	_ = e.DecodePayload(&p)
-	if p.Name == "" {
+	if p.Name == "" || p.ToolCallID == "" {
 		return
 	}
+	excluded := false
+	if choice := r.controls.choice; r.controls.present && choice != nil {
+		excluded = !choice.Permits(p.Name, r.controls.catalog, r.controls.catalogKnown)
+	}
 	if r.controls.calls == nil {
-		r.controls.calls = map[string]bool{}
+		r.controls.calls = map[protocol.ToolCallID]callChoice{}
 	}
-	r.controls.calls[p.Name] = true
-	if choice := r.controls.choice; choice != nil && !choice.Permits(p.Name, r.controls.catalog, r.controls.catalogKnown) {
-		s.addExpected(CodeUnappliedControl, i, line, e, "/payload/name", "run requested a tool its admitted tool_choice excludes", "a tool the policy permits", p.Name, string(r.id))
+	r.controls.calls[p.ToolCallID] = callChoice{name: p.Name, excluded: excluded}
+}
+
+func (s *state) checkCallSettlement(i, line int, e protocol.Envelope, r *runState) {
+	var p protocol.ActionCallPayload
+	_ = e.DecodePayload(&p)
+	call, ok := r.controls.calls[p.ToolCallID]
+	if !ok {
+		return
 	}
+	delete(r.controls.calls, p.ToolCallID)
+	refused := p.Error != nil && p.Error.Code == refusedByPolicy
+	switch {
+	case call.excluded && !refused:
+		s.addExpected(CodeUnappliedControl, i, line, e, "/type", "a call to a tool the admitted tool_choice excludes settled without a policy refusal", "action.call.failed with error.code "+refusedByPolicy, settlementOutcome(e.Type, p.Error), string(p.ToolCallID), string(r.id))
+	case !call.excluded && refused:
+		s.addExpected(CodeUnappliedControl, i, line, e, "/payload/error/code", "a call to a tool the admitted tool_choice permits claimed a policy refusal", "any code but "+refusedByPolicy, refusedByPolicy, string(p.ToolCallID), string(r.id))
+	}
+}
+
+func (s *state) sweepExcludedCalls(i, line int, e protocol.Envelope, r *runState) {
+	ids := make([]string, 0, len(r.controls.calls))
+	for id, call := range r.controls.calls {
+		if call.excluded {
+			ids = append(ids, string(id))
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		call := r.controls.calls[protocol.ToolCallID(id)]
+		s.addExpected(CodeUnappliedControl, i, line, e, "/type", "run terminated with a call to an excluded tool never settled as a policy refusal", "action.call.failed with error.code "+refusedByPolicy, "unsettled "+call.name, id, string(r.id))
+	}
+}
+
+func settlementOutcome(t protocol.EnvelopeType, err *protocol.ProtocolError) string {
+	if err == nil || err.Code == "" {
+		return string(t)
+	}
+	return string(t) + " with error.code " + err.Code
 }
 
 func sameJSON(a, b json.RawMessage) bool {

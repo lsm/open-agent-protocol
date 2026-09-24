@@ -18,6 +18,7 @@ pub const code_stale_capability_revision = "stale_capability_revision";
 pub const code_degraded_without_optin = "degraded_without_optin";
 pub const code_unsatisfiable_control = "unsatisfiable_control";
 pub const code_unapplied_control = "unapplied_control";
+const refused_by_policy = "refused_by_policy";
 pub const code_duplicate_tool_name = "duplicate_tool_name";
 pub const code_model_not_in_catalog = "model_not_in_catalog";
 pub const code_duplicate_model_id = "duplicate_model_id";
@@ -352,7 +353,7 @@ const Controls = struct {
     choice: ?ToolChoice = null,
     catalog: []const []const u8 = &.{},
     catalog_known: bool = false,
-    calls: std.StringArrayHashMapUnmanaged(void) = .empty,
+    calls: std.StringArrayHashMapUnmanaged(bool) = .empty,
 };
 
 const Pending = struct {
@@ -2191,14 +2192,27 @@ pub const Machine = struct {
         }
     }
 
-    fn checkCallAgainstChoice(self: *Machine, index: usize, payload: std.json.Value, run: *Run) !void {
-        if (!run.controls.present) return;
+    fn recordCallChoice(self: *Machine, payload: std.json.Value, run: *Run) !void {
         const name = memberString(payload, "name");
-        if (name.len == 0) return;
-        try run.controls.calls.put(self.arena.allocator(), name, {});
-        const choice = run.controls.choice orelse return;
-        if (!permits(choice, name, run.controls.catalog, run.controls.catalog_known)) {
-            try self.add(code_unapplied_control, index);
+        const call = memberString(payload, "tool_call_id");
+        if (name.len == 0 or call.len == 0) return;
+        var excluded = false;
+        if (run.controls.present) {
+            if (run.controls.choice) |choice| excluded = !permits(choice, name, run.controls.catalog, run.controls.catalog_known);
+        }
+        try run.controls.calls.put(self.arena.allocator(), call, excluded);
+    }
+
+    fn checkCallSettlement(self: *Machine, index: usize, payload: std.json.Value, run: *Run) !void {
+        const entry = run.controls.calls.fetchSwapRemove(memberString(payload, "tool_call_id")) orelse return;
+        const failure = member(payload, "error") orelse std.json.Value{ .null = {} };
+        const refused = std.mem.eql(u8, memberString(failure, "code"), refused_by_policy);
+        if (entry.value != refused) try self.add(code_unapplied_control, index);
+    }
+
+    fn sweepExcludedCalls(self: *Machine, index: usize, run: *Run) !void {
+        for (run.controls.calls.values()) |excluded| {
+            if (excluded) try self.add(code_unapplied_control, index);
         }
     }
 
@@ -2806,13 +2820,17 @@ pub const Machine = struct {
             try self.toolTransition(index, body, state, next);
             switch (next) {
                 .requested => {
-                    try self.checkCallAgainstChoice(index, body, state);
+                    try self.recordCallChoice(body, state);
                     try self.checkCallSource(index, body);
                     try self.checkCallOwner(index, body);
                     try self.controlCallRequested(index, body, state);
                 },
                 .progress => {},
-                .started, .completed, .failed, .cancelled => try self.controlCallEvent(index, envelope, body, state, next),
+                .started => try self.controlCallEvent(index, envelope, body, state, next),
+                .completed, .failed, .cancelled => {
+                    try self.controlCallEvent(index, envelope, body, state, next);
+                    try self.checkCallSettlement(index, body, state);
+                },
             }
         }
         if (interactionOpening(declared)) |kind| try self.interactionRequested(index, body, state, kind);
@@ -2825,6 +2843,7 @@ pub const Machine = struct {
             if (std.mem.eql(u8, declared, "run.completed")) {
                 try self.checkCompletedControls(index, body, state);
             }
+            try self.sweepExcludedCalls(index, state);
             try self.checkPendingAtTerminal(index, state);
             state.terminal = true;
             state.terminal_type = declared;

@@ -254,8 +254,15 @@ Execution, per advertised control, is that an implementation:
   effect is not a wire observable, so the key means "this endpoint accepts
   instructions" rather than a checked promise;
 - honours an admitted `tool_choice` over the session's catalog: it is a filter,
-  carrying `allowed` or `disallowed` and exactly one of them, and a tool the
-  filter excludes is never called. An `allowed` list naming a tool the catalog
+  carrying `allowed` or `disallowed` and exactly one of them, and a call to a
+  tool the filter excludes settles `action.call.failed` with `error.code`
+  `refused_by_policy`, a core code, which no other call may carry
+  ([Decision 0031](../decisions/0031-a-policy-refusal-is-a-settlement.md)).
+  For `run.tool_selection`, `native` means the harness constrains the model
+  before it acts, and `emulated` means the endpoint enforces the filter around
+  a harness that does not, by electing only permitted tools or by refusing
+  excluded calls that way; an endpoint that can do neither advertises
+  `unavailable`. An `allowed` list naming a tool the catalog
   does not carry is unsatisfiable wherever the catalog is known, and an empty
   `allowed` admits nothing;
 - binds an admitted `output_schema` to the run's final response:
