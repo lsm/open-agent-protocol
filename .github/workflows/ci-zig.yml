@@ -86,6 +86,7 @@ jobs:
         run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
 
       - name: Tests leave no credential store in the checkout
+        if: always()
         run: ./scripts/check-no-test-litter.sh
 
   no-comments:
@@ -158,6 +159,7 @@ jobs:
         run: npm run check:declarations
 
       - name: Tests leave no credential store in the checkout
+        if: always()
         run: ./scripts/check-no-test-litter.sh
 
   # =============================================================================
@@ -213,6 +215,7 @@ jobs:
         run: go test -race ./...
 
       - name: Tests leave no credential store in the checkout
+        if: always()
         run: ./scripts/check-no-test-litter.sh
 
   # =============================================================================
@@ -265,6 +268,7 @@ jobs:
         run: cargo test --all-features
 
       - name: Tests leave no credential store in the checkout
+        if: always()
         working-directory: .
         run: ./scripts/check-no-test-litter.sh
 
@@ -325,6 +329,7 @@ jobs:
         run: python -m pytest -q
 
       - name: Tests leave no credential store in the checkout
+        if: always()
         run: ./scripts/check-no-test-litter.sh
 
   # =============================================================================
@@ -367,6 +372,7 @@ jobs:
           python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/oapx" --output-dir tui-pty-out --scenario all
 
       - name: Tests leave no credential store in the checkout
+        if: always()
         run: ./scripts/check-no-test-litter.sh
 
       - name: Record metrics in job summary
