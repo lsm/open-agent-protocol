@@ -25,7 +25,6 @@ const (
 )
 
 var errTerminalWon = errors.New("claude adapter: terminal already selected")
-var errUnavailable = errors.New("claude adapter: operation unavailable")
 
 type Session struct {
 	mu       sync.Mutex
@@ -773,7 +772,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return err
 	}
 	if resolution.Input == nil {
-		return errUnavailable
+		return base.ErrInteractionNotFound
 	}
 	s.reduceMu.Lock()
 	gate := s.interactions[resolution.Input.InteractionID]

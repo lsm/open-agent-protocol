@@ -240,7 +240,7 @@ func (s *session) answerRun(run *runState) {
 
 func (s *session) submitInput(req protocol.MessageSubmitRequest) (string, native.Delivery, error) {
 
-	if err := base.RefuseUnadvertisedControls(req); err != nil {
+	if err := base.RefuseUnadvertisedControls(req, protocol.FeatureDeliveryQueue); err != nil {
 		return "", "", err
 	}
 	if req.SessionID == "" || len(req.Messages) != 1 {
