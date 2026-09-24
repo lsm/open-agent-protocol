@@ -136,6 +136,53 @@ pub fn userTurn(arena: std.mem.Allocator, uuid: []const u8, text: []const u8, co
     });
 }
 
+pub fn initializeRequest(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    return std.mem.concat(arena, u8, &.{ "{\"request\":{\"hooks\":null,\"subtype\":\"initialize\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });
+}
+
+pub fn interruptRequest(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    return std.mem.concat(arena, u8, &.{ "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });
+}
+
+pub fn permissionAllow(arena: std.mem.Allocator, request_id: []const u8, input_json: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    return std.mem.concat(arena, u8, &.{
+        "{\"response\":{\"request_id\":",
+        id,
+        ",\"response\":{\"behavior\":\"allow\",\"updatedInput\":",
+        input_json,
+        "},\"subtype\":\"success\"},\"type\":\"control_response\"}",
+    });
+}
+
+pub fn permissionDeny(arena: std.mem.Allocator, request_id: []const u8, message: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    const reason = try goJSONString(arena, message);
+    return std.mem.concat(arena, u8, &.{
+        "{\"response\":{\"request_id\":",
+        id,
+        ",\"response\":{\"behavior\":\"deny\",\"message\":",
+        reason,
+        "},\"subtype\":\"success\"},\"type\":\"control_response\"}",
+    });
+}
+
+pub fn controlError(arena: std.mem.Allocator, request_id: []const u8, message: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    const reason = try goJSONString(arena, message);
+    return std.mem.concat(arena, u8, &.{ "{\"response\":{\"error\":", reason, ",\"request_id\":", id, ",\"subtype\":\"error\"},\"type\":\"control_response\"}" });
+}
+
+pub const default_compact_above: usize = 256 * 1024;
+
+pub const Received = union(enum) {
+    message: rpc.Message,
+    quiet,
+    settled,
+};
+
 pub const Backend = struct {
     arena: *std.heap.ArenaAllocator,
     transport: *process.Transport,
@@ -143,6 +190,8 @@ pub const Backend = struct {
     settled: bool = false,
     closed: bool = false,
     expand_prompts: bool = false,
+    compact_above: usize = default_compact_above,
+    retained: usize = 0,
 
     pub fn open(
         arena: *std.heap.ArenaAllocator,
@@ -159,7 +208,7 @@ pub const Backend = struct {
         spawn: process.Spawn,
         options: session.Options,
     ) !Backend {
-        const transport = try process.Transport.open(arena.allocator(), spawn);
+        const transport = try process.Transport.open(arena.child_allocator, spawn);
         errdefer transport.deinit();
         var reducer = session.Reducer.init(arena, options);
         reducer.open();
@@ -167,8 +216,9 @@ pub const Backend = struct {
     }
 
     pub fn submit(self: *Backend, uuid: []const u8, text: []const u8, identity: session.Identity) !void {
-        const frame = try userTurn(self.arena.allocator(), uuid, text, !self.expand_prompts);
-        try self.reducer.submitAs(uuid, identity);
+        const owned = try self.arena.allocator().dupe(u8, uuid);
+        const frame = try userTurn(self.arena.allocator(), owned, text, !self.expand_prompts);
+        try self.reducer.submitAs(owned, identity);
         self.transport.write(frame) catch |err| {
             self.settled = true;
             self.reap();
@@ -187,6 +237,31 @@ pub const Backend = struct {
             try self.settle(null);
             return false;
         };
+        const message = try self.admit(bytes) orelse return false;
+        try self.reducer.observe(message);
+        return true;
+    }
+
+    pub fn receive(self: *Backend, wait_ns: u64) !Received {
+        if (self.settled) return .quiet;
+        const polled = self.transport.poll(wait_ns) catch |err| {
+            try self.settle(err);
+            return .settled;
+        };
+        switch (polled) {
+            .quiet => return .quiet,
+            .ended => {
+                try self.settle(null);
+                return .settled;
+            },
+            .frame => |bytes| {
+                const message = try self.admit(bytes) orelse return .settled;
+                return .{ .message = message };
+            },
+        }
+    }
+
+    fn admit(self: *Backend, bytes: []const u8) !?rpc.Message {
         const arena = self.arena.allocator();
         const held = try arena.dupe(u8, bytes);
         var diagnostic = rpc.Diagnostic{};
@@ -194,9 +269,37 @@ pub const Backend = struct {
             self.settled = true;
             self.reap();
             try self.reducer.transportFailed(diagnostic.message);
-            return false;
+            return null;
         };
-        try self.reducer.observe(message);
+        return message;
+    }
+
+    pub fn abandon(self: *Backend, detail: []const u8) !void {
+        if (self.settled) return;
+        self.settled = true;
+        self.reap();
+        try self.reducer.transportFailed(detail);
+    }
+
+    pub fn writeControl(self: *Backend, frame: []const u8) !void {
+        if (self.settled) return error.NotRunning;
+        self.transport.write(frame) catch |err| {
+            try self.settle(err);
+            return err;
+        };
+    }
+
+    pub fn compact(self: *Backend) !bool {
+        if (self.reducer.run != null or self.reducer.envelopes.items.len != 0) return false;
+        if (self.arena.queryCapacity() <= self.retained +| self.compact_above) return false;
+        var fresh = std.heap.ArenaAllocator.init(self.arena.child_allocator);
+        errdefer fresh.deinit();
+        var kept = try self.reducer.compactInto(&fresh);
+        self.arena.deinit();
+        self.arena.* = fresh;
+        kept.arena = self.arena;
+        self.reducer = kept;
+        self.retained = self.arena.queryCapacity();
         return true;
     }
 
@@ -541,4 +644,152 @@ test "a backend whose prompts expand writes the turn without client_composed" {
     const echoed = try backend.transport.next();
     try std.testing.expect(echoed != null);
     try std.testing.expectEqualStrings(try userTurn(arena.allocator(), "turn-1", "hello", false), echoed.?);
+}
+
+test "the control frames are the ones the pinned marshal produces, keys sorted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    try std.testing.expectEqualStrings(
+        "{\"request\":{\"hooks\":null,\"subtype\":\"initialize\"},\"request_id\":\"req_1\",\"type\":\"control_request\"}",
+        try initializeRequest(scratch, "req_1"),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":\"req_2\",\"type\":\"control_request\"}",
+        try interruptRequest(scratch, "req_2"),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"ls\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}",
+        try permissionAllow(scratch, "ask-1", "{\"command\":\"ls\"}"),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"response\":{\"request_id\":\"ask-2\",\"response\":{\"behavior\":\"deny\",\"message\":\"Denied by the operator\"},\"subtype\":\"success\"},\"type\":\"control_response\"}",
+        try permissionDeny(scratch, "ask-2", "Denied by the operator"),
+    );
+    try std.testing.expectEqualStrings(
+        "{\"response\":{\"error\":\"no \\u003cgate\\u003e\",\"request_id\":\"ask-3\",\"subtype\":\"error\"},\"type\":\"control_response\"}",
+        try controlError(scratch, "ask-3", "no <gate>"),
+    );
+}
+
+fn receiveMessage(backend: *Backend) !?rpc.Message {
+    var attempts: usize = 0;
+    while (attempts < 400) : (attempts += 1) {
+        switch (try backend.receive(25 * std.time.ns_per_ms)) {
+            .message => |message| return message,
+            .quiet => continue,
+            .settled => return null,
+        }
+    }
+    return error.ReceiveNeverSettled;
+}
+
+test "a received frame is handed over parsed and not yet reduced" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try shellBackend(&arena, "printf '%s\\n' '" ++ init_frame ++ "'");
+    defer backend.close();
+
+    const message = (try receiveMessage(&backend)).?;
+    try std.testing.expectEqualStrings("system", message.type);
+    try std.testing.expectEqualStrings("init", message.subtype);
+    try std.testing.expect(!backend.reducer.catalog_known);
+    try backend.reducer.observe(message);
+    try std.testing.expect(backend.reducer.catalog_known);
+}
+
+test "a receive past the child's exit settles once and then stays quiet" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try started(&arena, "printf '%s\\n' '" ++ echo_frame ++ "'; exit 4");
+    defer backend.close();
+
+    try backend.reducer.observe((try receiveMessage(&backend)).?);
+    try std.testing.expect(try receiveMessage(&backend) == null);
+    try std.testing.expect(backend.settled);
+    try std.testing.expect(backend.reducer.unusable);
+    try std.testing.expectEqualStrings("child exited with status 4", failureMessage(&backend) orelse return error.NoFailureEmitted);
+    try std.testing.expect(try backend.receive(std.time.ns_per_ms) == .quiet);
+}
+
+test "a frame the codec refuses on receive settles the run rather than surfacing" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try started(&arena, "printf '%s\\n' '" ++ echo_frame ++ "' 'not json'");
+    defer backend.close();
+
+    try backend.reducer.observe((try receiveMessage(&backend)).?);
+    try std.testing.expect(try receiveMessage(&backend) == null);
+    try std.testing.expect(backend.reducer.unusable);
+    try std.testing.expect(failureMessage(&backend) != null);
+}
+
+test "a control frame reaches the child whole, and one written after the child is gone is refused" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try shellBackend(&arena, "cat");
+    defer backend.close();
+
+    const frame = try initializeRequest(arena.allocator(), "req_1");
+    try backend.writeControl(frame);
+    const echoed = (try backend.transport.next()).?;
+    try std.testing.expectEqualStrings(frame, echoed);
+
+    backend.settled = true;
+    try std.testing.expectError(error.NotRunning, backend.writeControl(frame));
+}
+
+const turn_frames = "printf '%s\\n' " ++
+    "'{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{\"type\":\"message_start\"},\"uuid\":\"e1\",\"user_message_uuid\":\"turn-1\"}' " ++
+    "'{\"type\":\"stream_event\",\"session_id\":\"s\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"" ++ ("w" ** 2048) ++ "\"}},\"uuid\":\"e2\"}' " ++
+    "'{\"type\":\"result\",\"session_id\":\"s\",\"subtype\":\"success\",\"result\":\"one\",\"user_message_uuid\":\"turn-1\",\"uuid\":\"r1\"}'; " ++
+    "read -r second; printf '%s\\n' " ++
+    "'{\"type\":\"result\",\"session_id\":\"s\",\"subtype\":\"success\",\"result\":\"two\",\"user_message_uuid\":\"turn-2\",\"uuid\":\"r2\"}'";
+
+fn reduceUntilIdle(backend: *Backend) !void {
+    while (backend.reducer.run != null) {
+        const message = (try receiveMessage(backend)) orelse return error.ChildLeftEarly;
+        try backend.reducer.observe(message);
+    }
+}
+
+test "the turn uuid a submission names is held by the session, not borrowed from the caller" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try shellBackend(&arena, "head -n 1 >/dev/null; printf '%s\\n' '" ++ echo_frame ++ "'");
+    defer backend.close();
+
+    const lent = try std.testing.allocator.dupe(u8, "turn-1");
+    try backend.submit(lent, "go", .{});
+    @memset(lent, 'x');
+    std.testing.allocator.free(lent);
+
+    try backend.reducer.observe((try receiveMessage(&backend)).?);
+    try std.testing.expect(backend.reducer.run.?.started);
+    try std.testing.expectEqualStrings("turn-1", backend.reducer.started.?.submission_uuid);
+}
+
+test "compaction releases a settled run's frames once the session is idle and keeps the session answering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var backend = try started(&arena, turn_frames);
+    defer backend.close();
+    backend.compact_above = 0;
+
+    try std.testing.expect(!try backend.compact());
+    try reduceUntilIdle(&backend);
+    try std.testing.expect(!try backend.compact());
+
+    const grown = backend.arena.queryCapacity();
+    backend.reducer.envelopes.clearRetainingCapacity();
+    try std.testing.expect(try backend.compact());
+    try std.testing.expect(backend.arena.queryCapacity() < grown);
+    try std.testing.expect(backend.reducer.arena == backend.arena);
+
+    try backend.submit("turn-2", "again", .{});
+    try reduceUntilIdle(&backend);
+    const kinds = backend.reducer.envelopes.items;
+    try std.testing.expectEqualStrings("run.completed", kinds[kinds.len - 1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("two", kinds[kinds.len - 1].object.get("payload").?.object.get("final_response").?.object.get("content").?.string);
 }
