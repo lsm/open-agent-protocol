@@ -119,6 +119,7 @@ A strict stack; lower layers never import higher ones.
 | --- | --- |
 | `protocol` | Envelope, typed ID domains, payload structs, `Type*` constants |
 | `schema` (repo root, `schema/embed.go`) | Embeds `schema/v0.1/*.json` (JSON Schema 2020-12) |
+| `harnesses` (repo root), `harness` | Embeds the harness catalog; `harness` loads it strictly and runs `goap check`'s drift rules |
 | `validation` | Decode (duplicate keys), schema, semantic state machine (`state.go`), typed diagnostic codes |
 | `adapter` | `Adapter`/`Session`/`EventStream`, error sentinels, `ValidateInputAnswer`, and `Memory` |
 | `adapter/adaptertest` | `Next`/`Drain`, `AssertProtocolValid*` |
@@ -270,10 +271,21 @@ protocol bug, not a style issue.
 
 ## Adapters and fixtures
 
-Each adapter is pinned to one upstream commit or tag and is the executable form
-of its `research/` ledger, which records provenance hashes, the wire boundary,
-and every impedance mismatch with its classification. Mismatches are recorded,
-never silently compensated.
+Each adapter is pinned to the versions its catalog entry names
+(`harnesses/<id>.json`, Decision 0033) and is the executable form of their
+`research/` ledgers, which record provenance hashes, the wire boundary, and
+every impedance mismatch with its classification. Mismatches are recorded,
+never silently compensated. The catalog is the one place a pin is written:
+each version has a status (exactly one `current`; `supported`, `floor`,
+`retired`), its endpoint version and capability revision, its ledgers and
+corpus (`corpus_from` when the corpus was recorded at an older release), and
+per-platform artifact digests. A floor's corpus runs through the current
+adapter, so its expectations carry the current revision. `goap check` fails
+when a ledger or corpus is missing, a digest is in none of its version's
+ledgers, a corpus expects another revision, or a Go adapter's
+`CapabilityRevision` or `CorpusDirectory` differs from the current version.
+Move a pin by adding a version and a new corpus directory, never by editing one
+in place.
 
 The layout repeats across `adapter/<harness>/`, so copy a neighbour. What the
 files do not say: `session.go` is a reducer the adapter *owns*, not a rename

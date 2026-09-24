@@ -21,6 +21,7 @@ const (
 	ACPVersion             = 1
 	SchemaVersion          = "1.21.0"
 	CapabilityRevision     = "acp-v1.7.0-schema-v1.21.0-oap-v3"
+	CorpusDirectory        = "fixtures/adapters/acp-v1"
 	defaultJournalCapacity = 256
 )
 

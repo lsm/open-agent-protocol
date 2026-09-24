@@ -18,6 +18,7 @@ const (
 	endpointID             = "hermes.gateway"
 	PinnedVersion          = native.ReleaseTag
 	CapabilityRevision     = "hermes-v2026.8.31-oap-v2"
+	CorpusDirectory        = "fixtures/adapters/hermes-v2026.8.31"
 	defaultJournalCapacity = 256
 	relayCapacity          = 256
 )

@@ -21,6 +21,7 @@ const (
 	PinnedCommit = "16747470f976aca3d362ad730bcd3fe82ecc2c9a"
 
 	CapabilityRevision  = "opencode-v1.18.29-oap-v2"
+	CorpusDirectory     = "fixtures/adapters/opencode-v1.18.29"
 	defaultJournalCap   = 256
 	defaultHistoryLimit = 100
 
