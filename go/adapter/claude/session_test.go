@@ -1060,39 +1060,133 @@ func readUntilClosed(t *testing.T, stream base.EventStream) ([]protocol.Envelope
 	}
 }
 
-func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
-	session, peer := openWireWithJournal(t, 256)
-	result, uuid := startTextRun(t, session, peer, 0)
-	for index := range 2 * streamCapacity {
-		peer.send(textDelta(uuid, strconv.Itoa(index)))
-		if index%16 == 15 {
-			peer.awaitDrain()
+func awaitCursor(t *testing.T, session base.Session, sequence uint64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := session.State(context.Background())
+		if err == nil && state.TranscriptCursor == strconv.FormatUint(sequence, 10) {
+			return
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("transcript cursor = %q, %v; want %d", state.TranscriptCursor, err, sequence)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	prefix, streamErr := readUntilClosed(t, result.stream)
-	if !errors.Is(streamErr, base.ErrEventStreamOverflow) || len(prefix) != streamCapacity {
-		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
+}
+
+func idleCursor(t *testing.T, session base.Session) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := session.State(context.Background())
+		if err == nil && state.Status == protocol.SessionIdle {
+			cursor, err := strconv.ParseUint(state.TranscriptCursor, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return cursor
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session never settled: %+v, %v", state, err)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	cursor := *prefix[len(prefix)-1].Sequence
-	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: cursor})
-	if err != nil || recovery.ReplayGap != nil || recovery.RequestedAfter != cursor || recovery.ReplayedFrom != cursor+1 {
-		t.Fatalf("resume = %+v, %v", recovery, err)
-	}
-	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
-	events := append(prefix, adaptertest.Drain(t, resumed, 5*time.Second)...)
-	deltas := 0
+}
+
+func assertContiguousCompletedRun(t *testing.T, events []protocol.Envelope, from uint64, deltas int) {
+	t.Helper()
+	count := 0
 	for index, event := range events {
-		if event.Sequence == nil || *event.Sequence != uint64(index+1) {
+		if event.Sequence == nil || *event.Sequence != from+uint64(index) {
 			t.Fatalf("event %d carries sequence %v", index, event.Sequence)
 		}
 		if event.Type == protocol.TypeContentDelta {
-			deltas++
+			count++
 		}
 	}
-	if deltas != 2*streamCapacity || terminalOf(events).Type != protocol.TypeRunCompleted {
-		t.Fatalf("resumed run delivered %d deltas and ended with %s", deltas, terminalOf(events).Type)
+	if count != deltas || terminalOf(events).Type != protocol.TypeRunCompleted {
+		t.Fatalf("stream delivered %d deltas and ended with %s", count, terminalOf(events).Type)
 	}
-	assertValidTrace(t, result.admission, events)
+}
+
+func readSlowly(stream base.EventStream) ([]protocol.Envelope, error) {
+	var events []protocol.Envelope
+	for item := range stream {
+		if item.Error != nil {
+			return events, item.Error
+		}
+		events = append(events, item.Envelope)
+		time.Sleep(100 * time.Microsecond)
+	}
+	return events, nil
+}
+
+func TestASlowConsumerWithinTheJournalReceivesTheWholeRunWithoutOverflow(t *testing.T) {
+	session, peer := openWireWithJournal(t, 1024)
+	result, uuid := startTextRun(t, session, peer, 0)
+	type outcome struct {
+		events []protocol.Envelope
+		err    error
+	}
+	read := make(chan outcome, 1)
+	go func() {
+		events, err := readSlowly(result.stream)
+		read <- outcome{events, err}
+	}()
+	const deltas = 600
+	for index := range deltas {
+		peer.send(textDelta(uuid, strconv.Itoa(index)))
+	}
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	got := <-read
+	if got.err != nil {
+		t.Fatalf("slow consumer saw %v after %d envelopes", got.err, len(got.events))
+	}
+	assertContiguousCompletedRun(t, got.events, 1, deltas)
+	assertValidTrace(t, result.admission, got.events)
+}
+
+func TestAResumeWithABacklogPastSixtyFourEventsCompletesWhileTheRunKeepsStreaming(t *testing.T) {
+	session, peer := openWireWithJournal(t, 1024)
+	result, uuid := startTextRun(t, session, peer, 200)
+	awaitCursor(t, session, 201)
+	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: 1})
+	if err != nil || recovery.ReplayGap != nil || recovery.ReplayedFrom != 2 || recovery.ReplayedThrough != 201 {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	go func() {
+		for index := range 400 {
+			peer.send(textDelta(uuid, strconv.Itoa(200+index)))
+		}
+		peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	}()
+	events, streamErr := readSlowly(resumed)
+	if streamErr != nil {
+		t.Fatalf("resumed stream saw %v after %d envelopes", streamErr, len(events))
+	}
+	assertContiguousCompletedRun(t, events, 2, 600)
+}
+
+func TestLagBeyondTheJournalOverflowsAndResumingFromItsCursorReportsAGap(t *testing.T) {
+	const journal, lag = 16, 200
+	session, peer := openWireWithJournal(t, journal)
+	result, uuid := startTextRun(t, session, peer, lag)
+	awaitCursor(t, session, lag+1)
+	prefix, streamErr := readUntilClosed(t, result.stream)
+	if !errors.Is(streamErr, base.ErrEventStreamOverflow) {
+		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
+	}
+	var cursor uint64
+	if len(prefix) > 0 {
+		cursor = *prefix[len(prefix)-1].Sequence
+	}
+	_, _, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: cursor})
+	var gap *base.ReplayGap
+	if !errors.As(err, &gap) || *gap != (base.ReplayGap{RequestedAfter: cursor, OldestAvailable: lag + 2 - journal, LatestAvailable: lag + 1}) {
+		t.Fatalf("resume from %d = %v", cursor, err)
+	}
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 }
 
 func TestResumeReplaysAnEndedRunFromADetachedJournal(t *testing.T) {
@@ -1140,7 +1234,7 @@ func TestResumeReportsAGapOnceTheJournalEvictsTheCursor(t *testing.T) {
 	session, peer := openWireWithJournal(t, 4)
 	result, uuid := startTextRun(t, session, peer, 6)
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
-	latest := *terminalOf(adaptertest.Drain(t, result.stream, 5*time.Second)).Sequence
+	latest := idleCursor(t, session)
 	oldest := latest - 3
 	recovery, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: result.admission.RunID, AfterSequence: oldest - 2})
 	var gap *base.ReplayGap

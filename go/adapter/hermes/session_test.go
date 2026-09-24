@@ -1295,29 +1295,31 @@ func readUntilClosed(t *testing.T, stream base.EventStream) ([]protocol.Envelope
 	}
 }
 
-func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
-	s, f := openWithJournal(t, 256)
-	run := admitAt(t, s, f, 1)
-	var sent strings.Builder
-	for index := range 2 * streamCapacity {
-		f.event(native.EventMessageDelta, int64(index+2), `{"text":"`+strconv.Itoa(index)+`"}`)
-		sent.WriteString(strconv.Itoa(index) + ",")
+func idleCursor(t *testing.T, s base.Session) uint64 {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := s.State(context.Background())
+		if err == nil && state.Status == protocol.SessionIdle {
+			cursor, err := strconv.ParseUint(state.TranscriptCursor, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return cursor
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session never settled: %+v, %v", state, err)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	prefix, streamErr := readUntilClosed(t, run.stream)
-	if !errors.Is(streamErr, base.ErrEventStreamOverflow) || len(prefix) != streamCapacity {
-		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
-	}
-	cursor := *prefix[len(prefix)-1].Sequence
-	recovery, resumed, err := s.Resume(context.Background(), base.ResumeRequest{RunID: run.response.RunID, AfterSequence: cursor})
-	if err != nil || recovery.ReplayGap != nil || recovery.RequestedAfter != cursor || recovery.ReplayedFrom != cursor+1 {
-		t.Fatalf("resume = %+v, %v", recovery, err)
-	}
-	f.event(native.EventMessageComplete, int64(2*streamCapacity+2), settleFrame("complete", ""))
-	events := append(prefix, drain(t, resumed)...)
+}
+
+func assertContiguousDeltas(t *testing.T, events []protocol.Envelope, from uint64, want string) {
+	t.Helper()
 	var received strings.Builder
 	for index, event := range events {
-		if *event.Sequence != uint64(index+1) {
-			t.Fatalf("event %d carries sequence %d", index, *event.Sequence)
+		if event.Sequence == nil || *event.Sequence != from+uint64(index) {
+			t.Fatalf("event %d carries sequence %v", index, event.Sequence)
 		}
 		if event.Type != protocol.TypeContentDelta {
 			continue
@@ -1328,10 +1330,98 @@ func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
 		}
 		received.WriteString(delta.Part.Text + ",")
 	}
-	if received.String() != sent.String() || events[len(events)-1].Type != protocol.TypeRunCompleted {
-		t.Fatalf("resumed run delivered %q and ended with %s", received.String(), events[len(events)-1].Type)
+	if received.String() != want || events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("stream delivered %q and ended with %s", received.String(), events[len(events)-1].Type)
 	}
-	validateWithCapabilities(t, run.response, events)
+}
+
+func readSlowly(stream base.EventStream) ([]protocol.Envelope, error) {
+	var events []protocol.Envelope
+	for item := range stream {
+		if item.Error != nil {
+			return events, item.Error
+		}
+		events = append(events, item.Envelope)
+		time.Sleep(100 * time.Microsecond)
+	}
+	return events, nil
+}
+
+func TestASlowConsumerWithinTheJournalReceivesTheWholeRunWithoutOverflow(t *testing.T) {
+	s, f := openWithJournal(t, 1024)
+	run := admitAt(t, s, f, 1)
+	type outcome struct {
+		events []protocol.Envelope
+		err    error
+	}
+	read := make(chan outcome, 1)
+	go func() {
+		events, err := readSlowly(run.stream)
+		read <- outcome{events, err}
+	}()
+	var sent strings.Builder
+	const deltas = 600
+	for index := range deltas {
+		f.event(native.EventMessageDelta, int64(index+2), `{"text":"`+strconv.Itoa(index)+`"}`)
+		sent.WriteString(strconv.Itoa(index) + ",")
+	}
+	f.event(native.EventMessageComplete, deltas+2, settleFrame("complete", ""))
+	got := <-read
+	if got.err != nil {
+		t.Fatalf("slow consumer saw %v after %d envelopes", got.err, len(got.events))
+	}
+	assertContiguousDeltas(t, got.events, 1, sent.String())
+	validateWithCapabilities(t, run.response, got.events)
+}
+
+func TestAResumeWithABacklogPastSixtyFourEventsCompletesWhileTheRunKeepsStreaming(t *testing.T) {
+	s, f := openWithJournal(t, 1024)
+	run := admitAt(t, s, f, 1)
+	var sent strings.Builder
+	for index := range 200 {
+		f.event(native.EventMessageDelta, int64(index+2), `{"text":"`+strconv.Itoa(index)+`"}`)
+		sent.WriteString(strconv.Itoa(index) + ",")
+	}
+	recovery, resumed, err := s.Resume(context.Background(), base.ResumeRequest{RunID: run.response.RunID, AfterSequence: 1})
+	if err != nil || recovery.ReplayGap != nil || recovery.ReplayedFrom != 2 || recovery.ReplayedThrough != 201 {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	go func() {
+		for index := 200; index < 600; index++ {
+			f.event(native.EventMessageDelta, int64(index+2), `{"text":"`+strconv.Itoa(index)+`"}`)
+		}
+		f.event(native.EventMessageComplete, 602, settleFrame("complete", ""))
+	}()
+	for index := 200; index < 600; index++ {
+		sent.WriteString(strconv.Itoa(index) + ",")
+	}
+	events, streamErr := readSlowly(resumed)
+	if streamErr != nil {
+		t.Fatalf("resumed stream saw %v after %d envelopes", streamErr, len(events))
+	}
+	assertContiguousDeltas(t, events, 2, sent.String())
+}
+
+func TestLagBeyondTheJournalOverflowsAndResumingFromItsCursorReportsAGap(t *testing.T) {
+	const journal, lag = 16, 200
+	s, f := openWithJournal(t, journal)
+	run := admitAt(t, s, f, 1)
+	for index := range lag {
+		f.event(native.EventMessageDelta, int64(index+2), `{"text":"x"}`)
+	}
+	prefix, streamErr := readUntilClosed(t, run.stream)
+	if !errors.Is(streamErr, base.ErrEventStreamOverflow) {
+		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
+	}
+	var cursor uint64
+	if len(prefix) > 0 {
+		cursor = *prefix[len(prefix)-1].Sequence
+	}
+	_, _, err := s.Resume(context.Background(), base.ResumeRequest{RunID: run.response.RunID, AfterSequence: cursor})
+	var gap *base.ReplayGap
+	if !errors.As(err, &gap) || *gap != (base.ReplayGap{RequestedAfter: cursor, OldestAvailable: lag + 2 - journal, LatestAvailable: lag + 1}) {
+		t.Fatalf("resume from %d = %v", cursor, err)
+	}
 }
 
 func TestResumeReportsAGapOnceTheJournalEvictsTheCursor(t *testing.T) {
@@ -1341,8 +1431,7 @@ func TestResumeReportsAGapOnceTheJournalEvictsTheCursor(t *testing.T) {
 		f.event(native.EventMessageDelta, int64(index+2), `{"text":"x"}`)
 	}
 	f.event(native.EventMessageComplete, 8, settleFrame("complete", ""))
-	events := drain(t, first.stream)
-	latest := *events[len(events)-1].Sequence
+	latest := idleCursor(t, s)
 	oldest := latest - 3
 	recovery, stream, err := s.Resume(context.Background(), base.ResumeRequest{RunID: first.response.RunID, AfterSequence: oldest - 2})
 	var gap *base.ReplayGap
@@ -1364,7 +1453,8 @@ func TestResumeReportsAGapOnceTheJournalEvictsTheCursor(t *testing.T) {
 		f.event(native.EventMessageDelta, int64(index+10), `{"text":"y"}`)
 	}
 	f.event(native.EventMessageComplete, 13, settleFrame("complete", ""))
-	drain(t, second.stream)
+	idleCursor(t, s)
+	_ = second
 	recovery, _, err = s.Resume(context.Background(), base.ResumeRequest{RunID: first.response.RunID})
 	if !errors.As(err, &gap) || *gap != (base.ReplayGap{RequestedAfter: 0, OldestAvailable: 0, LatestAvailable: latest}) {
 		t.Fatalf("resume of an evicted run = %+v, %v", recovery, err)
