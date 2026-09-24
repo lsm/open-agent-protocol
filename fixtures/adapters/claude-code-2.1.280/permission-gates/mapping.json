@@ -1,0 +1,186 @@
+[
+  {
+    "index": 1,
+    "type": "write:control_request/initialize",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "protocol.initialize (emulated readiness exchange)"
+  },
+  {
+    "index": 2,
+    "type": "response:initialize",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "readiness receipt"
+  },
+  {
+    "index": 3,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 4,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "state refresh (CurrentModelID)"
+  },
+  {
+    "index": 5,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 6,
+    "type": "observe:assistant",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.requested + synthesized started"
+  },
+  {
+    "index": 7,
+    "type": "observe:control_request/can_use_tool",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "user_input gate (can_use_tool)"
+  },
+  {
+    "index": 8,
+    "type": "oap_control:resolve",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "user_input resolution (allow)"
+  },
+  {
+    "index": 9,
+    "type": "write:control_response",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "allow decision (original input executes)"
+  },
+  {
+    "index": 10,
+    "type": "observe:user",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.completed"
+  },
+  {
+    "index": 11,
+    "type": "observe:result/success",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run terminal"
+  },
+  {
+    "index": 12,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
+    "index": 13,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 14,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "state refresh (CurrentModelID)"
+  },
+  {
+    "index": 15,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 16,
+    "type": "observe:assistant",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.requested + synthesized started"
+  },
+  {
+    "index": 17,
+    "type": "observe:control_request/can_use_tool",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "user_input gate (can_use_tool)"
+  },
+  {
+    "index": 18,
+    "type": "oap_control:resolve",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "user_input resolution (deny)"
+  },
+  {
+    "index": 19,
+    "type": "write:control_response",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "deny decision (operator message returned)"
+  },
+  {
+    "index": 20,
+    "type": "observe:user",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.failed"
+  },
+  {
+    "index": 21,
+    "type": "observe:result/success",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run terminal"
+  },
+  {
+    "index": 22,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
+    "index": 23,
+    "type": "oap_control:close",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "session close via stdin EOF"
+  }
+]

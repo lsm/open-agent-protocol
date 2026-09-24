@@ -1,0 +1,63 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "running",
+      "model_id": "claude-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-5",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "message_id": "message-2",
+      "part": {
+        "type": "text",
+        "text": "partial"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.failed",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "error": {
+        "code": "claude_process_exit",
+        "message": "io: read/write on closed pipe"
+      },
+      "settled_by": "inferred"
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  }
+]

@@ -1,0 +1,359 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "running",
+      "model_id": "claude-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "arguments_json": {
+        "command": "ls"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-7",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash"
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "in_reply_to": "event-6",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-8",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "result": "probe output"
+    },
+    "sequence": 4,
+    "timestamp_ms": 6,
+    "in_reply_to": "event-7",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-9",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "final_response": {
+        "id": "message-2",
+        "role": "assistant",
+        "content": "tool done"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      },
+      "duration_ms": 130
+    },
+    "sequence": 5,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-13",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "status": "running",
+      "model_id": "claude-sonnet-4-5",
+      "started_at_ms": 8
+    },
+    "sequence": 1,
+    "timestamp_ms": 9,
+    "session_id": "session",
+    "run_id": "run-12",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-15",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "tool_call_id": "tool-call-14",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "name": "Read",
+      "arguments_json": {
+        "file_path": "/tmp/x"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 10,
+    "session_id": "session",
+    "run_id": "run-12",
+    "tool_call_id": "tool-call-14",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-16",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "tool_call_id": "tool-call-14",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "name": "Read"
+    },
+    "sequence": 3,
+    "timestamp_ms": 11,
+    "in_reply_to": "event-15",
+    "session_id": "session",
+    "run_id": "run-12",
+    "tool_call_id": "tool-call-14",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-17",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "tool_call_id": "tool-call-14",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "name": "Read",
+      "result": "data"
+    },
+    "sequence": 4,
+    "timestamp_ms": 12,
+    "in_reply_to": "event-16",
+    "session_id": "session",
+    "run_id": "run-12",
+    "tool_call_id": "tool-call-14",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-18",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-12",
+      "final_response": {
+        "id": "message-11",
+        "role": "assistant",
+        "content": "read done"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      },
+      "duration_ms": 130
+    },
+    "sequence": 5,
+    "timestamp_ms": 13,
+    "session_id": "session",
+    "run_id": "run-12",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-22",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-21",
+      "status": "running",
+      "model_id": "claude-sonnet-4-5",
+      "started_at_ms": 14
+    },
+    "sequence": 1,
+    "timestamp_ms": 15,
+    "session_id": "session",
+    "run_id": "run-21",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-24",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-21",
+      "tool_call_id": "tool-call-23",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "arguments_json": {
+        "command": "false"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 16,
+    "session_id": "session",
+    "run_id": "run-21",
+    "tool_call_id": "tool-call-23",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-25",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-21",
+      "tool_call_id": "tool-call-23",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash"
+    },
+    "sequence": 3,
+    "timestamp_ms": 17,
+    "in_reply_to": "event-24",
+    "session_id": "session",
+    "run_id": "run-21",
+    "tool_call_id": "tool-call-23",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.failed",
+    "id": "event-26",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-21",
+      "tool_call_id": "tool-call-23",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "error": {
+        "code": "claude_tool_error",
+        "message": "Exit code 1"
+      }
+    },
+    "sequence": 4,
+    "timestamp_ms": 18,
+    "in_reply_to": "event-25",
+    "session_id": "session",
+    "run_id": "run-21",
+    "tool_call_id": "tool-call-23",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-27",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-21",
+      "final_response": {
+        "id": "message-20",
+        "role": "assistant",
+        "content": "failed tool recorded"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      },
+      "duration_ms": 130
+    },
+    "sequence": 5,
+    "timestamp_ms": 19,
+    "session_id": "session",
+    "run_id": "run-21",
+    "capability_revision": "claude-code-2.1.280-oap-v2"
+  }
+]
