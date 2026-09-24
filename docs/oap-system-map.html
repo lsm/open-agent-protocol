@@ -597,9 +597,9 @@ goap: validation failed           <span class="cmt">(on stderr; exit status 1)</
         <tbody>
           <tr><td class="cmdcell">goap check</td><td class="note">Compiles the schemas, runs every fixture, drives the memory adapter demo. The one command that says yes or no.</td></tr>
           <tr><td class="cmdcell">goap validate trace.json</td><td class="note">Validate a trace you captured. <code>--format=json</code> for machine output.</td></tr>
-          <tr><td class="cmdcell">goap serve</td><td class="note">HTTP+SSE daemon over the hub: a registry, multi-session fan-out, cursor replay. Loopback only, no auth, single user.</td></tr>
-          <tr><td class="cmdcell">goap serve --stdio</td><td class="note">The same hub over newline JSON — twelve ops, each line wrapping an envelope in a transport object.</td></tr>
-          <tr><td class="cmdcell">goap endpoint</td><td class="note">One agent loop, raw OAP envelopes, one per line. The shape a harness implementing OAP natively takes.</td></tr>
+          <tr><td class="cmdcell">goap hub</td><td class="note">HTTP+SSE daemon over the hub: a registry, multi-session fan-out, cursor replay. Loopback only, no auth, single user.</td></tr>
+          <tr><td class="cmdcell">goap hub --stdio</td><td class="note">The same hub over newline JSON — twelve ops, each line wrapping an envelope in a transport object.</td></tr>
+          <tr><td class="cmdcell">goap serve agent</td><td class="note">One agent loop, raw OAP envelopes, one per line. The shape a harness implementing OAP natively takes.</td></tr>
           <tr><td class="cmdcell">goap conformance --command "…"</td><td class="note">Spawn somebody's endpoint binary, drive a scripted session, assemble the exchange and run it through the real validator.</td></tr>
           <tr><td class="cmdcell">oapx</td><td class="note">The TUI.</td></tr>
           <tr><td class="cmdcell">oapx run "fix the failing test"</td><td class="note">One shot, same loop, no server.</td></tr>

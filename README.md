@@ -51,6 +51,18 @@ agent tools and agent sampling options are not yet
 represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
 the default path; the old Makai wire is available only by explicit opt-in.
 
+`oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.280)
+behind the same stdio door instead of the built-in loop, following
+[the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
+`claude` from `PATH` with only `HOME` and `PATH` in its environment and the
+harness-default tool posture, so every gated tool call still reaches the host
+as a `user.input` gate. `--config <path>` takes the entry of that name from a
+registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
+unknown members are refused and `environment` is an explicit allowlist. Any
+other backend answers every request `unavailable`, naming itself; `goap serve`
+still carries those adapters. What claude cannot do through this path is
+recorded in [its ledger](research/claude-code-agent-sdk-2.1.280-mapping.md).
+
 Implementing OAP natively? [**STABILITY.md**](STABILITY.md) describes the
 v0.1 pre-release contract: what will freeze at the first tag, what may still
 be added, how conformance is defined and answered, how long a deprecation runs,
@@ -267,15 +279,15 @@ adapter's pin — which makes it the first native adapter to exercise the
 degraded opt-in end to end. The reference adapter serves the fixed catalog its
 model gate already enforces.
 
-### Local daemon (`goap serve`)
+### Local daemon (`goap hub`)
 
-`goap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
+`goap hub` exposes the adapter registry over HTTP + Server-Sent Events so any
 client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
 HTTP+SSE codec (`serve/servehttp`) over the embeddable `serve` package; its
 wire behavior is the contract the `client` package proves:
 
 ```sh
-goap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
+goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
 
 Without `--config` the daemon serves the built-in memory reference adapter
@@ -387,13 +399,13 @@ and closes every session inside a bounded window — active runs that refuse
 Close are cancelled first — so child agent processes are settled rather than
 orphaned.
 
-### Subprocess embedding (`goap serve --stdio`)
+### Subprocess embedding (`goap hub --stdio`)
 
 A host that would rather spawn a child process than manage a port gets the
 same surface over newline-delimited JSON on the process's own pipes:
 
 ```sh
-goap serve --stdio [--config examples/oap-serve.json]
+goap hub --stdio [--config examples/oap-serve.json]
 ```
 
 Spawning the process is the authorization, so there is no port, no TLS and no
@@ -561,13 +573,13 @@ boundary, exactly as `servehttp` does against the bundled schema.
 
 Pick the tier that fits: `adapter.Session` directly for one embedded session
 (a single run stream with a single consumer, replay through `Resume`);
-`serve` for multi-adapter, multi-session hosts in process; `goap serve` plus
+`serve` for multi-adapter, multi-session hosts in process; `goap hub` plus
 `client` for out-of-process or non-Go consumers over HTTP + SSE.
 
 ### Go client (`client`)
 
 The `client` package is the far-side conformance proof for that wire: a public
-Go client that drives `goap serve` over HTTP + SSE, and the template later
+Go client that drives `goap hub` over HTTP + SSE, and the template later
 clients (TypeScript) copy. It speaks verbatim schema/v0.1 envelopes, consumes
 the event stream through a real `text/event-stream` parser, and resolves
 interactive gates as participant `user` by default:
@@ -648,12 +660,12 @@ Every adapter in this repository translates a harness *into* OAP. An endpoint
 is the other direction: one agent loop that speaks OAP itself.
 
 `drafts/endpoint-stdio.md` is the binding — OAP envelopes, one per line, over
-stdin and stdout. It is deliberately narrower than `goap serve --stdio`, which
+stdin and stdout. It is deliberately narrower than `goap hub --stdio`, which
 exposes a hub; an implementer should not have to build a registry, twelve ops
 and multiplexed subscriptions to be conformant.
 
 ```sh
-goap endpoint --adapter memory    # the reference endpoint: one adapter, raw envelopes
+goap serve agent --backend memory # the reference endpoint: one adapter, raw envelopes
 goap conformance                  # drive that reference endpoint and judge it
 goap conformance --command "some-agent --oap" # drive somebody else's
 ```

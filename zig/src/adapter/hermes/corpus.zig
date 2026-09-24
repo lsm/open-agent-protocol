@@ -208,6 +208,12 @@ const cases = [_]Declared{
     .{ .id = "tool-lifecycle" },
 };
 
+test "the Hermes case list is exactly the corpus manifest's" {
+    var listed: [cases.len]corpus.CaseEntry = undefined;
+    for (&listed, cases) |*entry, declared| entry.* = .{ .id = declared.id, .path = declared.id };
+    try Harness.expectInventory(std.testing.allocator, &listed);
+}
+
 test "the Zig reducer reproduces every Hermes expectation, all eighteen of them" {
     const allocator = std.testing.allocator;
     const root = try Harness.root(allocator);

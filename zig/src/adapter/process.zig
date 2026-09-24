@@ -156,6 +156,50 @@ pub const Transport = struct {
         }
     }
 
+    pub const Poll = union(enum) {
+        frame: []const u8,
+        quiet,
+        ended,
+    };
+
+    pub fn poll(self: *Transport, wait_ns: u64) !Poll {
+        if (try self.take()) |frame| return .{ .frame = frame };
+        if (!self.ended) {
+            const budget: std.Io.Timeout = .{ .duration = .{ .clock = .awake, .raw = .fromNanoseconds(@intCast(wait_ns)) } };
+            if (!try self.fillBefore(budget.toDeadline(self.io()))) return .quiet;
+            if (try self.take()) |frame| return .{ .frame = frame };
+            if (!self.ended) return .quiet;
+        }
+        if (self.pending.items.len > 0) return Error.UnterminatedFrame;
+        return .ended;
+    }
+
+    fn fillBefore(self: *Transport, deadline: std.Io.Timeout) !bool {
+        if (!self.reading) {
+            self.ended = true;
+            return true;
+        }
+        self.multi.fill(1, deadline) catch |raised| switch (raised) {
+            error.EndOfStream => {
+                self.ended = true;
+                return true;
+            },
+            error.Timeout => return false,
+            else => |leftover| return leftover,
+        };
+        try self.absorb();
+        return true;
+    }
+
+    fn absorb(self: *Transport) !void {
+        const reader = self.multi.reader(0);
+        const arrived = reader.buffered();
+        if (arrived.len > 0) {
+            try self.pending.appendSlice(self.allocator, arrived);
+            reader.toss(arrived.len);
+        }
+    }
+
     fn idleDeadline(self: *Transport) std.Io.Timeout {
         if (self.idle == 0) return .none;
         const budget: std.Io.Timeout = .{ .duration = .{ .clock = .awake, .raw = .fromNanoseconds(@intCast(self.idle)) } };
@@ -193,12 +237,7 @@ pub const Transport = struct {
             error.Timeout => return Error.SilentChild,
             else => |leftover| return leftover,
         };
-        const reader = self.multi.reader(0);
-        const arrived = reader.buffered();
-        if (arrived.len > 0) {
-            try self.pending.appendSlice(self.allocator, arrived);
-            reader.toss(arrived.len);
-        }
+        try self.absorb();
     }
 
     pub fn close(self: *Transport) void {
@@ -500,6 +539,45 @@ test "a child that closes its own stdout and then goes inside the budget still r
     transport.close();
     try testing.expectEqual(Departure.exited, transport.departed().departure);
     try testing.expectEqual(@as(u32, 7), transport.departed().status);
+}
+
+fn pollFrame(transport: *Transport) !?[]const u8 {
+    var attempts: usize = 0;
+    while (attempts < 400) : (attempts += 1) {
+        switch (try transport.poll(25 * std.time.ns_per_ms)) {
+            .frame => |frame| return frame,
+            .quiet => continue,
+            .ended => return null,
+        }
+    }
+    return error.PollNeverSettled;
+}
+
+test "a poll that sees nothing before its deadline is quiet, and the frame that follows still arrives" {
+    const transport = try shell("sleep 0.3; printf 'late\\n'", .{ .executable = "" });
+    defer transport.deinit();
+
+    try testing.expect(try transport.poll(10 * std.time.ns_per_ms) == .quiet);
+    try testing.expectEqualStrings("late", (try pollFrame(transport)).?);
+    try testing.expect(try pollFrame(transport) == null);
+}
+
+test "a poll hands over frames the child already wrote, in order, then the end" {
+    const transport = try shell("printf 'a\\nbb\\n'", .{ .executable = "" });
+    defer transport.deinit();
+
+    try testing.expectEqualStrings("a", (try pollFrame(transport)).?);
+    try testing.expectEqualStrings("bb", (try pollFrame(transport)).?);
+    try testing.expect(try pollFrame(transport) == null);
+    try testing.expect(try transport.poll(std.time.ns_per_ms) == .ended);
+}
+
+test "bytes a polled child leaves unterminated are a framing defect, not a frame" {
+    const transport = try shell("printf 'a\\nbb'", .{ .executable = "" });
+    defer transport.deinit();
+
+    try testing.expectEqualStrings("a", (try pollFrame(transport)).?);
+    try testing.expectError(Error.UnterminatedFrame, pollFrame(transport));
 }
 
 test "an expiry whose child has already been waited on signals nothing" {

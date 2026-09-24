@@ -18,26 +18,65 @@ import (
 	"github.com/lsm/open-agent-protocol/go/serve/servehttp"
 )
 
-func TestUsageMentionsServe(t *testing.T) {
+func TestUsageMentionsHubAndServe(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run(context.Background(), nil, nil, &stdout, &stderr); err == nil {
 		t.Fatal("no command succeeded")
 	}
-	if !strings.Contains(stderr.String(), "serve") {
-		t.Fatalf("usage lacks serve: %s", stderr.String())
+	for _, verb := range []string{"hub", "serve"} {
+		if !strings.Contains(stderr.String(), verb) {
+			t.Fatalf("usage lacks %s: %s", verb, stderr.String())
+		}
 	}
 }
 
-func TestServeFlagErrors(t *testing.T) {
+func TestServeWithoutRoleNamesHub(t *testing.T) {
+	for _, args := range [][]string{{"serve"}, {"serve", "--addr", "127.0.0.1:0"}, {"serve", "--stdio"}} {
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {
+			t.Fatalf("%v succeeded", args)
+		}
+		if !strings.Contains(stderr.String(), "goap hub") || !strings.Contains(stderr.String(), "serve agent") {
+			t.Fatalf("%v usage does not name hub and serve agent: %s", args, stderr.String())
+		}
+	}
+}
+
+func TestServeProviderRolesAnswerUnavailable(t *testing.T) {
+	for _, role := range []string{"provider", "agent,provider"} {
+		var stdout, stderr bytes.Buffer
+		err := run(context.Background(), []string{"serve", role, "--stdio"}, strings.NewReader(""), &stdout, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "unavailable") || !strings.Contains(err.Error(), "serve "+role) {
+			t.Fatalf("serve %s: %v", role, err)
+		}
+	}
+}
+
+func TestServeAgentFlagErrors(t *testing.T) {
 	cases := [][]string{
-		{"serve", "--nope"},
-		{"serve", "extra-argument"},
-		{"serve", "--config", filepath.Join(t.TempDir(), "missing.json")},
+		{"serve", "agent", "--adapter", "memory"},
+		{"serve", "agent", "extra-argument"},
+		{"serve", "agent", "--backend", "absent"},
+		{"serve", "agent", "--config", filepath.Join(t.TempDir(), "missing.json")},
+	}
+	for _, args := range cases {
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {
+			t.Fatalf("%v succeeded", args)
+		}
+	}
+}
+
+func TestHubFlagErrors(t *testing.T) {
+	cases := [][]string{
+		{"hub", "--nope"},
+		{"hub", "extra-argument"},
+		{"hub", "--config", filepath.Join(t.TempDir(), "missing.json")},
 	}
 	for _, args := range cases {
 		var stdout, stderr bytes.Buffer
 		if err := run(context.Background(), args, nil, &stdout, &stderr); err == nil {
-			t.Fatalf("serve %v succeeded", args)
+			t.Fatalf("hub %v succeeded", args)
 		}
 	}
 }
@@ -85,7 +124,7 @@ func startServe(t *testing.T, args []string) (string, func(), <-chan error) {
 	t.Cleanup(cancel)
 	stdout := &syncBuffer{}
 	done := make(chan error, 1)
-	go func() { done <- runServe(ctx, args, nil, stdout, io.Discard) }()
+	go func() { done <- runHub(ctx, args, nil, stdout, io.Discard) }()
 
 	address := ""
 	deadline := time.Now().Add(5 * time.Second)

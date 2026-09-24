@@ -157,6 +157,72 @@ fn describe(allocator: std.mem.Allocator, value: std.json.Value) ![]const u8 {
     return std.json.Stringify.valueAlloc(allocator, value, .{ .whitespace = .indent_2 });
 }
 
+pub const CaseEntry = struct { id: []const u8, path: []const u8 };
+
+fn listedEntry(listed: []const CaseEntry, id: []const u8) ?CaseEntry {
+    for (listed) |entry| {
+        if (std.mem.eql(u8, entry.id, id)) return entry;
+    }
+    return null;
+}
+
+fn namesId(ids: []const []const u8, id: []const u8) bool {
+    for (ids) |candidate| {
+        if (std.mem.eql(u8, candidate, id)) return true;
+    }
+    return false;
+}
+
+fn manifestCase(declared: []const std.json.Value, id: []const u8) ?std.json.ObjectMap {
+    for (declared) |item| {
+        if (item != .object) continue;
+        const candidate = stringMember(item.object, "id") orelse continue;
+        if (std.mem.eql(u8, candidate, id)) return item.object;
+    }
+    return null;
+}
+
+pub fn inventoryFindings(scratch: std.mem.Allocator, manifest_text: []const u8, listed: []const CaseEntry, excluded: []const []const u8) ![]const []const u8 {
+    const manifest = try std.json.parseFromSliceLeaky(std.json.Value, scratch, manifest_text, .{});
+    if (manifest != .object) return error.InvalidManifest;
+    const declared_value = manifest.object.get("cases") orelse return error.InvalidManifest;
+    if (declared_value != .array) return error.InvalidManifest;
+    const declared = declared_value.array.items;
+
+    var findings = std.ArrayList([]const u8).empty;
+    for (declared) |item| {
+        if (item != .object) return error.InvalidManifest;
+        const id = stringMember(item.object, "id") orelse return error.InvalidManifest;
+        const path = stringMember(item.object, "path") orelse return error.InvalidManifest;
+        if (listedEntry(listed, id)) |entry| {
+            if (!std.mem.eql(u8, entry.path, path)) {
+                try findings.append(scratch, try std.fmt.allocPrint(scratch, "{s} is replayed from {s}, but the manifest puts it at {s}", .{ id, entry.path, path }));
+            }
+            if (namesId(excluded, id)) {
+                try findings.append(scratch, try std.fmt.allocPrint(scratch, "{s} is replayed and also excluded", .{id}));
+            }
+            continue;
+        }
+        if (!namesId(excluded, id)) {
+            try findings.append(scratch, try std.fmt.allocPrint(scratch, "{s} is in the manifest but neither replayed nor excluded", .{id}));
+        }
+    }
+    for (listed, 0..) |entry, index| {
+        if (listedEntry(listed[0..index], entry.id) != null) {
+            try findings.append(scratch, try std.fmt.allocPrint(scratch, "{s} is replayed twice", .{entry.id}));
+        }
+        if (manifestCase(declared, entry.id) == null) {
+            try findings.append(scratch, try std.fmt.allocPrint(scratch, "{s} is replayed, but the manifest has no such case", .{entry.id}));
+        }
+    }
+    for (excluded) |id| {
+        if (manifestCase(declared, id) == null) {
+            try findings.append(scratch, try std.fmt.allocPrint(scratch, "{s} is excluded, but the manifest has no such case", .{id}));
+        }
+    }
+    return findings.items;
+}
+
 pub fn Harness(comptime Driver: type) type {
     return struct {
         const Self = @This();
@@ -222,7 +288,24 @@ pub fn Harness(comptime Driver: type) type {
             };
         }
 
+        pub fn expectInventory(allocator: std.mem.Allocator, listed: []const CaseEntry) !void {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            defer arena.deinit();
+            const scratch = arena.allocator();
+            const corpus = try Self.root(scratch);
+            const manifest_text = try readFile(scratch, try std.fs.path.join(scratch, &.{ corpus, "manifest.json" }));
+            const excluded: []const []const u8 = if (@hasDecl(Driver, "excluded_cases")) &Driver.excluded_cases else &.{};
+            const findings = try inventoryFindings(scratch, manifest_text, listed, excluded);
+            for (findings) |finding| std.debug.print("\n{s}: {s}\n", .{ Driver.corpus_relative, finding });
+            try std.testing.expectEqual(@as(usize, 0), findings.len);
+        }
+
         pub fn expectEveryCase(allocator: std.mem.Allocator, cases: []const Driver.Case) !void {
+            const listed = try allocator.alloc(CaseEntry, cases.len);
+            defer allocator.free(listed);
+            for (listed, cases) |*entry, case| entry.* = .{ .id = case.id, .path = case.path };
+            try expectInventory(allocator, listed);
+
             const corpus = try Self.root(allocator);
             defer allocator.free(corpus);
 
@@ -417,4 +500,60 @@ test "the harness drives a script through the driver in order" {
     var refused = std.heap.ArenaAllocator.init(allocator);
     defer refused.deinit();
     try testing.expectError(error.UnhandledScriptAction, StubHarness.replay(&refused, root, case));
+}
+
+const inventory_manifest =
+    \\{"cases":[{"id":"alpha","path":"alpha"},{"id":"beta","path":"cases/beta"},{"id":"gamma","path":"gamma"}]}
+;
+
+fn findingsFor(scratch: std.mem.Allocator, listed: []const CaseEntry, excluded: []const []const u8) ![]const []const u8 {
+    return inventoryFindings(scratch, inventory_manifest, listed, excluded);
+}
+
+test "a case list naming every manifest case at its path, with the rest excluded by name, has no findings" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const findings = try findingsFor(arena.allocator(), &.{ .{ .id = "alpha", .path = "alpha" }, .{ .id = "beta", .path = "cases/beta" } }, &.{"gamma"});
+    try testing.expectEqual(@as(usize, 0), findings.len);
+}
+
+test "a manifest case the port neither replays nor excludes is a finding" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const findings = try findingsFor(arena.allocator(), &.{ .{ .id = "alpha", .path = "alpha" }, .{ .id = "beta", .path = "cases/beta" } }, &.{});
+    try testing.expectEqual(@as(usize, 1), findings.len);
+    try testing.expectEqualStrings("gamma is in the manifest but neither replayed nor excluded", findings[0]);
+}
+
+test "a replayed case the manifest does not declare is a finding" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const findings = try findingsFor(arena.allocator(), &.{ .{ .id = "alpha", .path = "alpha" }, .{ .id = "beta", .path = "cases/beta" }, .{ .id = "delta", .path = "delta" } }, &.{"gamma"});
+    try testing.expectEqual(@as(usize, 1), findings.len);
+    try testing.expectEqualStrings("delta is replayed, but the manifest has no such case", findings[0]);
+}
+
+test "a case replayed from a path other than the manifest's is a finding" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const findings = try findingsFor(arena.allocator(), &.{ .{ .id = "alpha", .path = "alpha" }, .{ .id = "beta", .path = "beta" } }, &.{"gamma"});
+    try testing.expectEqual(@as(usize, 1), findings.len);
+    try testing.expectEqualStrings("beta is replayed from beta, but the manifest puts it at cases/beta", findings[0]);
+}
+
+test "a case replayed twice is a finding" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const findings = try findingsFor(arena.allocator(), &.{ .{ .id = "alpha", .path = "alpha" }, .{ .id = "alpha", .path = "alpha" }, .{ .id = "beta", .path = "cases/beta" } }, &.{"gamma"});
+    try testing.expectEqual(@as(usize, 1), findings.len);
+    try testing.expectEqualStrings("alpha is replayed twice", findings[0]);
+}
+
+test "an exclusion must name a manifest case that is not also replayed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const findings = try findingsFor(arena.allocator(), &.{ .{ .id = "alpha", .path = "alpha" }, .{ .id = "beta", .path = "cases/beta" }, .{ .id = "gamma", .path = "gamma" } }, &.{ "gamma", "omega" });
+    try testing.expectEqual(@as(usize, 2), findings.len);
+    try testing.expectEqualStrings("gamma is replayed and also excluded", findings[0]);
+    try testing.expectEqualStrings("omega is excluded, but the manifest has no such case", findings[1]);
 }

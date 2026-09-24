@@ -29,6 +29,16 @@ pub const code_ambiguous_default_model = "ambiguous_default_model";
 pub const code_unannounced_catalog_change = "unannounced_catalog_change";
 pub const code_undisclosed_attach_modes = "undisclosed_attach_modes";
 pub const code_duplicate_tool_source = "duplicate_tool_source";
+pub const code_unmatched_tool = "unmatched_tool";
+pub const code_illegal_tool_transition = "illegal_tool_transition";
+pub const code_pending_tool_at_terminal = "pending_tool_at_terminal";
+pub const code_duplicate_interaction = "duplicate_interaction";
+pub const code_unmatched_interaction = "unmatched_interaction";
+pub const code_wrong_interaction_responder = "wrong_interaction_responder";
+pub const code_pending_interaction_at_terminal = "pending_interaction_at_terminal";
+pub const code_resolution_payload_mismatch = "resolution_payload_mismatch";
+pub const code_wrong_tool_owner = "wrong_tool_owner";
+pub const code_undisclosed_provide_limit = "undisclosed_provide_limit";
 
 pub const implemented = [_][]const u8{
     code_duplicate_envelope_id,
@@ -56,6 +66,16 @@ pub const implemented = [_][]const u8{
     code_unannounced_catalog_change,
     code_undisclosed_attach_modes,
     code_duplicate_tool_source,
+    code_unmatched_tool,
+    code_illegal_tool_transition,
+    code_pending_tool_at_terminal,
+    code_duplicate_interaction,
+    code_unmatched_interaction,
+    code_wrong_interaction_responder,
+    code_pending_interaction_at_terminal,
+    code_resolution_payload_mismatch,
+    code_wrong_tool_owner,
+    code_undisclosed_provide_limit,
 };
 
 pub fn isImplemented(code: []const u8) bool {
@@ -179,6 +199,59 @@ const Run = struct {
     controls: Controls = .{},
     deferred_controls: bool = false,
     status: []const u8 = "",
+    prior_unknown: bool = false,
+    tools: std.StringArrayHashMapUnmanaged(ToolTrack) = .empty,
+    interactions: std.StringArrayHashMapUnmanaged(*Interaction) = .empty,
+};
+
+const CallStatus = enum { requested, started, progress, completed, failed, cancelled };
+
+const ToolTrack = struct {
+    status: CallStatus,
+    interaction: []const u8 = "",
+};
+
+const InteractionKind = enum { permission, input, tool_call };
+
+const Arm = enum { started, result, @"error" };
+
+const Reason = enum {
+    unknown_interaction,
+    wrong_responder,
+    already_resolved,
+    repeated_acknowledgement,
+    late_acknowledgement,
+};
+
+const Interaction = struct {
+    kind: InteractionKind = .permission,
+    requested_by: []const u8 = "",
+    responded_by: []const u8 = "",
+    allow_cancel: bool = false,
+    choices: ?std.json.Value = null,
+    questions: ?std.json.Value = null,
+    resolved: bool = false,
+    unwitnessed: bool = false,
+    acked: bool = false,
+    settled: bool = false,
+    accepted_arm: ?Arm = null,
+    accepted_result: ?std.json.Value = null,
+    accepted_error: ?std.json.Value = null,
+    resolve_requests: std.StringArrayHashMapUnmanaged(void) = .empty,
+    settlements: std.StringArrayHashMapUnmanaged(void) = .empty,
+};
+
+const PendingResolve = struct {
+    run: []const u8,
+    interaction: []const u8,
+    arm: ?Arm,
+    reason: ?Reason = null,
+    judged: bool = true,
+};
+
+const ToolCatalog = struct {
+    revision: []const u8,
+    owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 };
 
 const Unjudged = struct {
@@ -220,6 +293,8 @@ const Session = struct {
     current_known: bool = false,
     expected_default: []const u8 = "",
     guard_default: bool = false,
+    provided_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    tool_catalog: ?ToolCatalog = null,
 };
 
 const Window = struct {
@@ -273,6 +348,8 @@ const Pending = struct {
     subscribe: ?Expectation = null,
     fired: bool = false,
     provided: []const []const u8 = &.{},
+    tools: ?std.json.Value = null,
+    honour: []const u8 = "",
     attachments: ?std.json.Value = null,
     model_listed: bool = false,
     limit_refusal: ?Expectation = null,
@@ -396,6 +473,8 @@ pub const Machine = struct {
     limits: ?Limits = null,
     windows: std.StringArrayHashMapUnmanaged(*Window) = .empty,
     submits: std.StringArrayHashMapUnmanaged(*Pending) = .empty,
+    resolves: std.StringArrayHashMapUnmanaged(PendingResolve) = .empty,
+    descriptor_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Machine {
         return .{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
@@ -415,6 +494,8 @@ pub const Machine = struct {
         self.catalogs.deinit(self.allocator);
         self.windows.deinit(self.allocator);
         self.submits.deinit(self.allocator);
+        self.resolves.deinit(self.allocator);
+        self.descriptor_owners.deinit(self.allocator);
         for (self.sessions.values()) |holder| {
             holder.order.deinit(self.allocator);
             holder.provided.deinit(self.allocator);
@@ -610,6 +691,7 @@ pub const Machine = struct {
             self.current_capability = field(envelope, "capability_revision");
             self.capabilities_stale = true;
             self.limits = null;
+            self.descriptor_owners.clearRetainingCapacity();
             return;
         }
         if (std.mem.eql(u8, declared, "session.message.submit.request")) {
@@ -663,16 +745,22 @@ pub const Machine = struct {
                 try self.add(code_duplicate_tool_source, index);
             }
             try self.duplicateNames(index, member(payload, "tools"));
+            try self.servedCatalog(payload);
             return;
         }
-        if (std.mem.eql(u8, declared, "action.call.resolve.request") or
-            std.mem.eql(u8, declared, "action.call.resolve.response"))
-        {
+        if (std.mem.eql(u8, declared, "action.call.resolve.request")) {
             try self.feature(index, envelope, "tools");
+            try self.resolveRequest(index, envelope, payload);
+            return;
+        }
+        if (std.mem.eql(u8, declared, "action.call.resolve.response")) {
+            try self.feature(index, envelope, "tools");
+            try self.resolveResponse(index, envelope, payload);
             return;
         }
         if (interactionFeature(declared)) |name| {
             try self.feature(index, envelope, name);
+            if (resolutionKind(declared)) |kind| try self.resolutionRequest(index, envelope, payload, declared, kind);
             return;
         }
         if (std.mem.eql(u8, declared, "error.response")) {
@@ -750,7 +838,68 @@ pub const Machine = struct {
         try self.checkAdvertisement(index, outgoing);
         self.catalog_ambiguous = duplicateToolName(self.catalog.items) != null;
         if (self.catalog_ambiguous) try self.add(code_duplicate_tool_name, index);
+        try self.collectOwners(payload);
         try self.checkRefreshAgainstProvided(index);
+    }
+
+    fn collectOwners(self: *Machine, payload: std.json.Value) !void {
+        self.descriptor_owners.clearRetainingCapacity();
+        if (self.catalog_ambiguous) return;
+        try self.absorbOwners(member(payload, "tools"));
+        const layers = member(payload, "layers") orelse return;
+        if (layers != .object) return;
+        var names = std.ArrayList([]const u8).empty;
+        defer names.deinit(self.allocator);
+        var layer = layers.object.iterator();
+        while (layer.next()) |entry| try names.append(self.allocator, entry.key_ptr.*);
+        std.mem.sort([]const u8, names.items, {}, lessThanName);
+        for (names.items) |name| {
+            try self.absorbOwners(member(layers.object.get(name).?, "tools"));
+        }
+    }
+
+    fn absorbOwners(self: *Machine, declared: ?std.json.Value) !void {
+        const tools = declared orelse return;
+        if (tools != .array) return;
+        for (tools.array.items) |tool| {
+            const owner = memberString(tool, "execution_owner");
+            if (owner.len == 0) continue;
+            try self.descriptor_owners.put(self.allocator, memberString(tool, "name"), owner);
+        }
+    }
+
+    fn servedCatalog(self: *Machine, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        if (session_id.len == 0) return;
+        const holder = try self.sessionFor(session_id);
+        var served = ToolCatalog{ .revision = self.current_capability };
+        if (member(payload, "tools")) |tools| {
+            if (tools == .array) {
+                for (tools.array.items) |tool| {
+                    try served.owners.put(self.arena.allocator(), memberString(tool, "name"), memberString(tool, "execution_owner"));
+                }
+            }
+        }
+        holder.tool_catalog = served;
+    }
+
+    fn ownerInForce(self: *const Machine, session_id: []const u8, name: []const u8) ?[]const u8 {
+        if (self.sessions.get(session_id)) |holder| {
+            if (holder.provided_owners.get(name)) |owner| return owner;
+            if (holder.tool_catalog) |served| {
+                if (std.mem.eql(u8, served.revision, self.current_capability)) return served.owners.get(name);
+            }
+        }
+        return self.descriptor_owners.get(name);
+    }
+
+    fn checkCallOwner(self: *Machine, index: usize, payload: std.json.Value) !void {
+        const name = memberString(payload, "name");
+        if (name.len == 0) return;
+        const recorded = self.ownerInForce(memberString(payload, "session_id"), name) orelse return;
+        if (!std.mem.eql(u8, recorded, memberString(payload, "execution_owner"))) {
+            try self.add(code_wrong_tool_owner, index);
+        }
     }
 
     fn checkAttachModes(self: *Machine, index: usize) !void {
@@ -878,6 +1027,7 @@ pub const Machine = struct {
             const names = try self.arena.allocator().alloc([]const u8, tools.?.array.items.len);
             for (tools.?.array.items, 0..) |tool, at| names[at] = memberString(tool, "name");
             pending.provided = names;
+            pending.tools = tools;
         }
         if (attaching) pending.attachments = sources;
         if (member(payload, "message")) |message| {
@@ -889,6 +1039,9 @@ pub const Machine = struct {
         if (attaching) try self.attachExpectations(payload, sources.?, pending);
         if (providing) try self.provideExpectations(payload, tools.?, sources, pending);
         if (pending.attachment != null) pending.limit_refusal = null;
+        if (pending.attachment == null and pending.limit_refusal == null) {
+            pending.honour = if (attaching) unnamed_defect else code_undisclosed_provide_limit;
+        }
     }
 
     fn attachExpectations(self: *Machine, payload: std.json.Value, sources: std.json.Value, pending: *Pending) !void {
@@ -1060,7 +1213,7 @@ pub const Machine = struct {
                     .reason = reason_unsatisfiable,
                     .detail_name = "tool",
                     .detail_value = memberString(tool, "name"),
-                    .diagnostic = unnamed_defect,
+                    .diagnostic = code_wrong_tool_owner,
                 });
             }
             const source = memberString(tool, "source");
@@ -1961,8 +2114,9 @@ pub const Machine = struct {
                 if (outranks(candidate, speaker)) speaker = candidate;
             }
             try self.raise(speaker, index);
-            if (pending.control != null) return true;
         }
+        if (pending.honour.len != 0) try self.add(pending.honour, index);
+        if (pending.control != null) return true;
         if (pending.model_query) return true;
         if (pending.model_listed and
             std.mem.eql(u8, memberString(raised, "code"), error_model_not_found))
@@ -2204,6 +2358,15 @@ pub const Machine = struct {
                         if (listedIn(holder.provided.items, name)) continue;
                         try holder.provided.append(self.allocator, name);
                     }
+                    if (opened.tools) |listed| {
+                        for (listed.array.items) |tool| {
+                            try holder.provided_owners.put(
+                                self.arena.allocator(),
+                                memberString(tool, "name"),
+                                memberString(tool, "execution_owner"),
+                            );
+                        }
+                    }
                     if (opened.attachments) |listed| {
                         if (listed == .array) {
                             for (listed.array.items) |attachment| {
@@ -2307,6 +2470,7 @@ pub const Machine = struct {
                         .started = !queued,
                         .next = resumeSequence(recovery, run_id, unsigned(entry, "as_of_sequence")),
                         .status = status,
+                        .pending = member(entry, "pending_interactions"),
                     });
                 }
             }
@@ -2317,6 +2481,7 @@ pub const Machine = struct {
                 .started = true,
                 .next = resumeSequence(recovery, active, null),
                 .status = "running",
+                .prior_unknown = true,
             });
         }
     }
@@ -2326,6 +2491,8 @@ pub const Machine = struct {
         next: u64,
         status: []const u8,
         queued: bool = false,
+        prior_unknown: bool = false,
+        pending: ?std.json.Value = null,
     };
 
     fn introduceRecovered(self: *Machine, index: usize, holder: *Session, run_id: []const u8, session_id: []const u8, shape: Recovered) !void {
@@ -2341,7 +2508,16 @@ pub const Machine = struct {
             .admitted_queued = shape.queued,
             .order = holder.order.items.len,
             .status = shape.status,
+            .prior_unknown = shape.prior_unknown,
         };
+        if (shape.pending) |listed| {
+            if (listed == .array) {
+                for (listed.array.items) |entry| {
+                    if (entry != .string) continue;
+                    _ = try self.unwitnessedInteraction(run, entry.string);
+                }
+            }
+        }
         try self.runs.put(self.allocator, run_id, run);
         try holder.order.append(self.allocator, run_id);
         try self.refreshQueueWindows(session_id);
@@ -2375,6 +2551,7 @@ pub const Machine = struct {
             .started = true,
             .next = resumeSequence(recovery, active, null),
             .status = "running",
+            .prior_unknown = true,
         });
     }
 
@@ -2478,17 +2655,30 @@ pub const Machine = struct {
 
         if (runEventFeature(declared)) |name| try self.feature(index, envelope, name);
 
-        if (std.mem.eql(u8, declared, "action.call.requested")) {
-            try self.checkCallAgainstChoice(index, member(envelope, "payload") orelse std.json.Value{ .null = {} }, state);
+        const body = member(envelope, "payload") orelse std.json.Value{ .null = {} };
+        if (callStatusOf(declared)) |next| {
+            try self.toolTransition(index, body, state, next);
+            switch (next) {
+                .requested => {
+                    try self.checkCallAgainstChoice(index, body, state);
+                    try self.checkCallOwner(index, body);
+                    try self.controlCallRequested(index, body, state);
+                },
+                .progress => {},
+                .started, .completed, .failed, .cancelled => try self.controlCallEvent(index, envelope, body, state, next),
+            }
         }
+        if (interactionOpening(declared)) |kind| try self.interactionRequested(index, body, state, kind);
+        if (interactionClosing(declared)) |kind| try self.interactionResolved(index, body, state, kind);
 
         if (isTerminal(declared)) {
             if (std.mem.eql(u8, declared, "run.cancelled") and !state.cancel_accepted and !state.recovered) {
                 try self.add(code_illegal_run_transition, index);
             }
             if (std.mem.eql(u8, declared, "run.completed")) {
-                try self.checkCompletedControls(index, member(envelope, "payload") orelse std.json.Value{ .null = {} }, state);
+                try self.checkCompletedControls(index, body, state);
             }
+            try self.checkPendingAtTerminal(index, state);
             state.terminal = true;
             state.terminal_type = declared;
             if (std.mem.eql(u8, declared, "run.completed")) state.status = "completed";
@@ -2498,6 +2688,320 @@ pub const Machine = struct {
                 if (std.mem.eql(u8, holder.active, state.id)) holder.active = "";
             }
             try self.refreshQueueWindows(state.session);
+        }
+    }
+
+    fn toolTransition(self: *Machine, index: usize, payload: std.json.Value, run: *Run, next: CallStatus) !void {
+        const call = memberString(payload, "tool_call_id");
+        if (run.tools.getPtr(call)) |track| {
+            const legal = switch (next) {
+                .requested => false,
+                .started => track.status == .requested,
+                .progress, .completed, .failed => track.status == .started or track.status == .progress,
+                .cancelled => !callTerminal(track.status),
+            };
+            if (!legal) try self.add(code_illegal_tool_transition, index);
+            track.status = next;
+            return;
+        }
+        if (next != .requested and !run.recovered) try self.add(code_unmatched_tool, index);
+        try run.tools.put(self.arena.allocator(), call, .{ .status = next });
+    }
+
+    fn controlOwned(self: *const Machine, owner: []const u8) bool {
+        return self.control_participant.len != 0 and std.mem.eql(u8, owner, self.control_participant);
+    }
+
+    fn controlCallRequested(self: *Machine, index: usize, payload: std.json.Value, run: *Run) !void {
+        if (!self.controlOwned(memberString(payload, "execution_owner"))) return;
+        const id = memberString(payload, "interaction_id");
+        const responder = memberString(payload, "responded_by");
+        if (id.len == 0 or responder.len == 0) {
+            try self.add(code_illegal_tool_transition, index);
+            return;
+        }
+        if (run.interactions.get(id) != null) {
+            try self.add(code_duplicate_interaction, index);
+            return;
+        }
+        const opened = try self.arena.allocator().create(Interaction);
+        opened.* = .{
+            .kind = .tool_call,
+            .requested_by = memberString(payload, "requested_by"),
+            .responded_by = responder,
+        };
+        try run.interactions.put(self.arena.allocator(), id, opened);
+        if (run.tools.getPtr(memberString(payload, "tool_call_id"))) |track| track.interaction = id;
+    }
+
+    fn controlCallEvent(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, run: *Run, next: CallStatus) !void {
+        const held = callInteraction(run, payload) orelse return;
+        const id = field(envelope, "id");
+        if (held.unwitnessed) {
+            if (self.controlOwned(memberString(payload, "execution_owner")) and callTerminal(next)) {
+                try self.settleControlCall(held, id);
+            }
+            return;
+        }
+        if (held.kind != .tool_call) return;
+        switch (next) {
+            .started => {
+                if (!held.acked and held.accepted_arm == null) {
+                    try self.add(code_illegal_tool_transition, index);
+                    return;
+                }
+                try self.checkDerivedRequest(index, payload, held);
+            },
+            .completed, .failed => {
+                const arm: Arm = if (next == .completed) .result else .@"error";
+                if (!acceptedAs(held, arm)) {
+                    try self.add(code_illegal_tool_transition, index);
+                } else {
+                    try self.checkDerivedRequest(index, payload, held);
+                    try self.checkResolutionPayload(index, payload, held, arm);
+                }
+                try self.settleControlCall(held, id);
+            },
+            .cancelled => try self.settleControlCall(held, id),
+            .requested, .progress => {},
+        }
+    }
+
+    fn settleControlCall(self: *Machine, held: *Interaction, id: []const u8) !void {
+        held.settled = true;
+        held.resolved = true;
+        try held.settlements.put(self.arena.allocator(), id, {});
+    }
+
+    fn checkDerivedRequest(self: *Machine, index: usize, payload: std.json.Value, held: *const Interaction) !void {
+        if (held.resolve_requests.get(memberString(payload, "request_id")) == null) {
+            try self.add(code_unmatched_interaction, index);
+        }
+    }
+
+    fn checkResolutionPayload(self: *Machine, index: usize, payload: std.json.Value, held: *const Interaction, arm: Arm) !void {
+        const stated = if (arm == .result) held.accepted_result else held.accepted_error;
+        const carried = member(payload, if (arm == .result) "result" else "error");
+        if (!sameStatement(stated, carried)) try self.add(code_resolution_payload_mismatch, index);
+    }
+
+    fn unwitnessedInteraction(self: *Machine, run: *Run, id: []const u8) !*Interaction {
+        const opened = try self.arena.allocator().create(Interaction);
+        opened.* = .{ .unwitnessed = true };
+        try run.interactions.put(self.arena.allocator(), id, opened);
+        return opened;
+    }
+
+    fn resolveRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const pending = try self.judgeResolve(index, envelope, payload);
+        try self.resolves.put(self.allocator, field(envelope, "id"), pending);
+    }
+
+    fn judgeResolve(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !PendingResolve {
+        var pending = PendingResolve{
+            .run = requestRun(envelope, payload),
+            .interaction = memberString(payload, "interaction_id"),
+            .arm = resolveArm(payload),
+        };
+        const run = self.runs.get(pending.run);
+        const known = if (run) |owner| owner.interactions.get(pending.interaction) else null;
+        const held = known orelse {
+            if (run) |owner| {
+                if (owner.prior_unknown) {
+                    _ = try self.unwitnessedInteraction(owner, pending.interaction);
+                    pending.judged = false;
+                    return pending;
+                }
+            }
+            pending.reason = .unknown_interaction;
+            return pending;
+        };
+        if (held.unwitnessed) {
+            pending.judged = false;
+            return pending;
+        }
+        if (held.kind != .tool_call) {
+            try self.add(code_unmatched_interaction, index);
+            pending.judged = false;
+            return pending;
+        }
+        try held.resolve_requests.put(self.arena.allocator(), field(envelope, "id"), {});
+        pending.reason = resolveLadder(payload, held, pending.arm);
+        return pending;
+    }
+
+    fn resolveResponse(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value) !void {
+        const pending = self.resolves.get(field(envelope, "in_reply_to")) orelse return;
+        const run = self.runs.get(pending.run);
+        const known = if (run) |owner| owner.interactions.get(pending.interaction) else null;
+        if (known) |held| {
+            if (held.unwitnessed) return;
+        }
+        if (!pending.judged) return;
+        const accepted = memberBool(payload, "accepted");
+        const stated = memberString(payload, "reason");
+        const held = known orelse {
+            if (!std.mem.eql(u8, stated, @tagName(Reason.unknown_interaction))) {
+                try self.add(code_unmatched_interaction, index);
+            }
+            return;
+        };
+        if (accepted) {
+            if (pending.reason) |reason| try self.add(reasonDiagnostic(reason), index);
+            try self.acceptResolution(envelope, pending, held);
+            return;
+        }
+        const reason = pending.reason orelse {
+            try self.add(code_unmatched_interaction, index);
+            return;
+        };
+        if (!std.mem.eql(u8, stated, @tagName(reason))) {
+            try self.add(reasonDiagnostic(reason), index);
+            return;
+        }
+        if (reason == .already_resolved) {
+            const details = member(payload, "details") orelse std.json.Value{ .null = {} };
+            if (held.settlements.get(memberString(details, "settlement_id")) == null) {
+                try self.add(code_unmatched_interaction, index);
+            }
+        }
+    }
+
+    fn acceptResolution(self: *Machine, envelope: std.json.Value, pending: PendingResolve, held: *Interaction) !void {
+        const arm = pending.arm orelse return;
+        const asked = if (self.requests.get(field(envelope, "in_reply_to"))) |request| request.payload else std.json.Value{ .null = {} };
+        switch (arm) {
+            .started => held.acked = true,
+            .result => {
+                held.accepted_arm = .result;
+                held.accepted_result = member(asked, "result");
+                try held.settlements.put(self.arena.allocator(), field(envelope, "id"), {});
+            },
+            .@"error" => {
+                held.accepted_arm = .@"error";
+                held.accepted_error = member(asked, "error");
+                try held.settlements.put(self.arena.allocator(), field(envelope, "id"), {});
+            },
+        }
+    }
+
+    fn interactionRequested(self: *Machine, index: usize, payload: std.json.Value, run: *Run, kind: InteractionKind) !void {
+        const id = memberString(payload, "interaction_id");
+        if (run.interactions.get(id) != null) try self.add(code_duplicate_interaction, index);
+        const opened = try self.arena.allocator().create(Interaction);
+        opened.* = .{
+            .kind = kind,
+            .requested_by = memberString(payload, "requested_by"),
+            .responded_by = memberString(payload, "responded_by"),
+            .allow_cancel = kind == .input and memberBool(payload, "allow_cancel"),
+            .choices = if (kind == .permission) member(payload, "choices") else null,
+            .questions = if (kind == .input) member(payload, "questions") else null,
+        };
+        try run.interactions.put(self.arena.allocator(), id, opened);
+    }
+
+    fn interactionResolved(self: *Machine, index: usize, payload: std.json.Value, run: *Run, kind: InteractionKind) !void {
+        const id = memberString(payload, "interaction_id");
+        const held = run.interactions.get(id) orelse blk: {
+            if (!run.prior_unknown) {
+                try self.add(code_unmatched_interaction, index);
+                return;
+            }
+            break :blk try self.unwitnessedInteraction(run, id);
+        };
+        if (held.resolved) try self.add(code_duplicate_interaction, index);
+        if (held.unwitnessed) {
+            held.resolved = true;
+            return;
+        }
+        if (!sameParticipants(payload, held)) try self.add(code_wrong_interaction_responder, index);
+        if (held.kind != kind) try self.add(code_unmatched_interaction, index);
+        if (kind == .input and std.mem.eql(u8, memberString(payload, "status"), "submitted")) {
+            try self.checkAnswers(index, held.questions, member(payload, "answers"));
+        }
+        if (kind == .permission and std.mem.eql(u8, memberString(payload, "outcome"), "resolved")) {
+            const choice = memberString(payload, "choice_id");
+            if (choice.len != 0 and !offersChoice(held.choices, choice)) try self.add(code_unmatched_interaction, index);
+        }
+        held.resolved = true;
+    }
+
+    fn resolutionRequest(self: *Machine, index: usize, envelope: std.json.Value, payload: std.json.Value, declared: []const u8, kind: InteractionKind) !void {
+        const id = memberString(payload, "interaction_id");
+        const run = self.runs.get(requestRun(envelope, payload));
+        const known = if (run) |owner| owner.interactions.get(id) else null;
+        const held = known orelse {
+            if (run) |owner| {
+                if (owner.prior_unknown) {
+                    _ = try self.unwitnessedInteraction(owner, id);
+                    return;
+                }
+            }
+            try self.add(code_unmatched_interaction, index);
+            return;
+        };
+        if (held.unwitnessed) return;
+        if (held.kind != kind) try self.add(code_unmatched_interaction, index);
+        if (std.mem.eql(u8, declared, "user.input.cancel.request") and !held.allow_cancel) {
+            try self.add(code_unmatched_interaction, index);
+        }
+        if (std.mem.eql(u8, declared, "action.permission.resolve.request")) {
+            const choice = memberString(payload, "choice_id");
+            if (choice.len != 0 and !offersChoice(held.choices, choice)) try self.add(code_unmatched_interaction, index);
+        }
+        if (std.mem.eql(u8, declared, "user.input.resolve.request")) {
+            try self.checkAnswers(index, held.questions, member(payload, "answers"));
+        }
+        if (!sameParticipants(payload, held)) try self.add(code_wrong_interaction_responder, index);
+    }
+
+    fn checkAnswers(self: *Machine, index: usize, questions: ?std.json.Value, submitted: ?std.json.Value) !void {
+        var covered: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer covered.deinit(self.allocator);
+        const given = submitted orelse std.json.Value{ .null = {} };
+        if (given == .array) {
+            for (given.array.items) |answer| {
+                const named = memberString(answer, "question_id");
+                const question = questionNamed(questions, named) orelse {
+                    try self.add(code_unmatched_interaction, index);
+                    continue;
+                };
+                if (covered.get(named) != null) {
+                    try self.add(code_unmatched_interaction, index);
+                    continue;
+                }
+                try covered.put(self.allocator, named, {});
+                const kind = memberString(question, "kind");
+                if (std.mem.eql(u8, kind, "text")) {
+                    if (memberString(answer, "text").len == 0) try self.add(code_unmatched_interaction, index);
+                    continue;
+                }
+                const single = std.mem.eql(u8, kind, "single_choice");
+                if (!single and !std.mem.eql(u8, kind, "multi_choice")) continue;
+                const selected = member(answer, "selected_option_ids") orelse std.json.Value{ .null = {} };
+                const picks: []const std.json.Value = if (selected == .array) selected.array.items else &.{};
+                if (picks.len == 0) try self.add(code_unmatched_interaction, index);
+                if (single and picks.len > 1) try self.add(code_unmatched_interaction, index);
+                for (picks) |pick| {
+                    if (pick != .string or !offersOption(question, pick.string)) try self.add(code_unmatched_interaction, index);
+                }
+            }
+        }
+        const offered = questions orelse return;
+        if (offered != .array) return;
+        for (offered.array.items) |question| {
+            if (memberBool(question, "required") and covered.get(memberString(question, "id")) == null) {
+                try self.add(code_unmatched_interaction, index);
+            }
+        }
+    }
+
+    fn checkPendingAtTerminal(self: *Machine, index: usize, run: *const Run) !void {
+        for (run.tools.values()) |track| {
+            if (!callTerminal(track.status)) try self.add(code_pending_tool_at_terminal, index);
+        }
+        for (run.interactions.values()) |held| {
+            if (!held.resolved) try self.add(code_pending_interaction_at_terminal, index);
         }
     }
 
@@ -2768,6 +3272,136 @@ fn interactionFeature(declared: []const u8) ?[]const u8 {
         std.mem.eql(u8, declared, "user.input.cancel.request") or
         std.mem.eql(u8, declared, "user.input.cancel.response")) return "user_input";
     return null;
+}
+
+fn resolutionKind(declared: []const u8) ?InteractionKind {
+    if (std.mem.eql(u8, declared, "action.permission.resolve.request")) return .permission;
+    if (std.mem.eql(u8, declared, "user.input.resolve.request") or
+        std.mem.eql(u8, declared, "user.input.cancel.request")) return .input;
+    return null;
+}
+
+fn interactionOpening(declared: []const u8) ?InteractionKind {
+    if (std.mem.eql(u8, declared, "action.permission.requested")) return .permission;
+    if (std.mem.eql(u8, declared, "user.input.requested")) return .input;
+    return null;
+}
+
+fn interactionClosing(declared: []const u8) ?InteractionKind {
+    if (std.mem.eql(u8, declared, "action.permission.resolved")) return .permission;
+    if (std.mem.eql(u8, declared, "user.input.resolved")) return .input;
+    return null;
+}
+
+fn callStatusOf(declared: []const u8) ?CallStatus {
+    const prefix = "action.call.";
+    if (!std.mem.startsWith(u8, declared, prefix)) return null;
+    return std.meta.stringToEnum(CallStatus, declared[prefix.len..]);
+}
+
+fn callTerminal(status: CallStatus) bool {
+    return status == .completed or status == .failed or status == .cancelled;
+}
+
+fn callInteraction(run: *Run, payload: std.json.Value) ?*Interaction {
+    if (run.tools.get(memberString(payload, "tool_call_id"))) |track| {
+        if (track.interaction.len != 0) return run.interactions.get(track.interaction);
+    }
+    const named = memberString(payload, "interaction_id");
+    if (named.len == 0) return null;
+    return run.interactions.get(named);
+}
+
+fn requestRun(envelope: std.json.Value, payload: std.json.Value) []const u8 {
+    const named = memberString(payload, "run_id");
+    if (named.len != 0) return named;
+    return field(envelope, "run_id");
+}
+
+fn resolveArm(payload: std.json.Value) ?Arm {
+    var arm: ?Arm = null;
+    var count: usize = 0;
+    inline for (.{ Arm.started, Arm.result, Arm.@"error" }) |candidate| {
+        if (member(payload, @tagName(candidate)) != null) {
+            arm = candidate;
+            count += 1;
+        }
+    }
+    return if (count == 1) arm else null;
+}
+
+fn armIs(arm: ?Arm, wanted: Arm) bool {
+    const held = arm orelse return false;
+    return held == wanted;
+}
+
+fn acceptedAs(held: *const Interaction, arm: Arm) bool {
+    return armIs(held.accepted_arm, arm);
+}
+
+fn sameParticipants(payload: std.json.Value, held: *const Interaction) bool {
+    return std.mem.eql(u8, memberString(payload, "responded_by"), held.responded_by) and
+        std.mem.eql(u8, memberString(payload, "requested_by"), held.requested_by);
+}
+
+fn outranking(held: ?Reason, candidate: Reason) Reason {
+    const current = held orelse return candidate;
+    return if (@intFromEnum(candidate) < @intFromEnum(current)) candidate else current;
+}
+
+fn resolveLadder(payload: std.json.Value, held: *const Interaction, arm: ?Arm) ?Reason {
+    var highest: ?Reason = null;
+    if (!sameParticipants(payload, held)) highest = outranking(highest, .wrong_responder);
+    const acknowledgement = armIs(arm, .started);
+    if (held.settled) {
+        highest = outranking(highest, .already_resolved);
+    } else if (held.accepted_arm != null) {
+        highest = outranking(highest, if (acknowledgement) .late_acknowledgement else .already_resolved);
+    }
+    if (acknowledgement and held.acked) highest = outranking(highest, .repeated_acknowledgement);
+    return highest;
+}
+
+fn reasonDiagnostic(reason: Reason) []const u8 {
+    return switch (reason) {
+        .wrong_responder => code_wrong_interaction_responder,
+        .already_resolved, .repeated_acknowledgement => code_duplicate_interaction,
+        .unknown_interaction, .late_acknowledgement => code_unmatched_interaction,
+    };
+}
+
+fn sameStatement(stated: ?std.json.Value, carried: ?std.json.Value) bool {
+    const left = stated orelse return carried == null;
+    const right = carried orelse return false;
+    return valueEql(left, right);
+}
+
+fn offersChoice(choices: ?std.json.Value, id: []const u8) bool {
+    const listed = choices orelse return false;
+    if (listed != .array) return false;
+    for (listed.array.items) |choice| {
+        if (std.mem.eql(u8, memberString(choice, "id"), id)) return true;
+    }
+    return false;
+}
+
+fn questionNamed(questions: ?std.json.Value, id: []const u8) ?std.json.Value {
+    const listed = questions orelse return null;
+    if (listed != .array) return null;
+    var found: ?std.json.Value = null;
+    for (listed.array.items) |question| {
+        if (std.mem.eql(u8, memberString(question, "id"), id)) found = question;
+    }
+    return found;
+}
+
+fn offersOption(question: std.json.Value, id: []const u8) bool {
+    const options = member(question, "options") orelse return false;
+    if (options != .array) return false;
+    for (options.array.items) |option| {
+        if (std.mem.eql(u8, memberString(option, "id"), id)) return true;
+    }
+    return false;
 }
 
 fn controlPointer(key: []const u8) []const u8 {
@@ -3284,7 +3918,7 @@ test "a settled run reports the settlement it broke, not the capability it also 
         \\{"type":"action.call.requested","id":"e3","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1",
         \\"payload":{"call_id":"c","name":"echo"}},
         \\{"type":"run.completed","id":"e2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":{}}]
-    , &.{"unavailable_capability"});
+    , &.{ "unavailable_capability", "pending_tool_at_terminal" });
 }
 
 test "a defect on one surface speaks before a bound the other surface merely reached" {
@@ -3980,7 +4614,7 @@ test "an escaped reference resolves the same way on both sides of the boundary" 
     , &.{"unapplied_control"});
 }
 
-test "a defect the port does not name still silences the bound beside it" {
+test "a defect silences the bound beside it, whether or not this port names the defect" {
     const bounded =
         \\{"type":"protocol.initialize.request","id":"i1","payload":{"participant":{"id":"control"}}},
         \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
@@ -3995,7 +4629,7 @@ test "a defect the port does not name still silences the bound beside it" {
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"one","execution_owner":"someone-else"},{"name":"two"}]}},
-    ++ refused, &.{});
+    ++ refused, &.{"wrong_tool_owner"});
 
     try expectCodes(
         \\[
@@ -4169,7 +4803,7 @@ test "the earliest defect speaks even when this port has no name for it" {
     ++ declared ++
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
-        \\"tools":[{"name":"a","execution_owner":"mallory"},{"name":"a"}]}},
+        \\"tools":[{"name":"a","source":"nowhere"},{"name":"a"}]}},
     ++ answered, &.{});
 
     try expectCodes(
@@ -4177,8 +4811,16 @@ test "the earliest defect speaks even when this port has no name for it" {
     ++ declared ++
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
-        \\"tools":[{"name":"a"},{"name":"a"},{"name":"b","execution_owner":"mallory"}]}},
+        \\"tools":[{"name":"a"},{"name":"a"},{"name":"b","source":"nowhere"}]}},
     ++ answered, &.{"duplicate_tool_name"});
+
+    try expectCodes(
+        \\[
+    ++ declared ++
+        \\,
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"a","execution_owner":"mallory"},{"name":"a"}]}},
+    ++ answered, &.{"wrong_tool_owner"});
 }
 
 test "a catalog is compared by the ids it resolves, not the rows it printed" {
@@ -4298,4 +4940,462 @@ test "provider attachment protects existing aliases and licenses catalog expansi
         \\{"type":"session.provider.attach.response","id":"r1","in_reply_to":"q1","capability_revision":"v1","session_id":"s","payload":
         \\{"session_id":"s","provider_id":"different"}}]
     , &.{"scope_mismatch"});
+}
+
+const interactive =
+    \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+    \\{"tools":{"level":"native"},"permissions":{"level":"native"},"user_input":{"level":"native"}}}},
+++ admitted ++
+    \\,
+    \\{"type":"run.started","id":"e0","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+;
+
+test "a tool call is requested once, starts once, and settles once" {
+    try expectCodes(interactive ++
+        \\{"type":"action.call.requested","id":"c1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":{"tool_call_id":"t","name":"echo","execution_owner":"agent"}},
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent"}},
+        \\{"type":"action.call.progress","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent","progress":{}}},
+        \\{"type":"action.call.completed","id":"c4","run_id":"run","session_id":"s","sequence":5,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent","result":{}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":6,"payload":{}}]
+    , &.{});
+
+    try expectCodes(interactive ++
+        \\{"type":"action.call.requested","id":"c1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":{"tool_call_id":"t","name":"echo","execution_owner":"agent"}},
+        \\{"type":"action.call.requested","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":{"tool_call_id":"t","name":"echo","execution_owner":"agent"}},
+        \\{"type":"action.call.cancelled","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{"illegal_tool_transition"});
+
+    try expectCodes(interactive ++
+        \\{"type":"action.call.requested","id":"c1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":{"tool_call_id":"t","name":"echo","execution_owner":"agent"}},
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent"}},
+        \\{"type":"action.call.started","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent"}},
+        \\{"type":"action.call.completed","id":"c4","run_id":"run","session_id":"s","sequence":5,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent","result":{}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":6,"payload":{}}]
+    , &.{"illegal_tool_transition"});
+
+    try expectCodes(interactive ++
+        \\{"type":"action.call.requested","id":"c1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":{"tool_call_id":"t","name":"echo","execution_owner":"agent"}},
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent"}},
+        \\{"type":"action.call.completed","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent","result":{}}},
+        \\{"type":"action.call.cancelled","id":"c4","run_id":"run","session_id":"s","sequence":5,"capability_revision":"v1","payload":{"tool_call_id":"t","execution_owner":"agent"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":6,"payload":{}}]
+    , &.{"illegal_tool_transition"});
+}
+
+const permission_asked =
+    \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+    \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+;
+
+test "an interaction is requested once and resolved once" {
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.requested","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{"duplicate_interaction"});
+
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"action.permission.resolved","id":"p3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{"duplicate_interaction"});
+}
+
+test "a resolution event answers a pending interaction of its own kind" {
+    try expectCodes(interactive ++
+        \\{"type":"action.permission.resolved","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":3,"payload":{}}]
+    , &.{"unmatched_interaction"});
+
+    try expectCodes(interactive ++
+        \\{"type":"user.input.requested","id":"u1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","title":"Name?","questions":[{"id":"name","kind":"text","prompt":"Name?"}]}},
+        \\{"type":"action.permission.resolved","id":"p1","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"unmatched_interaction"});
+}
+
+test "a resolution event repeats the requester and responder its request declared" {
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"someone","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"wrong_interaction_responder"});
+
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"intruder","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"wrong_interaction_responder"});
+}
+
+test "a resolved permission picks a choice its request offered" {
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"deny"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"unmatched_interaction"});
+}
+
+const input_asked =
+    \\{"type":"user.input.requested","id":"u1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+    \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","title":"About you","questions":[
+    \\{"id":"name","kind":"text","prompt":"Name?","required":true},
+    \\{"id":"color","kind":"single_choice","prompt":"Color?","options":[{"id":"red","label":"Red"},{"id":"blue","label":"Blue"}]},
+    \\{"id":"tags","kind":"multi_choice","prompt":"Tags?","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}]}},
+;
+
+const input_withdrawn =
+    \\{"type":"user.input.resolved","id":"u2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+    \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","status":"cancelled"}},
+    \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+;
+
+test "a resolution request answers a pending interaction of its own kind" {
+    const granted =
+        \\{"type":"action.permission.resolve.request","id":"q1","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"i","run_id":"run","session_id":"s","requested_by":"agent","responded_by":"user","granted":true}},
+    ;
+    try expectCodes(interactive ++ granted ++
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":2,"payload":{}}]
+    , &.{"unmatched_interaction"});
+
+    try expectCodes(interactive ++ input_asked ++ granted ++ input_withdrawn, &.{"unmatched_interaction"});
+}
+
+test "only a prompt opened for cancellation may be cancelled" {
+    const cancel =
+        \\{"type":"user.input.cancel.request","id":"q1","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"i","run_id":"run","session_id":"s","requested_by":"agent","responded_by":"user"}},
+    ;
+    try expectCodes(interactive ++ input_asked ++ cancel ++ input_withdrawn, &.{"unmatched_interaction"});
+
+    try expectCodes(interactive ++
+        \\{"type":"user.input.requested","id":"u1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","title":"Name?","allow_cancel":true,
+        \\"questions":[{"id":"name","kind":"text","prompt":"Name?"}]}},
+    ++ cancel ++ input_withdrawn, &.{});
+}
+
+test "a resolution request names the requester and responder its interaction declared" {
+    const resolved =
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    ;
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.resolve.request","id":"q1","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"i","run_id":"run","session_id":"s","requested_by":"agent","responded_by":"intruder","granted":true,"choice_id":"allow"}},
+    ++ resolved, &.{"wrong_interaction_responder"});
+
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.resolve.request","id":"q1","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"i","run_id":"run","session_id":"s","requested_by":"someone","responded_by":"user","granted":true,"choice_id":"allow"}},
+    ++ resolved, &.{"wrong_interaction_responder"});
+}
+
+test "a resolution request is scoped by the run its payload names" {
+    try expectCodes(interactive ++ permission_asked ++
+        \\{"type":"action.permission.resolve.request","id":"q1","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"i","run_id":"run","session_id":"s","requested_by":"agent","responded_by":"user","granted":true,"choice_id":"allow"}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{});
+}
+
+const answering =
+    \\{"type":"user.input.resolve.request","id":"q1","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+    \\{"interaction_id":"i","run_id":"run","session_id":"s","requested_by":"agent","responded_by":"user","answers":
+;
+
+test "an answer names a question its prompt asked, and answers it once" {
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"name","text":"Ada"},{"question_id":"color","selected_option_ids":["red"]},
+        \\{"question_id":"tags","selected_option_ids":["a","b"]}]}},
+    ++ input_withdrawn, &.{});
+
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"name","text":"Ada"},{"question_id":"age","text":"36"}]}},
+    ++ input_withdrawn, &.{"unmatched_interaction"});
+
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"name","text":"Ada"},{"question_id":"name","text":"Bea"}]}},
+    ++ input_withdrawn, &.{"unmatched_interaction"});
+}
+
+test "an answer takes the shape its question asks for" {
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"name","text":""}]}},
+    ++ input_withdrawn, &.{"unmatched_interaction"});
+
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"name","text":"Ada"},{"question_id":"color","text":"red"}]}},
+    ++ input_withdrawn, &.{"unmatched_interaction"});
+
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"name","text":"Ada"},{"question_id":"color","selected_option_ids":["red","blue"]}]}},
+    ++ input_withdrawn, &.{"unmatched_interaction"});
+
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"name","text":"Ada"},{"question_id":"tags","selected_option_ids":["a","z"]}]}},
+    ++ input_withdrawn, &.{"unmatched_interaction"});
+}
+
+test "a required question must be answered" {
+    try expectCodes(interactive ++ input_asked ++ answering ++
+        \\[{"question_id":"color","selected_option_ids":["red"]}]}},
+    ++ input_withdrawn, &.{"unmatched_interaction"});
+}
+
+test "a submitted resolution event is held to the same answers as a request" {
+    try expectCodes(interactive ++ input_asked ++
+        \\{"type":"user.input.resolved","id":"u2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","status":"submitted",
+        \\"answers":[{"question_id":"name","text":"Ada"},{"question_id":"age","text":"36"}]}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"unmatched_interaction"});
+}
+
+const controlled =
+    \\[{"type":"protocol.initialize.request","id":"i0","payload":{"participant":{"id":"control"}}},
+    \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+    \\{"tools":{"level":"native"},"permissions":{"level":"native"}}}},
+++ admitted ++
+    \\,
+    \\{"type":"run.started","id":"e0","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+;
+
+const control_call =
+    \\{"type":"action.call.requested","id":"c1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+    \\{"tool_call_id":"t1","name":"echo","execution_owner":"control","interaction_id":"x","requested_by":"agent","responded_by":"control"}},
+;
+
+const control_result =
+    \\{"type":"action.call.resolve.request","id":"rq","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+    \\{"interaction_id":"x","run_id":"run","session_id":"s","tool_call_id":"t1","requested_by":"agent","responded_by":"control","result":{"ok":true}}},
+;
+
+const control_accepted =
+    \\{"type":"action.call.resolve.response","id":"rs","in_reply_to":"rq","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+    \\{"interaction_id":"x","run_id":"run","session_id":"s","tool_call_id":"t1","accepted":true}},
+;
+
+test "a call to a control-owned tool opens an interaction no other call holds" {
+    try expectCodes(controlled ++ control_call ++
+        \\{"type":"action.call.requested","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t2","name":"echo","execution_owner":"control","interaction_id":"x","requested_by":"agent","responded_by":"control"}},
+        \\{"type":"action.call.cancelled","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x"}},
+        \\{"type":"action.call.cancelled","id":"c4","run_id":"run","session_id":"s","sequence":5,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t2","execution_owner":"control","interaction_id":"x"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":6,"payload":{}}]
+    , &.{"duplicate_interaction"});
+}
+
+test "an event derived from a resolution names the request it came from" {
+    try expectCodes(controlled ++ control_call ++ control_result ++ control_accepted ++
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x"}},
+        \\{"type":"action.call.completed","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x","request_id":"rq","result":{"ok":true}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{"unmatched_interaction"});
+}
+
+test "a call resolution answers only a tool-call interaction" {
+    try expectCodes(controlled ++
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"agent","responded_by":"control","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+    ++ control_result ++ control_accepted ++
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"x","requested_by":"agent","responded_by":"control","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"unmatched_interaction"});
+}
+
+test "the later events of a control call answer to the interaction its request opened, named or not" {
+    try expectCodes(controlled ++ control_call ++ control_result ++ control_accepted ++
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","request_id":"rq"}},
+        \\{"type":"action.call.completed","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","request_id":"rq","result":{"ok":true}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{});
+
+    try expectCodes(controlled ++ control_call ++
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control"}},
+        \\{"type":"action.call.cancelled","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{"illegal_tool_transition"});
+}
+
+test "an already-resolved refusal may name the acceptance that settled the call, whichever arm it took" {
+    const retry_refused =
+        \\{"type":"action.call.resolve.response","id":"rs2","in_reply_to":"rq2","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"x","run_id":"run","session_id":"s","tool_call_id":"t1","accepted":false,"reason":"already_resolved",
+        \\"details":{"settlement_id":"rs"}}},
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x","request_id":"rq"}},
+    ;
+    try expectCodes(controlled ++ control_call ++ control_result ++ control_accepted ++
+        \\{"type":"action.call.resolve.request","id":"rq2","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"x","run_id":"run","session_id":"s","tool_call_id":"t1","requested_by":"agent","responded_by":"control","result":{"ok":true}}},
+    ++ retry_refused ++
+        \\{"type":"action.call.completed","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x","request_id":"rq","result":{"ok":true}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{});
+
+    try expectCodes(controlled ++ control_call ++
+        \\{"type":"action.call.resolve.request","id":"rq","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"x","run_id":"run","session_id":"s","tool_call_id":"t1","requested_by":"agent","responded_by":"control",
+        \\"error":{"code":"tool_error","message":"boom"}}},
+    ++ control_accepted ++
+        \\{"type":"action.call.resolve.request","id":"rq2","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"x","run_id":"run","session_id":"s","tool_call_id":"t1","requested_by":"agent","responded_by":"control",
+        \\"error":{"code":"tool_error","message":"boom"}}},
+    ++ retry_refused ++
+        \\{"type":"action.call.failed","id":"c3","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x","request_id":"rq","error":{"code":"tool_error","message":"boom"}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":5,"payload":{}}]
+    , &.{});
+}
+
+test "a resolution that arrives before its interaction opens is judged unknown" {
+    try expectCodes(controlled ++ control_result ++ control_call ++ control_accepted ++
+        \\{"type":"action.call.cancelled","id":"c2","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":4,"payload":{}}]
+    , &.{"unmatched_interaction"});
+}
+
+test "a resolution of an unknown interaction is refused as unknown" {
+    const refused =
+        \\{"type":"action.call.resolve.response","id":"rs","in_reply_to":"rq","run_id":"run","session_id":"s","capability_revision":"v1","payload":
+        \\{"interaction_id":"x","run_id":"run","session_id":"s","tool_call_id":"t1","accepted":false,"reason":
+    ;
+    const settled =
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":2,"payload":{}}]
+    ;
+    try expectCodes(controlled ++ control_result ++ refused ++
+        \\"unknown_interaction"}},
+    ++ settled, &.{});
+
+    try expectCodes(controlled ++ control_result ++ refused ++
+        \\"wrong_responder"}},
+    ++ settled, &.{"unmatched_interaction"});
+
+    try expectCodes(controlled ++ control_result ++ control_accepted ++ settled, &.{"unmatched_interaction"});
+}
+
+test "a call a permission gates is not held to the control-call rules" {
+    try expectCodes(controlled ++
+        \\{"type":"action.call.requested","id":"c1","run_id":"run","session_id":"s","sequence":2,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","name":"echo","execution_owner":"agent"}},
+        \\{"type":"action.permission.requested","id":"p1","run_id":"run","session_id":"s","sequence":3,"capability_revision":"v1","payload":
+        \\{"interaction_id":"p","tool_call_id":"t1","requested_by":"agent","responded_by":"control","title":"Allow?","choices":[{"id":"allow","label":"Allow"}]}},
+        \\{"type":"action.permission.resolved","id":"p2","run_id":"run","session_id":"s","sequence":4,"capability_revision":"v1","payload":
+        \\{"interaction_id":"p","requested_by":"agent","responded_by":"control","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"action.call.started","id":"c2","run_id":"run","session_id":"s","sequence":5,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"agent","interaction_id":"p"}},
+        \\{"type":"action.call.completed","id":"c3","run_id":"run","session_id":"s","sequence":6,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"agent","interaction_id":"p","result":{}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":7,"payload":{}}]
+    , &.{});
+}
+
+const reattached =
+    \\{"type":"session.open.request","id":"o1","payload":{"session_id":"s","recovery":
+    \\{"recovered":true,"previous_run_id":"run","resume_cursor":"41"}}},
+;
+
+test "a run recovered without its history tolerates call resolutions it cannot place" {
+    try expectCodes(
+        \\[{"type":"protocol.initialize.request","id":"i0","payload":{"participant":{"id":"control"}}},
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"tools":{"level":"native"}}}},
+    ++ reattached ++
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","payload":{"session_id":"s","status":"running",
+        \\"active_run_id":"run","recovery":{"recovered":true,"previous_run_id":"run","resume_cursor":"41"}}},
+    ++ control_result ++ control_accepted ++
+        \\{"type":"action.call.completed","id":"c1","run_id":"run","session_id":"s","sequence":42,"capability_revision":"v1","payload":
+        \\{"tool_call_id":"t1","execution_owner":"control","interaction_id":"x","request_id":"rq","result":{"ok":true}}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":43,"payload":{}}]
+    , &.{});
+}
+
+test "a run a recovered snapshot introduces tolerates resolutions it cannot place" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"permissions":{"level":"native"}}}},
+    ++ reattached ++
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","payload":{"session_id":"s","status":"running",
+        \\"recovery":{"recovered":true,"previous_run_id":"run","resume_cursor":"41"}}},
+        \\{"type":"session.state.request","id":"t1","payload":{"session_id":"s"}},
+        \\{"type":"session.state.response","id":"t2","in_reply_to":"t1","payload":{"session_id":"s","status":"running","active_run_id":"run"}},
+        \\{"type":"action.permission.resolved","id":"p1","run_id":"run","session_id":"s","sequence":42,"capability_revision":"v1","payload":
+        \\{"interaction_id":"i","requested_by":"agent","responded_by":"user","outcome":"resolved","choice_id":"allow"}},
+        \\{"type":"run.completed","id":"e9","run_id":"run","session_id":"s","sequence":43,"payload":{}}]
+    , &.{});
+}
+
+const grep_catalogued =
+    \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+    \\{"tools":{"level":"native"},"action.tools.list":{"level":"native"}},"sources":[{"id":"native","kind":"native"}],
+    \\"tools":[{"name":"grep","execution_owner":"agent","source":"native","input_schema":{"type":"object"}}]}},
+    \\{"type":"action.tools.list.request","id":"l1","capability_revision":"v1","payload":{"session_id":"s"}},
+    \\{"type":"action.tools.list.response","id":"l2","in_reply_to":"l1","capability_revision":"v1","session_id":"s","payload":
+    \\{"session_id":"s","sources":[{"id":"native","kind":"native"}],
+    \\"tools":[{"name":"grep","execution_owner":"control","source":"native","input_schema":{"type":"object"}}]}},
+;
+
+fn grepCall(comptime owner: []const u8, comptime revision: []const u8) []const u8 {
+    return "{\"type\":\"action.call.requested\",\"id\":\"c1\",\"run_id\":\"run\",\"session_id\":\"s\",\"sequence\":2," ++
+        "\"capability_revision\":\"" ++ revision ++ "\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run\"," ++
+        "\"tool_call_id\":\"t1\",\"name\":\"grep\",\"execution_owner\":\"" ++ owner ++ "\",\"source\":\"native\"}}," ++
+        "{\"type\":\"action.call.cancelled\",\"id\":\"c2\",\"run_id\":\"run\",\"session_id\":\"s\",\"sequence\":3," ++
+        "\"capability_revision\":\"" ++ revision ++ "\",\"payload\":{\"tool_call_id\":\"t1\",\"execution_owner\":\"" ++ owner ++ "\"}}," ++
+        "{\"type\":\"run.completed\",\"id\":\"e9\",\"run_id\":\"run\",\"session_id\":\"s\",\"sequence\":4,\"payload\":{}}]";
+}
+
+const started_run = admitted ++
+    \\,
+    \\{"type":"run.started","id":"e0","run_id":"run","session_id":"s","sequence":1,"payload":{}},
+;
+
+test "a call is held to the owner recorded by the tool its session provided" {
+    try expectCodes(
+        \\[{"type":"protocol.initialize.request","id":"i0","payload":{"participant":{"id":"control"}}},
+        \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"},"action.tools.provide":{"level":"native"}}}},
+        \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
+        \\"tools":[{"name":"grep","execution_owner":"control","input_schema":{"type":"object"}}]}},
+        \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}},
+    ++ started_run ++ comptime grepCall("agent", "v1"), &.{"wrong_tool_owner"});
+}
+
+test "a session catalog in force outranks the descriptor on the owner of a call" {
+    try expectCodes(grep_catalogued ++ started_run ++ comptime grepCall("agent", "v1"), &.{"wrong_tool_owner"});
+}
+
+test "a capability update retires the catalogs the owner of a call was judged against" {
+    try expectCodes(grep_catalogued ++
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}},
+    ++ started_run ++ comptime grepCall("bystander", "v2"), &.{ "unavailable_capability", "unavailable_capability" });
+}
+
+test "a descriptor listing a tool twice records no owner for it" {
+    try expectCodes(
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"tools":{"level":"native"}},
+        \\"tools":[{"name":"grep","execution_owner":"agent","input_schema":{"type":"object"}},
+        \\{"name":"grep","execution_owner":"control","input_schema":{"type":"object"}}]}},
+    ++ started_run ++ comptime grepCall("bystander", "v1"), &.{"duplicate_tool_name"});
 }
