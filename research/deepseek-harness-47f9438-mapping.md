@@ -381,8 +381,9 @@ There is no native cancellation request at this boundary. OAP cancellation is
 nothing to the harness, and killing the process is transport failure, not
 cancellation. There is likewise no selected-wire steer, queue-control,
 interaction/permission, model-catalog, transcript, fork, or session-resume
-operation. With no interaction channel no interaction is ever raised, and
-`Session.Resolve` answers `operation unavailable` the same way.
+operation. With no interaction channel no interaction is ever raised, so
+`Session.Resolve` refuses every resolution as naming none, which the endpoint
+answers `resolution_rejected`.
 
 ## Final advertised capability matrix
 

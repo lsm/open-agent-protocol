@@ -1379,3 +1379,20 @@ func envelopeOfType(t *testing.T, envelopes []protocol.Envelope, typ protocol.En
 	t.Fatalf("no %s in %d envelopes", typ, len(envelopes))
 	return protocol.Envelope{}
 }
+
+func TestMemoryRefusesSteerAndBTWUnderTheirOwnKeys(t *testing.T) {
+	session := newTestSession(t, 64)
+	for _, mode := range []struct {
+		delivery protocol.RequestedDeliveryMode
+		key      string
+	}{
+		{protocol.DeliverySteer, protocol.FeatureDeliverySteer},
+		{protocol.DeliveryBTW, protocol.FeatureDeliveryBTW},
+	} {
+		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session-1", Delivery: mode.delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}}})
+		var refused *adapter.UnsupportedControlError
+		if !errors.As(err, &refused) || refused.Feature != mode.key || refused.Reason != adapter.ControlUnadvertised || stream != nil {
+			t.Fatalf("%s: err = %v, stream = %v", mode.delivery, err, stream)
+		}
+	}
+}

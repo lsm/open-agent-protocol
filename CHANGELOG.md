@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Go adapters refuse an explicit `queue`, `steer` or `btw` delivery they do not advertise with `unsupported_feature` naming `session.message.delivery.<mode>`, as `drafts/conformance.md` requires, instead of `invalid_submission` (or `internal` for OpenCode's `steer`). `adapter.RefuseUnadvertisedControls` now judges the delivery mode after the run controls, as the Zig contract does; OpenCode advertises `queue` through it. The Claude, Hermes and DeepSeek adapters answer a resolution naming no open interaction, such as any permission resolution, with `resolution_rejected` instead of `internal`.
+
 - A Zig adapter corpus driver now fails when its case list and its corpus `manifest.json` disagree in either direction — a manifest case neither replayed nor excluded by name, a replayed case the manifest lacks, a case read from another path, or a stale exclusion. Before, dropping a case from a driver's list left the build green. Claude's `process-exit` is the one named exclusion: its own test replays it and allows the single Go-runtime message it quotes.
 
 - The Claude Code adapter no longer fails a run when a `Bash` call outlives about three seconds. Claude Code 2.1.280 reports such a call as a foreground `local_bash` task whose `task_notification` carries `"output_file": ""`, and the Go and Zig decoders required that member non-empty, so the run failed with `claude_process_exit`. `output_file` must still be present, but may be empty.

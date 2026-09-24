@@ -415,7 +415,9 @@ func (s *memorySession) Submit(ctx context.Context, request protocol.MessageSubm
 		return protocol.MessageSubmitResponse{}, nil, ErrInvalidSubmission
 	}
 	if request.Delivery != "" && request.Delivery != protocol.DeliveryAuto && request.Delivery != protocol.DeliveryQueue {
-
+		if key := deliveryFeature(request.Delivery); key != "" {
+			return protocol.MessageSubmitResponse{}, nil, &UnsupportedControlError{Feature: key, Reason: ControlUnadvertised}
+		}
 		return protocol.MessageSubmitResponse{}, nil, fmt.Errorf("%w: delivery %q", ErrInvalidSubmission, request.Delivery)
 	}
 
