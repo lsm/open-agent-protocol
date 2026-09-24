@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compat = @import("compat");
 const httpapi = @import("httpapi");
 
@@ -46,6 +47,8 @@ pub fn encode(arena: std.mem.Allocator, target: Target, request: httpapi.Request
     if (request.body) |body| try out.appendSlice(arena, body);
     return out.items;
 }
+
+const line_limit = 4 * 1024;
 
 const Framing = enum { chunk_size, chunk_data, chunk_end, trailer, identity, done };
 
@@ -152,7 +155,7 @@ pub const Reader = struct {
                     return;
                 },
                 .chunk_size => {
-                    const end = std.mem.indexOf(u8, self.raw.items, "\r\n") orelse return;
+                    const end = std.mem.indexOf(u8, self.raw.items, "\r\n") orelse return self.boundLine();
                     const line = self.raw.items[0..end];
                     const digits = if (std.mem.indexOfScalar(u8, line, ';')) |semi| line[0..semi] else line;
                     const size = std.fmt.parseInt(usize, std.mem.trim(u8, digits, " \t"), 16) catch return error.MalformedResponse;
@@ -180,12 +183,16 @@ pub const Reader = struct {
                     self.framing = .chunk_size;
                 },
                 .trailer => {
-                    const end = std.mem.indexOf(u8, self.raw.items, "\r\n") orelse return;
+                    const end = std.mem.indexOf(u8, self.raw.items, "\r\n") orelse return self.boundLine();
                     self.consume(end + 2);
                     if (end == 0) self.framing = .done;
                 },
             }
         }
+    }
+
+    fn boundLine(self: *const Reader) Error!void {
+        if (self.raw.items.len > line_limit) return error.MalformedResponse;
     }
 
     pub fn take(self: *Reader, arena: std.mem.Allocator) std.mem.Allocator.Error![]const u8 {
@@ -238,6 +245,7 @@ pub const Connection = struct {
 };
 
 pub fn readSome(stream: *compat.net.Stream, buffer: []u8) !usize {
+    if (builtin.os.tag == .windows) return error.UnsupportedPlatform;
     return std.posix.read(compat.net.streamHandle(stream), buffer) catch |err| switch (err) {
         error.ConnectionResetByPeer => 0,
         else => |failure| return failure,
@@ -312,6 +320,26 @@ test "a truncated chunked body, an oversized body and a non-HTTP head are refuse
     var garbage = Reader.init(testing.allocator, 1024);
     defer garbage.deinit();
     try testing.expectError(error.MalformedResponse, garbage.push("SSH-2.0-OpenSSH\r\n\r\n"));
+}
+
+test "a chunk-size or trailer line that never ends is refused once it passes the line bound" {
+    var sized = Reader.init(testing.allocator, 1 << 20);
+    defer sized.deinit();
+    try sized.push("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+    const endless = "f" ** 1024;
+    var refused: ?Error = null;
+    var pushed: usize = 0;
+    while (pushed < 8 and refused == null) : (pushed += 1) {
+        sized.push(endless) catch |err| {
+            refused = err;
+        };
+    }
+    try testing.expectEqual(@as(?Error, error.MalformedResponse), refused);
+
+    var trailed = Reader.init(testing.allocator, 1 << 20);
+    defer trailed.deinit();
+    try trailed.push("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n");
+    try testing.expectError(error.MalformedResponse, trailed.push("x" ** (5 * 1024)));
 }
 
 test "an endpoint must be plain http, and its path becomes the base path" {
