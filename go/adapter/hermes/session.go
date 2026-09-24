@@ -627,7 +627,7 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return err
 	}
 	if resolution.Input == nil {
-		return errUnavailable
+		return base.ErrInteractionNotFound
 	}
 	s.reduceMu.Lock()
 	binding := s.interactions[resolution.Input.InteractionID]

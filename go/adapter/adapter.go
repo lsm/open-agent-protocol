@@ -162,7 +162,22 @@ func RefuseUnadvertisedControls(request protocol.MessageSubmitRequest, advertise
 			return &UnsupportedControlError{Feature: control.key, Reason: ControlUnadvertised}
 		}
 	}
+	if key := deliveryFeature(request.Delivery); key != "" && !offers(key) {
+		return &UnsupportedControlError{Feature: key, Reason: ControlUnadvertised}
+	}
 	return nil
+}
+
+func deliveryFeature(mode protocol.RequestedDeliveryMode) string {
+	switch mode {
+	case protocol.DeliveryQueue:
+		return protocol.FeatureDeliveryQueue
+	case protocol.DeliverySteer:
+		return protocol.FeatureDeliverySteer
+	case protocol.DeliveryBTW:
+		return protocol.FeatureDeliveryBTW
+	}
+	return ""
 }
 
 func RefuseUnadvertisedToolSources(request OpenRequest, disclosed ...protocol.FeatureSupport) error {

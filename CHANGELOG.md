@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Go adapters refuse an explicit `queue`, `steer` or `btw` delivery they do not advertise with `unsupported_feature` naming `session.message.delivery.<mode>`, as `drafts/conformance.md` requires, instead of `invalid_submission` (or `internal` for OpenCode's `steer`). `adapter.RefuseUnadvertisedControls` now judges the delivery mode after the run controls, as the Zig contract does; OpenCode advertises `queue` through it. The Claude, Hermes and DeepSeek adapters answer a resolution naming no open interaction, such as any permission resolution, with `resolution_rejected` instead of `internal`.
+
 - `oapx serve agent --backend claude` no longer panics on a tool input nested more than 256 levels deep. `std.json.Stringify` checks nesting against a fixed 256-level stack in safety builds, which releases are, while the Claude line decoder admits 10000. The emitted envelopes, the permission prompt and the input echoed back on allow now go through an iterative encoder, `zig/src/json/encode.zig`, whose output is byte-identical to Stringify's minified form.
 
 - A Zig adapter corpus driver now fails when its case list and its corpus `manifest.json` disagree in either direction — a manifest case neither replayed nor excluded by name, a replayed case the manifest lacks, a case read from another path, or a stale exclusion. Before, dropping a case from a driver's list left the build green. Claude's `process-exit` is the one named exclusion: its own test replays it and allows the single Go-runtime message it quotes.

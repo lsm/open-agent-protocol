@@ -805,7 +805,7 @@ func (s *Session) Resolve(ctx context.Context, _ base.InteractionResolution) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return errUnavailable
+	return base.ErrInteractionNotFound
 }
 func (s *Session) Cancel(ctx context.Context, _ protocol.RunID) (protocol.RunCancelResponse, error) {
 	if err := ctx.Err(); err != nil {
