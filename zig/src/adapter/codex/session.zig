@@ -41,6 +41,9 @@ pub const Options = struct {
     resume_thread_id: []const u8 = "",
     first_request_id: i64 = 1,
     id_width: usize = 0,
+    revision: []const u8 = capability_revision,
+    counter: ?*usize = null,
+    now_ms: ?*const fn () i64 = null,
 };
 
 pub const InputMessage = struct {
@@ -255,13 +258,15 @@ pub const Reducer = struct {
     }
 
     fn now(self: *Reducer) i64 {
+        if (self.options.now_ms) |wall| return wall();
         self.clock += 1;
         return self.clock;
     }
 
     fn nextID(self: *Reducer, kind: []const u8) ![]const u8 {
-        self.ids += 1;
-        const digits = try std.fmt.allocPrint(self.allocator(), "{d}", .{self.ids});
+        const counter = self.options.counter orelse &self.ids;
+        counter.* += 1;
+        const digits = try std.fmt.allocPrint(self.allocator(), "{d}", .{counter.*});
         const padding = self.options.id_width -| digits.len;
         const id = try self.allocator().alloc(u8, kind.len + 1 + padding + digits.len);
         @memcpy(id[0..kind.len], kind);
@@ -587,7 +592,7 @@ pub const Reducer = struct {
         try self.put(&envelope, "session_id", str(self.session_id));
         try self.put(&envelope, "run_id", str(run.id));
         try self.putNonEmpty(&envelope, "tool_call_id", tool_call_id);
-        try self.put(&envelope, "capability_revision", str(capability_revision));
+        try self.put(&envelope, "capability_revision", str(self.options.revision));
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
         if (!terminal) return;
         run.terminal = true;

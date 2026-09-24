@@ -48,6 +48,7 @@ const adapter_endpoint = @import("adapter_endpoint");
 const adapter_contract = @import("adapter_contract");
 const adapter_config = @import("adapter_config");
 const claude_adapter = @import("claude_adapter");
+const codex_adapter = @import("codex_adapter");
 
 pub const VERSION = @import("version_options").version;
 
@@ -2736,9 +2737,10 @@ fn printUsage(file: std.Io.File) !void {
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
         \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
-        \\                   Use --backend claude to serve a Claude Code child instead
-        \\                   of the built-in loop; --config reads an oap-serve.json
-        \\                   registry entry. Other backends answer unavailable.
+        \\                   Use --backend claude or --backend codex to serve a Claude
+        \\                   Code or Codex app-server child instead of the built-in
+        \\                   loop; --config reads an oap-serve.json registry entry.
+        \\                   Other backends answer unavailable.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
@@ -8898,7 +8900,7 @@ fn writeOapAuthOutbound(
     return wrote;
 }
 
-const unported_backends = [_][]const u8{ "acp", "codex", "deepseek", "hermes", "memory", "opencode", "pi" };
+const unported_backends = [_][]const u8{ "acp", "deepseek", "hermes", "memory", "opencode", "pi" };
 const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
@@ -8934,6 +8936,7 @@ fn backendEntry(
 ) !adapter_config.AdapterEntry {
     const path = config_path orelse {
         if (std.mem.eql(u8, name, "claude")) return adapter_config.builtinClaude(arena, environ);
+        if (std.mem.eql(u8, name, "codex")) return adapter_config.builtinCodex(arena, environ);
         return .{ .name = name, .kind = name };
     };
     const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, backend_config_read_limit) catch |err| {
@@ -8982,6 +8985,28 @@ fn claudeBackendConfig(
     } };
 }
 
+fn codexBackendConfig(
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    stderr: std.Io.File,
+) !codex_adapter.Config {
+    const wanted = if (entry.executable.len > 0) entry.executable else "codex";
+    const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
+        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, entry.name });
+        return error.BackendRefused;
+    };
+    return .{
+        .executable = executable,
+        .args = entry.args,
+        .environment = entry.environment,
+        .working_directory = entry.working_directory,
+        .model = entry.model,
+        .approval_policy = entry.approval_policy,
+        .sandbox = entry.sandbox,
+    };
+}
+
 fn writeEndpointOutbound(stdout: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
     var wrote = false;
     while (endpoint.popOutbound()) |line| {
@@ -9016,16 +9041,20 @@ fn runBackendMode(
     const entry = try backendEntry(arena, name, config_path, &environ, stderr);
 
     var claude: claude_adapter.Adapter = undefined;
+    var codex: codex_adapter.Adapter = undefined;
     var unavailable: adapter_contract.Unavailable = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
         claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(arena, entry, &environ, stderr));
         break :claude_served claude.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "codex")) codex_served: {
+        codex = codex_adapter.Adapter.init(allocator, try codexBackendConfig(arena, entry, &environ, stderr));
+        break :codex_served codex.adapter();
     } else if (unportedBackend(entry.kind)) unported_served: {
         const message = try std.fmt.allocPrint(arena, "oapx has no {s} backend yet; goap serve carries it", .{entry.kind});
         unavailable = .{ .backend = name, .message = message };
         break :unported_served unavailable.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude", .{ name, entry.kind });
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude and codex", .{ name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9333,7 +9362,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude and codex\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
