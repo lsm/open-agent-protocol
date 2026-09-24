@@ -1,5 +1,5 @@
 /**
- * The OAP client for a local `goap serve` daemon: OAP operations travel as
+ * The OAP client for a local `goap hub` daemon: OAP operations travel as
  * verbatim schema/v0.1 envelopes over the daemon's HTTP surface, and the
  * event stream is consumed through a real text/event-stream parser with
  * invisible cursor resume. It is the TypeScript counterpart of the Go
@@ -65,7 +65,7 @@ export const DEFAULT_PARTICIPANT = 'user';
 export interface DialOptions {
   /** Substitutes the transport used for daemon requests. */
   fetch?: FetchLike;
-  /** Sets the responder identity written into interactive-gate resolutions. It must match the identity the gates declare; against a `goap serve` daemon that is always "user", the default. */
+  /** Sets the responder identity written into interactive-gate resolutions. It must match the identity the gates declare; against a `goap hub` daemon that is always "user", the default. */
   participant?: string;
   /** Turns off invisible cursor resume: a dropped event stream is reported as a DisconnectError carrying the last observed sequence instead of being reconnected. */
   strictResume?: boolean;
