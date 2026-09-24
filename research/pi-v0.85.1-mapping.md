@@ -324,3 +324,24 @@ v0.85.1, whose `pi` launcher is a self-contained ELF binary.
 
 No adapter defect surfaced. Pi is the first tranche whose real-process gates
 were fully exercised without finding a mismatch.
+
+## Served by `oapx serve agent --backend pi`
+
+The Zig port (`zig/src/adapter/pi/adapter.zig`) drives the same reducer as the
+corpus, one per run. Where it differs from the Go adapter:
+
+- It advertises revision `pi-v0.85.1-oapx-v1`, with `run.resume` and
+  `run.replay` `unavailable`: it keeps no journal.
+- The child runs with `--no-extensions` and explicit extension arguments
+  refuse the open, per P0 policy 4, so no dialog is expected. One that arrives
+  anyway before `agent_start`, outside a run, or still open when the run settles
+  or the child exits is answered `cancelled`; one inside a started run surfaces
+  as `user.input`, though `action.permissions` stays `unavailable` as in Go.
+- A submission carrying image parts is refused `invalid_submission`; Go
+  forwards inline images in the native prompt. Only text parts are served.
+- `get_state` is read only at open. Go corroborates each `State` call with it;
+  the port answers from its projection of Pi events, and its `session.state` and
+  `run.reconciliation` reasons say so.
+- A prompt Pi refuses closes the session without a `run.failed`: the run was
+  never announced, so there is no one to report it to.
+- Without `--config` it runs `pi` from `PATH` with only `HOME` and `PATH`.
