@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Zig DeepSeek line codec refuses a frame nested past 10000 containers, counting the frame object, where the Go codec refuses it (`exceeded max depth`), instead of parsing any depth (#247).
+
 - Every HTTPS provider response read as empty after #240, so the TUI showed no reply: a turn "completed" with an empty assistant message and no error, on kimi and openai-codex alike. `compat.readResponse` switched to `Reader.readVec`, which may return 0 after only refilling the reader's buffer, as TLS does after a decrypt; callers took that 0 for end of stream. It now reads again until bytes arrive or the stream ends. Plain-HTTP endpoints were unaffected, which is why loopback tests kept passing.
 
 - The Zig DeepSeek adapter validates `subagent.finished` `lastAssistantMessage` the way the Go oracle does: each content block's member set per kind, Go's absent-versus-null rules, and the oracle's error text for mistyped or unknown block members. It previously checked only that the member was an array, so `[{"type":"bogus"}]` was admitted (#143).
