@@ -332,6 +332,11 @@ corpus, one per run. Where it differs from the Go adapter:
 
 - It advertises revision `pi-v0.85.1-oapx-v1`, with `run.resume` and
   `run.replay` `unavailable`: it keeps no journal.
-- A dialog raised outside a run, or still open when the run settles or the
-  child exits, is answered `cancelled` so the child is never left waiting.
+- The child runs with `--no-extensions` and explicit extension arguments
+  refuse the open, per P0 policy 4, so no dialog is expected. One that arrives
+  anyway before `agent_start`, outside a run, or still open when the run settles
+  or the child exits is answered `cancelled`; one inside a started run surfaces
+  as `user.input`, though `action.permissions` stays `unavailable` as in Go.
+- A prompt Pi refuses closes the session without a `run.failed`: the run was
+  never announced, so there is no one to report it to.
 - Without `--config` it runs `pi` from `PATH` with only `HOME` and `PATH`.

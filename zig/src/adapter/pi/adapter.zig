@@ -13,21 +13,23 @@ pub const capability_revision = "pi-v0.85.1-oapx-v1";
 const journal_reason = "oapx keeps no journal for this backend";
 
 const features = [_]contract.Feature{
-    .{ .key = "protocol.initialize", .level = .emulated, .reason = "Pi RPC has no initialize; readiness is a successful get_state" },
-    .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor over the pinned RPC surface" },
-    .{ .key = "session.open", .level = .emulated, .reason = "process spawn plus get_state" },
-    .{ .key = "session.state", .level = .emulated, .reason = "adapter-owned projection" },
-    .{ .key = "session.message.submit", .level = .native, .reason = "prompt command; admission waits for agent_start" },
-    .{ .key = "session.message.delivery.auto", .level = .native },
-    .{ .key = "run.streaming", .level = .native },
-    .{ .key = "run.status", .level = .native },
-    .{ .key = "run.cancel", .level = .native, .reason = "abort command; settlement arrives as agent_end with an aborted stop reason" },
-    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "action.permissions", .level = .unavailable, .reason = "extension dialogs are generic user input, not permissions" },
+    .{ .key = "action.tools", .level = .degraded, .reason = "observed tool lifecycle only; no portable catalog" },
+    .{ .key = "action.tools.execute", .level = .unavailable, .reason = "Pi executes tools internally" },
+    .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor synthesized for the pinned RPC vocabulary" },
+    .{ .key = "protocol.initialize", .level = .emulated, .reason = "Pi has no negotiation; readiness is a get_state handshake" },
+    .{ .key = "run.cancel", .level = .degraded, .reason = "abort intent is local; agent_settled remains terminal authority" },
+    .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state reconciles streaming state" },
     .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
-    .{ .key = "run.reconciliation", .level = .emulated, .reason = "state is the adapter's projection of Pi events" },
-    .{ .key = "action.tools", .level = .degraded, .reason = "tool_execution events are projected; Pi executes its own tools" },
-    .{ .key = "action.tools.execute", .level = .unavailable, .reason = "Pi executes its own tools" },
-    .{ .key = "user_input", .level = .native, .reason = "select, confirm, input and editor extension dialogs" },
+    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.status", .level = .emulated },
+    .{ .key = "run.streaming", .level = .native },
+    .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "idle auto is normalized to native prompt/start" },
+    .{ .key = "session.message.delivery.queue", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi queued prompt semantics safely" },
+    .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi steering semantics safely" },
+    .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
+    .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
+    .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
 };
 
 pub const descriptor = contract.Descriptor{
@@ -130,6 +132,10 @@ pub const Session = struct {
     fn construct(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
         const config = owner.config;
+        for (config.args) |arg| {
+            if (std.mem.eql(u8, arg, "--")) return refusal.fail(error.BackendFailed, "a standalone -- in the Pi args prevents enforced extension disabling");
+            if (std.mem.eql(u8, arg, "--extension") or std.mem.eql(u8, arg, "-e") or std.mem.startsWith(u8, arg, "--extension=")) return refusal.fail(error.BackendFailed, "explicit Pi extensions are incompatible with canonical prompt admission");
+        }
         const self = try gpa.create(Session);
         errdefer gpa.destroy(self);
         const id = if (request.session_id.len > 0) try gpa.dupe(u8, request.session_id) else try mint(owner, gpa, "session");
@@ -140,7 +146,7 @@ pub const Session = struct {
         errdefer gpa.destroy(reducer_arena);
         reducer_arena.* = std.heap.ArenaAllocator.init(gpa);
         errdefer reducer_arena.deinit();
-        const argv = try std.mem.concat(arena, []const u8, &.{ config.args, &.{ "--mode", "rpc" } });
+        const argv = try std.mem.concat(arena, []const u8, &.{ config.args, &.{ "--mode", "rpc", "--no-extensions" } });
         const transport = process.Transport.open(gpa, .{
             .executable = config.executable,
             .args = argv,
@@ -343,10 +349,8 @@ pub const Session = struct {
             .text
         else
             null;
-        const reducer = self.live() orelse {
-            if (dialog != null) _ = try self.send(try self.extensionAnswer(native_id, .cancelled));
-            return;
-        };
+        const reducer = self.live() orelse return self.dismiss(native_id, dialog);
+        if (!reducer.started) return self.dismiss(native_id, dialog);
         const opened_before = reducer.interactions.items.len;
         session.applyExtension(reducer, request) catch |err| return lift(err);
         if (reducer.interactions.items.len == opened_before) return;
@@ -365,6 +369,10 @@ pub const Session = struct {
             .dialog = dialog orelse .text,
             .labels = labels.items,
         });
+    }
+
+    fn dismiss(self: *Session, native_id: []const u8, dialog: ?Dialog) contract.Failure!void {
+        if (dialog != null) _ = try self.send(try self.extensionAnswer(native_id, .cancelled));
     }
 
     const Outcome = union(enum) { value: []const u8, confirmed: bool, cancelled };
@@ -456,7 +464,11 @@ pub const Session = struct {
         reducer.message_id = try reducer.counters.nextID(self.owned(), "message");
         self.reducer = reducer;
 
-        _ = try self.command(arena, "prompt", joined, refusal);
+        _ = self.command(arena, "prompt", joined, refusal) catch |err| {
+            self.reducer = null;
+            self.unusable = true;
+            return err;
+        };
         const started = monotonic();
         while (!reducer.started) {
             if (reducer.terminal or self.ended) return refusal.fail(error.BackendFailed, "the Pi agent ended the turn before starting it");
@@ -681,6 +693,7 @@ pub const FakePi = struct {
 
 pub const fake_prelude =
     \\#!/bin/sh
+    \\printf '%s\n' "$*" >"$(dirname "$0")/argv.log"
     \\exec 3>>"$(dirname "$0")/stdin.log"
     \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
     \\take; printf '{"type":"response","id":"req_1","command":"get_state","success":true,"data":{"sessionId":"native-session","isStreaming":false,"model":{"id":"model","provider":"fixture"}}}\n'
@@ -896,4 +909,58 @@ test "a dialog still open when its run settles is answered cancelled" {
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.completed", &seen);
     _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-1\",\"cancelled\":true}");
+}
+
+test "the child runs with extensions disabled, and an explicit extension argument refuses the open" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const argv = try probe.fake.tmp.dir.readFileAlloc(testing.io, "argv.log", probe.arena.allocator(), .limited(4096));
+    try testing.expectEqualStrings("--mode rpc --no-extensions\n", argv);
+    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("action.permissions"));
+
+    var refused: Probe = undefined;
+    try refused.init(fake_prelude ++ fake_idle);
+    defer refused.deinit();
+    refused.adapter.config.args = &.{ "--extension", "x.ts" };
+    try testing.expectError(error.BackendFailed, refused.open(&refusal));
+    try testing.expectEqualStrings("explicit Pi extensions are incompatible with canonical prompt admission", refusal.message);
+}
+
+test "a prompt Pi refuses closes the session rather than leaving an unstarted run behind" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"prompt","success":false,"error":"no model"}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    try testing.expectError(error.BackendFailed, probe.submit("hello", &refusal));
+    try testing.expectEqualStrings("pi prompt failed: no model", refusal.message);
+    try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
+    try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+    try testing.expectError(error.SessionClosed, probe.submit("again", &refusal));
+}
+
+test "a dialog raised before agent_start is answered cancelled and never surfaces" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"prompt","success":true}\n'
+        \\printf '{"type":"extension_ui_request","id":"ui-0","method":"confirm","title":"Early?","message":"Before start"}\n'
+        \\take
+        \\printf '{"type":"agent_start"}\n'
+        \\
+    ++ "printf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[" ++ assistant_hello ++ "],\"willRetry\":false}'\n" ++
+        "printf '{\"type\":\"agent_settled\"}\\n'\n" ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+    for (seen.items) |event| try testing.expect(std.mem.indexOf(u8, event.line, "user.input.requested") == null);
+    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-0\",\"cancelled\":true}");
 }
