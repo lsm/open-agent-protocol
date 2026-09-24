@@ -381,6 +381,7 @@ pub fn build(b: *std.Build) void {
     opencode_native_mod.addImport("gojson", adapter_gojson_mod);
     opencode_native_mod.addImport("goquote", adapter_goquote_mod);
     opencode_native_mod.addImport("gomarshal", adapter_gomarshal_mod);
+    opencode_native_mod.addImport("json_encode", json_encode_mod);
     const opencode_native_test = b.addTest(.{ .root_module = opencode_native_mod });
 
     const opencode_httpapi_mod = b.createModule(.{
