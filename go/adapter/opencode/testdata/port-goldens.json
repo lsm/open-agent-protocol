@@ -1,0 +1,188 @@
+{
+  "capability_revision": "opencode-v1.18.29-oap-v2",
+  "capabilities": {
+    "endpoint": {
+      "id": "opencode.server",
+      "name": "OpenCode Server Adapter",
+      "version": "v1.18.29",
+      "adapter": "opencode-http-sse"
+    },
+    "protocol_versions": [
+      "0.1"
+    ],
+    "profiles": [
+      "open-agent-protocol.agent-control-core"
+    ],
+    "features": {
+      "action.permissions": {
+        "level": "unavailable",
+        "reason": "durable stream carries no permission events; the polling surface is unexercised"
+      },
+      "action.tools": {
+        "level": "native",
+        "reason": "tool.called/progress/success/failed lifecycle observed natively"
+      },
+      "action.tools.execute": {
+        "level": "unavailable",
+        "reason": "tools execute server-side; no client-hosted execution surface"
+      },
+      "capabilities": {
+        "level": "emulated",
+        "reason": "descriptor synthesized from the pinned route inventory"
+      },
+      "models.list": {
+        "level": "degraded",
+        "reason": "the models this session is observed to run, projected from the native session record and durable step events; the server's own model.list route has no pinned response shape at this revision"
+      },
+      "protocol.initialize": {
+        "level": "emulated",
+        "reason": "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server"
+      },
+      "run.cancel": {
+        "level": "degraded",
+        "reason": "interrupt is intent with idle no-op; settlement derived from durable evidence and the active set"
+      },
+      "run.reconciliation": {
+        "level": "emulated",
+        "reason": "adapter-owned projection over active and durable sequence"
+      },
+      "run.replay": {
+        "level": "degraded",
+        "reason": "bounded adapter journal; the native durable cursor is exposed as the transcript cursor"
+      },
+      "run.resume": {
+        "level": "degraded",
+        "reason": "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal"
+      },
+      "run.status": {
+        "level": "native",
+        "reason": "session.active and durable step events"
+      },
+      "run.streaming": {
+        "level": "degraded",
+        "reason": "durable stream carries full-value text.ended boundaries, not live deltas"
+      },
+      "session.message.delivery.auto": {
+        "level": "emulated",
+        "reason": "no native auto; maps to steer which starts immediately when idle"
+      },
+      "session.message.delivery.queue": {
+        "level": "native",
+        "reason": "SessionInput.Admitted carries delivery=queue with promotedSeq; a reservation is admitted durably and promoted by session.next.prompted"
+      },
+      "session.message.delivery.steer": {
+        "level": "unavailable",
+        "reason": "an explicit steer request is rejected as outside the v0.1 subset; the server's default delivery is exposed through an auto request"
+      },
+      "session.message.submit": {
+        "level": "native",
+        "reason": "durable admission receipt with typed conflict rejection"
+      },
+      "session.open": {
+        "level": "native",
+        "reason": "POST /api/session with server-assigned identity"
+      },
+      "session.state": {
+        "level": "emulated",
+        "reason": "active set and adapter-owned projection"
+      }
+    },
+    "limits": {
+      "max_active_runs_per_session": 2,
+      "max_queued_runs_per_session": 1
+    }
+  },
+  "endpoint": "/base",
+  "requests": [
+    {
+      "name": "create-session",
+      "method": "POST",
+      "target": "/base/api/session",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"agent\":\"build\",\"model\":{\"id\":\"fixture\",\"providerID\":\"fixture\",\"variant\":\"high\"}}"
+    },
+    {
+      "name": "create-session-bare",
+      "method": "POST",
+      "target": "/base/api/session",
+      "headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "body": "{}"
+    },
+    {
+      "name": "prompt",
+      "method": "POST",
+      "target": "/base/api/session/ses_fake00000000000000/prompt",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"id\":\"msg_fake0000000000000004\",\"prompt\":{\"text\":\"hello\"},\"delivery\":\"steer\"}"
+    },
+    {
+      "name": "prompt-escaped-queue",
+      "method": "POST",
+      "target": "/base/api/session/ses_fake00000000000000/prompt",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0",
+        "Content-Type": "application/json"
+      },
+      "body": "{\"id\":\"msg_fake0000000000000009\",\"prompt\":{\"text\":\"a\\u003cb\\u003e\\u0026c \\\"q\\\" \\\\ \\u2028\\u2029\\n\\t\\r\\b\\f\\u0001\\u001f é\"},\"delivery\":\"queue\"}"
+    },
+    {
+      "name": "interrupt",
+      "method": "POST",
+      "target": "/base/api/session/ses_fake00000000000000/interrupt",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0",
+        "Content-Type": "application/json"
+      },
+      "body": "{}"
+    },
+    {
+      "name": "active",
+      "method": "GET",
+      "target": "/base/api/session/active",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
+      }
+    },
+    {
+      "name": "history",
+      "method": "GET",
+      "target": "/base/api/session/ses_fake00000000000000/history?after=3\u0026limit=100",
+      "headers": {
+        "Accept": "application/json",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
+      }
+    },
+    {
+      "name": "subscribe",
+      "method": "GET",
+      "target": "/base/api/session/ses_fake00000000000000/event",
+      "headers": {
+        "Accept": "text/event-stream",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
+      }
+    },
+    {
+      "name": "subscribe-after",
+      "method": "GET",
+      "target": "/base/api/session/ses_fake00000000000000/event?after=5",
+      "headers": {
+        "Accept": "text/event-stream",
+        "Authorization": "Basic b3BlbmNvZGU6c2VjcmV0"
+      }
+    }
+  ]
+}
