@@ -844,7 +844,7 @@ test "a child that dies mid-run fails the run and closes the session" {
     try testing.expectError(error.SessionClosed, probe.submit("after", &refusal));
 }
 
-test "a thread/start the child never answers refuses the open once the request bound passes, and stops the child" {
+test "a thread/start the child never answers refuses the open once the request bound passes" {
     var probe: Probe = undefined;
     try probe.init(
         \\#!/bin/sh
@@ -860,4 +860,29 @@ test "a thread/start the child never answers refuses the open once the request b
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, probe.open(&refusal));
     try testing.expectEqualStrings("the codex app-server did not answer thread/start within 3000 ms", refusal.message);
+}
+
+test "a turn/start the child never answers is refused once the request bound passes, stopping the child and closing the session" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take
+        \\while IFS= read -r line; do :; done
+        \\printf 'stdin closed\n' >&3
+        \\
+    );
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    probe.adapter.config.request_timeout_ns = 3 * std.time.ns_per_s;
+    try testing.expectError(error.BackendFailed, probe.submit("unanswered", &refusal));
+    try testing.expectEqualStrings("the codex app-server did not answer turn/start within 3000 ms", refusal.message);
+
+    var rounds: usize = 0;
+    while (rounds < 400) : (rounds += 1) {
+        const written = try probe.fake.written(probe.arena.allocator());
+        if (std.mem.endsWith(u8, written, "stdin closed\n")) break;
+        compat.time.sleepNs(5 * std.time.ns_per_ms);
+    } else return error.ChildNeverStopped;
+    try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+    try testing.expectError(error.SessionClosed, probe.submit("after", &refusal));
 }
