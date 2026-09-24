@@ -99,7 +99,7 @@ func TestARevisionRepeatedWithinAHarnessFails(t *testing.T) {
 	repeat := *versionLabelled(t, claude, "2.1.280")
 	repeat.Label, repeat.Status = "2.1.281", StatusSupported
 	claude.Versions = append(claude.Versions, repeat)
-	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeDuplicateRevision, "claude-code-2.1.280-oap-v2")
+	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeDuplicateRevision, "claude-code-2.1.280-oap-v3")
 }
 
 func TestARevisionItsCorpusDoesNotCarryFails(t *testing.T) {
@@ -111,7 +111,7 @@ func TestARevisionItsCorpusDoesNotCarryFails(t *testing.T) {
 	t.Run("floor", func(t *testing.T) {
 		catalog := loadCatalog(t)
 		versionLabelled(t, harnessNamed(t, &catalog, "claude-code"), "2.1.263").Corpus = "fixtures/adapters/pi-v0.85.1"
-		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeCorpusRevision, `"pi-v0.85.1-oap-v1", the catalog says "claude-code-2.1.280-oap-v2"`)
+		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeCorpusRevision, `"pi-v0.85.1-oap-v1", the catalog says "claude-code-2.1.280-oap-v3"`)
 	})
 }
 

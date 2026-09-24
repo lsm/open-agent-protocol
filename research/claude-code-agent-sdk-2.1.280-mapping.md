@@ -282,6 +282,80 @@ The Zig port has no per-subscriber stream or journal, so it has no `Resume`.
 Its corpus harness skips `resume` ops, and only its capability revision
 follows this change.
 
+## Issue #122: `run.tool_selection` is enforced per call
+
+`run.tool_selection` moves from unadvertised to `emulated`, scoped to the run,
+and the capability revision is now `claude-code-2.1.280-oap-v3`. Decision 0031
+made the projection conforming: a call the endpoint refuses because the
+admitted `tool_choice` excludes it settles `action.call.failed` with
+`refused_by_policy`, after the `requested` and `started` the harness really
+produced.
+
+The `can_use_tool` gate alone cannot carry the rule. The CLI asks only for
+calls it would prompt for: a tool `--allowedTools` pre-approves, a read-only
+tool such as `Read`, and a safe command such as `git status` or `pwd` run
+without an ask (item 3 above). An excluded tool on any of those paths would
+run. What covers every call is an SDK hook. Probed against the pinned binary
+with this adapter's argv, hermetic as above:
+
+1. `initialize` carrying
+   `{"PreToolUse":[{"matcher":null,"hookCallbackIds":["oap_tool_selection"]}]}`
+   makes the CLI send a `hook_callback` control request for every tool call,
+   after the `assistant` frame naming the `tool_use` and before it runs. It
+   carries `callback_id`, `tool_use_id`, and an `input` with
+   `hook_event_name: "PreToolUse"`, `tool_name`, `tool_input` and
+   `tool_use_id`.
+2. It fired for an ungated `Bash` `pwd` and an ungated `Read` under
+   `UnrestrictedTools()`, and for both again when `--tools Bash,Read
+   --allowedTools Bash Read` pre-approved them.
+3. Answering `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+   "permissionDecision":"deny","permissionDecisionReason":…}}` stopped the
+   call in every case, pre-approved ones included, with no `can_use_tool`. The
+   `tool_result` came back `is_error: true` with the reason as content and
+   `tool_result_meta` `non_execution_kind: "permission-rule"`.
+4. Answering `{}` left the call to the CLI's own handling: `pwd` and `Read`
+   ran and returned their output.
+
+What the adapter now does:
+
+- Open registers that hook in `initialize`. `hooks` was `null` before. A
+  caller-supplied `Factory` does no `initialize`, so it registers nothing.
+- Submit accepts `tool_choice` and admits it as Decisions 0022 and 0023
+  judge it, with `protocol.ToolChoice.Unsatisfiable` and `Permits`.
+- A `hook_callback` for a tool the run's policy excludes is answered with the
+  deny above. One for a permitted tool, or outside a run with a policy, is
+  answered `{}`. A callback id the adapter did not register is refused and
+  treated as foreign activity.
+- A `can_use_tool` for an excluded tool, which only arrives if no hook denied
+  first, is answered `{"behavior":"deny"}` with the same reason. Neither path
+  opens an OAP interaction.
+- The call settles `refused_by_policy` only when the adapter itself denied it
+  and the `tool_result` is an error. An excluded call the adapter never denied
+  keeps its honest settlement, which the validator reports as
+  `unapplied_control`.
+
+The catalog a policy is judged against is the descriptor's, and this adapter
+publishes none: the CLI's tools are known only per turn, from `system/init`,
+and `action.tools.list` serves that session view, which the validator does not
+use for `tool_choice`. Both the validator and the adapter therefore treat the
+catalog as known and empty. `allowed` naming any tool is refused
+`unsatisfiable`, and an admitted policy, whether `allowed: []` or any
+`disallowed` list, excludes every tool, so every call in that run is refused.
+That is conforming, and it is the only reading the oracle permits today. A
+narrower denylist needs a published catalog. The CLI does not provide one
+before the first turn, and it depends on the tool posture and MCP servers.
+
+`TestClaudeProcessExcludedToolIsRefusedByPolicy` drives the pinned binary with
+`disallowed: ["Bash"]` and a provider that asks for `Bash` `touch`, under
+`AllowTools("Bash")`, where the call is pre-approved and never asks, and under
+`UnrestrictedTools()`. In both the trace validates with the submit it was
+admitted under, the call settles `refused_by_policy`, no gate opens, the file
+is not written, and the run completes.
+
+The Zig port carries the new revision and does not implement the control or
+register the hook, so its descriptor lacks `run.tool_selection`. A revision
+names one descriptor, so this is a recorded divergence until the port follows.
+
 ## Corpus recorded at 2.1.280
 
 Recorded 2026-09-24 against `@anthropic-ai/claude-code-darwin-arm64@2.1.280`:
@@ -449,7 +523,7 @@ What differs from the Go adapter, or cannot be done through this path:
 
 | Area | oapx | Go adapter | Why |
 | --- | --- | --- | --- |
-| Capability revision | `claude-code-2.1.280-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` | `claude-code-2.1.280-oap-v2`, both `degraded` | oapx keeps no journal, and a revision names one descriptor. The replay control answers `unsupported_control`. |
+| Capability revision | `claude-code-2.1.280-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` | `claude-code-2.1.280-oap-v3`, both `degraded` | oapx keeps no journal, and a revision names one descriptor. The replay control answers `unsupported_control`. |
 | `models.request`, `session.model.switch.request` | `unsupported_feature` | the same | The CLI's model control is unexercised in both trees, so both fail the conformance runner's model-switch checks. |
 | Tool sources and provided tools at open | `unsupported_feature`, before any child starts | the same | Not advertised. |
 | Admission | A turn the child has not echoed within 10 minutes is abandoned: the child is stopped and the session closes | waits on the caller's context, and a cancelled wait closes the session | The endpoint serves one request at a time, so a submit cannot wait unbounded. |

@@ -242,11 +242,21 @@ func TestCanUseToolRequestDecode(t *testing.T) {
 	if _, err := DecodeControlRequest(ControlCanUseTool, []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{}}}`)); err == nil {
 		t.Fatal("ask without tool_use_id accepted")
 	}
-	value, err = DecodeControlRequest("hook_callback", []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"hook_callback","callback_id":"h1"}}`))
+	value, err = DecodeControlRequest(ControlHookCallback, []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"hook_callback","callback_id":"h1","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t1"},"tool_use_id":"t1"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unknown, ok := value.(*UnknownFrame); !ok || unknown.Subtype != "hook_callback" {
+	if hook, ok := value.(*HookCallbackRequest); !ok || hook.CallbackID != "h1" || hook.Input.ToolName != "Bash" || hook.Input.HookEventName != HookPreToolUse || hook.ToolUseID != "t1" {
+		t.Fatalf("hook callback = %#v", value)
+	}
+	if _, err := DecodeControlRequest(ControlHookCallback, []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"hook_callback"}}`)); err == nil {
+		t.Fatal("hook callback without callback_id accepted")
+	}
+	value, err = DecodeControlRequest("mcp_message", []byte(`{"type":"control_request","request_id":"r","request":{"subtype":"mcp_message"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown, ok := value.(*UnknownFrame); !ok || unknown.Subtype != "mcp_message" {
 		t.Fatalf("unconfigured reverse request = %T", value)
 	}
 }

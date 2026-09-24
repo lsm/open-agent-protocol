@@ -369,7 +369,7 @@ func runClaudeScriptedCase(t *testing.T, definition ccCorpusCase, frames []ccFra
 			channel := make(chan ccSubmit, 1)
 			pending = channel
 			go func() {
-				admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
+				admission, stream, err := session.Submit(context.Background(), helloSubmit)
 				channel <- ccSubmit{admission, stream, err}
 			}()
 			written, raw := peer.written()
@@ -606,11 +606,11 @@ func (e *ccExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 	if len(events) > 0 {
 		switch {
 		case e.cancelAccepted:
-			assertCancelledTrace(t, admission, events)
+			assertCancelledTrace(t, helloSubmit, admission, events)
 		case e.served != nil:
-			adaptertest.AssertProtocolValidWithCatalog(t, admission, testDescriptor(t), e.servedRequest, *e.served, events)
+			adaptertest.AssertProtocolValidWithSubmitAndCatalog(t, helloSubmit, admission, testDescriptor(t), e.servedRequest, *e.served, events)
 		default:
-			assertValidTrace(t, admission, events)
+			assertValidTrace(t, helloSubmit, admission, events)
 		}
 		e.runs = append(e.runs, events)
 	} else {
