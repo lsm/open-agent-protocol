@@ -412,7 +412,7 @@ func TestUnsupportedControlsHaveNoNativeSideEffects(t *testing.T) {
 	if _, e := s.Cancel(context.Background(), "x"); !errors.Is(e, errUnavailable) {
 		t.Fatal(e)
 	}
-	if e := s.Resolve(context.Background(), base.InteractionResolution{}); !errors.Is(e, errUnavailable) {
+	if e := s.Resolve(context.Background(), base.InteractionResolution{}); !errors.Is(e, base.ErrInteractionNotFound) {
 		t.Fatal(e)
 	}
 	f.mu.Lock()

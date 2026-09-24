@@ -450,8 +450,6 @@ What differs from the Go adapter, or cannot be done through this path:
 | Area | oapx | Go adapter | Why |
 | --- | --- | --- | --- |
 | Capability revision | `claude-code-2.1.280-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` | `claude-code-2.1.280-oap-v2`, both `degraded` | oapx keeps no journal, and a revision names one descriptor. The replay control answers `unsupported_control`. |
-| Explicit `queue`, `steer` or `btw` delivery | `unsupported_feature` naming `session.message.delivery.<mode>` | `invalid_submission` | The Go adapter diverges from `drafts/conformance.md` `+queue`: an endpoint that cannot queue refuses an explicit `queue` with `unsupported_feature` naming the key. |
-| `action.permission.resolve.request` | `resolution_rejected`: every ask is a `user.input` gate | `internal`, from `operation unavailable` | No permission interaction is ever open, so the request names none. `internal` reports an endpoint fault that did not happen. |
 | `models.request`, `session.model.switch.request` | `unsupported_feature` | the same | The CLI's model control is unexercised in both trees, so both fail the conformance runner's model-switch checks. |
 | Tool sources and provided tools at open | `unsupported_feature`, before any child starts | the same | Not advertised. |
 | Admission | A turn the child has not echoed within 10 minutes is abandoned: the child is stopped and the session closes | waits on the caller's context, and a cancelled wait closes the session | The endpoint serves one request at a time, so a submit cannot wait unbounded. |

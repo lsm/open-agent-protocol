@@ -1,5 +1,6 @@
 const std = @import("std");
 const rpc = @import("rpc");
+const json_encode = @import("json_encode");
 
 pub const capability_revision = "claude-code-2.1.280-oap-v2";
 pub const cost_extension = "com.anthropic.claude-code.cost";
@@ -418,7 +419,7 @@ pub const Reducer = struct {
 
         var prompt = tool_name;
         if (rpc.lookupRaw(ask, "input")) |input| {
-            const encoded = try std.json.Stringify.valueAlloc(self.allocator(), input, .{});
+            const encoded = try json_encode.valueAlloc(self.allocator(), input);
             if (encoded.len > 0) {
                 prompt = try std.fmt.allocPrint(self.allocator(), "{s} {s}", .{ tool_name, encoded });
             }

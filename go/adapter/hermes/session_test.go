@@ -1560,3 +1560,12 @@ func TestResumeReplaysARunAfterTheGatewayExits(t *testing.T) {
 		t.Fatalf("replay after the gateway exited = %s", got)
 	}
 }
+
+func TestAPermissionResolutionNamesNoInteraction(t *testing.T) {
+	s, f := openTest(t)
+	err := s.Resolve(context.Background(), base.InteractionResolution{Permission: &protocol.PermissionResolveRequest{InteractionID: "interaction-1", SessionID: "session", Granted: true}})
+	if !errors.Is(err, base.ErrInteractionNotFound) {
+		t.Fatalf("permission resolution = %v", err)
+	}
+	_ = f
+}
