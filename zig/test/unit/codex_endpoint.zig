@@ -240,6 +240,7 @@ test "a codex child that exits mid-run fails the run it held, and the exchange v
     _ = try conversation.submit("auto");
     const failed = try conversation.pumpUntil("run.failed");
     try testing.expectEqualStrings("native_transport_closed", failed.object.get("payload").?.object.get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("child exited with status 7", failed.object.get("payload").?.object.get("error").?.object.get("message").?.string);
 
     const state = try conversation.send(try conversation.envelope("session.state.request", ",\"session_id\":\"" ++ session_id ++ "\",\"capability_revision\":\"" ++ revision ++ "\"", "{\"session_id\":\"" ++ session_id ++ "\"}"));
     try testing.expectEqualStrings("session_closed", errorCode(state[0]));

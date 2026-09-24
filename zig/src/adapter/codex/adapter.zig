@@ -241,6 +241,7 @@ pub const Session = struct {
         switch (polled) {
             .quiet => return null,
             .ended => {
+                self.reap();
                 try self.fail(self.transport.departed().text(self.owned()));
                 return null;
             },
@@ -839,7 +840,8 @@ test "a child that dies mid-run fails the run and closes the session" {
     _ = try probe.open(&refusal);
     _ = try probe.submit("doomed", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
-    _ = try probe.pumpUntil("run.failed", &seen);
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    try testing.expectEqualStrings("child exited with status 0", (try probe.payloadOf(failed)).get("error").?.object.get("message").?.string);
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
     try testing.expectError(error.SessionClosed, probe.submit("after", &refusal));
 }
