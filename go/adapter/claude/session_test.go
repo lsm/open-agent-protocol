@@ -1152,6 +1152,9 @@ func TestASlowConsumerWithinTheJournalReceivesTheWholeRunWithoutOverflow(t *test
 	const deltas = 600
 	for index := range deltas {
 		peer.send(textDelta(uuid, strconv.Itoa(index)))
+		if (index+1)%16 == 0 {
+			awaitCursor(t, session, uint64(index)+2)
+		}
 	}
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	got := <-read
