@@ -569,7 +569,14 @@ pub const Session = struct {
         if (!std.mem.eql(u8, reducer.run_id, run_id)) return error.RunNotFound;
         if (!reducer.cancel_intent) {
             session.cancel(reducer) catch |err| return lift(err);
-            _ = try self.command(arena, "abort", null, refusal);
+            _ = self.command(arena, "abort", null, refusal) catch |err| {
+                if (err == error.BackendFailed and !self.ended) {
+                    session.abortFailed(reducer, refusal.message) catch |failure| return lift(failure);
+                    try self.recordTerminal();
+                    try self.settleAsks();
+                }
+                return err;
+            };
         }
         try self.recordTerminal();
         const status: oap_types.RunStatus = if (self.statuses.get(run_id)) |settled| std.meta.stringToEnum(oap_types.RunStatus, settled) orelse .cancelling else .cancelling;
@@ -985,4 +992,23 @@ test "a dialog raised before agent_start is answered cancelled and never surface
     _ = try probe.pumpUntil("run.completed", &seen);
     for (seen.items) |event| try testing.expect(std.mem.indexOf(u8, event.line, "user.input.requested") == null);
     _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-0\",\"cancelled\":true}");
+}
+
+test "an abort Pi refuses fails the run with pi_abort_failed, as Go does" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_prompt_accepted ++
+        \\take; printf '{"type":"response","id":"req_3","command":"abort","success":false,"error":"busy"}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("long", &refusal);
+    try testing.expectError(error.BackendFailed, probe.handle.?.cancel(probe.arena.allocator(), admitted.run_id.?, &refusal));
+    var seen = std.ArrayList(contract.Event).empty;
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    const failure = (try probe.payloadOf(failed)).get("error").?.object;
+    try testing.expectEqualStrings("pi_abort_failed", failure.get("code").?.string);
+    try testing.expectEqualStrings("pi abort failed: busy", failure.get("message").?.string);
+    try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
 }

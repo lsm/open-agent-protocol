@@ -881,6 +881,11 @@ pub fn cancel(reducer: *Reducer) !void {
     try statusUpdate(reducer, "cancelling", "");
 }
 
+pub fn abortFailed(reducer: *Reducer, message: []const u8) !void {
+    if (reducer.terminal) return;
+    try failRun(reducer, "pi_abort_failed", message);
+}
+
 pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
     if (reducer.terminal) return;
     if (!reducer.started) {

@@ -337,6 +337,8 @@ corpus, one per run. Where it differs from the Go adapter:
   anyway before `agent_start`, outside a run, or still open when the run settles
   or the child exits is answered `cancelled`; one inside a started run surfaces
   as `user.input`, though `action.permissions` stays `unavailable` as in Go.
+- A submission carrying image parts is refused `invalid_submission`; Go
+  forwards inline images in the native prompt. Only text parts are served.
 - `get_state` is read only at open. Go corroborates each `State` call with it;
   the port answers from its projection of Pi events, and its `session.state` and
   `run.reconciliation` reasons say so.
