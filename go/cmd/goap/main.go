@@ -33,10 +33,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return usage(stderr)
 	}
 	switch args[0] {
+	case "hub":
+		return runHub(ctx, args[1:], stdin, stdout, stderr)
 	case "serve":
-		return runServe(ctx, args[1:], stdin, stdout, stderr)
+		return runServeRole(ctx, args[1:], stdin, stdout, stderr)
 	case "endpoint":
-		return runEndpoint(ctx, args[1:], stdin, stdout, stderr)
+		return runEndpoint(ctx, "endpoint", "adapter", args[1:], stdin, stdout, stderr)
 	case "conformance":
 		return runConformance(ctx, args[1:], stdout, stderr)
 	case "validate":
@@ -55,7 +57,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func usage(w io.Writer) error {
-	fmt.Fprintln(w, "usage: goap <serve|endpoint|conformance|validate|fixtures|demo|check|providers> [arguments]")
+	fmt.Fprintln(w, "usage: goap <hub|serve|endpoint|conformance|validate|fixtures|demo|check|providers> [arguments]")
 	return errors.New("invalid command")
 }
 

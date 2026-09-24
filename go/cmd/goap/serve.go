@@ -20,8 +20,8 @@ import (
 	"github.com/lsm/open-agent-protocol/go/serve/servestdio"
 )
 
-func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("hub", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "adapter registry JSON path (default: built-in memory adapter)")
 	addr := fs.String("addr", servehttp.DefaultAddr, "listen address")
@@ -30,7 +30,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("serve accepts no positional arguments")
+		return errors.New("hub accepts no positional arguments")
 	}
 
 	addrSet := false
@@ -40,7 +40,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		}
 	})
 	if *overStdio && addrSet {
-		return errors.New("serve --stdio takes no listen address; --addr and --stdio are mutually exclusive")
+		return errors.New("hub --stdio takes no listen address; --addr and --stdio are mutually exclusive")
 	}
 
 	var registry *serve.Registry

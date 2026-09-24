@@ -77,7 +77,7 @@ func oapBinary(t *testing.T) string {
 func TestRunnerAcceptsTheReferenceEndpoint(t *testing.T) {
 	oap := oapBinary(t)
 	report, err := Run(context.Background(), Options{
-		Command: []string{oap, "endpoint", "--adapter", "memory"},
+		Command: []string{oap, "serve", "agent", "--backend", "memory"},
 		Stderr:  io.Discard,
 	})
 	if err != nil {
@@ -309,7 +309,7 @@ func handleHelperRequest(request protocol.Envelope, revision, mode string, emit 
 
 func TestReplayRefusesACursorItCannotHonour(t *testing.T) {
 	oap := oapBinary(t)
-	client, err := Spawn(context.Background(), oap, []string{"endpoint", "--adapter", "memory"}, io.Discard)
+	client, err := Spawn(context.Background(), oap, []string{"serve", "agent", "--backend", "memory"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
