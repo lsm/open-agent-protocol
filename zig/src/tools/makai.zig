@@ -50,6 +50,7 @@ const adapter_config = @import("adapter_config");
 const claude_adapter = @import("claude_adapter");
 const codex_adapter = @import("codex_adapter");
 const acp_adapter = @import("acp_adapter");
+const pi_adapter = @import("pi_adapter");
 const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
@@ -2741,8 +2742,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
         \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
-        \\                   Use --backend claude or --backend codex to serve a Claude
-        \\                   Code or Codex app-server child instead of the built-in
+        \\                   Use --backend claude, codex or pi to serve a Claude Code,
+        \\                   Codex app-server or Pi child instead of the built-in
         \\                   loop, or an ACP agent, Hermes gateway, DeepSeek harness
         \\                   or OpenCode server named by a --config entry;
         \\                   --config reads an oap-serve.json registry entry.
@@ -8906,7 +8907,7 @@ fn writeOapAuthOutbound(
     return wrote;
 }
 
-const unported_backends = [_][]const u8{ "memory", "pi" };
+const unported_backends = [_][]const u8{"memory"};
 const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
@@ -8943,6 +8944,7 @@ fn backendEntry(
     const path = config_path orelse {
         if (std.mem.eql(u8, name, "claude")) return adapter_config.builtinClaude(arena, environ);
         if (std.mem.eql(u8, name, "codex")) return adapter_config.builtinCodex(arena, environ);
+        if (std.mem.eql(u8, name, "pi")) return adapter_config.builtinPi(arena, environ);
         return .{ .name = name, .kind = name };
     };
     const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, backend_config_read_limit) catch |err| {
@@ -9010,6 +9012,25 @@ fn codexBackendConfig(
         .model = entry.model,
         .approval_policy = entry.approval_policy,
         .sandbox = entry.sandbox,
+    };
+}
+
+fn piBackendConfig(
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    stderr: std.Io.File,
+) !pi_adapter.Config {
+    const wanted = if (entry.executable.len > 0) entry.executable else "pi";
+    const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
+        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, entry.name });
+        return error.BackendRefused;
+    };
+    return .{
+        .executable = executable,
+        .args = entry.args,
+        .environment = entry.environment,
+        .working_directory = entry.working_directory,
     };
 }
 
@@ -9145,6 +9166,7 @@ fn runBackendMode(
 
     var claude: claude_adapter.Adapter = undefined;
     var codex: codex_adapter.Adapter = undefined;
+    var pi: pi_adapter.Adapter = undefined;
     var acp: acp_adapter.Adapter = undefined;
     var deepseek: deepseek_adapter.Adapter = undefined;
     var opencode: opencode_adapter.Adapter = undefined;
@@ -9156,6 +9178,9 @@ fn runBackendMode(
     } else if (std.mem.eql(u8, entry.kind, "codex")) codex_served: {
         codex = codex_adapter.Adapter.init(allocator, try codexBackendConfig(arena, entry, &environ, stderr));
         break :codex_served codex.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "pi")) pi_served: {
+        pi = pi_adapter.Adapter.init(allocator, try piBackendConfig(arena, entry, &environ, stderr));
+        break :pi_served pi.adapter();
     } else if (std.mem.eql(u8, entry.kind, "acp")) acp_served: {
         acp = acp_adapter.Adapter.init(allocator, try acpBackendConfig(arena, entry, &environ, stderr));
         break :acp_served acp.adapter();
@@ -9173,7 +9198,7 @@ fn runBackendMode(
         unavailable = .{ .backend = name, .message = message };
         break :unported_served unavailable.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, acp, hermes, deepseek and opencode", .{ name, entry.kind });
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode", .{ name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9481,7 +9506,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, acp, hermes, deepseek and opencode\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

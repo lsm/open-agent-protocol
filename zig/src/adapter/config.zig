@@ -270,6 +270,13 @@ pub fn builtinClaude(arena: std.mem.Allocator, environ: *const std.process.Envir
     return .{ .name = "claude", .kind = "claude", .environment = environment, .unrestricted_tools = true };
 }
 
+pub fn builtinPi(arena: std.mem.Allocator, environ: *const std.process.Environ.Map) Error!AdapterEntry {
+    var diagnostic = Diagnostic{};
+    const reader = Reader{ .arena = arena, .diagnostic = &diagnostic };
+    const environment = try resolveEnvironment(reader, "the built-in pi entry", &builtin_environment, environ, false);
+    return .{ .name = "pi", .kind = "pi", .environment = environment };
+}
+
 pub fn builtinCodex(arena: std.mem.Allocator, environ: *const std.process.Environ.Map) Error!AdapterEntry {
     var diagnostic = Diagnostic{};
     const reader = Reader{ .arena = arena, .diagnostic = &diagnostic };
@@ -520,6 +527,22 @@ test "the built-in codex entry passes only HOME and PATH and states no approval 
     try testing.expectEqualStrings("PATH=/usr/bin", entry.environment[1]);
     try testing.expectEqualStrings("", entry.approval_policy);
     try testing.expectEqualStrings("", entry.sandbox);
+}
+
+test "the built-in pi entry passes only HOME and PATH" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(arena.allocator());
+    try environ.put("HOME", "/home/me");
+    try environ.put("PATH", "/usr/bin");
+    try environ.put("ANTHROPIC_API_KEY", "secret");
+
+    const entry = try builtinPi(arena.allocator(), &environ);
+    try testing.expectEqualStrings("pi", entry.kind);
+    try testing.expectEqualStrings("", entry.executable);
+    try testing.expectEqual(@as(usize, 2), entry.environment.len);
+    try testing.expectEqualStrings("HOME=/home/me", entry.environment[0]);
+    try testing.expectEqualStrings("PATH=/usr/bin", entry.environment[1]);
 }
 
 test "a bare executable is found on the search path's absolute directories, and a path is taken as written" {

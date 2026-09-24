@@ -17,13 +17,17 @@ pub const Error = error{
 pub const Counters = struct {
     ids: usize = 0,
     clock: i64 = 0,
+    shared: ?*usize = null,
+    now_ms: ?*const fn () i64 = null,
 
     pub fn nextID(self: *Counters, arena: std.mem.Allocator, kind: []const u8) ![]const u8 {
-        self.ids += 1;
-        return std.fmt.allocPrint(arena, "{s}-{d}", .{ kind, self.ids });
+        const counter = self.shared orelse &self.ids;
+        counter.* += 1;
+        return std.fmt.allocPrint(arena, "{s}-{d}", .{ kind, counter.* });
     }
 
     pub fn nextTick(self: *Counters) i64 {
+        if (self.now_ms) |wall| return wall();
         self.clock += 1;
         return self.clock;
     }
@@ -52,6 +56,8 @@ pub const Reducer = struct {
     arena: std.mem.Allocator,
     counters: Counters = .{},
     session_id: []const u8 = "session",
+    responder: []const u8 = participant,
+    revision: []const u8 = capability_revision,
     run_id: []const u8 = "",
     message_id: []const u8 = "",
     sequence: u64 = 1,
@@ -106,7 +112,7 @@ pub const Reducer = struct {
         try map.put(self.arena, "timestamp_ms", .{ .integer = now });
         try map.put(self.arena, "session_id", str(self.session_id));
         try map.put(self.arena, "run_id", str(self.run_id));
-        try map.put(self.arena, "capability_revision", str(capability_revision));
+        try map.put(self.arena, "capability_revision", str(self.revision));
         if (reply.len != 0) try map.put(self.arena, "in_reply_to", str(reply));
         if (std.mem.startsWith(u8, kind, "action.call.")) {
             if (payload.object.get("tool_call_id")) |carried| try map.put(self.arena, "tool_call_id", carried);
@@ -875,6 +881,11 @@ pub fn cancel(reducer: *Reducer) !void {
     try statusUpdate(reducer, "cancelling", "");
 }
 
+pub fn abortFailed(reducer: *Reducer, message: []const u8) !void {
+    if (reducer.terminal) return;
+    try failRun(reducer, "pi_abort_failed", message);
+}
+
 pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
     if (reducer.terminal) return;
     if (!reducer.started) {
@@ -961,7 +972,7 @@ pub fn applyExtension(reducer: *Reducer, request: std.json.Value) !void {
     const payload = try reducer.object();
     try payload.put(reducer.arena, "interaction_id", Reducer.str(interaction.id));
     try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
-    try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
+    try payload.put(reducer.arena, "responded_by", Reducer.str(reducer.responder));
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "title", Reducer.str(title));
@@ -1008,7 +1019,7 @@ pub fn resolveExtension(reducer: *Reducer, interaction_id: []const u8, answer: [
     const payload = try reducer.object();
     try payload.put(reducer.arena, "interaction_id", Reducer.str(interaction.id));
     try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
-    try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
+    try payload.put(reducer.arena, "responded_by", Reducer.str(reducer.responder));
     try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
     try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
     try payload.put(reducer.arena, "status", Reducer.str("submitted"));
@@ -1486,7 +1497,7 @@ fn settleChildren(reducer: *Reducer, cancelled: bool) !void {
         const payload = try reducer.object();
         try payload.put(reducer.arena, "interaction_id", Reducer.str(interaction.id));
         try payload.put(reducer.arena, "requested_by", Reducer.str(endpoint_id));
-        try payload.put(reducer.arena, "responded_by", Reducer.str(participant));
+        try payload.put(reducer.arena, "responded_by", Reducer.str(reducer.responder));
         try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
         try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
         try payload.put(reducer.arena, "status", Reducer.str("cancelled"));
