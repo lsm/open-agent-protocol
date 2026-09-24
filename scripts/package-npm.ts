@@ -80,7 +80,6 @@ const mainPkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
 mainPkg.version = VERSION;
 mainPkg.bin = { makai: "makai.js" };
 mainPkg.files = ["dist/src/", "makai.js", "README.md"];
-// Provenance requires the manifest's repository to match the publishing repo.
 if (typeof mainPkg.repository !== "object" || !mainPkg.repository.url) {
   mainPkg.repository = {
     type: "git",
