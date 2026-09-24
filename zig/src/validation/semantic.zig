@@ -708,6 +708,7 @@ pub const Machine = struct {
             self.limits = null;
             self.descriptor_owners.clearRetainingCapacity();
             self.descriptor_attribution.clearRetainingCapacity();
+            self.declared_sources.clearRetainingCapacity();
             return;
         }
         if (std.mem.eql(u8, declared, "session.message.submit.request")) {
@@ -2493,7 +2494,7 @@ pub const Machine = struct {
                     if (opened.tools) |listed| {
                         for (listed.array.items) |tool| {
                             const provided_name = memberString(tool, "name");
-                            if (holder.provided_tools.get(provided_name) == null) try holder.provided_tools.put(self.arena.allocator(), provided_name, tool);
+                            try holder.provided_tools.put(self.arena.allocator(), provided_name, tool);
                             try holder.provided_owners.put(
                                 self.arena.allocator(),
                                 memberString(tool, "name"),
@@ -2515,7 +2516,9 @@ pub const Machine = struct {
             if (member(payload, "sources")) |published| {
                 var adopted = holder.attached_sources.iterator();
                 while (adopted.next()) |entry| {
-                    if (sourceWithId(published, entry.key_ptr.*)) |described| entry.value_ptr.* = described;
+                    if (sourceWithId(published, entry.key_ptr.*)) |described| {
+                        if (describesSource(entry.value_ptr.*, described)) entry.value_ptr.* = described;
+                    }
                 }
             }
             const reported = memberString(payload, "current_model_id");
@@ -3630,6 +3633,17 @@ fn toolNamed(tools: ?std.json.Value, name: []const u8) ?std.json.Value {
 fn sameSourceDescription(attached: std.json.Value, listed: std.json.Value) bool {
     for ([_][]const u8{ "id", "kind", "protocol", "endpoint", "display_name" }) |name| {
         if (!std.mem.eql(u8, memberString(attached, name), memberString(listed, name))) return false;
+    }
+    return true;
+}
+
+fn describesSource(attached: std.json.Value, published: std.json.Value) bool {
+    for ([_][]const u8{ "id", "kind" }) |name| {
+        if (!std.mem.eql(u8, memberString(attached, name), memberString(published, name))) return false;
+    }
+    for ([_][]const u8{ "display_name", "protocol", "endpoint" }) |name| {
+        const stated = memberString(attached, name);
+        if (stated.len != 0 and !std.mem.eql(u8, stated, memberString(published, name))) return false;
     }
     return true;
 }
@@ -5574,7 +5588,28 @@ test "a session catalog in force outranks the descriptor on the owner of a call"
 test "a capability update retires the catalogs the owner of a call was judged against" {
     try expectCodes(grep_catalogued ++
         \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}},
-    ++ started_run ++ comptime grepCall("bystander", "v2"), &.{ "unavailable_capability", "unavailable_capability" });
+    ++ started_run ++ comptime grepCall("bystander", "v2"), &.{ "unavailable_capability", "unmatched_tool_source", "unavailable_capability" });
+}
+
+fn findCall(comptime revision: []const u8) []const u8 {
+    return "{\"type\":\"action.call.requested\",\"id\":\"c1\",\"run_id\":\"run\",\"session_id\":\"s\",\"sequence\":2," ++
+        "\"capability_revision\":\"" ++ revision ++ "\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"run\"," ++
+        "\"tool_call_id\":\"t1\",\"name\":\"find\",\"execution_owner\":\"agent\",\"source\":\"extra\"}}," ++
+        "{\"type\":\"action.call.cancelled\",\"id\":\"c2\",\"run_id\":\"run\",\"session_id\":\"s\",\"sequence\":3," ++
+        "\"capability_revision\":\"" ++ revision ++ "\",\"payload\":{\"tool_call_id\":\"t1\",\"execution_owner\":\"agent\"}}," ++
+        "{\"type\":\"run.completed\",\"id\":\"e9\",\"run_id\":\"run\",\"session_id\":\"s\",\"sequence\":4,\"payload\":{}}]";
+}
+
+test "a capability update retires the sources the descriptor declared" {
+    const declaring =
+        \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
+        \\{"tools":{"level":"native"}},"sources":[{"id":"native","kind":"native"},{"id":"extra","kind":"process"}],
+        \\"tools":[{"name":"grep","execution_owner":"agent","source":"native","input_schema":{"type":"object"}}]}},
+    ;
+    try expectCodes(declaring ++ started_run ++ comptime findCall("v1"), &.{});
+    try expectCodes(declaring ++
+        \\{"type":"capabilities.updated","id":"k2","capability_revision":"v2","payload":{"previous_revision":"v1"}},
+    ++ started_run ++ comptime findCall("v2"), &.{ "unavailable_capability", "unmatched_tool_source", "unavailable_capability" });
 }
 
 test "a descriptor listing a tool twice records no owner for it" {
