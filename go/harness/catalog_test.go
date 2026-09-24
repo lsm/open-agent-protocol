@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"strings"
@@ -89,6 +90,19 @@ func TestDecodeStrictRefusesDataAfterTheObject(t *testing.T) {
 	_, err := DecodeStrict(append(catalogFile(t, "pi.json"), []byte(`{}`)...))
 	if err == nil || !strings.Contains(err.Error(), "data after the harness object") {
 		t.Fatalf("trailing data decoded: %v", err)
+	}
+}
+
+func TestDecodeStrictRefusesAMemberRepeatedInOneObject(t *testing.T) {
+	original := catalogFile(t, "pi.json")
+	for name, data := range map[string][]byte{
+		"top level": bytes.Replace(original, []byte(`{`), []byte(`{"id":"pi",`), 1),
+		"nested":    bytes.Replace(original, []byte(`"status"`), []byte(`"status":"retired","status"`), 1),
+	} {
+		_, err := DecodeStrict(data)
+		if err == nil || !strings.Contains(err.Error(), "appears twice") {
+			t.Fatalf("%s: repeated member decoded, err = %v", name, err)
+		}
 	}
 }
 

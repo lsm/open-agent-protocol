@@ -143,6 +143,9 @@ func Parse(schema *jsonschema.Schema, name string, data []byte) (Harness, error)
 }
 
 func DecodeStrict(data []byte) (Harness, error) {
+	if key, repeated := repeatedMember(data); repeated {
+		return Harness{}, fmt.Errorf("member %q appears twice in one object", key)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var harness Harness
@@ -153,4 +156,54 @@ func DecodeStrict(data []byte) (Harness, error) {
 		return Harness{}, errors.New("data after the harness object")
 	}
 	return harness, nil
+}
+
+func repeatedMember(data []byte) (string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var walk func() (string, bool)
+	walk = func() (string, bool) {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			return "", false
+		}
+		switch delim {
+		case '{':
+			seen := map[string]struct{}{}
+			for decoder.More() {
+				keyToken, err := decoder.Token()
+				if err != nil {
+					return "", false
+				}
+				key, ok := keyToken.(string)
+				if !ok {
+					return "", false
+				}
+				if _, repeated := seen[key]; repeated {
+					return key, true
+				}
+				seen[key] = struct{}{}
+				if nested, found := walk(); found {
+					return nested, true
+				}
+			}
+			if _, err := decoder.Token(); err != nil {
+				return "", false
+			}
+		case '[':
+			for decoder.More() {
+				if nested, found := walk(); found {
+					return nested, true
+				}
+			}
+			if _, err := decoder.Token(); err != nil {
+				return "", false
+			}
+		}
+		return "", false
+	}
+	return walk()
 }
