@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- [Decision 0032](decisions/0032-go-and-zig-are-peers.md): Go and Zig are peer implementations and the specification decides between them. It supersedes the parts of Decision 0019 that made the Go tree the oracle and scheduled its deletion, says a Go runtime quirk is not protocol behaviour until a decision specifies it, and names the Go binary `goap`, answering the question left open when the Go CLI kept the name `oap`. The rename itself follows separately.
+
 - `oapx serve provider --http 127.0.0.1:<port>` serves the same `model-provider-core` catalog and inference operations over HTTP/SSE, including concurrent inference streams and separately correlated cancellation. The listener binds only to loopback; cross-Pod exposure requires an operator-managed TLS/mTLS proxy. It advertises provider-managed credentials and does not accept credential grants over HTTP.
 
 - The HTTP provider endpoint returns the provider profile's JSON error envelope with HTTP 200 when an OAP envelope fails decoding, preserving its correlation id, error code, and message instead of replacing it with an empty HTTP 400 response.
