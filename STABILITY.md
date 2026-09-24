@@ -99,7 +99,7 @@ An endpoint's own surface therefore does not grow when a unit graduates that it
 has not adopted, and that — not a count of types — is the guarantee. The
 reciprocal obligation falls on consumers: an envelope type you do not recognise
 is treated exactly as an unrecognised capability key under section 3, ignored
-rather than refused. `oap validate -mode tolerant` is that rule in executable
+rather than refused. `goap validate -mode tolerant` is that rule in executable
 form, accepting another unit's envelope type on the common fields alone.
 
 Within an existing type, these changes may happen in `0.1` and are not
@@ -142,15 +142,15 @@ The artifacts that answer the question are in this repository and you can run
 them against your own endpoint:
 
 ```sh
-go run ./go/cmd/oap validate --format=json your-trace.json    # judge a trace you supply
-go run ./go/cmd/oap conformance --command "your-endpoint"     # drive your endpoint, then judge what it produced
+go run ./go/cmd/goap validate --format=json your-trace.json    # judge a trace you supply
+go run ./go/cmd/goap conformance --command "your-endpoint"     # drive your endpoint, then judge what it produced
 ```
 
-`oap conformance` spawns your binary as a process, drives a scripted session
+`goap conformance` spawns your binary as a process, drives a scripted session
 over the stdio binding in [drafts/endpoint-stdio.md](drafts/endpoint-stdio.md),
 assembles what crossed the pipe into a trace, and hands that trace to the same
-validator `oap validate` uses. Because it spawns a process rather than linking
-a library, it does not care what language you wrote your endpoint in. `oap
+validator `goap validate` uses. Because it spawns a process rather than linking
+a library, it does not care what language you wrote your endpoint in. `goap
 endpoint` is a reference endpoint in this repository that it is developed
 against, so the harness has a known-good target and you can see what one
 conformant implementation looks like.
@@ -166,7 +166,7 @@ capabilities you do not have to advertise.
 
 **The limits, stated rather than left to be discovered.** The harness drives
 the stdio binding. An endpoint reached over another transport is still served
-by `oap validate` on traces you collect yourself, and defining a binding for
+by `goap validate` on traces you collect yourself, and defining a binding for
 that transport is work this repository has not done.
 
 The harness walks the requirements above that a scripted session can reach,

@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The Go binary is `goap`, not `oap`** (Decision 0032). `go/cmd/oap` moves to `go/cmd/goap`, its log prefix and usage text follow, and CI, `clients/ts`, the README, STABILITY, CLAUDE.md, the drafts that invoke it and the system map name it. `oapx` is unchanged, and both still install side by side.
+
 - The Claude Code adapter's `Session.Resume` replays the adapter's own bounded journal instead of answering `unavailable`, so a consumer that overflows its event stream can resume from its last sequence, as `ErrEventStreamOverflow` tells it to. A cursor inside the journal replays the suffix and then follows the live run, and a run that has ended replays its retained tail. A cursor older than the journal returns `*adapter.ReplayGap`, and one past the run returns `ErrReplayCursorFuture`. `run.resume` and `run.replay` are now `degraded` (capability revision `claude-code-2.1.280-oap-v2`). Against the pinned 2.1.280, a consumer stalled past the 64-slot stream now completes the run where it failed with `operation unavailable` before (#238). `claude.Config.JournalCapacity` should cover the events of the longest stall. The daemon's `?after=` reconnect drives the same `Resume`. Recorded in [`research/claude-code-agent-sdk-2.1.280-mapping.md`](research/claude-code-agent-sdk-2.1.280-mapping.md).
 
 - A prerelease tag (one with a hyphen, such as `v0.1.0-alpha.2`) publishes its npm packages under the `next` dist-tag and marks its GitHub release as a prerelease. Before, the release workflow published every tag as npm `latest` and as a full GitHub release, so an alpha would have become the version `npm install oap-sdk` resolves.

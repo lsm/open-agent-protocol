@@ -3,7 +3,7 @@
 Open Agent Protocol (OAP): a CC0 draft protocol for the boundary between a
 control layer and an agent loop, with two peer implementations: the Zig runtime
 `oapx`, which is the product, and a Go tree that serves Go users natively (its
-binary is being renamed from `oap` to `goap`). One invariant holds everywhere:
+binary is `goap`). One invariant holds everywhere:
 an adapter over a third-party harness must emit traces the shared validator
 accepts. Neither tree is the oracle (Decision 0032): when Zig and Go disagree,
 the decisions, drafts, schema, fixtures and corpora decide, the wrong side is
@@ -38,12 +38,12 @@ Go 1.26. CI runs exactly these, in order, failing on any `gofmt -l` output:
 test -z "$(gofmt -l .)"
 go run ./go/tools/nocomment --check
 go vet ./... && go test ./... && go test -race ./...
-go run ./go/cmd/oap check
+go run ./go/cmd/goap check
 ```
 
 About 10 seconds. After changing the stdio binding, `serve/serveendpoint`, or
 the memory adapter's script, also run
-`go run ./go/cmd/oap conformance --command "go run ./go/cmd/oap endpoint"`; a
+`go run ./go/cmd/goap conformance --command "go run ./go/cmd/goap endpoint"`; a
 check it reports `skipped` is an obligation the endpoint does not carry, not one
 it failed.
 
@@ -63,7 +63,7 @@ There is no per-test filter; the smallest runnable unit is a group step, and
 `zig build --build-file zig/build.zig --help` lists them.
 
 TypeScript: `npm ci && npm test` at the root (the SDK) and in `clients/ts` (the
-daemon client). The latter builds `./go/cmd/oap`; set `OAP_GO` if `go` is not on
+daemon client). The latter builds `./go/cmd/goap`; set `OAP_GO` if `go` is not on
 `PATH`, or `OAP_TS_SKIP_INTEGRATION=1` to skip it.
 
 `OAP_SDK_BINARY_PATH` is what gates the SDK's real-binary coverage: every test
@@ -123,7 +123,7 @@ A strict stack; lower layers never import higher ones.
 | `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
 | `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no Go `model-provider-core` runtime yet |
-| `cmd/oap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
+| `cmd/goap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 
 `endpoint` and `conformance` are the endpoint-role pair, a different layer from
 `serve --stdio`. `serve --stdio` exposes the **hub** — twelve ops, an adapter
@@ -306,11 +306,11 @@ deliberately absent from executable v0.1.
 
 ## Daemon trust model
 
-`oap serve` is a single-user local service: loopback bind by default, no auth,
+`goap serve` is a single-user local service: loopback bind by default, no auth,
 `Host` allowlisted to loopback names on a loopback bind, and a restart kills
 every session. The registry config's `environment` list is an explicit
 allowlist — a child never inherits ambient variables that were not listed. Keep
-these when touching `serve/` or `cmd/oap/serve.go`.
+these when touching `serve/` or `cmd/goap/serve.go`.
 
 ## Conventions
 
