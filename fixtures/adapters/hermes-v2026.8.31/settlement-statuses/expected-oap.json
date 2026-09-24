@@ -16,7 +16,7 @@
     "timestamp_ms": 3,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -43,7 +43,7 @@
     "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -62,7 +62,7 @@
     "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-f",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -82,7 +82,7 @@
     "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-f",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -101,7 +101,7 @@
     "timestamp_ms": 9,
     "session_id": "session",
     "run_id": "run-j",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -121,7 +121,7 @@
     "timestamp_ms": 10,
     "session_id": "session",
     "run_id": "run-j",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -140,7 +140,7 @@
     "timestamp_ms": 12,
     "session_id": "session",
     "run_id": "run-n",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -160,7 +160,7 @@
     "timestamp_ms": 13,
     "session_id": "session",
     "run_id": "run-n",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -179,7 +179,7 @@
     "timestamp_ms": 15,
     "session_id": "session",
     "run_id": "run-r",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -199,6 +199,6 @@
     "timestamp_ms": 16,
     "session_id": "session",
     "run_id": "run-r",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   }
 ]

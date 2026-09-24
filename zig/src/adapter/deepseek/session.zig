@@ -2,7 +2,7 @@ const std = @import("std");
 const goquote = @import("goquote");
 const gojson = @import("gojson");
 
-pub const capability_revision = "deepseek-harness-47f9438-oap-v1";
+pub const capability_revision = "deepseek-harness-47f9438-oap-v2";
 pub const endpoint_id = "deepseek.harness";
 pub const execution_owner = "deepseek-harness";
 const protocol_name = "open-agent-protocol";

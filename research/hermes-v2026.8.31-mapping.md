@@ -324,12 +324,17 @@ prepending), not raw provider tokens.
 - subagent steer/interrupt: `native` candidates (registry-scoped)
 - cancellation: `degraded` — interrupt is intent; settlement is the
   `status:"interrupted"` terminal
-- replay: `degraded` native — bounded window, explicit `truncated`, epoch
-  invalidation; no replay of session-less events
+- replay: `degraded` — the adapter's bounded process-memory journal of the
+  envelopes it emitted, gaps explicit. The native ring (bounded window,
+  explicit `truncated`, epoch invalidation, no replay of session-less events)
+  is not consulted; see *Issue #237* below
 - reconciliation: `emulated` from `session.info` (`running`,
   `turn_started_at`) — `session.status` returns pre-rendered text and is not
   a structured source
-- resume/branch/undo: recovery family, `degraded`, separately classified
+- resume/branch/undo: OAP `run.resume` is `degraded`, served from the same
+  journal. The native recovery family stays unexercised: `session.resume`
+  and `session.branch` answer with a durable `stored_session_id`, a session
+  rather than a run's events
 - compaction (`session.compress`): observed-only
 - groups/handoff/delegation/billing/pets/voice/browser/desktop: `unavailable`
 
@@ -542,3 +547,99 @@ pinned model and bearer, post-run idle, clean close. Both gates pass 3x.
 
 The dead-proxy guard is retained and must stay: it is what bounds the child
 to loopback.
+
+## Issue #237: resume replays the adapter journal
+
+`run.resume` and `run.replay` move from `unavailable` to `degraded`, and the
+journal's replay with them; the capability revision is now
+`hermes-v2026.8.31-oap-v2`. `ErrEventStreamOverflow` tells a consumer to
+resume from its last sequence, and `Resume` answered `unavailable`
+unconditionally, so a consumer that stalled past the 64-slot stream lost the
+run, and the daemon's `?after=` reconnect, which drives the same `Resume`,
+could not resume a hermes session. `Resume` now replays the envelopes the
+adapter emitted, from the bounded process-memory journal every session
+already kept, as the Claude Code, ACP, Codex, OpenCode, Pi and memory adapters
+do.
+
+### Journal, not the native ring
+
+`session.events.since` (*Sequencing and replay*) is bounded replay with
+explicit truncation and epoch invalidation, and was the obvious candidate. It
+is not consulted, not even as corroboration, because it cannot replay what an
+OAP consumer missed:
+
+- It returns native frames, not OAP envelopes. Its `seq` is per session and
+  counts frames the adapter never projects (`session.info`, the
+  `session.usage` ticker, `status.update`, subagent frames); an OAP cursor is
+  per run.
+- Some envelopes have no native frame at all: the `user_input.resolved` and
+  `run.status.updated` that follow a `*.respond` call, the cancelled
+  resolutions and failed tools a settlement synthesizes, and the inferred
+  `run.failed` after process death. Re-reducing native frames would also mint
+  new envelope, tool-call and interaction ids for events the consumer may
+  already hold. That is fake continuity.
+- The ring lives in the gateway, so it is gone exactly when a run is settled
+  by process death, when a consumer most needs the tail. The journal lives in
+  the adapter and still replays after the gateway exits.
+- Nothing is lost between the gateway and the adapter: stdio is ordered and
+  lossless, and the reducer already fails a session on a non-contiguous
+  `seq`, which is also how a restart-reset epoch surfaces (`epoch-restart`).
+  Events are lost only in the consumer's bounded stream, and the journal holds
+  exactly what that stream carried. A corroborating `session.events.since`
+  call would add a native write, a second window whose truncation has no OAP
+  meaning and a failure mode once the gateway is gone, and would tell the
+  adapter nothing its fencing does not already enforce.
+
+### Semantics
+
+As in the Claude Code adapter:
+
+- A cursor inside the journal replays the suffix, detached from the journal,
+  then follows a live run to its terminal. A run that has ended replays its
+  retained tail; the adapter records each ended run's last sequence because
+  it deletes runs at their terminal.
+- A cursor older than the journal returns `*adapter.ReplayGap` with the
+  retained bounds, `OldestAvailable` 0 once the run is wholly evicted. A
+  cursor past the run returns `ErrReplayCursorFuture`.
+- A run the session never admitted, a native session id included, is
+  `ErrRunNotFound`. The native ring answers an unknown session with an empty,
+  untruncated window, indistinguishable from nothing having happened.
+- A closed session refuses a resume. One made unusable by process death or
+  foreign activity still replays its journal: those envelopes were emitted
+  before the failure.
+
+`JournalCapacity` (default 256) bounds the stall a consumer can recover from;
+past it the consumer gets a `ReplayGap`, never a silent hole.
+
+### Corpus
+
+`recovery-unavailable` is renamed `recovery-journal`, since its name no longer
+describes its body. Its resume ops now execute: a native session id is
+refused, a resume during the live turn replays `run.started` and follows the
+run to `run.completed`, and a resume after the turn replays the retained
+suffix. Every replay must equal what the run's own stream delivered.
+`resume-live` requires the live follow and the refusal, with `session.resume`
+never written; `branch` and `undo` still require that neither native method
+nor `session.events.since` is written.
+
+`steering-unavailable`'s resume follows the live run instead of expecting
+`unavailable`, and still writes nothing native. `replay-epoch` runs with a
+one-entry journal and resumes three times after the restart-reset frame: a
+cursor in the journal replays (`replay-in-window`), an evicted one is a
+`ReplayGap` (`replay-truncated`), and a never-admitted run is `run_not_found`
+(`replay-unknown-session`). None writes `session.events.since` or
+`session.events.stats`. Regenerating the expectations changed only the
+capability revision.
+
+Not run against the pinned gateway: the process gates are opt-in and need a
+prepared interpreter, and `Resume` makes no native call. The in-process test
+stalls a consumer past the stream with 128 deltas and resumes it to a
+complete, contiguous run.
+
+### Zig
+
+The port keeps no journal and has no `Resume` yet; that is separate, later
+work. Its corpus driver skips each resume op and counts the skips against a
+number declared per case (3 in `recovery-journal`, 3 in `replay-epoch`, 1 in
+`steering-unavailable`), failing on an undeclared skip or an unknown
+expectation. Only its capability revision follows this change.

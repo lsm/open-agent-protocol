@@ -44,7 +44,7 @@ const auth_resolver = @import("auth_resolver");
 const oap_types = @import("oap_types");
 const oap_bridge = @import("oap_bridge");
 
-pub const VERSION = "0.0.1";
+pub const VERSION = @import("version_options").version;
 
 const ProviderProtocolServer = provider_protocol_server.ProtocolServer;
 const ProviderProtocolRuntime = provider_protocol_runtime.ProviderProtocolRuntime;

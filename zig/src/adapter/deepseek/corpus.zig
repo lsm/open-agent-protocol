@@ -168,15 +168,24 @@ const Driver = struct {
 
 fn advertisedControl(op: []const u8) !bool {
     if (std.mem.eql(u8, op, "cancel")) return @hasDecl(session, "cancel");
-    if (std.mem.eql(u8, op, "resume")) return @hasDecl(session, "resume");
     if (std.mem.eql(u8, op, "resolve")) return @hasDecl(session, "resolve");
     return error.UnroutedControlOperation;
+}
+
+fn skipResume(comptime Port: type, raw: std.json.Value, expect: []const u8) !void {
+    if (@hasDecl(Port, "resume")) return error.ResumeDeclaredButSkipped;
+    const names_run = raw.object.get("run_id") != null;
+    if (std.mem.eql(u8, expect, "replay") and !names_run) return;
+    if (std.mem.eql(u8, expect, "run-not-found") and names_run) return;
+    return error.UnroutedControlExpectation;
 }
 
 fn assertControl(reducer: *session.Reducer, raw: std.json.Value) !void {
     if (raw != .object) return error.ControlIsNotAnObject;
     const op = corpus.stringMember(raw.object, "op") orelse return error.ControlWithoutOperation;
     const expect = corpus.stringMember(raw.object, "expect") orelse "";
+
+    if (std.mem.eql(u8, op, "resume")) return skipResume(session, raw, expect);
 
     if (std.mem.eql(u8, op, "assert-state")) {
         const want = corpus.stringMember(raw.object, "status") orelse return error.ControlWithoutStatus;
@@ -204,6 +213,7 @@ test "every deepseek corpus case replays to the recorded envelopes" {
         .{ .id = "initialize-lifecycle", .path = "initialize-lifecycle" },
         .{ .id = "initialize-pre-observe", .path = "initialize-pre-observe" },
         .{ .id = "injected-origin", .path = "injected-origin" },
+        .{ .id = "journal-replay", .path = "journal-replay" },
         .{ .id = "no-run-paths", .path = "no-run-paths" },
         .{ .id = "overlap-rejected", .path = "overlap-rejected" },
         .{ .id = "owned-start-completed", .path = "owned-start-completed" },
@@ -293,6 +303,35 @@ test "a control assertion that does not hold fails the case at the call site" {
         error.UnroutedControlOperation,
         Harness.steps(scratch, unknown_op, &unavailable, inline_case),
     );
+}
+
+test "a corpus resume is skipped only while the port declares no resume, and only in the shapes the oracle executes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    const inline_case = CorpusCase{ .id = "inline", .path = "inline" };
+
+    const replaying = try std.json.parseFromSliceLeaky(std.json.Value, scratch, "{\"type\":\"oap_control\",\"op\":\"resume\",\"expect\":\"replay\"}", .{});
+    try std.testing.expectError(error.ResumeDeclaredButSkipped, skipResume(struct {
+        pub fn @"resume"() void {}
+    }, replaying, "replay"));
+    try std.testing.expect(!@hasDecl(session, "resume"));
+
+    var skipped = session.Reducer.init(scratch);
+    session.openSession(&skipped);
+    const replay = "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"resume\",\"expect\":\"replay\"}}\n";
+    const receipt = "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"resume\",\"run_id\":\"m-1\",\"expect\":\"run-not-found\"}}\n";
+    try Harness.steps(scratch, replay ++ receipt, &skipped, inline_case);
+
+    for ([_][]const u8{
+        "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"resume\",\"expect\":\"unavailable\"}}\n",
+        "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"resume\",\"run_id\":\"m-1\",\"expect\":\"replay\"}}\n",
+        "{\"action\":\"oap-control\",\"raw\":{\"type\":\"oap_control\",\"op\":\"resume\",\"expect\":\"run-not-found\"}}\n",
+    }) |line| {
+        var unrouted = session.Reducer.init(scratch);
+        session.openSession(&unrouted);
+        try std.testing.expectError(error.UnroutedControlExpectation, Harness.steps(scratch, line, &unrouted, inline_case));
+    }
 }
 
 test "a status observed before any prompt admits nothing and writes nothing" {
