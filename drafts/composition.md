@@ -103,7 +103,7 @@ exactly this hazard:
 - Gated on a capability key; an endpoint that does not advertise it refuses
   with a typed `unsupported_feature`.
 - Refused whole or admitted whole, with the refusal naming the entry at fault.
-- `oap serve` accepts an **id** naming operator configuration. `serve/attach.go`
+- `goap serve` accepts an **id** naming operator configuration. `serve/attach.go`
   today refuses a command or arguments outright, refuses a process source whose
   id is not configured, and refuses any wire member — `endpoint` among them —
   that contradicts the configured source it names. A non-process attachment

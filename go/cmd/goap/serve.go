@@ -58,7 +58,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	defer stop()
 
 	hub := serve.New(registry, serve.Options{
-		Logger: log.New(stderr, "oap: ", 0),
+		Logger: log.New(stderr, "goap: ", 0),
 	})
 	if *overStdio {
 		return serveStdio(signals, hub, registry, stdin, stdout, stderr)
@@ -80,7 +80,7 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return listenErr
 	}
 	fmt.Fprintf(stdout, "listening on http://%s\n", listener.Addr())
-	fmt.Fprintf(stderr, "oap: serving adapters: %s (restart kills all sessions)\n", strings.Join(registry.Names(), ", "))
+	fmt.Fprintf(stderr, "goap: serving adapters: %s (restart kills all sessions)\n", strings.Join(registry.Names(), ", "))
 
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- httpServer.Serve(listener) }()
@@ -96,24 +96,24 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	case <-signals.Done():
 	}
 
-	fmt.Fprintln(stderr, "oap: shutting down")
+	fmt.Fprintln(stderr, "goap: shutting down")
 	httpShutdown, cancelHTTP := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelHTTP()
 	if err := httpServer.Shutdown(httpShutdown); err != nil {
-		fmt.Fprintf(stderr, "oap: http shutdown: %v\n", err)
+		fmt.Fprintf(stderr, "goap: http shutdown: %v\n", err)
 	}
 
 	daemon.Close()
 	sessionShutdown, cancelSessions := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
 	defer cancelSessions()
 	hub.CloseSessions(sessionShutdown)
-	fmt.Fprintln(stderr, "oap: stopped")
+	fmt.Fprintln(stderr, "goap: stopped")
 	return nil
 }
 
 func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, stdin io.Reader, stdout, stderr io.Writer) error {
 	frontend, err := servestdio.New(hub, servestdio.Options{
-		Logger: log.New(stderr, "oap: ", 0),
+		Logger: log.New(stderr, "goap: ", 0),
 	})
 	if err != nil {
 		return err
@@ -121,7 +121,7 @@ func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, s
 	if stdin == nil {
 		return errors.New("serve --stdio needs stdin")
 	}
-	fmt.Fprintf(stderr, "oap: serving adapters over stdio: %s (exit kills all sessions)\n", strings.Join(registry.Names(), ", "))
+	fmt.Fprintf(stderr, "goap: serving adapters over stdio: %s (exit kills all sessions)\n", strings.Join(registry.Names(), ", "))
 	runErr := frontend.Run(ctx, stdin, stdout)
 
 	sessionShutdown, cancelSessions := context.WithTimeout(context.Background(), serve.DefaultShutdownTimeout)
@@ -131,7 +131,7 @@ func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, s
 	if runErr != nil {
 		return runErr
 	}
-	fmt.Fprintln(stderr, "oap: stopped")
+	fmt.Fprintln(stderr, "goap: stopped")
 	return nil
 }
 
