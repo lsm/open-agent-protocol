@@ -53,7 +53,7 @@ the default path; the old Makai wire is available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.280),
 `--backend codex` a Codex app-server child (pinned `8d7cc24`), an `acp`
-entry an ACP v1 agent, and a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), behind the same stdio door instead of the built-in loop, following
+entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), and a `deepseek` entry a DeepSeek harness (pinned `47f9438`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
 harness-default tool posture, so every gated tool call still reaches the host

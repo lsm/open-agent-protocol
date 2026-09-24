@@ -841,3 +841,13 @@ the two `journal-replay` resume steps. Its corpus harness skips them explicitly
 skip once the port declares `resume`. The case's recorded envelopes are the
 delivered run, which the port does reproduce. Only its capability revision
 follows this change; a Zig journal and `Resume` are separate, later work.
+
+## Served by `oapx serve agent --backend <name>`
+
+The Zig port (`zig/src/adapter/deepseek/adapter.zig`) drives the corpus reducer
+behind a `deepseek` registry entry. Where it differs from the Go adapter:
+
+- It advertises revision `deepseek-harness-47f9438-oapx-v1`, with `run.resume`
+  and `run.replay` `unavailable`: it keeps no journal.
+- Envelope and run identifiers draw on one decimal counter per `oapx` process,
+  where the corpus reducer mints letter-suffixed ones per session.
