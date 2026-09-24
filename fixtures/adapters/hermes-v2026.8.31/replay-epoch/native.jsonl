@@ -7,4 +7,7 @@
 {"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"assert-state","status":"idle"}}
 {"action":"observe","classification":"required-unmapped","direction":"gateway-to-host","fidelity":"unsupported","raw":{"jsonrpc":"2.0","method":"event","params":{"type":"message.delta","session_id":"sess0001","seq":1,"payload":{"text":"restart"}}}}
 {"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"submit-closed","expect":"session-closed"}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"resume","after":1,"expect":"replay"}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"resume","after":0,"expect":"gap"}}
+{"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"resume","run_id":"run-never-admitted","expect":"run-not-found"}}
 {"action":"oap-control","classification":"mapped","direction":"harness-control","fidelity":"synthesized","raw":{"type":"oap_control","op":"close"}}
