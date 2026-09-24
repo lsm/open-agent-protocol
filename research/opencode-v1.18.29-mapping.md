@@ -664,3 +664,16 @@ because nothing settles the run between the prompt and its answer, and
   refuses a case that declares `replay_after`, and none does.
 - Request-level refusal of unadvertised controls and message shapes. That is
   the adapter contract's job, and `submit` takes the text and delivery.
+
+## Served by `oapx serve agent --backend <name>`
+
+The Zig port (`zig/src/adapter/opencode/adapter.zig`) drives the corpus reducer
+behind an `opencode` registry entry. Where it differs from the Go adapter:
+
+- It advertises revision `opencode-v1.18.29-oapx-v1`, with `run.resume` and
+  `run.replay` `unavailable`: it keeps no journal.
+- It speaks HTTP/1.1 itself (`opencode/client.zig`), one connection per request
+  with `Connection: close`, and accepts only a plain `http` endpoint. Go's
+  `net/http` client also takes `https`; a TLS endpoint needs the Go adapter.
+- Native message ids draw on one counter per `oapx` process rather than one per
+  session, so two sessions on the same server never mint the same `msg_oap` id.
