@@ -312,7 +312,7 @@ pub const Session = struct {
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         _ = refusal;
         const self = cast(ptr);
-        if (request.messages.len != 1 or request.allow_degraded_features.len != 0) return error.InvalidSubmission;
+        if (request.messages.len != 1) return error.InvalidSubmission;
         const message = request.messages[0];
         if (message.role != .user) return error.InvalidSubmission;
         const text = switch (message.content) {
@@ -806,4 +806,16 @@ test "the degraded models catalog is served only to a caller that opts into it" 
     try testing.expectEqualStrings("fixture/fixture", catalog.current_model_id.?);
     try testing.expectEqualStrings("fixture/fixture", catalog.models[0].id);
     try testing.expect(catalog.models[0].default);
+}
+
+test "a submission carrying a degraded-feature consent list is admitted, as Go's is" {
+    var probe: Probe = undefined;
+    try probe.init(&.{&text_turn}, &.{});
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const messages = try probe.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "hello" } }});
+    const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .allow_degraded_features = &.{"run.streaming"} };
+    const admitted = try probe.handle.?.submit(probe.arena.allocator(), &request, &refusal);
+    try testing.expect(admitted.accepted);
 }
