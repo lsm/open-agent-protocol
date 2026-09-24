@@ -72,7 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The Claude Code adapter no longer fails a run when a `Bash` call outlives about three seconds. Claude Code 2.1.280 reports such a call as a foreground `local_bash` task whose `task_notification` carries `"output_file": ""`, and the adapter and its Zig port required that member non-empty, so the run failed with `claude_process_exit`. `output_file` must still be present, but may be empty.
+- The Claude Code adapter no longer fails a run when a `Bash` call outlives about three seconds. Claude Code 2.1.280 reports such a call as a foreground `local_bash` task whose `task_notification` carries `"output_file": ""`, and the Go and Zig decoders required that member non-empty, so the run failed with `claude_process_exit`. `output_file` must still be present, but may be empty.
 
 - **`oapx --version` reports the version it was built as.** It printed a hard-coded `0.0.1` whatever the release. The version now comes from `zig/build.zig.zon`, a `-Dversion` build option overrides it, and the release workflow passes the tag, so a `v0.1.0-alpha.3` binary says `0.1.0-alpha.3`. The MCP bridge reads the same value instead of its own literal. The provider descriptor's `capability_revision` and `endpoint_version`, which reused the constant, follow it.
 

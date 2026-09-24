@@ -145,7 +145,7 @@ fn expectProcessExitDiffersOnlyInTheRuntimeText(comptime Harness: type) !void {
     try std.testing.expectEqualStrings(transport_error_case.transport_error, got_error.get("message").?.string);
 }
 
-test "process-exit differs only where its expectation quotes the oracle host's runtime, in both corpora" {
+test "process-exit differs only where its expectation quotes the Go runtime, in both corpora" {
     try expectProcessExitDiffersOnlyInTheRuntimeText(Current);
     try expectProcessExitDiffersOnlyInTheRuntimeText(Floor);
 }

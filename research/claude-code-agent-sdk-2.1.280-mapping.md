@@ -418,9 +418,9 @@ current one is the version its capability revision names.
 ### Findings
 
 - **The adapter failed any `Bash` call that ran longer than about three
-  seconds.** Its `task_notification` carries `"output_file": ""`. The native
-  decoder, and its Zig port, required a non-empty `output_file` and failed the
-  run with `claude_process_exit`. The frozen strictness policy makes a known
+  seconds.** Its `task_notification` carries `"output_file": ""`. The Go and
+  Zig decoders both required a non-empty `output_file` and failed the run with
+  `claude_process_exit`. The frozen strictness policy makes a known
   frame fatal when a required member is missing, and this one is present. It
   now has to be present (a string when not null) and may be empty, pinned by a
   unit test on each side and by `tool-lifecycle`.
