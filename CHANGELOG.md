@@ -86,6 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Zig semantic validator now judges tool sources: `unmatched_tool_source` (a descriptor or served catalog naming an undeclared source, a listed tool with none, a call attributed elsewhere or to nothing declared, a source changing mid-lifecycle, a provided tool naming a source a refresh removed), `unattributed_call`, `catalog_mismatch` for attached sources and provided tools, and `undisclosed_attach_limit`. An open response's reported sources are adopted as the attached descriptions, as Go does. `oapx validate` now fails 193 of the 306 semantic-invalid fixtures that need no pack, up from 178.
+
 - `oapx serve agent` no longer aborts when a client request nests JSON more than 256 levels deep, for example a provided tool's `input_schema` at `session.open`: the envelope decoder re-encoded such members with `std.json.Stringify`, which checks nesting against a fixed 256-level stack in safety builds. The same encoder, `zig/src/json/encode.zig`, now also re-encodes model tool arguments in the agent loop, MCP schemas, arguments and results, content-part arguments in `oapx`, the TUI approval view, adapter configuration and the OpenCode port's history items.
 
 - The Zig SSE parser (`zig/src/providers/sse_parser.zig`) no longer leaks an event's data when queueing the event fails to allocate. `checkAllAllocationFailures` over the OpenCode port's SSE decoder found it.
