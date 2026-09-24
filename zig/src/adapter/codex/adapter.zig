@@ -218,8 +218,13 @@ pub const Session = struct {
 
     fn write(self: *Session, arena: std.mem.Allocator, frame: []const u8, what: []const u8, refusal: *contract.Refusal) contract.Failure!void {
         self.transport.write(frame) catch |err| {
+            self.reap();
+            const departed = self.transport.departed().departure != .running;
             try self.fail(@errorName(err));
-            const message = try std.fmt.allocPrint(arena, "the codex app-server did not take {s}: {s}", .{ what, @errorName(err) });
+            const message = if (departed)
+                try std.fmt.allocPrint(arena, "the codex app-server exited before answering {s}", .{what})
+            else
+                try std.fmt.allocPrint(arena, "the codex app-server did not take {s}: {s}", .{ what, @errorName(err) });
             return refusal.fail(error.BackendFailed, message);
         };
     }
