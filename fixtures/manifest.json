@@ -2171,6 +2171,97 @@
       ]
     },
     {
+      "id": "controls-tool-choice-unpublished-catalog-disallows-only-named",
+      "path": "valid/controls-tool-choice-unpublished-catalog-disallows-only-named.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0034-an-unpublished-catalog-is-unknown.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-unpublished-catalog-allows-by-name",
+      "path": "valid/controls-tool-choice-unpublished-catalog-allows-by-name.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0034-an-unpublished-catalog-is-unknown.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-published-empty-catalog",
+      "path": "semantic-invalid/controls-tool-choice-published-empty-catalog.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0034-an-unpublished-catalog-is-unknown.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-unpublished-catalog-ignored",
+      "path": "semantic-invalid/controls-tool-choice-unpublished-catalog-ignored.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unapplied_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0034-an-unpublished-catalog-is-unknown.md"
+      ]
+    },
+    {
+      "id": "controls-tool-choice-layer-published-catalog",
+      "path": "semantic-invalid/controls-tool-choice-layer-published-catalog.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "unsatisfiable_control"
+      ],
+      "units": [
+        "core",
+        "run-controls"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0005-run-controls.md",
+        "decisions/0034-an-unpublished-catalog-is-unknown.md"
+      ]
+    },
+    {
       "id": "controls-tool-choice-refused-other-code",
       "path": "semantic-invalid/controls-tool-choice-refused-other-code.json",
       "kind": "semantic-invalid",

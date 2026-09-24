@@ -271,7 +271,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.features = map[string]protocol.SupportLevel{}
 		s.featureSupports = map[string]protocol.FeatureSupport{}
 		collectFeatures(s.features, s.featureSupports, p)
-		s.catalog, s.catalogKnown = collectCatalog(p), true
+		s.catalog, s.catalogKnown = collectCatalog(p), publishesCatalog(e.Payload)
 		s.limits = p.Limits
 		s.checkSelectionModes(i, line, e, p)
 		s.checkQueueLimits(i, line, e, p)
