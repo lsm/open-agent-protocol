@@ -138,7 +138,7 @@ const task_progress_members = [_]Member{
 const task_notification_members = [_]Member{
     .{ .path = &.{"task_id"}, .detail = task_notification_detail },
     .{ .path = &.{"status"}, .detail = task_notification_detail },
-    .{ .path = &.{"output_file"}, .detail = task_notification_detail },
+    .{ .path = &.{"output_file"}, .need = .present, .detail = task_notification_detail },
     .{ .path = &.{"summary"}, .detail = task_notification_detail },
     .{ .path = &.{"uuid"}, .detail = task_notification_detail },
     .{ .path = &.{"session_id"}, .detail = task_notification_detail },
@@ -379,6 +379,7 @@ const task_progress_declared = [_]Declared{
 };
 
 const task_notification_declared = [_]Declared{
+    .{ .path = &.{"output_file"}, .need = .text },
     .{ .path = &.{"tool_use_id"}, .need = .text },
     .{ .path = &.{"usage"}, .need = .object, .items = &task_usage_declared },
 };
@@ -1219,6 +1220,16 @@ test "a can_use_tool request is typed past its three required members" {
     try accepts(&arena, base ++ ",\"title\":\"ok\",\"agent_id\":\"a\"}}");
     try accepts(&arena, "{\"type\":\"control_request\",\"request_id\":\"r\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_use_id\":\"t1\",\"input\":{},\"TOOL_NAME\":\"Bash\"}}");
     try refuses(&arena, "{\"type\":\"control_request\",\"request_id\":\"r\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_use_id\":\"t1\",\"input\":{},\"tool_name\":\"Bash\",\"TOOL_NAME\":7}}");
+}
+
+test "a task notification requires output_file present and accepts it empty" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const notification = "{\"type\":\"system\",\"subtype\":\"task_notification\",\"session_id\":\"s\",\"task_id\":\"t\",\"tool_use_id\":\"toolu_01\",\"status\":\"completed\",\"summary\":\"sleep 6; ls\",\"uuid\":\"u\"";
+    try accepts(&arena, notification ++ ",\"output_file\":\"\"}");
+    try refuses(&arena, notification ++ "}");
+    try refuses(&arena, notification ++ ",\"output_file\":7}");
 }
 
 test "the typed pass covers every declared member of a typed frame" {

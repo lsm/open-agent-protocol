@@ -200,6 +200,18 @@ func TestSystemVocabulary(t *testing.T) {
 	}
 }
 
+func TestTaskNotificationRequiresOutputFilePresentButAcceptsItEmpty(t *testing.T) {
+	foreground := `{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"toolu_01","status":"completed","output_file":"","summary":"Wait, then list files","uuid":"t2","session_id":"` + sessionID + `"}`
+	notification := mustDecode(t, TypeSystem, SystemTaskNotification, foreground).(*TaskNotificationFrame)
+	if notification.OutputFile != "" || notification.Status != "completed" || notification.ToolUseID != "toolu_01" {
+		t.Fatalf("notification = %+v", notification)
+	}
+	absent := `{"type":"system","subtype":"task_notification","task_id":"b1","tool_use_id":"toolu_01","status":"completed","summary":"Wait, then list files","uuid":"t2","session_id":"` + sessionID + `"}`
+	if _, err := decode(t, TypeSystem, SystemTaskNotification, absent); err == nil {
+		t.Fatal("task_notification without output_file accepted")
+	}
+}
+
 func TestUnknownTypesAreTolerated(t *testing.T) {
 	for _, frameType := range []string{"future_frame", "auth_status", "prompt_suggestion", "tool_use_summary", "active_goal"} {
 		value, err := DecodeObservation(frameType, "", []byte(`{"type":"`+frameType+`","payload":{"x":1}}`))
