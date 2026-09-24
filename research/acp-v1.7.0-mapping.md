@@ -861,3 +861,30 @@ Finding these takes reading the schema's constraints against what the reducer
 fills — the sweep that produced #136 — or a second implementer asking why a
 value is never checked. The corpus proves the mapping; it does not bound the
 reducer, and a green corpus is not evidence that one is correct.
+
+## Served by `oapx serve agent --backend <acp entry>`
+
+`zig/src/adapter/acp/adapter.zig` implements the adapter contract around the Zig
+reducer, which only observes, so the adapter writes the frames Go's client
+writes: `initialize` (id 1: protocol version 1, empty client capabilities,
+client info), `session/new` (id 2: the working directory, no MCP servers), one
+`session/prompt` per turn, `session/cancel` as a notification, and each
+`session/request_permission` answer (`selected` with the option id, or
+`cancelled` when no run is live or the run settles with the ask open).
+Requests other than permission asks are refused `-32601`. An open is refused
+unless `initialize` answers protocol version 1 with `agentCapabilities`, and
+`session/new` a session id. Against a scripted agent, `goap conformance` passes
+every check but the two model-switch checks, and `goap serve agent` fails the
+same two against the same agent.
+
+What differs from the Go adapter:
+
+| Area | oapx | Go adapter | Why |
+| --- | --- | --- | --- |
+| Capability revision | `acp-v1.7.0-schema-v1.21.0-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` and no `action.tool_sources.attach` | `acp-v1.7.0-schema-v1.21.0-oap-v3` | oapx keeps no journal and does not yet pass attached MCP servers to `session/new`. |
+| Request bound | `initialize` and `session/new` are awaited at most 60 s, then the open is refused `internal` | context-bound | The endpoint serves one request at a time. |
+| Frame bytes | Encoded without Go's escaping of `<`, `>`, `&` and U+2028/2029 | `encoding/json` | The agent decodes either; no pinned write corpus exists for ACP. |
+| Permission answer order | The resolution is validated and `action.permission.resolved` emitted before the answer is written; a failed write then fails the transport | written first, then resolved; a failed write fails the run `acp_permission_response_failed` | The reducer owns validation and emission together. |
+| Session memory | The reducer's arena holds the session's frames until it closes | garbage-collected | No compaction yet. |
+| Configuration | No built-in entry: `--config` must name the agent's `executable`; `working_directory` defaults to the current directory and must be absolute | `goap serve` needs the same entry | ACP names a protocol, not an agent. |
+
