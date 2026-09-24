@@ -1,6 +1,6 @@
 # Decision 0019: One Binary, And The Rewrite That Gets There
 
-Status: proposed
+Status: proposed; its oracle and retirement clauses and the Go binary's name are superseded by [Decision 0032](0032-go-and-zig-are-peers.md)
 Date: 2026-09-18
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: `open-agent-protocol.agent-control-core` and
