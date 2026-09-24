@@ -1,0 +1,4 @@
+[
+  {"index": 4, "type": "observe:keep_alive", "reason": "stdin liveness keep-alive; no semantic content"},
+  {"index": 5, "type": "observe:prompt_suggestion", "reason": "unknown frame type tolerated by design (forward compatibility); no projection"}
+]

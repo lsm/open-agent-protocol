@@ -445,7 +445,13 @@ func decodeSystem(subtype string, raw []byte) (any, error) {
 		if err := unmarshal(raw, &frame); err != nil {
 			return nil, err
 		}
-		if frame.TaskID == "" || frame.Status == "" || frame.OutputFile == "" || frame.Summary == "" || frame.UUID == "" || frame.SessionID == "" {
+		var members struct {
+			OutputFile json.RawMessage `json:"output_file"`
+		}
+		if err := unmarshal(raw, &members); err != nil {
+			return nil, err
+		}
+		if frame.TaskID == "" || frame.Status == "" || len(members.OutputFile) == 0 || frame.Summary == "" || frame.UUID == "" || frame.SessionID == "" {
 			return nil, fmt.Errorf("%w: task_notification requires task_id, status, output_file, summary, uuid, and session_id", ErrInvalidFrame)
 		}
 		if !TerminalTaskStatuses[frame.Status] {

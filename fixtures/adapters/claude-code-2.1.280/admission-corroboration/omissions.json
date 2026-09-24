@@ -1,0 +1,8 @@
+[
+  {"index": 4, "type": "observe:command_lifecycle", "reason": "admission corroborated by the user_message_uuid echo; the command_lifecycle family is untyped in both reference SDKs"},
+  {"index": 5, "type": "observe:command_lifecycle", "reason": "admission corroborated by the user_message_uuid echo; the command_lifecycle family is untyped in both reference SDKs"},
+  {"index": 12, "type": "observe:stream_event", "reason": "injected turn (origin kind task-notification): the CLI authored it, not the OAP host; its stream carries no submitted uuid"},
+  {"index": 13, "type": "observe:stream_event", "reason": "assistant content of the injected turn; no OAP run owns it"},
+  {"index": 14, "type": "observe:assistant", "reason": "assistant content of the injected turn; no OAP run owns it"},
+  {"index": 15, "type": "observe:result/success", "reason": "terminal of the injected turn; its echo carries no submitted uuid, so it settles nothing"}
+]
