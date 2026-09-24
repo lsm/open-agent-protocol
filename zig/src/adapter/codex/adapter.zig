@@ -320,11 +320,13 @@ pub const Session = struct {
         const self = cast(ptr);
         if (self.reducer.closed or self.reducer.transport_closed) return error.SessionClosed;
         const current = self.reducer.state;
+        const active_run_id: ?[]const u8 = if (current.active_run_id.len > 0) try arena.dupe(u8, current.active_run_id) else null;
+        const current_model_id: ?[]const u8 = if (current.current_model_id.len > 0) try arena.dupe(u8, current.current_model_id) else null;
         return .{
             .session_id = self.id,
             .status = std.meta.stringToEnum(oap_types.SessionStatus, current.status) orelse .running,
-            .active_run_id = if (current.active_run_id.len > 0) try arena.dupe(u8, current.active_run_id) else null,
-            .current_model_id = if (current.current_model_id.len > 0) try arena.dupe(u8, current.current_model_id) else null,
+            .active_run_id = active_run_id,
+            .current_model_id = current_model_id,
             .updated_at_ms = if (current.updated_at_ms > 0) current.updated_at_ms else null,
         };
     }
@@ -335,14 +337,12 @@ pub const Session = struct {
         if (request.delivery != .auto or request.allow_degraded_features.len != 0) return error.InvalidSubmission;
         const inputs = try arena.alloc(session.InputMessage, request.messages.len);
         for (request.messages, inputs) |message, *input| {
-            input.* = .{
-                .id = try self.owned().dupe(u8, message.id orelse ""),
-                .role = @tagName(message.role),
-                .text = switch (message.content) {
-                    .text => |text| try self.owned().dupe(u8, text),
-                    .parts => null,
-                },
+            const id = try self.owned().dupe(u8, message.id orelse "");
+            const text: ?[]const u8 = switch (message.content) {
+                .text => |content| try self.owned().dupe(u8, content),
+                .parts => null,
             };
+            input.* = .{ .id = id, .role = @tagName(message.role), .text = text };
         }
         const model_id: ?[]const u8 = if (request.model_id) |model| try self.owned().dupe(u8, model) else null;
         self.reducer.submit(.{ .messages = inputs, .model_id = model_id }) catch |err| return switch (err) {
@@ -357,17 +357,20 @@ pub const Session = struct {
             .admitted => |admission| {
                 const message_ids = try arena.alloc([]const u8, admission.message_ids.len);
                 for (admission.message_ids, message_ids) |source, *slot| slot.* = try arena.dupe(u8, source);
+                const submission_id = try arena.dupe(u8, admission.submission_id);
+                const run_id = try arena.dupe(u8, admission.run_id);
+                const admitted_model: ?[]const u8 = if (admission.model_id.len > 0) try arena.dupe(u8, admission.model_id) else null;
                 return .{
                     .session_id = self.id,
                     .accepted = true,
-                    .submission_id = try arena.dupe(u8, admission.submission_id),
+                    .submission_id = submission_id,
                     .requested_delivery = .auto,
                     .effective_delivery = .start,
                     .delivery_resolution = "session_idle",
                     .admission = .started,
-                    .run_id = try arena.dupe(u8, admission.run_id),
+                    .run_id = run_id,
                     .status = .running,
-                    .model_id = if (admission.model_id.len > 0) try arena.dupe(u8, admission.model_id) else null,
+                    .model_id = admitted_model,
                     .message_ids = message_ids,
                 };
             },
@@ -380,46 +383,9 @@ pub const Session = struct {
         _ = arena;
         _ = refusal;
         const self = cast(ptr);
-        const own = self.owned();
-        const translated: session.Resolution = switch (resolution) {
-            .permission => |request| .{
-                .run_id = try own.dupe(u8, request.run_id),
-                .responded_by = try own.dupe(u8, request.responded_by),
-                .permission = .{
-                    .interaction_id = try own.dupe(u8, request.interaction_id),
-                    .requested_by = try own.dupe(u8, request.requested_by),
-                    .responded_by = try own.dupe(u8, request.responded_by),
-                    .session_id = try own.dupe(u8, request.session_id),
-                    .run_id = try own.dupe(u8, request.run_id),
-                    .choice_id = try own.dupe(u8, request.choice_id orelse ""),
-                    .granted = request.granted,
-                    .updates_arguments = request.updated_arguments_json != null,
-                },
-            },
-            .input => |request| input: {
-                const answers = try own.alloc(session.Answer, request.answers.len);
-                for (request.answers, answers) |answer, *slot| {
-                    const selected = try own.alloc([]const u8, answer.selected_option_ids.len);
-                    for (answer.selected_option_ids, selected) |option, *copy| copy.* = try own.dupe(u8, option);
-                    slot.* = .{
-                        .question_id = try own.dupe(u8, answer.question_id),
-                        .text = try own.dupe(u8, answer.text orelse ""),
-                        .selected_option_ids = selected,
-                    };
-                }
-                break :input .{
-                    .run_id = try own.dupe(u8, request.run_id),
-                    .responded_by = try own.dupe(u8, request.responded_by),
-                    .input = .{
-                        .interaction_id = try own.dupe(u8, request.interaction_id),
-                        .requested_by = try own.dupe(u8, request.requested_by),
-                        .responded_by = try own.dupe(u8, request.responded_by),
-                        .session_id = try own.dupe(u8, request.session_id),
-                        .run_id = try own.dupe(u8, request.run_id),
-                        .answers = answers,
-                    },
-                };
-            },
+        const translated = switch (resolution) {
+            .permission => |request| try ownPermission(self.owned(), request),
+            .input => |request| try ownInput(self.owned(), request),
         };
         self.reducer.resolve(translated) catch |err| return switch (err) {
             error.InteractionNotFound, error.InteractionResolved => error.InteractionNotFound,
@@ -482,6 +448,49 @@ pub const Session = struct {
         cast(ptr).destroy();
     }
 };
+
+fn ownPermission(own: std.mem.Allocator, request: *const oap_types.PermissionResolveRequest) std.mem.Allocator.Error!session.Resolution {
+    const interaction_id = try own.dupe(u8, request.interaction_id);
+    const requested_by = try own.dupe(u8, request.requested_by);
+    const responded_by = try own.dupe(u8, request.responded_by);
+    const session_id = try own.dupe(u8, request.session_id);
+    const run_id = try own.dupe(u8, request.run_id);
+    const choice_id = try own.dupe(u8, request.choice_id orelse "");
+    return .{ .run_id = run_id, .responded_by = responded_by, .permission = .{
+        .interaction_id = interaction_id,
+        .requested_by = requested_by,
+        .responded_by = responded_by,
+        .session_id = session_id,
+        .run_id = run_id,
+        .choice_id = choice_id,
+        .granted = request.granted,
+        .updates_arguments = request.updated_arguments_json != null,
+    } };
+}
+
+fn ownInput(own: std.mem.Allocator, request: *const oap_types.UserInputResolveRequest) std.mem.Allocator.Error!session.Resolution {
+    const answers = try own.alloc(session.Answer, request.answers.len);
+    for (request.answers, answers) |answer, *slot| {
+        const selected = try own.alloc([]const u8, answer.selected_option_ids.len);
+        for (answer.selected_option_ids, selected) |option, *copy| copy.* = try own.dupe(u8, option);
+        const question_id = try own.dupe(u8, answer.question_id);
+        const text = try own.dupe(u8, answer.text orelse "");
+        slot.* = .{ .question_id = question_id, .text = text, .selected_option_ids = selected };
+    }
+    const interaction_id = try own.dupe(u8, request.interaction_id);
+    const requested_by = try own.dupe(u8, request.requested_by);
+    const responded_by = try own.dupe(u8, request.responded_by);
+    const session_id = try own.dupe(u8, request.session_id);
+    const run_id = try own.dupe(u8, request.run_id);
+    return .{ .run_id = run_id, .responded_by = responded_by, .input = .{
+        .interaction_id = interaction_id,
+        .requested_by = requested_by,
+        .responded_by = responded_by,
+        .session_id = session_id,
+        .run_id = run_id,
+        .answers = answers,
+    } };
+}
 
 fn describe(arena: std.mem.Allocator, refused: session.Refusal) ![]const u8 {
     if (refused.code) |code| return std.fmt.allocPrint(arena, "codex rpc error for {s} ({d}): {s}", .{ refused.method, code, refused.message });
