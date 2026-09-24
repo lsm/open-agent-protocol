@@ -226,6 +226,9 @@ func runCheck(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("schemas: %w", err)
 	}
 	fmt.Fprintln(stdout, "PASS schemas")
+	if err := checkHarnesses(stdout); err != nil {
+		return fmt.Errorf("harnesses: %w", err)
+	}
 	if err := runFixtures(nil, stdout); err != nil {
 		return fmt.Errorf("fixtures: %w", err)
 	}

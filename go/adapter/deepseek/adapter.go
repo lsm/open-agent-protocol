@@ -18,6 +18,7 @@ const (
 	endpointID             = "deepseek.harness"
 	PinnedVersion          = native.ServerVersion
 	CapabilityRevision     = "deepseek-harness-47f9438-oap-v2"
+	CorpusDirectory        = "fixtures/adapters/deepseek-harness-47f9438"
 	defaultJournalCapacity = 256
 )
 

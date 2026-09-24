@@ -1,0 +1,44 @@
+{
+  "id": "deepseek-harness",
+  "name": "DeepSeek Harness",
+  "versions": [
+    {
+      "label": "dsh-v0.1.6-alpha.2",
+      "status": "current",
+      "endpoint_version": "0.0.1",
+      "capability_revision": "deepseek-harness-47f9438-oap-v2",
+      "admits": ["0.0.1"],
+      "ledgers": ["research/deepseek-harness-47f9438-mapping.md"],
+      "corpus": "fixtures/adapters/deepseek-harness-47f9438",
+      "corpus_from": "dsh-v0.1.5-rc.2",
+      "components": [
+        { "name": "deepseek-harness", "version": "dsh-v0.1.6-alpha.2", "repository": "https://github.com/deepseek-ai/deepseek-harness" }
+      ],
+      "sources": [
+        { "component": "deepseek-harness", "tag": "dsh-v0.1.6-alpha.2", "commit": "ddefc45fbc7f8e46dd73185e68295696d1297887", "tree": "5aca5ee6f8dfd110dc3ae199fbddf8a0f606625f" }
+      ]
+    },
+    {
+      "label": "dsh-v0.1.5-rc.2",
+      "status": "retired",
+      "ledgers": ["research/deepseek-harness-47f9438-mapping.md"],
+      "components": [
+        { "name": "deepseek-harness", "version": "dsh-v0.1.5-rc.2", "repository": "https://github.com/deepseek-ai/deepseek-harness" }
+      ],
+      "sources": [
+        { "component": "deepseek-harness", "tag": "dsh-v0.1.5-rc.2", "commit": "fb2c4b9e698e30edb738bca4cf0618587db7d203", "tree": "bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38" }
+      ]
+    },
+    {
+      "label": "47f9438",
+      "status": "retired",
+      "ledgers": ["research/deepseek-harness-47f9438-mapping.md"],
+      "components": [
+        { "name": "deepseek-harness", "repository": "https://github.com/deepseek-ai/deepseek-harness" }
+      ],
+      "sources": [
+        { "component": "deepseek-harness", "commit": "47f943859bef60e4160492346772ded9b24f765a", "tree": "f904efab9ef435201d6ba4da88a34d6366568272" }
+      ]
+    }
+  ]
+}

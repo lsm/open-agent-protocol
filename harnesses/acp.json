@@ -1,0 +1,27 @@
+{
+  "id": "acp",
+  "name": "Agent Client Protocol",
+  "versions": [
+    {
+      "label": "v1.7.0",
+      "status": "current",
+      "endpoint_version": "1.7.0",
+      "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3",
+      "ledgers": ["research/acp-v1.7.0-mapping.md"],
+      "corpus": "fixtures/adapters/acp-v1",
+      "components": [
+        { "name": "agent-client-protocol", "version": "v1.7.0", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
+        { "name": "agent-client-protocol-schema", "version": "schema-v1.21.0", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
+        { "name": "cagent", "version": "v1.138.0", "repository": "https://github.com/docker/cagent" }
+      ],
+      "artifacts": [
+        { "component": "agent-client-protocol", "platform": "any", "kind": "source-tree", "name": "schema/v1 agent-client-protocol-schema/src/v1 docs/protocol/v1", "sha256": "a23fba5f3ec62d4aeddec67f183a781e68acc89bc87dac8ffb98a440d20e1995" },
+        { "component": "agent-client-protocol-schema", "platform": "any", "kind": "source-tree", "name": "schema/v1", "sha256": "135854daf9d2b934c9498771d8084d3bf3174c6cf1db29b9d1a3ad1ec8a8dff3" }
+      ],
+      "sources": [
+        { "component": "agent-client-protocol", "tag": "v1.7.0", "commit": "272bf799f35a258c6a4107a0410ed361e83683d3" },
+        { "component": "cagent", "tag": "v1.138.0", "commit": "c06bb46bd00815c795f8bca4e162c4632fb7825d", "tree": "07a063266984d5158b6ee3b8e49aa4236d6e13b7" }
+      ]
+    }
+  ]
+}

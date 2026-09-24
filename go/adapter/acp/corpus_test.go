@@ -560,7 +560,7 @@ func acpCorpusRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", "acp-v1")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", filepath.FromSlash(CorpusDirectory))
 }
 
 func TestACPCorpusPinConstants(t *testing.T) {

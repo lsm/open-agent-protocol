@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -32,7 +33,7 @@ type ccCorpusPin struct {
 	sources ccCorpusSources
 }
 
-var ccCurrentCorpus = ccCorpusPin{dir: "claude-code-2.1.280", sources: ccCorpusSources{
+var ccCurrentCorpus = ccCorpusPin{dir: CorpusDirectory, sources: ccCorpusSources{
 	CLIVersion:        "2.1.280",
 	NPMTarballSHA256:  "1326e6b8cf00404fc3f9bd101d806b3fdec9588264e5a1aa8d98d1f7afe50170",
 	LauncherCjsSHA256: "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e",
@@ -63,7 +64,7 @@ var ccCurrentCorpus = ccCorpusPin{dir: "claude-code-2.1.280", sources: ccCorpusS
 	PyStoreValPy:      "16addd216281eecaadaedbe7ed361ad8205d0433",
 }}
 
-var ccFloorCorpus = ccCorpusPin{dir: "claude-code-2.1.263", sources: ccCorpusSources{
+var ccFloorCorpus = ccCorpusPin{dir: "fixtures/adapters/claude-code-2.1.263", sources: ccCorpusSources{
 	CLIVersion:        "2.1.263",
 	NPMTarballSHA256:  "b325aaaf748065ebce116c50893120384ce6ec56c1133f42f45177f8d1030c66",
 	LauncherCjsSHA256: "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e",
@@ -219,7 +220,7 @@ type ccDecodedFrame struct {
 
 func TestClaudeEvidenceCorpus(t *testing.T) {
 	for _, pin := range []ccCorpusPin{ccCurrentCorpus, ccFloorCorpus} {
-		t.Run(pin.dir, func(t *testing.T) {
+		t.Run(path.Base(pin.dir), func(t *testing.T) {
 			runClaudeEvidenceCorpus(t, pin)
 		})
 	}
@@ -1633,7 +1634,7 @@ func ccCorpusRoot(t *testing.T, dir string) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", dir)
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", filepath.FromSlash(dir))
 }
 
 func TestClaudeCorpusPinConstants(t *testing.T) {
@@ -1642,7 +1643,7 @@ func TestClaudeCorpusPinConstants(t *testing.T) {
 	}
 	for _, pin := range []ccCorpusPin{ccCurrentCorpus, ccFloorCorpus} {
 		s := pin.sources
-		if pin.dir != "claude-code-"+s.CLIVersion || s.NPMTarballSHA256 == "" || s.LinuxTarballSHA == "" || s.LinuxBinarySHA == "" || s.LinuxBinaryBytes == 0 || s.BuildCommit == "" || s.BuildDate == "" {
+		if pin.dir != "fixtures/adapters/claude-code-"+s.CLIVersion || s.NPMTarballSHA256 == "" || s.LinuxTarballSHA == "" || s.LinuxBinarySHA == "" || s.LinuxBinaryBytes == 0 || s.BuildCommit == "" || s.BuildDate == "" {
 			t.Fatalf("missing Claude Code corpus pin: %+v", pin)
 		}
 		if s.TSSDKTarballSHA == "" || s.TSSDKDtsSHA == "" || s.PySDKCommit == "" || s.PySDKTree == "" || s.PyPyprojectBlob == "" {

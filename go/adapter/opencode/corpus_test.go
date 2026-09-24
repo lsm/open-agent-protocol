@@ -506,7 +506,7 @@ func opencodeCorpusRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", "opencode-v1.18.29")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", filepath.FromSlash(CorpusDirectory))
 }
 
 func TestOpenCodeCorpusPinConstants(t *testing.T) {

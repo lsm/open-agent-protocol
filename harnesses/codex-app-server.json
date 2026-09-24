@@ -1,0 +1,23 @@
+{
+  "id": "codex-app-server",
+  "name": "Codex app-server",
+  "versions": [
+    {
+      "label": "8d7cc24",
+      "status": "current",
+      "endpoint_version": "8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9",
+      "capability_revision": "codex-appserver-8d7cc24-oap-v1",
+      "ledgers": ["research/codex-app-server-8d7cc24-mapping.md"],
+      "corpus": "fixtures/adapters/codex-appserver",
+      "components": [
+        { "name": "codex", "repository": "https://github.com/openai/codex" }
+      ],
+      "artifacts": [
+        { "component": "codex", "platform": "any", "kind": "source-tree", "name": "codex-rs/app-server-protocol/schema", "sha256": "d31125f254f93a9c6300e50c86ffbd3cc6ad388ef5b8833ecbd0a47371a344b6" }
+      ],
+      "sources": [
+        { "component": "codex", "commit": "8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9" }
+      ]
+    }
+  ]
+}

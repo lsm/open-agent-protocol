@@ -1434,7 +1434,7 @@ func dshCorpusRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", "deepseek-harness-47f9438")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", filepath.FromSlash(CorpusDirectory))
 }
 
 func TestDSHCorpusPinConstants(t *testing.T) {

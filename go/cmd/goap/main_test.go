@@ -16,7 +16,7 @@ func TestCheck(t *testing.T) {
 	if err := run(context.Background(), []string{"check"}, nil, &stdout, &stderr); err != nil {
 		t.Fatalf("check: %v\nstderr: %s", err, stderr.String())
 	}
-	for _, want := range []string{"PASS schemas", "PASS fixtures", "PASS golden", "PASS cancellation", "PASS check"} {
+	for _, want := range []string{"PASS schemas", "PASS harnesses", "PASS fixtures", "PASS golden", "PASS cancellation", "PASS check"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("output lacks %q:\n%s", want, stdout.String())
 		}
