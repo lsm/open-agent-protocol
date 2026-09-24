@@ -74,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Zig semantic validator now judges tool sources: `unmatched_tool_source` (a descriptor or served catalog naming an undeclared source, a listed tool with none, a call attributed elsewhere or to nothing declared, a source changing mid-lifecycle, a provided tool naming a source a refresh removed), `unattributed_call`, `catalog_mismatch` for attached sources and provided tools, and `undisclosed_attach_limit`. An open response's reported sources are adopted as the attached descriptions, as Go does. `oapx validate` now fails 193 of the 306 semantic-invalid fixtures that need no pack, up from 178.
+
 - A Zig adapter corpus driver now fails when its case list and its corpus `manifest.json` disagree in either direction — a manifest case neither replayed nor excluded by name, a replayed case the manifest lacks, a case read from another path, or a stale exclusion. Before, dropping a case from a driver's list left the build green. Claude's `process-exit` is the one named exclusion: its own test replays it and allows the single Go-runtime message it quotes.
 
 - The Claude Code adapter no longer fails a run when a `Bash` call outlives about three seconds. Claude Code 2.1.280 reports such a call as a foreground `local_bash` task whose `task_notification` carries `"output_file": ""`, and the Go and Zig decoders required that member non-empty, so the run failed with `claude_process_exit`. `output_file` must still be present, but may be empty.

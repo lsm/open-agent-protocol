@@ -29,6 +29,10 @@ pub const code_ambiguous_default_model = "ambiguous_default_model";
 pub const code_unannounced_catalog_change = "unannounced_catalog_change";
 pub const code_undisclosed_attach_modes = "undisclosed_attach_modes";
 pub const code_duplicate_tool_source = "duplicate_tool_source";
+pub const code_unmatched_tool_source = "unmatched_tool_source";
+pub const code_unattributed_call = "unattributed_call";
+pub const code_catalog_mismatch = "catalog_mismatch";
+pub const code_undisclosed_attach_limit = "undisclosed_attach_limit";
 pub const code_unmatched_tool = "unmatched_tool";
 pub const code_illegal_tool_transition = "illegal_tool_transition";
 pub const code_pending_tool_at_terminal = "pending_tool_at_terminal";
@@ -66,6 +70,10 @@ pub const implemented = [_][]const u8{
     code_unannounced_catalog_change,
     code_undisclosed_attach_modes,
     code_duplicate_tool_source,
+    code_unmatched_tool_source,
+    code_unattributed_call,
+    code_catalog_mismatch,
+    code_undisclosed_attach_limit,
     code_unmatched_tool,
     code_illegal_tool_transition,
     code_pending_tool_at_terminal,
@@ -209,6 +217,7 @@ const CallStatus = enum { requested, started, progress, completed, failed, cance
 const ToolTrack = struct {
     status: CallStatus,
     interaction: []const u8 = "",
+    source: []const u8 = "",
 };
 
 const InteractionKind = enum { permission, input, tool_call };
@@ -252,6 +261,8 @@ const PendingResolve = struct {
 const ToolCatalog = struct {
     revision: []const u8,
     owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    attribution: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    sources: std.StringArrayHashMapUnmanaged(void) = .empty,
 };
 
 const Unjudged = struct {
@@ -294,6 +305,8 @@ const Session = struct {
     expected_default: []const u8 = "",
     guard_default: bool = false,
     provided_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    provided_tools: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
+    attached_sources: std.StringArrayHashMapUnmanaged(std.json.Value) = .empty,
     tool_catalog: ?ToolCatalog = null,
 };
 
@@ -475,6 +488,7 @@ pub const Machine = struct {
     submits: std.StringArrayHashMapUnmanaged(*Pending) = .empty,
     resolves: std.StringArrayHashMapUnmanaged(PendingResolve) = .empty,
     descriptor_owners: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
+    descriptor_attribution: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Machine {
         return .{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
@@ -496,6 +510,7 @@ pub const Machine = struct {
         self.submits.deinit(self.allocator);
         self.resolves.deinit(self.allocator);
         self.descriptor_owners.deinit(self.allocator);
+        self.descriptor_attribution.deinit(self.allocator);
         for (self.sessions.values()) |holder| {
             holder.order.deinit(self.allocator);
             holder.provided.deinit(self.allocator);
@@ -692,6 +707,7 @@ pub const Machine = struct {
             self.capabilities_stale = true;
             self.limits = null;
             self.descriptor_owners.clearRetainingCapacity();
+            self.descriptor_attribution.clearRetainingCapacity();
             return;
         }
         if (std.mem.eql(u8, declared, "session.message.submit.request")) {
@@ -745,6 +761,9 @@ pub const Machine = struct {
                 try self.add(code_duplicate_tool_source, index);
             }
             try self.duplicateNames(index, member(payload, "tools"));
+            const request = self.submits.get(field(envelope, "in_reply_to"));
+            try self.checkListedToolSources(index, payload, if (request) |pending| pending.control != null else false);
+            try self.checkSessionCatalog(index, payload);
             try self.servedCatalog(payload);
             return;
         }
@@ -839,11 +858,13 @@ pub const Machine = struct {
         self.catalog_ambiguous = duplicateToolName(self.catalog.items) != null;
         if (self.catalog_ambiguous) try self.add(code_duplicate_tool_name, index);
         try self.collectOwners(payload);
+        try self.checkDescriptorToolSources(index, payload);
         try self.checkRefreshAgainstProvided(index);
     }
 
     fn collectOwners(self: *Machine, payload: std.json.Value) !void {
         self.descriptor_owners.clearRetainingCapacity();
+        self.descriptor_attribution.clearRetainingCapacity();
         if (self.catalog_ambiguous) return;
         try self.absorbOwners(member(payload, "tools"));
         const layers = member(payload, "layers") orelse return;
@@ -862,10 +883,84 @@ pub const Machine = struct {
         const tools = declared orelse return;
         if (tools != .array) return;
         for (tools.array.items) |tool| {
+            const source = memberString(tool, "source");
+            if (source.len != 0) try self.descriptor_attribution.put(self.allocator, memberString(tool, "name"), source);
             const owner = memberString(tool, "execution_owner");
             if (owner.len == 0) continue;
             try self.descriptor_owners.put(self.allocator, memberString(tool, "name"), owner);
         }
+    }
+
+    fn checkDescriptorToolSources(self: *Machine, index: usize, payload: std.json.Value) !void {
+        try self.checkDeclaredToolSources(index, member(payload, "tools"));
+        const layers = member(payload, "layers") orelse return;
+        if (layers != .object) return;
+        var names = std.ArrayList([]const u8).empty;
+        defer names.deinit(self.allocator);
+        var layer = layers.object.iterator();
+        while (layer.next()) |entry| try names.append(self.allocator, entry.key_ptr.*);
+        std.mem.sort([]const u8, names.items, {}, lessThanName);
+        for (names.items) |name| {
+            try self.checkDeclaredToolSources(index, member(layers.object.get(name).?, "tools"));
+        }
+    }
+
+    fn checkDeclaredToolSources(self: *Machine, index: usize, declared: ?std.json.Value) !void {
+        const tools = declared orelse return;
+        if (tools != .array) return;
+        for (tools.array.items) |tool| {
+            const source = memberString(tool, "source");
+            if (source.len != 0 and self.declared_sources.get(source) == null) try self.add(code_unmatched_tool_source, index);
+        }
+    }
+
+    fn checkListedToolSources(self: *Machine, index: usize, payload: std.json.Value, gated: bool) !void {
+        const tools = member(payload, "tools") orelse return;
+        if (tools != .array) return;
+        const sources = member(payload, "sources");
+        for (tools.array.items) |tool| {
+            const source = memberString(tool, "source");
+            if (source.len == 0) {
+                if (!gated) try self.add(code_unmatched_tool_source, index);
+                continue;
+            }
+            if (!declaresSource(sources, source)) try self.add(code_unmatched_tool_source, index);
+        }
+    }
+
+    fn servedInForce(self: *const Machine, session_id: []const u8) ?*const ToolCatalog {
+        const holder = self.sessions.get(session_id) orelse return null;
+        if (holder.tool_catalog) |*served| {
+            if (std.mem.eql(u8, served.revision, self.current_capability)) return served;
+        }
+        return null;
+    }
+
+    fn checkCallSource(self: *Machine, index: usize, payload: std.json.Value) !void {
+        const session_id = memberString(payload, "session_id");
+        const name = memberString(payload, "name");
+        const source = memberString(payload, "source");
+        const served = self.servedInForce(session_id);
+        const listed = if (served) |catalog| catalog.attribution.get(name) else self.descriptor_attribution.get(name);
+        if (source.len == 0) {
+            const level = self.features.get(feature_tools_list) orelse return;
+            if (!affirmative(level)) return;
+            const attributed = listed orelse return;
+            if (attributed.len != 0) try self.add(code_unattributed_call, index);
+            return;
+        }
+        if (listed) |attributed| {
+            if (!std.mem.eql(u8, attributed, source)) try self.add(code_unmatched_tool_source, index);
+            return;
+        }
+        if (served) |catalog| {
+            if (catalog.sources.get(source) != null) return;
+        }
+        if (self.sessions.get(session_id)) |holder| {
+            if (holder.attached.get(source) != null) return;
+        }
+        if (self.declared_sources.get(source) != null) return;
+        try self.add(code_unmatched_tool_source, index);
     }
 
     fn servedCatalog(self: *Machine, payload: std.json.Value) !void {
@@ -877,6 +972,15 @@ pub const Machine = struct {
             if (tools == .array) {
                 for (tools.array.items) |tool| {
                     try served.owners.put(self.arena.allocator(), memberString(tool, "name"), memberString(tool, "execution_owner"));
+                    try served.attribution.put(self.arena.allocator(), memberString(tool, "name"), memberString(tool, "source"));
+                }
+            }
+        }
+        if (member(payload, "sources")) |sources| {
+            if (sources == .array) {
+                for (sources.array.items) |source| {
+                    const id = memberString(source, "id");
+                    if (id.len != 0) try served.sources.put(self.arena.allocator(), id, {});
                 }
             }
         }
@@ -1040,7 +1144,7 @@ pub const Machine = struct {
         if (providing) try self.provideExpectations(payload, tools.?, sources, pending);
         if (pending.attachment != null) pending.limit_refusal = null;
         if (pending.attachment == null and pending.limit_refusal == null) {
-            pending.honour = if (attaching) unnamed_defect else code_undisclosed_provide_limit;
+            pending.honour = if (attaching) code_undisclosed_attach_limit else code_undisclosed_provide_limit;
         }
     }
 
@@ -1228,7 +1332,7 @@ pub const Machine = struct {
                     .reason = reason_unsatisfiable,
                     .detail_name = "source",
                     .detail_value = source,
-                    .diagnostic = unnamed_defect,
+                    .diagnostic = code_unmatched_tool_source,
                 });
             }
         }
@@ -1524,7 +1628,35 @@ pub const Machine = struct {
         for (self.sessions.values()) |holder| {
             for (holder.provided.items) |name| {
                 if (listedIn(self.catalog.items, name)) try self.add(code_duplicate_tool_name, index);
+                const tool = holder.provided_tools.get(name) orelse continue;
+                const source = memberString(tool, "source");
+                if (source.len == 0) continue;
+                if (self.declared_sources.get(source) != null) continue;
+                if (holder.attached.get(source) != null) continue;
+                try self.add(code_unmatched_tool_source, index);
             }
+        }
+    }
+
+    fn checkSessionCatalog(self: *Machine, index: usize, payload: std.json.Value) !void {
+        const holder = self.sessions.get(memberString(payload, "session_id")) orelse return;
+        const sources = member(payload, "sources");
+        var attached = holder.attached_sources.iterator();
+        while (attached.next()) |entry| {
+            const listed = sourceWithId(sources, entry.key_ptr.*) orelse {
+                try self.add(code_catalog_mismatch, index);
+                continue;
+            };
+            if (!sameSourceDescription(entry.value_ptr.*, listed)) try self.add(code_catalog_mismatch, index);
+        }
+        const tools = member(payload, "tools");
+        for (holder.provided.items) |name| {
+            const supplied = holder.provided_tools.get(name) orelse continue;
+            const listed = toolNamed(tools, name) orelse {
+                try self.add(code_catalog_mismatch, index);
+                continue;
+            };
+            if (!sameProvidedTool(supplied, listed)) try self.add(code_catalog_mismatch, index);
         }
     }
 
@@ -2360,6 +2492,8 @@ pub const Machine = struct {
                     }
                     if (opened.tools) |listed| {
                         for (listed.array.items) |tool| {
+                            const provided_name = memberString(tool, "name");
+                            if (holder.provided_tools.get(provided_name) == null) try holder.provided_tools.put(self.arena.allocator(), provided_name, tool);
                             try holder.provided_owners.put(
                                 self.arena.allocator(),
                                 memberString(tool, "name"),
@@ -2372,9 +2506,16 @@ pub const Machine = struct {
                             for (listed.array.items) |attachment| {
                                 const id = memberString(attachment, "id");
                                 if (id.len != 0) try holder.attached.put(self.allocator, id, {});
+                                if (id.len != 0) try holder.attached_sources.put(self.arena.allocator(), id, attachment);
                             }
                         }
                     }
+                }
+            }
+            if (member(payload, "sources")) |published| {
+                var adopted = holder.attached_sources.iterator();
+                while (adopted.next()) |entry| {
+                    if (sourceWithId(published, entry.key_ptr.*)) |described| entry.value_ptr.* = described;
                 }
             }
             const reported = memberString(payload, "current_model_id");
@@ -2661,6 +2802,7 @@ pub const Machine = struct {
             switch (next) {
                 .requested => {
                     try self.checkCallAgainstChoice(index, body, state);
+                    try self.checkCallSource(index, body);
                     try self.checkCallOwner(index, body);
                     try self.controlCallRequested(index, body, state);
                 },
@@ -2694,6 +2836,8 @@ pub const Machine = struct {
     fn toolTransition(self: *Machine, index: usize, payload: std.json.Value, run: *Run, next: CallStatus) !void {
         const call = memberString(payload, "tool_call_id");
         if (run.tools.getPtr(call)) |track| {
+            const source = memberString(payload, "source");
+            if (source.len != 0 and !std.mem.eql(u8, source, track.source)) try self.add(code_unmatched_tool_source, index);
             const legal = switch (next) {
                 .requested => false,
                 .started => track.status == .requested,
@@ -2705,7 +2849,7 @@ pub const Machine = struct {
             return;
         }
         if (next != .requested and !run.recovered) try self.add(code_unmatched_tool, index);
-        try run.tools.put(self.arena.allocator(), call, .{ .status = next });
+        try run.tools.put(self.arena.allocator(), call, .{ .status = next, .source = memberString(payload, "source") });
     }
 
     fn controlOwned(self: *const Machine, owner: []const u8) bool {
@@ -3465,6 +3609,47 @@ fn conformingRefusal(raised: std.json.Value, expectation: Expectation) bool {
 const error_run_active = "run_active";
 const resolution_session_busy = "session_busy";
 
+fn sourceWithId(sources: ?std.json.Value, id: []const u8) ?std.json.Value {
+    const listed = sources orelse return null;
+    if (listed != .array) return null;
+    for (listed.array.items) |source| {
+        if (std.mem.eql(u8, memberString(source, "id"), id)) return source;
+    }
+    return null;
+}
+
+fn toolNamed(tools: ?std.json.Value, name: []const u8) ?std.json.Value {
+    const listed = tools orelse return null;
+    if (listed != .array) return null;
+    for (listed.array.items) |tool| {
+        if (std.mem.eql(u8, memberString(tool, "name"), name)) return tool;
+    }
+    return null;
+}
+
+fn sameSourceDescription(attached: std.json.Value, listed: std.json.Value) bool {
+    for ([_][]const u8{ "id", "kind", "protocol", "endpoint", "display_name" }) |name| {
+        if (!std.mem.eql(u8, memberString(attached, name), memberString(listed, name))) return false;
+    }
+    return true;
+}
+
+fn sameProvidedTool(supplied: std.json.Value, listed: std.json.Value) bool {
+    for ([_][]const u8{ "description", "execution_owner", "source" }) |name| {
+        if (!std.mem.eql(u8, memberString(supplied, name), memberString(listed, name))) return false;
+    }
+    return sameStatement(member(supplied, "input_schema"), member(listed, "input_schema"));
+}
+
+fn declaresSource(sources: ?std.json.Value, id: []const u8) bool {
+    const listed = sources orelse return false;
+    if (listed != .array) return false;
+    for (listed.array.items) |source| {
+        if (std.mem.eql(u8, memberString(source, "id"), id)) return true;
+    }
+    return false;
+}
+
 fn affirmative(level: []const u8) bool {
     return std.mem.eql(u8, level, "native") or
         std.mem.eql(u8, level, "emulated") or
@@ -3844,7 +4029,7 @@ test "a bound below one is no bound at all" {
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tool_sources":[{"id":"a","kind":"process"}]}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
-    , &.{});
+    , &.{"undisclosed_attach_limit"});
 
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
@@ -4018,7 +4203,7 @@ test "a transports list naming no kind at all is no bound" {
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tool_sources":[{"id":"a","kind":"process"}]}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
-    , &.{});
+    , &.{"undisclosed_attach_limit"});
 
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
@@ -4026,7 +4211,7 @@ test "a transports list naming no kind at all is no bound" {
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tool_sources":[{"id":"a","kind":"process"}]}},
         \\{"type":"error.response","id":"o2","in_reply_to":"o1","payload":{"error":{"code":"internal_error"}}}]
-    , &.{});
+    , &.{"undisclosed_attach_limit"});
 }
 
 test "an update continues the revision it replaces, and introduces a different one" {
@@ -4614,7 +4799,7 @@ test "an escaped reference resolves the same way on both sides of the boundary" 
     , &.{"unapplied_control"});
 }
 
-test "a defect silences the bound beside it, whether or not this port names the defect" {
+test "a defect silences the bound beside it" {
     const bounded =
         \\{"type":"protocol.initialize.request","id":"i1","payload":{"participant":{"id":"control"}}},
         \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
@@ -4637,7 +4822,7 @@ test "a defect silences the bound beside it, whether or not this port names the 
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"one","source":"nowhere"},{"name":"two"}]}},
-    ++ refused, &.{});
+    ++ refused, &.{"unmatched_tool_source"});
 
     try expectCodes(
         \\[
@@ -4789,7 +4974,7 @@ test "a session records a provided name once, however many opens supply it" {
     , &.{"duplicate_tool_name"});
 }
 
-test "the earliest defect speaks even when this port has no name for it" {
+test "the earliest defect speaks" {
     const declared =
         \\{"type":"protocol.initialize.request","id":"i1","payload":{"participant":{"id":"control"}}},
         \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
@@ -4804,7 +4989,7 @@ test "the earliest defect speaks even when this port has no name for it" {
         \\,
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"a","source":"nowhere"},{"name":"a"}]}},
-    ++ answered, &.{});
+    ++ answered, &.{"unmatched_tool_source"});
 
     try expectCodes(
         \\[
@@ -5375,7 +5560,7 @@ test "a call is held to the owner recorded by the tool its session provided" {
     try expectCodes(
         \\[{"type":"protocol.initialize.request","id":"i0","payload":{"participant":{"id":"control"}}},
         \\{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":
-        \\{"tools":{"level":"native"},"action.tools.provide":{"level":"native"}}}},
+        \\{"tools":{"level":"native"},"action.tools.provide":{"level":"native"}},"sources":[{"id":"native","kind":"native"}]}},
         \\{"type":"session.open.request","id":"o1","capability_revision":"v1","payload":{"session_id":"s",
         \\"tools":[{"name":"grep","execution_owner":"control","input_schema":{"type":"object"}}]}},
         \\{"type":"session.open.response","id":"o2","in_reply_to":"o1","capability_revision":"v1","payload":{"session_id":"s"}},
@@ -5395,6 +5580,7 @@ test "a capability update retires the catalogs the owner of a call was judged ag
 test "a descriptor listing a tool twice records no owner for it" {
     try expectCodes(
         \\[{"type":"capabilities.response","id":"k1","capability_revision":"v1","payload":{"features":{"tools":{"level":"native"}},
+        \\"sources":[{"id":"native","kind":"native"}],
         \\"tools":[{"name":"grep","execution_owner":"agent","input_schema":{"type":"object"}},
         \\{"name":"grep","execution_owner":"control","input_schema":{"type":"object"}}]}},
     ++ started_run ++ comptime grepCall("bystander", "v1"), &.{"duplicate_tool_name"});
