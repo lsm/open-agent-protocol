@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "codex_commit": "8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9",
+  "capability_revision": "codex-appserver-8d7cc24-oap-v1",
+  "capabilities": "{\"endpoint\":{\"id\":\"codex.app-server\",\"name\":\"Codex app-server Adapter\",\"version\":\"8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9\",\"adapter\":\"codex-appserver-stdio\"},\"protocol_versions\":[\"0.1\"],\"profiles\":[\"open-agent-protocol.agent-control-core\"],\"features\":{\"action.permissions\":{\"level\":\"native\",\"reason\":\"command and file-change reverse approvals are correlated and round-trip once\"},\"action.tools\":{\"level\":\"degraded\",\"reason\":\"only pinned command, file-change, and MCP item families are normalized\"},\"action.tools.execute\":{\"level\":\"degraded\",\"reason\":\"only pinned command, file-change, and MCP item families are normalized\"},\"capabilities\":{\"level\":\"native\"},\"protocol.initialize\":{\"level\":\"native\"},\"run.cancel\":{\"level\":\"native\",\"reason\":\"turn/interrupt targets an exact native thread and turn; settlement is asynchronous\"},\"run.instructions\":{\"level\":\"unavailable\",\"reason\":\"this pin exposes no per-turn instruction override\"},\"run.model_selection\":{\"level\":\"native\",\"reason\":\"turn/start carries the model for one turn\",\"scope\":\"run\"},\"run.reconciliation\":{\"level\":\"emulated\",\"reason\":\"state is the adapter's canonical projection of native observations\"},\"run.replay\":{\"level\":\"degraded\",\"reason\":\"only adapter-emitted events in bounded process memory are replayable\"},\"run.resume\":{\"level\":\"degraded\",\"reason\":\"thread/resume restores native attachment; canonical replay is bounded process memory\"},\"run.status\":{\"level\":\"native\"},\"run.streaming\":{\"level\":\"native\"},\"run.structured_output\":{\"level\":\"unavailable\",\"reason\":\"this pin exposes no per-turn output schema\"},\"run.tool_selection\":{\"level\":\"unavailable\",\"reason\":\"this pin exposes no per-turn tool policy\"},\"session.message.delivery.auto\":{\"level\":\"native\"},\"session.message.submit\":{\"level\":\"native\"},\"session.open\":{\"level\":\"native\"},\"session.state\":{\"level\":\"native\"},\"user_input\":{\"level\":\"degraded\",\"reason\":\"Codex option questions normalize to OAP single-choice input\"}}}",
+  "frames": [
+    {
+      "direction": "client_to_server",
+      "frame": "{\"id\":0,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"open-agent-protocol\",\"version\":\"0.1\"}}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":0,\"result\":{\"userAgent\":\"codex-fixture\",\"codexHome\":\"/codex\",\"platformFamily\":\"unix\",\"platformOs\":\"linux\"}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"method\":\"initialized\"}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"id\":1,\"method\":\"thread/start\",\"params\":{\"model\":\"glm-test\",\"approvalPolicy\":\"on-request\",\"sandbox\":\"workspace-write\"}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":1,\"result\":{\"thread\":{\"id\":\"native-thread\"}}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"id\":2,\"method\":\"turn/start\",\"params\":{\"threadId\":\"native-thread\",\"input\":[{\"type\":\"text\",\"text\":\"hello \\u003ccodex\\u003e \\u0026 friends\\u2028é\"}],\"model\":\"glm-per-turn\"}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":2,\"result\":{\"turn\":{\"id\":\"native-turn\",\"status\":\"inProgress\"}}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"native-thread\",\"turn\":{\"id\":\"native-turn\",\"status\":\"inProgress\"}}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"method\":\"item/started\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\",\"item\":{\"type\":\"commandExecution\",\"id\":\"native-item\",\"command\":\"true\",\"status\":\"inProgress\"}}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":7,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\",\"itemId\":\"native-item\",\"kind\":\"command\",\"startedAtMs\":10,\"reason\":\"needs approval\",\"availableDecisions\":[\"accept\",\"decline\",\"cancel\"]}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"id\":7,\"result\":{\"decision\":\"decline\"}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":8,\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\",\"itemId\":\"tool-item\",\"isBlocking\":true,\"questions\":[{\"id\":\"mode\",\"header\":\"Mode\",\"question\":\"Choose mode\",\"isOther\":false,\"isSecret\":false,\"options\":[{\"label\":\"Fast\",\"description\":\"Lower latency\"},{\"label\":\"Safe\",\"description\":\"More checks\"}]},{\"id\":\"note\",\"header\":\"Note\",\"question\":\"Add note\",\"isOther\":false,\"isSecret\":false,\"options\":null}]}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"id\":8,\"result\":{\"answers\":{\"mode\":{\"answers\":[\"Safe\"]},\"note\":{\"answers\":[\"ship it\"]}}}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":9,\"method\":\"item/permissions/requestApproval\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\",\"itemId\":\"native-item\",\"permissions\":{}}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"error\":{\"code\":-32601,\"message\":\"unsupported Codex server request\",\"data\":{\"method\":\"item/permissions/requestApproval\"}},\"id\":9}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":10,\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"other-thread\",\"turnId\":\"native-turn\",\"itemId\":\"native-item\",\"kind\":\"command\",\"startedAtMs\":11}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"error\":{\"code\":-32602,\"message\":\"invalid approval request scope\"},\"id\":10}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":11,\"method\":\"item/fileChange/requestApproval\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\",\"itemId\":\"native-item\",\"startedAtMs\":12,\"reason\":\"apply edit\",\"grantRoot\":\"/workspace\"}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"id\":3,\"method\":\"turn/interrupt\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"native-turn\"}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"id\":3,\"result\":{}}"
+    },
+    {
+      "direction": "server_to_client",
+      "frame": "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"native-thread\",\"turn\":{\"id\":\"native-turn\",\"status\":\"interrupted\"}}}"
+    },
+    {
+      "direction": "client_to_server",
+      "frame": "{\"error\":{\"code\":-32800,\"message\":\"OAP run terminated before interaction resolution\"},\"id\":11}"
+    }
+  ]
+}

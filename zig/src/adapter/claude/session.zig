@@ -18,6 +18,13 @@ pub const Options = struct {
     responder: []const u8 = "user",
     endpoint: []const u8 = endpoint_id,
     revision: []const u8 = capability_revision,
+    counter: ?*usize = null,
+    now_ms: ?*const fn () i64 = null,
+};
+
+pub const Started = struct {
+    submission_uuid: []const u8,
+    run_id: []const u8,
 };
 
 pub const Identity = struct {
@@ -86,6 +93,8 @@ pub const Reducer = struct {
     unusable: bool = false,
     children: std.ArrayList(Child) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
+    servers: std.ArrayList([]const u8) = .empty,
+    started: ?Started = null,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options, .current_model = options.model };
@@ -96,13 +105,62 @@ pub const Reducer = struct {
     }
 
     fn nextID(self: *Reducer, kind: []const u8) ![]const u8 {
-        self.ids += 1;
-        return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, self.ids });
+        const counter = self.options.counter orelse &self.ids;
+        counter.* += 1;
+        return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, counter.* });
     }
 
     fn now(self: *Reducer) i64 {
         self.clock += 1;
+        if (self.options.now_ms) |read| return read();
         return self.clock;
+    }
+
+    pub fn gatePending(self: *const Reducer, interaction_id: []const u8) bool {
+        const run = self.run orelse return false;
+        for (self.gates.items) |gate| {
+            if (gate.resolved or !std.mem.eql(u8, gate.id, interaction_id)) continue;
+            if (std.mem.eql(u8, gate.run_id, run.id)) return true;
+        }
+        return false;
+    }
+
+    pub fn gateFor(self: *const Reducer, request_id: []const u8) ?[]const u8 {
+        const run = self.run orelse return null;
+        for (self.gates.items) |gate| {
+            if (gate.resolved or !std.mem.eql(u8, gate.request_id, request_id)) continue;
+            if (std.mem.eql(u8, gate.run_id, run.id)) return gate.id;
+        }
+        return null;
+    }
+
+    pub fn compactInto(self: *const Reducer, arena: *std.heap.ArenaAllocator) !Reducer {
+        if (self.run != null or self.envelopes.items.len != 0) return error.ReducerBusy;
+        const kept_allocator = arena.allocator();
+        var kept = Reducer.init(arena, self.options);
+        kept.ids = self.ids;
+        kept.clock = self.clock;
+        kept.unusable = self.unusable;
+        kept.catalog_known = self.catalog_known;
+        kept.current_model = try kept_allocator.dupe(u8, self.current_model);
+        try kept.tools.ensureTotalCapacity(kept_allocator, self.tools.items.len);
+        for (self.tools.items) |tool| {
+            const native_id = try kept_allocator.dupe(u8, tool.native_id);
+            kept.tools.appendAssumeCapacity(.{ .native_id = native_id, .id = "", .run_id = "", .name = "", .terminal = true });
+        }
+        try kept.catalog.ensureTotalCapacity(kept_allocator, self.catalog.items.len);
+        for (self.catalog.items) |entry| {
+            const name = try kept_allocator.dupe(u8, entry.name);
+            const source = try kept_allocator.dupe(u8, entry.source);
+            kept.catalog.appendAssumeCapacity(.{ .name = name, .source = source });
+        }
+        try kept.servers.ensureTotalCapacity(kept_allocator, self.servers.items.len);
+        for (self.servers.items) |server| {
+            kept.servers.appendAssumeCapacity(try kept_allocator.dupe(u8, server));
+        }
+        if (self.served) |served| kept.served = try copyNames(kept_allocator, served);
+        kept.attribution = try copyNames(kept_allocator, self.attribution);
+        return kept;
     }
 
     pub fn open(self: *Reducer) void {
@@ -439,6 +497,7 @@ pub const Reducer = struct {
         run.started = true;
         const minted_run = try self.nextID("run");
         run.id = if (self.identity.run_id.len > 0) self.identity.run_id else minted_run;
+        self.started = .{ .submission_uuid = run.submission_uuid, .run_id = run.id };
         var payload = self.object();
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
@@ -750,6 +809,7 @@ pub const Reducer = struct {
                 }
             }
         }
+        self.servers = servers;
         self.catalog.clearRetainingCapacity();
         if (rpc.lookup(frame, "tools")) |listed| {
             if (listed == .array) {
@@ -924,6 +984,18 @@ pub const Reducer = struct {
         }
     }
 };
+
+fn copyNames(allocator: std.mem.Allocator, names: std.StringHashMapUnmanaged([]const u8)) !std.StringHashMapUnmanaged([]const u8) {
+    var copy: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try copy.ensureTotalCapacity(allocator, names.count());
+    var it = names.iterator();
+    while (it.next()) |entry| {
+        const name = try allocator.dupe(u8, entry.key_ptr.*);
+        const source = try allocator.dupe(u8, entry.value_ptr.*);
+        copy.putAssumeCapacity(name, source);
+    }
+    return copy;
+}
 
 fn stringMember(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = rpc.lookup(map, key) orelse return null;
@@ -2344,4 +2416,157 @@ test "the revision every envelope cites is the one the caller supplied" {
         try testing.expectEqualStrings("makai-oap-core-v1", envelope.object.get("capability_revision").?.string);
     }
     try testing.expect(citedBy(&supplied, "run.failed", "error") == null);
+}
+
+test "reducers drawing on one shared counter never mint the same id" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var counter: usize = 0;
+
+    var first = try callingRun(&arena, .{ .counter = &counter });
+    var second = try callingRun(&arena, .{ .counter = &counter });
+    const first_ids = try envelopeIDs(&first, arena.allocator());
+    const second_ids = try envelopeIDs(&second, arena.allocator());
+    for (first_ids) |mine| {
+        for (second_ids) |theirs| try testing.expect(!std.mem.eql(u8, mine, theirs));
+    }
+    try testing.expect(!std.mem.eql(u8, first.envelopes.items[0].object.get("run_id").?.string, second.envelopes.items[0].object.get("run_id").?.string));
+    try testing.expectEqual(@as(usize, 0), first.ids);
+}
+
+fn fixedClock() i64 {
+    return 1_700_000_000_123;
+}
+
+test "a supplied clock stamps every time the run reports" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try callingRun(&arena, .{ .now_ms = fixedClock });
+
+    for (reducer.envelopes.items) |envelope| {
+        try testing.expectEqual(@as(i64, 1_700_000_000_123), envelope.object.get("timestamp_ms").?.integer);
+    }
+    try testing.expectEqual(@as(i64, 1_700_000_000_123), firstPayload(&reducer, "run.started").?.get("started_at_ms").?.integer);
+}
+
+test "the run that starts is recorded against the submission that asked for it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try reducer.submit("turn-1");
+    try testing.expectEqual(@as(?Started, null), reducer.started);
+    try observeText(&reducer, arena.allocator(),
+        \\{"type":"result","session_id":"s","subtype":"success","result":"at once","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expect(reducer.run == null);
+    try testing.expectEqualStrings("turn-1", reducer.started.?.submission_uuid);
+    try testing.expectEqualStrings(reducer.envelopes.items[0].object.get("run_id").?.string, reducer.started.?.run_id);
+}
+
+test "a gate is pending only within the run that opened it, and is found by the ask that raised it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+
+    try startedRun(&reducer, scratch, "turn-1");
+    try gateRequest(&reducer, scratch, "");
+    const interaction = reducer.gateFor("ask-1").?;
+    try testing.expect(reducer.gatePending(interaction));
+    try testing.expectEqual(@as(?[]const u8, null), reducer.gateFor("ask-9"));
+
+    try observeText(&reducer, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
+    );
+    try testing.expect(!reducer.gatePending(interaction));
+    try testing.expectEqual(@as(?[]const u8, null), reducer.gateFor("ask-1"));
+}
+
+fn settledSession(arena: *std.heap.ArenaAllocator) !Reducer {
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(arena, .{ .model = "" });
+    reducer.open();
+    try observeText(&reducer, scratch,
+        \\{"type":"system","session_id":"s","subtype":"init","model":"model-a","uuid":"i1","mcp_servers":[{"name":"files"},{"name":"idle"}],"tools":["Bash","mcp__files__read"]}
+    );
+    _ = try reducer.listTools();
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try gateRequest(&reducer, scratch, "");
+    try observeText(&reducer, scratch,
+        \\{"type":"result","session_id":"s","subtype":"success","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    reducer.envelopes.clearRetainingCapacity();
+    return reducer;
+}
+
+test "a compacted reducer keeps what later runs consult and none of what the settled run held" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    var reducer = try settledSession(&source);
+    const ids_before = reducer.ids;
+
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    var kept = try reducer.compactInto(&target);
+    source.deinit();
+
+    try testing.expectEqual(ids_before, kept.ids);
+    try testing.expectEqualStrings("model-a", kept.current_model);
+    try testing.expectEqual(@as(usize, 0), kept.gates.items.len);
+    try testing.expectEqual(@as(usize, 1), kept.tools.items.len);
+    try testing.expectEqualStrings("t1", kept.tools.items[0].native_id);
+    try testing.expectEqual(@as(usize, 2), kept.servers.items.len);
+    try testing.expectEqualStrings("idle", kept.servers.items[1]);
+
+    const scratch = target.allocator();
+    try startedRun(&kept, scratch, "turn-2");
+    try observeText(&kept, scratch,
+        \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"late"}]},"uuid":"u1"}
+    );
+    try testing.expectEqual(@as(?std.json.ObjectMap, null), firstPayload(&kept, "run.failed"));
+    try observeText(&kept, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t2","name":"mcp__files__read"}]},"uuid":"a2"}
+    );
+    try testing.expectEqualStrings("mcp:files", firstPayload(&kept, "action.call.requested").?.get("source").?.string);
+    try testing.expectEqualStrings("model-a", firstPayload(&kept, "run.started").?.get("model_id").?.string);
+    try observeText(&kept, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a3"}
+    );
+    try testing.expectEqualStrings("duplicate tool call", firstPayload(&kept, "run.failed").?.get("error").?.object.get("message").?.string);
+}
+
+test "compaction refuses a reducer with a run in flight or envelopes not yet drained" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try startedRun(&reducer, arena.allocator(), "turn-1");
+    try testing.expectError(error.ReducerBusy, reducer.compactInto(&target));
+
+    try observeText(&reducer, arena.allocator(),
+        \\{"type":"result","session_id":"s","subtype":"success","result":"one","user_message_uuid":"turn-1","uuid":"r1"}
+    );
+    try testing.expect(reducer.run == null);
+    try testing.expectError(error.ReducerBusy, reducer.compactInto(&target));
+}
+
+fn compactProbe(allocator: std.mem.Allocator, reducer: *const Reducer) !void {
+    var target = std.heap.ArenaAllocator.init(allocator);
+    defer target.deinit();
+    _ = try reducer.compactInto(&target);
+}
+
+test "compaction frees what it built when any allocation fails" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    defer source.deinit();
+    const reducer = try settledSession(&source);
+    try testing.checkAllAllocationFailures(testing.allocator, compactProbe, .{&reducer});
 }

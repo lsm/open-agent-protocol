@@ -1305,8 +1305,12 @@ func numbered(n int) []string {
 }
 
 func streamTexts(f *fakeClient, turn, seq int64, texts []string) {
+	streamTextsAs(f, turn, seq, "a", texts)
+}
+
+func streamTextsAs(f *fakeClient, turn, seq int64, id string, texts []string) {
 	record, _ := json.Marshal(map[string]any{"type": "text-chunks", "time0": seq, "index": 0, "dt": make([]int64, len(texts)-1), "texts": texts})
-	f.ev(seq, "assistant/message", assistantMessage(turn, 1, "a", []native.ContentBlock{{Type: "text", Text: strings.Join(texts, "")}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, "["+string(record)+"]", nil))
+	f.ev(seq, "assistant/message", assistantMessage(turn, 1, id, []native.ContentBlock{{Type: "text", Text: strings.Join(texts, "")}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, "["+string(record)+"]", nil))
 }
 
 func finishTurn(f *fakeClient, turn, seq int64) {
@@ -1344,7 +1348,7 @@ func overflowedPrefix(t *testing.T, f *fakeClient, stream base.EventStream, text
 	streamTexts(f, 1, 5, texts)
 	awaitReduced(t, f)
 	prefix, streamErr := readUntilClosed(t, stream)
-	if !errors.Is(streamErr, base.ErrEventStreamOverflow) || len(prefix) != streamCapacity {
+	if !errors.Is(streamErr, base.ErrEventStreamOverflow) {
 		t.Fatalf("stream closed with %v after %d envelopes", streamErr, len(prefix))
 	}
 	return prefix
@@ -1358,21 +1362,11 @@ func lastSequence(t *testing.T, events []protocol.Envelope) uint64 {
 	return *events[len(events)-1].Sequence
 }
 
-func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
-	session, client := openWithJournal(t, defaultJournalCapacity)
-	admitted, stream := admission(t, session, client, "receipt")
-	texts := numbered(2 * streamCapacity)
-	prefix := overflowedPrefix(t, client, stream, texts)
-	cursor := lastSequence(t, prefix)
-	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: cursor})
-	if err != nil || recovery.ReplayGap != nil || recovery.RequestedAfter != cursor || recovery.ReplayedFrom != cursor+1 || recovery.ReplayedThrough != uint64(1+len(texts)) {
-		t.Fatalf("resume = %+v, %v", recovery, err)
-	}
-	finishTurn(client, 1, 6)
-	events := append(prefix, drain(t, resumed)...)
+func assertStreamedTexts(t *testing.T, events []protocol.Envelope, from uint64, texts []string) {
+	t.Helper()
 	var text strings.Builder
 	for index, event := range events {
-		if *event.Sequence != uint64(index+1) {
+		if *event.Sequence != from+uint64(index) {
 			t.Fatalf("event %d carries sequence %d", index, *event.Sequence)
 		}
 		if event.Type == protocol.TypeContentDelta {
@@ -1384,15 +1378,75 @@ func TestResumeAfterOverflowDeliversTheRestOfTheRun(t *testing.T) {
 		}
 	}
 	if text.String() != strings.Join(texts, "") || events[len(events)-1].Type != protocol.TypeRunCompleted {
-		t.Fatalf("resumed run delivered %q and ended with %s", text.String(), events[len(events)-1].Type)
+		t.Fatalf("stream delivered %q and ended with %s", text.String(), events[len(events)-1].Type)
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), events)
+}
+
+func readSlowly(stream base.EventStream) ([]protocol.Envelope, error) {
+	var events []protocol.Envelope
+	for item := range stream {
+		if item.Error != nil {
+			return events, item.Error
+		}
+		events = append(events, item.Envelope)
+		time.Sleep(100 * time.Microsecond)
+	}
+	return events, nil
+}
+
+func TestASlowConsumerWithinTheJournalReceivesTheWholeRunWithoutOverflow(t *testing.T) {
+	session, client := openWithJournal(t, 1024)
+	admitted, stream := admission(t, session, client, "receipt")
+	type outcome struct {
+		events []protocol.Envelope
+		err    error
+	}
+	read := make(chan outcome, 1)
+	go func() {
+		events, err := readSlowly(stream)
+		read <- outcome{events, err}
+	}()
+	texts := numbered(600)
+	streamTexts(client, 1, 5, texts)
+	finishTurn(client, 1, 6)
+	got := <-read
+	if got.err != nil {
+		t.Fatalf("slow consumer saw %v after %d envelopes", got.err, len(got.events))
+	}
+	assertStreamedTexts(t, got.events, 1, texts)
+	adaptertest.AssertProtocolValidWithDescriptor(t, admitted, descriptorFromProbe(t), got.events)
+}
+
+func TestAResumeWithABacklogPastSixtyFourEventsCompletesWhileTheRunKeepsStreaming(t *testing.T) {
+	session, client := openWithJournal(t, 1024)
+	admitted, _ := admission(t, session, client, "receipt")
+	texts := numbered(600)
+	streamTextsAs(client, 1, 5, "a", texts[:200])
+	awaitReduced(t, client)
+	recovery, resumed, err := session.Resume(context.Background(), base.ResumeRequest{RunID: admitted.RunID, AfterSequence: 1})
+	if err != nil || recovery.ReplayGap != nil || recovery.ReplayedFrom != 2 || recovery.ReplayedThrough != 201 {
+		t.Fatalf("resume = %+v, %v", recovery, err)
+	}
+	go func() {
+		streamTextsAs(client, 1, 6, "b", texts[200:])
+		finishTurn(client, 1, 7)
+	}()
+	events, streamErr := readSlowly(resumed)
+	if streamErr != nil {
+		t.Fatalf("resumed stream saw %v after %d envelopes", streamErr, len(events))
+	}
+	assertStreamedTexts(t, events, 2, texts)
 }
 
 func TestResumeAfterTheProcessDiesStillDeliversTheRunsFailure(t *testing.T) {
 	session, client := openWithJournal(t, defaultJournalCapacity)
 	admitted, stream := admission(t, session, client, "receipt")
-	prefix := overflowedPrefix(t, client, stream, numbered(2*streamCapacity))
+	streamTexts(client, 1, 5, numbered(128))
+	awaitReduced(t, client)
+	var prefix []protocol.Envelope
+	for range 10 {
+		prefix = append(prefix, adaptertest.Next(t, stream, time.Second))
+	}
 	cursor := lastSequence(t, prefix)
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
@@ -1421,7 +1475,7 @@ func TestResumeAfterAStallLongerThanTheJournalReportsAGap(t *testing.T) {
 	const journal = 16
 	session, client := openWithJournal(t, journal)
 	admitted, stream := admission(t, session, client, "receipt")
-	texts := numbered(2 * streamCapacity)
+	texts := numbered(200)
 	cursor := lastSequence(t, overflowedPrefix(t, client, stream, texts))
 	latest := uint64(1 + len(texts))
 	oldest := latest - journal + 1

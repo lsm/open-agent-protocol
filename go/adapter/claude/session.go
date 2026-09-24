@@ -13,10 +13,9 @@ import (
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/rpc"
+	"github.com/lsm/open-agent-protocol/go/adapter/internal/journal"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
-
-const streamCapacity = 64
 
 const (
 	harnessOwner     = "claude-code"
@@ -35,7 +34,6 @@ type Session struct {
 	client   Client
 	clock    base.Clock
 	ids      base.IDGenerator
-	capacity int
 
 	expandPrompts bool
 
@@ -56,11 +54,10 @@ type Session struct {
 	pending      *runState
 	active       *runState
 	runs         map[protocol.RunID]*runState
-	ended        map[protocol.RunID]uint64
 	tools        map[string]*toolState
 	interactions map[protocol.InteractionID]*gateState
 	children     map[string]*childState
-	journal      []protocol.Envelope
+	journal      *journal.Journal
 	stop         chan struct{}
 	stopOnce     sync.Once
 }
@@ -83,7 +80,6 @@ type runState struct {
 	deferred     *native.ResultFrame
 	children     map[string]bool
 	terminalKind string
-	subscribers  []chan base.Result
 	startResult  chan error
 	startOnce    sync.Once
 }
@@ -167,8 +163,6 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
 	run := &runState{status: protocol.RunQueued, next: 1, submissionUUID: submissionUUID, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), model: s.state.CurrentModelID, startResult: make(chan error, 1), children: map[string]bool{}}
-	stream := make(chan base.Result, streamCapacity+1)
-	run.subscribers = []chan base.Result{stream}
 	s.pending = run
 	s.mu.Unlock()
 
@@ -208,7 +202,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 			return protocol.MessageSubmitResponse{}, nil, startErr
 		}
 	}
-	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(run.messageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, MessageIDs: []protocol.MessageID{run.messageID}}, stream, nil
+	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(run.messageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: run.model, MessageIDs: []protocol.MessageID{run.messageID}}, s.journal.Follow(run.id, 0), nil
 }
 
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
@@ -1071,7 +1065,7 @@ func (s *Session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 		return base.Recovery{}, nil, base.ErrSessionClosed
 	}
 	run := s.runs[request.RunID]
-	latest, ended := s.ended[request.RunID]
+	latest, ended := s.journal.Ended(request.RunID)
 	switch {
 	case run != nil:
 		latest = run.next - 1
@@ -1081,40 +1075,7 @@ func (s *Session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 	if request.AfterSequence > latest {
 		return base.Recovery{}, nil, base.ErrReplayCursorFuture
 	}
-	var oldest uint64
-	var suffix []protocol.Envelope
-	for _, envelope := range s.journal {
-		if envelope.RunID != request.RunID || envelope.Sequence == nil {
-			continue
-		}
-		if oldest == 0 {
-			oldest = *envelope.Sequence
-		}
-		if *envelope.Sequence > request.AfterSequence {
-			suffix = append(suffix, envelope)
-		}
-	}
-	recovery := base.Recovery{State: s.state, RunID: request.RunID, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
-	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
-	if request.AfterSequence < latest && (oldest == 0 || request.AfterSequence+1 < oldest) {
-		recovery.ReplayGap = &base.ReplayGap{RequestedAfter: request.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
-		recovery.ReplayedFrom, recovery.ReplayedThrough = 0, 0
-		close(stream)
-		return recovery, stream, recovery.ReplayGap
-	}
-	if len(suffix) > 0 {
-		recovery.ReplayedFrom = *suffix[0].Sequence
-		recovery.ReplayedThrough = *suffix[len(suffix)-1].Sequence
-	}
-	for _, envelope := range suffix {
-		stream <- base.Result{Envelope: cloneEnvelope(envelope)}
-	}
-	if run != nil {
-		run.subscribers = append(run.subscribers, stream)
-	} else {
-		close(stream)
-	}
-	return recovery, stream, nil
+	return s.journal.Resume(s.state, request.RunID, request.AfterSequence, latest)
 }
 
 func (s *Session) Close(ctx context.Context) error {
@@ -1135,15 +1096,12 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.state.Status = protocol.SessionClosed
-	subs := s.allSubscribersLocked()
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
 
 	err := s.client.Close()
 	s.stopOnce.Do(func() { close(s.stop) })
-	for _, channel := range subs {
-		close(channel)
-	}
+	s.journal.Close()
 	return err
 }
 
@@ -1173,15 +1131,10 @@ func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 		s.pending = nil
 	}
 	s.state.Status = protocol.SessionIdle
-	subs := run.subscribers
-	run.subscribers = nil
 	run.buffered = nil
 	run.deferred = nil
 	s.mu.Unlock()
 	run.signalStart(err)
-	for _, channel := range subs {
-		close(channel)
-	}
 }
 
 func (s *Session) failRun(run *runState, code, msg string) {
@@ -1264,10 +1217,7 @@ func (s *Session) emitWith(run *runState, t protocol.EnvelopeType, p any, termin
 		_ = json.Unmarshal(e.Payload, &payload)
 		e.ToolCallID = payload.ToolCallID
 	}
-	s.journal = append(s.journal, cloneEnvelope(e))
-	if len(s.journal) > s.capacity {
-		s.journal = append([]protocol.Envelope(nil), s.journal[len(s.journal)-s.capacity:]...)
-	}
+	s.journal.Append(e, terminal)
 	s.state.TranscriptCursor = strconv.FormatUint(seq, 10)
 	s.state.UpdatedAtMS = now
 	if terminal {
@@ -1284,76 +1234,12 @@ func (s *Session) emitWith(run *runState, t protocol.EnvelopeType, p any, termin
 			s.active = nil
 		}
 		delete(s.runs, run.id)
-		if s.ended == nil {
-			s.ended = map[protocol.RunID]uint64{}
-		}
-		s.ended[run.id] = seq
 		s.state.Status = protocol.SessionIdle
 		s.state.ActiveRunID = ""
-	}
-	kept := []chan base.Result{}
-	for _, channel := range run.subscribers {
-		if len(channel) < cap(channel)-1 {
-			channel <- base.Result{Envelope: e}
-			if terminal {
-				close(channel)
-			} else {
-				kept = append(kept, channel)
-			}
-		} else {
-			channel <- base.Result{Error: base.ErrEventStreamOverflow}
-			close(channel)
-		}
-	}
-	if terminal {
-		run.subscribers = nil
-	} else {
-		run.subscribers = kept
 	}
 	return e, nil
 }
 
-func (s *Session) allSubscribersLocked() []chan base.Result {
-	var out []chan base.Result
-	for _, r := range s.runs {
-		out = append(out, r.subscribers...)
-		r.subscribers = nil
-	}
-	if s.pending != nil {
-		out = append(out, s.pending.subscribers...)
-		s.pending.subscribers = nil
-	}
-	return out
-}
-
 func cloneRaw(v json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), v...) }
-
-func cloneEnvelope(e protocol.Envelope) protocol.Envelope {
-	cloned := e
-	if e.Payload != nil {
-		cloned.Payload = cloneRaw(e.Payload)
-	}
-	if e.Sequence != nil {
-		sequence := *e.Sequence
-		cloned.Sequence = &sequence
-	}
-	if e.TimestampMS != nil {
-		timestamp := *e.TimestampMS
-		cloned.TimestampMS = &timestamp
-	}
-	cloned.Extensions = cloneRawMap(e.Extensions)
-	return cloned
-}
-
-func cloneRawMap(m map[string]json.RawMessage) map[string]json.RawMessage {
-	if m == nil {
-		return nil
-	}
-	cloned := make(map[string]json.RawMessage, len(m))
-	for key, value := range m {
-		cloned[key] = cloneRaw(value)
-	}
-	return cloned
-}
 
 var _ base.Session = (*Session)(nil)

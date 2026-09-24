@@ -43,6 +43,10 @@ const oap_provider_grant_channel = @import("oap_provider_grant_channel");
 const auth_resolver = @import("auth_resolver");
 const oap_types = @import("oap_types");
 const oap_bridge = @import("oap_bridge");
+const adapter_endpoint = @import("adapter_endpoint");
+const adapter_contract = @import("adapter_contract");
+const adapter_config = @import("adapter_config");
+const claude_adapter = @import("claude_adapter");
 
 pub const VERSION = @import("version_options").version;
 
@@ -2710,6 +2714,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx                                              Start the terminal UI
         \\  oapx run [--agent] [--storage] [--model <id>] "<prompt>"
         \\  oapx serve agent [--stdio] [--model <model-ref>]
+        \\  oapx serve agent [--stdio] --backend <name> [--config <path>]
         \\  oapx serve provider [--stdio] [--specimens]
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
@@ -2730,6 +2735,9 @@ fn printUsage(file: std.Io.File) !void {
         \\  serve agent      Serve agent-control-core over stdio, one envelope per line
         \\                   Remote provider: set OAPX_PROVIDER_SERVICE_URL and
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
+        \\                   Use --backend claude to serve a Claude Code child instead
+        \\                   of the built-in loop; --config reads an oap-serve.json
+        \\                   registry entry. Other backends answer unavailable.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
@@ -6765,6 +6773,7 @@ pub fn main(init: std.process.Init) !void {
                 return error.InvalidArgument;
             }
             if (err == error.MalformedLine or err == error.UnaddressableEnvelope) std.process.exit(1);
+            if (err == error.FrameTooLarge or err == error.BackendRefused or err == error.StdinFailed) std.process.exit(1);
             return err;
         };
         return;
@@ -7049,13 +7058,30 @@ test "print mode short-circuits on --tui-runtime with its prompt" {
 const OapModeArgs = struct {
     default_model_id: ?[]const u8 = null,
     answers_specimens: bool = false,
+    backend: ?[]const u8 = null,
+    config_path: ?[]const u8 = null,
 };
 
 const OapArgError = struct {
     unknown_option: ?[]const u8 = null,
     missing_option_value: ?[]const u8 = null,
     unexpected_positional: ?[]const u8 = null,
+    repeated_option: ?[]const u8 = null,
+    backend_conflict: ?[]const u8 = null,
 };
+
+fn takeOptionValue(args: []const []const u8, index: *usize, option: []const u8, slot: *?[]const u8, arg_error: *OapArgError) !void {
+    if (slot.* != null) {
+        arg_error.repeated_option = option;
+        return error.InvalidArgument;
+    }
+    if (index.* + 1 >= args.len or std.mem.startsWith(u8, args[index.* + 1], "--")) {
+        arg_error.missing_option_value = option;
+        return error.InvalidArgument;
+    }
+    index.* += 1;
+    slot.* = args[index.*];
+}
 
 fn parseOapModeArgs(args: []const []const u8, arg_error: *OapArgError) !OapModeArgs {
     var parsed = OapModeArgs{};
@@ -7071,6 +7097,14 @@ fn parseOapModeArgs(args: []const []const u8, arg_error: *OapArgError) !OapModeA
             parsed.default_model_id = args[index];
             continue;
         }
+        if (std.mem.eql(u8, arg, "--backend")) {
+            try takeOptionValue(args, &index, "--backend", &parsed.backend, arg_error);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--config")) {
+            try takeOptionValue(args, &index, "--config", &parsed.config_path, arg_error);
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--stdio")) continue;
         if (std.mem.eql(u8, arg, "--specimens")) {
             parsed.answers_specimens = true;
@@ -7081,6 +7115,21 @@ fn parseOapModeArgs(args: []const []const u8, arg_error: *OapArgError) !OapModeA
             return error.InvalidArgument;
         }
         arg_error.unexpected_positional = arg;
+        return error.InvalidArgument;
+    }
+    if (parsed.backend == null) {
+        if (parsed.config_path != null) {
+            arg_error.backend_conflict = "--config";
+            return error.InvalidArgument;
+        }
+        return parsed;
+    }
+    if (parsed.default_model_id != null) {
+        arg_error.backend_conflict = "--model";
+        return error.InvalidArgument;
+    }
+    if (parsed.answers_specimens) {
+        arg_error.backend_conflict = "--specimens";
         return error.InvalidArgument;
     }
     return parsed;
@@ -8599,10 +8648,29 @@ fn runOapMode(
             var buf: [256]u8 = undefined;
             const msg = try std.fmt.bufPrint(&buf, "--oap takes no positional argument: {s}\n\n", .{value});
             try compat.stdio.writeAll(stderr, msg);
+        } else if (arg_error.repeated_option) |option| {
+            var buf: [256]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&buf, "{s} may be given once\n\n", .{option});
+            try compat.stdio.writeAll(stderr, msg);
+        } else if (arg_error.backend_conflict) |option| {
+            var buf: [256]u8 = undefined;
+            const msg = if (std.mem.eql(u8, option, "--config"))
+                try std.fmt.bufPrint(&buf, "--config names a backend's registry entry and needs --backend\n\n", .{})
+            else
+                try std.fmt.bufPrint(&buf, "{s} applies to the built-in loop and cannot be combined with --backend\n\n", .{option});
+            try compat.stdio.writeAll(stderr, msg);
         }
         try printUsage(stderr);
         return err;
     };
+    if (parsed.backend) |name| {
+        if (serve_provider) {
+            try compat.stdio.writeAll(stderr, "--backend serves agent-control-core alone; serve agent,provider runs the built-in loop\n\n");
+            try printUsage(stderr);
+            return error.InvalidArgument;
+        }
+        return runBackendMode(allocator, name, parsed.config_path, stdin, stdout, stderr);
+    }
 
     const env_model = try provider_base_url.envOwnedOrNull(allocator, "OAPX_OAP_MODEL");
     defer if (env_model) |value| allocator.free(value);
@@ -8829,6 +8897,180 @@ fn writeOapAuthOutbound(
     return wrote;
 }
 
+const unported_backends = [_][]const u8{ "acp", "codex", "deepseek", "hermes", "memory", "opencode", "pi" };
+const backend_config_read_limit = 1024 * 1024;
+
+const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
+const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent --backend: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
+
+fn backendClock() u64 {
+    return compat.time.monotonicNanos() catch 0;
+}
+
+fn backendIo() std.Io {
+    return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
+}
+
+fn writeBackendRefusal(stderr: std.Io.File, arena: std.mem.Allocator, comptime format: []const u8, args: anytype) !void {
+    const message = try std.fmt.allocPrint(arena, "oapx serve agent: " ++ format ++ "\n", args);
+    try compat.stdio.writeAll(stderr, message);
+}
+
+fn unportedBackend(kind: []const u8) bool {
+    for (unported_backends) |known| {
+        if (std.mem.eql(u8, known, kind)) return true;
+    }
+    return false;
+}
+
+fn backendEntry(
+    arena: std.mem.Allocator,
+    name: []const u8,
+    config_path: ?[]const u8,
+    environ: *const std.process.Environ.Map,
+    stderr: std.Io.File,
+) !adapter_config.AdapterEntry {
+    const path = config_path orelse {
+        if (std.mem.eql(u8, name, "claude")) return adapter_config.builtinClaude(arena, environ);
+        return .{ .name = name, .kind = name };
+    };
+    const bytes = compat.fs.readFileAlloc(arena, compat.fs.getCwd(), path, backend_config_read_limit) catch |err| {
+        try writeBackendRefusal(stderr, arena, "cannot read --config {s}: {s}", .{ path, @errorName(err) });
+        return error.BackendRefused;
+    };
+    var diagnostic = adapter_config.Diagnostic{};
+    const file = adapter_config.parse(arena, bytes, environ, &diagnostic) catch |err| {
+        if (err != error.ConfigInvalid) return err;
+        try writeBackendRefusal(stderr, arena, "{s}: {s}", .{ path, diagnostic.message });
+        return error.BackendRefused;
+    };
+    return file.adapter(name) orelse {
+        try writeBackendRefusal(stderr, arena, "--config {s} names no adapter \"{s}\"", .{ path, name });
+        return error.BackendRefused;
+    };
+}
+
+fn claudeBackendConfig(
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    stderr: std.Io.File,
+) !claude_adapter.Config {
+    var diagnostic = adapter_config.Diagnostic{};
+    const posture = adapter_config.toolPosture(arena, entry, &diagnostic) catch |err| {
+        if (err != error.ConfigInvalid) return err;
+        try writeBackendRefusal(stderr, arena, "{s}", .{diagnostic.message});
+        return error.BackendRefused;
+    };
+    const wanted = if (entry.executable.len > 0) entry.executable else "claude";
+    const executable = try adapter_config.resolveExecutable(arena, backendIo(), wanted, environ.get("PATH") orelse "") orelse {
+        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"; name one with \"executable\" in a --config entry", .{ wanted, entry.name });
+        return error.BackendRefused;
+    };
+    return .{ .backend = .{
+        .executable = executable,
+        .args = entry.args,
+        .environment = entry.environment,
+        .working_directory = entry.working_directory,
+        .model = entry.model,
+        .tools = switch (posture) {
+            .unrestricted => .unrestricted,
+            .allowed => |tools| .{ .allowed = tools },
+        },
+    } };
+}
+
+fn writeEndpointOutbound(stdout: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
+    var wrote = false;
+    while (endpoint.popOutbound()) |line| {
+        defer allocator.free(line);
+        try compat.stdio.writeLine(stdout, line);
+        wrote = true;
+    }
+    return wrote;
+}
+
+fn backendFatalMessage(err: anyerror) ?[]const u8 {
+    return switch (err) {
+        error.MalformedLine => BACKEND_MALFORMED_LINE_MESSAGE,
+        error.UnaddressableEnvelope => BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE,
+        error.FrameTooLarge => BACKEND_FRAME_TOO_LARGE_MESSAGE,
+        else => null,
+    };
+}
+
+fn runBackendMode(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    config_path: ?[]const u8,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var environ = try compat.createEnvMap(arena);
+    const entry = try backendEntry(arena, name, config_path, &environ, stderr);
+
+    var claude: claude_adapter.Adapter = undefined;
+    var unavailable: adapter_contract.Unavailable = undefined;
+    const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
+        claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(arena, entry, &environ, stderr));
+        break :claude_served claude.adapter();
+    } else if (unportedBackend(entry.kind)) unported_served: {
+        const message = try std.fmt.allocPrint(arena, "oapx has no {s} backend yet; goap serve carries it", .{entry.kind});
+        unavailable = .{ .backend = name, .message = message };
+        break :unported_served unavailable.adapter();
+    } else {
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude", .{ name, entry.kind });
+        return error.BackendRefused;
+    };
+
+    var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{});
+    defer endpoint.deinit();
+
+    var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
+    var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
+    defer _ = stdin_handle.deinit(STDIO_THREAD_JOIN_TIMEOUT_MS);
+    const stdin_stream = stdin_handle.getStream();
+
+    while (true) {
+        var did_work = false;
+        while (stdin_stream.poll()) |chunk| {
+            var owned = chunk;
+            defer owned.deinit(allocator);
+            const line = std.mem.trim(u8, owned.data, " \t\r\n");
+            if (line.len == 0) continue;
+            endpoint.handleLine(line) catch |err| {
+                _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+                if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
+                return err;
+            };
+            _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+            did_work = true;
+        }
+        if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
+            const failure = stdin_stream.getError() orelse break;
+            _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+            if (std.mem.eql(u8, failure, "stdio line too large")) {
+                try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
+                return error.FrameTooLarge;
+            }
+            try writeBackendRefusal(stderr, arena, "stdin failed: {s}", .{failure});
+            return error.StdinFailed;
+        }
+        if (endpoint.sessionCount() > 0) {
+            if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
+        }
+        if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
+        _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+    }
+    try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
+    _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+}
+
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
 const OAP_MALFORMED_LINE_MESSAGE = "oapx --oap: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
 const OAP_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx --oap: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
@@ -8953,6 +9195,165 @@ test "oap mode rejects unknown options, missing values, and positionals" {
         parseOapModeArgs(&[_][]const u8{"write a haiku"}, &positional),
     );
     try std.testing.expectEqualStrings("write a haiku", positional.unexpected_positional.?);
+}
+
+test "serve agent takes --backend and its --config, and without --backend serves the built-in loop" {
+    var arg_error = OapArgError{};
+    const chosen = try parseOapModeArgs(&[_][]const u8{ "--stdio", "--backend", "claude", "--config", "oap-serve.json" }, &arg_error);
+    try std.testing.expectEqualStrings("claude", chosen.backend.?);
+    try std.testing.expectEqualStrings("oap-serve.json", chosen.config_path.?);
+
+    const bare = try parseOapModeArgs(&[_][]const u8{ "--backend", "hermes" }, &arg_error);
+    try std.testing.expectEqualStrings("hermes", bare.backend.?);
+    try std.testing.expect(bare.config_path == null);
+
+    const native = try parseOapModeArgs(&[_][]const u8{"--stdio"}, &arg_error);
+    try std.testing.expect(native.backend == null);
+}
+
+test "a backend flag given twice, without a value, or beside a built-in loop flag is refused naming it" {
+    const cases = [_]struct { args: []const []const u8, repeated: ?[]const u8 = null, missing: ?[]const u8 = null, conflict: ?[]const u8 = null }{
+        .{ .args = &.{ "--backend", "claude", "--backend", "hermes" }, .repeated = "--backend" },
+        .{ .args = &.{ "--backend", "claude", "--config", "a.json", "--config", "b.json" }, .repeated = "--config" },
+        .{ .args = &.{"--backend"}, .missing = "--backend" },
+        .{ .args = &.{ "--backend", "--stdio" }, .missing = "--backend" },
+        .{ .args = &.{ "--backend", "claude", "--config" }, .missing = "--config" },
+        .{ .args = &.{ "--config", "oap-serve.json" }, .conflict = "--config" },
+        .{ .args = &.{ "--backend", "claude", "--model", "sonnet" }, .conflict = "--model" },
+        .{ .args = &.{ "--backend", "claude", "--specimens" }, .conflict = "--specimens" },
+    };
+    for (cases) |case| {
+        var arg_error = OapArgError{};
+        try std.testing.expectError(error.InvalidArgument, parseOapModeArgs(case.args, &arg_error));
+        if (case.repeated) |option| try std.testing.expectEqualStrings(option, arg_error.repeated_option.?);
+        if (case.missing) |option| try std.testing.expectEqualStrings(option, arg_error.missing_option_value.?);
+        if (case.conflict) |option| try std.testing.expectEqualStrings(option, arg_error.backend_conflict.?);
+    }
+}
+
+const BackendRun = struct {
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    config_path: ?[]const u8,
+    stdin_file: std.Io.File,
+    stdout_file: std.Io.File,
+    stderr_file: std.Io.File,
+    err: ?anyerror = null,
+
+    fn run(self: *BackendRun) void {
+        runBackendMode(self.allocator, self.name, self.config_path, self.stdin_file, self.stdout_file, self.stderr_file) catch |err| {
+            self.err = err;
+        };
+        compat.stdio.close(self.stdin_file);
+        compat.stdio.close(self.stdout_file);
+        compat.stdio.close(self.stderr_file);
+    }
+};
+
+fn readAllFrom(allocator: std.mem.Allocator, file: std.Io.File) ![]u8 {
+    var collected = std.ArrayList(u8).empty;
+    errdefer collected.deinit(allocator);
+    var buffer: [4096]u8 = undefined;
+    while (true) {
+        const read = compat.stdio.read(file, &buffer) catch |err| switch (err) {
+            error.EndOfStream => break,
+            error.WouldBlock => continue,
+            else => return err,
+        };
+        if (read == 0) break;
+        try collected.appendSlice(allocator, buffer[0..read]);
+    }
+    return collected.toOwnedSlice(allocator);
+}
+
+test "an unported backend answers each request unavailable, naming itself, and exits clean at end of input" {
+    const allocator = std.testing.allocator;
+    const stdin_pipe = try compat.stdio.pipe();
+    const stdout_pipe = try compat.stdio.pipe();
+    const stderr_pipe = try compat.stdio.pipe();
+
+    var runner = BackendRun{
+        .allocator = allocator,
+        .name = "hermes",
+        .config_path = null,
+        .stdin_file = stdin_pipe[0],
+        .stdout_file = stdout_pipe[1],
+        .stderr_file = stderr_pipe[1],
+    };
+    const thread = try std.Thread.spawn(.{}, BackendRun.run, .{&runner});
+
+    try compat.stdio.writeLine(stdin_pipe[1], "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
+    compat.stdio.close(stdin_pipe[1]);
+    const written = try readAllFrom(allocator, stdout_pipe[0]);
+    defer allocator.free(written);
+    compat.stdio.close(stdout_pipe[0]);
+    const complained = try readAllFrom(allocator, stderr_pipe[0]);
+    defer allocator.free(complained);
+    compat.stdio.close(stderr_pipe[0]);
+    thread.join();
+
+    try std.testing.expect(runner.err == null);
+    try std.testing.expectEqual(@as(usize, 0), complained.len);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trimEnd(u8, written, "\n"), .{});
+    defer parsed.deinit();
+    const failure = parsed.value.object.get("payload").?.object.get("error").?.object;
+    try std.testing.expectEqualStrings("q1", parsed.value.object.get("in_reply_to").?.string);
+    try std.testing.expectEqualStrings("unavailable", failure.get("code").?.string);
+    try std.testing.expectEqualStrings("hermes", failure.get("details").?.object.get("backend").?.string);
+}
+
+fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?[]const u8) ![]u8 {
+    const stdin_pipe = try compat.stdio.pipe();
+    const stdout_pipe = try compat.stdio.pipe();
+    const stderr_pipe = try compat.stdio.pipe();
+    var runner = BackendRun{
+        .allocator = allocator,
+        .name = name,
+        .config_path = config_path,
+        .stdin_file = stdin_pipe[0],
+        .stdout_file = stdout_pipe[1],
+        .stderr_file = stderr_pipe[1],
+    };
+    const thread = try std.Thread.spawn(.{}, BackendRun.run, .{&runner});
+    compat.stdio.close(stdin_pipe[1]);
+    const written = try readAllFrom(allocator, stdout_pipe[0]);
+    defer allocator.free(written);
+    compat.stdio.close(stdout_pipe[0]);
+    const complained = try readAllFrom(allocator, stderr_pipe[0]);
+    compat.stdio.close(stderr_pipe[0]);
+    thread.join();
+    errdefer allocator.free(complained);
+    try std.testing.expectEqual(@as(?anyerror, error.BackendRefused), runner.err);
+    try std.testing.expectEqual(@as(usize, 0), written.len);
+    return complained;
+}
+
+test "a backend oapx does not know, or a --config entry it cannot serve, is refused on stderr before any request is read" {
+    const allocator = std.testing.allocator;
+    const unknown = try refusedBackend(allocator, "nonesuch", null);
+    defer allocator.free(unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude\n", unknown);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "oap-serve.json", .data = "{\"adapters\":{\"work\":{\"type\":\"claude\",\"executable\":\"/bin/sh\"}}}" });
+    const cwd = try std.process.currentPathAlloc(std.testing.io, allocator);
+    defer allocator.free(cwd);
+    const path = try std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..], "oap-serve.json" });
+    defer allocator.free(path);
+
+    const unstated = try refusedBackend(allocator, "work", path);
+    defer allocator.free(unstated);
+    try std.testing.expectEqualStrings("oapx serve agent: config: adapter \"work\": state its tool posture: set \"allowed_tools\" to the tools the child may use, or \"unrestricted_tools\": true to give it the harness default\n", unstated);
+
+    const absent = try refusedBackend(allocator, "other", path);
+    defer allocator.free(absent);
+    try std.testing.expect(std.mem.endsWith(u8, absent, "names no adapter \"other\"\n"));
+
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "oap-serve.json", .data = "{\"adapters\":{\"typo\":{\"type\":\"claude\",\"executble\":\"/bin/sh\"}}}" });
+    const misspelt = try refusedBackend(allocator, "typo", path);
+    defer allocator.free(misspelt);
+    try std.testing.expect(std.mem.endsWith(u8, misspelt, "config: adapter \"typo\": unknown field \"executble\"\n"));
 }
 
 test "every provider the oap endpoint advertises accepts an inference" {

@@ -12,10 +12,9 @@ import (
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/rpc"
+	"github.com/lsm/open-agent-protocol/go/adapter/internal/journal"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
-
-const streamCapacity = 64
 
 var errTerminalWon = errors.New("deepseek adapter: terminal already selected")
 var errUnavailable = errors.New("deepseek adapter: operation unavailable")
@@ -28,7 +27,6 @@ type Session struct {
 	inbound  <-chan rpc.InboundMessage
 	clock    base.Clock
 	ids      base.IDGenerator
-	capacity int
 	nativeID string
 	model    string
 	state    protocol.SessionState
@@ -37,10 +35,9 @@ type Session struct {
 	pending  *runState
 	active   *runState
 	runs     map[protocol.RunID]*runState
-	ended    map[protocol.RunID]uint64
 	tools    map[string]*toolState
 	children map[string]*childState
-	journal  []protocol.Envelope
+	journal  *journal.Journal
 
 	lastSeq  int64
 	seqSeen  bool
@@ -62,12 +59,12 @@ type runState struct {
 	candidateEvents      []native.Event
 	pendingNotifications []bufferedNotification
 	startResult          chan error
+	stream               journal.Reservation
 	startOnce            sync.Once
 	final                *native.AssistantMessageEvent
 	endKind              string
 	turnEnded            bool
 	idleAfterEnd         bool
-	subscribers          []chan base.Result
 }
 type bufferedNotification struct {
 	message  rpc.NotificationMessage
@@ -125,8 +122,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		return protocol.MessageSubmitResponse{}, nil, base.ErrRunActive
 	}
 	run := &runState{status: protocol.RunQueued, next: 1, messageID: protocol.MessageID(s.ids.NewID("message")), startResult: make(chan error, 1)}
-	stream := make(chan base.Result, streamCapacity+1)
-	run.subscribers = []chan base.Result{stream}
+	run.stream = s.journal.Reserve()
 	s.pending = run
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
@@ -139,7 +135,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if startErr := <-started; startErr != nil {
 		s.promptMu.Unlock()
 		s.abortPreStart(run, startErr)
-		return protocol.MessageSubmitResponse{}, stream, startErr
+		return protocol.MessageSubmitResponse{}, run.stream.Stream(), startErr
 	}
 	err = <-callDone
 	s.reduceMu.Lock()
@@ -154,7 +150,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.reduceMu.Unlock()
 		s.promptMu.Unlock()
 		s.abortPreStart(run, err)
-		return protocol.MessageSubmitResponse{}, stream, err
+		return protocol.MessageSubmitResponse{}, run.stream.Stream(), err
 	}
 	run.receipt = result.MessageID
 	s.evaluateAdmission(run)
@@ -163,23 +159,23 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	select {
 	case startErr := <-run.startResult:
 		if startErr != nil {
-			return protocol.MessageSubmitResponse{}, stream, startErr
+			return protocol.MessageSubmitResponse{}, run.stream.Stream(), startErr
 		}
 	case <-ctx.Done():
 		s.reduceMu.Lock()
 		if !run.started && !run.terminal {
 
 			s.reduceMu.Unlock()
-			return protocol.MessageSubmitResponse{}, stream, ctx.Err()
+			return protocol.MessageSubmitResponse{}, run.stream.Stream(), ctx.Err()
 		}
 		s.reduceMu.Unlock()
 
 		startErr := <-run.startResult
 		if startErr != nil {
-			return protocol.MessageSubmitResponse{}, stream, startErr
+			return protocol.MessageSubmitResponse{}, run.stream.Stream(), startErr
 		}
 	}
-	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(result.MessageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: s.model, MessageIDs: messageIDs}, stream, nil
+	return protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(result.MessageID), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: s.model, MessageIDs: messageIDs}, run.stream.Stream(), nil
 }
 
 func (s *Session) nativePrompt(req protocol.MessageSubmitRequest) ([]native.ContentBlock, []protocol.MessageID, error) {
@@ -499,6 +495,7 @@ func (s *Session) evaluateAdmission(run *runState) {
 		run.candidateEvents = candidate
 	}
 	run.id = protocol.RunID(s.ids.NewID("run"))
+	run.stream.Bind(run.id)
 	run.started = true
 	run.status = protocol.RunRunning
 	s.mu.Lock()
@@ -826,7 +823,7 @@ func (s *Session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 		return base.Recovery{}, nil, base.ErrSessionClosed
 	}
 	run := s.runs[request.RunID]
-	latest, ended := s.ended[request.RunID]
+	latest, ended := s.journal.Ended(request.RunID)
 	switch {
 	case run != nil:
 		latest = run.next - 1
@@ -836,40 +833,7 @@ func (s *Session) Resume(ctx context.Context, request base.ResumeRequest) (base.
 	if request.AfterSequence > latest {
 		return base.Recovery{}, nil, base.ErrReplayCursorFuture
 	}
-	var oldest uint64
-	var suffix []protocol.Envelope
-	for _, envelope := range s.journal {
-		if envelope.RunID != request.RunID {
-			continue
-		}
-		if oldest == 0 {
-			oldest = *envelope.Sequence
-		}
-		if *envelope.Sequence > request.AfterSequence {
-			suffix = append(suffix, envelope)
-		}
-	}
-	recovery := base.Recovery{State: s.state, RunID: request.RunID, RequestedAfter: request.AfterSequence, ReplayedFrom: request.AfterSequence, ReplayedThrough: request.AfterSequence}
-	stream := make(chan base.Result, len(suffix)+streamCapacity+1)
-	if request.AfterSequence < latest && (oldest == 0 || request.AfterSequence+1 < oldest) {
-		recovery.ReplayGap = &base.ReplayGap{RequestedAfter: request.AfterSequence, OldestAvailable: oldest, LatestAvailable: latest}
-		recovery.ReplayedFrom, recovery.ReplayedThrough = 0, 0
-		close(stream)
-		return recovery, stream, recovery.ReplayGap
-	}
-	if len(suffix) > 0 {
-		recovery.ReplayedFrom = *suffix[0].Sequence
-		recovery.ReplayedThrough = *suffix[len(suffix)-1].Sequence
-	}
-	for _, envelope := range suffix {
-		stream <- base.Result{Envelope: cloneEnvelope(envelope)}
-	}
-	if run != nil {
-		run.subscribers = append(run.subscribers, stream)
-	} else {
-		close(stream)
-	}
-	return recovery, stream, nil
+	return s.journal.Resume(s.state, request.RunID, request.AfterSequence, latest)
 }
 func (s *Session) Close(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -889,15 +853,12 @@ func (s *Session) Close(ctx context.Context) error {
 	}
 	s.closed = true
 	s.state.Status = protocol.SessionClosed
-	subs := s.allSubscribersLocked()
 	s.mu.Unlock()
 	s.reduceMu.Unlock()
 
 	err := s.client.Close()
 	s.stopOnce.Do(func() { close(s.stop) })
-	for _, c := range subs {
-		close(c)
-	}
+	s.journal.Close()
 	return err
 }
 func (s *Session) externalActivity(what string) {
@@ -925,13 +886,9 @@ func (s *Session) abortPreStart(run *runState, err error) {
 		s.pending = nil
 	}
 	s.state.Status = protocol.SessionIdle
-	subs := run.subscribers
-	run.subscribers = nil
 	s.mu.Unlock()
+	run.stream.Release()
 	run.signalStart(err)
-	for _, c := range subs {
-		close(c)
-	}
 }
 func (s *Session) failRun(run *runState, code, msg string) {
 	s.failRunSettled(run, code, msg, "")
@@ -971,13 +928,9 @@ func (s *Session) abortPreStartUnlocked(run *runState, err error) {
 	if s.pending == run {
 		s.pending = nil
 	}
-	subs := run.subscribers
-	run.subscribers = nil
 	s.mu.Unlock()
+	run.stream.Release()
 	run.signalStart(err)
-	for _, c := range subs {
-		close(c)
-	}
 }
 func (s *Session) transportFailed() {
 	s.mu.Lock()
@@ -1024,10 +977,7 @@ func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, te
 		_ = json.Unmarshal(e.Payload, &a)
 		e.ToolCallID = a.ToolCallID
 	}
-	s.journal = append(s.journal, cloneEnvelope(e))
-	if len(s.journal) > s.capacity {
-		s.journal = append([]protocol.Envelope(nil), s.journal[len(s.journal)-s.capacity:]...)
-	}
+	s.journal.Append(e, terminal)
 	s.state.TranscriptCursor = strconv.FormatUint(seq, 10)
 	s.state.UpdatedAtMS = now
 	if terminal {
@@ -1042,53 +992,12 @@ func (s *Session) emitEnvelope(run *runState, t protocol.EnvelopeType, p any, te
 		}
 
 		delete(s.runs, run.id)
-		s.ended[run.id] = seq
 		s.state.Status = protocol.SessionIdle
 		s.state.ActiveRunID = ""
 	}
-	kept := []chan base.Result{}
-	for _, ch := range run.subscribers {
-		if len(ch) < cap(ch)-1 {
-			ch <- base.Result{Envelope: e}
-			if terminal {
-				close(ch)
-			} else {
-				kept = append(kept, ch)
-			}
-		} else {
-			ch <- base.Result{Error: base.ErrEventStreamOverflow}
-			close(ch)
-		}
-	}
-	if terminal {
-		run.subscribers = nil
-	} else {
-		run.subscribers = kept
-	}
 	return e, nil
 }
-func (s *Session) allSubscribersLocked() []chan base.Result {
-	var out []chan base.Result
-	for _, r := range s.runs {
-		out = append(out, r.subscribers...)
-		r.subscribers = nil
-	}
-	if s.pending != nil {
-		out = append(out, s.pending.subscribers...)
-		s.pending.subscribers = nil
-	}
-	return out
-}
-func cloneRaw(v json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), v...) }
 
-func cloneEnvelope(e protocol.Envelope) protocol.Envelope {
-	cloned := e
-	cloned.Payload = cloneRaw(e.Payload)
-	sequence := *e.Sequence
-	cloned.Sequence = &sequence
-	timestamp := *e.TimestampMS
-	cloned.TimestampMS = &timestamp
-	return cloned
-}
+func cloneRaw(v json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), v...) }
 
 var _ base.Session = (*Session)(nil)
