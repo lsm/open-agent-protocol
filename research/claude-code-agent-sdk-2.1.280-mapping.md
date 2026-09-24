@@ -278,3 +278,32 @@ have.
 The Zig port has no per-subscriber stream or journal, so it has no `Resume`.
 Its corpus harness skips `resume` ops, and only its capability revision
 follows this change.
+
+## Served by `oapx serve agent --backend claude`
+
+The Zig port now serves a live child as well as replaying the corpus:
+`zig/src/adapter/claude/adapter.zig` implements the adapter contract in
+`zig/src/adapter/contract.zig`, and `zig/src/adapter/endpoint.zig` serves it
+over the endpoint stdio binding. It spawns the same argv, writes the same
+`initialize`, answers `can_use_tool` with the same `control_response` frames
+(`updatedInput` echoes the ask's own input; a deny carries `Denied by the
+operator`), and cancels with `interrupt`. An ask outside an owned run, and one
+left open when its run settles, is refused back to the child with the Go
+adapter's messages. Against a scripted child, `goap conformance` passes every
+check but the two model-switch checks, and `goap validate` and `oapx validate`
+accept the assembled trace.
+
+What differs from the Go adapter, or cannot be done through this path:
+
+| Area | oapx | Go adapter | Why |
+| --- | --- | --- | --- |
+| Capability revision | `claude-code-2.1.280-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` | `claude-code-2.1.280-oap-v2`, both `degraded` | oapx keeps no journal, and a revision names one descriptor. The replay control answers `unsupported_control`. |
+| Explicit `queue`, `steer` or `btw` delivery | `unsupported_feature` naming `session.message.delivery.<mode>` | `invalid_submission` | The Go adapter diverges from `drafts/conformance.md` `+queue`: an endpoint that cannot queue refuses an explicit `queue` with `unsupported_feature` naming the key. |
+| `action.permission.resolve.request` | `resolution_rejected`: every ask is a `user.input` gate | `internal`, from `operation unavailable` | No permission interaction is ever open, so the request names none. `internal` reports an endpoint fault that did not happen. |
+| `models.request`, `session.model.switch.request` | `unsupported_feature` | the same | The CLI's model control is unexercised in both trees, so both fail the conformance runner's model-switch checks. |
+| Tool sources and provided tools at open | `unsupported_feature`, before any child starts | the same | Not advertised. |
+| Admission | A turn the child has not echoed within 10 minutes is abandoned: the child is stopped and the session closes | waits on the caller's context, and a cancelled wait closes the session | The endpoint serves one request at a time, so a submit cannot wait unbounded. |
+| `initialize` and `interrupt` | The child's receipt is awaited at most 60 s, then the request is answered `internal` | context-bound | Same reason. |
+| Session memory | Once a settled session has grown 256 KiB past its last compaction, its arena is rebuilt from what later runs consult: the model, the MCP servers, the catalog and the native tool ids | garbage-collected | Bounded between runs, not within one: a run's frames stay until it settles. |
+| Configuration | `--config` reads the `oap-serve.json` shape: unknown members refused, `environment` an explicit allowlist. Without it, the built-in entry passes `HOME` and `PATH` only and takes the harness-default tool posture | `goap serve` reads the same file | Member names are exact; Go's decoder matches them case-insensitively. |
+| A frame read while memory is exhausted | The codec folds the allocation failure into a decode refusal, so the run fails as a transport failure | not applicable | `rpc.zig` and `gojson.zig` never propagate `OutOfMemory`. |
