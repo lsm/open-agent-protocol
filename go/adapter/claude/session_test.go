@@ -273,7 +273,7 @@ func awaitSubmit(t *testing.T, channel chan submitOutcome) submitOutcome {
 
 const peerSession = "3b926aac-d113-4b86-9dc1-0c36b2013f93"
 
-const initFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Task","Bash"],"mcp_servers":[],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
+const initFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Task","Bash"],"mcp_servers":[],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1","mcp_read_resource_v1","mcp_tool_ui_meta_v1"],"uuid":"i1"}`
 
 func turnUUIDOf(t *testing.T, frame map[string]any) string {
 	t.Helper()
@@ -785,7 +785,7 @@ func TestSecondTurnSequentialDistinctRuns(t *testing.T) {
 }
 
 func initFrameNaming(model string) string {
-	return `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Task","Bash"],"mcp_servers":[],"model":"` + model + `","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
+	return `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Task","Bash"],"mcp_servers":[],"model":"` + model + `","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1","mcp_read_resource_v1","mcp_tool_ui_meta_v1"],"uuid":"i1"}`
 }
 
 func awaitBuffered(t *testing.T, session base.Session) {
@@ -1490,7 +1490,7 @@ func TestToollessInitFrameServesAnEmptyCatalogArray(t *testing.T) {
 	}
 }
 
-const mcpInitFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Bash","mcp__files__read_file"],"mcp_servers":[{"name":"files","status":"connected"}],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.263","capabilities":["interrupt_receipt_v1","msg_lifecycle_v1"],"uuid":"i1"}`
+const mcpInitFrame = `{"type":"system","subtype":"init","session_id":"` + peerSession + `","tools":["Bash","mcp__files__read_file"],"mcp_servers":[{"name":"files","status":"connected"}],"model":"claude-test","permissionMode":"default","slash_commands":[],"apiKeySource":"none","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1","mcp_read_resource_v1","mcp_tool_ui_meta_v1"],"uuid":"i1"}`
 
 func TestServingACatalogRacesNoToolCall(t *testing.T) {
 	_, session, peer := openWire(t)

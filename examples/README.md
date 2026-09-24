@@ -40,5 +40,5 @@ executable rather than illustrative: `../fixtures/packs/storage` is a worked
 pack — a descriptor, the branches it contributes, the members it adds to core
 payloads, and its own fixture corpus — and the traces that exercise it are
 normative fixtures listed in `../fixtures/manifest.json`. Load one with
-`oap validate -pack ../fixtures/packs/storage <trace.json>`; see
+`goap validate -pack ../fixtures/packs/storage <trace.json>`; see
 [Decision 0004](../decisions/0004-extension-packs.md).

@@ -2135,9 +2135,9 @@ const backend_degradation = [_]oap_types.Degradation{
 };
 
 const backend_descriptor = Descriptor{
-    .endpoint_id = "claude-code.cli",
-    .endpoint_name = "Claude Code",
-    .capability_revision = "claude-code-2.1.263-oap-v3",
+    .endpoint_id = "pinned-harness.cli",
+    .endpoint_name = "Pinned Harness",
+    .capability_revision = "pinned-harness-oap-v1",
     .features = &backend_features,
     .degradation = &backend_degradation,
 };
@@ -2151,10 +2151,10 @@ test "a backed endpoint answers with the backend's descriptor, not its own" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
 
-    try std.testing.expectEqualStrings("claude-code-2.1.263-oap-v3", reply.capability_revision.?);
+    try std.testing.expectEqualStrings("pinned-harness-oap-v1", reply.capability_revision.?);
     const capabilities = reply.payload.capabilities_response;
-    try std.testing.expectEqualStrings("claude-code.cli", capabilities.endpoint.id);
-    try std.testing.expectEqualStrings("Claude Code", capabilities.endpoint.name.?);
+    try std.testing.expectEqualStrings("pinned-harness.cli", capabilities.endpoint.id);
+    try std.testing.expectEqualStrings("Pinned Harness", capabilities.endpoint.name.?);
     try std.testing.expectEqual(oap_types.SupportLevel.emulated, capabilities.feature("protocol.initialize").?.level);
     try std.testing.expect(capabilities.feature("session.message.delivery.auto") == null);
     try std.testing.expectEqual(@as(usize, backend_degradation.len), capabilities.degradation.len);
@@ -2174,8 +2174,8 @@ test "a backed endpoint declares the backend as the agent participant" {
     var reply = try nextEnvelope(&server, allocator);
     defer reply.deinit(allocator);
 
-    try std.testing.expectEqualStrings("claude-code.cli", reply.payload.initialize_response.endpoint.id);
-    try std.testing.expectEqualStrings("claude-code-2.1.263-oap-v3", reply.capability_revision.?);
+    try std.testing.expectEqualStrings("pinned-harness.cli", reply.payload.initialize_response.endpoint.id);
+    try std.testing.expectEqualStrings("pinned-harness-oap-v1", reply.capability_revision.?);
 }
 
 test "a run control is judged against the backend's feature list" {
@@ -2228,7 +2228,7 @@ test "a backed endpoint measures a stale revision against the backend's" {
     defer reply.deinit(allocator);
 
     try std.testing.expectEqualStrings("stale_capabilities", reply.payload.error_response.code);
-    try std.testing.expectEqualStrings("claude-code-2.1.263-oap-v3", reply.payload.error_response.detail("current_revision").?);
+    try std.testing.expectEqualStrings("pinned-harness-oap-v1", reply.payload.error_response.detail("current_revision").?);
 }
 
 test "capabilities and initialize ignore a stale capability revision" {

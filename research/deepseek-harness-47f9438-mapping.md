@@ -768,6 +768,15 @@ decodes both into a zero-valued `wireToolCallContent` without error. This port
 cannot fail that way, because it asserts nothing about a payload's member set.
 A port's failure modes follow from which of the oracle's layers it reproduced.
 
+**The line codec now refuses a frame past the nesting limit (#247).** Probed on
+Go 1.27: `ParseMessage` and `Decoder.Decode` accept a frame whose containers
+nest 10000 deep, counting the frame object itself, and refuse 10001 with
+`deepseek rpc: invalid JSON-RPC message: exceeded max depth`. The port parsed
+any depth, so it accepted what the codec refuses and recursed as deep as the
+frame went. It now applies the shared `gojson.withinNestingLimit` before
+parsing, as the acp port does, with the same cut; a Go test pins the codec's
+side.
+
 ## Issue #237: resume replays the adapter journal
 
 This ledger has classified replay/resume `degraded`, a bounded adapter journal,

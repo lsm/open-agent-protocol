@@ -23,7 +23,7 @@ import (
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "oap:", err)
+		fmt.Fprintln(os.Stderr, "goap:", err)
 		os.Exit(1)
 	}
 }
@@ -55,7 +55,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func usage(w io.Writer) error {
-	fmt.Fprintln(w, "usage: oap <serve|endpoint|conformance|validate|fixtures|demo|check|providers> [arguments]")
+	fmt.Fprintln(w, "usage: goap <serve|endpoint|conformance|validate|fixtures|demo|check|providers> [arguments]")
 	return errors.New("invalid command")
 }
 
@@ -180,7 +180,7 @@ func runFixtures(args []string, stdout io.Writer) error {
 
 func runProviders(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] != "zai-cn" {
-		fmt.Fprintln(stderr, "usage: oap providers zai-cn [--format=human|json]")
+		fmt.Fprintln(stderr, "usage: goap providers zai-cn [--format=human|json]")
 		return errors.New("invalid providers command")
 	}
 	fs := flag.NewFlagSet("providers zai-cn", flag.ContinueOnError)

@@ -51,7 +51,7 @@ The wire already carries more than the executable subset accepts:
 Decision 0003's four steps translate into these exit criteria for every unit:
 
 1. `adapter/memory.go` executes the unit and `adapter/adaptertest` asserts
-   it; `oap check` drives the reference path.
+   it; `goap check` drives the reference path.
 2. `validation/state.go` enforces the unit's invariants with new diagnostic
    codes registered in `validation/diagnostic.go` and
    `validation/manifest.go`; `fixtures/manifest.json` lists the unit's
@@ -502,7 +502,7 @@ and `ext-pack-restates-core-member` (load refusal).
   invariant holds by construction rather than by a pack's good behaviour.
 - Containment is checked at load, before compilation, against the
   declared names in each descriptor.
-- `oap validate` gains a repeatable `-pack <path>`. Packs are opt-in on
+- `goap validate` gains a repeatable `-pack <path>`. Packs are opt-in on
   the command line for the same reason tolerance is: which vocabulary is
   in force must be the caller's stated choice, not inferred from the
   input.
@@ -727,7 +727,7 @@ strictly while the same envelopes are tolerated without it; containment
 refusals are covered; the core fixture corpus passes identically with and
 without packs loaded; the corpus-completeness check runs in CI over the
 core corpus and over every loaded pack's corpus, and passes with the five
-fixtures above in place; and `oap validate -pack` is documented beside
+fixtures above in place; and `goap validate -pack` is documented beside
 `-mode`.
 
 ## T1. Run controls
@@ -5125,13 +5125,13 @@ phase therefore begins with a tolerance step that lands before T1 and that
 every later unit relies on:
 
 - `validation.CompileSchemas` gains a tolerant variant, used by the Go
-  client's dev-mode validation and by `oap validate` when it is asked
+  client's dev-mode validation and by `goap validate` when it is asked
   for it. Which mode applies has to be a choice the caller makes, not
   one inferred from the input: `runValidate` takes file operands only
-  (`cmd/oap/main.go:65-90`), and a live envelope saved to a file is
+  (`go/cmd/goap/main.go`), and a live envelope saved to a file is
   indistinguishable from a fixture, so inferring would either weaken the
   typo-catching the fixture path exists for or fail the
-  forward-compatibility the live path needs. `oap validate` therefore
+  forward-compatibility the live path needs. `goap validate` therefore
   gains `-mode strict|tolerant`, defaulting to `strict` so the fixture
   behaviour every existing invocation relies on is unchanged, and the
   tolerant variant is what `-mode tolerant` and the Go client's dev-mode

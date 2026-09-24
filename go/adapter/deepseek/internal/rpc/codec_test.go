@@ -82,3 +82,25 @@ func TestRequestIDDomainsAndMessageStrictness(t *testing.T) {
 		}
 	}
 }
+
+func nestedParams(arrays int) []byte {
+	return []byte(`{"jsonrpc":"2.0","method":"session.event","params":` + strings.Repeat("[", arrays) + strings.Repeat("]", arrays) + `}`)
+}
+
+func TestAFrameIsRefusedOnceItNestsPastTenThousandContainersCountingTheFrameObject(t *testing.T) {
+	if _, err := ParseMessage(nestedParams(9999)); err != nil {
+		t.Fatalf("ten thousand containers refused: %v", err)
+	}
+	for name, decode := range map[string]func([]byte) error{
+		"parse": func(frame []byte) error { _, err := ParseMessage(frame); return err },
+		"decode": func(frame []byte) error {
+			_, err := NewDecoder(bytes.NewReader(append(frame, '\n')), 1<<24).Decode()
+			return err
+		},
+	} {
+		err := decode(nestedParams(10000))
+		if err == nil || err.Error() != "deepseek rpc: invalid JSON-RPC message: exceeded max depth" {
+			t.Fatalf("%s past the limit = %v", name, err)
+		}
+	}
+}
