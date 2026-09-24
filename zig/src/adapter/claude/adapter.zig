@@ -587,7 +587,20 @@ pub const FakeClaude = struct {
     }
 
     pub fn written(self: *FakeClaude, allocator: std.mem.Allocator) ![]u8 {
-        return self.tmp.dir.readFileAlloc(testing.io, "stdin.log", allocator, .limited(1 << 20));
+        const file = try self.tmp.dir.openFile(testing.io, "stdin.log", .{});
+        defer file.close(testing.io);
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(allocator);
+        var buffer: [4096]u8 = undefined;
+        while (true) {
+            const count = file.readStreaming(testing.io, &.{&buffer}) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => |failure| return failure,
+            };
+            if (count == 0) break;
+            try out.appendSlice(allocator, buffer[0..count]);
+        }
+        return out.toOwnedSlice(allocator);
     }
 
     pub fn config(self: *const FakeClaude) Config {
