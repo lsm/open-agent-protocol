@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`oapx --version` reports the version it was built as.** It printed a hard-coded `0.0.1` whatever the release. The version now comes from `zig/build.zig.zon`, a `-Dversion` build option overrides it, and the release workflow passes the tag, so a `v0.1.0-alpha.3` binary says `0.1.0-alpha.3`. The MCP bridge reads the same value instead of its own literal. The provider descriptor's `capability_revision` and `endpoint_version`, which reused the constant, follow it.
+
 - The Zig DeepSeek line codec refuses a frame nested past 10000 containers, counting the frame object, where the Go codec refuses it (`exceeded max depth`), instead of parsing any depth (#247).
 
 - Every HTTPS provider response read as empty after #240, so the TUI showed no reply: a turn "completed" with an empty assistant message and no error, on kimi and openai-codex alike. `compat.readResponse` switched to `Reader.readVec`, which may return 0 after only refilling the reader's buffer, as TLS does after a decrypt; callers took that 0 for end of stream. It now reads again until bytes arrive or the stream ends. Plain-HTTP endpoints were unaffected, which is why loopback tests kept passing.
