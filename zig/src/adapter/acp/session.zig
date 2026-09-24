@@ -27,10 +27,21 @@ pub const Options = struct {
     model: []const u8 = "",
     endpoint: []const u8 = endpoint_id,
     revision: []const u8 = capability_revision,
+    counter: ?*usize = null,
+    now_ms: ?*const fn () i64 = null,
+    id_style: IdStyle = .letter,
 };
+
+pub const IdStyle = enum { letter, decimal };
 
 pub const Identity = struct {
     run_id: []const u8 = "",
+    message_ids: []const []const u8 = &.{},
+};
+
+pub const Admission = struct {
+    submission_id: []const u8 = "",
+    message_ids: []const []const u8 = &.{},
 };
 
 const Run = struct {
@@ -104,6 +115,7 @@ pub const Reducer = struct {
     gates: std.ArrayList(Gate) = .empty,
     messages: std.ArrayList(MessageBinding) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
+    admission: Admission = .{},
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options };
@@ -124,13 +136,18 @@ pub const Reducer = struct {
     }
 
     fn now(self: *Reducer) i64 {
+        if (self.options.now_ms) |wall| return wall();
         self.clock += 1;
         return self.clock;
     }
 
     fn nextID(self: *Reducer, kind: []const u8) ![]const u8 {
-        self.ids += 1;
-        return std.fmt.allocPrint(self.allocator(), "{s}-{u}", .{ kind, idScalar(self.ids - 1) });
+        const counter = self.options.counter orelse &self.ids;
+        counter.* += 1;
+        return switch (self.options.id_style) {
+            .letter => std.fmt.allocPrint(self.allocator(), "{s}-{u}", .{ kind, idScalar(counter.* - 1) }),
+            .decimal => std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, counter.* }),
+        };
     }
 
     fn newMessageID(self: *Reducer) ![]const u8 {
@@ -163,9 +180,10 @@ pub const Reducer = struct {
         if (self.run) |run| {
             if (!run.terminal) return Error.RunActive;
         }
-        var minted: usize = 0;
-        while (minted < message_count) : (minted += 1) {
-            _ = try self.nextID("message");
+        const message_ids = try self.allocator().alloc([]const u8, message_count);
+        for (message_ids, 0..) |*slot, index| {
+            const given = if (index < identity.message_ids.len) identity.message_ids[index] else "";
+            slot.* = if (given.len > 0) given else try self.nextID("message");
         }
         const minted_run = try self.nextID("run");
         const run_id = if (identity.run_id.len > 0) identity.run_id else minted_run;
@@ -184,7 +202,8 @@ pub const Reducer = struct {
         if (self.options.model.len > 0) try self.put(&payload, "model_id", str(self.options.model));
         try self.put(&payload, "started_at_ms", int(self.now()));
         _ = try self.emit(run, "run.started", .{ .object = payload });
-        _ = try self.nextID("submission");
+        const submission_id = try self.nextID("submission");
+        self.admission = .{ .submission_id = submission_id, .message_ids = message_ids };
     }
 
     fn emit(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value) ![]const u8 {

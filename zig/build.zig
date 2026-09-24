@@ -1157,6 +1157,22 @@ pub fn build(b: *std.Build) void {
     });
     const claude_adapter_test = b.addTest(.{ .root_module = claude_adapter_mod });
 
+    const acp_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/acp/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "process", .module = adapter_process_mod },
+            .{ .name = "session", .module = acp_session_mod },
+            .{ .name = "rpc", .module = acp_rpc_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+        },
+    });
+    const acp_adapter_test = b.addTest(.{ .root_module = acp_adapter_mod });
+
     const pi_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/pi/adapter.zig"),
         .target = target,
@@ -1199,6 +1215,21 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "endpoint", .module = adapter_endpoint_mod },
                 .{ .name = "claude_adapter", .module = claude_adapter_mod },
+                .{ .name = "semantic", .module = semantic_mod },
+                .{ .name = "jsonschema", .module = jsonschema_mod },
+                .{ .name = "compat", .module = compat_mod },
+            },
+        }),
+    });
+
+    const acp_endpoint_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/unit/acp_endpoint.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "endpoint", .module = adapter_endpoint_mod },
+                .{ .name = "acp_adapter", .module = acp_adapter_mod },
                 .{ .name = "semantic", .module = semantic_mod },
                 .{ .name = "jsonschema", .module = jsonschema_mod },
                 .{ .name = "compat", .module = compat_mod },
@@ -2317,6 +2348,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "adapter_config", .module = adapter_config_mod },
             .{ .name = "claude_adapter", .module = claude_adapter_mod },
             .{ .name = "codex_adapter", .module = codex_adapter_mod },
+            .{ .name = "acp_adapter", .module = acp_adapter_mod },
             .{ .name = "pi_adapter", .module = pi_adapter_mod },
         },
     });
@@ -2402,13 +2434,17 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
+    test_step.dependOn(&b.addRunArtifact(acp_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(pi_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_endpoint_test).step);
+    test_step.dependOn(&b.addRunArtifact(acp_endpoint_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);

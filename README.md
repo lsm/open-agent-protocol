@@ -52,9 +52,9 @@ represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
 the default path; the old Makai wire is available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.280),
-`--backend codex` a Codex app-server child (pinned `8d7cc24`), and `--backend pi`
-a Pi RPC child (pinned 0.85.1), behind the
-same stdio door instead of the built-in loop, following
+`--backend codex` a Codex app-server child (pinned `8d7cc24`), `--backend pi` a
+Pi RPC child (pinned 0.85.1), and an `acp`
+entry an ACP v1 agent, behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
 harness-default tool posture, so every gated tool call still reaches the host
@@ -64,8 +64,10 @@ unknown members are refused and `environment` is an explicit allowlist. Any
 other backend answers every request `unavailable`, naming itself; `goap serve`
 still carries those adapters. What each cannot do through this path is
 recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.280-mapping.md),
-[codex](research/codex-app-server-8d7cc24-mapping.md). Without `--config`, codex
-runs `codex` from `PATH` with only `HOME` and `PATH`.
+[codex](research/codex-app-server-8d7cc24-mapping.md),
+[acp](research/acp-v1.7.0-mapping.md). Without `--config`, codex runs `codex`
+from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
+a `--config` entry naming its `executable`.
 
 Implementing OAP natively? [**STABILITY.md**](STABILITY.md) describes the
 v0.1 pre-release contract: what will freeze at the first tag, what may still

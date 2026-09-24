@@ -49,6 +49,7 @@ const adapter_contract = @import("adapter_contract");
 const adapter_config = @import("adapter_config");
 const claude_adapter = @import("claude_adapter");
 const codex_adapter = @import("codex_adapter");
+const acp_adapter = @import("acp_adapter");
 const pi_adapter = @import("pi_adapter");
 
 pub const VERSION = @import("version_options").version;
@@ -2740,7 +2741,8 @@ fn printUsage(file: std.Io.File) !void {
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
         \\                   Use --backend claude, codex or pi to serve a Claude Code,
         \\                   Codex app-server or Pi child instead of the built-in
-        \\                   loop; --config reads an oap-serve.json registry entry.
+        \\                   loop, or an ACP agent named by a --config entry;
+        \\                   --config reads an oap-serve.json registry entry.
         \\                   Other backends answer unavailable.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
@@ -8901,7 +8903,7 @@ fn writeOapAuthOutbound(
     return wrote;
 }
 
-const unported_backends = [_][]const u8{ "acp", "deepseek", "hermes", "memory", "opencode" };
+const unported_backends = [_][]const u8{ "deepseek", "hermes", "memory", "opencode" };
 const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
@@ -9028,6 +9030,33 @@ fn piBackendConfig(
     };
 }
 
+fn acpBackendConfig(
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    environ: *const std.process.Environ.Map,
+    stderr: std.Io.File,
+) !acp_adapter.Config {
+    if (entry.executable.len == 0) {
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is an ACP agent and needs a --config entry naming its \"executable\"", .{entry.name});
+        return error.BackendRefused;
+    }
+    const executable = try adapter_config.resolveExecutable(arena, backendIo(), entry.executable, environ.get("PATH") orelse "") orelse {
+        try writeBackendRefusal(stderr, arena, "no executable \"{s}\" on PATH for backend \"{s}\"", .{ entry.executable, entry.name });
+        return error.BackendRefused;
+    };
+    const working_directory = entry.working_directory orelse try std.process.currentPathAlloc(backendIo(), arena);
+    if (!std.fs.path.isAbsolute(working_directory)) {
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" needs an absolute \"working_directory\"", .{entry.name});
+        return error.BackendRefused;
+    }
+    return .{
+        .executable = executable,
+        .args = entry.args,
+        .environment = entry.environment,
+        .working_directory = working_directory,
+    };
+}
+
 fn writeEndpointOutbound(stdout: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
     var wrote = false;
     while (endpoint.popOutbound()) |line| {
@@ -9064,6 +9093,7 @@ fn runBackendMode(
     var claude: claude_adapter.Adapter = undefined;
     var codex: codex_adapter.Adapter = undefined;
     var pi: pi_adapter.Adapter = undefined;
+    var acp: acp_adapter.Adapter = undefined;
     var unavailable: adapter_contract.Unavailable = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
         claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(arena, entry, &environ, stderr));
@@ -9074,12 +9104,15 @@ fn runBackendMode(
     } else if (std.mem.eql(u8, entry.kind, "pi")) pi_served: {
         pi = pi_adapter.Adapter.init(allocator, try piBackendConfig(arena, entry, &environ, stderr));
         break :pi_served pi.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "acp")) acp_served: {
+        acp = acp_adapter.Adapter.init(allocator, try acpBackendConfig(arena, entry, &environ, stderr));
+        break :acp_served acp.adapter();
     } else if (unportedBackend(entry.kind)) unported_served: {
         const message = try std.fmt.allocPrint(arena, "oapx has no {s} backend yet; goap serve carries it", .{entry.kind});
         unavailable = .{ .backend = name, .message = message };
         break :unported_served unavailable.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex and pi", .{ name, entry.kind });
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi and acp", .{ name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9387,7 +9420,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex and pi\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi and acp\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
