@@ -359,6 +359,45 @@ pub fn build(b: *std.Build) void {
     claude_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
     const claude_corpus_test = b.addTest(.{ .root_module = claude_corpus_mod });
 
+    const codex_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_rpc_mod.addImport("gojson", adapter_gojson_mod);
+    const codex_rpc_test = b.addTest(.{ .root_module = codex_rpc_mod });
+
+    const codex_native_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/native.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_native_mod.addImport("gojson", adapter_gojson_mod);
+    const codex_native_test = b.addTest(.{ .root_module = codex_native_mod });
+
+    const codex_session_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_session_mod.addImport("rpc", codex_rpc_mod);
+    codex_session_mod.addImport("native", codex_native_mod);
+    const codex_session_test = b.addTest(.{ .root_module = codex_session_mod });
+
+    const codex_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_corpus_mod.addImport("rpc", codex_rpc_mod);
+    codex_corpus_mod.addImport("native", codex_native_mod);
+    codex_corpus_mod.addImport("session", codex_session_mod);
+    codex_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
+    codex_corpus_mod.addImport("semantic", semantic_mod);
+    codex_corpus_mod.addImport("jsonschema", jsonschema_mod);
+    codex_corpus_mod.addOptions("build_options", gate_options);
+    const codex_corpus_test = b.addTest(.{ .root_module = codex_corpus_mod });
+
     const provider_base_url_mod = b.createModule(.{
         .root_source_file = b.path("src/provider_base_url.zig"),
         .target = target,
@@ -2394,6 +2433,14 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_native_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_session_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_native_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_session_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);

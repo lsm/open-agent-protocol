@@ -215,3 +215,93 @@ Decision 0002 made the shapes canonical and the validator now rejects the
 mix; the adapter reports `status=running` for its started admissions. The
 run's internal state still promotes at `run.started` exactly as before; only
 the response's status claim changed.
+
+## Zig port (2026-09-24)
+
+`zig/src/adapter/codex/` is a second implementation of this ledger, a peer of
+the Go adapter under Decision 0032: `rpc.zig` (line codec and a Go-compatible
+frame encoder), `native.zig` (pinned method names, the decode shape of every
+native struct the adapter reads, and the parameters it writes), `session.zig`
+(the reducer) and `corpus.zig` (the evidence driver). It is not yet served by
+`oapx serve agent`; the reducer has the shape of the other Zig ports, with two
+additions this adapter needs because it writes to Codex: `writes` holds every
+frame the adapter would send, and `settled` holds the outcome of each call once
+its response is observed.
+
+### What the corpus proves
+
+All thirteen cases are claimed, and the driver's case list must equal the
+manifest's in order. Each case replays through the production codec and the
+reducer, and the Zig trace, encoded the way Go encodes it, must equal
+`expected-oap.json` with its whitespace removed, byte for byte. Each trace
+then passes the Zig schema check and `validation/semantic.zig`, built the way
+`adaptertest` builds it: a capabilities exchange carrying the adapter's
+descriptor, the submit exchange, and for `interrupted-turn` the cancel
+exchange at the same cut. The driver also ports Go's
+`assertClassifications`, reads events with Go's `Next` semantics (an
+`await_events` count must already have been emitted), refuses an
+`observed-only` line that emits anything, and requires exactly one native
+response per reverse request, equal to `expected_result` or `expected_error`.
+
+Three properties of the Go test harness, not of the adapter, are reproduced so
+the expectations keep reproducing:
+
+- `process-exit` and `interrupted-turn` open with a `turn/started` the Go test
+  sends itself; it is not in either `native.jsonl`. `interrupted-turn` then
+  skips its first native line, which that prefix replaces.
+- The fake client answers `thread/start` with `native-thread` and `turn/start`
+  with `native-turn`; the Zig driver answers the requests the reducer wrote with
+  the same results, and answers `turn/interrupt` with `{}`.
+- Ids are `%s-%02d` from one counter (`Options.id_width = 2`) and the clock
+  ticks once per read, as `fakeIDs` and `fakeClock` do.
+
+### What the adapter writes
+
+The corpus carries no host-to-server lines, so the writes are pinned
+separately. `fixtures/adapters/codex-appserver-writes/conversation.json` is a
+conversation between the Go adapter, through its real `rpc.Start` process
+path, and a scripted app-server: the handshake, `thread/start` with every
+optional member, `turn/start` with a per-turn model and text Go escapes for
+HTML, an approval answer, a user-input answer, the `-32601` and `-32602`
+replies, `turn/interrupt`, and the `-32800` that closes an interaction at the
+terminal. It also records the capability descriptor. Go's
+`TestCodexProcessWritesTheRecordedConversation` fails if the Go adapter stops
+writing those bytes (`OAP_UPDATE_CODEX_CONVERSATION=1` rerecords), and the Zig
+driver replays the same server frames and requires the same bytes and the same
+descriptor. `thread/resume` and the `-32602` variants other than scope are
+pinned only by Zig unit tests against hand-written bytes.
+
+### Where the port differs
+
+1. **Invalid UTF-8.** Go's decoder accepts a frame carrying it; the Zig codec
+   refuses the frame. Codex writes JSON with serde, which cannot emit it.
+2. **Pass-through members** (`item.arguments`, `item.result`, a file change's
+   `kind`) are re-encoded from the parsed value. Number literals survive
+   verbatim in both, but Go's `json.RawMessage` also keeps every string escape
+   as Codex spelled it (`A`, `\/`, `é`, a lone `\ud800`), escaping
+   only `<`, `>`, `&` and U+2028/2029, while Zig writes the decoded character
+   in Go's canonical form (a lone surrogate as U+FFFD). No corpus frame
+   carries an escape in a pass-through member.
+3. **Order at a terminal.** Go closes open interactions and actions by ranging
+   over maps, so with two of either open the order of their `-32800` replies and
+   envelopes is unspecified; Zig uses the order they opened in. Neither the
+   corpus nor the recorded conversation has two open at once.
+4. **Case-variant duplicate members** are resolved with the shared `gojson`
+   fold helpers. A pointer member that a later null resets and a still later
+   member reassigns is merged across the reset in Zig, where Go starts again.
+5. **No journal.** Like the other Zig ports the reducer keeps no journal and
+   has no `Resume`. The descriptor is byte-identical to Go's, so it still
+   advertises `run.resume` and `run.replay` as `degraded`; serving the port
+   means porting the journal or advertising both `unavailable` under a new
+   revision.
+6. **Endpoint checks.** Unadvertised controls, the session id, delivery,
+   degraded opt-in and metadata are refused before a submission reaches the
+   reducer, as are tools and tool sources at open. Call failures come back as a
+   structured refusal (method, remote code, message) rather than Go's composed
+   error text.
+
+One finding outside the adapter: `std.json.Stringify` keeps a fixed nesting
+stack and panics past 256 levels in safe builds, while Go admits 10 000. A
+pass-through member can reach that depth, so the codex encoder walks values
+iteratively; anything that stringifies another port's envelopes with
+`std.json.Stringify` inherits the panic.
