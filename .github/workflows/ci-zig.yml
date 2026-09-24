@@ -85,6 +85,10 @@ jobs:
       - name: Run ${{ matrix.group }} unit tests
         run: zig build --build-file zig/build.zig test-unit-${{ matrix.group }}
 
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        run: ./scripts/check-no-test-litter.sh
+
   no-comments:
     name: Zero-Comments Policy
     runs-on: ubuntu-latest
@@ -154,6 +158,10 @@ jobs:
       - name: Verify npm package ships TypeScript declarations
         run: npm run check:declarations
 
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        run: ./scripts/check-no-test-litter.sh
+
   # =============================================================================
   # Go SDK (deterministic, no API keys)
   #
@@ -206,6 +214,10 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-go/bin/oapx
         run: go test -race ./...
 
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        run: ./scripts/check-no-test-litter.sh
+
   # =============================================================================
   rust-sdk:
     name: Rust SDK
@@ -254,6 +266,11 @@ jobs:
         env:
           OAP_SDK_BINARY_PATH: /tmp/makai-rs/bin/oapx
         run: cargo test --all-features
+
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        working-directory: .
+        run: ./scripts/check-no-test-litter.sh
 
   # =============================================================================
   # Python SDK (sdk/python/)
@@ -311,6 +328,10 @@ jobs:
           OAP_SDK_BINARY_PATH: /tmp/makai-py/bin/oapx
         run: python -m pytest -q
 
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        run: ./scripts/check-no-test-litter.sh
+
   # =============================================================================
   # TUI PTY Harness (deterministic, fixture provider — no API keys)
   #
@@ -356,6 +377,10 @@ jobs:
           sudo cp "$RUNNER_TEMP/pty-tls/ca.pem" /usr/local/share/ca-certificates/oap-tui-pty-test.crt
           sudo update-ca-certificates
           python3 scripts/tui-pty-driver.py --binary "$RUNNER_TEMP/makai-pty/bin/oapx" --output-dir tui-pty-out --scenario all --tls-dir "$RUNNER_TEMP/pty-tls"
+
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        run: ./scripts/check-no-test-litter.sh
 
       - name: Record metrics in job summary
         if: success()
