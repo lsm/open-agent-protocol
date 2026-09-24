@@ -80,7 +80,7 @@ type child struct {
 
 func spawn(t *testing.T, args ...string) *child {
 	t.Helper()
-	cmd := exec.Command(oapBinary(t), append([]string{"serve", "--stdio"}, args...)...)
+	cmd := exec.Command(oapBinary(t), append([]string{"hub", "--stdio"}, args...)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -361,9 +361,9 @@ func TestStdioBinaryFailsClosedOnAMalformedLine(t *testing.T) {
 
 func TestStdioRefusesAListenAddress(t *testing.T) {
 	binary := oapBinary(t)
-	output, err := exec.Command(binary, "serve", "--stdio", "--addr", "127.0.0.1:0").CombinedOutput()
+	output, err := exec.Command(binary, "hub", "--stdio", "--addr", "127.0.0.1:0").CombinedOutput()
 	if err == nil {
-		t.Fatalf("serve --stdio --addr succeeded: %s", output)
+		t.Fatalf("hub --stdio --addr succeeded: %s", output)
 	}
 	if !strings.Contains(string(output), "mutually exclusive") {
 		t.Fatalf("refusal does not explain itself: %s", output)

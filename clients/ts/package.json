@@ -1,7 +1,7 @@
 {
   "name": "oap-client",
   "version": "0.1.0",
-  "description": "TypeScript client for the goap serve daemon: Open Agent Protocol agent-control-core over HTTP + SSE",
+  "description": "TypeScript client for the goap hub daemon: Open Agent Protocol agent-control-core over HTTP + SSE",
   "license": "CC0-1.0",
   "type": "module",
   "main": "dist/src/index.js",
