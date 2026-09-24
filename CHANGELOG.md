@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Claude Code 2.1.280 evidence corpus, `fixtures/adapters/claude-code-2.1.280`, recorded against the pinned darwin-arm64 binary. It carries the same thirteen cases as the 2.1.263 corpus, which stays as a floor; Go and Zig run both. Frames a hermetic probe can produce come from a capture of the pinned binary, and the rest are carried over with 2.1.280's shape changes. Against the 2.1.263 expectations, four envelopes differ, each in text 2.1.280 writes itself. `TestClaudeProcessRecordsCorpusProbes`, gated on `OAP_CLAUDE_CAPTURE_DIR`, is the capture path. Recorded in [`research/claude-code-agent-sdk-2.1.280-mapping.md`](research/claude-code-agent-sdk-2.1.280-mapping.md).
+
 - `oapx serve provider --http 127.0.0.1:<port>` serves the same `model-provider-core` catalog and inference operations over HTTP/SSE, including concurrent inference streams and separately correlated cancellation. The listener binds only to loopback; cross-Pod exposure requires an operator-managed TLS/mTLS proxy. It advertises provider-managed credentials and does not accept credential grants over HTTP.
 
 - The HTTP provider endpoint returns the provider profile's JSON error envelope with HTTP 200 when an OAP envelope fails decoding, preserving its correlation id, error code, and message instead of replacing it with an empty HTTP 400 response.

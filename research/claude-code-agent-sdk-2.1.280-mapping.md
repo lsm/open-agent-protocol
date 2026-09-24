@@ -3,11 +3,13 @@
 Status: the Claude Code adapter's pin. This ledger moves the adapter from
 2.1.263 to 2.1.280 and records only what the move changed or settled.
 [The 2.1.263 ledger](claude-code-agent-sdk-2.1.263-mapping.md) remains the
-mapping of record for every surface not restated here. Its corpus,
-`fixtures/adapters/claude-code-2.1.263`, was recorded against 2.1.263 and is
-carried forward: the native frames are unchanged, and the expectations name the
-new capability revision. Every hash below was computed on 2026-09-22 from the
-artifacts named, and the live checks ran the 2.1.280 binary.
+mapping of record for every surface not restated here. Since 2026-09-24 the
+adapter's corpus is `fixtures/adapters/claude-code-2.1.280`, recorded against
+the pinned darwin-arm64 binary (see *Corpus recorded at 2.1.280*).
+`fixtures/adapters/claude-code-2.1.263` stays as the floor: its frames are
+2.1.263's, and both corpora run in Go and in Zig. Every hash below was computed
+on 2026-09-22 from the artifacts named, the darwin-arm64 pair again on
+2026-09-24, and the live checks ran the 2.1.280 binary.
 
 ## Provenance
 
@@ -168,8 +170,9 @@ adapter's, including the caller args a review host passes
   naming no tool is refused. `UnrestrictedTools()` still passes no tool flag.
   Caller args still follow the posture and can override it.
 - Endpoint version `v2.1.280`; capability revision `claude-code-2.1.280-oap-v1`.
-  The corpus expectations name the new revision; their native frames are
-  unchanged.
+  At this move the 2.1.263 corpus was carried forward with expectations naming
+  the new revision; the 2.1.280 corpus has since replaced it as the current
+  one.
 - The Zig port's spawn argv and capability revision match.
 - `TestClaudeProcessReadOnlyReviewCompletesWithoutAGate` drives the pinned
   binary through a review host's configuration: `AllowTools("Read", "Grep",
@@ -278,3 +281,152 @@ have.
 The Zig port has no per-subscriber stream or journal, so it has no `Resume`.
 Its corpus harness skips `resume` ops, and only its capability revision
 follows this change.
+
+## Corpus recorded at 2.1.280
+
+Recorded 2026-09-24 against `@anthropic-ai/claude-code-darwin-arm64@2.1.280`:
+tarball sha256 `76170ceef79015e118fdea65e3b11663342153d3559f301ab8e6a7dfecc7f4a3`,
+binary sha256 `387a5c5dcdbb815085edf0baf79591f9d8894efe922bceaf3d75b1b08055229d`
+(217,254,576 bytes), both checked against the provenance above before the
+binary ran; it self-reports `2.1.280 (Claude Code)`. Every case's provenance
+names these and the linux-x64 pin.
+
+### Capture
+
+`TestClaudeProcessRecordsCorpusProbes` (`capture_integration_test.go`) is the
+capture path. It skips unless `OAP_CLAUDE_CAPTURE_DIR` names an absolute
+directory outside the repository, and takes the binary from
+`OAP_CLAUDE_BIN`/`OAP_CLAUDE_SHA256` like the other gates. Each probe spawns
+the adapter's argv in `claudeEnvironment`, against the `providertest`
+loopback, with one change: the three proxy variables point at a loopback sink
+that records a connection and refuses it. One probe adds
+`CLAUDE_CODE_CONTAINER_ID`. A process factory tees both pipes, so
+`<probe>.jsonl` holds every line in each direction even after the adapter has
+failed a run. The test fails if the sink saw a connection.
+
+Seventeen probes: two text turns, a text turn under `UnrestrictedTools()`,
+`Bash` calls (`ls`, `sleep 6; ls`, a loop printing a line a second, the same
+loop with `CLAUDE_CODE_CONTAINER_ID` set, `false`), `Read`, an
+allowed `touch` and a denied `rm -rf`, an interrupt, `--max-turns 1`, a 429
+(ten retries, about three minutes), the credential-free login failure, a
+background subagent finishing before the turn's result and one finishing
+after it, and a background `Bash`. The corpus probes run under
+`AllowTools("Task", "Bash(git status)")`, for which `system/init.tools` is
+exactly `["Task","Bash"]`, the list the 2.1.263 corpus carried. That posture
+still asks for `touch` and `rm`, and approves `ls` and `false` without asking.
+`Read` ran under `UnrestrictedTools()`, which reports 27 built-ins.
+
+On macOS every start of this binary reads the keychain. It runs `security
+find-generic-password` for `Claude Code-<hash>` and
+`Claude Code-credentials-<hash>`, the hash taken from `CLAUDE_CONFIG_DIR`, so
+neither lookup can name the login stored for the default configuration
+directory. Its runtime also calls `SecItemCopyMatching` once at start-up, with
+a query the backtrace does not show. Both are reads. The recording ran with a
+`security` stand-in first on `PATH` and under a sandbox denying the keychain
+daemons and non-loopback connections, so neither reached the keychain. It
+recorded no outbound attempt and no proxy connection.
+
+### How a case was built
+
+Each case keeps its 2.1.263 script: the same submits, controls and frame order,
+except where the capture shows 2.1.280 doing something else (listed below). A
+live-derived frame keeps the members its 2.1.263 counterpart carried, with the
+values 2.1.280 reported. It also gains the wire-delta members the capture
+shows: `result_index` on every `result`, and `ttft_ms`, `ttft_stream_ms`,
+`time_to_request_ms`, `first_content_frame_ms` and `request_sent_wall_ms` on a
+successful one. A `result` carrying `user_message_uuid` now carries
+`user_message_uuids` too, and each turn's first `assistant` frame carries the
+echo. Ids, paths and prompts take the 2.1.263 placeholders. Model text, tool
+input and output, token counts, durations and costs keep the case's own values,
+because the probe chose them, not the harness. Values the harness writes itself
+are 2.1.280's. That covers `system/init`'s version, capabilities (all five),
+`apiKeySource`, `slash_commands` and tools; `num_turns`; the interrupt
+diagnostic; the turn-limit run's `stop_reason` and error; and the results of a
+failed, a silent and a denied command and of a 429.
+
+| Case | Live-derived | Constructed |
+| --- | --- | --- |
+| initialize-lifecycle | every frame | — |
+| admission-corroboration | the human turn; the injected turn | — |
+| settlement-statuses | the completed, turn-limit and 429 runs | the `error_during_execution` run |
+| interrupt-cancel | every other frame | the text delta before the cancel |
+| queued-continuation | — | every frame |
+| background-children | the `local_agent` run | the `local_workflow` run |
+| streaming-provenance | every frame's shape | the split and thinking deltas |
+| tool-lifecycle | the `ls` run (with its task pair and `tool_progress`) and the `false` run | the `Read` run |
+| permission-gates | every frame | — |
+| process-exit | every frame (the exit is the harness's) | — |
+| malformed-stdout | every frame but the truncated line | the truncated line |
+| hygiene-recovery | the turn | `keep_alive`, `prompt_suggestion` |
+| tools-catalog-sources | — | every frame (the MCP servers) |
+
+Where 2.1.280's sequence differs from the 2.1.263 case:
+
+- **The injected turn has no `user` frame.** Both background probes surface it
+  as a fresh `system/init`, an echo-free stream and `assistant` frame, and a
+  `result` whose `origin` is `task-notification`. The case now carries that
+  shape instead of the constructed `user` frame.
+- **A rejected request starts its run at the synthetic `assistant` frame.** No
+  `message_start` precedes it, so the echo first arrives there. One of the ten
+  `system/api_retry` notices is kept.
+- **A foreground `Bash` call past about three seconds becomes a `local_bash`
+  task**: `task_started` with `is_backgrounded: false`, and on completion a
+  `task_notification` whose `output_file` is `""`. The `ls` run carries that
+  pair.
+- **Bash `tool_progress` needs `CLAUDE_CODE_REMOTE` or
+  `CLAUDE_CODE_CONTAINER_ID`,** which the adapter's environment never sets;
+  without one, the looping probe emitted none. With
+  `CLAUDE_CODE_CONTAINER_ID` it emitted one, beside `task_started`, shaped
+  differently from the 2.1.263 frame: `tool_use_id` is a synthetic
+  `bash-progress-0`, `parent_tool_use_id` names the call, and `task_id` names
+  the `local_bash` task. The case's `tool_progress` takes that shape. A frame
+  of this kind therefore carries a `parent_tool_use_id` without coming from a
+  subagent. The adapter ignores `tool_progress`, so nothing reads it.
+- **The interrupt marker is a text block** (`[{"type":"text",...}]`), not a
+  string.
+- **The first `background-children` run is live.** The turn's `result` arrives
+  while the `local_agent` child still runs, and the run settles at its
+  `task_notification`. The shapes needed no change.
+
+The constructed frames carry over with 2.1.280's shape changes only.
+`prompt_suggestion` takes the shape the 2.1.280 emitter writes (`suggestion`,
+`uuid`, `session_id`), and `keep_alive` already had it. The `Read` result drops
+`is_error`, which 2.1.280 omits from a successful `Read`.
+
+### Expected OAP against 2.1.263
+
+Four envelopes differ, each a text 2.1.280 writes itself. Every other envelope
+in the thirteen cases is identical, the reshaped frames above included.
+
+| Case | Envelope | 2.1.263 | 2.1.280 |
+| --- | --- | --- | --- |
+| permission-gates | `action.call.completed` result, allowed `touch` | `done` | `(Bash completed with no output)` |
+| permission-gates | `action.call.failed` message, denied call | `User denied the operation` | `Denied by the operator`: the tool result is the host's deny message |
+| tool-lifecycle | `action.call.failed` message, `false` | `command failed` | `Exit code 1` |
+| settlement-statuses | `run.failed` message, the 429 | `API Error: rate limited` | `API Error: Request rejected (429) · fixture rate limit` |
+
+Three evidence rules in `corpus_test.go` quoted 2.1.263 text and now read the
+case's own frames, keeping their strength: `api-error-result` compares the
+failure with the 429 `result` text, `interrupt-cancel` accepts the marker as a
+string or as text blocks, and `injected-turn-origin` takes the origin from a
+`user` or a `result` frame and checks that none of that turn's text reaches an
+envelope. `TestClaudeCurrentCorpusRecordsThePinnedVersion` holds the current
+corpus's manifest, provenance and every `system/init` version to
+`PinnedVersion`. The Zig harness runs both corpora, and asserts that the
+current one is the version its capability revision names.
+
+### Findings
+
+- **The adapter failed any `Bash` call that ran longer than about three
+  seconds.** Its `task_notification` carries `"output_file": ""`. The native
+  decoder, and its Zig port, required a non-empty `output_file` and failed the
+  run with `claude_process_exit`. The frozen strictness policy makes a known
+  frame fatal when a required member is missing, and this one is present. It
+  now has to be present (a string when not null) and may be empty, pinned by a
+  unit test on each side and by `tool-lifecycle`.
+- **`system/init` names the subagent tool `Task`; the provider is offered
+  `Agent`, and calls arrive as `Agent`.** `--tools Task` still selects it. The
+  catalog projected from `init` therefore lists `Task`, and an `Agent` call
+  carries no `source`. Recorded, not compensated; no case exercises the call.
+- The login-failure run matches the 2.1.263 finding, and its `system/init`
+  also lists `ToolSearch`, which the loopback runs omit.
