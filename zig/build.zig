@@ -1157,6 +1157,20 @@ pub fn build(b: *std.Build) void {
     });
     const claude_adapter_test = b.addTest(.{ .root_module = claude_adapter_mod });
 
+    const pi_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/pi/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "process", .module = adapter_process_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+        },
+    });
+    const pi_adapter_test = b.addTest(.{ .root_module = pi_adapter_mod });
+
     const codex_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/codex/adapter.zig"),
         .target = target,
@@ -2303,6 +2317,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "adapter_config", .module = adapter_config_mod },
             .{ .name = "claude_adapter", .module = claude_adapter_mod },
             .{ .name = "codex_adapter", .module = codex_adapter_mod },
+            .{ .name = "pi_adapter", .module = pi_adapter_mod },
         },
     });
 
@@ -2387,6 +2402,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
+    test_step.dependOn(&b.addRunArtifact(pi_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_endpoint_test).step);
