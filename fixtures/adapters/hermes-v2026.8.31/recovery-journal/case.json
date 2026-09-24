@@ -1,10 +1,10 @@
 {
   "advertised_capabilities": {
-    "run.replay": "unavailable",
-    "run.resume": "unavailable"
+    "run.replay": "degraded",
+    "run.resume": "degraded"
   },
   "expected_oap": "expected-oap.json",
-  "id": "recovery-unavailable",
+  "id": "recovery-journal",
   "identity_map": {
     "_block request_id (8 hex)": "interaction identity (expire siblings share it)",
     "approval registry entry": "interaction identity (no wire request_id)",

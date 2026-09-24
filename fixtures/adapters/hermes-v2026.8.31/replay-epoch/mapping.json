@@ -8,5 +8,8 @@
   {"index":7,"type":"oap_control:assert-state","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"reducer-owned session state"},
   {"index":8,"type":"event/message.delta","direction":"gateway-to-host","classification":"required-unmapped","fidelity":"unsupported"},
   {"index":9,"type":"oap_control:submit-closed","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"restart-reset seq fails the contiguous fencing"},
-  {"index":10,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session close via stdin EOF"}
+  {"index":10,"type":"oap_control:resume","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"run.replay: a cursor inside the adapter journal replays the retained suffix, restart or not"},
+  {"index":11,"type":"oap_control:resume","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"run.replay: a cursor older than the adapter journal is an explicit ReplayGap"},
+  {"index":12,"type":"oap_control:resume","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"a run this session never admitted is run_not_found, never an empty replay"},
+  {"index":13,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session close via stdin EOF"}
 ]

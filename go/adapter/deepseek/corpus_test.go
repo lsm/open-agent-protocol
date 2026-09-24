@@ -124,6 +124,7 @@ type dshControl struct {
 	Op     string `json:"op,omitempty"`
 	Expect string `json:"expect,omitempty"`
 	Status string `json:"status,omitempty"`
+	RunID  string `json:"run_id,omitempty"`
 }
 type dshCorpusMapping struct {
 	Index          int    `json:"index"`
@@ -205,6 +206,7 @@ func runDSHCorpusCase(t *testing.T, root string, entry dshCorpusManifestCase) {
 	if definition.Version != 1 || definition.ID != entry.ID || p.Repository != dshCorpusRepository || p.Tag != dshCorpusTag || p.Commit != dshCorpusCommit || p.CommitTree != dshCorpusCommitTree || p.Sources != pinnedDSHSources() || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
 		t.Fatalf("invalid case metadata: %+v", definition)
 	}
+	dshAssertCapabilities(t, definition, descriptorFromProbe(t))
 	frames, decoded := dshLoadFrames(t, filepath.Join(dir, definition.Native))
 	mappings := dshLoadJSON[[]dshCorpusMapping](t, filepath.Join(dir, definition.Mapping))
 	omissions := dshLoadJSON[[]dshCorpusOmission](t, filepath.Join(dir, definition.Omissions))
@@ -256,6 +258,7 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 	}
 	var pending chan submitResult
 	var settled []submitResult
+	recorded := 0
 	submits := 0
 
 	waitReap := func() {
@@ -269,6 +272,12 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 			t.Fatal("submit did not settle")
 		}
 		pending = nil
+	}
+	recordSettled := func() {
+		waitReap()
+		for ; recorded < len(settled); recorded++ {
+			execution.record(t, settled[recorded].admission, settled[recorded].stream, settled[recorded].err)
+		}
 	}
 	for i, frame := range frames {
 		switch frame.Action {
@@ -327,10 +336,36 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 				if _, err := session.Cancel(context.Background(), "run"); !errors.Is(err, errUnavailable) {
 					t.Fatalf("frame %d: cancel error = %v", i+1, err)
 				}
+				execution.cancelRefused++
 			case "resume":
-				if _, _, err := session.Resume(context.Background(), base.ResumeRequest{RunID: "run"}); !errors.Is(err, errUnavailable) {
+				if control.Expect == "run-not-found" {
+					if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: protocol.RunID(control.RunID)}); !errors.Is(err, base.ErrRunNotFound) || stream != nil {
+						t.Fatalf("frame %d: resume error = %v", i+1, err)
+					}
+					execution.resumeRefused++
+					break
+				}
+				recordSettled()
+				if len(execution.runs) == 0 {
+					t.Fatalf("frame %d: no delivered run to replay", i+1)
+				}
+				delivered := execution.runs[len(execution.runs)-1]
+				recovery, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: delivered[0].RunID})
+				if err != nil || recovery.ReplayGap != nil {
 					t.Fatalf("frame %d: resume error = %v", i+1, err)
 				}
+				want, err := json.Marshal(delivered)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := json.Marshal(adaptertest.Drain(t, stream, 5*time.Second))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("frame %d: replay %s differs from delivery %s", i+1, got, want)
+				}
+				execution.resumeReplayed++
 			case "resolve":
 				if err := session.Resolve(context.Background(), base.InteractionResolution{}); !errors.Is(err, errUnavailable) {
 					t.Fatalf("frame %d: resolve error = %v", i+1, err)
@@ -350,7 +385,6 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 			if client.callCount() != submits {
 				t.Fatalf("frame %d: adapter control produced a native request", i+1)
 			}
-			execution.controlsUnavailable = true
 		case "wait-submit":
 
 			waitReap()
@@ -365,10 +399,7 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 			t.Fatalf("frame %d: unsupported action %q for the in-process harness", i+1, frame.Action)
 		}
 	}
-	waitReap()
-	for _, result := range settled {
-		execution.record(t, result.admission, result.stream, result.err)
-	}
+	recordSettled()
 	execution.wirePrompts = client.callCount()
 	if execution.wirePrompts != submits {
 		t.Fatalf("adapter wrote %d native prompts for %d submissions", execution.wirePrompts, submits)
@@ -503,17 +534,20 @@ func runDSHProcessCase(t *testing.T, dir string, definition dshCorpusCase, frame
 }
 
 type dshExecution struct {
-	descriptor          base.Descriptor
-	admissions          []protocol.MessageSubmitResponse
-	submitErrors        []error
-	envelopes           []protocol.Envelope
-	wirePrompts         int
-	logLines            []string
-	openErr             error
-	closed              bool
-	overlapRejected     bool
-	controlsUnavailable bool
-	assertStates        []string
+	descriptor      base.Descriptor
+	admissions      []protocol.MessageSubmitResponse
+	submitErrors    []error
+	envelopes       []protocol.Envelope
+	runs            [][]protocol.Envelope
+	wirePrompts     int
+	logLines        []string
+	openErr         error
+	closed          bool
+	overlapRejected bool
+	cancelRefused   int
+	resumeReplayed  int
+	resumeRefused   int
+	assertStates    []string
 }
 
 func (e *dshExecution) record(t *testing.T, admission protocol.MessageSubmitResponse, stream base.EventStream, err error) {
@@ -529,6 +563,7 @@ func (e *dshExecution) record(t *testing.T, admission protocol.MessageSubmitResp
 	events := adaptertest.Drain(t, stream, 5*time.Second)
 	if len(events) > 0 {
 		e.validate(t, admission, events)
+		e.runs = append(e.runs, events)
 	}
 	e.envelopes = append(e.envelopes, events...)
 }
@@ -731,9 +766,13 @@ func dshLoadFrames(t *testing.T, filename string) ([]dshFrame, []dshDecodedFrame
 				}
 			case "oap_control":
 				switch control.Op {
-				case "cancel", "resume", "resolve":
-					if control.Expect != "unavailable" {
+				case "cancel", "resolve":
+					if control.Expect != "unavailable" || control.RunID != "" {
 						t.Fatalf("frame %d invalid oap control expectation", i+1)
+					}
+				case "resume":
+					if (control.Expect != "replay" || control.RunID != "") && (control.Expect != "run-not-found" || control.RunID == "") {
+						t.Fatalf("frame %d invalid resume expectation", i+1)
 					}
 				case "assert-state":
 					if control.Status != "idle" && control.Status != "running" {
@@ -1190,8 +1229,16 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 					ok = false
 				}
 			}
-		case "no-native-cancel", "no-implied-replay":
-			ok = execution.controlsUnavailable && execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
+		case "no-native-cancel":
+			feature, advertised := execution.descriptor.Capabilities.Features["run.cancel"]
+			ok = execution.cancelRefused >= 1 && advertised && feature.Level == protocol.SupportUnavailable && execution.descriptor.CancellationTarget == "none" &&
+				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
+		case "no-implied-replay":
+			feature, advertised := execution.descriptor.Capabilities.Features["run.replay"]
+			journal := execution.descriptor.Journal
+			ok = execution.resumeReplayed >= 1 && execution.resumeRefused >= 1 && advertised && feature.Level == protocol.SupportDegraded &&
+				journal.Replay == protocol.SupportDegraded && journal.Persistence == "process_memory" &&
+				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "no-wire-claim":
 			_, err := native.DecodeNotification("agent/inbox/claimed", []byte(`{"message":{"id":"m","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"user"}},"turn":1}`))
 			deletion := false
@@ -1360,6 +1407,19 @@ func assertDSHCorpusInventory(t *testing.T, root string, manifest dshCorpusManif
 	sort.Strings(unlisted)
 	if len(unlisted) > 0 {
 		t.Fatalf("unlisted corpus files: %v", unlisted)
+	}
+}
+
+func dshAssertCapabilities(t *testing.T, definition dshCorpusCase, descriptor base.Descriptor) {
+	t.Helper()
+	for key, level := range definition.Capabilities {
+		feature, ok := descriptor.Capabilities.Features[key]
+		if !ok {
+			t.Fatalf("case advertises unknown capability %q", key)
+		}
+		if string(feature.Level) != level {
+			t.Fatalf("capability %q = %q, case claims %q", key, feature.Level, level)
+		}
 	}
 }
 

@@ -1,6 +1,6 @@
 {
   "advertised_capabilities": {
-    "run.resume": "unavailable",
+    "run.resume": "degraded",
     "session.message.delivery.queue": "unavailable",
     "session.message.delivery.steer": "unavailable"
   },

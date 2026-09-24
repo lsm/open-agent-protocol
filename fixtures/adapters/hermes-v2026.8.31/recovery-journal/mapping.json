@@ -1,0 +1,13 @@
+[
+  {"index":1,"type":"oap_control:resume","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"a native session id is not an OAP run: run_not_found"},
+  {"index":2,"type":"request:prompt.submit","direction":"host-to-gateway","classification":"mapped","fidelity":"native","oap":"session.message.submit(auto→start)"},
+  {"index":3,"type":"response:prompt.submit","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"admission receipt (status-only)"},
+  {"index":4,"type":"event/message.start","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.started (by construction)"},
+  {"index":5,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":6,"type":"oap_control:resume","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"run.resume replays the adapter journal, then follows the live run"},
+  {"index":7,"type":"event/message.complete","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.completed(usage)"},
+  {"index":8,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},
+  {"index":9,"type":"oap_control:resume","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"run.resume replays an ended run's retained suffix"},
+  {"index":10,"type":"oap_control:assert-state","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"reducer-owned session state"},
+  {"index":11,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session close via stdin EOF"}
+]

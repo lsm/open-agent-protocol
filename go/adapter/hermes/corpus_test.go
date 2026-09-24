@@ -110,6 +110,7 @@ type hmCorpusCase struct {
 	IdentityMap  map[string]string  `json:"identity_map"`
 	ServerMode   string             `json:"server_mode,omitempty"`
 	OpenError    bool               `json:"open_error,omitempty"`
+	JournalCap   int                `json:"journal_capacity,omitempty"`
 }
 type hmCorpusProvenance struct {
 	Repository string          `json:"repository"`
@@ -133,6 +134,8 @@ type hmControl struct {
 	Answer string `json:"answer,omitempty"`
 	Status string `json:"status,omitempty"`
 	Expect string `json:"expect,omitempty"`
+	RunID  string `json:"run_id,omitempty"`
+	After  uint64 `json:"after,omitempty"`
 }
 type hmCorpusMapping struct {
 	Index          int    `json:"index"`
@@ -227,7 +230,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	t.Helper()
 	execution := hmExecution{nativeWrites: map[string]int{}}
 	client := newHMCorpusClient()
-	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return client, "sess0001", nil }), Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return client, "sess0001", nil }), Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: hmJournalCapacity(definition)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +250,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	}
 	var pending chan hmSubmit
 	var settled []hmSubmit
+	var resumes []hmResume
 	var pendingResolve chan error
 
 	waitReap := func() {
@@ -354,13 +358,23 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 				execution.submitClosed = true
 			case "resume":
 				calls := client.totalCalls()
-				if _, _, err := session.Resume(context.Background(), base.ResumeRequest{RunID: "run"}); !errors.Is(err, errUnavailable) {
-					t.Fatalf("frame %d: resume error = %v, want %v", i+1, err, errUnavailable)
+				if control.Expect == "run-not-found" {
+					if _, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: protocol.RunID(control.RunID)}); !errors.Is(err, base.ErrRunNotFound) || stream != nil {
+						t.Fatalf("frame %d: resume of %q = %v, want %v", i+1, control.RunID, err, base.ErrRunNotFound)
+					}
+					execution.resumeRefused++
+				} else {
+					waitReap()
+					if len(settled) == 0 || settled[len(settled)-1].err != nil {
+						t.Fatalf("frame %d: no admitted run to resume", i+1)
+					}
+					target := len(settled) - 1
+					recovery, stream, err := session.Resume(context.Background(), base.ResumeRequest{RunID: settled[target].admission.RunID, AfterSequence: control.After})
+					resumes = append(resumes, hmResume{frame: i + 1, settled: target, control: *control, recovery: recovery, stream: stream, err: err})
 				}
 				if client.totalCalls() != calls {
 					t.Fatalf("frame %d: resume produced a native request", i+1)
 				}
-				execution.resumeUnavailable++
 			case "close":
 				waitReap()
 				if err := session.Close(context.Background()); err != nil {
@@ -393,8 +407,13 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	}
 	waitReap()
 	joinResolve()
-	for _, result := range settled {
-		execution.record(t, result.admission, result.stream, result.err)
+	for index, result := range settled {
+		delivered := execution.record(t, result.admission, result.stream, result.err)
+		for _, resume := range resumes {
+			if resume.settled == index {
+				execution.assertResume(t, resume, delivered)
+			}
+		}
 	}
 	for _, method := range client.methods() {
 		if !hmAllowedMethod(method) {
@@ -420,7 +439,7 @@ func runHermesProcessCase(t *testing.T, dir string, definition hmCorpusCase, fra
 		"OAP_HM_FIXTURE_LOG=" + logPath,
 		"OAP_HM_FIXTURE_SCRIPT=" + filepath.Join(dir, definition.Native),
 	}
-	implementation, err := New(Config{Executable: self, Args: []string{"--hermes-fixture-server"}, Environment: environment, WorkingDirectory: workspace, Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: 64})
+	implementation, err := New(Config{Executable: self, Args: []string{"--hermes-fixture-server"}, Environment: environment, WorkingDirectory: workspace, Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: hmJournalCapacity(definition)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,24 +563,43 @@ func runHermesProcessCase(t *testing.T, dir string, definition hmCorpusCase, fra
 }
 
 type hmExecution struct {
-	descriptor        base.Descriptor
-	admissions        []protocol.MessageSubmitResponse
-	submitErrors      []error
-	envelopes         []protocol.Envelope
-	runs              [][]protocol.Envelope
-	wirePrompts       int
-	logLines          []string
-	nativeWrites      map[string]int
-	openErr           error
-	closed            bool
-	closeErr          error
-	overlapRejected   bool
-	submitClosed      bool
-	resumeUnavailable int
-	assertStates      []string
+	descriptor      base.Descriptor
+	admissions      []protocol.MessageSubmitResponse
+	submitErrors    []error
+	envelopes       []protocol.Envelope
+	runs            [][]protocol.Envelope
+	wirePrompts     int
+	logLines        []string
+	nativeWrites    map[string]int
+	openErr         error
+	closed          bool
+	closeErr        error
+	overlapRejected bool
+	submitClosed    bool
+	resumeReplayed  int
+	resumeFollowed  int
+	resumeGaps      int
+	resumeRefused   int
+	assertStates    []string
 }
 
-func (e *hmExecution) record(t *testing.T, admission protocol.MessageSubmitResponse, stream base.EventStream, err error) {
+type hmResume struct {
+	frame    int
+	settled  int
+	control  hmControl
+	recovery base.Recovery
+	stream   base.EventStream
+	err      error
+}
+
+func hmJournalCapacity(definition hmCorpusCase) int {
+	if definition.JournalCap > 0 {
+		return definition.JournalCap
+	}
+	return 64
+}
+
+func (e *hmExecution) record(t *testing.T, admission protocol.MessageSubmitResponse, stream base.EventStream, err error) []protocol.Envelope {
 	t.Helper()
 	if err == nil {
 		e.admissions = append(e.admissions, admission)
@@ -569,7 +607,7 @@ func (e *hmExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 		e.submitErrors = append(e.submitErrors, err)
 	}
 	if stream == nil {
-		return
+		return nil
 	}
 	events := adaptertest.Drain(t, stream, 5*time.Second)
 	if len(events) > 0 {
@@ -579,6 +617,51 @@ func (e *hmExecution) record(t *testing.T, admission protocol.MessageSubmitRespo
 		e.runs = append(e.runs, nil)
 	}
 	e.envelopes = append(e.envelopes, events...)
+	return events
+}
+
+func (e *hmExecution) assertResume(t *testing.T, resume hmResume, delivered []protocol.Envelope) {
+	t.Helper()
+	if len(delivered) == 0 {
+		t.Fatalf("frame %d: the resumed run delivered nothing", resume.frame)
+	}
+	latest := *delivered[len(delivered)-1].Sequence
+	switch resume.control.Expect {
+	case "replay":
+		if resume.err != nil || resume.recovery.ReplayGap != nil {
+			t.Fatalf("frame %d: resume = %+v, %v", resume.frame, resume.recovery, resume.err)
+		}
+		var suffix []protocol.Envelope
+		for _, envelope := range delivered {
+			if *envelope.Sequence > resume.control.After {
+				suffix = append(suffix, envelope)
+			}
+		}
+		want, err := json.Marshal(suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := json.Marshal(adaptertest.Drain(t, resume.stream, 5*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(suffix) == 0 || !bytes.Equal(got, want) {
+			t.Fatalf("frame %d: replay %s differs from delivery %s", resume.frame, got, want)
+		}
+		e.resumeReplayed++
+		if resume.recovery.State.ActiveRunID == delivered[0].RunID {
+			e.resumeFollowed++
+		}
+	case "gap":
+		var gap *base.ReplayGap
+		if !errors.As(resume.err, &gap) || resume.recovery.ReplayGap != gap || gap.RequestedAfter != resume.control.After || gap.LatestAvailable != latest || (gap.OldestAvailable != 0 && gap.OldestAvailable <= resume.control.After+1) {
+			t.Fatalf("frame %d: resume = %+v, %v", resume.frame, resume.recovery, resume.err)
+		}
+		if replayed := adaptertest.Drain(t, resume.stream, 5*time.Second); len(replayed) != 0 {
+			t.Fatalf("frame %d: a gap replayed %d envelopes", resume.frame, len(replayed))
+		}
+		e.resumeGaps++
+	}
 }
 
 func (e *hmExecution) validate(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
@@ -900,7 +983,10 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 						t.Fatalf("frame %d invalid submit-closed expectation", i+1)
 					}
 				case "resume":
-					if control.Expect != "unavailable" {
+					switch {
+					case (control.Expect == "replay" || control.Expect == "gap") && control.RunID == "":
+					case control.Expect == "run-not-found" && control.RunID != "" && control.After == 0:
+					default:
 						t.Fatalf("frame %d invalid resume expectation", i+1)
 					}
 				case "close":
@@ -1566,10 +1652,17 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			}
 			ok = hasTick && usage && len(hmEventIndexes(decoded, native.EventSessionUsage)) == 1
 		case "replay-in-window", "replay-truncated", "replay-unknown-session":
-
+			executed := execution.resumeReplayed
+			switch label {
+			case "replay-truncated":
+				executed = execution.resumeGaps
+			case "replay-unknown-session":
+				executed = execution.resumeRefused
+			}
 			level, advertised := hmDescriptorLevel(*execution, "run.replay")
-			ok = !hmWrote(*execution, native.MethodSessionEventsSinc) && !hmWrote(*execution, native.MethodSessionEventsStat) &&
-				advertised && level == protocol.SupportUnavailable &&
+			journal := execution.descriptor.Journal
+			ok = executed > 0 && !hmWrote(*execution, native.MethodSessionEventsSinc) && !hmWrote(*execution, native.MethodSessionEventsStat) &&
+				advertised && level == protocol.SupportDegraded && journal.Replay == protocol.SupportDegraded && journal.Persistence == "process_memory" &&
 				execution.wirePrompts == len(execution.admissions)+len(execution.submitErrors)
 		case "epoch-restart":
 
@@ -1589,11 +1682,11 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			ok = restart && execution.submitClosed
 		case "resume-live":
 			level, advertised := hmDescriptorLevel(*execution, "run.resume")
-			ok = execution.resumeUnavailable >= 2 && !hmWrote(*execution, "session.resume") &&
-				advertised && level == protocol.SupportUnavailable
+			ok = execution.resumeFollowed >= 1 && execution.resumeRefused >= 1 && !hmWrote(*execution, "session.resume") &&
+				advertised && level == protocol.SupportDegraded
 		case "branch", "undo":
 			ok = !hmWrote(*execution, "session."+label) && !hmWrote(*execution, native.MethodSessionEventsSinc) &&
-				execution.resumeUnavailable > 0 && len(execution.admissions) > 0
+				execution.resumeReplayed > 0 && len(execution.admissions) > 0
 		case "global-events-unsequenced":
 			globals := 0
 			for i := range decoded {

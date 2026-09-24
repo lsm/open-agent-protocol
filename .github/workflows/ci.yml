@@ -27,7 +27,7 @@ jobs:
       - name: Race test
         run: go test -race ./...
       - name: Check executable core
-        run: go run ./go/cmd/oap check
+        run: go run ./go/cmd/goap check
 
   ts:
     runs-on: ubuntu-latest

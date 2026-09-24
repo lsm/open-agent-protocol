@@ -1,6 +1,6 @@
 # oap-client (TypeScript)
 
-The TypeScript client for a local `oap serve` daemon: drives any OAP adapter
+The TypeScript client for a local `goap serve` daemon: drives any OAP adapter
 over the daemon's HTTP + SSE surface with verbatim schema/v0.1 envelopes. It
 is the counterpart of the Go `client` package — same wire surface, same
 semantics — so non-Go hosts (HyperNeo and friends) can consume the exact
@@ -158,7 +158,7 @@ npm test
   run changes under a cursor).
 - The schema cross-check compares every payload interface against
   `schema/v0.1`.
-- The integration test builds the `oap` binary (`go build ./cmd/oap`), boots
+- The integration test builds the `goap` binary (`go build ./go/cmd/goap`), boots
   it with the built-in memory adapter on a loopback port, and drives the full
   lifecycle — open → submit → gates → terminal → disconnect/resume — through
   the platform fetch. It skips (not fails) when the go toolchain is missing;

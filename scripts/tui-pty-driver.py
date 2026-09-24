@@ -15,6 +15,13 @@
 # FixtureRuntime in zig/src/tui/app.zig); plain values stay a single canned
 # reply. A literal `|` or `\` inside a step payload is escaped as `\|` / `\\`.
 #
+# The provider-* scenarios unset OAPX_TUI_FIXTURE and register
+# scripts/tui-fake-provider.py as a custom provider in $HOME/.oapx/providers.json,
+# one per wire format plus an env-keyed variant, and assert the streamed reply
+# renders and the session log records its text_delta events and message_end.
+# provider-https needs --tls-dir (a gen-certs directory whose ca.pem the system
+# trust store holds) and is reported as skipped without it.
+#
 # Usage:
 #   zig build install -Doptimize=ReleaseFast --prefix /tmp/oapx-pty
 #   python3 scripts/tui-pty-driver.py --binary /tmp/oapx-pty/bin/oapx \
@@ -105,6 +112,10 @@ OSC52_RE = re.compile(rb"\x1b\]52;c;([^\x07\x1b]*)(?:\x07|\x1b\\)")
 
 
 class ScenarioError(Exception):
+    pass
+
+
+class ScenarioSkipped(Exception):
     pass
 
 
@@ -386,7 +397,7 @@ class VtScreen:
 
 
 class PtySession:
-    def __init__(self, args, fixture_text=None, home=None):
+    def __init__(self, args, fixture_text=None, home=None, use_fixture=True, extra_env=None):
         self.binary = args.binary
         self.width = args.width
         self.height = args.height
@@ -412,7 +423,10 @@ class PtySession:
                     env.pop(name, None)
                 env["HOME"] = self.home
                 env["TERM"] = "xterm-256color"
-                env[FIXTURE_ENV_VAR] = self.fixture_text
+                env.pop(FIXTURE_ENV_VAR, None)
+                if use_fixture:
+                    env[FIXTURE_ENV_VAR] = self.fixture_text
+                env.update(extra_env or {})
                 self.spawned_at = time.monotonic()
                 self.proc = subprocess.Popen(
                     [self.binary, "--tui"],
@@ -800,7 +814,7 @@ def assert_status_bar_whole_segments(run, what):
 
 
 class SweepRun:
-    def __init__(self, args, name, fixture_text, width=None, height=None, home=None):
+    def __init__(self, args, name, fixture_text, width=None, height=None, home=None, use_fixture=True, extra_env=None):
         self.args = args
         self.name = name
         self.notes = []
@@ -813,7 +827,7 @@ class SweepRun:
         if height is not None:
             frame_args.height = height
         try:
-            self.session = PtySession(frame_args, fixture_text=fixture_text, home=home)
+            self.session = PtySession(frame_args, fixture_text=fixture_text, home=home, use_fixture=use_fixture, extra_env=extra_env)
         except OSError as err:
             raise ScenarioError(f"failed to start {args.binary} in a pseudo-terminal: {err}")
 
@@ -1412,6 +1426,147 @@ def scenario_session_roundtrip(args):
     return second
 
 
+FAKE_PROVIDER_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tui-fake-provider.py")
+FAKE_PROVIDER_MODEL = "pty-fake-model"
+FAKE_PROVIDER_DELTAS = 5
+FAKE_PROVIDER_KEY_ENV = "OAPX_PTY_FAKE_PROVIDER_KEY"
+
+
+class FakeProvider:
+    def __init__(self, log_path, require_key=None, tls_dir=None):
+        command = [sys.executable, FAKE_PROVIDER_SCRIPT, "serve", "--deltas", str(FAKE_PROVIDER_DELTAS), "--model", FAKE_PROVIDER_MODEL, "--log", log_path]
+        if require_key is not None:
+            command += ["--require-key", require_key]
+        if tls_dir is not None:
+            command += ["--cert", os.path.join(tls_dir, "leaf.pem"), "--key", os.path.join(tls_dir, "leaf.key")]
+        self.log_path = log_path
+        self.proc = subprocess.Popen(command, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True)
+        ready, _, _ = select.select([self.proc.stdout], [], [], 10.0)
+        line = self.proc.stdout.readline() if ready else ""
+        if not line.strip().isdigit():
+            self.close()
+            raise ScenarioError(f"fake provider did not report a port (got {line!r})")
+        self.port = int(line)
+
+    def requests(self):
+        try:
+            with open(self.log_path) as handle:
+                return [json.loads(line) for line in handle if line.strip()]
+        except OSError:
+            return []
+
+    def close(self):
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
+
+
+def session_events(home):
+    sessions = os.path.join(home, ".oapx", "sessions")
+    events = []
+    try:
+        names = sorted(os.listdir(sessions))
+    except OSError:
+        return events
+    for name in names:
+        if not name.endswith(".jsonl"):
+            continue
+        with open(os.path.join(sessions, name)) as handle:
+            for line in handle:
+                try:
+                    events.append(json.loads(line).get("event", {}))
+                except ValueError:
+                    pass
+    return events
+
+
+def run_fake_provider_scenario(args, name, api, keyed=False, tls=False):
+    expected = "".join(f"fp{i} " for i in range(FAKE_PROVIDER_DELTAS)).strip()
+    home = tempfile.mkdtemp(prefix=f"makai-pty-home-{name}-")
+    scheme = "https" if tls else "http"
+    key = "pty-fake-key-value" if keyed else None
+    provider = None
+    try:
+        provider = FakeProvider(os.path.join(home, "fake-provider.jsonl"), require_key=key, tls_dir=args.tls_dir if tls else None)
+        os.makedirs(os.path.join(home, ".oapx"))
+        entry = {
+            "id": "pty-fake",
+            "api": api,
+            "base_url": f"{scheme}://{'localhost' if tls else '127.0.0.1'}:{provider.port}",
+            "auth": {"env": FAKE_PROVIDER_KEY_ENV} if keyed else "none",
+            "models": [FAKE_PROVIDER_MODEL],
+        }
+        with open(os.path.join(home, ".oapx", "providers.json"), "w") as handle:
+            json.dump({"providers": [entry]}, handle)
+        extra_env = {FAKE_PROVIDER_KEY_ENV: key} if keyed else {}
+        run = SweepRun(args, name, "", home=home, use_fixture=False, extra_env=extra_env)
+        try:
+            run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
+            run.settle()
+            run.session.type_text(f"/model {FAKE_PROVIDER_MODEL}")
+            run.session.send(KEY_ENTER, "Enter (/model)")
+            run.settle(0.5)
+            run.frame("model-selected")
+            reply_from = len(run.session.plain)
+            run.session.type_text("say the fake words")
+            run.session.send(KEY_ENTER, "Enter (submit)")
+            try:
+                run.session.wait_for(expected.encode(), args.stream_timeout, f"streamed reply {expected!r}", since=reply_from)
+            except ScenarioError as err:
+                raise ScenarioError(f"{name}: {err}; fake provider saw {provider.requests()!r}")
+            run.settle()
+            run.frame("reply")
+            posts = [r for r in provider.requests() if r["method"] == "POST"]
+            if not posts:
+                raise ScenarioError(f"{name}: the reply rendered but the fake provider saw no POST")
+            if keyed and not all(r["authorized"] for r in posts):
+                raise ScenarioError(f"{name}: a POST reached the fake provider without the configured key")
+            run.quit()
+            events = session_events(home)
+            deltas = [e for e in events if e.get("type") == "text_delta"]
+            ends = [e for e in events if e.get("type") == "message_end" and e.get("role") == "assistant"]
+            if len(deltas) < FAKE_PROVIDER_DELTAS:
+                raise ScenarioError(f"{name}: session log holds {len(deltas)} text_delta events, expected at least {FAKE_PROVIDER_DELTAS}")
+            if not ends or ends[-1].get("text", "").strip() != expected:
+                raise ScenarioError(f"{name}: session log assistant message_end text is {[e.get('text') for e in ends]!r}, expected {expected!r}")
+            run.note(f"{api} over {scheme}{' with an env key' if keyed else ''}: {len(posts)} POST(s), {len(deltas)} text_delta events, message_end {expected!r}")
+        except ScenarioError as err:
+            run.error = str(err)
+            log = os.path.join(home, ".oapx", "tui-stderr.log")
+            if os.path.exists(log):
+                with open(log, errors="replace") as handle:
+                    run.note("tui-stderr.log tail: " + handle.read()[-1500:])
+        finally:
+            run.close()
+        return run
+    finally:
+        if provider is not None:
+            provider.close()
+        shutil.rmtree(home, ignore_errors=True)
+
+
+def scenario_provider_anthropic(args):
+    return run_fake_provider_scenario(args, "provider-anthropic", "anthropic-messages")
+
+
+def scenario_provider_completions(args):
+    return run_fake_provider_scenario(args, "provider-completions", "openai-completions")
+
+
+def scenario_provider_responses(args):
+    return run_fake_provider_scenario(args, "provider-responses", "openai-responses")
+
+
+def scenario_provider_keyed(args):
+    return run_fake_provider_scenario(args, "provider-keyed", "openai-completions", keyed=True)
+
+
+def scenario_provider_https(args):
+    if not args.tls_dir:
+        raise ScenarioSkipped("provider-https needs --tls-dir: a gen-certs directory whose ca.pem the system trust store holds (CI installs it with update-ca-certificates)")
+    return run_fake_provider_scenario(args, "provider-https", "anthropic-messages", tls=True)
+
+
 SCENARIOS = {
     "core-loop": None,
     "commands": scenario_commands,
@@ -1422,6 +1577,11 @@ SCENARIOS = {
     "session-roundtrip": scenario_session_roundtrip,
     "tool-loss-reconcile": scenario_tool_loss_reconcile,
     "tool-loss-flush-release": scenario_tool_loss_flush_release,
+    "provider-anthropic": scenario_provider_anthropic,
+    "provider-completions": scenario_provider_completions,
+    "provider-responses": scenario_provider_responses,
+    "provider-keyed": scenario_provider_keyed,
+    "provider-https": scenario_provider_https,
 }
 
 
@@ -1516,6 +1676,8 @@ def run_sweep_scenario(args, repo_root, name):
             "notes": run.notes,
             "output_dir": output_dir,
         }
+    except ScenarioSkipped as err:
+        return {"scenario": name, "result": "skip", "reason": str(err), "notes": []}
     except (ScenarioError, OSError) as err:
         return {"scenario": name, "result": "fail", "error": str(err), "notes": []}
 
@@ -1532,6 +1694,7 @@ def main():
     parser.add_argument("--scenario", default="core-loop", choices=list(SCENARIOS) + ["all"])
     parser.add_argument("--startup-timeout", type=float, default=15.0)
     parser.add_argument("--stream-timeout", type=float, default=15.0)
+    parser.add_argument("--tls-dir", help="gen-certs output of scripts/tui-fake-provider.py whose ca.pem the system trust store holds; enables provider-https")
     args = parser.parse_args()
     if sys.platform == "darwin":
         parser.error(
@@ -1566,7 +1729,7 @@ def main():
     for name in names:
         result = run_sweep_scenario(args, repo_root, name)
         results.append(result)
-        status = "OK" if result["result"] == "pass" else f"FAIL: {result.get('error', '')}"
+        status = {"pass": "OK", "skip": f"SKIP: {result.get('reason', '')}"}.get(result["result"], f"FAIL: {result.get('error', '')}")
         print(f"tui-pty-driver: {name}: {status}", file=sys.stderr)
 
     summary = {

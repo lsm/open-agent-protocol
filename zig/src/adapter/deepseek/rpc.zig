@@ -1,4 +1,5 @@
 const std = @import("std");
+const gojson = @import("gojson");
 
 pub const frame_limit_default: usize = 8 << 20;
 
@@ -63,6 +64,7 @@ fn identifiesRequest(value: std.json.Value) bool {
 pub fn parseMessage(arena: std.mem.Allocator, line: []const u8) !Message {
     if (!std.unicode.utf8ValidateSlice(line)) return Error.InvalidMessage;
     if (line.len == 0 or line[0] != '{' or line[line.len - 1] != '}') return Error.InvalidMessage;
+    if (!gojson.withinNestingLimit(line)) return Error.InvalidMessage;
 
     const document = std.json.parseFromSliceLeaky(std.json.Value, arena, line, .{}) catch return Error.InvalidMessage;
     if (document != .object) return Error.InvalidMessage;
@@ -262,4 +264,37 @@ test "an error object carries an integer code and a non-empty message, and nothi
     try refuses("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":\"x\",\"other\":1}}");
     try refuses("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":\"boom\"}");
     try refuses("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":[]}");
+}
+
+fn nestedParams(allocator: std.mem.Allocator, arrays: usize) ![]const u8 {
+    var body = std.ArrayList(u8).empty;
+    try body.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":");
+    try body.appendNTimes(allocator, '[', arrays);
+    try body.appendNTimes(allocator, ']', arrays);
+    try body.appendSlice(allocator, "}");
+    return body.items;
+}
+
+test "a frame is refused once it nests past ten thousand containers, counting the frame object itself" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqual(Kind.notification, (try parseMessage(allocator, try nestedParams(allocator, 9999))).kind);
+    try std.testing.expectError(Error.InvalidMessage, parseMessage(allocator, try nestedParams(allocator, 10000)));
+    var decoder = Decoder{ .source = try std.mem.concat(allocator, u8, &.{ try nestedParams(allocator, 10000), "\n" }) };
+    try std.testing.expectError(Error.InvalidMessage, decoder.next(allocator));
+}
+
+test "brackets inside a string value are text, not nesting" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var body = std.ArrayList(u8).empty;
+    try body.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"session.event\",\"params\":{\"text\":\"");
+    try body.appendNTimes(allocator, '[', 10001);
+    try body.appendSlice(allocator, "\"}}");
+
+    try std.testing.expectEqual(Kind.notification, (try parseMessage(allocator, body.items)).kind);
 }

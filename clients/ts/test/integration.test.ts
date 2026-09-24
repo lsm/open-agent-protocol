@@ -1,5 +1,5 @@
 /**
- * The integration test: builds the oap binary, boots it with the built-in
+ * The integration test: builds the goap binary, boots it with the built-in
  * memory adapter on a loopback port, and drives the full lifecycle — open →
  * submit → gates → terminal → disconnect/resume — through the platform
  * fetch. It skips (not fails) when the go or node prerequisites are
@@ -56,15 +56,15 @@ const go = process.env.OAP_TS_SKIP_INTEGRATION === '1' ? null : findGo();
 const skip = go === null ? 'go toolchain not available (set OAP_TS_SKIP_INTEGRATION=1 to silence)' : false;
 
 test(
-  'integration: full lifecycle against oap serve',
+  'integration: full lifecycle against goap serve',
   { skip },
   async (t) => {
     assert.ok(go);
     const workdir = mkdtempSync(join(tmpdir(), 'oap-ts-'));
-    const binary = join(workdir, 'oap');
+    const binary = join(workdir, 'goap');
     t.after(() => rmSync(workdir, { recursive: true, force: true }));
 
-    const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/oap'], {
+    const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/goap'], {
       cwd: repoRoot,
       env: go.env,
       encoding: 'utf8',
@@ -232,10 +232,10 @@ test(
   async (t) => {
     assert.ok(go);
     const workdir = mkdtempSync(join(tmpdir(), 'oap-ts-'));
-    const binary = join(workdir, 'oap');
+    const binary = join(workdir, 'goap');
     t.after(() => rmSync(workdir, { recursive: true, force: true }));
 
-    const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/oap'], {
+    const build = spawnSync(go.binary, ['build', '-o', binary, './go/cmd/goap'], {
       cwd: repoRoot,
       env: go.env,
       encoding: 'utf8',
@@ -309,7 +309,7 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
     let buffered = '';
     const deadline = setTimeout(() => {
       cleanup();
-      reject(new Error(`oap serve did not start: ${buffered || 'no output'}`));
+      reject(new Error(`goap serve did not start: ${buffered || 'no output'}`));
     }, 15000);
     const onData = (chunk: Buffer): void => {
       buffered += chunk.toString('utf8');
@@ -325,7 +325,7 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
     };
     const onExit = (code: number | null): void => {
       cleanup();
-      reject(new Error(`oap serve exited early with code ${code}: ${buffered}`));
+      reject(new Error(`goap serve exited early with code ${code}: ${buffered}`));
     };
     const cleanup = (): void => {
       clearTimeout(deadline);
