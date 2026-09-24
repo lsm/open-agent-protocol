@@ -1,0 +1,234 @@
+[
+  {
+    "id": "caps-req",
+    "payload": {},
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "caps-resp",
+    "in_reply_to": "caps-req",
+    "payload": {
+      "endpoint": {
+        "id": "fixture.endpoint",
+        "name": "Tool-sources fixture endpoint"
+      },
+      "features": {
+        "action.tool_sources.attach": {
+          "level": "native",
+          "limits": {
+            "max_sources": 2,
+            "transports": [
+              "process",
+              "local"
+            ]
+          },
+          "modes": [
+            "session_open"
+          ]
+        },
+        "action.tools.list": {
+          "level": "native"
+        },
+        "session.message.delivery.auto": {
+          "level": "native"
+        },
+        "session.message.submit": {
+          "level": "native"
+        },
+        "session.open": {
+          "level": "native"
+        },
+        "session.state": {
+          "level": "native"
+        }
+      },
+      "sources": [
+        {
+          "display_name": "Harness tools",
+          "id": "native",
+          "kind": "native"
+        }
+      ],
+      "tools": [
+        {
+          "execution_owner": "agent",
+          "input_schema": {
+            "type": "object"
+          },
+          "name": "grep",
+          "source": "native"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "type": "capabilities.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "open-req",
+    "payload": {
+      "session_id": "s1",
+      "tool_sources": [
+        {
+          "command": "/usr/local/bin/mcp-filesystem",
+          "environment": [
+            "MCP_TOKEN"
+          ],
+          "id": "files",
+          "kind": "process"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "open-resp",
+    "in_reply_to": "open-req",
+    "payload": {
+      "session_id": "s1",
+      "sources": [
+        {
+          "display_name": "Harness tools",
+          "id": "native",
+          "kind": "native"
+        },
+        {
+          "id": "files",
+          "kind": "process"
+        }
+      ],
+      "status": "idle"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "open-req-2",
+    "payload": {
+      "session_id": "s1",
+      "tool_sources": [
+        {
+          "command": "/usr/local/bin/mcp-filesystem",
+          "environment": [
+            "MCP_TOKEN"
+          ],
+          "id": "files",
+          "kind": "process"
+        },
+        {
+          "command": "/usr/local/bin/mcp-filesystem",
+          "environment": [
+            "MCP_TOKEN"
+          ],
+          "id": "files",
+          "kind": "process"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "open-resp-2",
+    "in_reply_to": "open-req-2",
+    "payload": {
+      "session_id": "s1",
+      "sources": [
+        {
+          "display_name": "Harness tools",
+          "id": "native",
+          "kind": "native"
+        },
+        {
+          "display_name": "Filesystem",
+          "endpoint": "stdio:filesystem-tools",
+          "id": "files",
+          "kind": "process",
+          "protocol": "mcp"
+        }
+      ],
+      "status": "idle"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "session.open.response",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "list-req",
+    "payload": {
+      "session_id": "s1"
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "action.tools.list.request",
+    "version": "0.1"
+  },
+  {
+    "capability_revision": "tools-v1",
+    "id": "list-resp",
+    "in_reply_to": "list-req",
+    "payload": {
+      "session_id": "s1",
+      "sources": [
+        {
+          "display_name": "Harness tools",
+          "id": "native",
+          "kind": "native"
+        },
+        {
+          "display_name": "Filesystem",
+          "endpoint": "stdio:filesystem-tools",
+          "id": "files",
+          "kind": "process",
+          "protocol": "mcp"
+        }
+      ],
+      "tools": [
+        {
+          "execution_owner": "agent",
+          "input_schema": {
+            "type": "object"
+          },
+          "name": "grep",
+          "source": "native"
+        },
+        {
+          "execution_owner": "agent",
+          "input_schema": {
+            "type": "object"
+          },
+          "name": "mcp__files__read_file",
+          "source": "files"
+        }
+      ]
+    },
+    "profile": "open-agent-protocol.agent-control-core",
+    "protocol": "open-agent-protocol",
+    "session_id": "s1",
+    "type": "action.tools.list.response",
+    "version": "0.1"
+  }
+]

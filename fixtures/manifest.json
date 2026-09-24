@@ -3468,6 +3468,42 @@
       ]
     },
     {
+      "id": "tools-catalog-follows-contradicting-open",
+      "path": "semantic-invalid/tools-catalog-follows-contradicting-open.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch",
+        "session_state_mismatch"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
+      "id": "tools-catalog-ignores-refused-open-sources",
+      "path": "semantic-invalid/tools-catalog-ignores-refused-open-sources.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch",
+        "duplicate_tool_source"
+      ],
+      "units": [
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0008-tool-sources.md"
+      ]
+    },
+    {
       "id": "descriptor-leaks-attachment-fields",
       "path": "semantic-invalid/descriptor-leaks-attachment-fields.json",
       "kind": "semantic-invalid",
@@ -7752,6 +7788,21 @@
       ]
     },
     {
+      "id": "open-reprovide-lists-latest-definition",
+      "path": "valid/open-reprovide-lists-latest-definition.json",
+      "kind": "positive",
+      "valid": true,
+      "units": [
+        "core",
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
       "id": "control-tool-revealed-for-one-run",
       "path": "valid/control-tool-revealed-for-one-run.json",
       "kind": "positive",
@@ -8450,6 +8501,24 @@
     {
       "id": "tools-catalog-alters-provided-schema",
       "path": "semantic-invalid/tools-catalog-alters-provided-schema.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "catalog_mismatch"
+      ],
+      "units": [
+        "control-tools",
+        "tool-sources"
+      ],
+      "provenance": [
+        "drafts/staged-units-graduation.md",
+        "decisions/0011-control-layer-provided-tools.md"
+      ]
+    },
+    {
+      "id": "tools-catalog-keeps-superseded-provided",
+      "path": "semantic-invalid/tools-catalog-keeps-superseded-provided.json",
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",

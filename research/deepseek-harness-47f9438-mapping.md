@@ -609,19 +609,28 @@ native text for an unknown required event and routes it through
 `transportFailed`, and tool-call arguments the port cannot hold now route the
 same way, as `deepseek native: invalid pinned message: invalid tool/call`.
 
-What remains unreproduced is the set of predicates the port never evaluates, so
-nothing reaches `transportFailed` at all:
+The three predicates this section once tabulated as unevaluated — an empty or
+missing tool call `name`, an empty or missing `callId`, and a negative count in
+`usage` (`validUsage`, all six counters) — are now evaluated before the reducer
+reads the frame, and refuse it with the oracle's text,
+`invalid tool/call` and `invalid assistant/message`, through the same
+`transportFailed` path. Each case, admitted and refused, was established by
+running `DecodeNotification` rather than read from the struct tags; a JSON
+`null` for either string is refused like an empty one, and a `null` counter or
+`usage` is admitted.
 
-| native member | where the oracle refuses | what the oracle emits | what the port emits |
-| --- | --- | --- | --- |
-| tool call `name` | `Event.Validate`, `validBlock` | `run.failed` / `deepseek_process_exit`, `invalid tool/call` | `action.call.requested` and `.started` carrying `"name": ""`, which the schema declares `nonEmptyString` |
-| `usage.inputTokens`, `usage.outputTokens` | `validUsage` | `run.failed` / `deepseek_process_exit`, `invalid assistant/message` | `run.completed` carrying `"input_tokens": -5`, which the schema declares `minimum: 0` |
-| tool call `callId` | `Event.Validate` | `run.failed` / `deepseek_process_exit`, `invalid tool/call` | a completed projection; the emitted `tool_call_id` is minted, so only the internal key is empty |
+What remains of `Event.Validate` unported, and still tracked as #143:
 
-Each is a missed terminal, and two of the three also produce an envelope the
-shared validator refuses. Tracked as #143, which is smaller than it looks: the
-refusal surface exists, so what is missing is the predicates and the mapping
-from each to its native error text, not a new failure mode.
+- The envelope rules: negative `seq` or `time`, a false `ignorable`, and the
+  surface metadata (`sourceEventSeqs`, `surfaceOp`) on a non-surface event.
+- Strict decode of each kind's `data`: an unknown member, or a member of the
+  wrong JSON type (`"name":5`, `"inputTokens":1.5`), is refused by the oracle
+  with `encoding/json`'s text, which the port neither evaluates nor composes.
+- The per-kind predicates beyond the three above: positive `turn`/`step`,
+  the `turn/end` reason enum, `assistant/message` identity, role, source and
+  `stream` presence, `tool/result`'s single matching block and error shape,
+  `user/message`, `agent/inbox/spliced`, `todo/write`, `request/header` and
+  `request/context`.
 
 That row once held a fourth entry, and it pointed the other way: arguments
 carrying duplicate keys were refused here and accepted by the oracle, because a
