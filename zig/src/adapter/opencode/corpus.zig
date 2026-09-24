@@ -485,12 +485,18 @@ test "the validator the driver runs refuses a trace with a gap in its sequence" 
     try testing.expectError(error.SemanticallyInvalidTrace, validate(allocator, &registry, try protocolTrace(scratch, played.admission, &gapped, false)));
 }
 
-test "the driver's case list is the manifest's, in order" {
+test "the driver's case list is the manifest's, in order, at the pinned tag and commit" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     const root = try adapter_corpus.corpusRoot(scratch, corpus_relative);
-    const manifest = try std.json.parseFromSliceLeaky(std.json.Value, scratch, try readFile(scratch, try std.fs.path.join(scratch, &.{ root, "manifest.json" })), .{});
+    const manifest_text = try readFile(scratch, try std.fs.path.join(scratch, &.{ root, "manifest.json" }));
+    var entries: [cases.len]adapter_corpus.CaseEntry = undefined;
+    for (&entries, cases) |*entry, id| entry.* = .{ .id = id, .path = id };
+    const findings = try adapter_corpus.inventoryFindings(scratch, manifest_text, &entries, &.{});
+    for (findings) |finding| std.debug.print("\n{s}: {s}\n", .{ corpus_relative, finding });
+    try testing.expectEqual(@as(usize, 0), findings.len);
+    const manifest = try std.json.parseFromSliceLeaky(std.json.Value, scratch, manifest_text, .{});
     try testing.expectEqualStrings(native.pinned_tag, manifest.object.get("tag").?.string);
     try testing.expectEqualStrings(session.pinned_commit, manifest.object.get("commit").?.string);
     const listed = manifest.object.get("cases").?.array.items;
