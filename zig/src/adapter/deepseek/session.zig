@@ -14,8 +14,14 @@ pub const Error = error{ InvalidFrame, OutOfMemory, SessionUnusable, SessionClos
 pub const Counters = struct {
     ids: usize = 0,
     clock: i64 = 0,
+    shared: ?*usize = null,
+    now_ms: ?*const fn () i64 = null,
 
     pub fn nextID(self: *Counters, arena: std.mem.Allocator, kind: []const u8) ![]const u8 {
+        if (self.shared) |counter| {
+            counter.* += 1;
+            return std.fmt.allocPrint(arena, "{s}-{d}", .{ kind, counter.* });
+        }
         self.ids += 1;
         const scalar = 'a' + self.ids - 1;
         const point: u21 = if (scalar > 0x10FFFF) 0xFFFD else @intCast(scalar);
@@ -23,6 +29,7 @@ pub const Counters = struct {
     }
 
     pub fn nextTick(self: *Counters) i64 {
+        if (self.now_ms) |clock| return clock();
         self.clock += 1;
         return self.clock;
     }
