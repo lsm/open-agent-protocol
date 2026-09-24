@@ -35,8 +35,8 @@ them per boundary in the pin-specific ledgers:
 - Codex app-server: `codex-app-server-8d7cc24-mapping.md`
 - ACP v1.7.0 / schema v1.21.0: `acp-v1.7.0-mapping.md`
 - Makai `67ad514`: `makai-agent-67ad514-mapping.md`
-- Claude Code / Agent SDK `2.1.263`:
-  `claude-code-agent-sdk-2.1.263-mapping.md`
+- Claude Code / Agent SDK `2.1.280`:
+  `claude-code-agent-sdk-2.1.280-mapping.md`, over the 2.1.263 base mapping
 - Pi `v0.85.1`: `pi-v0.85.1-mapping.md`
 - OpenCode `v1.18.29`: `opencode-v1.18.29-mapping.md`
 - Hermes `v2026.8.31`: `hermes-v2026.8.31-mapping.md`
