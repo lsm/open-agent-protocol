@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Every HTTPS provider response read as empty after #240, so the TUI showed no reply: a turn "completed" with an empty assistant message and no error, on kimi and openai-codex alike. `compat.readResponse` switched to `Reader.readVec`, which may return 0 after only refilling the reader's buffer, as TLS does after a decrypt; callers took that 0 for end of stream. It now reads again until bytes arrive or the stream ends. Plain-HTTP endpoints were unaffected, which is why loopback tests kept passing.
+
 - The Zig DeepSeek adapter validates `subagent.finished` `lastAssistantMessage` the way the Go oracle does: each content block's member set per kind, Go's absent-versus-null rules, and the oracle's error text for mistyped or unknown block members. It previously checked only that the member was an array, so `[{"type":"bogus"}]` was admitted (#143).
 
 - OAP model switching now retains the previous session model until its response is queued, so an allocation failure cannot silently switch the model or leak the old value. Allocation-failure probes cover model switching and listing, plus auth provider listing, login, cancellation, and disconnect. The auth adapter now propagates parsing OOM and releases native auth replies with their owning server allocator.
