@@ -75,13 +75,13 @@ Protocol artifacts:
 
 - [Illustrative protocol envelopes](examples/README.md)
 - `fixtures/`: normative executable conformance traces
-- `fixtures/packs/`: extension packs, loadable with `oap validate -pack`
+- `fixtures/packs/`: extension packs, loadable with `goap validate -pack`
 - `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles
 
 Executable core (Go 1.27 or later):
 
 ```sh
-go run ./go/cmd/oap check
+go run ./go/cmd/goap check
 ```
 
 The command validates positive and negative fixtures and drives the deterministic
@@ -89,10 +89,10 @@ in-memory reference adapter. The reference adapter proves the public adapter
 boundary and bounded process-memory recovery; it is not a production harness or
 a durable persistence implementation.
 
-### Validating a trace (`oap validate`)
+### Validating a trace (`goap validate`)
 
 ```sh
-go run ./go/cmd/oap validate [--format=human|json] [-mode strict|tolerant] [-pack <dir>]... <trace.json>...
+go run ./go/cmd/goap validate [--format=human|json] [-mode strict|tolerant] [-pack <dir>]... <trace.json>...
 ```
 
 `-mode strict` (the default) compiles the bundle exactly as published: an
@@ -267,15 +267,15 @@ adapter's pin — which makes it the first native adapter to exercise the
 degraded opt-in end to end. The reference adapter serves the fixed catalog its
 model gate already enforces.
 
-### Local daemon (`oap serve`)
+### Local daemon (`goap serve`)
 
-`oap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
+`goap serve` exposes the adapter registry over HTTP + Server-Sent Events so any
 client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
 HTTP+SSE codec (`serve/servehttp`) over the embeddable `serve` package; its
 wire behavior is the contract the `client` package proves:
 
 ```sh
-oap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
+goap serve [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
 
 Without `--config` the daemon serves the built-in memory reference adapter
@@ -387,13 +387,13 @@ and closes every session inside a bounded window — active runs that refuse
 Close are cancelled first — so child agent processes are settled rather than
 orphaned.
 
-### Subprocess embedding (`oap serve --stdio`)
+### Subprocess embedding (`goap serve --stdio`)
 
 A host that would rather spawn a child process than manage a port gets the
 same surface over newline-delimited JSON on the process's own pipes:
 
 ```sh
-oap serve --stdio [--config examples/oap-serve.json]
+goap serve --stdio [--config examples/oap-serve.json]
 ```
 
 Spawning the process is the authorization, so there is no port, no TLS and no
@@ -561,13 +561,13 @@ boundary, exactly as `servehttp` does against the bundled schema.
 
 Pick the tier that fits: `adapter.Session` directly for one embedded session
 (a single run stream with a single consumer, replay through `Resume`);
-`serve` for multi-adapter, multi-session hosts in process; `oap serve` plus
+`serve` for multi-adapter, multi-session hosts in process; `goap serve` plus
 `client` for out-of-process or non-Go consumers over HTTP + SSE.
 
 ### Go client (`client`)
 
 The `client` package is the far-side conformance proof for that wire: a public
-Go client that drives `oap serve` over HTTP + SSE, and the template later
+Go client that drives `goap serve` over HTTP + SSE, and the template later
 clients (TypeScript) copy. It speaks verbatim schema/v0.1 envelopes, consumes
 the event stream through a real `text/event-stream` parser, and resolves
 interactive gates as participant `user` by default:
@@ -648,23 +648,23 @@ Every adapter in this repository translates a harness *into* OAP. An endpoint
 is the other direction: one agent loop that speaks OAP itself.
 
 `drafts/endpoint-stdio.md` is the binding — OAP envelopes, one per line, over
-stdin and stdout. It is deliberately narrower than `oap serve --stdio`, which
+stdin and stdout. It is deliberately narrower than `goap serve --stdio`, which
 exposes a hub; an implementer should not have to build a registry, twelve ops
 and multiplexed subscriptions to be conformant.
 
 ```sh
-oap endpoint --adapter memory     # the reference endpoint: one adapter, raw envelopes
-oap conformance                   # drive that reference endpoint and judge it
-oap conformance --command "some-agent --oap" # drive somebody else's
+goap endpoint --adapter memory    # the reference endpoint: one adapter, raw envelopes
+goap conformance                  # drive that reference endpoint and judge it
+goap conformance --command "some-agent --oap" # drive somebody else's
 ```
 
 The binding carries cursor replay as a transport control frame — the same
 place the HTTP binding puts it, where `?after=` and `Last-Event-ID` are not
 envelopes either.
 
-`oap conformance` spawns the command as a process, drives a scripted session
+`goap conformance` spawns the command as a process, drives a scripted session
 over the binding, assembles every envelope it sent and received into a trace,
-and hands that trace to the same validator `oap validate` uses. The runner
+and hands that trace to the same validator `goap validate` uses. The runner
 drives; the validator judges. Driving a process rather than linking a library
 is what keeps the runner usable against an endpoint written in any language.
 
@@ -689,7 +689,7 @@ Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:
 
 ```sh
-go run ./go/cmd/oap providers zai-cn
+go run ./go/cmd/goap providers zai-cn
 ```
 
 Ordinary tests use fake credentials and loopback provider servers. Credentialed
@@ -763,7 +763,7 @@ prebuilt-only, so it cannot be pinned as evidence.
 
 ### Real-process gate coverage
 
-CI runs `gofmt`, `go vet`, the full and race suites, and `oap check` on every
+CI runs `gofmt`, `go vet`, the full and race suites, and `goap check` on every
 push and pull request. The real-process gates above are **not** run in CI:
 they need pinned third-party binaries, are skip-by-default, and require an
 explicit opt-in variable plus an absolute binary path (and optionally a

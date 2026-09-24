@@ -3,8 +3,8 @@
 Status: proposed design
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
-Reference implementation: `oap endpoint`
-Conformance runner: `oap conformance`
+Reference implementation: `goap endpoint`
+Conformance runner: `goap conformance`
 
 This profile may also share one stdio connection with
 `open-agent-protocol.model-provider-core`. In that composed mode the host
@@ -23,12 +23,12 @@ This binding exists because the repository had no answer for an implementer
 asking "what do I build, and how do I know it is right". The corpus tests
 adapters, which reduce native frames; an endpoint has no native frames.
 `adapter/adaptertest` is an in-process Go kit. `client/` and `clients/ts` speak
-HTTP+SSE. What was left was hand-assembling a trace and running `oap validate`
+HTTP+SSE. What was left was hand-assembling a trace and running `goap validate`
 over it, which is authored files agreeing with each other.
 
 ## What this binding is not
 
-`oap serve --stdio` is a different thing and implementers should not build it.
+`goap serve --stdio` is a different thing and implementers should not build it.
 That frontend exposes a **hub**: twelve ops, an `adapter` dimension, cursor
 replay, and several subscriptions multiplexed over one pipe, each line wrapping
 an OAP envelope inside a transport object with its own numeric `id`.
@@ -251,9 +251,9 @@ host that wants the first should not be handed the third.
 
 ## Conformance
 
-`oap conformance --command "<cmd>"` spawns the command, drives a scripted
+`goap conformance --command "<cmd>"` spawns the command, drives a scripted
 session over this binding, assembles every envelope it sent and received into a
-trace, and runs that trace through the same validator `oap validate` uses. It
+trace, and runs that trace through the same validator `goap validate` uses. It
 then asserts the exit contract above.
 
 The point of assembling a trace is that the verdict does not come from the
@@ -261,7 +261,7 @@ runner's own opinion. The runner drives; the validator judges; they are
 different code, and the validator is the one the adapters are already held to.
 
 The runner drives a **process**, not an in-process adapter, so it works against
-any binary regardless of implementation language. `oap endpoint` is the
+any binary regardless of implementation language. `goap endpoint` is the
 known-good target it is developed against.
 
 **What the script needs from you, and what it does not.** It drives one run,

@@ -557,7 +557,7 @@
     <div class="broke">
       <h3>Now break one thing</h3>
       <p>A sibling fixture, <code>fixtures/semantic-invalid/pending-interaction.json</code>, makes the same mistake one envelope earlier: it opens a <code>user.input.requested</code> interaction <code>i1</code>, then completes the run while <code>i1</code> is still waiting on its responder. Nothing about any single envelope is malformed; the schema phase passes. The defect only exists across the trace, which is what the semantic phase is for.</p>
-<pre class="diag">$ oap validate --format=json fixtures/semantic-invalid/pending-interaction.json
+<pre class="diag">$ goap validate --format=json fixtures/semantic-invalid/pending-interaction.json
 
 [
   {
@@ -595,12 +595,12 @@ oap: validation failed            <span class="cmt">(on stderr; exit status 1)</
       <table>
         <thead><tr><th>Command</th><th>What it does</th></tr></thead>
         <tbody>
-          <tr><td class="cmdcell">oap check</td><td class="note">Compiles the schemas, runs every fixture, drives the memory adapter demo. The one command that says yes or no.</td></tr>
-          <tr><td class="cmdcell">oap validate trace.json</td><td class="note">Validate a trace you captured. <code>--format=json</code> for machine output.</td></tr>
-          <tr><td class="cmdcell">oap serve</td><td class="note">HTTP+SSE daemon over the hub: a registry, multi-session fan-out, cursor replay. Loopback only, no auth, single user.</td></tr>
-          <tr><td class="cmdcell">oap serve --stdio</td><td class="note">The same hub over newline JSON — twelve ops, each line wrapping an envelope in a transport object.</td></tr>
-          <tr><td class="cmdcell">oap endpoint</td><td class="note">One agent loop, raw OAP envelopes, one per line. The shape a harness implementing OAP natively takes.</td></tr>
-          <tr><td class="cmdcell">oap conformance --command "…"</td><td class="note">Spawn somebody's endpoint binary, drive a scripted session, assemble the exchange and run it through the real validator.</td></tr>
+          <tr><td class="cmdcell">goap check</td><td class="note">Compiles the schemas, runs every fixture, drives the memory adapter demo. The one command that says yes or no.</td></tr>
+          <tr><td class="cmdcell">goap validate trace.json</td><td class="note">Validate a trace you captured. <code>--format=json</code> for machine output.</td></tr>
+          <tr><td class="cmdcell">goap serve</td><td class="note">HTTP+SSE daemon over the hub: a registry, multi-session fan-out, cursor replay. Loopback only, no auth, single user.</td></tr>
+          <tr><td class="cmdcell">goap serve --stdio</td><td class="note">The same hub over newline JSON — twelve ops, each line wrapping an envelope in a transport object.</td></tr>
+          <tr><td class="cmdcell">goap endpoint</td><td class="note">One agent loop, raw OAP envelopes, one per line. The shape a harness implementing OAP natively takes.</td></tr>
+          <tr><td class="cmdcell">goap conformance --command "…"</td><td class="note">Spawn somebody's endpoint binary, drive a scripted session, assemble the exchange and run it through the real validator.</td></tr>
           <tr><td class="cmdcell">oapx</td><td class="note">The TUI.</td></tr>
           <tr><td class="cmdcell">oapx run "fix the failing test"</td><td class="note">One shot, same loop, no server.</td></tr>
           <tr><td class="cmdcell">oapx serve agent provider</td><td class="note">Both profiles in one process.</td></tr>
