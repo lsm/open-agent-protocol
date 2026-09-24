@@ -359,6 +359,45 @@ pub fn build(b: *std.Build) void {
     claude_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
     const claude_corpus_test = b.addTest(.{ .root_module = claude_corpus_mod });
 
+    const codex_rpc_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/rpc.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_rpc_mod.addImport("gojson", adapter_gojson_mod);
+    const codex_rpc_test = b.addTest(.{ .root_module = codex_rpc_mod });
+
+    const codex_native_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/native.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_native_mod.addImport("gojson", adapter_gojson_mod);
+    const codex_native_test = b.addTest(.{ .root_module = codex_native_mod });
+
+    const codex_session_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_session_mod.addImport("rpc", codex_rpc_mod);
+    codex_session_mod.addImport("native", codex_native_mod);
+    const codex_session_test = b.addTest(.{ .root_module = codex_session_mod });
+
+    const codex_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/codex/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    codex_corpus_mod.addImport("rpc", codex_rpc_mod);
+    codex_corpus_mod.addImport("native", codex_native_mod);
+    codex_corpus_mod.addImport("session", codex_session_mod);
+    codex_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
+    codex_corpus_mod.addImport("semantic", semantic_mod);
+    codex_corpus_mod.addImport("jsonschema", jsonschema_mod);
+    codex_corpus_mod.addOptions("build_options", gate_options);
+    const codex_corpus_test = b.addTest(.{ .root_module = codex_corpus_mod });
+
     const provider_base_url_mod = b.createModule(.{
         .root_source_file = b.path("src/provider_base_url.zig"),
         .target = target,
@@ -1006,6 +1045,69 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_types", .module = protocol_oap_types_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
         },
+    });
+
+    const adapter_contract_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/contract.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+        },
+    });
+    const adapter_contract_test = b.addTest(.{ .root_module = adapter_contract_mod });
+
+    const adapter_endpoint_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/endpoint.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "json_writer", .module = json_writer_mod },
+            .{ .name = "contract", .module = adapter_contract_mod },
+        },
+    });
+    const adapter_endpoint_test = b.addTest(.{ .root_module = adapter_endpoint_mod });
+
+    const adapter_config_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    adapter_config_mod.addAnonymousImport("example_registry", .{
+        .root_source_file = b.path("../examples/oap-serve.json"),
+    });
+    const adapter_config_test = b.addTest(.{ .root_module = adapter_config_mod });
+
+    const claude_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/claude/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "backend", .module = claude_backend_mod },
+            .{ .name = "session", .module = claude_session_mod },
+            .{ .name = "rpc", .module = claude_rpc_mod },
+            .{ .name = "compat", .module = compat_mod },
+        },
+    });
+    const claude_adapter_test = b.addTest(.{ .root_module = claude_adapter_mod });
+
+    const claude_endpoint_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/unit/claude_endpoint.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "endpoint", .module = adapter_endpoint_mod },
+                .{ .name = "claude_adapter", .module = claude_adapter_mod },
+                .{ .name = "semantic", .module = semantic_mod },
+                .{ .name = "jsonschema", .module = jsonschema_mod },
+                .{ .name = "compat", .module = compat_mod },
+            },
+        }),
     });
 
     const protocol_oap_provider_types_mod = b.createModule(.{
@@ -2097,6 +2199,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "packs", .module = packs_mod },
             .{ .name = "jsonschema", .module = jsonschema_mod },
             .{ .name = "version_options", .module = version_module },
+            .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
+            .{ .name = "adapter_contract", .module = adapter_contract_mod },
+            .{ .name = "adapter_config", .module = adapter_config_mod },
+            .{ .name = "claude_adapter", .module = claude_adapter_mod },
         },
     });
 
@@ -2174,6 +2280,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(claude_backend_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_backend_test).step);
+    test_step.dependOn(&b.addRunArtifact(adapter_contract_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_contract_test).step);
+    test_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
+    test_step.dependOn(&b.addRunArtifact(claude_endpoint_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_endpoint_test).step);
+    test_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_config_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
@@ -2317,6 +2433,14 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_native_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_session_test).step);
+    test_step.dependOn(&b.addRunArtifact(codex_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_rpc_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_native_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_session_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(codex_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);

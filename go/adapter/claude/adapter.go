@@ -13,6 +13,7 @@ import (
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/claude/internal/rpc"
+	"github.com/lsm/open-agent-protocol/go/adapter/internal/journal"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
@@ -20,6 +21,7 @@ const (
 	endpointID             = "claude-code.cli"
 	PinnedVersion          = native.ReleaseTag
 	CapabilityRevision     = "claude-code-2.1.280-oap-v2"
+	CorpusDirectory        = "fixtures/adapters/claude-code-2.1.280"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
@@ -276,7 +278,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	if a.initializeAtOpen {
 

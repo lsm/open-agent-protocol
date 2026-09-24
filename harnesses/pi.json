@@ -1,0 +1,24 @@
+{
+  "id": "pi",
+  "name": "Pi coding agent",
+  "versions": [
+    {
+      "label": "v0.85.1",
+      "status": "current",
+      "endpoint_version": "v0.85.1",
+      "capability_revision": "pi-v0.85.1-oap-v1",
+      "admits": ["0.85.1"],
+      "ledgers": ["research/pi-v0.85.1-mapping.md"],
+      "corpus": "fixtures/adapters/pi-v0.85.1",
+      "components": [
+        { "name": "pi", "version": "v0.85.1", "repository": "https://github.com/earendil-works/pi" }
+      ],
+      "artifacts": [
+        { "component": "pi", "platform": "linux-x64", "kind": "archive", "name": "pi-linux-x64.tar.gz", "sha256": "494e498f47d74d21f40b3386f6a5e921a3d49531a169cab55bbdaca0ea1fe25a" }
+      ],
+      "sources": [
+        { "component": "pi", "tag": "v0.85.1", "commit": "d981de1229ef899957bbe968bc8dcda02a21f477", "tree": "346294a615d2d0ad4f6e5fbccb4cee4ccd7b2d6c" }
+      ]
+    }
+  ]
+}

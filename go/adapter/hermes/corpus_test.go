@@ -1880,7 +1880,7 @@ func hmCorpusRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", "hermes-v2026.8.31")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", filepath.FromSlash(CorpusDirectory))
 }
 
 func TestHermesCorpusPinConstants(t *testing.T) {

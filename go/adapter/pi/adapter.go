@@ -21,6 +21,7 @@ const (
 	PinnedVersion          = native.Version
 	PinnedCommit           = native.Commit
 	CapabilityRevision     = "pi-v0.85.1-oap-v1"
+	CorpusDirectory        = "fixtures/adapters/pi-v0.85.1"
 	defaultJournalCapacity = 256
 )
 

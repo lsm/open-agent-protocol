@@ -11,6 +11,7 @@ import (
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/rpc"
+	"github.com/lsm/open-agent-protocol/go/adapter/internal/journal"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
@@ -18,6 +19,7 @@ const (
 	endpointID             = "deepseek.harness"
 	PinnedVersion          = native.ServerVersion
 	CapabilityRevision     = "deepseek-harness-47f9438-oap-v2"
+	CorpusDirectory        = "fixtures/adapters/deepseek-harness-47f9438"
 	defaultJournalCapacity = 256
 )
 
@@ -195,7 +197,7 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, capacity: a.config.JournalCapacity, nativeID: string(id), model: model, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, ended: map[protocol.RunID]uint64{}, tools: map[string]*toolState{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	s := &Session{client: client, inbound: client.Inbound(), clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), nativeID: string(id), model: model, state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	return s, nil
 }

@@ -618,7 +618,7 @@ func piCorpusRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", "pi-v0.85.1")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", filepath.FromSlash(CorpusDirectory))
 }
 func TestPiCorpusPinConstants(t *testing.T) {
 	if PinnedVersion == "" || PinnedCommit == "" || piCommitTree == "" || piRPCTypesBlob == "" || piRPCModeBlob == "" || piAgentSessionBlob == "" || piSessionMgrBlob == "" || piAgentTypesBlob == "" || piRPCEntryBlob == "" || piCLIArgsBlob == "" || CapabilityRevision == "" {

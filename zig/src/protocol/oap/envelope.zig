@@ -154,6 +154,62 @@ pub fn serializeStringArray(w: *json_writer.JsonWriter, key: []const u8, values:
     try w.endArray();
 }
 
+fn serializeFeatureMap(w: *json_writer.JsonWriter, features: []const oap_types.Feature) !void {
+    try w.writeKey("features");
+    try w.beginObject();
+    for (features) |feature| {
+        try w.writeKey(feature.key);
+        try w.beginObject();
+        try w.writeStringField("level", @tagName(feature.level));
+        if (feature.scope) |scope| try w.writeStringField("scope", scope);
+        if (feature.reason) |reason| try w.writeStringField("reason", reason);
+        try w.endObject();
+    }
+    try w.endObject();
+}
+
+fn serializeSources(w: *json_writer.JsonWriter, sources: []const oap_types.ToolSourceDescriptor) !void {
+    try w.writeKey("sources");
+    try w.beginArray();
+    for (sources) |source| {
+        try w.beginObject();
+        try w.writeStringField("id", source.id);
+        try w.writeStringField("kind", source.kind);
+        if (source.display_name) |value| try w.writeStringField("display_name", value);
+        if (source.protocol) |value| try w.writeStringField("protocol", value);
+        if (source.endpoint) |value| try w.writeStringField("endpoint", value);
+        try w.endObject();
+    }
+    try w.endArray();
+}
+
+fn serializeToolDefinition(w: *json_writer.JsonWriter, tool: oap_types.ToolDefinition) !void {
+    try w.beginObject();
+    try w.writeStringField("name", tool.name);
+    if (tool.description) |value| try w.writeStringField("description", value);
+    try w.writeKey("input_schema");
+    try writeJsonValueOrString(w, tool.input_schema_json);
+    try w.writeStringField("execution_owner", tool.execution_owner);
+    if (tool.source) |value| try w.writeStringField("source", value);
+    if (tool.features.len > 0) try serializeFeatureMap(w, tool.features);
+    try w.endObject();
+}
+
+fn serializeInteractionScope(
+    w: *json_writer.JsonWriter,
+    interaction_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+) !void {
+    try w.writeStringField("interaction_id", interaction_id);
+    try w.writeStringField("requested_by", requested_by);
+    try w.writeStringField("responded_by", responded_by);
+    try w.writeStringField("session_id", session_id);
+    try w.writeStringField("run_id", run_id);
+}
+
 fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !void {
     try w.beginObject();
     switch (payload) {
@@ -198,19 +254,7 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 }
                 try w.endArray();
             }
-            if (value.features.len > 0) {
-                try w.writeKey("features");
-                try w.beginObject();
-                for (value.features) |feature| {
-                    try w.writeKey(feature.key);
-                    try w.beginObject();
-                    try w.writeStringField("level", @tagName(feature.level));
-                    if (feature.scope) |scope| try w.writeStringField("scope", scope);
-                    if (feature.reason) |reason| try w.writeStringField("reason", reason);
-                    try w.endObject();
-                }
-                try w.endObject();
-            }
+            if (value.features.len > 0) try serializeFeatureMap(w, value.features);
             if (value.requested_delivery_modes.len > 0 or value.effective_delivery_modes.len > 0) {
                 try w.writeKey("layers");
                 try w.beginObject();
@@ -244,6 +288,7 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 }
                 try w.endArray();
             }
+            if (value.sources.len > 0) try serializeSources(w, value.sources);
         },
         .models_request => |value| {
             try w.writeStringField("session_id", value.session_id);
@@ -265,6 +310,22 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
         },
         .session_open_request => |value| {
             if (value.session_id) |session_id| try w.writeStringField("session_id", session_id);
+            if (value.subscribe) try w.writeBoolField("subscribe", true);
+            if (value.message_json) |message| {
+                try w.writeKey("message");
+                try writeJsonValueOrString(w, message);
+            }
+            if (value.tool_sources_json) |sources| {
+                try w.writeKey("tool_sources");
+                try writeJsonValueOrString(w, sources);
+            }
+            if (value.tools_json) |tools| {
+                try w.writeKey("tools");
+                try writeJsonValueOrString(w, tools);
+            }
+            if (value.allow_degraded_features.len > 0) {
+                try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
+            }
         },
         .session_state_request => |value| {
             try w.writeStringField("session_id", value.session_id);
@@ -318,6 +379,7 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             if (value.run_id) |run_id| try w.writeStringField("run_id", run_id);
             if (value.status) |status| try w.writeStringField("status", @tagName(status));
             if (value.model_id) |model_id| try w.writeStringField("model_id", model_id);
+            if (value.message_ids.len > 0) try serializeStringArray(w, "message_ids", value.message_ids);
         },
         .run_cancel_request => |value| {
             try w.writeStringField("session_id", value.session_id);
@@ -375,6 +437,86 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
             if (!value.usage.isEmpty()) try serializeUsage(w, value.usage);
             if (value.duration_ms) |duration| try w.writeIntField("duration_ms", duration);
         },
+        .user_input_resolve_request => |value| {
+            try serializeInteractionScope(w, value.interaction_id, value.requested_by, value.responded_by, value.session_id, value.run_id);
+            try w.writeKey("answers");
+            try w.beginArray();
+            for (value.answers) |answer| {
+                try w.beginObject();
+                try w.writeStringField("question_id", answer.question_id);
+                if (answer.text) |text| try w.writeStringField("text", text);
+                if (answer.selected_option_ids.len > 0) {
+                    try serializeStringArray(w, "selected_option_ids", answer.selected_option_ids);
+                }
+                try w.endObject();
+            }
+            try w.endArray();
+        },
+        .user_input_resolve_response, .permission_resolve_response => |value| {
+            try w.writeStringField("interaction_id", value.interaction_id);
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("run_id", value.run_id);
+            try w.writeBoolField("accepted", value.accepted);
+        },
+        .permission_resolve_request => |value| {
+            try serializeInteractionScope(w, value.interaction_id, value.requested_by, value.responded_by, value.session_id, value.run_id);
+            if (value.choice_id) |choice| try w.writeStringField("choice_id", choice);
+            try w.writeBoolField("granted", value.granted);
+            if (value.reason) |reason| try w.writeStringField("reason", reason);
+            if (value.updated_arguments_json) |arguments| {
+                try w.writeKey("updated_arguments_json");
+                try writeJsonValueOrString(w, arguments);
+            }
+        },
+        .call_resolve_request => |value| {
+            try w.writeStringField("interaction_id", value.interaction_id);
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("run_id", value.run_id);
+            try w.writeStringField("tool_call_id", value.tool_call_id);
+            try w.writeStringField("requested_by", value.requested_by);
+            try w.writeStringField("responded_by", value.responded_by);
+            if (value.started) {
+                try w.writeKey("started");
+                try w.beginObject();
+                try w.endObject();
+            }
+            if (value.result_json) |result| {
+                try w.writeKey("result");
+                try writeJsonValueOrString(w, result);
+            }
+            if (value.err) |failure| {
+                try w.writeKey("error");
+                try serializeProtocolError(w, failure);
+            }
+        },
+        .call_resolve_response => |value| {
+            try w.writeStringField("interaction_id", value.interaction_id);
+            try w.writeStringField("session_id", value.session_id);
+            try w.writeStringField("run_id", value.run_id);
+            try w.writeStringField("tool_call_id", value.tool_call_id);
+            try w.writeBoolField("accepted", value.accepted);
+            if (value.reason) |reason| try w.writeStringField("reason", reason);
+            if (value.settlement_id) |settlement| {
+                try w.writeKey("details");
+                try w.beginObject();
+                try w.writeStringField("settlement_id", settlement);
+                try w.endObject();
+            }
+        },
+        .tools_list_request => |value| {
+            if (value.session_id) |session_id| try w.writeStringField("session_id", session_id);
+            if (value.allow_degraded_features.len > 0) {
+                try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
+            }
+        },
+        .tools_list_response => |value| {
+            if (value.session_id) |session_id| try w.writeStringField("session_id", session_id);
+            if (value.sources.len > 0) try serializeSources(w, value.sources);
+            try w.writeKey("tools");
+            try w.beginArray();
+            for (value.tools) |tool| try serializeToolDefinition(w, tool);
+            try w.endArray();
+        },
         .error_response => |value| {
             try w.writeKey("error");
             try serializeProtocolError(w, value);
@@ -384,7 +526,8 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
 }
 
 pub fn deserializeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_types.Envelope {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
         return DecodeError.InvalidEnvelope;
     };
     defer parsed.deinit();
@@ -797,9 +940,7 @@ fn deserializePayload(
         } };
     }
     if (std.mem.eql(u8, type_str, "session.open.request")) {
-        return .{ .session_open_request = .{
-            .session_id = try optionalOwnedString(obj, "session_id", allocator),
-        } };
+        return .{ .session_open_request = try deserializeSessionOpen(obj, allocator) };
     }
     if (std.mem.eql(u8, type_str, "session.state.request")) {
         return .{ .session_state_request = .{
@@ -860,6 +1001,10 @@ fn deserializePayload(
         const effective_delivery = try requiredEnum(oap_types.EffectiveDelivery, obj, "effective_delivery");
         const admission = try requiredEnum(oap_types.Admission, obj, "admission");
         const status = try optionalEnum(oap_types.RunStatus, obj, "status");
+        const message_ids: []const []const u8 = if (obj.get("message_ids") != null)
+            try deserializeStringArray(obj, "message_ids", allocator)
+        else
+            &.{};
         return .{ .message_submit_response = .{
             .session_id = session_id,
             .accepted = accepted,
@@ -871,6 +1016,7 @@ fn deserializePayload(
             .run_id = run_id,
             .status = status,
             .model_id = model_id,
+            .message_ids = message_ids,
         } };
     }
     if (std.mem.eql(u8, type_str, "run.cancel.request")) {
@@ -1006,8 +1152,360 @@ fn deserializePayload(
         const error_value = obj.get("error") orelse return DecodeError.MissingField;
         return .{ .error_response = try deserializeProtocolError(error_value, allocator) };
     }
+    if (std.mem.eql(u8, type_str, "user.input.resolve.request")) {
+        return .{ .user_input_resolve_request = try deserializeInputResolve(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "user.input.resolve.response")) {
+        return .{ .user_input_resolve_response = try deserializeResolveResponse(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.permission.resolve.request")) {
+        return .{ .permission_resolve_request = try deserializePermissionResolve(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.permission.resolve.response")) {
+        return .{ .permission_resolve_response = try deserializeResolveResponse(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.call.resolve.request")) {
+        return .{ .call_resolve_request = try deserializeCallResolve(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.call.resolve.response")) {
+        return .{ .call_resolve_response = try deserializeCallResolveResponse(obj, allocator) };
+    }
+    if (std.mem.eql(u8, type_str, "action.tools.list.request")) {
+        const session_id = try optionalOwnedString(obj, "session_id", allocator);
+        errdefer if (session_id) |owned| allocator.free(owned);
+        const allow_degraded: []const []const u8 = if (obj.get("allow_degraded_features") != null)
+            try deserializeStringArray(obj, "allow_degraded_features", allocator)
+        else
+            &.{};
+        return .{ .tools_list_request = .{ .session_id = session_id, .allow_degraded_features = allow_degraded } };
+    }
+    if (std.mem.eql(u8, type_str, "action.tools.list.response")) {
+        return .{ .tools_list_response = try deserializeToolsList(obj, allocator) };
+    }
 
     return DecodeError.UnknownEnvelopeType;
+}
+
+fn electedArrayJson(obj: std.json.ObjectMap, key: []const u8, allocator: std.mem.Allocator) !?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    if (value != .array) return DecodeError.InvalidField;
+    if (value.array.items.len == 0) return null;
+    return try ownedRawJson(value, allocator);
+}
+
+fn deserializeSessionOpen(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.SessionOpenRequest {
+    const session_id = try optionalOwnedString(obj, "session_id", allocator);
+    errdefer if (session_id) |owned| allocator.free(owned);
+    const subscribe = (try optionalBool(obj, "subscribe")) orelse false;
+    const message_json: ?[]const u8 = if (obj.get("message")) |value| blk: {
+        if (value != .object) return DecodeError.InvalidField;
+        break :blk try ownedRawJson(value, allocator);
+    } else null;
+    errdefer if (message_json) |owned| allocator.free(owned);
+    const tools_json = try electedArrayJson(obj, "tools", allocator);
+    errdefer if (tools_json) |owned| allocator.free(owned);
+    const tool_sources_json = try electedArrayJson(obj, "tool_sources", allocator);
+    errdefer if (tool_sources_json) |owned| allocator.free(owned);
+    const allow_degraded: []const []const u8 = if (obj.get("allow_degraded_features") != null)
+        try deserializeStringArray(obj, "allow_degraded_features", allocator)
+    else
+        &.{};
+    return .{
+        .session_id = session_id,
+        .subscribe = subscribe,
+        .message_json = message_json,
+        .tools_json = tools_json,
+        .tool_sources_json = tool_sources_json,
+        .allow_degraded_features = allow_degraded,
+    };
+}
+
+fn deserializeFeatureMap(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.Feature {
+    if (value != .object) return DecodeError.InvalidField;
+    const features = try allocator.alloc(oap_types.Feature, value.object.count());
+    var filled: usize = 0;
+    errdefer {
+        for (features[0..filled]) |*entry| entry.deinit(allocator);
+        allocator.free(features);
+    }
+    var iterator = value.object.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.* != .object) return DecodeError.InvalidField;
+        const level = try requiredEnum(oap_types.SupportLevel, entry.value_ptr.object, "level");
+        const key = try allocator.dupe(u8, entry.key_ptr.*);
+        errdefer allocator.free(key);
+        const scope = try optionalOwnedString(entry.value_ptr.object, "scope", allocator);
+        errdefer if (scope) |owned| allocator.free(owned);
+        const reason = try optionalOwnedString(entry.value_ptr.object, "reason", allocator);
+        features[filled] = .{ .key = key, .level = level, .scope = scope, .reason = reason };
+        filled += 1;
+    }
+    return features;
+}
+
+fn deserializeSources(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.ToolSourceDescriptor {
+    if (value != .array) return DecodeError.InvalidField;
+    const sources = try allocator.alloc(oap_types.ToolSourceDescriptor, value.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (sources[0..filled]) |*entry| entry.deinit(allocator);
+        allocator.free(sources);
+    }
+    for (value.array.items) |item| {
+        if (item != .object) return DecodeError.InvalidField;
+        const id = try requiredOwnedString(item.object, "id", allocator);
+        errdefer allocator.free(id);
+        const kind = try requiredOwnedString(item.object, "kind", allocator);
+        errdefer allocator.free(kind);
+        const display_name = try optionalOwnedString(item.object, "display_name", allocator);
+        errdefer if (display_name) |owned| allocator.free(owned);
+        const protocol = try optionalOwnedString(item.object, "protocol", allocator);
+        errdefer if (protocol) |owned| allocator.free(owned);
+        const endpoint = try optionalOwnedString(item.object, "endpoint", allocator);
+        sources[filled] = .{ .id = id, .kind = kind, .display_name = display_name, .protocol = protocol, .endpoint = endpoint };
+        filled += 1;
+    }
+    return sources;
+}
+
+fn deserializeToolDefinition(value: std.json.Value, allocator: std.mem.Allocator) !oap_types.ToolDefinition {
+    if (value != .object) return DecodeError.InvalidField;
+    const obj = value.object;
+    const schema = obj.get("input_schema") orelse return DecodeError.MissingField;
+    if (schema != .object) return DecodeError.InvalidField;
+    const name = try requiredOwnedString(obj, "name", allocator);
+    errdefer allocator.free(name);
+    const description = if (obj.get("description")) |described| blk: {
+        if (described != .string) return DecodeError.InvalidField;
+        break :blk try allocator.dupe(u8, described.string);
+    } else null;
+    errdefer if (description) |owned| allocator.free(owned);
+    const input_schema_json = try ownedRawJson(schema, allocator);
+    errdefer allocator.free(input_schema_json);
+    const execution_owner = try requiredOwnedString(obj, "execution_owner", allocator);
+    errdefer allocator.free(execution_owner);
+    const source = try optionalOwnedString(obj, "source", allocator);
+    errdefer if (source) |owned| allocator.free(owned);
+    const features: []oap_types.Feature = if (obj.get("features")) |declared|
+        try deserializeFeatureMap(declared, allocator)
+    else
+        &.{};
+    return .{
+        .name = name,
+        .description = description,
+        .input_schema_json = input_schema_json,
+        .execution_owner = execution_owner,
+        .source = source,
+        .features = features,
+    };
+}
+
+fn deserializeToolsList(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.ToolsListResponse {
+    const listed = obj.get("tools") orelse return DecodeError.MissingField;
+    if (listed != .array) return DecodeError.InvalidField;
+    const session_id = try optionalOwnedString(obj, "session_id", allocator);
+    errdefer if (session_id) |owned| allocator.free(owned);
+    const sources: []oap_types.ToolSourceDescriptor = if (obj.get("sources")) |declared|
+        try deserializeSources(declared, allocator)
+    else
+        &.{};
+    errdefer {
+        for (sources) |*entry| entry.deinit(allocator);
+        allocator.free(sources);
+    }
+    const tools = try allocator.alloc(oap_types.ToolDefinition, listed.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (tools[0..filled]) |*entry| entry.deinit(allocator);
+        allocator.free(tools);
+    }
+    for (listed.array.items) |item| {
+        tools[filled] = try deserializeToolDefinition(item, allocator);
+        filled += 1;
+    }
+    return .{ .session_id = session_id, .sources = sources, .tools = tools };
+}
+
+fn deserializeAnswers(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.InputAnswer {
+    if (value != .array or value.array.items.len == 0) return DecodeError.InvalidField;
+    const answers = try allocator.alloc(oap_types.InputAnswer, value.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (answers[0..filled]) |*entry| entry.deinit(allocator);
+        allocator.free(answers);
+    }
+    for (value.array.items) |item| {
+        if (item != .object) return DecodeError.InvalidField;
+        const question_id = try requiredOwnedString(item.object, "question_id", allocator);
+        errdefer allocator.free(question_id);
+        const text = if (item.object.get("text")) |written| blk: {
+            if (written != .string) return DecodeError.InvalidField;
+            break :blk try allocator.dupe(u8, written.string);
+        } else null;
+        errdefer if (text) |owned| allocator.free(owned);
+        const selected: []const []const u8 = if (item.object.get("selected_option_ids") != null)
+            try deserializeStringArray(item.object, "selected_option_ids", allocator)
+        else
+            &.{};
+        answers[filled] = .{ .question_id = question_id, .text = text, .selected_option_ids = selected };
+        filled += 1;
+    }
+    return answers;
+}
+
+const InteractionScope = struct {
+    interaction_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+
+    fn decode(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !InteractionScope {
+        const interaction_id = try requiredOwnedString(obj, "interaction_id", allocator);
+        errdefer allocator.free(interaction_id);
+        const requested_by = try requiredOwnedString(obj, "requested_by", allocator);
+        errdefer allocator.free(requested_by);
+        const responded_by = try requiredOwnedString(obj, "responded_by", allocator);
+        errdefer allocator.free(responded_by);
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const run_id = try requiredOwnedString(obj, "run_id", allocator);
+        return .{
+            .interaction_id = interaction_id,
+            .requested_by = requested_by,
+            .responded_by = responded_by,
+            .session_id = session_id,
+            .run_id = run_id,
+        };
+    }
+
+    fn deinit(self: InteractionScope, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.requested_by);
+        allocator.free(self.responded_by);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+    }
+};
+
+fn deserializeInputResolve(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.UserInputResolveRequest {
+    const listed = obj.get("answers") orelse return DecodeError.MissingField;
+    const scope = try InteractionScope.decode(obj, allocator);
+    errdefer scope.deinit(allocator);
+    const answers = try deserializeAnswers(listed, allocator);
+    return .{
+        .interaction_id = scope.interaction_id,
+        .requested_by = scope.requested_by,
+        .responded_by = scope.responded_by,
+        .session_id = scope.session_id,
+        .run_id = scope.run_id,
+        .answers = answers,
+    };
+}
+
+fn deserializePermissionResolve(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.PermissionResolveRequest {
+    const granted = try requiredBool(obj, "granted");
+    const scope = try InteractionScope.decode(obj, allocator);
+    errdefer scope.deinit(allocator);
+    const choice_id = if (obj.get("choice_id")) |chosen| blk: {
+        if (chosen != .string) return DecodeError.InvalidField;
+        break :blk try allocator.dupe(u8, chosen.string);
+    } else null;
+    errdefer if (choice_id) |owned| allocator.free(owned);
+    const reason = if (obj.get("reason")) |given| blk: {
+        if (given != .string) return DecodeError.InvalidField;
+        break :blk try allocator.dupe(u8, given.string);
+    } else null;
+    errdefer if (reason) |owned| allocator.free(owned);
+    const updated_arguments_json = try optionalRawJson(obj, "updated_arguments_json", allocator);
+    return .{
+        .interaction_id = scope.interaction_id,
+        .requested_by = scope.requested_by,
+        .responded_by = scope.responded_by,
+        .session_id = scope.session_id,
+        .run_id = scope.run_id,
+        .granted = granted,
+        .choice_id = choice_id,
+        .reason = reason,
+        .updated_arguments_json = updated_arguments_json,
+    };
+}
+
+fn deserializeResolveResponse(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.InteractionResolveResponse {
+    const accepted = try requiredBool(obj, "accepted");
+    const interaction_id = try requiredOwnedString(obj, "interaction_id", allocator);
+    errdefer allocator.free(interaction_id);
+    const session_id = try requiredOwnedString(obj, "session_id", allocator);
+    errdefer allocator.free(session_id);
+    const run_id = try requiredOwnedString(obj, "run_id", allocator);
+    return .{ .interaction_id = interaction_id, .session_id = session_id, .run_id = run_id, .accepted = accepted };
+}
+
+fn deserializeCallResolve(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.CallResolveRequest {
+    const started = if (obj.get("started")) |marker| blk: {
+        if (marker != .object) return DecodeError.InvalidField;
+        break :blk true;
+    } else false;
+    const interaction_id = try requiredOwnedString(obj, "interaction_id", allocator);
+    errdefer allocator.free(interaction_id);
+    const session_id = try requiredOwnedString(obj, "session_id", allocator);
+    errdefer allocator.free(session_id);
+    const run_id = try requiredOwnedString(obj, "run_id", allocator);
+    errdefer allocator.free(run_id);
+    const tool_call_id = try requiredOwnedString(obj, "tool_call_id", allocator);
+    errdefer allocator.free(tool_call_id);
+    const requested_by = try requiredOwnedString(obj, "requested_by", allocator);
+    errdefer allocator.free(requested_by);
+    const responded_by = try requiredOwnedString(obj, "responded_by", allocator);
+    errdefer allocator.free(responded_by);
+    const result_json = try optionalRawJson(obj, "result", allocator);
+    errdefer if (result_json) |owned| allocator.free(owned);
+    const failure: ?oap_types.ProtocolError = if (obj.get("error")) |raised|
+        try deserializeProtocolError(raised, allocator)
+    else
+        null;
+    return .{
+        .interaction_id = interaction_id,
+        .session_id = session_id,
+        .run_id = run_id,
+        .tool_call_id = tool_call_id,
+        .requested_by = requested_by,
+        .responded_by = responded_by,
+        .started = started,
+        .result_json = result_json,
+        .err = failure,
+    };
+}
+
+fn deserializeCallResolveResponse(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.CallResolveResponse {
+    const accepted = try requiredBool(obj, "accepted");
+    const settled = if (obj.get("details")) |details| blk: {
+        if (details != .object) return DecodeError.InvalidField;
+        break :blk details.object.get("settlement_id");
+    } else null;
+    if (settled) |value| {
+        if (value != .string or value.string.len == 0) return DecodeError.InvalidField;
+    }
+    const interaction_id = try requiredOwnedString(obj, "interaction_id", allocator);
+    errdefer allocator.free(interaction_id);
+    const session_id = try requiredOwnedString(obj, "session_id", allocator);
+    errdefer allocator.free(session_id);
+    const run_id = try requiredOwnedString(obj, "run_id", allocator);
+    errdefer allocator.free(run_id);
+    const tool_call_id = try requiredOwnedString(obj, "tool_call_id", allocator);
+    errdefer allocator.free(tool_call_id);
+    const reason = try optionalOwnedString(obj, "reason", allocator);
+    errdefer if (reason) |owned| allocator.free(owned);
+    const settlement_id: ?[]const u8 = if (settled) |value| try allocator.dupe(u8, value.string) else null;
+    return .{
+        .interaction_id = interaction_id,
+        .session_id = session_id,
+        .run_id = run_id,
+        .tool_call_id = tool_call_id,
+        .accepted = accepted,
+        .reason = reason,
+        .settlement_id = settlement_id,
+    };
 }
 
 fn deserializeSubmitRequest(
@@ -1101,26 +1599,10 @@ fn deserializeCapabilities(
         result.bindings = bindings;
     }
     if (obj.get("features")) |value| {
-        if (value != .object) return DecodeError.InvalidField;
-        const features = try allocator.alloc(oap_types.Feature, value.object.count());
-        var filled: usize = 0;
-        errdefer {
-            for (features[0..filled]) |*entry| entry.deinit(allocator);
-            allocator.free(features);
-        }
-        var iterator = value.object.iterator();
-        while (iterator.next()) |entry| {
-            if (entry.value_ptr.* != .object) return DecodeError.InvalidField;
-            const key = try allocator.dupe(u8, entry.key_ptr.*);
-            errdefer allocator.free(key);
-            const level = try requiredEnum(oap_types.SupportLevel, entry.value_ptr.object, "level");
-            const scope = try optionalOwnedString(entry.value_ptr.object, "scope", allocator);
-            errdefer if (scope) |owned| allocator.free(owned);
-            const reason = try optionalOwnedString(entry.value_ptr.object, "reason", allocator);
-            features[filled] = .{ .key = key, .level = level, .scope = scope, .reason = reason };
-            filled += 1;
-        }
-        result.features = features;
+        result.features = try deserializeFeatureMap(value, allocator);
+    }
+    if (obj.get("sources")) |value| {
+        result.sources = try deserializeSources(value, allocator);
     }
     if (obj.get("layers")) |layers| {
         if (layers != .object) return DecodeError.InvalidField;
@@ -1537,5 +2019,256 @@ test "an error code outside this endpoint's own set decodes as a value and survi
         const quoted = try std.fmt.allocPrint(allocator, "\"code\":\"{s}\"", .{case.code});
         defer allocator.free(quoted);
         try std.testing.expect(std.mem.indexOf(u8, line, quoted) != null);
+    }
+}
+
+fn roundTrip(envelope: oap_types.Envelope, allocator: std.mem.Allocator) !oap_types.Envelope {
+    const line = try serializeEnvelope(envelope, allocator);
+    defer allocator.free(line);
+    return deserializeEnvelope(line, allocator);
+}
+
+test "a user input resolution round trips every answer shape" {
+    const allocator = std.testing.allocator;
+
+    var answers = [_]oap_types.InputAnswer{
+        .{ .question_id = "decision", .selected_option_ids = &.{"allow"} },
+        .{ .question_id = "note", .text = "go ahead" },
+    };
+    var decoded = try roundTrip(.{
+        .id = "resolve-1",
+        .session_id = "s",
+        .run_id = "r",
+        .capability_revision = "rev",
+        .payload = .{ .user_input_resolve_request = .{
+            .interaction_id = "i-1",
+            .requested_by = "claude-code.cli",
+            .responded_by = "user",
+            .session_id = "s",
+            .run_id = "r",
+            .answers = &answers,
+        } },
+    }, allocator);
+    defer decoded.deinit(allocator);
+
+    const resolution = decoded.payload.user_input_resolve_request;
+    try std.testing.expectEqualStrings("i-1", resolution.interaction_id);
+    try std.testing.expectEqualStrings("claude-code.cli", resolution.requested_by);
+    try std.testing.expectEqualStrings("user", resolution.responded_by);
+    try std.testing.expectEqual(@as(usize, 2), resolution.answers.len);
+    try std.testing.expectEqualStrings("allow", resolution.answers[0].selected_option_ids[0]);
+    try std.testing.expect(resolution.answers[0].text == null);
+    try std.testing.expectEqualStrings("go ahead", resolution.answers[1].text.?);
+    try std.testing.expectEqual(@as(usize, 0), resolution.answers[1].selected_option_ids.len);
+}
+
+test "a user input resolution with no answers is refused rather than decoded empty" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"type\":\"user.input.resolve.request\",\"id\":\"a\",\"payload\":{\"interaction_id\":\"i\"," ++
+            "\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"answers\":[]}}",
+        allocator,
+    ));
+}
+
+test "a permission resolution round trips its optional members" {
+    const allocator = std.testing.allocator;
+
+    var decoded = try roundTrip(.{
+        .id = "resolve-2",
+        .payload = .{ .permission_resolve_request = .{
+            .interaction_id = "i-2",
+            .requested_by = "e",
+            .responded_by = "u",
+            .session_id = "s",
+            .run_id = "r",
+            .granted = false,
+            .choice_id = "deny-once",
+            .reason = "not today",
+            .updated_arguments_json = "{\"path\":\"b\"}",
+        } },
+    }, allocator);
+    defer decoded.deinit(allocator);
+
+    const resolution = decoded.payload.permission_resolve_request;
+    try std.testing.expect(!resolution.granted);
+    try std.testing.expectEqualStrings("deny-once", resolution.choice_id.?);
+    try std.testing.expectEqualStrings("not today", resolution.reason.?);
+    try std.testing.expectEqualStrings("{\"path\":\"b\"}", resolution.updated_arguments_json.?);
+}
+
+test "both interaction acknowledgements round trip under their own type" {
+    const allocator = std.testing.allocator;
+
+    const acknowledgement = oap_types.InteractionResolveResponse{ .interaction_id = "i", .session_id = "s", .run_id = "r", .accepted = true };
+    var input = try roundTrip(.{ .id = "a-1", .payload = .{ .user_input_resolve_response = acknowledgement } }, allocator);
+    defer input.deinit(allocator);
+    try std.testing.expect(input.payload.user_input_resolve_response.accepted);
+    try std.testing.expectEqualStrings("user.input.resolve.response", input.payload.typeName());
+
+    var permission = try roundTrip(.{ .id = "a-2", .payload = .{ .permission_resolve_response = acknowledgement } }, allocator);
+    defer permission.deinit(allocator);
+    try std.testing.expectEqualStrings("i", permission.payload.permission_resolve_response.interaction_id);
+    try std.testing.expectEqualStrings("action.permission.resolve.response", permission.payload.typeName());
+}
+
+test "an action call resolution and its refusal round trip" {
+    const allocator = std.testing.allocator;
+
+    var request = try roundTrip(.{ .id = "call-1", .payload = .{ .call_resolve_request = .{
+        .interaction_id = "i",
+        .session_id = "s",
+        .run_id = "r",
+        .tool_call_id = "t",
+        .requested_by = "e",
+        .responded_by = "u",
+        .result_json = "{\"ok\":true}",
+    } } }, allocator);
+    defer request.deinit(allocator);
+    try std.testing.expectEqualStrings("{\"ok\":true}", request.payload.call_resolve_request.result_json.?);
+    try std.testing.expect(!request.payload.call_resolve_request.started);
+
+    var refusal = try roundTrip(.{ .id = "call-2", .payload = .{ .call_resolve_response = .{
+        .interaction_id = "i",
+        .session_id = "s",
+        .run_id = "r",
+        .tool_call_id = "t",
+        .accepted = false,
+        .reason = "already_resolved",
+        .settlement_id = "settled-1",
+    } } }, allocator);
+    defer refusal.deinit(allocator);
+    try std.testing.expectEqualStrings("already_resolved", refusal.payload.call_resolve_response.reason.?);
+    try std.testing.expectEqualStrings("settled-1", refusal.payload.call_resolve_response.settlement_id.?);
+}
+
+test "a tool catalog round trips its sources and definitions" {
+    const allocator = std.testing.allocator;
+
+    var sources = [_]oap_types.ToolSourceDescriptor{
+        .{ .id = "claude-code-native", .kind = "native", .display_name = "Claude Code built-in tools" },
+        .{ .id = "mcp:files", .kind = "process", .protocol = "mcp", .display_name = "files" },
+    };
+    var features = [_]oap_types.Feature{.{ .key = "action.tools.execute", .level = .unavailable, .reason = "the CLI executes its own tools" }};
+    var tools = [_]oap_types.ToolDefinition{.{
+        .name = "Bash",
+        .input_schema_json = "{\"type\":\"object\"}",
+        .execution_owner = "claude-code",
+        .source = "claude-code-native",
+        .features = &features,
+    }};
+    var decoded = try roundTrip(.{ .id = "tools-1", .capability_revision = "rev", .payload = .{ .tools_list_response = .{
+        .session_id = "s",
+        .sources = &sources,
+        .tools = &tools,
+    } } }, allocator);
+    defer decoded.deinit(allocator);
+
+    const catalog = decoded.payload.tools_list_response;
+    try std.testing.expectEqualStrings("s", catalog.session_id.?);
+    try std.testing.expectEqual(@as(usize, 2), catalog.sources.len);
+    try std.testing.expectEqualStrings("mcp", catalog.sources[1].protocol.?);
+    try std.testing.expectEqualStrings("Bash", catalog.tools[0].name);
+    try std.testing.expectEqualStrings("{\"type\":\"object\"}", catalog.tools[0].input_schema_json);
+    try std.testing.expectEqual(oap_types.SupportLevel.unavailable, catalog.tools[0].features[0].level);
+
+    var request = try roundTrip(.{ .id = "tools-2", .payload = .{ .tools_list_request = .{
+        .session_id = "s",
+        .allow_degraded_features = &.{"action.tools.list"},
+    } } }, allocator);
+    defer request.deinit(allocator);
+    try std.testing.expect(request.payload.tools_list_request.allowsDegraded("action.tools.list"));
+    try std.testing.expect(!request.payload.tools_list_request.allowsDegraded("models.list"));
+}
+
+test "an open elects tools and tool sources only when it names at least one" {
+    const allocator = std.testing.allocator;
+    const prefix = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+        "\",\"type\":\"session.open.request\",\"id\":\"o\",\"payload\":";
+
+    var empty = try deserializeEnvelope(prefix ++ "{\"session_id\":\"s\",\"tools\":[],\"tool_sources\":[]}}", allocator);
+    defer empty.deinit(allocator);
+    try std.testing.expect(empty.payload.session_open_request.tools_json == null);
+    try std.testing.expect(empty.payload.session_open_request.tool_sources_json == null);
+    try std.testing.expect(!empty.payload.session_open_request.subscribe);
+
+    var elected = try deserializeEnvelope(prefix ++
+        "{\"subscribe\":true,\"tools\":[{\"name\":\"t\"}],\"tool_sources\":[{\"id\":\"x\",\"kind\":\"process\"}]," ++
+        "\"message\":{\"delivery\":\"auto\",\"messages\":[]},\"allow_degraded_features\":[\"session.open.subscribe\"]}}", allocator);
+    defer elected.deinit(allocator);
+    const open = elected.payload.session_open_request;
+    try std.testing.expect(open.subscribe);
+    try std.testing.expect(open.tools_json != null);
+    try std.testing.expect(open.tool_sources_json != null);
+    try std.testing.expect(open.message_json != null);
+    try std.testing.expect(open.allowsDegraded("session.open.subscribe"));
+
+    try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(prefix ++ "{\"tools\":{}}}", allocator));
+    try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(prefix ++ "{\"message\":[]}}", allocator));
+}
+
+test "a capabilities response carries the tool sources it declares" {
+    const allocator = std.testing.allocator;
+
+    var sources = [_]oap_types.ToolSourceDescriptor{.{ .id = "claude-code-native", .kind = "native" }};
+    var decoded = try roundTrip(.{ .id = "cap", .payload = .{ .capabilities_response = .{
+        .endpoint = .{ .id = "claude-code.cli" },
+        .sources = &sources,
+    } } }, allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), decoded.payload.capabilities_response.sources.len);
+    try std.testing.expectEqualStrings("native", decoded.payload.capabilities_response.sources[0].kind);
+}
+
+test "an admission names the messages it admitted" {
+    const allocator = std.testing.allocator;
+
+    var decoded = try roundTrip(.{ .id = "adm", .payload = .{ .message_submit_response = .{
+        .session_id = "s",
+        .accepted = true,
+        .submission_id = "sub",
+        .requested_delivery = .auto,
+        .effective_delivery = .start,
+        .admission = .started,
+        .run_id = "r",
+        .status = .running,
+        .message_ids = &.{"message-2"},
+    } } }, allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), decoded.payload.message_submit_response.message_ids.len);
+    try std.testing.expectEqualStrings("message-2", decoded.payload.message_submit_response.message_ids[0]);
+}
+
+fn decodeAndRelease(allocator: std.mem.Allocator, line: []const u8) !void {
+    var decoded = try deserializeEnvelope(line, allocator);
+    decoded.deinit(allocator);
+}
+
+test "every new payload decoder frees what it built when an allocation fails" {
+    const prefix = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+        "\",\"id\":\"e-1\",\"type\":\"";
+    const lines = [_][]const u8{
+        prefix ++ "user.input.resolve.request\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\"," ++
+            "\"session_id\":\"s\",\"run_id\":\"r\",\"answers\":[{\"question_id\":\"q\",\"selected_option_ids\":[\"a\",\"b\"]},{\"question_id\":\"n\",\"text\":\"t\"}]}}",
+        prefix ++ "action.permission.resolve.request\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\"," ++
+            "\"session_id\":\"s\",\"run_id\":\"r\",\"granted\":true,\"choice_id\":\"c\",\"reason\":\"why\",\"updated_arguments_json\":{\"a\":1}}}",
+        prefix ++ "action.call.resolve.request\",\"payload\":{\"interaction_id\":\"i\",\"session_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\"," ++
+            "\"requested_by\":\"e\",\"responded_by\":\"u\",\"result\":{\"x\":2},\"error\":{\"code\":\"c\",\"message\":\"m\",\"details\":{\"k\":\"v\"}}}}",
+        prefix ++ "action.call.resolve.response\",\"payload\":{\"interaction_id\":\"i\",\"session_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\"," ++
+            "\"accepted\":false,\"reason\":\"already_resolved\",\"details\":{\"settlement_id\":\"z\"}}}",
+        prefix ++ "action.tools.list.request\",\"payload\":{\"session_id\":\"s\",\"allow_degraded_features\":[\"action.tools.list\"]}}",
+        prefix ++ "action.tools.list.response\",\"payload\":{\"session_id\":\"s\",\"sources\":[{\"id\":\"n\",\"kind\":\"native\",\"display_name\":\"d\"}]," ++
+            "\"tools\":[{\"name\":\"Bash\",\"description\":\"run\",\"input_schema\":{\"type\":\"object\"},\"execution_owner\":\"o\",\"source\":\"n\"," ++
+            "\"features\":{\"action.tools.execute\":{\"level\":\"unavailable\",\"reason\":\"r\"}}}]}}",
+        prefix ++ "session.open.request\",\"payload\":{\"session_id\":\"s\",\"subscribe\":true,\"message\":{\"delivery\":\"auto\"}," ++
+            "\"tools\":[{\"name\":\"t\"}],\"tool_sources\":[{\"id\":\"x\"}],\"allow_degraded_features\":[\"a\",\"b\"]}}",
+        prefix ++ "capabilities.response\",\"payload\":{\"endpoint\":{\"id\":\"e\"},\"features\":{\"run.cancel\":{\"level\":\"degraded\"}}," ++
+            "\"sources\":[{\"id\":\"n\",\"kind\":\"native\"},{\"id\":\"m\",\"kind\":\"process\",\"protocol\":\"mcp\",\"endpoint\":\"x\"}]}}",
+        prefix ++ "session.message.submit.response\",\"payload\":{\"session_id\":\"s\",\"accepted\":true,\"submission_id\":\"sub\"," ++
+            "\"requested_delivery\":\"auto\",\"effective_delivery\":\"start\",\"admission\":\"started\",\"run_id\":\"r\",\"message_ids\":[\"m1\",\"m2\"]}}",
+    };
+    for (lines) |line| {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, decodeAndRelease, .{line});
     }
 }
