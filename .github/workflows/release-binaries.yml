@@ -336,10 +336,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      # Trusted Publishing via OIDC (npmjs.com → Automations → lsm/open-agent-protocol).
+      # npm's OIDC trusted publishing (no token) needs npm >= 11.5.1; Node 24 ships it.
+      # Trusted Publishing is configured in npmjs.com → Automations → lsm/open-agent-protocol.
       # No token needed; the job must hold id-token: write and publish with --provenance.
       - name: Publish platform packages
         run: |
