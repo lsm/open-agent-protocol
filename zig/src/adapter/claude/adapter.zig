@@ -6,6 +6,7 @@ const backend = @import("backend");
 const session = @import("session");
 const rpc = @import("rpc");
 const compat = @import("compat");
+const jsonencode = @import("jsonencode");
 
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = "claude-code-2.1.280-oapx-v1";
@@ -258,7 +259,7 @@ pub const Session = struct {
         if (request != .object) return;
         const input = rpc.lookupRaw(request.object, "input") orelse std.json.Value.null;
         try self.asks.ensureUnusedCapacity(self.gpa, 1);
-        const input_json = try std.json.Stringify.valueAlloc(self.gpa, input, .{});
+        const input_json = try jsonencode.valueAlloc(self.gpa, input);
         errdefer self.gpa.free(input_json);
         const request_id = try self.gpa.dupe(u8, message.request_id);
         self.asks.appendAssumeCapacity(.{ .request_id = request_id, .input_json = input_json });
@@ -529,7 +530,7 @@ fn appendEvents(allocator: std.mem.Allocator, emitted: []const std.json.Value, o
         out.shrinkRetainingCapacity(first);
     }
     for (emitted) |value| {
-        const line = try std.json.Stringify.valueAlloc(allocator, value, .{});
+        const line = try jsonencode.valueAlloc(allocator, value);
         errdefer allocator.free(line);
         const run_id = try allocator.dupe(u8, value.object.get("run_id").?.string);
         const sequence: u64 = @intCast(value.object.get("sequence").?.integer);
@@ -615,11 +616,15 @@ pub const fake_prelude =
 ;
 
 pub fn fakeGatedTurn(comptime tool_id: []const u8, comptime ask_id: []const u8) []const u8 {
+    return fakeGatedTurnWithInput(tool_id, ask_id, "{\"command\":\"touch /tmp/x\"}");
+}
+
+fn fakeGatedTurnWithInput(comptime tool_id: []const u8, comptime ask_id: []const u8, comptime input: []const u8) []const u8 {
     return "take; uuid=$(field uuid)\n" ++
         "printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"native-1\",\"tools\":[\"Bash\",\"Read\",\"mcp__files__read\"],\"mcp_servers\":[{\"name\":\"files\",\"status\":\"connected\"}],\"model\":\"claude-fake\",\"uuid\":\"i1\"}\\n'\n" ++
         "printf '{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"},\"session_id\":\"native-1\",\"parent_tool_use_id\":null,\"uuid\":\"e1\",\"user_message_uuid\":\"%s\"}\\n' \"$uuid\"\n" ++
-        "printf '{\"type\":\"assistant\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-fake\",\"content\":[{\"type\":\"tool_use\",\"id\":\"" ++ tool_id ++ "\",\"name\":\"Bash\",\"input\":{\"command\":\"touch /tmp/x\"}}]},\"parent_tool_use_id\":null,\"session_id\":\"native-1\",\"uuid\":\"a1\"}\\n'\n" ++
-        "printf '{\"type\":\"control_request\",\"request_id\":\"" ++ ask_id ++ "\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":{\"command\":\"touch /tmp/x\"},\"tool_use_id\":\"" ++ tool_id ++ "\"}}\\n'\n" ++
+        "printf '{\"type\":\"assistant\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-fake\",\"content\":[{\"type\":\"tool_use\",\"id\":\"" ++ tool_id ++ "\",\"name\":\"Bash\",\"input\":" ++ input ++ "}]},\"parent_tool_use_id\":null,\"session_id\":\"native-1\",\"uuid\":\"a1\"}\\n'\n" ++
+        "printf '{\"type\":\"control_request\",\"request_id\":\"" ++ ask_id ++ "\",\"request\":{\"subtype\":\"can_use_tool\",\"tool_name\":\"Bash\",\"input\":" ++ input ++ ",\"tool_use_id\":\"" ++ tool_id ++ "\"}}\\n'\n" ++
         "take; behavior=$(field behavior)\n" ++
         "printf '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"" ++ tool_id ++ "\",\"type\":\"tool_result\",\"content\":\"%s\",\"is_error\":false}]},\"parent_tool_use_id\":null,\"session_id\":\"native-1\",\"uuid\":\"u1\"}\\n' \"$behavior\"\n" ++
         "printf '{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}},\"session_id\":\"native-1\",\"parent_tool_use_id\":null,\"uuid\":\"e2\"}\\n'\n" ++
@@ -792,6 +797,34 @@ test "an allowed ask reaches the child with the tool's own input, and the run co
 
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"touch /tmp/x\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+}
+
+test "a tool input nested past 256 levels reaches the call, the prompt and the child whole" {
+    const input = "{\"command\":\"touch /tmp/x\",\"nested\":" ++ ("[" ** 300) ++ "1" ++ ("]" ** 300) ++ "}";
+    var probe: Probe = undefined;
+    try probe.init(comptime (fake_prelude ++ fakeGatedTurnWithInput("toolu_1", "ask-1", input) ++ fake_idle));
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("fix it", &refusal);
+
+    var seen = std.ArrayList(contract.Event).empty;
+    const asked = try probe.pumpUntil("user.input.requested", &seen);
+    const scratch = probe.arena.allocator();
+    var requested: ?std.json.Value = null;
+    for (seen.items) |event| {
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, event.line, .{});
+        if (std.mem.eql(u8, parsed.object.get("type").?.string, "action.call.requested")) requested = parsed;
+    }
+    const arguments = requested.?.object.get("payload").?.object.get("arguments_json").?;
+    try testing.expectEqualStrings(input, try jsonencode.valueAlloc(scratch, arguments));
+
+    const prompt = (try std.json.parseFromSliceLeaky(std.json.Value, scratch, asked.line, .{})).object.get("payload").?.object.get("questions").?.array.items[0].object.get("prompt").?.string;
+    try testing.expectEqualStrings("Bash " ++ input, prompt);
+
+    try probe.answer(asked, "allow", &refusal);
+    _ = try probe.waitWritten("\"updatedInput\":" ++ input ++ "}");
+    _ = try probe.pumpUntil("run.completed", &seen);
 }
 
 test "a denied ask reaches the child as the operator's refusal" {
