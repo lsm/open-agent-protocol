@@ -260,13 +260,20 @@ pub fn toolPosture(arena: std.mem.Allocator, entry: AdapterEntry, diagnostic: *D
     return .{ .allowed = allowed };
 }
 
-pub const builtin_claude_environment = [_][]const u8{ "HOME", "PATH" };
+pub const builtin_environment = [_][]const u8{ "HOME", "PATH" };
 
 pub fn builtinClaude(arena: std.mem.Allocator, environ: *const std.process.Environ.Map) Error!AdapterEntry {
     var diagnostic = Diagnostic{};
     const reader = Reader{ .arena = arena, .diagnostic = &diagnostic };
-    const environment = try resolveEnvironment(reader, "the built-in claude entry", &builtin_claude_environment, environ, false);
+    const environment = try resolveEnvironment(reader, "the built-in claude entry", &builtin_environment, environ, false);
     return .{ .name = "claude", .kind = "claude", .environment = environment, .unrestricted_tools = true };
+}
+
+pub fn builtinCodex(arena: std.mem.Allocator, environ: *const std.process.Environ.Map) Error!AdapterEntry {
+    var diagnostic = Diagnostic{};
+    const reader = Reader{ .arena = arena, .diagnostic = &diagnostic };
+    const environment = try resolveEnvironment(reader, "the built-in codex entry", &builtin_environment, environ, false);
+    return .{ .name = "codex", .kind = "codex", .environment = environment };
 }
 
 pub fn resolveExecutable(arena: std.mem.Allocator, io: std.Io, name: []const u8, search_path: []const u8) Error!?[]const u8 {
@@ -494,6 +501,24 @@ test "the built-in claude entry passes only HOME and PATH, and takes the harness
     try testing.expectEqualStrings("PATH=/usr/bin", entry.environment[1]);
     var diagnostic = Diagnostic{};
     try testing.expectEqual(Posture.unrestricted, try toolPosture(arena.allocator(), entry, &diagnostic));
+}
+
+test "the built-in codex entry passes only HOME and PATH and states no approval policy or sandbox" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var environ = std.process.Environ.Map.init(arena.allocator());
+    try environ.put("HOME", "/home/me");
+    try environ.put("PATH", "/usr/bin");
+    try environ.put("OPENAI_API_KEY", "secret");
+
+    const entry = try builtinCodex(arena.allocator(), &environ);
+    try testing.expectEqualStrings("codex", entry.kind);
+    try testing.expectEqualStrings("", entry.executable);
+    try testing.expectEqual(@as(usize, 2), entry.environment.len);
+    try testing.expectEqualStrings("HOME=/home/me", entry.environment[0]);
+    try testing.expectEqualStrings("PATH=/usr/bin", entry.environment[1]);
+    try testing.expectEqualStrings("", entry.approval_policy);
+    try testing.expectEqualStrings("", entry.sandbox);
 }
 
 test "a bare executable is found on the search path's absolute directories, and a path is taken as written" {
