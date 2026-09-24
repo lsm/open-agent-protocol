@@ -2425,6 +2425,13 @@ const ValidateFinding = struct {
     phase: ValidatePhase,
     code: []const u8,
     index: usize,
+    line: usize = 0,
+};
+
+const TraceItem = struct {
+    raw: []const u8,
+    value: std.json.Value,
+    line: usize,
 };
 
 const ValidateFormat = enum { human, json };
@@ -2439,10 +2446,10 @@ fn freeFindings(allocator: std.mem.Allocator, findings: *std.ArrayList(ValidateF
     findings.deinit(allocator);
 }
 
-fn appendFinding(allocator: std.mem.Allocator, out: *std.ArrayList(ValidateFinding), phase: ValidatePhase, code: []const u8, index: usize) !void {
+fn appendFinding(allocator: std.mem.Allocator, out: *std.ArrayList(ValidateFinding), phase: ValidatePhase, code: []const u8, index: usize, line: usize) !void {
     const owned = try allocator.dupe(u8, code);
     errdefer allocator.free(owned);
-    try out.append(allocator, .{ .phase = phase, .code = owned, .index = index });
+    try out.append(allocator, .{ .phase = phase, .code = owned, .index = index, .line = line });
 }
 
 fn traceElements(allocator: std.mem.Allocator, source: []const u8) ![]const []const u8 {
@@ -2469,29 +2476,66 @@ fn repeatsAKey(allocator: std.mem.Allocator, element: []const u8) !bool {
     return false;
 }
 
-fn validateTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, source: []const u8, out: *std.ArrayList(ValidateFinding)) !void {
-    var document = std.json.parseFromSlice(std.json.Value, allocator, source, .{ .duplicate_field_behavior = .use_last }) catch |err| switch (err) {
+fn parseValue(arena: std.mem.Allocator, text: []const u8) !?std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{ .duplicate_field_behavior = .use_last }) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => return appendFinding(allocator, out, .decode, "malformed_json", 0),
+        else => return null,
     };
-    defer document.deinit();
-    if (document.value != .array) return error.TraceIsNotAnArray;
-    const trace = document.value.array.items;
-    const elements = try traceElements(allocator, source);
-    defer allocator.free(elements);
-    if (elements.len != trace.len) return error.TraceIsNotAnArray;
+}
+
+fn traceItems(allocator: std.mem.Allocator, arena: std.mem.Allocator, source: []const u8, out: *std.ArrayList(ValidateFinding)) !?[]const TraceItem {
+    const text = std.mem.trim(u8, source, " \t\r\n");
+    if (text.len == 0) return &.{};
+    if (text[0] == '[') {
+        const document = try parseValue(arena, text) orelse {
+            try appendFinding(allocator, out, .decode, "malformed_json", 0, 0);
+            return null;
+        };
+        const elements = try traceElements(arena, text);
+        const items = try arena.alloc(TraceItem, elements.len);
+        for (items, elements, document.array.items) |*item, raw, value| item.* = .{ .raw = raw, .value = value, .line = 0 };
+        return items;
+    }
+    if (try parseValue(arena, text)) |value| {
+        const items = try arena.alloc(TraceItem, 1);
+        items[0] = .{ .raw = text, .value = value, .line = 1 };
+        return items;
+    }
+    var items = std.ArrayList(TraceItem).empty;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var number: usize = 0;
+    while (lines.next()) |untrimmed| {
+        number += 1;
+        const line = std.mem.trim(u8, untrimmed, " \t\r\n");
+        if (line.len == 0) continue;
+        const value = try parseValue(arena, line) orelse {
+            try appendFinding(allocator, out, .decode, "malformed_json", items.items.len, number);
+            return null;
+        };
+        try items.append(arena, .{ .raw = line, .value = value, .line = number });
+    }
+    return items.items;
+}
+
+fn validateTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, source: []const u8, out: *std.ArrayList(ValidateFinding)) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const items = try traceItems(allocator, arena, source, out) orelse return;
+    const trace = try arena.alloc(std.json.Value, items.len);
+    for (trace, items) |*value, item| value.* = item.value;
 
     const provider = namesProviderProfile(trace);
     const schema_document = if (provider) "provider-envelope.schema.json" else "envelope.schema.json";
     var validator = jsonschema.Validator.init(allocator, registry);
     defer validator.deinit();
-    for (trace, elements, 0..) |envelope, element, index| {
-        if (try repeatsAKey(allocator, element)) {
-            try appendFinding(allocator, out, .decode, "duplicate_key", index);
+    for (items, 0..) |item, index| {
+        if (try repeatsAKey(allocator, item.raw)) {
+            try appendFinding(allocator, out, .decode, "duplicate_key", index, item.line);
             continue;
         }
-        if (try validator.validate(schema_document, envelope) != null) {
-            try appendFinding(allocator, out, .schema, "schema_invalid", index);
+        if (try validator.validate(schema_document, item.value) != null) {
+            try appendFinding(allocator, out, .schema, "schema_invalid", index, item.line);
         }
     }
     if (out.items.len != 0) return;
@@ -2501,7 +2545,7 @@ fn validateTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Regis
         defer machine.deinit();
         for (trace, 0..) |envelope, index| try machine.apply(index, envelope);
         try machine.close();
-        for (machine.diagnostics.items) |diagnostic| try appendFinding(allocator, out, .semantic, diagnostic.code, diagnostic.index);
+        for (machine.diagnostics.items) |diagnostic| try appendFinding(allocator, out, .semantic, diagnostic.code, diagnostic.index, lineOf(items, diagnostic.index));
         return;
     }
 
@@ -2509,7 +2553,11 @@ fn validateTrace(allocator: std.mem.Allocator, registry: *const jsonschema.Regis
     defer machine.deinit();
     for (trace, 0..) |envelope, index| try machine.apply(index, envelope);
     try machine.close();
-    for (machine.diagnostics.items) |diagnostic| try appendFinding(allocator, out, .semantic, diagnostic.code, diagnostic.index);
+    for (machine.diagnostics.items) |diagnostic| try appendFinding(allocator, out, .semantic, diagnostic.code, diagnostic.index, lineOf(items, diagnostic.index));
+}
+
+fn lineOf(items: []const TraceItem, index: usize) usize {
+    return if (index < items.len) items[index].line else 0;
 }
 
 const partial_semantic_note = "semantic rules partial: this validator has not ported every rule; goap validate checks them all";
@@ -2523,7 +2571,11 @@ fn writeHumanReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path:
                 return;
             }
             for (findings) |finding| {
-                try out.print(allocator, "FAIL {s}: {s} {s} at {d}\n", .{ path, @tagName(finding.phase), finding.code, finding.index });
+                if (finding.line == 0) {
+                    try out.print(allocator, "FAIL {s}: {s} {s} at {d}\n", .{ path, @tagName(finding.phase), finding.code, finding.index });
+                } else {
+                    try out.print(allocator, "FAIL {s}: {s} {s} at {d} (line {d})\n", .{ path, @tagName(finding.phase), finding.code, finding.index, finding.line });
+                }
             }
         },
     }
@@ -2563,6 +2615,10 @@ fn writeJsonReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: 
                 try json.write(finding.code);
                 try json.objectField("index");
                 try json.write(finding.index);
+                if (finding.line != 0) {
+                    try json.objectField("line");
+                    try json.write(finding.line);
+                }
                 try json.endObject();
             }
             try json.endArray();
@@ -9608,11 +9664,53 @@ test "validate reports the code a run event before its start earns" {
     try std.testing.expect(named_missing_terminal);
 }
 
-test "validate refuses a trace that is not an array of envelopes" {
+const ndjson_first = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}";
+const ndjson_repeating = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q2\",\"id\":\"q3\",\"payload\":{}}";
+
+test "validate judges a lone object as a one-envelope trace on line 1" {
     const allocator = std.testing.allocator;
-    var codes = std.ArrayList([]const u8).empty;
-    defer codes.deinit(allocator);
-    try std.testing.expectError(error.TraceIsNotAnArray, diagnosedCodes(allocator, "{}", &codes));
+    var found = std.ArrayList(ValidateFinding).empty;
+    defer freeFindings(allocator, &found);
+    try judgedFindings(allocator, "{}", &found);
+    try std.testing.expectEqual(@as(usize, 1), found.items.len);
+    try std.testing.expectEqual(ValidatePhase.schema, found.items[0].phase);
+    try std.testing.expectEqualStrings("schema_invalid", found.items[0].code);
+    try std.testing.expectEqual(@as(usize, 0), found.items[0].index);
+    try std.testing.expectEqual(@as(usize, 1), found.items[0].line);
+}
+
+test "an empty, blank or bracketed-empty trace has no envelopes and nothing to refuse" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "", " \n\t\n", "[]" }) |source| {
+        var found = std.ArrayList(ValidateFinding).empty;
+        defer freeFindings(allocator, &found);
+        try judgedFindings(allocator, source, &found);
+        try std.testing.expectEqual(@as(usize, 0), found.items.len);
+    }
+}
+
+test "a newline-delimited trace counts blank lines and names the envelope a repeated key spoils" {
+    const allocator = std.testing.allocator;
+    var found = std.ArrayList(ValidateFinding).empty;
+    defer freeFindings(allocator, &found);
+    try judgedFindings(allocator, ndjson_first ++ "\n\n" ++ ndjson_repeating ++ "\n", &found);
+    try std.testing.expectEqual(@as(usize, 1), found.items.len);
+    try std.testing.expectEqual(ValidatePhase.decode, found.items[0].phase);
+    try std.testing.expectEqualStrings("duplicate_key", found.items[0].code);
+    try std.testing.expectEqual(@as(usize, 1), found.items[0].index);
+    try std.testing.expectEqual(@as(usize, 3), found.items[0].line);
+}
+
+test "a newline-delimited line that does not parse refuses the trace at that line" {
+    const allocator = std.testing.allocator;
+    var found = std.ArrayList(ValidateFinding).empty;
+    defer freeFindings(allocator, &found);
+    try judgedFindings(allocator, ndjson_first ++ "\n{\"broken\n" ++ ndjson_first ++ "\n", &found);
+    try std.testing.expectEqual(@as(usize, 1), found.items.len);
+    try std.testing.expectEqual(ValidatePhase.decode, found.items[0].phase);
+    try std.testing.expectEqualStrings("malformed_json", found.items[0].code);
+    try std.testing.expectEqual(@as(usize, 1), found.items[0].index);
+    try std.testing.expectEqual(@as(usize, 2), found.items[0].line);
 }
 
 test "validate judges a provider trace with the provider machine, not the agent one" {
