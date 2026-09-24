@@ -3,7 +3,7 @@
 Status: proposed design
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
-Reference implementation: `goap endpoint`
+Reference implementation: `goap serve agent`
 Conformance runner: `goap conformance`
 
 This profile may also share one stdio connection with
@@ -28,7 +28,7 @@ over it, which is authored files agreeing with each other.
 
 ## What this binding is not
 
-`goap serve --stdio` is a different thing and implementers should not build it.
+`goap hub --stdio` is a different thing and implementers should not build it.
 That frontend exposes a **hub**: twelve ops, an `adapter` dimension, cursor
 replay, and several subscriptions multiplexed over one pipe, each line wrapping
 an OAP envelope inside a transport object with its own numeric `id`.
@@ -261,7 +261,7 @@ runner's own opinion. The runner drives; the validator judges; they are
 different code, and the validator is the one the adapters are already held to.
 
 The runner drives a **process**, not an in-process adapter, so it works against
-any binary regardless of implementation language. `goap endpoint` is the
+any binary regardless of implementation language. `goap serve agent` is the
 known-good target it is developed against.
 
 **What the script needs from you, and what it does not.** It drives one run,

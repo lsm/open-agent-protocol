@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A Claude Code 2.1.280 evidence corpus, `fixtures/adapters/claude-code-2.1.280`, recorded against the pinned darwin-arm64 binary. It carries the same thirteen cases as the 2.1.263 corpus, which stays as a floor; Go and Zig run both. Frames a hermetic probe can produce come from a capture of the pinned binary, and the rest are carried over with 2.1.280's shape changes. Against the 2.1.263 expectations, four envelopes differ, each in text 2.1.280 writes itself. `TestClaudeProcessRecordsCorpusProbes`, gated on `OAP_CLAUDE_CAPTURE_DIR`, is the capture path. Recorded in [`research/claude-code-agent-sdk-2.1.280-mapping.md`](research/claude-code-agent-sdk-2.1.280-mapping.md).
+
 - [Decision 0032](decisions/0032-go-and-zig-are-peers.md): Go and Zig are peer implementations and the specification decides between them. It supersedes the parts of Decision 0019 that made the Go tree the oracle and scheduled its deletion, says a Go runtime quirk is not protocol behaviour until a decision specifies it, and names the Go binary `goap`, answering the question left open when the Go CLI kept the name `oap`. The rename itself follows separately.
 
 - `oapx serve provider --http 127.0.0.1:<port>` serves the same `model-provider-core` catalog and inference operations over HTTP/SSE, including concurrent inference streams and separately correlated cancellation. The listener binds only to loopback; cross-Pod exposure requires an operator-managed TLS/mTLS proxy. It advertises provider-managed credentials and does not accept credential grants over HTTP.
@@ -20,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bounded remote-provider HTTP operations: unary calls and the first streamed envelope have a 30-second deadline, and an active SSE stream has a 120-second idle deadline that SSE traffic, including comment heartbeats, refreshes. A timed-out connection is shut down, repeated or skipped inference sequences are rejected, and a cancel acknowledgment is consumed outside the bounded inference-event queue so cancellation cannot wait on that queue when it is full. SSE events are delivered as bytes arrive, rather than waiting for a 4 KiB read or connection close.
 
 ### Changed
+
+- `goap serve` is now `goap hub` (same `--config`, `--addr`, `--stdio`), with no alias; `goap serve` without a role prints usage naming `hub`. `goap serve agent [--backend A]` serves one agent loop, replacing `goap endpoint --adapter A`, which stays as an alias. `goap serve provider` and `goap serve agent,provider` answer `unavailable`. This is the `goap` half of the CLI contract in `drafts/cli.md`.
 
 - The claude, hermes and deepseek adapters deliver every event stream as a follower of the session journal: a consumer reads at its own pace with backpressure, and `ErrEventStreamOverflow` now means only that it fell behind what the journal retains, after which `Resume` from its cursor reports a `ReplayGap`. Previously a stream had 64 slots of headroom beyond any replayed backlog, so a resumed consumer draining a large backlog overflowed again while the run kept streaming (#237).
 
@@ -72,9 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Claude Code adapter no longer fails a run when a `Bash` call outlives about three seconds. Claude Code 2.1.280 reports such a call as a foreground `local_bash` task whose `task_notification` carries `"output_file": ""`, and the Go and Zig decoders required that member non-empty, so the run failed with `claude_process_exit`. `output_file` must still be present, but may be empty.
+
 - **`oapx --version` reports the version it was built as.** It printed a hard-coded `0.0.1` whatever the release. The version now comes from `zig/build.zig.zon`, a `-Dversion` build option overrides it, and the release workflow passes the tag, so a `v0.1.0-alpha.3` binary says `0.1.0-alpha.3`. The MCP bridge reads the same value instead of its own literal. The provider descriptor's `capability_revision` and `endpoint_version`, which reused the constant, follow it.
 
 - The Zig DeepSeek line codec refuses a frame nested past 10000 containers, counting the frame object, where the Go codec refuses it (`exceeded max depth`), instead of parsing any depth (#247).
+
+- **`oapx validate` no longer passes a trace it never checked.** It now runs the decode and schema phases before the semantic machine, in Go's order and with Go's codes (`malformed_json`, `duplicate_key` with the envelope's index, `schema_invalid`), and runs the semantic rules only when both are clean, as Go does. It reads a trace the way Go does too: blank input is an empty trace, a lone object is a one-envelope trace, and anything else that is not an array is read as newline-delimited JSON, with each finding carrying its line. Over the manifest's fixtures that need no pack or tolerant mode, every schema-invalid fixture now fails and no positive one does. The semantic port is still partial — 156 semantic-invalid fixtures still pass — so a pass says so, `--format json` reports `"complete": false`, and a trace the schema interpreter cannot judge is reported `UNJUDGED` and fails rather than passing.
 
 - Every HTTPS provider response read as empty after #240, so the TUI showed no reply: a turn "completed" with an empty assistant message and no error, on kimi and openai-codex alike. `compat.readResponse` switched to `Reader.readVec`, which may return 0 after only refilling the reader's buffer, as TLS does after a decrypt; callers took that 0 for end of stream. It now reads again until bytes arrive or the stream ends. Plain-HTTP endpoints were unaffected, which is why loopback tests kept passing.
 

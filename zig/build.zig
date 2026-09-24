@@ -2095,6 +2095,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "semantic", .module = semantic_mod },
             .{ .name = "provider_semantic", .module = provider_semantic_mod },
             .{ .name = "packs", .module = packs_mod },
+            .{ .name = "jsonschema", .module = jsonschema_mod },
             .{ .name = "version_options", .module = version_module },
         },
     });

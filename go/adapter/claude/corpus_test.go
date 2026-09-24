@@ -23,32 +23,73 @@ import (
 )
 
 const (
-	ccCorpusCLIVersion   = "2.1.263"
-	ccCorpusWrapperSHA   = "b325aaaf748065ebce116c50893120384ce6ec56c1133f42f45177f8d1030c66"
-	ccCorpusLauncherSHA  = "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e"
-	ccCorpusLinuxSHA     = "8b6207348ad56fdcde085a0ad1f7cff0dfe06ce2c6c1bf97f69f1a1a7b6d0945"
-	ccCorpusBinarySHA    = "26d020351e8112f4006790f3cfce43b4c9df0c1bb1d0e542364d64151b81d5ba"
-	ccCorpusBinaryBytes  = 215662064
-	ccCorpusBuildCommit  = "37ae3f38d765199d54a6913cd61c6c9ad8576cc6"
-	ccCorpusBuildDate    = "2026-09-06T01:17:56Z"
-	ccCorpusTSSDKVersion = "0.3.263"
-	ccCorpusTSSDKSHA     = "e1d6b68b557fc3c57430cafa8cc65eea9d40ff7348b238fe2c431284d727901d"
-	ccCorpusTSSDKDtsSHA  = "59560e31f91e47ed93e7cbcaa846e3fc3c96d8dcc41ea36cda64de96c0c4edf4"
-	ccCorpusTSRepository = "https://github.com/anthropics/claude-agent-sdk-typescript"
-	ccCorpusPySDKVersion = "0.2.152"
-	ccCorpusPySDKCommit  = "efd4d865ef1795daffee3cd24cce45307aed8a51"
-	ccCorpusPySDKTree    = "d617ca6d630c7bab54f3c0cd1376dcbb938103a2"
-	ccCorpusPyPyproject  = "ebece50404bb77b0d02aa47be14375fde76eea60"
-	ccCorpusPyRepository = "https://github.com/anthropics/claude-agent-sdk-python"
-	ccCorpusPyClientPy   = "bba76b10e4c2ecb6b0d526ad302122b7549c3ac4"
-	ccCorpusPyTypesPy    = "308b76cb7fd928d124666c255b253c92c343f15d"
-	ccCorpusPyQueryPy    = "4d5f0070e0568778255a39cc6351aaf40429da7c"
-	ccCorpusPyParserPy   = "931cc2a632f296aab43f3f98209020138431ce7d"
-	ccCorpusPyTransport  = "58abc438ddadc7406330a32d90f743ae60d10c69"
-	ccCorpusPyResumePy   = "a50e578fdaea7b10de83697fe355145b7351cecc"
-	ccCorpusPyStorePy    = "bb6a2155b08ad546227eba9f2349d95bffd910fa"
-	ccCorpusPyStoreVal   = "16addd216281eecaadaedbe7ed361ad8205d0433"
+	ccTSRepository = "https://github.com/anthropics/claude-agent-sdk-typescript"
+	ccPyRepository = "https://github.com/anthropics/claude-agent-sdk-python"
 )
+
+type ccCorpusPin struct {
+	dir     string
+	sources ccCorpusSources
+}
+
+var ccCurrentCorpus = ccCorpusPin{dir: "claude-code-2.1.280", sources: ccCorpusSources{
+	CLIVersion:        "2.1.280",
+	NPMTarballSHA256:  "1326e6b8cf00404fc3f9bd101d806b3fdec9588264e5a1aa8d98d1f7afe50170",
+	LauncherCjsSHA256: "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e",
+	LinuxTarballSHA:   "3d95573100e302f79d536ef3eb64f5da0d537433af6ae8de571dfeda6d52bfd3",
+	LinuxBinarySHA:    "1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b",
+	LinuxBinaryBytes:  233709640,
+	DarwinTarballSHA:  "76170ceef79015e118fdea65e3b11663342153d3559f301ab8e6a7dfecc7f4a3",
+	DarwinBinarySHA:   "387a5c5dcdbb815085edf0baf79591f9d8894efe922bceaf3d75b1b08055229d",
+	DarwinBinaryBytes: 217254576,
+	BuildCommit:       "80abbfe7d7232280011ff01a21ae3338f4c6e372",
+	BuildDate:         "2026-09-21T20:55:27Z",
+	TSSDKVersion:      "0.3.280",
+	TSSDKTarballSHA:   "5d3f5706261215c352d8b41606fb320f92a63cf252f020b47e7eed598bcb7ba8",
+	TSSDKDtsSHA:       "b7ac9c0ed0db5c1792a5394e72c75d69d85f4ce9edc0279487ec55d32eabfa76",
+	TSRepository:      ccTSRepository,
+	PySDKVersion:      "0.2.158",
+	PySDKCommit:       "2c24c8248d0b52d44ff352854d7b679ac37b0db7",
+	PySDKTree:         "698715c4e378cd259f3513eb44c3932fa56d502c",
+	PyPyprojectBlob:   "916afbc6977b9d1572fd0d970d362c7f31da39d2",
+	PyRepository:      ccPyRepository,
+	PyClientPy:        "f3155011c17fb5ca5d44ff21a43ecd66dca51282",
+	PyTypesPy:         "861c316936565edc413896d27e280028c4660125",
+	PyQueryPy:         "63bac7d43eedab56e4d7adbb68e1e6d92d21eb6d",
+	PyParserPy:        "931cc2a632f296aab43f3f98209020138431ce7d",
+	PyTransportPy:     "7e53b8131c7e003543ebf005dc4dd5c28f9986d9",
+	PyResumePy:        "a50e578fdaea7b10de83697fe355145b7351cecc",
+	PyStorePy:         "bb6a2155b08ad546227eba9f2349d95bffd910fa",
+	PyStoreValPy:      "16addd216281eecaadaedbe7ed361ad8205d0433",
+}}
+
+var ccFloorCorpus = ccCorpusPin{dir: "claude-code-2.1.263", sources: ccCorpusSources{
+	CLIVersion:        "2.1.263",
+	NPMTarballSHA256:  "b325aaaf748065ebce116c50893120384ce6ec56c1133f42f45177f8d1030c66",
+	LauncherCjsSHA256: "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e",
+	LinuxTarballSHA:   "8b6207348ad56fdcde085a0ad1f7cff0dfe06ce2c6c1bf97f69f1a1a7b6d0945",
+	LinuxBinarySHA:    "26d020351e8112f4006790f3cfce43b4c9df0c1bb1d0e542364d64151b81d5ba",
+	LinuxBinaryBytes:  215662064,
+	BuildCommit:       "37ae3f38d765199d54a6913cd61c6c9ad8576cc6",
+	BuildDate:         "2026-09-06T01:17:56Z",
+	TSSDKVersion:      "0.3.263",
+	TSSDKTarballSHA:   "e1d6b68b557fc3c57430cafa8cc65eea9d40ff7348b238fe2c431284d727901d",
+	TSSDKDtsSHA:       "59560e31f91e47ed93e7cbcaa846e3fc3c96d8dcc41ea36cda64de96c0c4edf4",
+	TSRepository:      ccTSRepository,
+	PySDKVersion:      "0.2.152",
+	PySDKCommit:       "efd4d865ef1795daffee3cd24cce45307aed8a51",
+	PySDKTree:         "d617ca6d630c7bab54f3c0cd1376dcbb938103a2",
+	PyPyprojectBlob:   "ebece50404bb77b0d02aa47be14375fde76eea60",
+	PyRepository:      ccPyRepository,
+	PyClientPy:        "bba76b10e4c2ecb6b0d526ad302122b7549c3ac4",
+	PyTypesPy:         "308b76cb7fd928d124666c255b253c92c343f15d",
+	PyQueryPy:         "4d5f0070e0568778255a39cc6351aaf40429da7c",
+	PyParserPy:        "931cc2a632f296aab43f3f98209020138431ce7d",
+	PyTransportPy:     "58abc438ddadc7406330a32d90f743ae60d10c69",
+	PyResumePy:        "a50e578fdaea7b10de83697fe355145b7351cecc",
+	PyStorePy:         "bb6a2155b08ad546227eba9f2349d95bffd910fa",
+	PyStoreValPy:      "16addd216281eecaadaedbe7ed361ad8205d0433",
+}}
 
 var ccLedgerFixtures = map[string]bool{
 
@@ -83,6 +124,9 @@ type ccCorpusSources struct {
 	LinuxTarballSHA   string `json:"linux_x64_tarball_sha256"`
 	LinuxBinarySHA    string `json:"linux_x64_binary_sha256"`
 	LinuxBinaryBytes  int    `json:"linux_x64_binary_bytes"`
+	DarwinTarballSHA  string `json:"darwin_arm64_tarball_sha256"`
+	DarwinBinarySHA   string `json:"darwin_arm64_binary_sha256"`
+	DarwinBinaryBytes int    `json:"darwin_arm64_binary_bytes"`
 	BuildCommit       string `json:"build_commit"`
 	BuildDate         string `json:"build_date"`
 	TSSDKVersion      string `json:"ts_sdk_version"`
@@ -173,40 +217,18 @@ type ccDecodedFrame struct {
 	ResponseType string
 }
 
-func pinnedCCSources() ccCorpusSources {
-	return ccCorpusSources{
-		CLIVersion:        ccCorpusCLIVersion,
-		NPMTarballSHA256:  ccCorpusWrapperSHA,
-		LauncherCjsSHA256: ccCorpusLauncherSHA,
-		LinuxTarballSHA:   ccCorpusLinuxSHA,
-		LinuxBinarySHA:    ccCorpusBinarySHA,
-		LinuxBinaryBytes:  ccCorpusBinaryBytes,
-		BuildCommit:       ccCorpusBuildCommit,
-		BuildDate:         ccCorpusBuildDate,
-		TSSDKVersion:      ccCorpusTSSDKVersion,
-		TSSDKTarballSHA:   ccCorpusTSSDKSHA,
-		TSSDKDtsSHA:       ccCorpusTSSDKDtsSHA,
-		TSRepository:      ccCorpusTSRepository,
-		PySDKVersion:      ccCorpusPySDKVersion,
-		PySDKCommit:       ccCorpusPySDKCommit,
-		PySDKTree:         ccCorpusPySDKTree,
-		PyPyprojectBlob:   ccCorpusPyPyproject,
-		PyRepository:      ccCorpusPyRepository,
-		PyClientPy:        ccCorpusPyClientPy,
-		PyTypesPy:         ccCorpusPyTypesPy,
-		PyQueryPy:         ccCorpusPyQueryPy,
-		PyParserPy:        ccCorpusPyParserPy,
-		PyTransportPy:     ccCorpusPyTransport,
-		PyResumePy:        ccCorpusPyResumePy,
-		PyStorePy:         ccCorpusPyStorePy,
-		PyStoreValPy:      ccCorpusPyStoreVal,
+func TestClaudeEvidenceCorpus(t *testing.T) {
+	for _, pin := range []ccCorpusPin{ccCurrentCorpus, ccFloorCorpus} {
+		t.Run(pin.dir, func(t *testing.T) {
+			runClaudeEvidenceCorpus(t, pin)
+		})
 	}
 }
 
-func TestClaudeEvidenceCorpus(t *testing.T) {
-	root := ccCorpusRoot(t)
+func runClaudeEvidenceCorpus(t *testing.T, pin ccCorpusPin) {
+	root := ccCorpusRoot(t, pin.dir)
 	manifest := ccLoadJSON[ccCorpusManifest](t, filepath.Join(root, "manifest.json"))
-	if manifest.Version != 1 || manifest.Adapter != "claude-code-stream-json" || manifest.Tag != ccCorpusCLIVersion || manifest.Sources != pinnedCCSources() {
+	if manifest.Version != 1 || manifest.Adapter != "claude-code-stream-json" || manifest.Tag != pin.sources.CLIVersion || manifest.Sources != pin.sources {
 		t.Fatalf("corpus provenance pin mismatch: %+v", manifest)
 	}
 	seenIDs, seenPaths, covered := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -223,7 +245,7 @@ func TestClaudeEvidenceCorpus(t *testing.T) {
 				covered[fixture] = true
 			}
 			seenIDs[entry.ID], seenPaths[entry.Path] = true, true
-			runClaudeCorpusCase(t, root, entry)
+			runClaudeCorpusCase(t, root, entry, pin)
 		})
 	}
 	for fixture := range ccLedgerFixtures {
@@ -234,11 +256,11 @@ func TestClaudeEvidenceCorpus(t *testing.T) {
 	assertClaudeCorpusInventory(t, root, manifest)
 }
 
-func runClaudeCorpusCase(t *testing.T, root string, entry ccCorpusManifestCase) {
+func runClaudeCorpusCase(t *testing.T, root string, entry ccCorpusManifestCase, pin ccCorpusPin) {
 	dir := filepath.Join(root, entry.Path)
 	definition := ccLoadJSON[ccCorpusCase](t, filepath.Join(dir, "case.json"))
 	p := definition.Provenance
-	if definition.Version != 1 || definition.ID != entry.ID || p.Repository != ccCorpusTSRepository || p.Tag != ccCorpusCLIVersion || p.Sources != pinnedCCSources() || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
+	if definition.Version != 1 || definition.ID != entry.ID || p.Repository != ccTSRepository || p.Tag != pin.sources.CLIVersion || p.Sources != pin.sources || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
 		t.Fatalf("invalid case metadata: %+v", definition)
 	}
 	frames, decoded := ccLoadFrames(t, filepath.Join(dir, definition.Native))
@@ -1143,21 +1165,26 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 			}
 			ok = states["queued"] && states["started"] && corroborated && len(execution.admissions) > 0
 		case "injected-turn-origin":
-			injected := false
+			var injected []string
 			for _, i := range ccObserveIndexes(decoded, native.TypeUser, "") {
-				user, is := decoded[i].Observation.(*native.UserFrame)
-				if is && user.Origin != nil && user.Origin.Kind != "human" {
-					injected = true
+				if user, is := decoded[i].Observation.(*native.UserFrame); is && user.Origin != nil && user.Origin.Kind != "human" {
+					injected = append(injected, ccUserText(user))
 				}
 			}
-			leaked := false
-			for _, envelope := range execution.envelopes {
-				data, _ := json.Marshal(envelope.Payload)
-				if strings.Contains(string(data), "task complete") {
-					leaked = true
+			for _, i := range ccObserveIndexes(decoded, native.TypeResult, "") {
+				if result, is := decoded[i].Observation.(*native.ResultFrame); is && result.Origin != nil && result.Origin.Kind != "human" {
+					injected = append(injected, result.Result)
 				}
 			}
-			ok = injected && !leaked && len(execution.admissions) == 1 &&
+			leaked, blank := false, false
+			for _, text := range injected {
+				blank = blank || text == ""
+				for _, envelope := range execution.envelopes {
+					data, _ := json.Marshal(envelope.Payload)
+					leaked = leaked || strings.Contains(string(data), text)
+				}
+			}
+			ok = len(injected) > 0 && !blank && !leaked && len(execution.admissions) == 1 &&
 				len(execution.runs) == 1 && len(execution.assertStates) > 0 &&
 				execution.assertStates[len(execution.assertStates)-1] == "idle"
 		case "queued-turn-count":
@@ -1179,8 +1206,14 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 				return typ == protocol.TypeRunCompleted && stop == "max_turns"
 			}) && ccHasObservation(decoded, native.TypeResult, native.ResultErrorMaxTurns)
 		case "api-error-result":
-			ok = ccAnyRun(*execution, func(typ protocol.EnvelopeType, code, message string) bool {
-				return typ == protocol.TypeRunFailed && code == "claude_api_429" && message == "API Error: rate limited"
+			reported := ""
+			for _, i := range ccObserveIndexes(decoded, native.TypeResult, "") {
+				if result, is := decoded[i].Observation.(*native.ResultFrame); is && result.APIErrorStatus != nil && *result.APIErrorStatus == 429 {
+					reported = strings.TrimSpace(result.Result)
+				}
+			}
+			ok = reported != "" && ccAnyRun(*execution, func(typ protocol.EnvelopeType, code, message string) bool {
+				return typ == protocol.TypeRunFailed && code == "claude_api_429" && message == reported
 			})
 		case "error-result":
 			ok = ccAnyRun(*execution, func(typ protocol.EnvelopeType, code, _ string) bool {
@@ -1197,10 +1230,8 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 				}
 			}
 			for _, i := range ccObserveIndexes(decoded, native.TypeUser, "") {
-				if user, is := decoded[i].Observation.(*native.UserFrame); is {
-					if text, isText := user.TextContent(); isText && strings.Contains(text, "interrupted by user") {
-						synthetic = true
-					}
+				if user, is := decoded[i].Observation.(*native.UserFrame); is && strings.Contains(ccUserText(user), "interrupted by user") {
+					synthetic = true
 				}
 			}
 			ok = cancelled && aborted && synthetic &&
@@ -1445,6 +1476,20 @@ func assertClaudeLedgerEvidence(t *testing.T, labels []string, frames []ccFrame,
 	}
 }
 
+func ccUserText(user *native.UserFrame) string {
+	if text, ok := user.TextContent(); ok {
+		return text
+	}
+	blocks, _ := user.Blocks()
+	var texts []string
+	for _, block := range blocks {
+		if block.Type == "text" {
+			texts = append(texts, block.Text)
+		}
+	}
+	return strings.Join(texts, "")
+}
+
 func ccHasControlRequest(decoded []ccDecodedFrame, subtype string) bool {
 	for i := range decoded {
 		if decoded[i].Message != nil && decoded[i].Message.Kind == rpc.KindControlRequest && decoded[i].Message.Subtype == subtype {
@@ -1582,23 +1627,60 @@ func ccSafeRelative(path string) bool {
 	return path != "" && !filepath.IsAbs(path) && clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
 
-func ccCorpusRoot(t *testing.T) string {
+func ccCorpusRoot(t *testing.T, dir string) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", "claude-code-2.1.263")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", "fixtures", "adapters", dir)
 }
 
 func TestClaudeCorpusPinConstants(t *testing.T) {
-	if ccCorpusCLIVersion == "" || ccCorpusWrapperSHA == "" || ccCorpusLinuxSHA == "" || ccCorpusBinarySHA == "" || ccCorpusBinaryBytes == 0 || ccCorpusBuildCommit == "" || CapabilityRevision == "" || PinnedVersion == "" {
-		t.Fatal("missing Claude Code corpus pin")
+	if CapabilityRevision == "" || PinnedVersion == "" {
+		t.Fatal("missing Claude Code adapter pin")
 	}
-	if ccCorpusTSSDKSHA == "" || ccCorpusTSSDKDtsSHA == "" || ccCorpusPySDKCommit == "" || ccCorpusPySDKTree == "" || ccCorpusPyPyproject == "" {
-		t.Fatal("missing Claude Code SDK corpus pin")
+	for _, pin := range []ccCorpusPin{ccCurrentCorpus, ccFloorCorpus} {
+		s := pin.sources
+		if pin.dir != "claude-code-"+s.CLIVersion || s.NPMTarballSHA256 == "" || s.LinuxTarballSHA == "" || s.LinuxBinarySHA == "" || s.LinuxBinaryBytes == 0 || s.BuildCommit == "" || s.BuildDate == "" {
+			t.Fatalf("missing Claude Code corpus pin: %+v", pin)
+		}
+		if s.TSSDKTarballSHA == "" || s.TSSDKDtsSHA == "" || s.PySDKCommit == "" || s.PySDKTree == "" || s.PyPyprojectBlob == "" {
+			t.Fatalf("missing Claude Code SDK corpus pin: %+v", pin)
+		}
+		if s.PyClientPy == "" || s.PyTypesPy == "" || s.PyQueryPy == "" || s.PyParserPy == "" || s.PyTransportPy == "" || s.PyResumePy == "" || s.PyStorePy == "" || s.PyStoreValPy == "" {
+			t.Fatalf("missing Claude Code Python source pin: %+v", pin)
+		}
 	}
-	if ccCorpusPyClientPy == "" || ccCorpusPyTypesPy == "" || ccCorpusPyQueryPy == "" || ccCorpusPyParserPy == "" || ccCorpusPyTransport == "" || ccCorpusPyResumePy == "" || ccCorpusPyStorePy == "" || ccCorpusPyStoreVal == "" {
-		t.Fatal("missing Claude Code Python source pin")
+	if s := ccCurrentCorpus.sources; s.DarwinTarballSHA == "" || s.DarwinBinarySHA == "" || s.DarwinBinaryBytes == 0 {
+		t.Fatal("the current corpus does not name the binary it was recorded against")
+	}
+}
+
+func TestClaudeCurrentCorpusRecordsThePinnedVersion(t *testing.T) {
+	pinned := strings.TrimPrefix(PinnedVersion, "v")
+	root := ccCorpusRoot(t, ccCurrentCorpus.dir)
+	manifest := ccLoadJSON[ccCorpusManifest](t, filepath.Join(root, "manifest.json"))
+	if ccCurrentCorpus.sources.CLIVersion != pinned || manifest.Tag != pinned || manifest.Sources.CLIVersion != pinned {
+		t.Fatalf("the current corpus records %q (sources %q), the adapter pins %q", manifest.Tag, manifest.Sources.CLIVersion, PinnedVersion)
+	}
+	inits := 0
+	for _, entry := range manifest.Cases {
+		dir := filepath.Join(root, entry.Path)
+		definition := ccLoadJSON[ccCorpusCase](t, filepath.Join(dir, "case.json"))
+		if definition.Provenance.Tag != pinned || definition.Provenance.Sources.CLIVersion != pinned {
+			t.Fatalf("%s records %q, the adapter pins %q", entry.ID, definition.Provenance.Tag, PinnedVersion)
+		}
+		_, decoded := ccLoadFrames(t, filepath.Join(dir, definition.Native))
+		for _, i := range ccObserveIndexes(decoded, native.TypeSystem, native.SystemInit) {
+			init, ok := decoded[i].Observation.(*native.InitFrame)
+			if !ok || init.ClaudeCodeVersion != pinned {
+				t.Fatalf("%s frame %d reports claude_code_version %+v, the adapter pins %q", entry.ID, i+1, decoded[i].Observation, PinnedVersion)
+			}
+			inits++
+		}
+	}
+	if inits == 0 {
+		t.Fatal("the current corpus carries no system/init frame")
 	}
 }
