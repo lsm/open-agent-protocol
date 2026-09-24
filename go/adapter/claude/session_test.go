@@ -1032,8 +1032,23 @@ func startTextRun(t *testing.T, session base.Session, peer *wirePeer, deltas int
 	}
 	for index := range deltas {
 		peer.send(textDelta(uuid, strconv.Itoa(index)))
+		if (index+1)%16 == 0 {
+			awaitCursor(t, session, uint64(index)+2)
+		}
 	}
 	return result, uuid
+}
+
+func reachedCursor(session base.Session, sequence uint64) bool {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		state, err := session.State(context.Background())
+		if cursor, parseErr := strconv.ParseUint(state.TranscriptCursor, 10, 64); err == nil && parseErr == nil && cursor >= sequence {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }
 
 func readUntilClosed(t *testing.T, stream base.EventStream) ([]protocol.Envelope, error) {
@@ -1158,6 +1173,9 @@ func TestAResumeWithABacklogPastSixtyFourEventsCompletesWhileTheRunKeepsStreamin
 	go func() {
 		for index := range 400 {
 			peer.send(textDelta(uuid, strconv.Itoa(200+index)))
+			if (index+1)%16 == 0 && !reachedCursor(session, uint64(index)+202) {
+				return
+			}
 		}
 		peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	}()
