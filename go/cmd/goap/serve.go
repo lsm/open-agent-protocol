@@ -119,7 +119,7 @@ func serveStdio(ctx context.Context, hub *serve.Hub, registry *serve.Registry, s
 		return err
 	}
 	if stdin == nil {
-		return errors.New("serve --stdio needs stdin")
+		return errors.New("hub --stdio needs stdin")
 	}
 	fmt.Fprintf(stderr, "goap: serving adapters over stdio: %s (exit kills all sessions)\n", strings.Join(registry.Names(), ", "))
 	runErr := frontend.Run(ctx, stdin, stdout)
