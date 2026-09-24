@@ -1,7 +1,7 @@
 {
   "advertised_capabilities": {
+    "action.permissions": "unavailable",
     "run.cancel": "unavailable",
-    "run.replay": "unavailable",
     "session.message.submit": "degraded"
   },
   "expected_oap": "expected-oap.json",
