@@ -1071,6 +1071,12 @@ func (s *Session) sweepRun(run *runState) {
 		tool.terminal = true
 		payload := s.toolPayload(tool)
 		payload.ArgumentsJSON = nil
+		if s.policyDenied[tool.nativeID] {
+			delete(s.policyDenied, tool.nativeID)
+			payload.Error = &protocol.ProtocolError{Code: refusedByPolicy, Message: "refused by the run's tool_choice"}
+			_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, payload, false, tool.started)
+			continue
+		}
 		_, _ = s.emitEnvelope(run, protocol.TypeActionCallCancelled, payload, false, tool.started)
 	}
 	for _, gate := range s.interactions {

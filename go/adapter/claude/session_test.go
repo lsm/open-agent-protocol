@@ -1990,6 +1990,26 @@ func TestExcludedToolIsDeniedAtTheHookBeforeAnyGate(t *testing.T) {
 	}
 }
 
+func TestADeniedCallStillOpenWhenTheRunEndsSettlesRefusedByPolicy(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admitWith(t, session, peer, excludesBash)
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	peer.send(bashToolUse("toolu_x5"))
+	peer.send(`{"type":"control_request","request_id":"hook-x5","request":{"subtype":"hook_callback","callback_id":"` + native.ToolSelectionHook + `","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"toolu_x5"},"tool_use_id":"toolu_x5"}}`)
+	peer.written()
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	if got := strings.Join(callSettlements(t, events), ","); got != "action.call.requested,action.call.started,action.call.failed:refused_by_policy" {
+		t.Fatalf("call lifecycle = %s", got)
+	}
+	assertValidTrace(t, excludesBash, outcome.admission, events)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHookContinuesATurnWithoutToolChoice(t *testing.T) {
 	_, session, peer := openWire(t)
 	uuid, outcome := admit(t, session, peer)
