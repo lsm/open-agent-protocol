@@ -236,8 +236,8 @@
     <h1>One wire between a control layer and an agent loop</h1>
     <p class="lede">OAP is a CC0 draft protocol plus an executable core that proves it. Everything in the tree serves one invariant: an adapter over somebody else's agent harness must emit event traces the shared validator accepts.</p>
     <div class="binaries">
-      <div class="bin"><b>oap</b><span>Go · ships today · the reference and the oracle</span></div>
-      <div class="bin"><b>oapx</b><span>Zig · the binary that ships next · port in progress</span></div>
+      <div class="bin"><b>oap</b><span>Go · peer implementation · being renamed <code>goap</code></span></div>
+      <div class="bin"><b>oapx</b><span>Zig · the product binary · port in progress</span></div>
     </div>
   </header>
 
@@ -636,15 +636,15 @@ oap: validation failed            <span class="cmt">(on stderr; exit status 1)</
   <section>
     <div class="sec-head">
       <p class="eyebrow">Where the port stands</p>
-      <h2>Go is the oracle; Zig is what ships</h2>
-      <p>Both implementations run side by side against the same corpus &mdash; 546 fixtures at the time of writing. The Go tree is the answer key until the Zig one reproduces it. Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>zig/src/validation/semantic_gate.zig</code> names each declared exception.</p>
+      <h2>Go and Zig are peers; the specification decides</h2>
+      <p>Both implementations run side by side against the same corpus &mdash; 546 fixtures at the time of writing. Neither tree is the answer key: a disagreement is settled by the decisions, drafts, schema, fixtures and corpora (Decision 0032). Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>zig/src/validation/semantic_gate.zig</code> names each declared exception.</p>
     </div>
     <div class="status">
       <div class="stage done"><span class="st">complete</span><b>1 · Types</b><span>Wire model and strict decode.</span></div>
       <div class="stage done"><span class="st">complete</span><b>2 · Schema</b><span>Interpreted, not generated. Every fixture judged or explicitly accounted for.</span></div>
       <div class="stage now"><span class="st">in progress</span><b>3 · Semantic</b><span>Landing unit by unit. The gate names every fixture still disagreeing, so the remainder is always in the tree.</span></div>
       <div class="stage next"><span class="st">next</span><b>4 · Adapters</b><span>Seven harnesses, ~24k lines, one corpus each.</span></div>
-      <div class="stage next"><span class="st">then</span><b>5 · Oracle</b><span>Retired, or kept in CI.</span></div>
+      <div class="stage next"><span class="st">always</span><b>5 · Differential</b><span>Runs both ways. Nothing retires.</span></div>
     </div>
     <p class="fine">There is never a moment without a working product: each stage adds a capability to a binary that already ships. The names stay apart on purpose — differential execution needs both on one <code>PATH</code>, and two executables cannot both be <code>oap</code>.</p>
   </section>

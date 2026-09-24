@@ -1,11 +1,14 @@
 # CLAUDE.md
 
 Open Agent Protocol (OAP): a CC0 draft protocol for the boundary between a
-control layer and an agent loop, a Go core that proves it, and a Zig runtime
-(`oapx`) the same adapters are being ported to. One invariant holds everywhere:
+control layer and an agent loop, with two peer implementations: the Zig runtime
+`oapx`, which is the product, and a Go tree that serves Go users natively (its
+binary is being renamed from `oap` to `goap`). One invariant holds everywhere:
 an adapter over a third-party harness must emit traces the shared validator
-accepts. The Go tree is the oracle — when Zig and Go disagree, probe Go and
-match it, or record the divergence.
+accepts. Neither tree is the oracle (Decision 0032): when Zig and Go disagree,
+the decisions, drafts, schema, fixtures and corpora decide, the wrong side is
+fixed or the divergence recorded in its ledger, and a Go runtime quirk is not
+protocol behaviour until a decision says so.
 
 Authority: `decisions/0001-*.md` and `0002-*.md` freeze semantics, amended only
 by later decisions; `drafts/` holds the prose profiles, and
@@ -119,7 +122,7 @@ A strict stack; lower layers never import higher ones.
 | `serve/{servehttp,servestdio}` | HTTP+SSE and newline-JSON over one hub; `parity_test.go` enforces the mirror |
 | `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
-| `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no `model-provider-core` oracle yet |
+| `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no Go `model-provider-core` runtime yet |
 | `cmd/oap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 
 `endpoint` and `conformance` are the endpoint-role pair, a different layer from
