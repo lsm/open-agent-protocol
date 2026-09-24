@@ -134,12 +134,9 @@ pub const SSEParser = struct {
     fn finalizeEvent(self: *SSEParser) !void {
         if (!self.has_data_field) return;
 
-        const event = SSEEvent{
-            .event_type = self.current_event_type,
-            .data = try self.allocator.dupe(u8, self.current_data.items),
-        };
-
-        try self.pending_events.append(self.allocator, event);
+        const data = try self.allocator.dupe(u8, self.current_data.items);
+        errdefer self.allocator.free(data);
+        try self.pending_events.append(self.allocator, .{ .event_type = self.current_event_type, .data = data });
 
         self.current_event_type = null;
         self.current_data.clearRetainingCapacity();
@@ -616,4 +613,15 @@ test "SSEParser - exact limits succeed and one byte over recovers after reset" {
     const recovered = try parser.feed("data: ok\n\n");
     try std.testing.expectEqual(@as(usize, 1), recovered.len);
     try std.testing.expectEqualStrings("ok", recovered[0].data);
+}
+
+fn feedEveryShape(allocator: std.mem.Allocator) !void {
+    var parser = SSEParser.init(allocator);
+    defer parser.deinit();
+    _ = try parser.feed("event: one\ndata: a\n\n");
+    _ = try parser.feed("data: b\ndata: c\n\nevent: two\ndata: d\n\n");
+}
+
+test "SSEParser - feeding propagates every allocation failure and leaks nothing" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, feedEveryShape, .{});
 }
