@@ -76,7 +76,10 @@ mean to.
 
 Guardrails, which CI runs before unit tests:
 `./scripts/check-zig-patterns.sh` and `node scripts/check-no-comments.mjs
---check`.
+--check`. After the Zig, SDK and TUI tests it runs
+`./scripts/check-no-test-litter.sh`, which fails if a test left a credential
+store (`.oapx` or `.makai`) inside the checkout; both stay in `.gitignore`, so
+nothing else would notice one.
 
 ## Zero comments
 
