@@ -48,11 +48,11 @@ func oapBinary(t *testing.T) string {
 		if buildErr != nil {
 			return
 		}
-		binary := filepath.Join(buildDir, "oap")
-		build := exec.Command(resolved, "build", "-o", binary, "./go/cmd/oap")
+		binary := filepath.Join(buildDir, "goap")
+		build := exec.Command(resolved, "build", "-o", binary, "./go/cmd/goap")
 		build.Dir = repositoryRoot()
 		if output, err := build.CombinedOutput(); err != nil {
-			buildErr = fmt.Errorf("build oap: %v: %s", err, output)
+			buildErr = fmt.Errorf("build goap: %v: %s", err, output)
 			return
 		}
 		builtBinary = binary

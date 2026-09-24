@@ -1,5 +1,5 @@
 /**
- * The TypeScript OAP client: drives a local `oap serve` daemon over its
+ * The TypeScript OAP client: drives a local `goap serve` daemon over its
  * HTTP + SSE surface with verbatim schema/v0.1 envelopes. Zero-dependency
  * runtime (platform fetch + streams, Node 18+ baseline); the Go `client`
  * package is the behavioral reference — same wire surface, same semantics.

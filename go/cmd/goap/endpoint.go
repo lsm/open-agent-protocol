@@ -44,15 +44,15 @@ func runEndpoint(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hub := serve.New(registry, serve.Options{Logger: log.New(stderr, "oap: ", 0)})
+	hub := serve.New(registry, serve.Options{Logger: log.New(stderr, "goap: ", 0)})
 	endpoint, err := serveendpoint.New(hub, serveendpoint.Options{
 		Adapter: *adapterName,
-		Logger:  log.New(stderr, "oap: ", 0),
+		Logger:  log.New(stderr, "goap: ", 0),
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "oap: endpoint over adapter %q (exit closes the session)\n", *adapterName)
+	fmt.Fprintf(stderr, "goap: endpoint over adapter %q (exit closes the session)\n", *adapterName)
 
 	runErr := endpoint.Run(signals, stdin, stdout)
 
@@ -63,6 +63,6 @@ func runEndpoint(ctx context.Context, args []string, stdin io.Reader, stdout, st
 	if runErr != nil {
 		return runErr
 	}
-	fmt.Fprintln(stderr, "oap: stopped")
+	fmt.Fprintln(stderr, "goap: stopped")
 	return nil
 }
