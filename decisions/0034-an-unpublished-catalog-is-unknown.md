@@ -1,6 +1,6 @@
 # Decision 0034: An Unpublished Catalog Is Unknown
 
-Status: proposed
+Status: accepted
 Date: 2026-09-24
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
