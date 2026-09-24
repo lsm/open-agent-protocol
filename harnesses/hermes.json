@@ -1,0 +1,20 @@
+{
+  "id": "hermes",
+  "name": "Hermes Agent",
+  "versions": [
+    {
+      "label": "v2026.8.31",
+      "status": "current",
+      "endpoint_version": "v2026.8.31",
+      "capability_revision": "hermes-v2026.8.31-oap-v2",
+      "ledgers": ["research/hermes-v2026.8.31-mapping.md"],
+      "corpus": "fixtures/adapters/hermes-v2026.8.31",
+      "components": [
+        { "name": "hermes-agent", "version": "v2026.8.31", "repository": "https://github.com/NousResearch/hermes-agent" }
+      ],
+      "sources": [
+        { "component": "hermes-agent", "tag": "v2026.8.31", "commit": "29112bef099274229cadff79cdff7bf7b99c4b77", "tree": "daaffc303ae437041b7f76be17c5f61b14f2ce99" }
+      ]
+    }
+  ]
+}

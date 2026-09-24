@@ -536,7 +536,7 @@ func corpusRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "fixtures", "adapters", "codex-appserver")
+	return filepath.Join(filepath.Dir(file), "..", "..", "..", "..", filepath.FromSlash(CorpusDirectory))
 }
 
 func TestCodexNonReducerEvidenceRegistry(t *testing.T) {

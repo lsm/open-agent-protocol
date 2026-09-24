@@ -641,6 +641,16 @@ for await (const envelope of events) {
 See `clients/ts/README.md` for the full surface. npm publishing is
 intentionally out of scope; the package is consumed from a checkout.
 
+Harness pins:
+
+Which upstream versions each adapter is proven against lives once, in
+`harnesses/<id>.json`, validated by `harnesses/harness.schema.json`
+([Decision 0033](decisions/0033-harness-pins-are-data.md)). A version records
+its status (one `current`; `supported`, `floor`, `retired`), endpoint version,
+capability revision, ledgers, corpus, and artifact digests per platform.
+`goap check` fails offline when the catalog disagrees with a ledger, a corpus's
+expectations or a Go adapter's constants.
+
 Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)

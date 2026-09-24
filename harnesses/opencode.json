@@ -1,0 +1,20 @@
+{
+  "id": "opencode",
+  "name": "OpenCode",
+  "versions": [
+    {
+      "label": "v1.18.29",
+      "status": "current",
+      "endpoint_version": "v1.18.29",
+      "capability_revision": "opencode-v1.18.29-oap-v2",
+      "ledgers": ["research/opencode-v1.18.29-mapping.md"],
+      "corpus": "fixtures/adapters/opencode-v1.18.29",
+      "components": [
+        { "name": "opencode", "version": "v1.18.29", "repository": "https://github.com/anomalyco/opencode" }
+      ],
+      "sources": [
+        { "component": "opencode", "tag": "v1.18.29", "commit": "16747470f976aca3d362ad730bcd3fe82ecc2c9a", "tree": "6d8cc725d9c0945d7259b78e2f60cdec6c493a26" }
+      ]
+    }
+  ]
+}

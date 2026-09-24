@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "harness.schema.json",
+  "title": "Open Agent Protocol harness catalog entry",
+  "description": "The upstream versions one adapter is proven against (Decision 0033). One file per harness, named <id>.json.",
+  "type": "object",
+  "required": ["id", "name", "versions"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "name": { "$ref": "#/$defs/nonEmptyString" },
+    "versions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/version" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "repositoryPath": { "type": "string", "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$", "not": { "pattern": "(^|/)\\.\\.?(/|$)" } },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "status": { "enum": ["current", "supported", "floor", "retired"] },
+    "version": {
+      "type": "object",
+      "required": ["label", "status", "ledgers"],
+      "properties": {
+        "label": { "$ref": "#/$defs/nonEmptyString" },
+        "status": { "$ref": "#/$defs/status" },
+        "endpoint_version": { "$ref": "#/$defs/nonEmptyString" },
+        "capability_revision": { "$ref": "#/$defs/nonEmptyString" },
+        "admits": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "ledgers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/repositoryPath" } },
+        "corpus": { "$ref": "#/$defs/repositoryPath" },
+        "corpus_from": { "$ref": "#/$defs/nonEmptyString" },
+        "components": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/component" } },
+        "artifacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/source" } }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "enum": ["current", "supported"] } } },
+          "then": { "required": ["endpoint_version", "capability_revision", "corpus"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "floor" } } },
+          "then": {
+            "required": ["corpus"],
+            "not": { "anyOf": [{ "required": ["endpoint_version"] }, { "required": ["capability_revision"] }, { "required": ["admits"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "retired" } } },
+          "then": {
+            "not": { "anyOf": [{ "required": ["endpoint_version"] }, { "required": ["capability_revision"] }, { "required": ["admits"] }, { "required": ["corpus"] }, { "required": ["corpus_from"] }] }
+          }
+        },
+        {
+          "if": { "required": ["corpus_from"] },
+          "then": { "required": ["corpus"] }
+        }
+      ]
+    },
+    "component": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "package": { "$ref": "#/$defs/nonEmptyString" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "repository": { "type": "string", "pattern": "^https://" }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["component", "platform", "kind", "name", "sha256"],
+      "properties": {
+        "component": { "$ref": "#/$defs/nonEmptyString" },
+        "platform": { "type": "string", "pattern": "^(any|[a-z0-9]+-[a-z0-9_]+)$" },
+        "kind": { "enum": ["npm-tarball", "archive", "binary", "file", "source-tree"] },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "bytes": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": ["component", "commit"],
+      "properties": {
+        "component": { "$ref": "#/$defs/nonEmptyString" },
+        "tag": { "$ref": "#/$defs/nonEmptyString" },
+        "commit": { "$ref": "#/$defs/gitObject" },
+        "tree": { "$ref": "#/$defs/gitObject" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

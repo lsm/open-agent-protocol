@@ -21,6 +21,7 @@ const (
 	endpointID             = "claude-code.cli"
 	PinnedVersion          = native.ReleaseTag
 	CapabilityRevision     = "claude-code-2.1.280-oap-v2"
+	CorpusDirectory        = "fixtures/adapters/claude-code-2.1.280"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
