@@ -38,7 +38,9 @@ fn refusal(scratch: std.mem.Allocator, wire: []const u8) ?[]const u8 {
     return null;
 }
 
-pub const CorpusCase = struct { id: []const u8, path: []const u8 };
+pub const CorpusCase = struct { id: []const u8, path: []const u8, skipped_resumes: *usize };
+
+const resume_expectations = [_][]const u8{ "replay", "gap", "run-not-found" };
 
 const Driver = struct {
     pub const corpus_relative = "fixtures/adapters/hermes-v2026.8.31";
@@ -58,7 +60,6 @@ const Driver = struct {
     }
 
     pub fn step(reducer: *Reducer, scratch: std.mem.Allocator, item: corpus.Step, case: CorpusCase) !corpus.Handled {
-        _ = case;
         const action = item.action;
         const direction = directionOf(action) orelse return .unhandled;
         if (item.raw == .null) {
@@ -106,7 +107,7 @@ const Driver = struct {
             return .handled;
         }
         if (std.mem.eql(u8, action, "oap-control")) {
-            try control(reducer, scratch, item.raw);
+            try control(reducer, scratch, item.raw, case);
             return .handled;
         }
         return .unhandled;
@@ -122,13 +123,7 @@ fn admissionAnswer(parsed: std.json.Value) ?bool {
     return std.mem.eql(u8, status, "streaming");
 }
 
-fn advertised(op: []const u8) !bool {
-    if (std.mem.eql(u8, op, "resume")) return @hasDecl(session.Reducer, "resumeRun");
-    if (std.mem.eql(u8, op, "cancel")) return @hasDecl(session.Reducer, "cancel");
-    return error.UnroutedControlOperation;
-}
-
-fn control(reducer: *session.Reducer, scratch: std.mem.Allocator, raw: std.json.Value) !void {
+fn control(reducer: *session.Reducer, scratch: std.mem.Allocator, raw: std.json.Value, case: CorpusCase) !void {
     if (raw != .object) return error.ControlIsNotAnObject;
     const op = corpus.stringMember(raw.object, "op") orelse return error.ControlWithoutOperation;
 
@@ -179,31 +174,38 @@ fn control(reducer: *session.Reducer, scratch: std.mem.Allocator, raw: std.json.
         return;
     }
 
-    if (!std.mem.eql(u8, expect, "unavailable")) return error.UnroutedControlExpectation;
-    if (try advertised(op)) return error.ControlRecordedUnavailableIsAdvertised;
+    if (!std.mem.eql(u8, op, "resume")) return error.UnroutedControlOperation;
+    for (resume_expectations) |known| {
+        if (!std.mem.eql(u8, expect, known)) continue;
+        case.skipped_resumes.* += 1;
+        return;
+    }
+    return error.UnroutedControlExpectation;
 }
 
 pub const Harness = corpus.Harness(Driver);
 
-const cases = [_]CorpusCase{
-    .{ .id = "admission-busy", .path = "admission-busy" },
-    .{ .id = "admission-orders", .path = "admission-orders" },
-    .{ .id = "hygiene-globals", .path = "hygiene-globals" },
-    .{ .id = "interaction-expire", .path = "interaction-expire" },
-    .{ .id = "interaction-gates", .path = "interaction-gates" },
-    .{ .id = "malformed-frame", .path = "malformed-frame" },
-    .{ .id = "pre-ready-observation", .path = "pre-ready-observation" },
-    .{ .id = "process-exit", .path = "process-exit" },
-    .{ .id = "ready-handshake", .path = "ready-handshake" },
-    .{ .id = "reconciliation", .path = "reconciliation" },
-    .{ .id = "recovery-unavailable", .path = "recovery-unavailable" },
-    .{ .id = "replay-epoch", .path = "replay-epoch" },
-    .{ .id = "settlement-statuses", .path = "settlement-statuses" },
-    .{ .id = "side-channels", .path = "side-channels" },
-    .{ .id = "steering-unavailable", .path = "steering-unavailable" },
-    .{ .id = "streaming-provenance", .path = "streaming-provenance" },
-    .{ .id = "subagent-frames", .path = "subagent-frames" },
-    .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
+const Declared = struct { id: []const u8, skipped_resumes: usize = 0 };
+
+const cases = [_]Declared{
+    .{ .id = "admission-busy" },
+    .{ .id = "admission-orders" },
+    .{ .id = "hygiene-globals" },
+    .{ .id = "interaction-expire" },
+    .{ .id = "interaction-gates" },
+    .{ .id = "malformed-frame" },
+    .{ .id = "pre-ready-observation" },
+    .{ .id = "process-exit" },
+    .{ .id = "ready-handshake" },
+    .{ .id = "reconciliation" },
+    .{ .id = "recovery-journal", .skipped_resumes = 3 },
+    .{ .id = "replay-epoch", .skipped_resumes = 3 },
+    .{ .id = "settlement-statuses" },
+    .{ .id = "side-channels" },
+    .{ .id = "steering-unavailable", .skipped_resumes = 1 },
+    .{ .id = "streaming-provenance" },
+    .{ .id = "subagent-frames" },
+    .{ .id = "tool-lifecycle" },
 };
 
 test "the Zig reducer reproduces every Hermes expectation, all eighteen of them" {
@@ -211,7 +213,9 @@ test "the Zig reducer reproduces every Hermes expectation, all eighteen of them"
     const root = try Harness.root(allocator);
     defer allocator.free(root);
     var failed: usize = 0;
-    for (cases) |case| {
+    for (cases) |declared| {
+        var skipped: usize = 0;
+        const case = CorpusCase{ .id = declared.id, .path = declared.id, .skipped_resumes = &skipped };
         const outcome = Harness.runCase(allocator, root, case) catch |err| {
             std.debug.print("V|{s}: {s}\n", .{ case.id, @errorName(err) });
             failed += 1;
@@ -222,7 +226,12 @@ test "the Zig reducer reproduces every Hermes expectation, all eighteen of them"
             failed += 1;
             continue;
         }
-        std.debug.print("V|{s}: EXACT {d}\n", .{ case.id, outcome.expected });
+        if (skipped != declared.skipped_resumes) {
+            std.debug.print("V|{s}: skipped {d} resume ops, declared {d}\n", .{ case.id, skipped, declared.skipped_resumes });
+            failed += 1;
+            continue;
+        }
+        std.debug.print("V|{s}: EXACT {d}, skipped {d} resume ops\n", .{ case.id, outcome.expected, skipped });
     }
     if (failed != 0) return error.CorpusMismatch;
 }

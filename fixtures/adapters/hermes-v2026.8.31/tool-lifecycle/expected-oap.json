@@ -16,7 +16,7 @@
     "timestamp_ms": 3,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -40,7 +40,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-d",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -62,7 +62,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-d",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -85,7 +85,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-d",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -107,7 +107,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-h",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -129,7 +129,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-h",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -152,7 +152,7 @@
     "session_id": "session",
     "run_id": "run-b",
     "tool_call_id": "tool-call-h",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   },
   {
     "protocol": "open-agent-protocol",
@@ -179,6 +179,6 @@
     "timestamp_ms": 10,
     "session_id": "session",
     "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v1"
+    "capability_revision": "hermes-v2026.8.31-oap-v2"
   }
 ]

@@ -148,8 +148,8 @@
       ]
     },
     {
-      "id": "recovery-unavailable",
-      "path": "recovery-unavailable",
+      "id": "recovery-journal",
+      "path": "recovery-journal",
       "ledger_fixtures": [
         "resume-live",
         "branch",
