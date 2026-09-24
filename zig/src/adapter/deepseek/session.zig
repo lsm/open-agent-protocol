@@ -335,6 +335,25 @@ fn sameStep(reducer: *Reducer, data: std.json.Value) !bool {
     return true;
 }
 
+fn blankText(value: std.json.Value, name: []const u8) bool {
+    const found = memberOf(value, name) orelse return true;
+    return switch (found) {
+        .null => true,
+        .string => |s| s.len == 0,
+        else => false,
+    };
+}
+
+fn validUsage(carried: ?std.json.Value) bool {
+    const usage = carried orelse return true;
+    if (usage != .object) return true;
+    for ([_][]const u8{ "inputTokens", "outputTokens", "totalTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens" }) |name| {
+        const found = usage.object.get(name) orelse continue;
+        if (found == .integer and found.integer < 0) return false;
+    }
+    return true;
+}
+
 pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
     if (reducer.terminal) return;
     const kind = textOf(event, "type");
@@ -365,12 +384,20 @@ pub fn applyEvent(reducer: *Reducer, event: std.json.Value) !void {
         return;
     }
     if (std.mem.eql(u8, kind, "assistant/message")) {
+        if (!validUsage(memberOf(data, "usage"))) {
+            try invalidEvent(reducer, "assistant/message");
+            return;
+        }
         if (!try sameStep(reducer, data)) return;
         if (memberOf(data, "stream")) |records| try emitStreamRecords(reducer, records);
         reducer.final = data;
         return;
     }
     if (std.mem.eql(u8, kind, "tool/call")) {
+        if (blankText(data, "callId") or blankText(data, "name")) {
+            try invalidEvent(reducer, "tool/call");
+            return;
+        }
         if (!try sameStep(reducer, data)) return;
         try startTool(reducer, data);
         return;
@@ -1489,6 +1516,52 @@ test "a final tool call the port cannot hold settles as the assistant event's re
         "deepseek native: invalid pinned message: invalid assistant/message",
         failureMessage(&reducer) orelse return error.NoRefusal,
     );
+}
+
+fn lastKind(reducer: *Reducer) []const u8 {
+    if (reducer.emitted.items.len == 0) return "";
+    return textOf(reducer.emitted.items[reducer.emitted.items.len - 1], "type");
+}
+
+test "event members the oracle refuses at decode fail the run with its text, and its admitted neighbours pass" {
+    const message = "\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"source\":{\"kind\":\"model\"},\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"stream\":[]";
+    const Case = struct { event: []const u8, said: ?[]const u8 };
+    const cases = [_]Case{
+        .{ .event = "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c\",\"name\":\"\",\"arguments\":\"{}\"}}", .said = "invalid tool/call" },
+        .{ .event = "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"\",\"name\":\"n\",\"arguments\":\"{}\"}}", .said = "invalid tool/call" },
+        .{ .event = "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"name\":\"n\",\"arguments\":\"{}\"}}", .said = "invalid tool/call" },
+        .{ .event = "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":null,\"name\":\"n\",\"arguments\":\"{}\"}}", .said = "invalid tool/call" },
+        .{ .event = "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c\",\"name\":null,\"arguments\":\"{}\"}}", .said = "invalid tool/call" },
+        .{ .event = "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c\",\"arguments\":\"{}\"}}", .said = "invalid tool/call" },
+        .{ .event = "{\"type\":\"tool/call\",\"data\":{\"turn\":1,\"step\":1,\"callId\":\"c\",\"name\":\"n\",\"arguments\":\"{}\"}}", .said = null },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":-5,\"outputTokens\":1}}}", .said = "invalid assistant/message" },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":5,\"outputTokens\":-1}}}", .said = "invalid assistant/message" },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":5,\"outputTokens\":1,\"totalTokens\":-1}}}", .said = "invalid assistant/message" },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":5,\"outputTokens\":1,\"cacheReadTokens\":-1}}}", .said = "invalid assistant/message" },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":5,\"outputTokens\":1,\"cacheWriteTokens\":-1}}}", .said = "invalid assistant/message" },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":5,\"outputTokens\":1,\"reasoningTokens\":-1}}}", .said = "invalid assistant/message" },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":0,\"outputTokens\":0,\"totalTokens\":0,\"cacheReadTokens\":0,\"cacheWriteTokens\":0,\"reasoningTokens\":0}}}", .said = null },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{\"inputTokens\":5,\"outputTokens\":1,\"totalTokens\":null}}}", .said = null },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":null}}", .said = null },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ ",\"usage\":{}}}", .said = null },
+        .{ .event = "{\"type\":\"assistant/message\",\"data\":{\"turn\":1,\"step\":1," ++ message ++ "}}", .said = null },
+    };
+    for (cases) |case| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var reducer = try admittedRun(a);
+        try applyEvent(&reducer, try parse(a, case.event));
+        const said = case.said orelse {
+            const want: []const u8 = if (std.mem.indexOf(u8, case.event, "tool/call") != null) "action.call.started" else "run.started";
+            try std.testing.expectEqualStrings(want, lastKind(&reducer));
+            try std.testing.expect(!reducer.terminal);
+            continue;
+        };
+        try std.testing.expectEqualStrings("deepseek_process_exit", lastFailure(&reducer) orelse return error.NoRefusal);
+        const expected = try std.fmt.allocPrint(a, "deepseek native: invalid pinned message: {s}", .{said});
+        try std.testing.expectEqualStrings(expected, failureMessage(&reducer) orelse return error.NoRefusal);
+    }
 }
 
 test "an unmappable final block reports which block and why, the way the oracle does" {
