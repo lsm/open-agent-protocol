@@ -366,6 +366,57 @@ pub fn build(b: *std.Build) void {
     claude_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
     const claude_corpus_test = b.addTest(.{ .root_module = claude_corpus_mod });
 
+    const adapter_gomarshal_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/gomarshal.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const adapter_gomarshal_test = b.addTest(.{ .root_module = adapter_gomarshal_mod });
+
+    const opencode_native_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/opencode/native.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    opencode_native_mod.addImport("gojson", adapter_gojson_mod);
+    opencode_native_mod.addImport("goquote", adapter_goquote_mod);
+    opencode_native_mod.addImport("gomarshal", adapter_gomarshal_mod);
+    const opencode_native_test = b.addTest(.{ .root_module = opencode_native_mod });
+
+    const opencode_httpapi_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/opencode/httpapi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    opencode_httpapi_mod.addImport("native", opencode_native_mod);
+    opencode_httpapi_mod.addImport("sse_parser", sse_parser_mod);
+    opencode_httpapi_mod.addImport("goquote", adapter_goquote_mod);
+    opencode_httpapi_mod.addImport("gomarshal", adapter_gomarshal_mod);
+    const opencode_httpapi_test = b.addTest(.{ .root_module = opencode_httpapi_mod });
+
+    const opencode_session_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/opencode/session.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    opencode_session_mod.addImport("native", opencode_native_mod);
+    opencode_session_mod.addImport("gomarshal", adapter_gomarshal_mod);
+    const opencode_session_test = b.addTest(.{ .root_module = opencode_session_mod });
+
+    const opencode_corpus_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/opencode/corpus.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    opencode_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
+    opencode_corpus_mod.addImport("native", opencode_native_mod);
+    opencode_corpus_mod.addImport("httpapi", opencode_httpapi_mod);
+    opencode_corpus_mod.addImport("session", opencode_session_mod);
+    opencode_corpus_mod.addImport("gomarshal", adapter_gomarshal_mod);
+    opencode_corpus_mod.addImport("jsonschema", jsonschema_mod);
+    opencode_corpus_mod.addImport("semantic", semantic_mod);
+    const opencode_corpus_test = b.addTest(.{ .root_module = opencode_corpus_mod });
+
     const codex_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/codex/rpc.zig"),
         .target = target,
@@ -2446,6 +2497,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
+    test_step.dependOn(&b.addRunArtifact(adapter_gomarshal_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_gomarshal_test).step);
+    test_step.dependOn(&b.addRunArtifact(opencode_native_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_native_test).step);
+    test_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_httpapi_test).step);
+    test_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_session_test).step);
+    test_step.dependOn(&b.addRunArtifact(opencode_corpus_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(opencode_corpus_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_native_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_session_test).step);

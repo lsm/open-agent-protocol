@@ -1340,6 +1340,40 @@ func TestSubmitRejectsInvalidSurfaces(t *testing.T) {
 	_ = peer
 }
 
+func TestAnExplicitDeliveryIsRefusedUnderItsOwnKey(t *testing.T) {
+	_, session, peer := openWire(t)
+	for _, mode := range []struct {
+		delivery protocol.RequestedDeliveryMode
+		key      string
+	}{
+		{protocol.DeliveryQueue, protocol.FeatureDeliveryQueue},
+		{protocol.DeliverySteer, protocol.FeatureDeliverySteer},
+		{protocol.DeliveryBTW, protocol.FeatureDeliveryBTW},
+	} {
+		_, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: mode.delivery, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("a")}}})
+		var refused *base.UnsupportedControlError
+		if !errors.As(err, &refused) || refused.Feature != mode.key || refused.Reason != base.ControlUnadvertised || stream != nil {
+			t.Fatalf("%s: err = %v, stream = %v", mode.delivery, err, stream)
+		}
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer
+}
+
+func TestAPermissionResolutionNamesNoInteraction(t *testing.T) {
+	_, session, peer := openWire(t)
+	err := session.Resolve(context.Background(), base.InteractionResolution{Permission: &protocol.PermissionResolveRequest{InteractionID: "interaction-1", SessionID: "session", Granted: true}})
+	if !errors.Is(err, base.ErrInteractionNotFound) {
+		t.Fatalf("permission resolution = %v", err)
+	}
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer
+}
+
 func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 	_, session, peer := openWire(t)
 	uuid, outcome := admit(t, session, peer)

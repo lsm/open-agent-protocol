@@ -131,6 +131,8 @@ const (
 	FeatureInstructions   = "run.instructions"
 
 	FeatureDeliveryQueue    = "session.message.delivery.queue"
+	FeatureDeliverySteer    = "session.message.delivery.steer"
+	FeatureDeliveryBTW      = "session.message.delivery.btw"
 	FeatureToolSelection    = "run.tool_selection"
 	FeatureStructuredOutput = "run.structured_output"
 )

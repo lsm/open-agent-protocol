@@ -528,3 +528,139 @@ Regression coverage: `TestSubscribeReturnsWhenHeadersAreDeferred` in
 The live server gate `OAP_OPENCODE_INTEGRATION=1` now passes end to end
 against the pinned v1.18.29 binary. The gate remains skip-by-default and
 CI-safe.
+
+## Zig port (2026-09-24)
+
+`zig/src/adapter/opencode/` is a second implementation of this ledger:
+`native.zig` (pinned types and strict decoding), `httpapi.zig` (SSE framing,
+request encoding, response decoding), `session.zig` (the reducer) and
+`corpus.zig` (the driver). `zig/src/adapter/gomarshal.zig` writes values the
+way `encoding/json` does. Per Decision 0032 the ledger and the corpus decide;
+the Go adapter is the reference for how they were realized.
+
+### Evidence
+
+- **Corpus.** All fifteen cases reproduce `expected-oap.json` byte for byte:
+  the driver compares the Go-style encoding of the emitted trace with the
+  expectation compacted, not a structural diff. Each trace is also checked for
+  scope, contiguous sequence, revision and exactly one final terminal, and is
+  run through the Zig schema and semantic validator inside the same exchange
+  `adaptertest.AssertProtocolValid*` builds (capabilities, submit, and the
+  cancel pair where `case.json` says `cancel`). A test proves that validator
+  refuses a trace with a gap. Stream frames go through the production SSE
+  decoder and history frames through the production event decoder; a line
+  classified `observed-only` must emit nothing.
+- **Requests and descriptor.** `go/adapter/opencode/port_goldens_test.go`
+  drives the real `httpapi.Client` against a recording server and writes
+  `testdata/port-goldens.json` (method, target, the headers the adapter sets,
+  body) for create session with and without auth, prompt, a prompt whose text
+  needs Go's escaping, interrupt, active, history and subscribe, plus the
+  `Probe` descriptor and revision. Regeneration is gated on
+  `OAP_UPDATE_OPENCODE_PORT_GOLDENS=1`, and the comparison runs in CI. Zig's
+  encoders match every request, and every corpus case asserts that the prompt
+  its reducer sent encodes to the recorded one. No permission reply exists in
+  either runtime, since `action.permissions` is unavailable at this pin, so
+  none is verified. `wait` is a stub at this pin, and only Go's tests call it,
+  so it is not ported.
+- **Multi-run scenarios.** The corpus drives one submission per case, so
+  holding, promotion, quarantine and the reservation's failure paths have no
+  corpus evidence. `port_scenarios_test.go` runs fourteen scripts through the
+  Go session with its test fakes and records their admissions and per-run
+  traces in `testdata/port-scenarios.json`. Its `await` op reads envelopes off
+  a stream before the script goes on, which is what makes the Go side
+  deterministic, and the Zig driver ignores it. All fourteen replay byte for
+  byte.
+
+### The single-threaded model
+
+The Go session calls the server in the middle of three operations: `Prompt`
+inside `Submit`, `Interrupt` inside `Cancel`, and `Active`/`History` inside
+settlement. The Zig reducer takes these as callbacks (`session.Native`), so
+each operation stays atomic, and the host serializes every call. Go polls
+`Active` in a loop on the dispatch goroutine. `Reducer.poll` asks once and
+returns while the session is still listed, and the host owns the backoff. A settlement polls once as it
+begins, as Go's does. Pending settlements form a stack settled newest first,
+which is the order Go's nested `awaitQuiescenceLocked` calls settle in.
+
+### Where the port and the oracle differ
+
+1. **Unfinished tools settle in start order.** Go ranges over the `s.tools`
+   map, so when one run has several unfinished tools, the order of their
+   `action.call.failed`/`cancelled` envelopes is unspecified, and so are their
+   event ids. No case or scenario has more than one.
+2. **A cancel during a pending settlement.** In Go, `Cancel` takes
+   `transitionMu`, which dispatch holds for the whole poll loop. The cancel
+   therefore waits for the settlement and is refused with the completed
+   status. Zig takes the cancel at once, and the run settles `cancelled`. Both
+   are valid traces.
+3. **Events during an in-flight prompt.** Go reduces such an event up to the
+   `<-run.admitted` wait. A serialized host hands it over after `submit`
+   returns. The only state that differs is `promotionSeen` on a run the same
+   submit moved out of the reservation slot, and nothing reads it afterwards.
+4. **When a pending settlement is dropped.** Go checks `terminal` and
+   `openSteps` after each drain, which can be a batch of events. Zig checks
+   after every event. Only the fence's watermark can differ, and dedup by
+   durable `seq` makes the fence's result the same unless the stream skipped a
+   sequence.
+5. **Token counts.** Go's `uint64(float64)` is implementation-defined for
+   negative and overflowing values. Measured on darwin/arm64 it saturates
+   (negative to 0, at or above 2^64 to the maximum), while on amd64 a negative
+   count wraps. Zig saturates as arm64 does. No case or scenario carries such a
+   count, so both CI platforms agree.
+6. **Decode messages.** A malformed data payload, or a frame that fails a
+   subscription, surfaces its decode error in `run.failed.error.message`. Zig
+   reproduces the text for unknown fields (`json: unknown field "x"`),
+   duplicate keys, `EOF`, and every message the adapter writes itself. Type
+   mismatches and syntax errors carry Zig's own text. No corpus case pins one,
+   and the `invalid-data` scenario, an unknown field, matches exactly.
+7. **SSE framing reuses `sse_parser.zig`.** It does the field parsing and data
+   assembly, and the port adds the oracle's strictness: bare CR, an event
+   without data, a duplicate `event` or `id`, NUL in `id`, and the per-event
+   size limit, which counts comment lines too. `sse_parser` joins data lines
+   with LF from the second data field on, while Go joins from the first
+   non-empty one. They differ only in leading LFs, which JSON decoding ignores.
+   Running `checkAllAllocationFailures` over this path found a leak in
+   `sse_parser`, fixed here: an event's data leaked when queueing it failed to
+   allocate.
+
+### Go runtime behaviour reproduced so the corpus keeps reproducing
+
+- Output is `encoding/json`'s: HTML-safe escaping, U+2028/U+2029 escaped,
+  float64 formatting (`0.30000000000000004`, `1e+21`), and sorted keys with
+  float64 numbers when `arguments_json` re-encodes tool input
+  (`12345678901234567890` becomes `12345678901234567000`).
+- `arguments_json` is `null` when `tool.called` carries no input (a nil map
+  marshals to `null`), and `progress` is `null` when a progress event carries
+  no content.
+- A tool content item drops members the pinned type does not name and omits
+  empty `text`, because Go re-marshals `[]ToolContent`.
+- Member names match case-insensitively, and the last non-null wins. A `data`
+  of `null` decodes as a zero-valued payload, while absent `data` is `EOF`.
+  Invalid UTF-8 and lone surrogate escapes decode to U+FFFD.
+- A completed run with no tokens reports `"usage":{}`, `total_tokens` wraps at
+  2^64, and a cost that is not finite drops the cost extension, as
+  `reportedCost` does when `json.Marshal` fails.
+- The driver repeats two rules of `corpus_test.go`: a case whose id contains
+  `queued` gets an admission without `promotedSeq`, and a `prompted` frame is
+  rebound to the admitted message id.
+
+### Guards in Go that the port does not carry
+
+Each is unreachable in a single-threaded reducer, and an unkillable guard is
+worse than none. `tool.run != run` in start, update and end can never fire,
+because the tool key includes the run id. Neither can `!tool.started` in
+update, because an entry exists only once started. `opencode_invalid_tool_arguments`
+and `opencode_invalid_tool_progress` are dead because marshaling a decoded
+value cannot fail. `!run.terminal` in `Submit`'s promoted branch is dead
+because nothing settles the run between the prompt and its answer, and
+`nativeMessageID` is written but never read.
+
+### Not ported
+
+- The transport: sockets, the 250 ms subscription grace and the pump
+  goroutine. The codec they call is ported and pinned.
+- The state projection (`State`, `active_runs`, `as_of.settled`, the
+  transcript cursor), the journal and `Resume`, and `Close`. The corpus driver
+  refuses a case that declares `replay_after`, and none does.
+- Request-level refusal of unadvertised controls and message shapes. That is
+  the adapter contract's job, and `submit` takes the text and delivery.

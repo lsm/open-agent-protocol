@@ -367,7 +367,7 @@ func runDSHFakeCase(t *testing.T, definition dshCorpusCase, frames []dshFrame, d
 				}
 				execution.resumeReplayed++
 			case "resolve":
-				if err := session.Resolve(context.Background(), base.InteractionResolution{}); !errors.Is(err, errUnavailable) {
+				if err := session.Resolve(context.Background(), base.InteractionResolution{}); !errors.Is(err, base.ErrInteractionNotFound) {
 					t.Fatalf("frame %d: resolve error = %v", i+1, err)
 				}
 			case "assert-state":

@@ -1017,7 +1017,7 @@ func TestRepeatedIdleSnapshotsRemainProvisionalUntilSettled(t *testing.T) {
 func TestStateStrictReconciliationAndDeliveryRejection(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
-	if _, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}}}); !errors.Is(err, base.ErrInvalidSubmission) {
+	if _, _, err := s.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryQueue, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}}}); !isUnadvertised(err, protocol.FeatureDeliveryQueue) {
 		t.Fatalf("queue err=%v", err)
 	}
 	state, err := s.State(context.Background())
@@ -1392,4 +1392,9 @@ func TestTheOldestOutstandingGateIsTheRunsOwn(t *testing.T) {
 	if settled := session.oldestPendingInput(mine); settled != nil {
 		t.Fatalf("oldest = %+v, want none once this run has nothing open", settled)
 	}
+}
+
+func isUnadvertised(err error, key string) bool {
+	var refused *base.UnsupportedControlError
+	return errors.As(err, &refused) && refused.Feature == key && refused.Reason == base.ControlUnadvertised
 }
