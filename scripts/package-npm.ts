@@ -55,7 +55,7 @@ for (const { target, os, cpu, binary } of PLATFORMS) {
         license: "ISC",
         repository: {
           type: "git",
-          url: "https://github.com/lsm/makai",
+          url: "https://github.com/lsm/open-agent-protocol",
         },
       },
       null,
