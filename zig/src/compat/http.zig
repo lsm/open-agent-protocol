@@ -78,10 +78,13 @@ pub const ResponseReader = opaque {};
 pub fn readResponse(reader: *ResponseReader, buffer: []u8) !usize {
     const inner: *std.Io.Reader = @ptrCast(@alignCast(reader));
     var slices = [_][]u8{buffer};
-    return inner.readVec(&slices) catch |err| switch (err) {
-        error.EndOfStream => 0,
-        else => |failure| return failure,
-    };
+    while (true) {
+        const read = inner.readVec(&slices) catch |err| switch (err) {
+            error.EndOfStream => return 0,
+            else => |failure| return failure,
+        };
+        if (read > 0 or buffer.len == 0) return read;
+    }
 }
 
 pub fn readAllResponse(reader: *ResponseReader, buffer: []u8) !void {
@@ -342,4 +345,45 @@ test "fetch options default to a bounded timeout" {
     const options = FetchOptions{};
     try std.testing.expectEqual(default_fetch_timeout_ms, options.timeout_ms);
     try std.testing.expect(options.timeout_ms > 0);
+}
+
+const BufferFillingReader = struct {
+    interface: std.Io.Reader,
+    pending: []const u8,
+
+    fn init(storage: []u8, pending: []const u8) BufferFillingReader {
+        return .{
+            .interface = .{
+                .vtable = &.{ .stream = stream, .readVec = readVec },
+                .buffer = storage,
+                .seek = 0,
+                .end = 0,
+            },
+            .pending = pending,
+        };
+    }
+
+    fn stream(_: *std.Io.Reader, _: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        return error.EndOfStream;
+    }
+
+    fn readVec(r: *std.Io.Reader, _: [][]u8) std.Io.Reader.Error!usize {
+        const self: *BufferFillingReader = @fieldParentPtr("interface", r);
+        if (self.pending.len == 0) return error.EndOfStream;
+        const n = @min(self.pending.len, r.buffer.len - r.end);
+        @memcpy(r.buffer[r.end..][0..n], self.pending[0..n]);
+        r.end += n;
+        self.pending = self.pending[n..];
+        return 0;
+    }
+};
+
+test "readResponse keeps reading when a fill lands in the reader's buffer" {
+    var storage: [16]u8 = undefined;
+    var source = BufferFillingReader.init(&storage, "pong");
+    const reader: *ResponseReader = @ptrCast(&source.interface);
+    var out: [8]u8 = undefined;
+    const read = try readResponse(reader, &out);
+    try std.testing.expectEqualStrings("pong", out[0..read]);
+    try std.testing.expectEqual(@as(usize, 0), try readResponse(reader, &out));
 }
