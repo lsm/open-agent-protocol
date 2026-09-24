@@ -50,6 +50,7 @@ const adapter_config = @import("adapter_config");
 const claude_adapter = @import("claude_adapter");
 const codex_adapter = @import("codex_adapter");
 const acp_adapter = @import("acp_adapter");
+const opencode_adapter = @import("opencode_adapter");
 
 pub const VERSION = @import("version_options").version;
 
@@ -2740,7 +2741,8 @@ fn printUsage(file: std.Io.File) !void {
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
         \\                   Use --backend claude or --backend codex to serve a Claude
         \\                   Code or Codex app-server child instead of the built-in
-        \\                   loop, or an ACP agent named by a --config entry;
+        \\                   loop, or an ACP agent or OpenCode server named by a
+        \\                   --config entry;
         \\                   --config reads an oap-serve.json registry entry.
         \\                   Other backends answer unavailable.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
@@ -8902,7 +8904,7 @@ fn writeOapAuthOutbound(
     return wrote;
 }
 
-const unported_backends = [_][]const u8{ "deepseek", "hermes", "memory", "opencode", "pi" };
+const unported_backends = [_][]const u8{ "deepseek", "hermes", "memory", "pi" };
 const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
@@ -9036,6 +9038,18 @@ fn acpBackendConfig(
     };
 }
 
+fn opencodeBackendConfig(
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    stderr: std.Io.File,
+) !opencode_adapter.Config {
+    if (entry.endpoint.len == 0) {
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is an OpenCode server and needs a --config entry naming its \"endpoint\"", .{entry.name});
+        return error.BackendRefused;
+    }
+    return .{ .endpoint = entry.endpoint, .agent = entry.agent };
+}
+
 fn writeEndpointOutbound(stdout: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
     var wrote = false;
     while (endpoint.popOutbound()) |line| {
@@ -9072,6 +9086,7 @@ fn runBackendMode(
     var claude: claude_adapter.Adapter = undefined;
     var codex: codex_adapter.Adapter = undefined;
     var acp: acp_adapter.Adapter = undefined;
+    var opencode: opencode_adapter.Adapter = undefined;
     var unavailable: adapter_contract.Unavailable = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
         claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(arena, entry, &environ, stderr));
@@ -9082,12 +9097,15 @@ fn runBackendMode(
     } else if (std.mem.eql(u8, entry.kind, "acp")) acp_served: {
         acp = acp_adapter.Adapter.init(allocator, try acpBackendConfig(arena, entry, &environ, stderr));
         break :acp_served acp.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "opencode")) opencode_served: {
+        opencode = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(arena, entry, stderr));
+        break :opencode_served opencode.adapter();
     } else if (unportedBackend(entry.kind)) unported_served: {
         const message = try std.fmt.allocPrint(arena, "oapx has no {s} backend yet; goap serve carries it", .{entry.kind});
         unavailable = .{ .backend = name, .message = message };
         break :unported_served unavailable.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex and acp", .{ name, entry.kind });
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, acp and opencode", .{ name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9395,7 +9413,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex and acp\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, acp and opencode\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

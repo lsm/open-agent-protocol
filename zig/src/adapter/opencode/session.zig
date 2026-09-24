@@ -46,6 +46,9 @@ pub const Options = struct {
     model: []const u8 = "",
     message_prefix: []const u8 = "msg_oap",
     history_limit: usize = default_history_limit,
+    revision: []const u8 = capability_revision,
+    counter: ?*u64 = null,
+    now_ms: ?*const fn () i64 = null,
 };
 
 pub const Admission = struct {
@@ -171,18 +174,23 @@ pub const Reducer = struct {
     }
 
     fn now(self: *Reducer) i64 {
+        if (self.options.now_ms) |clock| return clock();
         self.clock += 1;
         return self.clock;
     }
 
+    fn tick(self: *Reducer) u64 {
+        const counter = self.options.counter orelse &self.ids;
+        counter.* += 1;
+        return counter.*;
+    }
+
     fn nextID(self: *Reducer, kind: []const u8) std.mem.Allocator.Error![]const u8 {
-        self.ids += 1;
-        return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, self.ids });
+        return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, self.tick() });
     }
 
     fn nextMessageID(self: *Reducer) std.mem.Allocator.Error![]const u8 {
-        self.ids += 1;
-        return std.fmt.allocPrint(self.allocator(), "{s}{d:0>16}", .{ self.options.message_prefix, self.ids });
+        return std.fmt.allocPrint(self.allocator(), "{s}{d:0>16}", .{ self.options.message_prefix, self.tick() });
     }
 
     fn put(self: *Reducer, map: *std.json.ObjectMap, key: []const u8, value: std.json.Value) std.mem.Allocator.Error!void {
@@ -769,7 +777,7 @@ pub const Reducer = struct {
         if (std.mem.startsWith(u8, kind, "action.call.")) {
             if (payload.get("tool_call_id")) |carried| try self.put(&envelope, "tool_call_id", carried);
         }
-        try self.put(&envelope, "capability_revision", str(capability_revision));
+        try self.put(&envelope, "capability_revision", str(self.options.revision));
         if (extensions) |carried| try self.put(&envelope, "extensions", carried);
         if (std.mem.eql(u8, kind, "run.started") and !run.holding) run.status = .running;
         if (terminal) {

@@ -310,6 +310,7 @@ pub const Endpoint = struct {
                 .bindings = bindings,
                 .features = features,
                 .sources = sources,
+                .limits = descriptor.limits,
             } },
         });
     }

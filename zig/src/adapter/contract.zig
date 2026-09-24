@@ -75,6 +75,7 @@ pub const Descriptor = struct {
     capability_revision: []const u8,
     features: []const Feature,
     sources: []const oap_types.ToolSourceDescriptor = &.{},
+    limits: ?oap_types.Limits = null,
 
     pub fn level(self: Descriptor, key: []const u8) oap_types.SupportLevel {
         for (self.features) |feature| {

@@ -478,6 +478,11 @@ pub const InitializeResponse = struct {
     }
 };
 
+pub const Limits = struct {
+    max_active_runs_per_session: ?u32 = null,
+    max_queued_runs_per_session: ?u32 = null,
+};
+
 pub const CapabilitiesResponse = struct {
     endpoint: Endpoint,
     protocol_versions: []const []const u8 = &.{},
@@ -488,6 +493,7 @@ pub const CapabilitiesResponse = struct {
     effective_delivery_modes: []const EffectiveDelivery = &.{},
     degradation: []Degradation = &.{},
     sources: []ToolSourceDescriptor = &.{},
+    limits: ?Limits = null,
 
     pub fn deinit(self: *CapabilitiesResponse, allocator: std.mem.Allocator) void {
         self.endpoint.deinit(allocator);
@@ -544,9 +550,18 @@ pub const SessionStateRequest = struct {
 
 pub const ModelsRequest = struct {
     session_id: []const u8,
+    allow_degraded_features: []const []const u8 = &.{},
+
+    pub fn allowsDegraded(self: *const ModelsRequest, feature: []const u8) bool {
+        for (self.allow_degraded_features) |allowed| {
+            if (std.mem.eql(u8, allowed, feature)) return true;
+        }
+        return false;
+    }
 
     pub fn deinit(self: *ModelsRequest, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
+        freeStringList(allocator, self.allow_degraded_features);
     }
 };
 
