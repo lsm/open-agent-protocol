@@ -381,6 +381,7 @@ pub fn build(b: *std.Build) void {
     opencode_native_mod.addImport("gojson", adapter_gojson_mod);
     opencode_native_mod.addImport("goquote", adapter_goquote_mod);
     opencode_native_mod.addImport("gomarshal", adapter_gomarshal_mod);
+    opencode_native_mod.addImport("json_encode", json_encode_mod);
     const opencode_native_test = b.addTest(.{ .root_module = opencode_native_mod });
 
     const opencode_httpapi_mod = b.createModule(.{
@@ -1102,6 +1103,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "oap_types", .module = protocol_oap_types_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
 
@@ -1133,6 +1135,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    adapter_config_mod.addImport("json_encode", json_encode_mod);
     adapter_config_mod.addAnonymousImport("example_registry", .{
         .root_source_file = b.path("../examples/oap-serve.json"),
     });
@@ -1433,6 +1436,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "owned_slice", .module = owned_slice_mod },
             .{ .name = "permission", .module = permission_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
 
@@ -1534,7 +1538,7 @@ pub fn build(b: *std.Build) void {
     const tools_hashline_mod = b.createModule(.{ .root_source_file = b.path("src/tools/hashline.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "protocol_tool_types", .module = protocol_tool_types_mod } } });
     const tools_search_mod = b.createModule(.{ .root_source_file = b.path("src/tools/search.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod } } });
     const tools_workspace_mod = b.createModule(.{ .root_source_file = b.path("src/tools/workspace.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "tools/process_runner", .module = tools_process_runner_mod } } });
-    const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module } } });
+    const tools_mcp_bridge_mod = b.createModule(.{ .root_source_file = b.path("src/tools/mcp_bridge.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "compat", .module = compat_mod }, .{ .name = "ai_types", .module = ai_types_mod }, .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/common", .module = tools_common_mod }, .{ .name = "build_options", .module = version_module }, .{ .name = "json_encode", .module = json_encode_mod } } });
     const tools_registry_mod = b.createModule(.{ .root_source_file = b.path("src/tools/registry.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "agent", .module = agent_mod }, .{ .name = "tools/shell", .module = tools_shell_mod }, .{ .name = "tools/file", .module = tools_file_mod }, .{ .name = "tools/edit", .module = tools_edit_mod }, .{ .name = "tools/hashline", .module = tools_hashline_mod }, .{ .name = "tools/search", .module = tools_search_mod }, .{ .name = "tools/workspace", .module = tools_workspace_mod }, .{ .name = "tools/artifact", .module = tools_artifact_mod }, .{ .name = "tools/mcp_bridge", .module = tools_mcp_bridge_mod } } });
 
     const tui_runtime_mod = b.createModule(.{
@@ -1607,7 +1611,7 @@ pub fn build(b: *std.Build) void {
     const tui_view_transcript_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/transcript.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_composer_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/composer.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_status_bar_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/status_bar.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
-    const tui_view_approval_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/approval.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
+    const tui_view_approval_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/approval.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod }, .{ .name = "json_encode", .module = json_encode_mod } } });
     const tui_view_session_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/session_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_menu_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/menu_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
 
@@ -2218,6 +2222,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "transport", .module = transport_mod },
             .{ .name = "model_ref", .module = protocol_model_ref_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "oauth/anthropic", .module = oauth_anthropic_mod },
             .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
             .{ .name = "oauth/storage", .module = oauth_storage_mod },

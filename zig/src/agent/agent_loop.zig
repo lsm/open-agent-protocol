@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream_module = @import("event_stream");
@@ -577,7 +578,7 @@ fn withCompactToolOutput(allocator: std.mem.Allocator, args_json: []const u8) ![
     if (parsed.value != .object) return try allocator.dupe(u8, args_json);
     if (parsed.value.object.contains("compact_output")) return try allocator.dupe(u8, args_json);
     try parsed.value.object.put(parsed.arena.allocator(), "compact_output", .{ .bool = true });
-    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
+    return json_encode.valueAlloc(allocator, parsed.value);
 }
 
 test "compact output injection grows parsed object with parser arena" {
@@ -585,6 +586,13 @@ test "compact output injection grows parsed object with parser arena" {
     const injected = try withCompactToolOutput(std.testing.allocator, args);
     defer std.testing.allocator.free(injected);
     try std.testing.expect(std.mem.indexOf(u8, injected, "\"compact_output\":true") != null);
+}
+
+test "compact output injection keeps model arguments nested past 256 levels whole" {
+    const nested = ("[" ** 400) ++ "1" ++ ("]" ** 400);
+    const injected = try withCompactToolOutput(std.testing.allocator, "{\"command\":\"ls\",\"nested\":" ++ nested ++ "}");
+    defer std.testing.allocator.free(injected);
+    try std.testing.expectEqualStrings("{\"command\":\"ls\",\"nested\":" ++ nested ++ ",\"compact_output\":true}", injected);
 }
 
 fn pushProviderMessageUpdate(

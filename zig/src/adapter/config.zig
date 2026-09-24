@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 
 pub const Error = error{ConfigInvalid} || std.mem.Allocator.Error;
 
@@ -175,7 +176,7 @@ fn readAdapter(reader: Reader, name: []const u8, value: std.json.Value, environ:
     const allowed_tools = try reader.strings(object, where, "allowed_tools");
     var agent_config_json: ?[]const u8 = null;
     if (object.get("agent_config")) |raw| {
-        if (raw != .null) agent_config_json = try std.json.Stringify.valueAlloc(reader.arena, raw, .{});
+        if (raw != .null) agent_config_json = try json_encode.valueAlloc(reader.arena, raw);
     }
     return .{
         .name = name,
