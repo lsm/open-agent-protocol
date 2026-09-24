@@ -125,5 +125,5 @@ func endpointCommand(command, adapterName string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locating this binary to run its own endpoint: %w", err)
 	}
-	return []string{self, "endpoint", "--adapter", adapterName}, nil
+	return []string{self, "serve", "agent", "--backend", adapterName}, nil
 }

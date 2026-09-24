@@ -282,6 +282,178 @@ pub const Binding = struct {
     }
 };
 
+pub const ToolSourceDescriptor = struct {
+    id: []const u8,
+    kind: []const u8,
+    display_name: ?[]const u8 = null,
+    protocol: ?[]const u8 = null,
+    endpoint: ?[]const u8 = null,
+
+    pub fn deinit(self: *ToolSourceDescriptor, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.kind);
+        if (self.display_name) |value| allocator.free(value);
+        if (self.protocol) |value| allocator.free(value);
+        if (self.endpoint) |value| allocator.free(value);
+    }
+};
+
+pub const ToolDefinition = struct {
+    name: []const u8,
+    description: ?[]const u8 = null,
+    input_schema_json: []const u8,
+    execution_owner: []const u8,
+    source: ?[]const u8 = null,
+    features: []Feature = &.{},
+
+    pub fn deinit(self: *ToolDefinition, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.description) |value| allocator.free(value);
+        allocator.free(self.input_schema_json);
+        allocator.free(self.execution_owner);
+        if (self.source) |value| allocator.free(value);
+        for (self.features) |*entry| entry.deinit(allocator);
+        allocator.free(self.features);
+    }
+};
+
+pub const ToolsListRequest = struct {
+    session_id: ?[]const u8 = null,
+    allow_degraded_features: []const []const u8 = &.{},
+
+    pub fn deinit(self: *ToolsListRequest, allocator: std.mem.Allocator) void {
+        if (self.session_id) |value| allocator.free(value);
+        freeStringList(allocator, self.allow_degraded_features);
+    }
+
+    pub fn allowsDegraded(self: *const ToolsListRequest, key: []const u8) bool {
+        return containsKey(self.allow_degraded_features, key);
+    }
+};
+
+pub const ToolsListResponse = struct {
+    session_id: ?[]const u8 = null,
+    sources: []ToolSourceDescriptor = &.{},
+    tools: []ToolDefinition = &.{},
+
+    pub fn deinit(self: *ToolsListResponse, allocator: std.mem.Allocator) void {
+        if (self.session_id) |value| allocator.free(value);
+        for (self.sources) |*entry| entry.deinit(allocator);
+        allocator.free(self.sources);
+        for (self.tools) |*entry| entry.deinit(allocator);
+        allocator.free(self.tools);
+    }
+};
+
+pub const InputAnswer = struct {
+    question_id: []const u8,
+    text: ?[]const u8 = null,
+    selected_option_ids: []const []const u8 = &.{},
+
+    pub fn deinit(self: *InputAnswer, allocator: std.mem.Allocator) void {
+        allocator.free(self.question_id);
+        if (self.text) |value| allocator.free(value);
+        freeStringList(allocator, self.selected_option_ids);
+    }
+};
+
+pub const UserInputResolveRequest = struct {
+    interaction_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+    answers: []InputAnswer,
+
+    pub fn deinit(self: *UserInputResolveRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.requested_by);
+        allocator.free(self.responded_by);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+        for (self.answers) |*answer| answer.deinit(allocator);
+        allocator.free(self.answers);
+    }
+};
+
+pub const PermissionResolveRequest = struct {
+    interaction_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+    granted: bool,
+    choice_id: ?[]const u8 = null,
+    reason: ?[]const u8 = null,
+    updated_arguments_json: ?[]const u8 = null,
+
+    pub fn deinit(self: *PermissionResolveRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.requested_by);
+        allocator.free(self.responded_by);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+        if (self.choice_id) |value| allocator.free(value);
+        if (self.reason) |value| allocator.free(value);
+        if (self.updated_arguments_json) |value| allocator.free(value);
+    }
+};
+
+pub const InteractionResolveResponse = struct {
+    interaction_id: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+    accepted: bool,
+
+    pub fn deinit(self: *InteractionResolveResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+    }
+};
+
+pub const CallResolveRequest = struct {
+    interaction_id: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+    tool_call_id: []const u8,
+    requested_by: []const u8,
+    responded_by: []const u8,
+    started: bool = false,
+    result_json: ?[]const u8 = null,
+    err: ?ProtocolError = null,
+
+    pub fn deinit(self: *CallResolveRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+        allocator.free(self.tool_call_id);
+        allocator.free(self.requested_by);
+        allocator.free(self.responded_by);
+        if (self.result_json) |value| allocator.free(value);
+        if (self.err) |*value| value.deinit(allocator);
+    }
+};
+
+pub const CallResolveResponse = struct {
+    interaction_id: []const u8,
+    session_id: []const u8,
+    run_id: []const u8,
+    tool_call_id: []const u8,
+    accepted: bool,
+    reason: ?[]const u8 = null,
+    settlement_id: ?[]const u8 = null,
+
+    pub fn deinit(self: *CallResolveResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.interaction_id);
+        allocator.free(self.session_id);
+        allocator.free(self.run_id);
+        allocator.free(self.tool_call_id);
+        if (self.reason) |value| allocator.free(value);
+        if (self.settlement_id) |value| allocator.free(value);
+    }
+};
+
 pub const InitializeRequest = struct {
     protocol_versions: []const []const u8,
     profiles: []const []const u8,
@@ -315,6 +487,7 @@ pub const CapabilitiesResponse = struct {
     requested_delivery_modes: []const RequestedDelivery = &.{},
     effective_delivery_modes: []const EffectiveDelivery = &.{},
     degradation: []Degradation = &.{},
+    sources: []ToolSourceDescriptor = &.{},
 
     pub fn deinit(self: *CapabilitiesResponse, allocator: std.mem.Allocator) void {
         self.endpoint.deinit(allocator);
@@ -328,6 +501,8 @@ pub const CapabilitiesResponse = struct {
         allocator.free(self.effective_delivery_modes);
         for (self.degradation) |*record| record.deinit(allocator);
         allocator.free(self.degradation);
+        for (self.sources) |*source| source.deinit(allocator);
+        allocator.free(self.sources);
     }
 
     pub fn feature(self: *const CapabilitiesResponse, key: []const u8) ?Feature {
@@ -340,9 +515,22 @@ pub const CapabilitiesResponse = struct {
 
 pub const SessionOpenRequest = struct {
     session_id: ?[]const u8 = null,
+    subscribe: bool = false,
+    message_json: ?[]const u8 = null,
+    tools_json: ?[]const u8 = null,
+    tool_sources_json: ?[]const u8 = null,
+    allow_degraded_features: []const []const u8 = &.{},
 
     pub fn deinit(self: *SessionOpenRequest, allocator: std.mem.Allocator) void {
         if (self.session_id) |value| allocator.free(value);
+        if (self.message_json) |value| allocator.free(value);
+        if (self.tools_json) |value| allocator.free(value);
+        if (self.tool_sources_json) |value| allocator.free(value);
+        freeStringList(allocator, self.allow_degraded_features);
+    }
+
+    pub fn allowsDegraded(self: *const SessionOpenRequest, key: []const u8) bool {
+        return containsKey(self.allow_degraded_features, key);
     }
 };
 
@@ -448,10 +636,7 @@ pub const MessageSubmitRequest = struct {
     }
 
     pub fn allowsDegraded(self: *const MessageSubmitRequest, key: []const u8) bool {
-        for (self.allow_degraded_features) |entry| {
-            if (std.mem.eql(u8, entry, key)) return true;
-        }
-        return false;
+        return containsKey(self.allow_degraded_features, key);
     }
 
     pub fn control(self: *const MessageSubmitRequest, which: RunControl) ?[]const u8 {
@@ -475,6 +660,7 @@ pub const MessageSubmitResponse = struct {
     run_id: ?[]const u8 = null,
     status: ?RunStatus = null,
     model_id: ?[]const u8 = null,
+    message_ids: []const []const u8 = &.{},
 
     pub fn deinit(self: *MessageSubmitResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -482,6 +668,7 @@ pub const MessageSubmitResponse = struct {
         if (self.delivery_resolution) |value| allocator.free(value);
         if (self.run_id) |value| allocator.free(value);
         if (self.model_id) |value| allocator.free(value);
+        freeStringList(allocator, self.message_ids);
     }
 };
 
@@ -618,6 +805,14 @@ pub const Payload = union(enum) {
     run_completed: RunCompleted,
     run_failed: RunFailed,
     run_cancelled: RunCancelled,
+    user_input_resolve_request: UserInputResolveRequest,
+    user_input_resolve_response: InteractionResolveResponse,
+    permission_resolve_request: PermissionResolveRequest,
+    permission_resolve_response: InteractionResolveResponse,
+    call_resolve_request: CallResolveRequest,
+    call_resolve_response: CallResolveResponse,
+    tools_list_request: ToolsListRequest,
+    tools_list_response: ToolsListResponse,
     error_response: ProtocolError,
 
     pub fn deinit(self: *Payload, allocator: std.mem.Allocator) void {
@@ -645,6 +840,14 @@ pub const Payload = union(enum) {
             .run_completed => |*value| value.deinit(allocator),
             .run_failed => |*value| value.deinit(allocator),
             .run_cancelled => |*value| value.deinit(allocator),
+            .user_input_resolve_request => |*value| value.deinit(allocator),
+            .user_input_resolve_response => |*value| value.deinit(allocator),
+            .permission_resolve_request => |*value| value.deinit(allocator),
+            .permission_resolve_response => |*value| value.deinit(allocator),
+            .call_resolve_request => |*value| value.deinit(allocator),
+            .call_resolve_response => |*value| value.deinit(allocator),
+            .tools_list_request => |*value| value.deinit(allocator),
+            .tools_list_response => |*value| value.deinit(allocator),
             .error_response => |*value| value.deinit(allocator),
         }
     }
@@ -674,6 +877,14 @@ pub const Payload = union(enum) {
             .run_completed => "run.completed",
             .run_failed => "run.failed",
             .run_cancelled => "run.cancelled",
+            .user_input_resolve_request => "user.input.resolve.request",
+            .user_input_resolve_response => "user.input.resolve.response",
+            .permission_resolve_request => "action.permission.resolve.request",
+            .permission_resolve_response => "action.permission.resolve.response",
+            .call_resolve_request => "action.call.resolve.request",
+            .call_resolve_response => "action.call.resolve.response",
+            .tools_list_request => "action.tools.list.request",
+            .tools_list_response => "action.tools.list.response",
             .error_response => "error.response",
         };
     }
@@ -722,6 +933,13 @@ pub const Envelope = struct {
         self.payload.deinit(allocator);
     }
 };
+
+fn containsKey(list: []const []const u8, key: []const u8) bool {
+    for (list) |entry| {
+        if (std.mem.eql(u8, entry, key)) return true;
+    }
+    return false;
+}
 
 pub fn freeStringList(allocator: std.mem.Allocator, list: []const []const u8) void {
     for (list) |entry| allocator.free(entry);

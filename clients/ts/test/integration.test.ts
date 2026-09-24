@@ -56,7 +56,7 @@ const go = process.env.OAP_TS_SKIP_INTEGRATION === '1' ? null : findGo();
 const skip = go === null ? 'go toolchain not available (set OAP_TS_SKIP_INTEGRATION=1 to silence)' : false;
 
 test(
-  'integration: full lifecycle against goap serve',
+  'integration: full lifecycle against goap hub',
   { skip },
   async (t) => {
     assert.ok(go);
@@ -71,7 +71,7 @@ test(
     });
     assert.equal(build.status, 0, `go build failed: ${build.stderr}`);
 
-    const daemon = spawn(binary, ['serve', '--addr', '127.0.0.1:0'], {
+    const daemon = spawn(binary, ['hub', '--addr', '127.0.0.1:0'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     t.after(() => {
@@ -242,7 +242,7 @@ test(
     });
     assert.equal(build.status, 0, `go build failed: ${build.stderr}`);
 
-    const daemon = spawn(binary, ['serve', '--addr', '127.0.0.1:0'], {
+    const daemon = spawn(binary, ['hub', '--addr', '127.0.0.1:0'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     t.after(() => {
@@ -309,7 +309,7 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
     let buffered = '';
     const deadline = setTimeout(() => {
       cleanup();
-      reject(new Error(`goap serve did not start: ${buffered || 'no output'}`));
+      reject(new Error(`goap hub did not start: ${buffered || 'no output'}`));
     }, 15000);
     const onData = (chunk: Buffer): void => {
       buffered += chunk.toString('utf8');
@@ -325,7 +325,7 @@ function waitForListening(daemon: ChildProcessByStdio<null, Readable, Readable>)
     };
     const onExit = (code: number | null): void => {
       cleanup();
-      reject(new Error(`goap serve exited early with code ${code}: ${buffered}`));
+      reject(new Error(`goap hub exited early with code ${code}: ${buffered}`));
     };
     const cleanup = (): void => {
       clearTimeout(deadline);

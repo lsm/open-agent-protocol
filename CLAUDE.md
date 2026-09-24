@@ -32,7 +32,8 @@ reproducing the wire it is pinned to.
 
 ## Commands
 
-Go 1.26. CI runs exactly these, in order, failing on any `gofmt -l` output:
+Go 1.26 or newer (the `go.mod` floor; CI uses 1.27.x). CI runs exactly these, in
+order, failing on any `gofmt -l` output:
 
 ```sh
 test -z "$(gofmt -l .)"
@@ -43,7 +44,7 @@ go run ./go/cmd/goap check
 
 About 10 seconds. After changing the stdio binding, `serve/serveendpoint`, or
 the memory adapter's script, also run
-`go run ./go/cmd/goap conformance --command "go run ./go/cmd/goap endpoint"`; a
+`go run ./go/cmd/goap conformance --command "go run ./go/cmd/goap serve agent"`; a
 check it reports `skipped` is an obligation the endpoint does not carry, not one
 it failed.
 
@@ -129,10 +130,10 @@ A strict stack; lower layers never import higher ones.
 | `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no Go `model-provider-core` runtime yet |
 | `cmd/goap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 
-`endpoint` and `conformance` are the endpoint-role pair, a different layer from
-`serve --stdio`. `serve --stdio` exposes the **hub** — twelve ops, an adapter
+`serve agent` (alias `endpoint`) and `conformance` are the endpoint-role pair, a
+different layer from `hub --stdio`. `hub --stdio` exposes the **hub** — twelve ops, an adapter
 dimension, cursor replay, multiplexed subscriptions — each line wrapping an
-envelope in a transport object. `endpoint` exposes **one agent loop** carrying
+envelope in a transport object. `serve agent` exposes **one agent loop** carrying
 raw OAP envelopes, one per line, per `drafts/endpoint-stdio.md`.
 
 ## Architecture — Zig
@@ -310,7 +311,7 @@ deliberately absent from executable v0.1.
 
 ## Daemon trust model
 
-`goap serve` is a single-user local service: loopback bind by default, no auth,
+`goap hub` is a single-user local service: loopback bind by default, no auth,
 `Host` allowlisted to loopback names on a loopback bind, and a restart kills
 every session. The registry config's `environment` list is an explicit
 allowlist — a child never inherits ambient variables that were not listed. Keep

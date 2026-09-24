@@ -570,7 +570,15 @@ fn runCase(allocator: std.mem.Allocator, registry: *const jsonschema.Registry, r
 test "the claimed case list is the manifest's, in order, and the pins match the port" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try checkManifest(try loadManifest(arena.allocator()), &claimed_cases);
+    const scratch = arena.allocator();
+    try checkManifest(try loadManifest(scratch), &claimed_cases);
+    var listed: [claimed_cases.len]corpus.CaseEntry = undefined;
+    for (&listed, claimed_cases) |*entry, case| entry.* = .{ .id = case.id, .path = case.path };
+    const root = try corpus.corpusRoot(scratch, corpus_relative);
+    const manifest_text = try readFile(scratch, try std.fs.path.join(scratch, &.{ root, "manifest.json" }));
+    const findings = try corpus.inventoryFindings(scratch, manifest_text, &listed, &.{});
+    for (findings) |finding| std.debug.print("\n{s}: {s}\n", .{ corpus_relative, finding });
+    try std.testing.expectEqual(@as(usize, 0), findings.len);
 }
 
 test "a case dropped from, or reordered in, the claimed list fails the manifest check" {

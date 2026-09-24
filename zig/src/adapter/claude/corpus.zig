@@ -29,6 +29,7 @@ fn Driver(comptime version: []const u8) type {
         pub const blank_expectation = corpus.BlankExpectation.zero_byte_or_empty_array;
         pub const Reducer = session.Reducer;
         pub const Case = ClaudeCase;
+        pub const excluded_cases = [_][]const u8{transport_error_case.id};
 
         pub fn open(arena: *std.heap.ArenaAllocator, case: Case) Reducer {
             _ = case;
