@@ -19,7 +19,7 @@ const features = [_]contract.Feature{
     .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor synthesized for the pinned RPC vocabulary" },
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "Pi has no negotiation; readiness is a get_state handshake" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "abort intent is local; agent_settled remains terminal authority" },
-    .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state reconciles streaming state" },
+    .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state is read at open; afterwards the state is the adapter projection of Pi events" },
     .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
     .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
     .{ .key = "run.status", .level = .emulated },
@@ -29,7 +29,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi steering semantics safely" },
     .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
     .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
-    .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
+    .{ .key = "session.state", .level = .emulated, .reason = "adapter projection of Pi events; get_state is read only at open" },
 };
 
 pub const descriptor = contract.Descriptor{
@@ -497,7 +497,6 @@ pub const Session = struct {
     }
 
     fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
-        _ = arena;
         _ = refusal;
         const self = cast(ptr);
         const request = switch (resolution) {
@@ -512,6 +511,7 @@ pub const Session = struct {
         if (request.answers.len != 1) return error.InvalidResolution;
         const answer = request.answers[0];
         const ask = self.asks.items[at];
+        if (!contract.validInputAnswer(try posed(arena, ask), answer)) return error.InvalidResolution;
         const outcome: Outcome = switch (ask.dialog) {
             .text => .{ .value = try self.owned().dupe(u8, answer.text orelse return error.InvalidResolution) },
             .confirm => confirmed: {
@@ -540,6 +540,18 @@ pub const Session = struct {
         };
         _ = self.asks.orderedRemove(at);
         _ = try self.send(try self.extensionAnswer(ask.native_id, outcome));
+    }
+
+    fn posed(arena: std.mem.Allocator, ask: Ask) std.mem.Allocator.Error!contract.Question {
+        return switch (ask.dialog) {
+            .text => .{ .id = "value", .kind = .text },
+            .confirm => .{ .id = "value", .kind = .single_choice, .options = &.{ "yes", "no" } },
+            .select => select: {
+                const options = try arena.alloc([]const u8, ask.labels.len);
+                for (options, 1..) |*slot, position| slot.* = try std.fmt.allocPrint(arena, "option-{d}", .{position});
+                break :select .{ .id = "value", .kind = .single_choice, .options = options };
+            },
+        };
     }
 
     fn askFor(self: *Session, interaction_id: []const u8) ?usize {
@@ -819,7 +831,7 @@ test "a turn is admitted on agent_start and settles on agent_end, citing the ser
     try testing.expectError(error.RunTerminal, probe.handle.?.cancel(probe.arena.allocator(), admitted.run_id.?, &refusal));
 }
 
-test "a confirm dialog becomes a user input interaction and the answer reaches Pi as confirmed" {
+test "a confirm dialog becomes a user input interaction, a malformed answer is refused unwritten, and a valid one reaches Pi as confirmed" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_dialog_turn ++ fake_idle);
     defer probe.deinit();
@@ -840,6 +852,16 @@ test "a confirm dialog becomes a user input interaction and the answer reaches P
         .run_id = payload.get("run_id").?.string,
         .answers = answers,
     };
+    for ([_]oap_types.InputAnswer{
+        .{ .question_id = "other", .selected_option_ids = selected },
+        .{ .question_id = "value", .text = "yes", .selected_option_ids = selected },
+        .{ .question_id = "value", .selected_option_ids = try probe.arena.allocator().dupe([]const u8, &.{"maybe"}) },
+    }) |wrong| {
+        var refused = request;
+        refused.answers = try probe.arena.allocator().dupe(oap_types.InputAnswer, &.{wrong});
+        try testing.expectError(error.InvalidResolution, probe.handle.?.resolve(probe.arena.allocator(), .{ .input = &refused }, &refusal));
+    }
+    try testing.expect(std.mem.indexOf(u8, try probe.fake.written(probe.arena.allocator()), "extension_ui_response") == null);
     try probe.handle.?.resolve(probe.arena.allocator(), .{ .input = &request }, &refusal);
     _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-1\",\"confirmed\":true}");
     _ = try probe.pumpUntil("run.completed", &seen);
