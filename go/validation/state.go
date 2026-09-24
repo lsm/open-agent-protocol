@@ -970,7 +970,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 	case protocol.TypeActionCallRequested:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "requested")
-		s.checkCallAgainstChoice(i, line, e, r)
+		s.recordCallChoice(e, r)
 		s.checkCallSource(i, line, e)
 		s.checkCallOwner(i, line, e)
 		s.controlCallRequested(i, line, e, r)
@@ -986,14 +986,17 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "completed")
 		s.controlCallEvent(i, line, e, r, "completed")
+		s.checkCallSettlement(i, line, e, r)
 	case protocol.TypeActionCallFailed:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "failed")
 		s.controlCallEvent(i, line, e, r, "failed")
+		s.checkCallSettlement(i, line, e, r)
 	case protocol.TypeActionCallCancelled:
 		s.feature(i, line, e, "tools")
 		s.tool(i, line, e, "cancelled")
 		s.controlCallEvent(i, line, e, r, "cancelled")
+		s.checkCallSettlement(i, line, e, r)
 	case protocol.TypeActionPermissionRequested:
 		s.feature(i, line, e, "permissions")
 		s.interactionRequested(i, line, e, "permission")
@@ -1016,6 +1019,7 @@ func (s *state) runEvent(i, line int, e protocol.Envelope) {
 
 			s.checkCompletedControls(i, line, e, r)
 		}
+		s.sweepExcludedCalls(i, line, e, r)
 		for id, st := range r.tools {
 			if !toolTerminal(st.status) {
 				s.addExpected(CodePendingToolAtTerminal, i, line, e, "/type", "run terminated with a pending tool call", "terminal tool", st.status, string(id))

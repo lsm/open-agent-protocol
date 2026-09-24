@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A call to a tool the admitted `tool_choice` excludes is judged at its settlement, not at `action.call.requested` ([Decision 0031](decisions/0031-a-policy-refusal-is-a-settlement.md), now accepted). Settled `action.call.failed` with `error.code` `refused_by_policy` it is valid; settled any other way, or unsettled at the run terminal, it is `unapplied_control` at the settling envelope or the terminal. A permitted call settled `refused_by_policy` is `unapplied_control` too. An endpoint that can only refuse a call after the model makes it can now advertise `run.tool_selection` `emulated` and project the attempt honestly. Go and Zig validators both; five new `controls-tool-choice` fixtures (#122).
+
 - `goap serve` is now `goap hub` (same `--config`, `--addr`, `--stdio`), with no alias; `goap serve` without a role prints usage naming `hub`. `goap serve agent [--backend A]` serves one agent loop, replacing `goap endpoint --adapter A`, which stays as an alias. `goap serve provider` and `goap serve agent,provider` answer `unavailable`. This is the `goap` half of the CLI contract in `drafts/cli.md`.
 
 - The claude, hermes and deepseek adapters deliver every event stream as a follower of the session journal: a consumer reads at its own pace with backpressure, and `ErrEventStreamOverflow` now means only that it fell behind what the journal retains, after which `Resume` from its cursor reports a `ReplayGap`. Previously a stream had 64 slots of headroom beyond any replayed backlog, so a resumed consumer draining a large backlog overflowed again while the run kept streaming (#237).

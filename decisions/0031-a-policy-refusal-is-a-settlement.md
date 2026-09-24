@@ -1,6 +1,8 @@
 # Decision 0031: A Policy Refusal Is a Settlement
 
-Status: proposed
+Status: accepted 2026-09-24 (the validator arbitrates at settlement in Go and
+Zig, with six `controls-tool-choice` fixtures; the Claude adapter's `emulated`
+advertisement follows separately)
 Date: 2026-09-23
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
