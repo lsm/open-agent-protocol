@@ -32,7 +32,8 @@ reproducing the wire it is pinned to.
 
 ## Commands
 
-Go 1.26. CI runs exactly these, in order, failing on any `gofmt -l` output:
+Go 1.26 or newer (the `go.mod` floor; CI uses 1.27.x). CI runs exactly these, in
+order, failing on any `gofmt -l` output:
 
 ```sh
 test -z "$(gofmt -l .)"
