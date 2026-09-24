@@ -1,0 +1,3108 @@
+[
+  {
+    "name": "holding",
+    "client": {
+      "gated": true
+    },
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "textID": "t3",
+            "text": "first"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "op": "await",
+        "count": 2
+      },
+      {
+        "op": "submit",
+        "delivery": "queue",
+        "text": "later"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 5,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 5,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000010",
+            "prompt": {
+              "text": "later"
+            },
+            "delivery": "queue"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0006",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 6,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 6,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0007",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 7,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 7,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "textID": "t7",
+            "text": "second"
+          }
+        }
+      },
+      {
+        "op": "idle"
+      },
+      {
+        "op": "await",
+        "count": 1
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0008",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 8,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 8,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      },
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-9",
+        "requested_delivery": "queue",
+        "effective_delivery": "queue",
+        "delivery_resolution": "session_busy",
+        "admission": "queued",
+        "run_id": "run-7",
+        "status": "queued",
+        "message_ids": [
+          "msg_fake0000000000000010"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "content.delta",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "message_id": "message-2",
+            "part": {
+              "type": "text",
+              "text": "first"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.completed",
+          "id": "event-13",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "final_response": {
+              "id": "message-2",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "first"
+                }
+              ]
+            },
+            "stop_reason": "stop",
+            "usage": {}
+          },
+          "sequence": 3,
+          "timestamp_ms": 10,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ],
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-11",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-7",
+            "status": "running",
+            "started_at_ms": 7
+          },
+          "sequence": 1,
+          "timestamp_ms": 8,
+          "session_id": "session",
+          "run_id": "run-7",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "content.delta",
+          "id": "event-12",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-7",
+            "message_id": "message-8",
+            "part": {
+              "type": "text",
+              "text": "second"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 9,
+          "session_id": "session",
+          "run_id": "run-7",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.completed",
+          "id": "event-14",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-7",
+            "final_response": {
+              "id": "message-8",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "second"
+                }
+              ]
+            },
+            "stop_reason": "stop",
+            "usage": {}
+          },
+          "sequence": 3,
+          "timestamp_ms": 11,
+          "session_id": "session",
+          "run_id": "run-7",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "quarantine",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "textID": "t3",
+            "text": "first"
+          }
+        }
+      },
+      {
+        "op": "await",
+        "count": 2
+      },
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "later"
+      },
+      {
+        "op": "cancel",
+        "submission": 1
+      },
+      {
+        "op": "await",
+        "submission": 1,
+        "count": 1
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000010",
+            "prompt": {
+              "text": "later"
+            },
+            "delivery": "queue"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 5,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 5,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0006",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 6,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 6,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "textID": "t6",
+            "text": "abandoned"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0007",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 7,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 7,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "op": "fail",
+        "message": "stream gone"
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      },
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-9",
+        "requested_delivery": "auto",
+        "effective_delivery": "queue",
+        "delivery_resolution": "session_busy",
+        "admission": "queued",
+        "run_id": "run-7",
+        "status": "queued",
+        "message_ids": [
+          "msg_fake0000000000000010"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "content.delta",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "message_id": "message-2",
+            "part": {
+              "type": "text",
+              "text": "first"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-12",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_stream_failed",
+              "message": "stream gone"
+            },
+            "settled_by": "inferred"
+          },
+          "sequence": 3,
+          "timestamp_ms": 8,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ],
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.cancelled",
+          "id": "event-11",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-7",
+            "reason": "reservation cancelled before promotion",
+            "settled_by": "inferred"
+          },
+          "sequence": 1,
+          "timestamp_ms": 7,
+          "session_id": "session",
+          "run_id": "run-7",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "dropped",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "await",
+        "count": 1
+      },
+      {
+        "op": "submit",
+        "delivery": "queue",
+        "text": "later"
+      },
+      {
+        "op": "fail",
+        "message": "stream gone"
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      },
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-8",
+        "requested_delivery": "queue",
+        "effective_delivery": "queue",
+        "delivery_resolution": "session_busy",
+        "admission": "queued",
+        "run_id": "run-6",
+        "status": "queued",
+        "message_ids": [
+          "msg_fake0000000000000009"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-10",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_stream_failed",
+              "message": "stream gone"
+            },
+            "settled_by": "inferred"
+          },
+          "sequence": 2,
+          "timestamp_ms": 6,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ],
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-11",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-6",
+            "error": {
+              "code": "queue_dropped",
+              "message": "the reservation was dropped before promotion: stream gone"
+            },
+            "settled_by": "inferred"
+          },
+          "sequence": 1,
+          "timestamp_ms": 7,
+          "session_id": "session",
+          "run_id": "run-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "cancel-tool",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.tool.called",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "callID": "call_1",
+            "tool": "bash",
+            "input": {
+              "cmd": "a \u0026\u0026 b \u003c c",
+              "n": 1.5,
+              "z": [
+                1e+21,
+                -0.0,
+                12345678901234567890
+              ],
+              "a": null
+            },
+            "provider": {
+              "executed": true
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.tool.progress",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "callID": "call_1",
+            "structured": {},
+            "content": [
+              {
+                "type": "text",
+                "text": "half",
+                "extra": 1
+              },
+              {
+                "type": "image"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "op": "await",
+        "count": 4
+      },
+      {
+        "op": "cancel"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 5,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 5,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "aborted",
+            "cost": 0.1,
+            "tokens": {
+              "input": 2.9,
+              "output": 1,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.requested",
+          "id": "event-7",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "bash",
+            "arguments_json": {
+              "a": null,
+              "cmd": "a \u0026\u0026 b \u003c c",
+              "n": 1.5,
+              "z": [
+                1e+21,
+                -0,
+                12345678901234567000
+              ]
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.started",
+          "id": "event-8",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "bash"
+          },
+          "sequence": 3,
+          "timestamp_ms": 6,
+          "in_reply_to": "event-7",
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.progress",
+          "id": "event-9",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "bash",
+            "progress": [
+              {
+                "type": "text",
+                "text": "half"
+              },
+              {
+                "type": "image"
+              }
+            ]
+          },
+          "sequence": 4,
+          "timestamp_ms": 7,
+          "in_reply_to": "event-8",
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.status.updated",
+          "id": "event-10",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "cancelling",
+            "updated_at_ms": 8
+          },
+          "sequence": 5,
+          "timestamp_ms": 9,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.cancelled",
+          "id": "event-11",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "bash",
+            "progress": [
+              {
+                "type": "text",
+                "text": "half"
+              },
+              {
+                "type": "image"
+              }
+            ]
+          },
+          "sequence": 6,
+          "timestamp_ms": 10,
+          "in_reply_to": "event-8",
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.cancelled",
+          "id": "event-12",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "reason": "OpenCode interrupt confirmed idle"
+          },
+          "sequence": 7,
+          "timestamp_ms": 11,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0.1
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "failed-tool",
+    "client": {
+      "gated": true
+    },
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "tool_use",
+            "cost": 0.25,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005",
+          "type": "session.next.tool.called",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 5,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 5,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "callID": "call_9",
+            "tool": "read"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0006",
+          "type": "session.next.step.failed",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 6,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 6,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "error": {
+              "type": "ProviderError",
+              "message": "upstream refused"
+            }
+          }
+        }
+      },
+      {
+        "op": "idle"
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.requested",
+          "id": "event-7",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "read",
+            "arguments_json": null
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.started",
+          "id": "event-8",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "read"
+          },
+          "sequence": 3,
+          "timestamp_ms": 6,
+          "in_reply_to": "event-7",
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.failed",
+          "id": "event-9",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "read",
+            "error": {
+              "code": "incomplete_tool",
+              "message": "OpenCode run settled with an unfinished tool"
+            }
+          },
+          "sequence": 4,
+          "timestamp_ms": 7,
+          "in_reply_to": "event-8",
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-10",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_step_failed",
+              "message": "upstream refused"
+            }
+          },
+          "sequence": 5,
+          "timestamp_ms": 8,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0.25
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "tool-success-then-duplicate-end",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.tool.called",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "callID": "call_1",
+            "tool": "read",
+            "input": {},
+            "provider": {
+              "executed": true
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.tool.success",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "callID": "call_1",
+            "structured": {},
+            "content": [
+              {
+                "type": "text",
+                "text": "\u003cok\u003e"
+              }
+            ],
+            "provider": {
+              "executed": true
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005",
+          "type": "session.next.tool.failed",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 5,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 5,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "callID": "call_1",
+            "error": {
+              "type": "unknown",
+              "message": "late"
+            },
+            "provider": {
+              "executed": true
+            }
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.requested",
+          "id": "event-7",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "read",
+            "arguments_json": {}
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.started",
+          "id": "event-8",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "read"
+          },
+          "sequence": 3,
+          "timestamp_ms": 6,
+          "in_reply_to": "event-7",
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "action.call.completed",
+          "id": "event-9",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "tool_call_id": "tool-call-6",
+            "requested_by": "opencode.server",
+            "execution_owner": "opencode-server",
+            "name": "read",
+            "result": [
+              {
+                "type": "text",
+                "text": "\u003cok\u003e"
+              }
+            ]
+          },
+          "sequence": 4,
+          "timestamp_ms": 7,
+          "in_reply_to": "event-8",
+          "session_id": "session",
+          "run_id": "run-1",
+          "tool_call_id": "tool-call-6",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-10",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_invalid_tool_lifecycle",
+              "message": "duplicate or foreign tool end"
+            }
+          },
+          "sequence": 5,
+          "timestamp_ms": 8,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "progress-without-start",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.tool.progress",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "callID": "call_x",
+            "structured": {},
+            "content": null
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_invalid_tool_lifecycle",
+              "message": "tool progress without active start"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "quiescence-failure",
+    "client": {
+      "active_error": "active down"
+    },
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_quiescence_failed",
+              "message": "active down"
+            },
+            "settled_by": "inferred"
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "history-failure",
+    "client": {
+      "history_error": "history down"
+    },
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_history_failed",
+              "message": "history down"
+            },
+            "settled_by": "inferred"
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "invalid-data",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "model": {
+              "id": "m",
+              "providerID": "p"
+            },
+            "surprise": true
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_invalid_step_event",
+              "message": "opencode native: invalid wire payload: session.next.step.started data: json: unknown field \"surprise\""
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "explicit-queue-idle",
+    "client": {},
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "queue",
+        "text": "go"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "go"
+            },
+            "delivery": "queue"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.reasoning.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "reasoningID": "r1",
+            "text": ""
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "queue",
+        "effective_delivery": "queue",
+        "admission": "queued",
+        "run_id": "run-1",
+        "status": "queued",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "content.delta",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "message_id": "message-2",
+            "part": {
+              "type": "reasoning"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.completed",
+          "id": "event-7",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "final_response": {
+              "id": "message-2",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "reasoning"
+                }
+              ]
+            },
+            "stop_reason": "stop",
+            "usage": {}
+          },
+          "sequence": 3,
+          "timestamp_ms": 6,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "foreign-admission",
+    "client": {
+      "foreign_admission": true
+    },
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "queue",
+        "admission": "queued",
+        "run_id": "run-1",
+        "status": "queued"
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.failed",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "error": {
+              "code": "opencode_foreign_admission",
+              "message": "server admitted msg_foreign for request msg_fake0000000000000004"
+            }
+          },
+          "sequence": 1,
+          "timestamp_ms": 3,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "dedup-and-usage",
+    "client": {
+      "gated": true
+    },
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "textID": "t3",
+            "text": "a"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0033",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "textID": "t3",
+            "text": "b"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "tool_use",
+            "cost": 0.1,
+            "tokens": {
+              "input": 2.9,
+              "output": 1.2,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 5,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 5,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0006",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 6,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 6,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "stop",
+            "cost": 0.2,
+            "tokens": {
+              "input": 1,
+              "output": 1,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "op": "idle"
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "content.delta",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "message_id": "message-2",
+            "part": {
+              "type": "text",
+              "text": "a"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.completed",
+          "id": "event-7",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "final_response": {
+              "id": "message-2",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "a"
+                }
+              ]
+            },
+            "stop_reason": "stop",
+            "usage": {
+              "input_tokens": 3,
+              "output_tokens": 2,
+              "total_tokens": 5
+            }
+          },
+          "sequence": 3,
+          "timestamp_ms": 6,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0.30000000000000004
+            }
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "foreign-input-quarantine",
+    "client": {
+      "gated": true
+    },
+    "script": [
+      {
+        "op": "submit",
+        "delivery": "auto",
+        "text": "hello"
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0001",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 1,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 1,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_fake0000000000000004",
+            "prompt": {
+              "text": "hello"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0002",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 2,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 2,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0003",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 3,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 3,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "textID": "t3",
+            "text": "mine"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0004",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 4,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 4,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a1",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "op": "await",
+        "count": 2
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0005",
+          "type": "session.next.prompted",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 5,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 5,
+            "sessionID": "ses_fake00000000000000",
+            "messageID": "msg_elsewhere",
+            "prompt": {
+              "text": "theirs"
+            },
+            "delivery": "steer"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0006",
+          "type": "session.next.step.started",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 6,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 6,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "agent": "build",
+            "model": {
+              "id": "fixture",
+              "providerID": "fixture"
+            }
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0007",
+          "type": "session.next.text.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 7,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 7,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "textID": "t7",
+            "text": "theirs"
+          }
+        }
+      },
+      {
+        "op": "event",
+        "raw": {
+          "id": "evt_s0008",
+          "type": "session.next.step.ended",
+          "durable": {
+            "aggregateID": "ses_fake00000000000000",
+            "seq": 8,
+            "version": 1
+          },
+          "data": {
+            "timestamp": 8,
+            "sessionID": "ses_fake00000000000000",
+            "assistantMessageID": "msg_a2",
+            "finish": "stop",
+            "cost": 0,
+            "tokens": {
+              "input": 0,
+              "output": 0,
+              "reasoning": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            }
+          }
+        }
+      },
+      {
+        "op": "idle"
+      }
+    ],
+    "admissions": [
+      {
+        "session_id": "session",
+        "accepted": true,
+        "submission_id": "submission-3",
+        "requested_delivery": "auto",
+        "effective_delivery": "start",
+        "admission": "started",
+        "run_id": "run-1",
+        "status": "running",
+        "message_ids": [
+          "msg_fake0000000000000004"
+        ]
+      }
+    ],
+    "runs": [
+      [
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.started",
+          "id": "event-5",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "status": "running",
+            "started_at_ms": 3
+          },
+          "sequence": 1,
+          "timestamp_ms": 4,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "content.delta",
+          "id": "event-6",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "message_id": "message-2",
+            "part": {
+              "type": "text",
+              "text": "mine"
+            }
+          },
+          "sequence": 2,
+          "timestamp_ms": 5,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2"
+        },
+        {
+          "protocol": "open-agent-protocol",
+          "version": "0.1",
+          "profile": "open-agent-protocol.agent-control-core",
+          "type": "run.completed",
+          "id": "event-7",
+          "payload": {
+            "session_id": "session",
+            "run_id": "run-1",
+            "final_response": {
+              "id": "message-2",
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "mine"
+                }
+              ]
+            },
+            "stop_reason": "stop",
+            "usage": {}
+          },
+          "sequence": 3,
+          "timestamp_ms": 6,
+          "session_id": "session",
+          "run_id": "run-1",
+          "capability_revision": "opencode-v1.18.29-oap-v2",
+          "extensions": {
+            "io.github.anomalyco.opencode.cost": {
+              "total_cost_usd": 0
+            }
+          }
+        }
+      ]
+    ]
+  }
+]
