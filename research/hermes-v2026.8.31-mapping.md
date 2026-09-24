@@ -643,3 +643,17 @@ work. Its corpus driver skips each resume op and counts the skips against a
 number declared per case (3 in `recovery-journal`, 3 in `replay-epoch`, 1 in
 `steering-unavailable`), failing on an undeclared skip or an unknown
 expectation. Only its capability revision follows this change.
+
+## Served by `oapx serve agent --backend <name>`
+
+The Zig port (`zig/src/adapter/hermes/adapter.zig`) drives the corpus reducer
+behind a `hermes` registry entry. Where it differs from the Go adapter:
+
+- It advertises revision `hermes-v2026.8.31-oapx-v1`, with `run.resume` and
+  `run.replay` `unavailable`: it keeps no journal.
+- Events that arrive while an answer's `*.respond` call is in flight are held
+  and applied after the reply, where Go defers only the settlement. The order
+  the host sees is the same: the answer is `submitted` before the run settles.
+- A `gateway.ready` is checked for `change_events`, a 32-hex `replay_epoch` and
+  a present `skin`, as Go's `ValidateReady` does, but its payload is not
+  decoded against the pinned type.
