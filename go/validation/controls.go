@@ -670,6 +670,30 @@ func (s *state) checkSelectionModes(i, line int, e protocol.Envelope, p protocol
 	}
 }
 
+func publishesCatalog(payload json.RawMessage) bool {
+	var members map[string]json.RawMessage
+	if json.Unmarshal(payload, &members) != nil {
+		return false
+	}
+	if _, ok := members["tools"]; ok {
+		return true
+	}
+	var layers map[string]json.RawMessage
+	if json.Unmarshal(members["layers"], &layers) != nil {
+		return false
+	}
+	for _, raw := range layers {
+		var layer map[string]json.RawMessage
+		if json.Unmarshal(raw, &layer) != nil {
+			continue
+		}
+		if _, ok := layer["tools"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func collectCatalog(p protocol.CapabilitiesResponse) []string {
 	names := make([]string, 0, len(p.Tools))
 	for _, tool := range p.Tools {

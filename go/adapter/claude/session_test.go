@@ -2050,23 +2050,23 @@ func TestExcludedToolTheAdapterNeverDeniedIsNotReportedRefused(t *testing.T) {
 	}
 }
 
-func TestToolChoiceIsJudgedAgainstTheEmptyPublishedCatalog(t *testing.T) {
-	if tools := testDescriptor(t).Capabilities.Tools; len(tools) != 0 {
-		t.Fatalf("the descriptor now publishes %d tools; the catalog every policy is judged against changed", len(tools))
+func TestToolChoiceIsJudgedAgainstAnUnknownCatalog(t *testing.T) {
+	if tools := testDescriptor(t).Capabilities.Tools; tools != nil {
+		t.Fatalf("the descriptor now publishes %d tools; the catalog is no longer unknown under Decision 0034", len(tools))
 	}
-	_, session, _ := openWire(t)
+	_, session, peer := openWire(t)
 	allowed := excludesBash
-	allowed.ToolChoice = json.RawMessage(`{"allowed":["Bash"]}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, _, err := session.Submit(ctx, allowed)
-	var refused *base.UnsupportedControlError
-	if !errors.As(err, &refused) || refused.Reason != base.ControlUnsatisfiable || refused.Tool != "Bash" {
-		t.Fatalf("allowed naming a tool outside the published catalog: %v", err)
+	allowed.ToolChoice = json.RawMessage(`{"allowed":["Read"]}`)
+	if _, outcome := admitWith(t, session, peer, allowed); outcome.err != nil {
+		t.Fatalf("allowed naming a tool of an unknown catalog was refused: %v", outcome.err)
 	}
-	run := &runState{choice: &protocol.ToolChoice{Disallowed: []string{"Bash"}}}
-	if !run.excludes("Read") {
-		t.Fatal("a tool outside the published catalog was permitted under a denylist")
+	denylist := &runState{choice: &protocol.ToolChoice{Disallowed: []string{"Bash"}}}
+	if !denylist.excludes("Bash") || denylist.excludes("Read") {
+		t.Fatal("a denylist over an unknown catalog must exclude exactly the tools it names")
+	}
+	allowlist := &runState{choice: &protocol.ToolChoice{Allowed: []string{"Read"}}}
+	if allowlist.excludes("Read") || !allowlist.excludes("Bash") {
+		t.Fatal("an allowlist over an unknown catalog must permit exactly the tools it names")
 	}
 	if (&runState{}).excludes("Bash") {
 		t.Fatal("a run without tool_choice excluded a tool")

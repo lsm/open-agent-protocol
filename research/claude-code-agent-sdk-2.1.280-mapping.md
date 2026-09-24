@@ -335,15 +335,15 @@ What the adapter now does:
   `unapplied_control`.
 
 The catalog a policy is judged against is the descriptor's, and this adapter
-publishes none: the CLI's tools are known only per turn, from `system/init`,
-and `action.tools.list` serves that session view, which the validator does not
-use for `tool_choice`. Both the validator and the adapter therefore treat the
-catalog as known and empty. `allowed` naming any tool is refused
-`unsatisfiable`, and an admitted policy, whether `allowed: []` or any
-`disallowed` list, excludes every tool, so every call in that run is refused.
-That is conforming, and it is the only reading the oracle permits today. A
-narrower denylist needs a published catalog. The CLI does not provide one
-before the first turn, and it depends on the tool posture and MCP servers.
+publishes none. The CLI's tools are known only per turn, from `system/init`, and
+`action.tools.list` serves that session view. Under
+[Decision 0034](../decisions/0034-an-unpublished-catalog-is-unknown.md) a
+descriptor with no `tools` member leaves the catalog unknown, so the validator
+and the adapter judge a policy by its names alone. `disallowed: ["Bash"]`
+excludes exactly `Bash`, and `allowed: ["Read"]` is admitted and permits
+exactly `Read`. Before 0034 the catalog was known and empty, so `allowed`
+naming any tool was refused `unsatisfiable` and every admitted policy excluded
+every tool.
 
 `TestClaudeProcessExcludedToolIsRefusedByPolicy` drives the pinned binary with
 `disallowed: ["Bash"]` and a provider that asks for `Bash` `touch`, under

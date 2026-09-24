@@ -251,7 +251,7 @@ func admitToolChoice(req protocol.MessageSubmitRequest) (*protocol.ToolChoice, e
 	if policy == nil {
 		return nil, nil
 	}
-	if defect := policy.Unsatisfiable(publishedCatalog(), true); defect != nil {
+	if defect := policy.Unsatisfiable(publishedCatalog(), false); defect != nil {
 		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: base.ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason}
 	}
 	return policy, nil
@@ -266,7 +266,7 @@ func publishedCatalog() []string {
 }
 
 func (r *runState) excludes(name string) bool {
-	return r != nil && r.choice != nil && !r.choice.Permits(name, publishedCatalog(), true)
+	return r != nil && r.choice != nil && !r.choice.Permits(name, publishedCatalog(), false)
 }
 
 func (s *Session) dispatch() {

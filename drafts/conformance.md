@@ -264,7 +264,11 @@ Execution, per advertised control, is that an implementation:
   excluded calls that way; an endpoint that can do neither advertises
   `unavailable`. An `allowed` list naming a tool the catalog
   does not carry is unsatisfiable wherever the catalog is known, and an empty
-  `allowed` admits nothing;
+  `allowed` admits nothing. The catalog is known once `capabilities.response`
+  carries a `tools` member, at the top level or in a layer, even an empty one;
+  a descriptor carrying none leaves it unknown, and the filter then excludes
+  exactly the tools its lists exclude
+  ([Decision 0034](../decisions/0034-an-unpublished-catalog-is-unknown.md));
 - binds an admitted `output_schema` to the run's final response:
   `run.completed.result` is present and conforms, or the run fails with
   `structured_output_failed`. A fixed-output endpoint declares its result as
