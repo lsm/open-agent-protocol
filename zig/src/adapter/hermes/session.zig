@@ -19,6 +19,8 @@ pub const Options = struct {
     responder: []const u8 = "user",
     endpoint: []const u8 = endpoint_id,
     revision: []const u8 = capability_revision,
+    counter: ?*usize = null,
+    now_ms: ?*const fn () i64 = null,
 };
 
 pub const Identity = struct {
@@ -106,11 +108,16 @@ pub const Reducer = struct {
     }
 
     fn now(self: *Reducer) i64 {
+        if (self.options.now_ms) |clock| return clock();
         self.clock += 1;
         return self.clock;
     }
 
     fn nextID(self: *Reducer, kind: []const u8) ![]const u8 {
+        if (self.options.counter) |counter| {
+            counter.* += 1;
+            return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, counter.* });
+        }
         self.ids += 1;
         return std.fmt.allocPrint(self.allocator(), "{s}-{u}", .{ kind, idScalar(self.ids - 1) });
     }
@@ -715,7 +722,7 @@ pub const Reducer = struct {
         }
     }
 
-    pub fn resolve(self: *Reducer, interaction_id: []const u8, answers: []const Answer) !void {
+    pub fn check(self: *Reducer, interaction_id: []const u8, answers: []const Answer) !Interaction {
         if (self.unusable) return Error.SessionUnusable;
         const at = self.findInteraction(interaction_id) orelse return Error.InteractionNotFound;
         if (self.interactions.items[at].resolved) return Error.InteractionNotFound;
@@ -730,6 +737,13 @@ pub const Reducer = struct {
                 if (std.mem.eql(u8, earlier.question_id, answer.question_id)) return Error.InvalidResolution;
             }
         }
+        return binding;
+    }
+
+    pub fn resolve(self: *Reducer, interaction_id: []const u8, answers: []const Answer) !void {
+        const binding = try self.check(interaction_id, answers);
+        const run = self.active().?;
+        const at = self.findInteraction(interaction_id).?;
         self.interactions.items[at].resolved = true;
         const body = try self.resolvedPayload(binding, run, "submitted", answers);
         _ = try self.emitEnvelope(run, "user.input.resolved", body, binding.requested);
