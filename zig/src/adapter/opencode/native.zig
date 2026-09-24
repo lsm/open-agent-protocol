@@ -887,14 +887,20 @@ pub fn decodeApiError(arena: std.mem.Allocator, status: u16, body: []const u8) s
         .ok, .duplicate => {},
         .empty, .syntax, .trailing => return found,
     }
+    var tag: []const u8 = "";
     for (try topMembers(arena, clean)) |candidate| {
         if (!gojson.foldEql(candidate.key, "_tag")) continue;
         const value = std.json.parseFromSliceLeaky(std.json.Value, arena, candidate.source, .{ .parse_numbers = false, .allocate = .alloc_always }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => continue,
         };
-        if (value == .string) found.tag = value.string;
+        switch (value) {
+            .string => |named| tag = named,
+            .null => {},
+            else => return found,
+        }
     }
+    found.tag = tag;
     return found;
 }
 
@@ -1093,12 +1099,18 @@ test "a string decodes the way encoding/json decodes one, replacing what is not 
     try testing.expectEqualStrings("a\u{fffd}b\u{fffd}c\u{1f600}", data.text);
 }
 
-test "an API error keeps its status and the last string tag it names" {
+test "an API error keeps its status and the last string tag it names, and no tag once any names a non-string" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     try testing.expectEqualStrings("opencode native: HTTP 409 ConflictError", try (try decodeApiError(scratch, 409, "{\"_tag\":\"ConflictError\"}")).message(scratch));
-    try testing.expectEqualStrings("opencode native: HTTP 404 B", try (try decodeApiError(scratch, 404, "{\"_tag\":\"A\",\"_TAG\":\"B\",\"_tag\":5,\"_tag\":null}")).message(scratch));
+    try testing.expectEqualStrings("opencode native: HTTP 404 B", try (try decodeApiError(scratch, 404, "{\"_Tag\":\"A\",\"_tag\":\"B\"}")).message(scratch));
+    try testing.expectEqualStrings("opencode native: HTTP 404 A", try (try decodeApiError(scratch, 404, "{\"_tag\":\"A\",\"_tag\":null,\"other\":5}")).message(scratch));
+    try testing.expectEqualStrings("opencode native: HTTP 404", try (try decodeApiError(scratch, 404, "{\"_tag\":\"A\",\"_TAG\":\"B\",\"_tag\":5,\"_tag\":null}")).message(scratch));
+    try testing.expectEqualStrings("opencode native: HTTP 404", try (try decodeApiError(scratch, 404, "{\"_tag\":5,\"_tag\":\"A\"}")).message(scratch));
+    try testing.expectEqualStrings("opencode native: HTTP 404", try (try decodeApiError(scratch, 404, "{\"_tag\":\"A\",\"_tag\":true}")).message(scratch));
+    try testing.expectEqualStrings("opencode native: HTTP 404", try (try decodeApiError(scratch, 404, "{\"_tag\":\"A\",\"_tag\":{}}")).message(scratch));
+    try testing.expectEqualStrings("opencode native: HTTP 404", try (try decodeApiError(scratch, 404, "{\"_tag\":\"A\",\"_tag\":[]}")).message(scratch));
     try testing.expectEqualStrings("opencode native: HTTP 503", try (try decodeApiError(scratch, 503, "{\"_tag\":")).message(scratch));
     try testing.expectEqualStrings("opencode native: HTTP 500", try (try decodeApiError(scratch, 500, "[\"_tag\"]")).message(scratch));
 }
