@@ -1399,3 +1399,20 @@ func TestMemoryRefusesSteerAndBTWUnderTheirOwnKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveRefusesAQueuedRunBeforeItStarts(t *testing.T) {
+	session := newTestSession(t, 64)
+	ctx := context.Background()
+	submitAdmission(t, session)
+	queued, _, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "session-1", Delivery: protocol.DeliveryQueue,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("later")}},
+	})
+	if err != nil || queued.Admission != protocol.AdmissionQueued {
+		t.Fatalf("queued admission = %+v, err=%v", queued, err)
+	}
+	err = session.Resolve(ctx, adapter.InteractionResolution{RunID: queued.RunID, RespondedBy: "user", Permission: &protocol.PermissionResolveRequest{InteractionID: "unseen", SessionID: "session-1", RunID: queued.RunID, RequestedBy: "reference.memory", RespondedBy: "user", ChoiceID: "approve", Granted: true}})
+	if !errors.Is(err, adapter.ErrInteractionNotFound) {
+		t.Fatalf("resolve before start = %v, want ErrInteractionNotFound", err)
+	}
+}
