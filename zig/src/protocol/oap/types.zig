@@ -665,7 +665,7 @@ pub const ActiveRun = struct {
 };
 
 pub const RunPosition = struct {
-    run_id: []const u8,
+    run_id: ?[]const u8,
     sequence: u64,
 };
 
@@ -676,9 +676,9 @@ pub const SessionCapture = struct {
 
     pub fn deinit(self: *SessionCapture, allocator: std.mem.Allocator) void {
         freeStringList(allocator, self.admitted_submit_requests);
-        for (self.settled) |entry| allocator.free(entry.run_id);
+        for (self.settled) |entry| if (entry.run_id) |owned| allocator.free(owned);
         allocator.free(self.settled);
-        if (self.model_run_sequence) |position| allocator.free(position.run_id);
+        if (self.model_run_sequence) |position| if (position.run_id) |owned| allocator.free(owned);
     }
 };
 

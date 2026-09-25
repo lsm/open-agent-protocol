@@ -176,7 +176,12 @@ fn serializeSessionState(w: *json_writer.JsonWriter, state: oap_types.SessionSta
 
 fn serializeRunPosition(w: *json_writer.JsonWriter, position: oap_types.RunPosition) !void {
     try w.beginObject();
-    try w.writeStringField("run_id", position.run_id);
+    if (position.run_id) |run_id| {
+        try w.writeStringField("run_id", run_id);
+    } else {
+        try w.writeKey("run_id");
+        try w.writeNull();
+    }
     try w.writeIntField("sequence", position.sequence);
     try w.endObject();
 }
@@ -956,9 +961,13 @@ fn deserializeActiveRuns(value: std.json.Value, allocator: std.mem.Allocator) ![
     return runs;
 }
 
-fn deserializeRunPosition(value: std.json.Value, allocator: std.mem.Allocator) !oap_types.RunPosition {
+fn deserializeRunPosition(value: std.json.Value, allocator: std.mem.Allocator, genesis_allowed: bool) !oap_types.RunPosition {
     if (value != .object) return DecodeError.InvalidField;
     const sequence = (try optionalUnsigned(value.object, "sequence")) orelse return DecodeError.MissingField;
+    if (genesis_allowed) {
+        const carried = value.object.get("run_id") orelse return DecodeError.MissingField;
+        if (carried == .null) return .{ .run_id = null, .sequence = sequence };
+    }
     const run_id = try requiredOwnedString(value.object, "run_id", allocator);
     return .{ .run_id = run_id, .sequence = sequence };
 }
@@ -973,16 +982,16 @@ fn deserializeSessionCapture(value: std.json.Value, allocator: std.mem.Allocator
         const positions = try allocator.alloc(oap_types.RunPosition, settled.array.items.len);
         var filled: usize = 0;
         errdefer {
-            for (positions[0..filled]) |entry| allocator.free(entry.run_id);
+            for (positions[0..filled]) |entry| if (entry.run_id) |owned| allocator.free(owned);
             allocator.free(positions);
         }
         for (settled.array.items) |item| {
-            positions[filled] = try deserializeRunPosition(item, allocator);
+            positions[filled] = try deserializeRunPosition(item, allocator, false);
             filled += 1;
         }
         capture.settled = positions;
     }
-    if (value.object.get("model_run_sequence")) |position| capture.model_run_sequence = try deserializeRunPosition(position, allocator);
+    if (value.object.get("model_run_sequence")) |position| capture.model_run_sequence = try deserializeRunPosition(position, allocator, true);
     return capture;
 }
 
@@ -2586,4 +2595,18 @@ test "session state, models and capabilities round trip the members goap serves"
     try std.testing.expectEqualStrings("{\"max_sources\":2}", feature.limits_json.?);
     try std.testing.expectEqualStrings("{\"fixed_result\":{\"ok\":true}}", feature.constraints_json.?);
     try std.testing.expectEqualStrings("scripted_tool", capabilities.payload.capabilities_response.tools[0].name);
+}
+
+test "a model run sequence at genesis round trips its null run_id, and a settled run must name one" {
+    const allocator = std.testing.allocator;
+    const prefix = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+        "\",\"id\":\"e-1\",\"type\":\"session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"idle\",\"as_of\":";
+    var decoded = try deserializeEnvelope(prefix ++ "{\"model_run_sequence\":{\"run_id\":null,\"sequence\":0}}}}", allocator);
+    defer decoded.deinit(allocator);
+    const position = decoded.payload.session_state_response.as_of.?.model_run_sequence.?;
+    try std.testing.expect(position.run_id == null);
+    const encoded = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"model_run_sequence\":{\"run_id\":null,\"sequence\":0}") != null);
+    try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(prefix ++ "{\"settled\":[{\"run_id\":null,\"sequence\":1}]}}}", allocator));
 }
