@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, transport, protocol, providers, utils, makai-cli, tui, tools, agent-types, agent-loop, agent-mod, agent-bridge, agent-unit, agent-chain, validation, adapter, bounded-output]
+        group: [core, transport, protocol, providers, utils, makai-cli, tui, tools, agent-types, agent-loop, agent-mod, agent-bridge, agent-unit, agent-chain, validation, adapter, stdio-host]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -217,6 +217,65 @@ jobs:
       - name: Tests leave no credential store in the checkout
         if: always()
         run: ./scripts/check-no-test-litter.sh
+
+  backend-parity:
+    name: Parity - oapx served backends against goap
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build oapx
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-parity
+
+      - name: Require each backend to answer and write its child exactly as goap does
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
+        run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
+
+  memory-conformance:
+    name: Conformance and parity - oapx memory backend
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build oapx
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-memory
+
+      - name: Run goap conformance against oapx serve agent --backend memory
+        run: go run ./go/cmd/goap conformance --command "/tmp/oapx-memory/bin/oapx serve agent --backend memory"
+
+      - name: Require oapx's memory backend to answer exactly as goap's
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-memory/bin/oapx
+        run: go test ./go/cmd/goap/ -run TestMemoryBackendMatchesOapx -v
 
   # =============================================================================
   rust-sdk:
@@ -422,7 +481,7 @@ jobs:
   # =============================================================================
 
   windows-unit:
-    name: Unit Tests - bounded-output (windows)
+    name: Unit Tests - stdio-host (windows)
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -434,9 +493,9 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Run bounded-output unit tests
+      - name: Run stdio-host unit tests
         shell: bash
-        run: zig build --build-file zig/build.zig test-unit-bounded-output --summary all
+        run: zig build --build-file zig/build.zig test-unit-stdio-host --summary all
 
   cross-compile-smoke:
     name: Cross-compile - ${{ matrix.target }}

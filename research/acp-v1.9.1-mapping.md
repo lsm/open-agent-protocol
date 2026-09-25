@@ -69,8 +69,11 @@ Pinned by `TestToolNamePrefersProgrammaticNameAndIgnoresWrongType`,
 `TestToolNameFallsBackToTitle` and the two matching Zig reducer tests. The
 Zig fallback was mutated to title-only and the first Zig test failed.
 
-The capability descriptor is unchanged, so the revision suffixes stay
-`oap-v3` and `oapx-v1`; the prefix moves with the pin.
+The capability descriptor is unchanged, so only the revision's version prefix
+moves: `acp-v1.9.1-schema-v1.23.0-oap-v3`. Both trees carry it — since the
+Zig served backend gained the journal and the `session/new` tool-source
+attach, the catalog holds one revision for the pin and
+`zig/src/adapter/acp/adapter.zig` reads it.
 
 ## Corpus
 
