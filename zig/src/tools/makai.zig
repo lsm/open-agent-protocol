@@ -55,6 +55,7 @@ const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
 const bounded_output = @import("bounded_output");
+const endpoint_signals = @import("endpoint_signals");
 
 pub const VERSION = @import("version_options").version;
 
@@ -8515,7 +8516,7 @@ fn runOapProviderMode(
     stderr: std.Io.File,
     answers_specimens: bool,
 ) !void {
-    installEndpointSignals();
+    endpoint_signals.install() catch {};
     var registry = api_registry.ApiRegistry.init(allocator);
     defer registry.deinit();
     try register_builtins.registerBuiltInApiProviders(&registry);
@@ -8556,13 +8557,13 @@ fn runOapProviderMode(
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(if (endpoint_signalled.load(.acquire)) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
+    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
     while (true) {
         var did_work = false;
 
-        while (if (endpoint_signalled.load(.acquire)) null else stdin_stream.poll()) |chunk| {
+        while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
             var mutable_chunk = chunk;
             defer mutable_chunk.deinit(allocator);
 
@@ -8638,7 +8639,7 @@ fn isProviderOapLine(allocator: std.mem.Allocator, line: []const u8) !bool {
 }
 
 fn oapInputEnded(stream: *transport.ByteStream) bool {
-    return endpoint_signalled.load(.acquire) or oapInputDrained(stream);
+    return endpoint_signals.received() or oapInputDrained(stream);
 }
 
 fn oapInputDrained(stream: *transport.ByteStream) bool {
@@ -8682,7 +8683,7 @@ fn runOapMode(
         try printUsage(stderr);
         return err;
     };
-    installEndpointSignals();
+    endpoint_signals.install() catch {};
     if (parsed.backend) |name| {
         if (serve_provider) {
             try compat.stdio.writeAll(stderr, "--backend serves agent-control-core alone; serve agent,provider runs the built-in loop\n\n");
@@ -8772,7 +8773,7 @@ fn runOapMode(
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(if (endpoint_signalled.load(.acquire)) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
+    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
     if (!serve_provider) unblockOutput(stdout);
@@ -8795,7 +8796,7 @@ fn runOapMode(
     while (true) {
         var did_work = false;
 
-        while (if (endpoint_signalled.load(.acquire)) null else stdin_stream.poll()) |chunk| {
+        while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
             var mutable_chunk = chunk;
             defer mutable_chunk.deinit(allocator);
 
@@ -9179,20 +9180,6 @@ fn backendFatalMessage(err: anyerror) ?[]const u8 {
     };
 }
 
-var endpoint_signalled = std.atomic.Value(bool).init(false);
-
-fn onEndpointSignal(signal: std.posix.SIG) callconv(.c) void {
-    _ = signal;
-    endpoint_signalled.store(true, .release);
-}
-
-fn installEndpointSignals() void {
-    if (@import("builtin").os.tag == .windows) return;
-    const action = std.posix.Sigaction{ .handler = .{ .handler = onEndpointSignal }, .mask = std.posix.sigemptyset(), .flags = 0 };
-    std.posix.sigaction(std.posix.SIG.INT, &action, null);
-    std.posix.sigaction(std.posix.SIG.TERM, &action, null);
-}
-
 fn runBackendMode(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -9255,10 +9242,10 @@ fn runBackendMode(
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(if (endpoint_signalled.load(.acquire)) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
+    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
-    while (!endpoint_signalled.load(.acquire)) {
+    while (!endpoint_signals.received()) {
         var did_work = false;
         while (stdin_stream.poll()) |chunk| {
             var owned = chunk;
@@ -10448,8 +10435,8 @@ test "a SIGTERM ends the served backend as end of input does, exiting clean" {
     const stdin_pipe = try compat.stdio.pipe();
     const stdout_pipe = try compat.stdio.pipe();
     const stderr_pipe = try compat.stdio.pipe();
-    installEndpointSignals();
-    defer endpoint_signalled.store(false, .release);
+    endpoint_signals.install() catch {};
+    defer endpoint_signals.reset();
 
     var runner = BackendRun{
         .allocator = std.heap.page_allocator,
@@ -10481,7 +10468,7 @@ test "a SIGTERM ends the built-in agent loop as end of input does, after its ans
     const stdin_pipe = try compat.stdio.pipe();
     const stdout_pipe = try compat.stdio.pipe();
     const stderr_pipe = try compat.stdio.pipe();
-    defer endpoint_signalled.store(false, .release);
+    defer endpoint_signals.reset();
 
     var runner = BuiltinRun{ .stdin_file = stdin_pipe[0], .stdout_file = stdout_pipe[1], .stderr_file = stderr_pipe[1] };
     const thread = try std.Thread.spawn(.{}, BuiltinRun.run, .{&runner});
