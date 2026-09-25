@@ -10,7 +10,7 @@ const session = @import("session.zig");
 const rpc = @import("rpc.zig");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.pi_oapx_capability_revision;
+pub const capability_revision = harness_pins.pi_capability_revision;
 
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .unavailable, .reason = "extension dialogs are generic user input, not permissions" },

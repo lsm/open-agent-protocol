@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `oapx serve agent` keeps a bounded journal of 256 events per session and answers the replay control from it for every backend, as `goap` does; a frame lost to the line bound can now be replayed. Every backend advertises `run.resume` and `run.replay` `degraded`, and codex, hermes, deepseek and opencode now serve exactly the Go adapter's descriptor under its revision.
+- `oapx serve agent` keeps a bounded journal of 256 events per session and answers the replay control from it for every backend, as `goap` does; a frame lost to the line bound can now be replayed. Every backend advertises `run.resume` and `run.replay` `degraded`, and codex, hermes, deepseek, opencode and pi now serve exactly the Go adapter's descriptor under its revision.
 - `goap serve agent` names its stdio binding (`{"kind":"stdio","serialization":"jsonl"}`) in `capabilities.response`, as `oapx` already does.
 - On Windows, `oapx serve agent` and `serve provider` treat a console Ctrl+C, Ctrl+Break or close as end of input, as SIGINT and SIGTERM are treated elsewhere; a close gets up to 4.5 s to settle before Windows ends the process.
 - `oapx serve agent` and `oapx serve provider` without `--backend` treat SIGINT and SIGTERM as end of input, as both stdio drafts require: they stop reading, settle what they admitted, flush and exit. Before, a signal killed the built-in loop outright.
