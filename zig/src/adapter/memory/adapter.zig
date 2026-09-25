@@ -114,7 +114,6 @@ const Run = struct {
     status: oap_types.RunStatus = .running,
     stage: Stage = .permission,
     started: bool = false,
-    queued_admission: bool = false,
     terminal: bool = false,
     pending: bool = false,
     next_sequence: u64 = 1,
@@ -326,7 +325,6 @@ pub const Session = struct {
             .instructions = instructions,
             .structured = controls.structured,
             .calls_tool = controls.calls_tool,
-            .queued_admission = reservation,
             .status = if (reservation) .queued else .running,
         };
         return run;
@@ -381,7 +379,7 @@ pub const Session = struct {
         try self.emit(run, "run.started", started.value(), false);
 
         const lead = if (run.calls_tool) "I will use the scripted tool." else "I will answer without the scripted tool.";
-        const text = if (run.instructions) |instructions| try std.fmt.allocPrint(a, "{s} {s}", .{ instructions, lead }) else lead;
+        const text = if (run.instructions) |instructions| if (instructions.len == 0) lead else try std.fmt.allocPrint(a, "{s} {s}", .{ instructions, lead }) else lead;
         try self.emitDelta(a, run, text);
         if (!run.calls_tool) return self.requestInput(run);
 
@@ -471,6 +469,7 @@ pub const Session = struct {
         };
         const run = self.findRun(run_id) orelse return error.RunNotFound;
         if (run.terminal) return error.InteractionNotFound;
+        if (!run.started) return error.InteractionNotFound;
         if (!std.mem.eql(u8, responded_by, self.participant)) return error.InvalidResolution;
         switch (run.stage) {
             .permission => {
@@ -1062,6 +1061,28 @@ test "a busy session queues one run, refuses a third, and promotes the queued ru
     const last = probe.seen.items[probe.seen.items.len - 1];
     try testing.expectEqualStrings(queued.run_id.?, last.run_id);
     try testing.expect(std.mem.indexOf(u8, probe.seen.items[probe.seen.items.len - 4].line, "\"run.started\"") != null);
+}
+
+test "a queued run's gates cannot be resolved before it starts" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    _ = try probe.submit();
+    const queued = try probe.submitWith(.auto, .{ .session_id = "", .messages = &.{}, .delivery = .auto });
+    const minted = try std.fmt.parseInt(u64, queued.run_id.?["run-".len..], 10);
+    const permission = try std.fmt.allocPrint(probe.a(), "permission-{d}", .{minted + 1});
+    const input = try std.fmt.allocPrint(probe.a(), "input-{d}", .{minted + 2});
+    try testing.expectError(error.InteractionNotFound, probe.approve(queued.run_id.?, permission, "approve"));
+    try testing.expectError(error.InteractionNotFound, probe.answer(queued.run_id.?, input));
+}
+
+test "empty instructions leave the scripted text unprefixed" {
+    var probe: Probe = undefined;
+    try probe.init();
+    defer probe.deinit();
+    _ = try probe.submitWith(.auto, .{ .session_id = "", .messages = &.{}, .delivery = .auto, .instructions = "" });
+    try probe.session.drain(probe.a(), &probe.seen);
+    try testing.expect(std.mem.indexOf(u8, probe.seen.items[1].line, "\"text\":\"I will use the scripted tool.\"") != null);
 }
 
 test "a queued reservation cancelled before promotion settles with its own first event" {
