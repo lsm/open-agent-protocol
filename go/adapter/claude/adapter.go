@@ -20,11 +20,13 @@ import (
 const (
 	endpointID             = "claude-code.cli"
 	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "claude-code-2.1.280-oap-v2"
+	CapabilityRevision     = "claude-code-2.1.280-oap-v3"
 	CorpusDirectory        = "fixtures/adapters/claude-code-2.1.280"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )
+
+func endpointTools() []protocol.ToolDefinition { return nil }
 
 func endpointSources() []protocol.ToolSourceDescriptor {
 	return []protocol.ToolSourceDescriptor{
@@ -246,6 +248,10 @@ func advertisedFeatures() map[string]protocol.FeatureSupport {
 		protocol.FeatureToolsList: {Level: protocol.SupportDegraded, Reason: "system/init republishes the tool and MCP server lists per turn; there is none before the first"},
 		"action.permissions":      {Level: protocol.SupportNative, Reason: "can_use_tool reverse control requests"},
 		"user_input":              {Level: protocol.SupportNative, Reason: "permission gates over the control plane"},
+		protocol.FeatureToolSelection: {
+			Level: protocol.SupportEmulated, Scope: protocol.ScopeRun,
+			Reason: "enforced per call: a PreToolUse hook, and the can_use_tool gate behind it, refuse an excluded tool before it runs and the call settles refused_by_policy; not retained past the run",
+		},
 	}
 }
 
@@ -254,7 +260,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		return base.Descriptor{}, err
 	}
 	features := advertisedFeatures()
-	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
+	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Claude Code Adapter", Version: PinnedVersion, Adapter: "claude-code-stream-json"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features, Tools: endpointTools(), Sources: endpointSources()}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "interrupt control request"}, nil
 }
 
 func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session, error) {
@@ -278,13 +284,13 @@ func (a *Adapter) Open(ctx context.Context, req base.OpenRequest) (base.Session,
 		id = protocol.SessionID(a.ids.NewID("session"))
 	}
 	now := a.clock.Now().UnixMilli()
-	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, children: map[string]*childState{}, stop: make(chan struct{})}
+	s := &Session{client: client, clock: a.clock, ids: a.ids, journal: journal.New(a.config.JournalCapacity), expandPrompts: a.config.ExpandPrompts, participant: participant(req.Participant), state: protocol.SessionState{SessionID: id, Status: protocol.SessionIdle, CurrentModelID: a.config.Model, UpdatedAtMS: now}, runs: map[protocol.RunID]*runState{}, tools: map[string]*toolState{}, interactions: map[protocol.InteractionID]*gateState{}, policyDenied: map[string]bool{}, children: map[string]*childState{}, stop: make(chan struct{})}
 	go s.dispatch()
 	if a.initializeAtOpen {
 
 		initCtx, cancel := context.WithTimeout(ctx, initializeTimeout)
 		defer cancel()
-		if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: nil}, &struct{}{}); err != nil {
+		if err := client.Call(initCtx, native.InitializeRequest{Subtype: native.ControlInitialize, Hooks: native.ToolSelectionHooks()}, &struct{}{}); err != nil {
 			_ = s.Close(context.Background())
 			return nil, fmt.Errorf("claude adapter: initialize exchange failed: %w", err)
 		}

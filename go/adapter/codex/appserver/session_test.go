@@ -201,12 +201,14 @@ func openFake(t *testing.T) (*fakeClient, adapter.Session, adapter.Descriptor) {
 	return client, session, descriptor
 }
 
+var fakeSubmit = protocol.MessageSubmitRequest{
+	SessionID: "session-1", Delivery: protocol.DeliveryAuto,
+	Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
+}
+
 func submitFake(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream) {
 	t.Helper()
-	response, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "session-1", Delivery: protocol.DeliveryAuto,
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}},
-	})
+	response, stream, err := session.Submit(context.Background(), fakeSubmit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +270,7 @@ func TestCompletedLifecycle(t *testing.T) {
 	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
 	events := drainClosed(t, stream)
 	adaptertest.AssertTypes(t, events, protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeRunCompleted)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithSubmit(t, fakeSubmit, admission, descriptor, events)
 	for index, event := range events {
 		if event.RunID != admission.RunID || event.Sequence == nil || *event.Sequence != uint64(index+1) || event.CapabilityRevision != descriptor.CapabilityRevision {
 			t.Fatalf("event %d: %+v", index, event)
@@ -769,7 +771,7 @@ func TestDispatchReducesRequestAfterPrecedingNotification(t *testing.T) {
 	}
 	client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnCompleted}})
 	events = append(events, drainClosed(t, stream)...)
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithSubmit(t, fakeSubmit, admission, descriptor, events)
 }
 
 func TestUserInputEmptyOptionsSurfacesAsText(t *testing.T) {
@@ -1056,7 +1058,7 @@ func TestCancellationSettlesAnOpenActionAsCancelled(t *testing.T) {
 	if settled < 0 || terminal < 0 || settled > terminal {
 		t.Fatalf("settled=%d terminal=%d events=%v", settled, terminal, envelopeTypes(events))
 	}
-	adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, fakeSubmit, admission, descriptor, events)
 }
 
 func envelopeTypes(events []protocol.Envelope) []protocol.EnvelopeType {

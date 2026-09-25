@@ -44,12 +44,14 @@ func referenceDescriptor(t *testing.T) adapter.Descriptor {
 	return descriptor
 }
 
+var providedCallSubmit = protocol.MessageSubmitRequest{
+	SessionID: "control-tools", Delivery: protocol.DeliveryAuto,
+	Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+}
+
 func submitProvidedCall(t *testing.T, session adapter.Session) (protocol.MessageSubmitResponse, adapter.EventStream, []protocol.Envelope, protocol.ActionCallPayload) {
 	t.Helper()
-	admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{
-		SessionID: "control-tools",
-		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-	})
+	admission, stream, err := session.Submit(context.Background(), providedCallSubmit)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestProvidedCallRoundTripValidates(t *testing.T) {
 			break
 		}
 	}
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, referenceDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmit(t, providedCallSubmit, admission, referenceDescriptor(t), events)
 
 	var completed protocol.ActionCallPayload
 	for _, event := range events {
@@ -260,7 +262,7 @@ func TestCancelClosesAPendingProvidedCall(t *testing.T) {
 	if !cancelledCall {
 		t.Fatal("a cancelled run must close its pending control-owned call")
 	}
-	adaptertest.AssertProtocolValidWithCancellation(t, admission, referenceDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, providedCallSubmit, admission, referenceDescriptor(t), events)
 }
 
 func TestProvidedCatalogAndAcknowledgedSubset(t *testing.T) {

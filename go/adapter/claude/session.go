@@ -22,6 +22,7 @@ const (
 	nativeToolSource = "claude-code-native"
 	mcpSourcePrefix  = "mcp:"
 	mcpToolPrefix    = "mcp__"
+	refusedByPolicy  = "refused_by_policy"
 )
 
 var errTerminalWon = errors.New("claude adapter: terminal already selected")
@@ -56,6 +57,7 @@ type Session struct {
 	tools        map[string]*toolState
 	interactions map[protocol.InteractionID]*gateState
 	children     map[string]*childState
+	policyDenied map[string]bool
 	journal      *journal.Journal
 	stop         chan struct{}
 	stopOnce     sync.Once
@@ -74,7 +76,8 @@ type runState struct {
 	submittedText  string
 	messageID      protocol.MessageID
 
-	model string
+	model  string
+	choice *protocol.ToolChoice
 
 	deferred     *native.ResultFrame
 	children     map[string]bool
@@ -126,6 +129,10 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 	if err != nil {
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
+	choice, err := admitToolChoice(req)
+	if err != nil {
+		return protocol.MessageSubmitResponse{}, nil, err
+	}
 	s.promptMu.Lock()
 	s.reduceMu.Lock()
 	s.mu.Lock()
@@ -161,7 +168,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 		s.promptMu.Unlock()
 		return protocol.MessageSubmitResponse{}, nil, err
 	}
-	run := &runState{status: protocol.RunQueued, next: 1, submissionUUID: submissionUUID, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), model: s.state.CurrentModelID, startResult: make(chan error, 1), children: map[string]bool{}}
+	run := &runState{status: protocol.RunQueued, next: 1, submissionUUID: submissionUUID, submittedText: text, messageID: protocol.MessageID(s.ids.NewID("message")), model: s.state.CurrentModelID, choice: choice, startResult: make(chan error, 1), children: map[string]bool{}}
 	s.pending = run
 	s.mu.Unlock()
 
@@ -206,7 +213,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 
 func submitText(req protocol.MessageSubmitRequest) (string, error) {
 
-	if err := base.RefuseUnadvertisedControls(req); err != nil {
+	if err := base.RefuseUnadvertisedControls(req, protocol.FeatureToolSelection); err != nil {
 		return "", err
 	}
 	if req.SessionID == "" || len(req.Messages) != 1 || (req.Delivery != "" && req.Delivery != protocol.DeliveryAuto) {
@@ -234,6 +241,32 @@ func submitText(req protocol.MessageSubmitRequest) (string, error) {
 		builder.WriteString(part.Text)
 	}
 	return builder.String(), nil
+}
+
+func admitToolChoice(req protocol.MessageSubmitRequest) (*protocol.ToolChoice, error) {
+	policy, err := req.ToolChoicePolicy()
+	if err != nil {
+		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: base.ControlUnsatisfiable, Detail: err.Error()}
+	}
+	if policy == nil {
+		return nil, nil
+	}
+	if defect := policy.Unsatisfiable(publishedCatalog(), false); defect != nil {
+		return nil, &base.UnsupportedControlError{Feature: protocol.FeatureToolSelection, Reason: base.ControlUnsatisfiable, Tool: defect.Tool, Detail: defect.Reason}
+	}
+	return policy, nil
+}
+
+func publishedCatalog() []string {
+	names := make([]string, 0, len(endpointTools()))
+	for _, tool := range endpointTools() {
+		names = append(names, tool.Name)
+	}
+	return names
+}
+
+func (r *runState) excludes(name string) bool {
+	return r != nil && r.choice != nil && !r.choice.Permits(name, publishedCatalog(), false)
 }
 
 func (s *Session) dispatch() {
@@ -297,6 +330,10 @@ func (s *Session) reduce(in rpc.InboundMessage) {
 }
 
 func (s *Session) reduceControl(control *rpc.IncomingControl) {
+	if hook, ok := control.Value.(*native.HookCallbackRequest); ok {
+		s.answerHook(control, hook)
+		return
+	}
 	ask, ok := control.Value.(*native.CanUseToolRequest)
 	if !ok {
 
@@ -304,6 +341,32 @@ func (s *Session) reduceControl(control *rpc.IncomingControl) {
 		return
 	}
 	s.openGate(control, ask)
+}
+
+func (s *Session) answerHook(control *rpc.IncomingControl, hook *native.HookCallbackRequest) {
+	if hook.CallbackID != native.ToolSelectionHook || hook.Input.HookEventName != native.HookPreToolUse {
+		_ = control.RespondError(context.Background(), "claude adapter: unregistered hook callback")
+		s.foreignActivity(fmt.Sprintf("hook callback %q", hook.CallbackID))
+		return
+	}
+	if !s.currentRun().excludes(hook.Input.ToolName) {
+		_ = control.Respond(context.Background(), native.HookContinue{})
+		return
+	}
+	s.refuseByPolicy(control, native.DenyTool(policyRefusal(hook.Input.ToolName)), hook.Input.ToolUseID)
+}
+
+func policyRefusal(tool string) string {
+	return fmt.Sprintf("%s is excluded by this run's tool_choice", tool)
+}
+
+func (s *Session) refuseByPolicy(control *rpc.IncomingControl, answer any, toolUseID string) {
+	if err := control.Respond(context.Background(), answer); err != nil {
+		return
+	}
+	if toolUseID != "" {
+		s.policyDenied[toolUseID] = true
+	}
 }
 
 func (s *Session) applyObservation(observation *rpc.ObservationMessage) {
@@ -679,6 +742,14 @@ func (s *Session) endTool(run *runState, nativeID string, content json.RawMessag
 	tool.terminal = true
 	payload := s.toolPayload(tool)
 	payload.ArgumentsJSON = nil
+	refused := s.policyDenied[nativeID]
+	delete(s.policyDenied, nativeID)
+	if refused && isError != nil && *isError {
+		payload.Result = nil
+		payload.Error = &protocol.ProtocolError{Code: refusedByPolicy, Message: toolResultText(content)}
+		_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, payload, false, tool.started)
+		return
+	}
 	if isError != nil && *isError {
 
 		payload.Result = nil
@@ -733,6 +804,10 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 
 		_ = control.RespondError(context.Background(), "claude adapter: permission ask outside an owned run")
 		s.foreignActivity("can_use_tool outside an owned run")
+		return
+	}
+	if run.excludes(ask.ToolName) {
+		s.refuseByPolicy(control, native.PermissionDeny{Behavior: "deny", Message: policyRefusal(ask.ToolName)}, ask.ToolUseID)
 		return
 	}
 	id := protocol.InteractionID(s.ids.NewID("interaction"))
@@ -996,6 +1071,12 @@ func (s *Session) sweepRun(run *runState) {
 		tool.terminal = true
 		payload := s.toolPayload(tool)
 		payload.ArgumentsJSON = nil
+		if s.policyDenied[tool.nativeID] {
+			delete(s.policyDenied, tool.nativeID)
+			payload.Error = &protocol.ProtocolError{Code: refusedByPolicy, Message: "refused by the run's tool_choice"}
+			_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, payload, false, tool.started)
+			continue
+		}
 		_, _ = s.emitEnvelope(run, protocol.TypeActionCallCancelled, payload, false, tool.started)
 	}
 	for _, gate := range s.interactions {

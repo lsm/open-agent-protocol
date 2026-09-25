@@ -404,6 +404,101 @@ func TestClaudeProcessMentionReachesTheProviderOnlyWhenPromptsExpand(t *testing.
 	}
 }
 
+func TestClaudeProcessExcludedToolIsRefusedByPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Claude Code process integration in short mode")
+	}
+	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	for name, posture := range map[string]ToolPosture{"pre-approved": AllowTools("Bash"), "unrestricted": UnrestrictedTools()} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			work := filepath.Join(root, "work")
+			if err := os.MkdirAll(work, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			written := filepath.Join(work, "written-by-an-excluded-tool")
+			bashArguments, err := json.Marshal(map[string]string{"command": "touch " + written, "description": "write a file"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mock := providertest.New(t, providertest.Config{AnthropicKey: claudeMockSecret})
+			mock.EnqueueToolCall(providertest.AnthropicMessages, providertest.ToolCall{ID: "toolu_excluded_bash", Name: "Bash", Arguments: string(bashArguments)})
+			mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
+			implementation := newPinnedClaude(t, Config{
+				Environment: claudeEnvironment(t, root, mock.AnthropicBaseURL()), WorkingDirectory: work,
+				Tools: posture, Args: []string{"--no-session-persistence"},
+			})
+			descriptor, err := implementation.Probe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			session, err := implementation.Open(ctx, base.OpenRequest{SessionID: "claude-policy-session", Participant: protocol.Participant{ID: "integration-user"}})
+			if err != nil {
+				t.Fatalf("open pinned CLI (spawn + initialize exchange): %v", err)
+			}
+			closed := false
+			defer func() {
+				if !closed {
+					_ = session.Close(context.Background())
+				}
+			}()
+			request := protocol.MessageSubmitRequest{
+				SessionID: "claude-policy-session", Delivery: protocol.DeliveryAuto,
+				ToolChoice: json.RawMessage(`{"disallowed":["Bash"]}`),
+				Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Write the file.")}},
+			}
+			admission, stream, err := session.Submit(ctx, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var events []protocol.Envelope
+			for settled := false; !settled; {
+				event := adaptertest.Next(t, stream, 60*time.Second)
+				if event.Type == protocol.TypeUserInputRequested {
+					t.Fatalf("a gate opened for an excluded tool: %s", event.Payload)
+				}
+				events = append(events, event)
+				settled = event.Type == protocol.TypeRunCompleted || event.Type == protocol.TypeRunFailed || event.Type == protocol.TypeRunCancelled
+			}
+			if trailing := adaptertest.Drain(t, stream, 10*time.Second); len(trailing) != 0 {
+				t.Fatalf("events after the terminal: %v", trailing)
+			}
+			adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)
+
+			var refused *protocol.ActionCallPayload
+			for _, event := range events {
+				switch event.Type {
+				case protocol.TypeActionCallCompleted:
+					t.Fatalf("the excluded Bash completed: %s", event.Payload)
+				case protocol.TypeActionCallFailed:
+					var payload protocol.ActionCallPayload
+					if err := event.DecodePayload(&payload); err != nil {
+						t.Fatal(err)
+					}
+					refused = &payload
+				}
+			}
+			if refused == nil || refused.Name != "Bash" || refused.Error == nil || refused.Error.Code != refusedByPolicy {
+				t.Fatalf("the excluded Bash did not settle refused_by_policy: %+v", refused)
+			}
+			if _, err := os.Stat(written); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the excluded Bash ran: stat %s: %v", written, err)
+			}
+			if terminal := events[len(events)-1]; terminal.Type != protocol.TypeRunCompleted {
+				t.Fatalf("terminal=%s", terminal.Type)
+			}
+			if err := session.Close(ctx); err != nil {
+				t.Fatalf("close claude policy session: %v", err)
+			}
+			closed = true
+		})
+	}
+}
+
 func claudeEnvironment(t *testing.T, root, loopbackBaseURL string) []string {
 	t.Helper()
 	home := filepath.Join(root, "home")
