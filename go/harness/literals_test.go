@@ -28,6 +28,10 @@ func TestAPinSpelledInSourceFails(t *testing.T) {
 		tree := fstest.MapFS{"zig/src/adapter/pi/session.zig": {Data: []byte(fmt.Sprintf("pub const capability_revision = %q;\n", revision))}}
 		assertOnly(t, CheckLiterals(tree, catalog), CodePinLiteral, "zig/src/adapter/pi/session.zig:1")
 	})
+	t.Run("zig multiline string", func(t *testing.T) {
+		tree := fstest.MapFS{"zig/src/adapter/pi/session.zig": {Data: []byte("const x =\n    \\\\" + revision + "\n;\n")}}
+		assertOnly(t, CheckLiterals(tree, catalog), CodePinLiteral, "zig/src/adapter/pi/session.zig:2")
+	})
 	t.Run("zig build script", func(t *testing.T) {
 		tree := fstest.MapFS{"zig/build.zig": {Data: []byte(fmt.Sprintf("const pin = %q;\n", revision))}}
 		assertOnly(t, CheckLiterals(tree, catalog), CodePinLiteral, "zig/build.zig:1")
