@@ -1117,10 +1117,34 @@ fn toolFeatures(keep: std.mem.Allocator, carried: ?std.json.Value) ![]oap_types.
     while (it.next()) |declared| {
         const support = declared.value_ptr.*;
         const level = std.meta.stringToEnum(oap_types.SupportLevel, stringOf(support, "level")) orelse continue;
-        result[filled] = .{ .key = declared.key_ptr.*, .level = level, .reason = optionalString(support, "reason"), .scope = optionalString(support, "scope") };
+        const modes = try featureModes(keep, support);
+        const constraints_json = try featureObjectJson(keep, support, "constraints");
+        const limits_json = try featureObjectJson(keep, support, "limits");
+        result[filled] = .{ .key = declared.key_ptr.*, .level = level, .reason = optionalString(support, "reason"), .scope = optionalString(support, "scope"), .modes = modes, .constraints_json = constraints_json, .limits_json = limits_json };
         filled += 1;
     }
     return result[0..filled];
+}
+
+fn featureModes(keep: std.mem.Allocator, support: std.json.Value) ![]const []const u8 {
+    if (support != .object) return &.{};
+    const carried = support.object.get("modes") orelse return &.{};
+    if (carried != .array) return &.{};
+    const modes = try keep.alloc([]const u8, carried.array.items.len);
+    var filled: usize = 0;
+    for (carried.array.items) |mode| {
+        if (mode != .string) continue;
+        modes[filled] = mode.string;
+        filled += 1;
+    }
+    return modes[0..filled];
+}
+
+fn featureObjectJson(keep: std.mem.Allocator, support: std.json.Value, key: []const u8) !?[]const u8 {
+    if (support != .object) return null;
+    const carried = support.object.get(key) orelse return null;
+    if (carried != .object) return null;
+    return try std.json.Stringify.valueAlloc(keep, carried, .{});
 }
 
 fn stringOf(value: std.json.Value, key: []const u8) []const u8 {
@@ -1162,6 +1186,7 @@ fn admissibleDialect(schema: ?std.json.Value) bool {
     if (value == .null) return true;
     if (value != .object) return false;
     const declared = value.object.get("$schema") orelse return true;
+    if (declared == .null) return true;
     if (declared != .string) return false;
     return declared.string.len == 0 or std.mem.eql(u8, declared.string, provided_dialect);
 }
@@ -1639,4 +1664,18 @@ fn provideAndSettle(allocator: std.mem.Allocator) !void {
 
 test "an open with provided tools, a submit and a settled call free everything they built when an allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, provideAndSettle, .{});
+}
+
+test "a provided tool keeps its declared feature modes, constraints and limits, and a null $schema is admitted" {
+    var probe: Probe = undefined;
+    try probe.initWith("[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":null,\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\",\"features\":{\"x\":{\"level\":\"degraded\",\"modes\":[\"session_open\"],\"constraints\":{\"b\":1,\"a\":2},\"limits\":{\"max\":3}}}}]", attached_local);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    const listed_tools = try probe.session.vtable.tools.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1" }, &refusal);
+    const feature = listed_tools.tools[1].features[0];
+    try testing.expectEqualStrings("x", feature.key);
+    try testing.expectEqual(@as(usize, 1), feature.modes.len);
+    try testing.expectEqualStrings("session_open", feature.modes[0]);
+    try testing.expectEqualStrings("{\"b\":1,\"a\":2}", feature.constraints_json.?);
+    try testing.expectEqualStrings("{\"max\":3}", feature.limits_json.?);
 }
