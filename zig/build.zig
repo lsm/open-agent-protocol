@@ -1246,7 +1246,7 @@ pub fn build(b: *std.Build) void {
 
     codex_adapter_mod.addImport("harness_pins", harness_pins_mod);
     codex_adapter_mod.addAnonymousImport("codex_conversation", .{
-        .root_source_file = b.path("../fixtures/adapters/codex-appserver-writes/conversation.json"),
+        .root_source_file = b.path("../fixtures/adapters/codex-appserver-0.157.0-writes/conversation.json"),
     });
     const codex_adapter_test = b.addTest(.{ .root_module = codex_adapter_mod });
 

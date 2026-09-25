@@ -16,26 +16,28 @@
     "timestamp_ms": 5,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.failed",
+    "type": "run.completed",
     "id": "event-06",
     "payload": {
       "session_id": "session-1",
       "run_id": "run-02",
-      "error": {
-        "code": "native_turn_failed",
-        "message": "fixture failure"
-      }
+      "final_response": {
+        "id": "message-03",
+        "role": "assistant",
+        "content": ""
+      },
+      "stop_reason": "end_turn"
     },
     "sequence": 2,
     "timestamp_ms": 6,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   }
 ]

@@ -8,7 +8,7 @@ const semantic = @import("semantic");
 const jsonschema = @import("jsonschema");
 
 const corpus_relative = harness_pins.codex_app_server_corpus;
-const writes_relative = "fixtures/adapters/codex-appserver-writes/conversation.json";
+const writes_relative = "fixtures/adapters/codex-appserver-0.157.0-writes/conversation.json";
 const schema_tree_sha256 = harness_pins.codex_app_server_codex_source_tree_sha256;
 const participant = "user";
 

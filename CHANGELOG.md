@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
+- The Codex app-server pin moves from commit `8d7cc24` to release `rust-v0.157.0` (`00c972ed`). No adapter code changes: every frame the adapters read or write has the same schema at both pins. The capability revisions become `codex-appserver-0.157.0-oap-v1` and `codex-appserver-0.157.0-oapx-v1`, the corpus moves to `fixtures/adapters/codex-appserver-0.157.0` with its native lines carried forward, and `8d7cc24` is retired. See [`research/codex-app-server-0.157.0-mapping.md`](research/codex-app-server-0.157.0-mapping.md).
 
 ### Removed
 

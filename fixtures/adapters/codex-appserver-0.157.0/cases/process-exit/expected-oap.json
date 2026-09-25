@@ -16,7 +16,7 @@
     "timestamp_ms": 5,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
@@ -37,6 +37,6 @@
     "timestamp_ms": 6,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   }
 ]

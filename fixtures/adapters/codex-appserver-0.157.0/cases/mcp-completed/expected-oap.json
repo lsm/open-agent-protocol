@@ -16,7 +16,7 @@
     "timestamp_ms": 5,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
@@ -30,15 +30,9 @@
       "tool_call_id": "tool-call-06",
       "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
-      "name": "codex.file_change",
+      "name": "mcp.fixture.ping",
       "arguments_json": {
-        "changes": [
-          {
-            "path": "file.txt",
-            "kind": "update",
-            "diff": "+ok"
-          }
-        ]
+        "value": "x"
       }
     },
     "sequence": 2,
@@ -46,7 +40,7 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
@@ -60,15 +54,9 @@
       "tool_call_id": "tool-call-06",
       "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
-      "name": "codex.file_change",
+      "name": "mcp.fixture.ping",
       "arguments_json": {
-        "changes": [
-          {
-            "path": "file.txt",
-            "kind": "update",
-            "diff": "+ok"
-          }
-        ]
+        "value": "x"
       }
     },
     "sequence": 3,
@@ -76,7 +64,7 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
@@ -90,9 +78,9 @@
       "tool_call_id": "tool-call-06",
       "requested_by": "codex.app-server",
       "execution_owner": "codex.app-server",
-      "name": "codex.file_change",
+      "name": "mcp.fixture.ping",
       "result": {
-        "changed": 1
+        "pong": true
       }
     },
     "sequence": 4,
@@ -100,7 +88,7 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
@@ -122,6 +110,6 @@
     "timestamp_ms": 9,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   }
 ]

@@ -16,41 +16,49 @@
     "timestamp_ms": 5,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.status.updated",
+    "type": "content.delta",
     "id": "event-06",
     "payload": {
       "session_id": "session-1",
       "run_id": "run-02",
-      "status": "cancelling",
-      "updated_at_ms": 6
+      "message_id": "message-03",
+      "part": {
+        "type": "text",
+        "text": "fixture-ok"
+      }
     },
     "sequence": 2,
-    "timestamp_ms": 7,
+    "timestamp_ms": 6,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.cancelled",
+    "type": "run.completed",
     "id": "event-07",
     "payload": {
       "session_id": "session-1",
       "run_id": "run-02",
-      "reason": "native turn interrupted"
+      "final_response": {
+        "id": "message-03",
+        "role": "assistant",
+        "content": "fixture-ok"
+      },
+      "stop_reason": "end_turn"
     },
     "sequence": 3,
-    "timestamp_ms": 8,
+    "timestamp_ms": 7,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   }
 ]
