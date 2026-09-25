@@ -881,7 +881,7 @@ What differs from the Go adapter:
 
 | Area | oapx | Go adapter | Why |
 | --- | --- | --- | --- |
-| Capability revision | `acp-v1.7.0-schema-v1.21.0-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` and no `action.tool_sources.attach` | `acp-v1.7.0-schema-v1.21.0-oap-v3` | oapx keeps no journal and does not yet pass attached MCP servers to `session/new`. |
+| Capability revision | `acp-v1.7.0-schema-v1.21.0-oapx-v2`: Go's descriptor without `action.tool_sources.attach` | `acp-v1.7.0-schema-v1.21.0-oap-v3` | oapx does not yet pass attached MCP servers to `session/new`. `run.resume` and `run.replay` are `degraded` as in Go: the endpoint journals 256 events per session. |
 | Request bound | `initialize` and `session/new` are awaited at most 60 s, then the open is refused `internal` | context-bound | The endpoint serves one request at a time. |
 | Frame bytes | Encoded without Go's escaping of `<`, `>`, `&` and U+2028/2029 | `encoding/json` | The agent decodes either; no pinned write corpus exists for ACP. |
 | Permission answer order | The resolution is validated and `action.permission.resolved` emitted before the answer is written; a failed write then fails the transport | written first, then resolved; a failed write fails the run `acp_permission_response_failed` | The reducer owns validation and emission together. |

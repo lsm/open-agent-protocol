@@ -330,8 +330,9 @@ were fully exercised without finding a mismatch.
 The Zig port (`zig/src/adapter/pi/adapter.zig`) drives the same reducer as the
 corpus, one per run. Where it differs from the Go adapter:
 
-- It advertises revision `pi-v0.85.1-oapx-v1`, with `run.resume` and
-  `run.replay` `unavailable`: it keeps no journal.
+- It advertises the Go adapter's revision, with `run.resume` and `run.replay`
+  `degraded` as Go does: the `oapx` endpoint keeps a bounded journal of 256
+  events per session and answers the replay control from it.
 - The child runs with `--no-extensions` and explicit extension arguments
   refuse the open, per P0 policy 4, so no dialog is expected. One that arrives
   anyway is handled as in Go: before `agent_start` it waits and surfaces as

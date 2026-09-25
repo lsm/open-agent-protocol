@@ -10,8 +10,7 @@ const session = @import("session.zig");
 const rpc = @import("rpc.zig");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.pi_oapx_capability_revision;
-const journal_reason = "oapx keeps no journal for this backend";
+pub const capability_revision = harness_pins.pi_capability_revision;
 
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .unavailable, .reason = "extension dialogs are generic user input, not permissions" },
@@ -21,8 +20,8 @@ const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "Pi has no negotiation; readiness is a get_state handshake" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "abort intent is local; agent_settled remains terminal authority" },
     .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state reconciles streaming state" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
-    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps explicit" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "bounded process-memory replay" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "idle auto is normalized to native prompt/start" },

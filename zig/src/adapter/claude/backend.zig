@@ -138,7 +138,27 @@ pub fn userTurn(arena: std.mem.Allocator, uuid: []const u8, text: []const u8, co
 
 pub fn initializeRequest(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
     const id = try goJSONString(arena, request_id);
-    return std.mem.concat(arena, u8, &.{ "{\"request\":{\"hooks\":null,\"subtype\":\"initialize\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });
+    return std.mem.concat(arena, u8, &.{ "{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"" ++ tool_selection_hook ++ "\"]}]},\"subtype\":\"initialize\"},\"request_id\":", id, ",\"type\":\"control_request\"}" });
+}
+
+pub const tool_selection_hook = "oap_tool_selection";
+pub const pre_tool_use = "PreToolUse";
+
+pub fn hookContinue(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    return std.mem.concat(arena, u8, &.{ "{\"response\":{\"request_id\":", id, ",\"response\":{},\"subtype\":\"success\"},\"type\":\"control_response\"}" });
+}
+
+pub fn hookDeny(arena: std.mem.Allocator, request_id: []const u8, reason: []const u8) ![]const u8 {
+    const id = try goJSONString(arena, request_id);
+    const why = try goJSONString(arena, reason);
+    return std.mem.concat(arena, u8, &.{
+        "{\"response\":{\"request_id\":",
+        id,
+        ",\"response\":{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":",
+        why,
+        "}},\"subtype\":\"success\"},\"type\":\"control_response\"}",
+    });
 }
 
 pub fn interruptRequest(arena: std.mem.Allocator, request_id: []const u8) ![]const u8 {
@@ -652,7 +672,7 @@ test "the control frames are the ones the pinned marshal produces, keys sorted" 
     const scratch = arena.allocator();
 
     try std.testing.expectEqualStrings(
-        "{\"request\":{\"hooks\":null,\"subtype\":\"initialize\"},\"request_id\":\"req_1\",\"type\":\"control_request\"}",
+        "{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"oap_tool_selection\"]}]},\"subtype\":\"initialize\"},\"request_id\":\"req_1\",\"type\":\"control_request\"}",
         try initializeRequest(scratch, "req_1"),
     );
     try std.testing.expectEqualStrings(

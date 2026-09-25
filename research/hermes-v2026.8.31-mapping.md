@@ -649,8 +649,9 @@ expectation. Only its capability revision follows this change.
 The Zig port (`zig/src/adapter/hermes/adapter.zig`) drives the corpus reducer
 behind a `hermes` registry entry. Where it differs from the Go adapter:
 
-- It advertises revision `hermes-v2026.8.31-oapx-v1`, with `run.resume` and
-  `run.replay` `unavailable`: it keeps no journal.
+- It advertises the Go adapter's revision, with `run.resume` and `run.replay`
+  `degraded` as Go does: the `oapx` endpoint keeps a bounded journal of 256
+  events per session and answers the replay control from it.
 - Events that arrive while an answer's `*.respond` call is in flight are held
   and applied after the reply, where Go defers only the settlement. The order
   the host sees is the same: the answer is `submitted` before the run settles.
