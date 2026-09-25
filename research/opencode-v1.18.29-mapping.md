@@ -670,8 +670,9 @@ because nothing settles the run between the prompt and its answer, and
 The Zig port (`zig/src/adapter/opencode/adapter.zig`) drives the corpus reducer
 behind an `opencode` registry entry. Where it differs from the Go adapter:
 
-- It advertises revision `opencode-v1.18.29-oapx-v1`, with `run.resume` and
-  `run.replay` `unavailable`: it keeps no journal.
+- It advertises the Go adapter's revision, with `run.resume` and `run.replay`
+  `degraded` as Go does: the `oapx` endpoint keeps a bounded journal of 256
+  events per session and answers the replay control from it.
 - It speaks HTTP/1.1 itself (`opencode/client.zig`), one connection per request
   with `Connection: close`, and accepts only a plain `http` endpoint. Go's
   `net/http` client also takes `https`; a TLS endpoint needs the Go adapter.

@@ -567,7 +567,6 @@ What differs from the Go adapter, or cannot be done through this path:
 
 | Area | oapx | Go adapter | Why |
 | --- | --- | --- | --- |
-| Capability revision | `claude-code-2.1.280-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` | `claude-code-2.1.280-oap-v3`, both `degraded` | oapx keeps no journal, and a revision names one descriptor. The replay control answers `unsupported_control`. |
 | `models.request`, `session.model.switch.request` | `unsupported_feature` | the same | The CLI's model control is unexercised in both trees, so both fail the conformance runner's model-switch checks. |
 | Tool sources and provided tools at open | `unsupported_feature`, before any child starts | the same | Not advertised. |
 | Admission | A turn the child has not echoed within 10 minutes is abandoned: the child is stopped and the session closes | waits on the caller's context, and a cancelled wait closes the session | The endpoint serves one request at a time, so a submit cannot wait unbounded. |

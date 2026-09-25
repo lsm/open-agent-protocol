@@ -14,7 +14,6 @@ pub const capability_revision = harness_pins.acp_oapx_capability_revision;
 pub const acp_protocol_version: i64 = 1;
 pub const client_name = "open-agent-protocol";
 pub const client_version = "0.1";
-const journal_reason = "oapx keeps no journal for this backend";
 
 const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "ACP initialize is normalized into the OAP adapter boundary" },
@@ -26,9 +25,9 @@ const features = [_]contract.Feature{
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.cancel", .level = .degraded, .reason = "ACP cancellation is an unacknowledged session notification; prompt settlement is authoritative" },
-    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.resume", .level = .degraded, .reason = "canonical replay is bounded process memory only" },
     .{ .key = "run.reconciliation", .level = .emulated, .reason = "state is adapter-owned" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded process-memory journal; gaps are explicit" },
     .{ .key = "action.tools", .level = .degraded, .reason = "observed ACP presentation tool calls only; no catalog" },
     .{ .key = "action.tools.execute", .level = .degraded, .reason = "observed tool lifecycle is normalized" },
     .{ .key = "action.permissions", .level = .native, .reason = "ACP permission choice semantics with synthesized portable identity" },

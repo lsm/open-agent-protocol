@@ -11,23 +11,14 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.codex_app_server_oapx_capability_revision;
-const journal_reason = "oapx keeps no journal for this backend";
+pub const capability_revision = session.capability_revision;
 const app_server_args = [_][]const u8{ "app-server", "--listen", "stdio://" };
-
-fn journalled(name: []const u8) bool {
-    return std.mem.eql(u8, name, "run.replay") or std.mem.eql(u8, name, "run.resume");
-}
 
 const features = table: {
     @setEvalBranchQuota(20000);
     var built: [session.features.len]contract.Feature = undefined;
     for (session.features, &built) |feature, *slot| {
-        slot.* = if (journalled(feature.name)) .{
-            .key = feature.name,
-            .level = .unavailable,
-            .reason = journal_reason,
-        } else .{
+        slot.* = .{
             .key = feature.name,
             .level = std.meta.stringToEnum(oap_types.SupportLevel, feature.level).?,
             .reason = if (feature.reason.len > 0) feature.reason else null,
@@ -695,21 +686,15 @@ fn kinds(allocator: std.mem.Allocator, events: []const contract.Event) ![]const 
     return names;
 }
 
-test "the descriptor is the Go adapter's with resume and replay unavailable, under its own revision" {
-    try testing.expect(!std.mem.eql(u8, capability_revision, session.capability_revision));
+test "the descriptor is the Go adapter's, under its revision" {
+    try testing.expectEqualStrings(session.capability_revision, capability_revision);
     try testing.expectEqual(session.features.len, descriptor.features.len);
     for (session.features, descriptor.features) |pinned, served| {
         try testing.expectEqualStrings(pinned.name, served.key);
-        if (journalled(pinned.name)) {
-            try testing.expectEqual(oap_types.SupportLevel.unavailable, served.level);
-            continue;
-        }
         try testing.expectEqualStrings(pinned.level, @tagName(served.level));
         try testing.expectEqualStrings(pinned.reason, served.reason orelse "");
         try testing.expectEqualStrings(pinned.scope, served.scope orelse "");
     }
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.replay"));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.resume"));
 }
 
 test "an open writes the pinned initialize, initialized and thread/start frames before handing the session out" {
