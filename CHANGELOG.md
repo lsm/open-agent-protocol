@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The Claude Code 2.1.263 floor: its corpus and catalog version. Its ledger stays as the base the 2.1.280 ledger builds on.
 
+### Fixed
+
+- `goap serve agent` honours an open's elections instead of dropping them: `tool_sources` are gated and resolved as the hub resolves them, `subscribe` is gated, and a compound `message` is refused `unsupported_feature` (`field: message`), as `oapx` refuses it. Before, all three were accepted and silently ignored.
+
 ### Added
 
 - `oapx serve agent --backend claude` enforces `run.tool_selection` as `goap` does: it registers the `oap_tool_selection` PreToolUse hook at `initialize`, denies a hook callback or permission ask for a tool the run's `tool_choice` excludes, and settles that call `refused_by_policy`.
