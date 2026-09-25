@@ -38,7 +38,7 @@ func TestAPinInsideALargerStringPasses(t *testing.T) {
 	catalog := loadCatalog(t)
 	revision := currentOf(t, &catalog, "pi").CapabilityRevision
 	tree := fstest.MapFS{
-		"go/adapter/pi/session_test.go": {Data: []byte(fmt.Sprintf("package pi\n\nconst frame = %q\n", `{"revision":"`+revision+`"}`))},
+		"go/adapter/pi/session_test.go":  {Data: []byte(fmt.Sprintf("package pi\n\nconst frame = %q\n", `{"revision":"`+revision+`"}`))},
 		"zig/src/adapter/pi/session.zig": {Data: []byte("const frame =\n    \\\\\"" + revision + "\"\n;\n")},
 		"zig/src/adapter/pi/notes.txt":   {Data: []byte(`"` + revision + `"`)},
 	}
