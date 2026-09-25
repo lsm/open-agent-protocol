@@ -326,13 +326,15 @@ pub const Session = struct {
         }
         const settled = try arena.alloc(oap_types.RunPosition, self.reducer.settled.items.len);
         for (self.reducer.settled.items, settled) |entry, *slot| slot.* = .{ .run_id = try arena.dupe(u8, entry.run_id), .sequence = entry.sequence };
+        const active_run_id: ?[]const u8 = if (started) |id| try arena.dupe(u8, id) else null;
+        const transcript_cursor: ?[]const u8 = if (self.reducer.last_seq > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_seq}) else null;
         return .{
             .session_id = self.id,
             .status = if (started != null) .running else if (entries.items.len > 0) .queued else .idle,
-            .active_run_id = if (started) |id| try arena.dupe(u8, id) else null,
+            .active_run_id = active_run_id,
             .active_runs = entries.items,
             .current_model_id = current_model_id,
-            .transcript_cursor = if (self.reducer.last_seq > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_seq}) else null,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
             .as_of = if (settled.len > 0) .{ .settled = settled } else null,
         };
