@@ -703,11 +703,18 @@ pub const Session = struct {
         return false;
     }
 
+    fn copyEvent(allocator: std.mem.Allocator, entry: Journaled) !contract.Event {
+        const line = try allocator.dupe(u8, entry.line);
+        errdefer allocator.free(line);
+        const run_id = try allocator.dupe(u8, entry.run_id);
+        return .{ .line = line, .run_id = run_id, .sequence = entry.sequence };
+    }
+
     fn drain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
         const self = cast(ptr);
         try out.ensureUnusedCapacity(allocator, self.outbox.items.len);
         for (self.outbox.items) |entry| {
-            out.appendAssumeCapacity(.{ .line = try allocator.dupe(u8, entry.line), .run_id = try allocator.dupe(u8, entry.run_id), .sequence = entry.sequence });
+            out.appendAssumeCapacity(try copyEvent(allocator, entry));
         }
         for (self.outbox.items) |entry| self.gpa.free(entry.line);
         self.outbox.clearRetainingCapacity();
@@ -781,7 +788,8 @@ pub const Session = struct {
             if (!std.mem.eql(u8, entry.run_id, run.id)) continue;
             if (oldest == 0) oldest = entry.sequence;
             if (entry.sequence > after) {
-                try suffix.append(allocator, .{ .line = try allocator.dupe(u8, entry.line), .run_id = try allocator.dupe(u8, entry.run_id), .sequence = entry.sequence });
+                try suffix.ensureUnusedCapacity(allocator, 1);
+                suffix.appendAssumeCapacity(try copyEvent(allocator, entry));
             }
         }
         if (after < latest and (oldest == 0 or after + 1 < oldest)) {
