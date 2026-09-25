@@ -60,9 +60,10 @@ entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), 
 harness-default tool posture, so every gated tool call still reaches the host
 as a `user.input` gate. `--config <path>` takes the entry of that name from a
 registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
-unknown members are refused and `environment` is an explicit allowlist. Any
-other backend answers every request `unavailable`, naming itself; `goap serve`
-still carries those adapters. What each cannot do through this path is
+unknown members are refused and `environment` is an explicit allowlist.
+`--backend memory` serves the in-memory reference script and passes
+`goap conformance`; unlike `goap`'s, it cannot take provided tools or attached
+tool sources at open, since the Zig adapter contract carries neither. What each cannot do through this path is
 recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.280-mapping.md),
 [codex](research/codex-app-server-8d7cc24-mapping.md),
 [acp](research/acp-v1.7.0-mapping.md). Without `--config`, codex runs `codex`

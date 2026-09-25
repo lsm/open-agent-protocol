@@ -54,6 +54,7 @@ const pi_adapter = @import("pi_adapter");
 const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
+const memory_adapter = @import("memory_adapter");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
 
@@ -2749,7 +2750,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   loop, or an ACP agent, Hermes gateway, DeepSeek harness
         \\                   or OpenCode server named by a --config entry;
         \\                   --config reads an oap-serve.json registry entry.
-        \\                   Other backends answer unavailable.
+        \\                   --backend memory serves the in-memory reference script.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
@@ -8924,7 +8925,6 @@ fn writeOapAuthOutbound(
     return wrote;
 }
 
-const unported_backends = [_][]const u8{"memory"};
 const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
@@ -8944,13 +8944,6 @@ fn backendIo() std.Io {
 fn writeBackendRefusal(stderr: std.Io.File, arena: std.mem.Allocator, comptime format: []const u8, args: anytype) !void {
     const message = try std.fmt.allocPrint(arena, "oapx serve agent: " ++ format ++ "\n", args);
     try compat.stdio.writeAll(stderr, message);
-}
-
-fn unportedBackend(kind: []const u8) bool {
-    for (unported_backends) |known| {
-        if (std.mem.eql(u8, known, kind)) return true;
-    }
-    return false;
 }
 
 fn backendEntry(
@@ -9201,7 +9194,7 @@ fn runBackendMode(
     var deepseek: deepseek_adapter.Adapter = undefined;
     var opencode: opencode_adapter.Adapter = undefined;
     var hermes: hermes_adapter.Adapter = undefined;
-    var unavailable: adapter_contract.Unavailable = undefined;
+    var memory: memory_adapter.Adapter = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
         claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(arena, entry, &environ, stderr));
         break :claude_served claude.adapter();
@@ -9223,12 +9216,11 @@ fn runBackendMode(
     } else if (std.mem.eql(u8, entry.kind, "hermes")) hermes_served: {
         hermes = hermes_adapter.Adapter.init(allocator, try hermesBackendConfig(arena, entry, &environ, stderr));
         break :hermes_served hermes.adapter();
-    } else if (unportedBackend(entry.kind)) unported_served: {
-        const message = try std.fmt.allocPrint(arena, "oapx has no {s} backend yet; goap serve carries it", .{entry.kind});
-        unavailable = .{ .backend = name, .message = message };
-        break :unported_served unavailable.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "memory")) memory_served: {
+        memory = memory_adapter.Adapter.init(allocator);
+        break :memory_served memory.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode", .{ name, entry.kind });
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9492,7 +9484,7 @@ fn readAllFrom(allocator: std.mem.Allocator, file: std.Io.File) ![]u8 {
     return collected.toOwnedSlice(allocator);
 }
 
-test "an unported backend answers each request unavailable, naming itself, and exits clean at end of input" {
+test "the memory backend answers capabilities as the reference endpoint and exits clean at end of input" {
     const allocator = std.testing.allocator;
     const stdin_pipe = try compat.stdio.pipe();
     const stdout_pipe = try compat.stdio.pipe();
@@ -9522,10 +9514,10 @@ test "an unported backend answers each request unavailable, naming itself, and e
     try std.testing.expectEqual(@as(usize, 0), complained.len);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trimEnd(u8, written, "\n"), .{});
     defer parsed.deinit();
-    const failure = parsed.value.object.get("payload").?.object.get("error").?.object;
     try std.testing.expectEqualStrings("q1", parsed.value.object.get("in_reply_to").?.string);
-    try std.testing.expectEqualStrings("unavailable", failure.get("code").?.string);
-    try std.testing.expectEqualStrings("memory", failure.get("details").?.object.get("backend").?.string);
+    try std.testing.expectEqualStrings("capabilities.response", parsed.value.object.get("type").?.string);
+    try std.testing.expectEqualStrings(memory_adapter.capability_revision, parsed.value.object.get("capability_revision").?.string);
+    try std.testing.expectEqualStrings(memory_adapter.endpoint_id, parsed.value.object.get("payload").?.object.get("endpoint").?.object.get("id").?.string);
 }
 
 fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?[]const u8) ![]u8 {
@@ -9558,7 +9550,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -218,6 +218,32 @@ jobs:
         if: always()
         run: ./scripts/check-no-test-litter.sh
 
+  memory-conformance:
+    name: Conformance - oapx memory backend
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build oapx
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-memory
+
+      - name: Run goap conformance against oapx serve agent --backend memory
+        run: go run ./go/cmd/goap conformance --command "/tmp/oapx-memory/bin/oapx serve agent --backend memory"
+
   # =============================================================================
   rust-sdk:
     name: Rust SDK
