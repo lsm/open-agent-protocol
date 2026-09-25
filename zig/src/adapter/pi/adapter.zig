@@ -114,6 +114,8 @@ pub const Session = struct {
     awaited: []const u8 = "",
     reply: ?Reply = null,
     asks: std.ArrayList(Ask) = .empty,
+    unbound: std.ArrayList(Ask) = .empty,
+    bound: usize = 0,
     statuses: std.StringHashMapUnmanaged([]const u8) = .empty,
     unusable: bool = false,
     ended: bool = false,
@@ -333,6 +335,7 @@ pub const Session = struct {
             },
             .event => if (self.reducer) |reducer| {
                 session.apply(reducer, received.value) catch |err| return lift(err);
+                try self.bindAsks();
             },
             .extension_ui_request => try self.extensionRequest(received.value),
         }
@@ -352,12 +355,8 @@ pub const Session = struct {
             .text
         else
             null;
-        const reducer = self.live() orelse return self.dismiss(native_id, dialog);
-        if (!reducer.started) return self.dismiss(native_id, dialog);
-        const opened_before = reducer.interactions.items.len;
-        session.applyExtension(reducer, request) catch |err| return lift(err);
-        if (reducer.interactions.items.len == opened_before) return;
-        const interaction = reducer.interactions.items[reducer.interactions.items.len - 1];
+        const reducer = self.live() orelse return;
+        const kind = dialog orelse return;
         var labels = std.ArrayList([]const u8).empty;
         if (memberOf(request, "options")) |options| {
             if (options == .array) {
@@ -366,16 +365,23 @@ pub const Session = struct {
                 }
             }
         }
-        try self.asks.append(self.owned(), .{
+        try self.unbound.append(self.owned(), .{
             .native_id = try self.owned().dupe(u8, native_id),
-            .interaction_id = interaction.id,
-            .dialog = dialog orelse .text,
+            .interaction_id = "",
+            .dialog = kind,
             .labels = labels.items,
         });
+        session.applyExtension(reducer, request) catch |err| return lift(err);
+        try self.bindAsks();
     }
 
-    fn dismiss(self: *Session, native_id: []const u8, dialog: ?Dialog) contract.Failure!void {
-        if (dialog != null) _ = try self.send(try self.extensionAnswer(native_id, .cancelled));
+    fn bindAsks(self: *Session) contract.Failure!void {
+        const reducer = self.reducer orelse return;
+        while (self.bound < reducer.interactions.items.len and self.unbound.items.len > 0) : (self.bound += 1) {
+            var ask = self.unbound.orderedRemove(0);
+            ask.interaction_id = reducer.interactions.items[self.bound].id;
+            try self.asks.append(self.owned(), ask);
+        }
     }
 
     const Outcome = union(enum) { value: []const u8, confirmed: bool, cancelled };
@@ -394,8 +400,8 @@ pub const Session = struct {
 
     fn settleAsks(self: *Session) contract.Failure!void {
         if (self.live() != null and !self.ended) return;
-        for (self.asks.items) |ask| _ = try self.send(try self.extensionAnswer(ask.native_id, .cancelled));
         self.asks.clearRetainingCapacity();
+        self.unbound.clearRetainingCapacity();
     }
 
     fn recordTerminal(self: *Session) contract.Failure!void {
@@ -463,6 +469,9 @@ pub const Session = struct {
         reducer.session_id = self.id;
         reducer.responder = self.participant;
         reducer.revision = capability_revision;
+        reducer.model_id = self.current_model;
+        self.bound = 0;
+        self.unbound.clearRetainingCapacity();
         reducer.counters.shared = &self.owner.ids;
         reducer.counters.now_ms = wallClock;
         const message_ids = try arena.alloc([]const u8, request.messages.len);
@@ -848,6 +857,18 @@ test "an open asks get_state and takes the model it reports, and the prompt reac
     , written);
 }
 
+test "run.started names the model get_state reported, as Go does" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const started = try probe.pumpUntil("run.started", &seen);
+    try testing.expectEqualStrings("fixture/model", (try probe.payloadOf(started)).get("model_id").?.string);
+}
+
 test "a turn is admitted on agent_start and settles on agent_end, citing the served revision" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
@@ -952,21 +973,54 @@ test "a Pi agent that dies mid-run fails the run with its exit and closes the se
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
 }
 
-test "a dialog still open when its run settles is answered cancelled" {
+test "a dialog still open when its run settles resolves cancelled and writes Pi nothing, as Go does" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_prompt_accepted ++
         \\printf '{"type":"extension_ui_request","id":"ui-1","method":"confirm","title":"Proceed?","message":"Continue"}\n'
         \\
     ++
         "printf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[" ++ assistant_hello ++ "],\"willRetry\":false}'\n" ++
-        "printf '{\"type\":\"agent_settled\"}\\n'\n" ++ fake_idle);
+        "printf '{\"type\":\"agent_settled\"}\\n'\n" ++
+        \\take; printf '{"type":"response","id":"req_3","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
     defer probe.deinit();
     var refusal = contract.Refusal{};
     _ = try probe.open(&refusal);
     _ = try probe.submit("go", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.completed", &seen);
-    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-1\",\"cancelled\":true}");
+    const resolved = seen.items[seen.items.len - 2];
+    try testing.expect(std.mem.indexOf(u8, resolved.line, "\"type\":\"user.input.resolved\"") != null);
+    try testing.expectEqualStrings("cancelled", (try probe.payloadOf(resolved)).get("status").?.string);
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"prompt","message":"go","streamingBehavior":"steer"}
+        \\{"id":"req_3","type":"get_state"}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
+}
+
+test "a dialog raised outside a run is ignored and writes Pi nothing, as Go does" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"extension_ui_request","id":"ui-9","method":"confirm","title":"Idle?","message":"No run"}\n'
+        \\printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"get_state"}
+        \\{"id":"req_3","type":"get_state"}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
 }
 
 test "the child runs with extensions disabled, and an explicit extension argument refuses the open" {
@@ -1003,13 +1057,13 @@ test "a prompt Pi refuses closes the session rather than leaving an unstarted ru
     try testing.expectError(error.SessionClosed, probe.submit("again", &refusal));
 }
 
-test "a dialog raised before agent_start is answered cancelled and never surfaces" {
+test "a dialog raised before agent_start surfaces once the run starts and its answer reaches Pi, as Go does" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++
         \\take; printf '{"type":"response","id":"req_2","command":"prompt","success":true}\n'
         \\printf '{"type":"extension_ui_request","id":"ui-0","method":"confirm","title":"Early?","message":"Before start"}\n'
-        \\take
         \\printf '{"type":"agent_start"}\n'
+        \\take
         \\
     ++ "printf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[" ++ assistant_hello ++ "],\"willRetry\":false}'\n" ++
         "printf '{\"type\":\"agent_settled\"}\\n'\n" ++ fake_idle);
@@ -1018,9 +1072,20 @@ test "a dialog raised before agent_start is answered cancelled and never surface
     _ = try probe.open(&refusal);
     _ = try probe.submit("hello", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
+    const asked = try probe.pumpUntil("user.input.requested", &seen);
+    const payload = try probe.payloadOf(asked);
+    const answers = try probe.arena.allocator().dupe(oap_types.InputAnswer, &.{.{ .question_id = "value", .selected_option_ids = try probe.arena.allocator().dupe([]const u8, &.{"no"}) }});
+    const request = oap_types.UserInputResolveRequest{
+        .interaction_id = payload.get("interaction_id").?.string,
+        .requested_by = payload.get("requested_by").?.string,
+        .responded_by = payload.get("responded_by").?.string,
+        .session_id = payload.get("session_id").?.string,
+        .run_id = payload.get("run_id").?.string,
+        .answers = answers,
+    };
+    try probe.handle.?.resolve(probe.arena.allocator(), .{ .input = &request }, &refusal);
+    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-0\",\"confirmed\":false}");
     _ = try probe.pumpUntil("run.completed", &seen);
-    for (seen.items) |event| try testing.expect(std.mem.indexOf(u8, event.line, "user.input.requested") == null);
-    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-0\",\"cancelled\":true}");
 }
 
 test "an abort Pi refuses fails the run with pi_abort_failed, as Go does" {

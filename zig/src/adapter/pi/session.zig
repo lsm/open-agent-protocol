@@ -61,6 +61,7 @@ pub const Reducer = struct {
     revision: []const u8 = capability_revision,
     run_id: []const u8 = "",
     message_id: []const u8 = "",
+    model_id: []const u8 = "",
     sequence: u64 = 1,
     started: bool = false,
     terminal: bool = false,
@@ -498,6 +499,7 @@ pub fn apply(reducer: *Reducer, event: std.json.Value) !void {
         try payload.put(reducer.arena, "session_id", Reducer.str(reducer.session_id));
         try payload.put(reducer.arena, "run_id", Reducer.str(reducer.run_id));
         try payload.put(reducer.arena, "status", Reducer.str("running"));
+        if (reducer.model_id.len > 0) try payload.put(reducer.arena, "model_id", Reducer.str(reducer.model_id));
         try payload.put(reducer.arena, "started_at_ms", .{ .integer = started_at });
         try reducer.emit("run.started", .{ .object = payload.* }, false);
         if (reducer.cancel_intent) try statusUpdate(reducer, "cancelling", "");

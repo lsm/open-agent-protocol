@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `oapx serve agent --backend pi` handles Pi dialogs as the Go adapter does: one raised before `agent_start` surfaces once the run starts, one outside a run is ignored, and one still open at settlement resolves `cancelled` without an `extension_ui_response`. Its `run.started` now names the model, as Go's does.
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
 
 ### Removed
