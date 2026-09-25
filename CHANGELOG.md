@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
+- `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Its state reports the last run sequence as `transcript_cursor`. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
 
 ### Changed
 

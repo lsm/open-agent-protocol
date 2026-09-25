@@ -50,5 +50,6 @@ take
 printf '%s\n' "{\"type\":\"message_end\",\"message\":$assistant}"
 printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[$assistant],\"willRetry\":false}"
 printf '{"type":"agent_settled"}\n'
+take; state req_10 6 false
 
 while take; do :; done

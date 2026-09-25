@@ -107,6 +107,7 @@ pub const Session = struct {
     reducer_arena: *std.heap.ArenaAllocator,
     transport: *process.Transport,
     reducer: ?*session.Reducer = null,
+    settled_cursor: u64 = 0,
     current_model: []const u8 = "",
     native_session: []const u8 = "",
     next_request: usize = 0,
@@ -403,6 +404,11 @@ pub const Session = struct {
         self.unbound.clearRetainingCapacity();
     }
 
+    fn cursor(self: *Session) u64 {
+        const reducer = self.reducer orelse return self.settled_cursor;
+        return if (reducer.sequence > 1) reducer.sequence - 1 else self.settled_cursor;
+    }
+
     fn recordTerminal(self: *Session) contract.Failure!void {
         const reducer = self.reducer orelse return;
         if (!reducer.terminal or self.statuses.contains(reducer.run_id)) return;
@@ -438,6 +444,7 @@ pub const Session = struct {
             .status = if (reducer == null) .idle else if (self.asks.items.len > 0) .waiting_for_input else .running,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
+            .transcript_cursor = if (self.cursor() > 0) try std.fmt.allocPrint(arena, "{d}", .{self.cursor()}) else null,
             .updated_at_ms = wallClock(),
         };
     }
@@ -480,6 +487,7 @@ pub const Session = struct {
         }
         reducer.run_id = try reducer.counters.nextID(self.owned(), "run");
         reducer.message_id = try reducer.counters.nextID(self.owned(), "message");
+        self.settled_cursor = self.cursor();
         self.reducer = reducer;
 
         _ = self.command(arena, "prompt", joined, refusal) catch |err| {
@@ -1106,7 +1114,7 @@ test "an abort Pi refuses fails the run with pi_abort_failed, as Go does" {
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
 }
 
-test "a state request reads get_state again, idle and mid-run, and answers the adapter projection" {
+test "a state request reads get_state again, idle and mid-run, and answers the adapter projection with the last sequence as its cursor" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++
         \\take; printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
@@ -1121,10 +1129,12 @@ test "a state request reads get_state again, idle and mid-run, and answers the a
     const idle = try probe.handle.?.state(probe.arena.allocator(), &refusal);
     try testing.expectEqual(oap_types.SessionStatus.idle, idle.status);
     try testing.expectEqualStrings("fixture/model", idle.current_model_id.?);
+    try testing.expect(idle.transcript_cursor == null);
     const admitted = try probe.submit("long", &refusal);
     const running = try probe.handle.?.state(probe.arena.allocator(), &refusal);
     try testing.expectEqual(oap_types.SessionStatus.running, running.status);
     try testing.expectEqualStrings(admitted.run_id.?, running.active_run_id.?);
+    try testing.expectEqualStrings("1", running.transcript_cursor.?);
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expectEqualStrings(
         \\{"id":"req_1","type":"get_state"}
