@@ -1,0 +1,1 @@
+{"adapters":{"hermes":{"type":"hermes","executable":"@DIR@/child.sh","working_directory":"@DIR@","model":"hermes-test","environment":["PATH"]}}}
