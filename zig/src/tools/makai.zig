@@ -6784,7 +6784,7 @@ pub fn main(init: std.process.Init) !void {
                 return error.InvalidArgument;
             }
             if (err == error.MalformedLine or err == error.UnaddressableEnvelope) std.process.exit(1);
-            if (err == error.FrameTooLarge or err == error.BackendRefused or err == error.StdinFailed) std.process.exit(1);
+            if (err == error.FrameTooLarge or err == error.BackendRefused or err == error.StdinFailed or err == error.OutputStalled or err == error.BrokenPipe) std.process.exit(1);
             return err;
         };
         return;
