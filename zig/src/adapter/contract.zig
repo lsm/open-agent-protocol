@@ -71,12 +71,16 @@ pub const Feature = struct {
     level: oap_types.SupportLevel,
     reason: ?[]const u8 = null,
     scope: ?[]const u8 = null,
+    modes: []const []const u8 = &.{},
+    constraints_json: ?[]const u8 = null,
+    limits_json: ?[]const u8 = null,
 };
 
 pub const Descriptor = struct {
     endpoint: oap_types.Endpoint,
     capability_revision: []const u8,
     features: []const Feature,
+    tools: []const oap_types.ToolDefinition = &.{},
     sources: []const oap_types.ToolSourceDescriptor = &.{},
     limits: ?oap_types.Limits = null,
 
@@ -92,6 +96,8 @@ pub const OpenRequest = struct {
     session_id: []const u8 = "",
     participant: []const u8,
     allow_degraded_features: []const []const u8 = &.{},
+    tools_json: ?[]const u8 = null,
+    tool_sources_json: ?[]const u8 = null,
 };
 
 pub const Resolution = union(enum) {
