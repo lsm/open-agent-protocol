@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `oapx serve agent` words its `unknown_session`, `tool_catalog_unavailable` and unadvertised or degraded `unsupported_feature` refusals as `goap serve agent` does. A codex parity fixture for `TestBackendsMatchOapx` records the remaining differences.
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
 
 ### Removed

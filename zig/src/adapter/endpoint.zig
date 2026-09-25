@@ -256,9 +256,9 @@ pub const Endpoint = struct {
         try self.outbound.append(self.allocator, line);
     }
 
-    fn entryFor(self: *Endpoint, request: *const oap_types.Envelope) error{Denied}!*Entry {
+    fn entryFor(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope) Served!*Entry {
         const addressed = request.session_id orelse return self.deny("invalid_request", "this request must name its session", &.{});
-        return self.find(addressed) orelse self.deny("unknown_session", "no session is open under the addressed session_id", &.{});
+        return self.find(addressed) orelse self.deny("unknown_session", try std.fmt.allocPrint(arena, "no session \"{s}\"", .{addressed}), &.{});
     }
 
     fn requireScope(self: *Endpoint, arena: std.mem.Allocator, payload_session: []const u8, entry: *Entry) Served!void {
@@ -347,7 +347,7 @@ pub const Endpoint = struct {
     }
 
     fn state(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         const current = try entry.session.state(arena, refusal);
         try self.respond(arena, request, .{
             .id = "",
@@ -358,7 +358,7 @@ pub const Endpoint = struct {
     }
 
     fn switchModel(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionModelSwitchRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const switcher = entry.session.vtable.switch_model orelse
             return refusal.unsupported(contract.feature_model_switch, contract.reason_unadvertised);
@@ -385,7 +385,7 @@ pub const Endpoint = struct {
     }
 
     fn submit(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.MessageSubmitRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         try contract.refuseUnadvertisedControls(descriptor, payload, refusal);
         const admission = try entry.session.submit(arena, payload, refusal);
@@ -399,7 +399,7 @@ pub const Endpoint = struct {
     }
 
     fn cancel(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.RunCancelRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const acknowledged = try entry.session.cancel(arena, payload.run_id, refusal);
         try self.respond(arena, request, .{
@@ -412,7 +412,7 @@ pub const Endpoint = struct {
     }
 
     fn resolveInput(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.UserInputResolveRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         try entry.session.resolve(arena, .{ .input = payload }, refusal);
         try self.respond(arena, request, .{
@@ -430,7 +430,7 @@ pub const Endpoint = struct {
     }
 
     fn resolvePermission(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.PermissionResolveRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         try entry.session.resolve(arena, .{ .permission = payload }, refusal);
         try self.respond(arena, request, .{
@@ -448,7 +448,7 @@ pub const Endpoint = struct {
     }
 
     fn resolveCall(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.CallResolveRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const resolver = entry.session.vtable.resolve_call orelse
             return refusal.unsupported(contract.feature_tools_provide, contract.reason_unadvertised);
@@ -463,7 +463,7 @@ pub const Endpoint = struct {
     }
 
     fn models(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ModelsRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const lister = entry.session.vtable.models orelse
             return refusal.unsupported(contract.feature_models_list, contract.reason_unadvertised);
@@ -477,10 +477,10 @@ pub const Endpoint = struct {
     }
 
     fn tools(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ToolsListRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         if (payload.session_id) |scoped| try self.requireScope(arena, scoped, entry);
         const lister = entry.session.vtable.tools orelse
-            return self.deny("tool_catalog_unavailable", "no portable tool catalog is served", &.{});
+            return self.deny("tool_catalog_unavailable", "adapter: no portable tool catalog is served", &.{});
         const catalog = try lister(entry.session.ptr, arena, payload, refusal);
         try self.respond(arena, request, .{
             .id = "",
@@ -502,10 +502,10 @@ pub const Endpoint = struct {
         if (refusal.backend.len > 0) try details.append(arena, .{ .key = "backend", .value = refusal.backend });
         var message = if (refusal.message.len > 0) refusal.message else fallback;
         if (failure == error.UnsupportedFeature and refusal.message.len == 0 and refusal.feature.len > 0) {
-            message = try std.fmt.allocPrint(arena, "unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
+            message = try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
         }
         if (failure == error.CapabilityDegraded and refusal.message.len == 0) {
-            message = try std.fmt.allocPrint(arena, "unsupported input: {s} is degraded and was not opted into", .{refusal.feature});
+            message = try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} is degraded and was not opted into", .{refusal.feature});
         }
         return self.deny(code, message, details.items);
     }
@@ -696,7 +696,7 @@ fn codeFor(failure: contract.Failure) Mapped {
         error.RunTerminal => .{ .code = "run_terminal", .fallback = "run already completed or failed" },
         error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "interaction not found" },
         error.InvalidResolution => .{ .code = "resolution_rejected", .fallback = "invalid interaction resolution" },
-        error.ToolCatalogUnavailable => .{ .code = "tool_catalog_unavailable", .fallback = "no portable tool catalog is served" },
+        error.ToolCatalogUnavailable => .{ .code = "tool_catalog_unavailable", .fallback = "adapter: no portable tool catalog is served" },
         error.Unavailable => .{ .code = "unavailable", .fallback = "this backend is unavailable" },
         error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "replay cursor is newer than the run" },
         error.BackendFailed, error.OutOfMemory => .{ .code = "internal", .fallback = "the backend failed" },
@@ -1172,6 +1172,7 @@ test "a session-scoped request must name a session this endpoint opened" {
     try testing.expectEqualStrings("invalid_request", field(unnamed[0], &.{ "payload", "error", "code" }));
     const unknown = try harness.send(framed("session.state.request", "state-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("unknown_session", field(unknown[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("no session \"s1\"", field(unknown[0], &.{ "payload", "error", "message" }));
     try testing.expectEqualStrings("s1", field(unknown[0], &.{"session_id"}));
 }
 
@@ -1271,9 +1272,9 @@ test "a resolution is acknowledged under the type its request named" {
 }
 
 test "each backend refusal reaches the host under its typed code and details" {
-    const cases = [_]struct { failure: contract.Failure, refusal: contract.Refusal, code: []const u8, detail: []const u8, value: []const u8 }{
-        .{ .failure = error.UnsupportedFeature, .refusal = .{ .feature = "run.tool_selection", .reason = "unadvertised" }, .code = "unsupported_feature", .detail = "feature", .value = "run.tool_selection" },
-        .{ .failure = error.CapabilityDegraded, .refusal = .{ .feature = "run.instructions" }, .code = "capability_degraded", .detail = "feature", .value = "run.instructions" },
+    const cases = [_]struct { failure: contract.Failure, refusal: contract.Refusal, code: []const u8, detail: []const u8, value: []const u8, message: []const u8 = "" }{
+        .{ .failure = error.UnsupportedFeature, .refusal = .{ .feature = "run.tool_selection", .reason = "unadvertised" }, .code = "unsupported_feature", .detail = "feature", .value = "run.tool_selection", .message = "adapter: unsupported input: run.tool_selection (unadvertised)" },
+        .{ .failure = error.CapabilityDegraded, .refusal = .{ .feature = "run.instructions" }, .code = "capability_degraded", .detail = "feature", .value = "run.instructions", .message = "adapter: unsupported input: run.instructions is degraded and was not opted into" },
         .{ .failure = error.ModelNotFound, .refusal = .{ .model_id = "ghost" }, .code = "model_not_found", .detail = "model_id", .value = "ghost" },
         .{ .failure = error.SessionClosed, .refusal = .{}, .code = "session_closed", .detail = "", .value = "" },
         .{ .failure = error.RunActive, .refusal = .{}, .code = "run_active", .detail = "", .value = "" },
@@ -1299,6 +1300,9 @@ test "each backend refusal reaches the host under its typed code and details" {
         }
         if (case.refusal.message.len > 0) {
             try testing.expectEqualStrings(case.refusal.message, field(refused[0], &.{ "payload", "error", "message" }));
+        }
+        if (case.message.len > 0) {
+            try testing.expectEqualStrings(case.message, field(refused[0], &.{ "payload", "error", "message" }));
         }
     }
 }
@@ -1339,12 +1343,14 @@ test "models, model switch, tools and call resolution are refused when the backe
     const models = try harness.send(framed("models.request", "models-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("unsupported_feature", field(models[0], &.{ "payload", "error", "code" }));
     try testing.expectEqualStrings("models.list", field(models[0], &.{ "payload", "error", "details", "feature" }));
+    try testing.expectEqualStrings("adapter: unsupported input: models.list (unadvertised)", field(models[0], &.{ "payload", "error", "message" }));
 
     const switched = try harness.send(framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"m\"}"));
     try testing.expectEqualStrings("session.model.switch", field(switched[0], &.{ "payload", "error", "details", "feature" }));
 
     const tools = try harness.send(framed("action.tools.list.request", "tools-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("tool_catalog_unavailable", field(tools[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("adapter: no portable tool catalog is served", field(tools[0], &.{ "payload", "error", "message" }));
 
     const call = try harness.send(framed("action.call.resolve.request", "call-1", ",\"session_id\":\"s1\"", "{\"interaction_id\":\"i\",\"session_id\":\"s1\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"started\":{}}"));
     try testing.expectEqualStrings("action.tools.provide", field(call[0], &.{ "payload", "error", "details", "feature" }));
