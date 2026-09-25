@@ -1,0 +1,1 @@
+{"adapters":{"codex":{"type":"codex","executable":"@DIR@/child.sh","working_directory":"@DIR@","model":"glm-test","approval_policy":"on-request","sandbox":"workspace-write","environment":["PATH"]}}}

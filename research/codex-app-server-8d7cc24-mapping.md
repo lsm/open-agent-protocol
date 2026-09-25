@@ -330,3 +330,5 @@ What differs from the Go adapter:
 | Session memory | The reducer's arena holds every frame and envelope until the session closes | garbage-collected | No compaction yet: a long-lived session grows without bound. |
 | Configuration | Without `--config`, `codex` from `PATH` with only `HOME` and `PATH`, stating no approval policy or sandbox, so Codex applies its own defaults | `goap serve` needs a `--config` entry | Member names are exact; Go's decoder matches them case-insensitively. |
 | Transport failure text | `codex app-server rpc: <error>` or the child's departure | Go's error text | The run still fails `native_transport_closed`, inferred. |
+| State | No `transcript_cursor` | Carries one | The Zig wire type has no member for it yet. |
+| Cancel answer | `cancelling` and a `run.status.updated`, then `run.cancelled` | The same, except that when `turn/completed` directly follows the `turn/interrupt` answer, usually `cancelled` and no status update | Go settles the run on its reader goroutine while the cancel waits for the lock; the endpoint answers before reading the next frame. `go/cmd/goap/testdata/parity/codex` delays the completion so both answer alike. |
