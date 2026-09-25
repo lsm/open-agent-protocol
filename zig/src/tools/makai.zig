@@ -10402,7 +10402,7 @@ test "a SIGTERM ends the served backend as end of input does, exiting clean" {
     defer backend_signalled.store(false, .release);
 
     var runner = BackendRun{
-        .allocator = allocator,
+        .allocator = std.heap.page_allocator,
         .name = "memory",
         .config_path = null,
         .stdin_file = stdin_pipe[0],
