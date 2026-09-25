@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `goap serve agent` names its stdio binding (`{"kind":"stdio","serialization":"jsonl"}`) in `capabilities.response`, as `oapx` already does.
 - On Windows, `oapx serve agent` and `serve provider` treat a console Ctrl+C, Ctrl+Break or close as end of input, as SIGINT and SIGTERM are treated elsewhere; a close gets up to 4.5 s to settle before Windows ends the process.
 - `oapx serve agent` and `oapx serve provider` without `--backend` treat SIGINT and SIGTERM as end of input, as both stdio drafts require: they stop reading, settle what they admitted, flush and exit. Before, a signal killed the built-in loop outright.
 - `oapx serve agent` without `--backend` now enforces the same two-minute output-stall bound: it writes one line to stderr and exits non-zero. `serve provider` keeps unbounded writes, since its binding sets no bound.
