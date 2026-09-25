@@ -36,6 +36,27 @@ pub const Identity = struct {
 
 pub const Decision = enum { allow, deny };
 
+pub const ToolPolicy = struct {
+    allowed: ?[]const []const u8 = null,
+    disallowed: []const []const u8 = &.{},
+
+    fn excludes(self: ToolPolicy, name: []const u8) bool {
+        if (self.allowed) |allowed| {
+            if (!listedName(allowed, name)) return true;
+        }
+        return listedName(self.disallowed, name);
+    }
+};
+
+fn listedName(names: []const []const u8, name: []const u8) bool {
+    for (names) |candidate| {
+        if (std.mem.eql(u8, candidate, name)) return true;
+    }
+    return false;
+}
+
+pub const refused_by_policy = "refused_by_policy";
+
 const Run = struct {
     id: []const u8 = "",
     message_id: []const u8 = "",
@@ -97,6 +118,8 @@ pub const Reducer = struct {
     envelopes: std.ArrayList(std.json.Value) = .empty,
     servers: std.ArrayList([]const u8) = .empty,
     started: ?Started = null,
+    policy: ToolPolicy = .{},
+    policy_denied: std.ArrayList([]const u8) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options, .current_model = options.model };
@@ -125,6 +148,30 @@ pub const Reducer = struct {
             if (std.mem.eql(u8, gate.run_id, run.id)) return true;
         }
         return false;
+    }
+
+    pub fn excludes(self: *const Reducer, tool_name: []const u8) bool {
+        const run = self.run orelse return false;
+        return run.started and self.policy.excludes(tool_name);
+    }
+
+    pub fn refusedByPolicy(self: *Reducer, tool_use_id: []const u8) !void {
+        if (tool_use_id.len == 0) return;
+        try self.policy_denied.append(self.allocator(), try self.allocator().dupe(u8, tool_use_id));
+    }
+
+    fn takeDenial(self: *Reducer, tool_use_id: []const u8) bool {
+        for (self.policy_denied.items, 0..) |denied, index| {
+            if (!std.mem.eql(u8, denied, tool_use_id)) continue;
+            _ = self.policy_denied.orderedRemove(index);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn hookCallback(self: *Reducer, callback_id: []const u8) !void {
+        const what = try std.fmt.allocPrint(self.allocator(), "hook callback \"{s}\"", .{callback_id});
+        try self.foreignActivity(what);
     }
 
     pub fn gateFor(self: *const Reducer, request_id: []const u8) ?[]const u8 {
@@ -331,9 +378,10 @@ pub const Reducer = struct {
         }
         tool.terminal = true;
         var payload = try self.toolPayload(run, tool.*);
+        const refused = self.takeDenial(native_id);
         if (is_error) {
             var failure = self.object();
-            try self.put(&failure, "code", str("claude_tool_error"));
+            try self.put(&failure, "code", str(if (refused) refused_by_policy else "claude_tool_error"));
             try self.put(&failure, "message", str(toolResultText(content)));
             try self.put(&payload, "error", .{ .object = failure });
             _ = try self.emitCorrelated(run, "action.call.failed", .{ .object = payload }, tool.id, tool.started_event);
@@ -727,7 +775,15 @@ pub const Reducer = struct {
         for (self.tools.items) |*tool| {
             if (!std.mem.eql(u8, tool.run_id, run.id) or tool.terminal) continue;
             tool.terminal = true;
-            const payload = try self.toolPayload(run, tool.*);
+            var payload = try self.toolPayload(run, tool.*);
+            if (self.takeDenial(tool.native_id)) {
+                var failure = self.object();
+                try self.put(&failure, "code", str(refused_by_policy));
+                try self.put(&failure, "message", str("refused by the run's tool_choice"));
+                try self.put(&payload, "error", .{ .object = failure });
+                _ = try self.emitCorrelated(run, "action.call.failed", .{ .object = payload }, tool.id, tool.started_event);
+                continue;
+            }
             _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
         }
         var kept_gates = std.ArrayList(Gate).empty;

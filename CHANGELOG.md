@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `oapx serve agent --backend claude` enforces `run.tool_selection` as `goap` does: it registers the `oap_tool_selection` PreToolUse hook at `initialize`, denies a hook callback or permission ask for a tool the run's `tool_choice` excludes, and settles that call `refused_by_policy`.
 - `oapx serve agent` and `oapx serve provider` without `--backend` treat SIGINT and SIGTERM as end of input, as both stdio drafts require: they stop reading, settle what they admitted, flush and exit. Before, a signal killed the built-in loop outright.
 - `oapx serve agent` without `--backend` now enforces the same two-minute output-stall bound: it writes one line to stderr and exits non-zero. `serve provider` keeps unbounded writes, since its binding sets no bound.
 - `oapx serve agent --backend` stops when its stdout makes no progress for two minutes, the bound [`drafts/endpoint-stdio.md`](drafts/endpoint-stdio.md) sets and `goap` uses: it writes one line to stderr and exits non-zero. Before, a host that stopped reading left the endpoint blocked in a write forever. A piped or socket stdout is made non-blocking, and writes go out after `poll` reports it writable, in chunks no larger than `PIPE_BUF`, so no write can block past the bound. On Windows a watchdog thread cancels a write blocked past the bound with `CancelSynchronousIo`; its tests run on a `windows-latest` CI job.
