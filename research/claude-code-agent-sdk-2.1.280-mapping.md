@@ -355,6 +355,10 @@ is not written, and the run completes.
 The Zig port carries the new revision and does not implement the control or
 register the hook, so its descriptor lacks `run.tool_selection`. A revision
 names one descriptor, so this is a recorded divergence until the port follows.
+Because the Zig port registers no hook, a live child never sends it a
+`hook_callback`, and the Zig corpus driver passes over the `hook_callback`
+frames the corpora now carry (see *Hook callbacks in the corpus*) instead of
+feeding them to a reducer that would fail the run on them.
 
 ## Corpus recorded at 2.1.280
 
@@ -466,6 +470,45 @@ The constructed frames carry over with 2.1.280's shape changes only.
 `prompt_suggestion` takes the shape the 2.1.280 emitter writes (`suggestion`,
 `uuid`, `session_id`), and `keep_alive` already had it. The `Read` result drops
 `is_error`, which 2.1.280 omits from a successful `Read`.
+
+### Hook callbacks in the corpus
+
+The cases above were built before the adapter registered its hook, so no tool
+call in them raised a `hook_callback`. With the registration in `initialize`,
+the pinned CLI raises one for every call, so the tool probes were recorded
+again the same day, with the same binary, method and sandbox, through the
+adapter as it now stands: `tool-ls`, `tool-false`, `tool-read`, `gate-allow`,
+`gate-deny`, `max-turns` and `subagent`. The sink saw no connection. Each
+call raised exactly one `hook_callback`, after the `assistant` frame naming the
+`tool_use` and before anything else about the call: before `can_use_tool` in
+the two gated probes, before `task_started` for the `Agent` call, and before
+the `tool_result` everywhere. The adapter answered each `{}` (no run carried a
+`tool_choice`), and every run settled as before.
+
+`tool-lifecycle` and `permission-gates` now carry, after each `tool_use`, the
+`hook_callback` as an `observe` and the adapter's `{}` `control_response` as
+an `expect-write`, so the harness replays the callback and asserts the answer
+byte for byte. The frame keeps every member the capture shows; `request_id`
+is `hook-<n>` like the gates' `ask-<n>`, and `cwd`, `transcript_path` and
+`prompt_id` take placeholders. No expected envelope changed: a continued
+callback projects nothing.
+
+Not carried:
+
+- `tools-catalog-sources` is constructed in full, and its calls are to MCP
+  tools, which no probe exercised with the hook registered. It carries no
+  callback rather than one no capture shows.
+- No case denies at the hook. The corpus harness submits without a
+  `tool_choice`, so every callback continues. The deny path is covered by
+  `TestExcludedToolIsDeniedAtTheHookBeforeAnyGate`,
+  `TestExcludedToolIsDeniedAtTheGateAndSettlesRefusedByPolicy`,
+  `TestADeniedCallStillOpenWhenTheRunEndsSettlesRefusedByPolicy` and
+  `TestExcludedToolTheAdapterNeverDeniedIsNotReportedRefused`
+  (`session_test.go`), and against the pinned binary by
+  `TestClaudeProcessExcludedToolIsRefusedByPolicy`.
+- The 2.1.263 floor corpus carries the same pair per call, backed by its own
+  probe (*PreToolUse hook probed at 2.1.263* in
+  [that ledger](claude-code-agent-sdk-2.1.263-mapping.md)).
 
 ### Expected OAP against 2.1.263
 
