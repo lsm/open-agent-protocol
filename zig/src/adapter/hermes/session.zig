@@ -294,7 +294,7 @@ pub const Reducer = struct {
             try self.emitDelta(payload, "text");
             return;
         }
-        if (std.mem.eql(u8, kind, "reasoning.delta") or std.mem.eql(u8, kind, "thinking.delta")) {
+        if (std.mem.eql(u8, kind, "reasoning.delta")) {
             try self.emitDelta(payload, "reasoning");
             return;
         }

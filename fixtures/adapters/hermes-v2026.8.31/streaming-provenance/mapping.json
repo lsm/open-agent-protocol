@@ -6,7 +6,7 @@
   {"index":5,"type":"event/message.delta","direction":"gateway-to-host","classification":"mapped","fidelity":"normalized","oap":"content.delta(text)"},
   {"index":6,"type":"event/message.delta","direction":"gateway-to-host","classification":"mapped","fidelity":"normalized","oap":"content.delta(text)"},
   {"index":7,"type":"event/reasoning.delta","direction":"gateway-to-host","classification":"mapped","fidelity":"normalized","oap":"content.delta(reasoning)"},
-  {"index":8,"type":"event/thinking.delta","direction":"gateway-to-host","classification":"mapped","fidelity":"normalized","oap":"content.delta(reasoning)"},
+  {"index":8,"type":"event/thinking.delta","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
   {"index":9,"type":"event/message.interim","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
   {"index":10,"type":"event/message.complete","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.completed(usage)"},
   {"index":11,"type":"sync:wait-submit","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"deterministic submission barrier"},

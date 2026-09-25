@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Its state reports the last run sequence as `transcript_cursor`. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
 - `oapx serve agent --backend claude` mints ids in `goap`'s order (turn, message, run) with the message id as `submission_id`, suffixes control request ids with four random bytes as `goap` does, and reports `claude_native_session_id` metadata and the last run sequence as `transcript_cursor` in session state. The Claude parity fixture covers a permission gate answered allow.
 
+### Fixed
+
+- The Hermes adapter no longer projects the gateway's `thinking.delta` as reasoning, in Go or Zig. The event carries the activity spinner (`"{face} {verb}..."`, or `""` to clear it), not model reasoning, so it is now observed-only; `reasoning.delta` is still projected. Recorded in [`research/hermes-thinking-delta-note.md`](research/hermes-thinking-delta-note.md).
+
 ### Changed
 
 - `oapx serve agent --backend pi` handles Pi dialogs as the Go adapter does: one raised before `agent_start` surfaces once the run starts, one outside a run is ignored, and one still open at settlement resolves `cancelled` without an `extension_ui_response`. Its `run.started` now names the model, as Go's does.

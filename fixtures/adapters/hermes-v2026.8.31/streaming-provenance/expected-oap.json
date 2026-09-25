@@ -85,29 +85,8 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "content.delta",
-    "id": "event-g",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-b",
-      "message_id": "message-a",
-      "part": {
-        "type": "reasoning",
-        "reasoning": "wait"
-      }
-    },
-    "sequence": 5,
-    "timestamp_ms": 7,
-    "session_id": "session",
-    "run_id": "run-b",
-    "capability_revision": "hermes-v2026.8.31-oap-v2"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-h",
+    "id": "event-g",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
@@ -123,8 +102,8 @@
         "total_tokens": 8
       }
     },
-    "sequence": 6,
-    "timestamp_ms": 8,
+    "sequence": 5,
+    "timestamp_ms": 7,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.8.31-oap-v2"
