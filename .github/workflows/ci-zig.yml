@@ -436,7 +436,7 @@ jobs:
 
       - name: Run bounded-output unit tests
         shell: bash
-        run: zig build --build-file zig/build.zig test-unit-bounded-output
+        run: zig build --build-file zig/build.zig test-unit-bounded-output --summary all
 
   cross-compile-smoke:
     name: Cross-compile - ${{ matrix.target }}
