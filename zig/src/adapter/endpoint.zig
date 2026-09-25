@@ -345,12 +345,6 @@ pub const Endpoint = struct {
     fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
         try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
         const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
-        if (payload.session_id) |requested| {
-            if (self.find(requested) != null) {
-                const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{requested});
-                return self.deny("session_exists", message, &.{});
-            }
-        }
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         const session = try self.adapter.open(arena, .{
             .session_id = payload.session_id orelse "",
@@ -359,14 +353,15 @@ pub const Endpoint = struct {
             .tools_json = payload.tools_json,
             .tool_sources_json = tool_sources_json,
         }, refusal);
-        if (self.find(session.id()) != null) {
-            session.close();
-            return self.deny("session_exists", "the backend opened a session under an id already in use", &.{});
-        }
         const state_now = session.state(arena, refusal) catch |failure| {
             session.close();
             return failure;
         };
+        if (self.find(session.id()) != null) {
+            const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{session.id()});
+            session.close();
+            return self.deny("session_exists", message, &.{});
+        }
         self.entries.appendAssumeCapacity(.{ .session = session });
         try self.respond(arena, request, .{
             .id = "",
@@ -1386,7 +1381,7 @@ test "a session-scoped request must name a session this endpoint opened" {
     try testing.expectEqualStrings("s1", field(unknown[0], &.{"session_id"}));
 }
 
-test "a second open under an id already open is refused session_exists without reaching the backend" {
+test "a second open under an id already open reaches the backend as goap's hub does, then is refused session_exists and the duplicate closed" {
     var harness: Harness = undefined;
     harness.init(testing.allocator, .{});
     defer harness.deinit();
@@ -1394,7 +1389,9 @@ test "a second open under an id already open is refused session_exists without r
     _ = try harness.send(open_line);
     const again = try harness.send(framed("session.open.request", "open-2", "", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("session_exists", field(again[0], &.{ "payload", "error", "code" }));
-    try testing.expectEqual(@as(usize, 1), harness.fake.opened);
+    try testing.expectEqualStrings("session \"s1\" already exists", field(again[0], &.{ "payload", "error", "message" }));
+    try testing.expectEqual(@as(usize, 2), harness.fake.opened);
+    try testing.expectEqual(@as(usize, 1), harness.fake.closed);
 }
 
 test "an open electing a feature the descriptor lacks is refused before any session exists" {

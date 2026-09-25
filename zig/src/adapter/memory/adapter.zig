@@ -750,7 +750,11 @@ pub const Session = struct {
         var refusal = answer;
         refusal.accepted = false;
         refusal.reason = reason;
-        if (std.mem.eql(u8, reason, "already_resolved")) refusal.settlement_id = settlement;
+        if (std.mem.eql(u8, reason, "already_resolved")) {
+            if (settlement) |named| {
+                if (named.len > 0) refusal.settlement_id = named;
+            }
+        }
         return refusal;
     }
 
@@ -1687,4 +1691,11 @@ test "a provided tool keeps its declared feature modes, constraints and limits, 
     try testing.expectEqualStrings("session_open", feature.modes[0]);
     try testing.expectEqualStrings("{\"a\":2,\"b\":1.50}", feature.constraints_json.?);
     try testing.expectEqualStrings("{\"max\":3}", feature.limits_json.?);
+}
+
+test "an already_resolved refusal names its settlement only when there is one" {
+    const answer = oap_types.CallResolveResponse{ .interaction_id = "call-5", .session_id = "s1", .run_id = "run-1", .tool_call_id = "tool-call-4", .accepted = false };
+    try testing.expect(Session.refused(answer, "already_resolved", "").settlement_id == null);
+    try testing.expect(Session.refused(answer, "already_resolved", null).settlement_id == null);
+    try testing.expectEqualStrings("event-9", Session.refused(answer, "already_resolved", "event-9").settlement_id.?);
 }
