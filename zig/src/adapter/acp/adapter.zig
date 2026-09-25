@@ -221,14 +221,12 @@ pub const Session = struct {
     scanned: usize = 0,
     ended: bool = false,
     reaped: bool = false,
-    servers: []const std.json.Value = &.{},
     sources: []oap_types.ToolSourceDescriptor = &.{},
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const attached = try attach(owner, arena, request.tool_sources_json, refusal);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
-        self.servers = attached.servers;
         self.sources = try self.owned().alloc(oap_types.ToolSourceDescriptor, attached.sources.len);
         for (attached.sources, self.sources) |source, *slot| slot.* = try ownedSource(self.owned(), source);
         const initialized = try self.call(arena, "initialize", try self.initializeParams(), refusal);
@@ -237,7 +235,7 @@ pub const Session = struct {
         const versioned = if (version) |value| value == .integer and value.integer == acp_protocol_version else false;
         const capable = if (capabilities) |value| value != .null else false;
         if (!versioned or !capable) return refusal.fail(error.BackendFailed, "the ACP agent answered initialize with another protocol version or no agentCapabilities");
-        const created = try self.call(arena, "session/new", try self.sessionNewParams(), refusal);
+        const created = try self.call(arena, "session/new", try self.sessionNewParams(attached.servers), refusal);
         const native_session = memberOf(created, "sessionId") orelse std.json.Value.null;
         if (native_session != .string or native_session.string.len == 0) return refusal.fail(error.BackendFailed, "the ACP agent answered session/new with no session id");
         self.native_id = native_session.string;
@@ -367,11 +365,11 @@ pub const Session = struct {
         return .{ .object = params };
     }
 
-    fn sessionNewParams(self: *Session) !std.json.Value {
+    fn sessionNewParams(self: *Session, attached: []const std.json.Value) !std.json.Value {
         var params = self.object();
         try self.put(&params, "cwd", .{ .string = self.owner.config.working_directory });
         var servers = std.json.Array.init(self.owned());
-        try servers.appendSlice(self.servers);
+        try servers.appendSlice(attached);
         try self.put(&params, "mcpServers", .{ .array = servers });
         return .{ .object = params };
     }
