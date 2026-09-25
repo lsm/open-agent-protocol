@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `oapx serve agent --backend` treats SIGINT and SIGTERM as end of input, as [`drafts/endpoint-stdio.md`](drafts/endpoint-stdio.md) requires and `goap` already does: it settles what it admitted, flushes, closes each session so its child is stopped, and exits 0. Before, a signal killed `oapx` outright and could leave a backend child running. The output-stall bound is still not implemented.
+
 - **`oapx serve agent --backend <name> --config <path>`** also serves an OpenCode server (pinned `v1.18.29`) named by an `opencode` registry entry's `endpoint`. `zig/src/adapter/opencode/adapter.zig` drives the corpus reducer over a small HTTP/1.1 client (`opencode/client.zig`) with a pollable SSE subscription, and settles a run by polling the active set with Go's 10–500 ms backoff. `auto` and `queue` delivery are served; `run.resume` and `run.replay` are `unavailable`, under `opencode-v1.18.29-oapx-v1`. Only plain `http` endpoints are accepted. Against a scripted server, `goap conformance` fails only the model-switch checks, as it does against `goap serve agent`. Differences are in [`research/opencode-v1.18.29-mapping.md`](research/opencode-v1.18.29-mapping.md).
 - The Zig endpoint's `capabilities.response` now carries the descriptor's `limits`, which a backend advertising native `queue` delivery must disclose, and `models.request` carries `allow_degraded_features`, so a degraded catalog is served only to a caller that opts in.
 
