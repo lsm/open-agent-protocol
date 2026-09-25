@@ -3092,7 +3092,7 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
         options.addOption([]const u8, b.fmt("{s}_label", .{prefix}), pin.label);
         options.addOption([]const u8, b.fmt("{s}_endpoint_version", .{prefix}), pin.endpoint_version orelse std.debug.panic("{s}: current version has no endpoint_version", .{path}));
         options.addOption([]const u8, b.fmt("{s}_capability_revision", .{prefix}), pin.capability_revision orelse std.debug.panic("{s}: current version has no capability_revision", .{path}));
-        options.addOption([]const u8, b.fmt("{s}_oapx_capability_revision", .{prefix}), pin.oapx_capability_revision orelse std.debug.panic("{s}: current version has no oapx_capability_revision", .{path}));
+        if (pin.oapx_capability_revision) |revision| options.addOption([]const u8, b.fmt("{s}_oapx_capability_revision", .{prefix}), revision);
         options.addOption([]const u8, b.fmt("{s}_corpus", .{prefix}), pin.corpus orelse std.debug.panic("{s}: current version has no corpus", .{path}));
         options.addOption([]const []const u8, b.fmt("{s}_admits", .{prefix}), pin.admits orelse &.{});
         for (pin.sources) |source| {
