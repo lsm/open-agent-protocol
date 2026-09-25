@@ -341,9 +341,9 @@ corpus, one per run. Where it differs from the Go adapter:
   forwards inline images in the native prompt. Only text parts are served.
 - Like Go, each state request reads `get_state` again and answers the adapter
   projection; a reply naming another native session makes the session
-  unusable. Go also rejects a reply with negative counts, an unknown queue mode
-  or an unknown thinking level, at open and on each state request; the port
-  checks only that it names a session.
+  unusable. As in Go, a reply with no session, a negative count, an unknown
+  queue mode or an unknown thinking level is refused at open and on each state
+  request; a refused state request leaves the session usable.
 - A prompt Pi refuses closes the session without a `run.failed`: the run was
   never announced, so there is no one to report it to.
 - Without `--config` it runs `pi` from `PATH` with only `HOME` and `PATH`.
