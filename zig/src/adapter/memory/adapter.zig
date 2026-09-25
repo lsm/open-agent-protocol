@@ -157,7 +157,6 @@ pub const Session = struct {
     participant: []u8,
     current_model: []const u8 = "",
     updated_at_ms: i64,
-    closed: bool = false,
     active: ?*Run = null,
     reserved: ?*Run = null,
     runs: std.ArrayList(*Run) = .empty,
@@ -230,7 +229,6 @@ pub const Session = struct {
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
         _ = refusal;
         const self = cast(ptr);
-        if (self.closed) return error.SessionClosed;
         return self.snapshot(arena);
     }
 
@@ -261,7 +259,6 @@ pub const Session = struct {
         var controls = try admitControls(arena, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (request.delivery != .auto and request.delivery != .queue) return error.InvalidSubmission;
-        if (self.closed) return error.SessionClosed;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
         const is_busy = self.busy();
         if (is_busy) {
@@ -271,34 +268,9 @@ pub const Session = struct {
         }
         if (!is_busy and request.delivery != .queue and controls.model.len == 0) controls.model = self.current_model;
 
-        const gpa = self.gpa;
-        const run = try gpa.create(Run);
-        errdefer gpa.destroy(run);
-        const run_id = try self.owner.nextID(gpa, "run");
-        errdefer gpa.free(run_id);
-        const permission_id = try self.owner.nextID(gpa, "permission");
-        errdefer gpa.free(permission_id);
-        const input_id = try self.owner.nextID(gpa, "input");
-        errdefer gpa.free(input_id);
-        const tool_call_id = try self.owner.nextID(gpa, "tool-call");
-        errdefer gpa.free(tool_call_id);
-        const instructions = if (controls.instructions) |text| try gpa.dupe(u8, text) else null;
-        errdefer if (instructions) |owned| gpa.free(owned);
-        try self.runs.ensureUnusedCapacity(gpa, 1);
         const reservation = is_busy or request.delivery == .queue;
-        run.* = .{
-            .id = run_id,
-            .permission_id = permission_id,
-            .input_id = input_id,
-            .tool_call_id = tool_call_id,
-            .stage = if (controls.calls_tool) .permission else .input,
-            .model = controls.model,
-            .instructions = instructions,
-            .structured = controls.structured,
-            .calls_tool = controls.calls_tool,
-            .queued_admission = reservation,
-            .status = if (reservation) .queued else .running,
-        };
+        try self.runs.ensureUnusedCapacity(self.gpa, 1);
+        const run = try self.newRun(controls, reservation);
         self.runs.appendAssumeCapacity(run);
         if (is_busy) self.reserved = run else self.active = run;
         self.updated_at_ms = self.owner.now_ms();
@@ -329,6 +301,35 @@ pub const Session = struct {
         }
         if (!is_busy) try self.emitInitial(run);
         return admission;
+    }
+
+    fn newRun(self: *Session, controls: Controls, reservation: bool) !*Run {
+        const gpa = self.gpa;
+        const run = try gpa.create(Run);
+        errdefer gpa.destroy(run);
+        const run_id = try self.owner.nextID(gpa, "run");
+        errdefer gpa.free(run_id);
+        const permission_id = try self.owner.nextID(gpa, "permission");
+        errdefer gpa.free(permission_id);
+        const input_id = try self.owner.nextID(gpa, "input");
+        errdefer gpa.free(input_id);
+        const tool_call_id = try self.owner.nextID(gpa, "tool-call");
+        errdefer gpa.free(tool_call_id);
+        const instructions = if (controls.instructions) |text| try gpa.dupe(u8, text) else null;
+        run.* = .{
+            .id = run_id,
+            .permission_id = permission_id,
+            .input_id = input_id,
+            .tool_call_id = tool_call_id,
+            .stage = if (controls.calls_tool) .permission else .input,
+            .model = controls.model,
+            .instructions = instructions,
+            .structured = controls.structured,
+            .calls_tool = controls.calls_tool,
+            .queued_admission = reservation,
+            .status = if (reservation) .queued else .running,
+        };
+        return run;
     }
 
     fn admitControls(arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!Controls {
@@ -464,7 +465,6 @@ pub const Session = struct {
         _ = arena;
         _ = refusal;
         const self = cast(ptr);
-        if (self.closed) return error.SessionClosed;
         const run_id, const responded_by = switch (resolution) {
             .permission => |request| .{ request.run_id, request.responded_by },
             .input => |request| .{ request.run_id, request.responded_by },
@@ -579,7 +579,6 @@ pub const Session = struct {
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
         _ = refusal;
         const self = cast(ptr);
-        if (self.closed) return error.SessionClosed;
         const run = self.findRun(run_id) orelse return error.RunNotFound;
         const owned_run_id = try arena.dupe(u8, run.id);
         if (run.terminal) {
@@ -655,17 +654,7 @@ pub const Session = struct {
         try envelope.put("run_id", .{ .string = run.id });
         if (run.calls_tool and carriesToolCall(kind)) try envelope.put("tool_call_id", .{ .string = run.tool_call_id });
         try envelope.put("capability_revision", .{ .string = capability_revision });
-        const line = try json_encode.valueAlloc(gpa, envelope.value());
-        errdefer gpa.free(line);
-        const copy = try gpa.dupe(u8, line);
-        errdefer gpa.free(copy);
-        try self.outbox.ensureUnusedCapacity(gpa, 1);
-        try self.journal.ensureUnusedCapacity(gpa, 1);
-        self.outbox.appendAssumeCapacity(.{ .line = copy, .run_id = run.id, .sequence = sequence });
-        if (self.journal.items.len == journal_capacity) {
-            gpa.free(self.journal.orderedRemove(0).line);
-        }
-        self.journal.appendAssumeCapacity(.{ .line = line, .run_id = run.id, .sequence = sequence });
+        try self.store(run, try json_encode.valueAlloc(gpa, envelope.value()), sequence);
         run.next_sequence += 1;
         self.updated_at_ms = now;
 
@@ -688,6 +677,20 @@ pub const Session = struct {
                 }
             }
         }
+    }
+
+    fn store(self: *Session, run: *Run, line: []u8, sequence: u64) !void {
+        const gpa = self.gpa;
+        errdefer gpa.free(line);
+        const copy = try gpa.dupe(u8, line);
+        errdefer gpa.free(copy);
+        try self.outbox.ensureUnusedCapacity(gpa, 1);
+        try self.journal.ensureUnusedCapacity(gpa, 1);
+        self.outbox.appendAssumeCapacity(.{ .line = copy, .run_id = run.id, .sequence = sequence });
+        if (self.journal.items.len == journal_capacity) {
+            gpa.free(self.journal.orderedRemove(0).line);
+        }
+        self.journal.appendAssumeCapacity(.{ .line = line, .run_id = run.id, .sequence = sequence });
     }
 
     fn carriesToolCall(kind: []const u8) bool {
@@ -724,7 +727,6 @@ pub const Session = struct {
     fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ToolsListResponse {
         _ = refusal;
         const self = cast(ptr);
-        if (self.closed) return error.SessionClosed;
         if (request.session_id) |named| {
             if (named.len > 0 and !std.mem.eql(u8, named, self.id)) return error.RunNotFound;
         }
@@ -746,7 +748,6 @@ pub const Session = struct {
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ModelsResponse {
         _ = refusal;
         const self = cast(ptr);
-        if (self.closed) return error.SessionClosed;
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
         const listed = try arena.dupe(oap_types.ModelDescriptor, &.{
             .{ .id = model_primary, .display_name = "Reference Model A", .provider_id = "reference", .default = true },
@@ -757,7 +758,6 @@ pub const Session = struct {
 
     fn switchModel(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *contract.Refusal) contract.Failure!contract.Switched {
         const self = cast(ptr);
-        if (self.closed) return error.SessionClosed;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
         const chosen = if (std.mem.eql(u8, request.model_id, model_primary)) model_primary else if (std.mem.eql(u8, request.model_id, model_secondary)) model_secondary else return refusal.missingModel(request.model_id);
         const previous = self.current_model;
@@ -772,7 +772,6 @@ pub const Session = struct {
     fn replay(ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *contract.Refusal) contract.Failure!contract.Replay {
         _ = refusal;
         const self = cast(ptr);
-        if (self.closed) return error.SessionClosed;
         const run = self.findRun(run_id) orelse return error.RunNotFound;
         const latest = run.next_sequence - 1;
         if (after > latest) return error.ReplayCursorFuture;
@@ -1143,4 +1142,25 @@ test "a model switch changes the session default the next run starts with" {
     try testing.expectError(error.ModelNotFound, probe.session.vtable.switch_model.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1", .model_id = "nope" }, &refusal));
     const admitted = try probe.submit();
     try testing.expectEqualStrings(model_secondary, admitted.model_id.?);
+}
+
+fn submitAndSettle(allocator: std.mem.Allocator) !void {
+    var adapter = Adapter.init(allocator);
+    adapter.now_ms = fixedClock;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const session = try adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &refusal);
+    defer session.close();
+    const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
+    const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .instructions = "Be brief." };
+    _ = try session.submit(arena.allocator(), &request, &refusal);
+    _ = try session.submit(arena.allocator(), &request, &refusal);
+    _ = try session.cancel(arena.allocator(), "run-1", &refusal);
+    var drained = std.ArrayList(contract.Event).empty;
+    try session.drain(arena.allocator(), &drained);
+}
+
+test "a submit, a queued submit and the promoting cancel free everything they built when an allocation fails" {
+    try testing.checkAllAllocationFailures(testing.allocator, submitAndSettle, .{});
 }

@@ -249,6 +249,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const endpoint_signals_mod = b.createModule(.{
+        .root_source_file = b.path("src/transports/endpoint_signals.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const claude_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/claude/rpc.zig"),
         .target = target,
@@ -2521,6 +2527,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
             .{ .name = "memory_adapter", .module = memory_adapter_mod },
             .{ .name = "bounded_output", .module = bounded_output_mod },
+            .{ .name = "endpoint_signals", .module = endpoint_signals_mod },
         },
     });
 
@@ -2531,6 +2538,7 @@ pub fn build(b: *std.Build) void {
     const makai_cli_test = b.addTest(.{ .root_module = makai_cli_module });
     const makai_cli_test_run = b.addRunArtifact(makai_cli_test);
     const bounded_output_test_run = b.addRunArtifact(b.addTest(.{ .root_module = bounded_output_mod }));
+    const endpoint_signals_test_run = b.addRunArtifact(b.addTest(.{ .root_module = endpoint_signals_mod }));
     const auth_cli_test = b.addTest(.{ .root_module = auth_cli_mod });
     const auth_cli_test_run = b.addRunArtifact(auth_cli_test);
     b.installArtifact(makai_cli);
@@ -2677,6 +2685,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(retry_test).step);
     test_step.dependOn(&b.addRunArtifact(oom_test).step);
     test_step.dependOn(&bounded_output_test_run.step);
+    test_step.dependOn(&endpoint_signals_test_run.step);
     test_step.dependOn(&b.addRunArtifact(sanitize_test).step);
     test_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_provider_defs_test).step);
@@ -2911,8 +2920,9 @@ pub fn build(b: *std.Build) void {
     test_unit_makai_cli_step.dependOn(&auth_cli_test_run.step);
     test_unit_makai_cli_step.dependOn(&makai_cli_test_run.step);
 
-    const test_unit_bounded_output_step = b.step("test-unit-bounded-output", "Run bounded output unit tests");
-    test_unit_bounded_output_step.dependOn(&bounded_output_test_run.step);
+    const test_unit_stdio_host_step = b.step("test-unit-stdio-host", "Run the stdio host's output bound and signal unit tests");
+    test_unit_stdio_host_step.dependOn(&bounded_output_test_run.step);
+    test_unit_stdio_host_step.dependOn(&endpoint_signals_test_run.step);
 
     const test_unit_tools_step = b.step("test-unit-tools", "Run agent tool unit tests");
     test_unit_tools_step.dependOn(&b.addRunArtifact(tools_common_test).step);
