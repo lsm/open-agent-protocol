@@ -52,6 +52,7 @@ const codex_adapter = @import("codex_adapter");
 const acp_adapter = @import("acp_adapter");
 const pi_adapter = @import("pi_adapter");
 const deepseek_adapter = @import("deepseek_adapter");
+const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
 
 pub const VERSION = @import("version_options").version;
@@ -2743,8 +2744,8 @@ fn printUsage(file: std.Io.File) !void {
         \\                   OAPX_PROVIDER_SERVICE_SECURITY=loopback|tls|mesh_proxy
         \\                   Use --backend claude, codex or pi to serve a Claude Code,
         \\                   Codex app-server or Pi child instead of the built-in
-        \\                   loop, or an ACP agent, Hermes gateway or DeepSeek
-        \\                   harness named by a --config entry;
+        \\                   loop, or an ACP agent, Hermes gateway, DeepSeek harness
+        \\                   or OpenCode server named by a --config entry;
         \\                   --config reads an oap-serve.json registry entry.
         \\                   Other backends answer unavailable.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
@@ -8906,7 +8907,7 @@ fn writeOapAuthOutbound(
     return wrote;
 }
 
-const unported_backends = [_][]const u8{ "memory", "opencode" };
+const unported_backends = [_][]const u8{"memory"};
 const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
@@ -9118,6 +9119,18 @@ fn deepseekBackendConfig(
     };
 }
 
+fn opencodeBackendConfig(
+    arena: std.mem.Allocator,
+    entry: adapter_config.AdapterEntry,
+    stderr: std.Io.File,
+) !opencode_adapter.Config {
+    if (entry.endpoint.len == 0) {
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is an OpenCode server and needs a --config entry naming its \"endpoint\"", .{entry.name});
+        return error.BackendRefused;
+    }
+    return .{ .endpoint = entry.endpoint, .agent = entry.agent };
+}
+
 fn writeEndpointOutbound(stdout: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
     var wrote = false;
     while (endpoint.popOutbound()) |line| {
@@ -9156,6 +9169,7 @@ fn runBackendMode(
     var pi: pi_adapter.Adapter = undefined;
     var acp: acp_adapter.Adapter = undefined;
     var deepseek: deepseek_adapter.Adapter = undefined;
+    var opencode: opencode_adapter.Adapter = undefined;
     var hermes: hermes_adapter.Adapter = undefined;
     var unavailable: adapter_contract.Unavailable = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
@@ -9173,6 +9187,9 @@ fn runBackendMode(
     } else if (std.mem.eql(u8, entry.kind, "deepseek")) deepseek_served: {
         deepseek = deepseek_adapter.Adapter.init(allocator, try deepseekBackendConfig(arena, entry, &environ, stderr));
         break :deepseek_served deepseek.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "opencode")) opencode_served: {
+        opencode = opencode_adapter.Adapter.init(allocator, try opencodeBackendConfig(arena, entry, stderr));
+        break :opencode_served opencode.adapter();
     } else if (std.mem.eql(u8, entry.kind, "hermes")) hermes_served: {
         hermes = hermes_adapter.Adapter.init(allocator, try hermesBackendConfig(arena, entry, &environ, stderr));
         break :hermes_served hermes.adapter();
@@ -9181,7 +9198,7 @@ fn runBackendMode(
         unavailable = .{ .backend = name, .message = message };
         break :unported_served unavailable.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes and deepseek", .{ name, entry.kind });
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode", .{ name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9489,7 +9506,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes and deepseek\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

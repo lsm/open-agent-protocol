@@ -290,9 +290,19 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 try w.endArray();
             }
             if (value.sources.len > 0) try serializeSources(w, value.sources);
+            if (value.limits) |limits| {
+                try w.writeKey("limits");
+                try w.beginObject();
+                if (limits.max_active_runs_per_session) |active| try w.writeIntField("max_active_runs_per_session", active);
+                if (limits.max_queued_runs_per_session) |queued| try w.writeIntField("max_queued_runs_per_session", queued);
+                try w.endObject();
+            }
         },
         .models_request => |value| {
             try w.writeStringField("session_id", value.session_id);
+            if (value.allow_degraded_features.len > 0) {
+                try serializeStringArray(w, "allow_degraded_features", value.allow_degraded_features);
+            }
         },
         .models_response => |value| {
             try w.writeStringField("session_id", value.session_id);
@@ -899,8 +909,15 @@ fn deserializePayload(
         return .{ .capabilities_response = try deserializeCapabilities(obj, allocator) };
     }
     if (std.mem.eql(u8, type_str, "models.request")) {
+        const session_id = try requiredOwnedString(obj, "session_id", allocator);
+        errdefer allocator.free(session_id);
+        const allow_degraded = if (obj.get("allow_degraded_features") != null)
+            try deserializeStringArray(obj, "allow_degraded_features", allocator)
+        else
+            &.{};
         return .{ .models_request = .{
-            .session_id = try requiredOwnedString(obj, "session_id", allocator),
+            .session_id = session_id,
+            .allow_degraded_features = allow_degraded,
         } };
     }
     if (std.mem.eql(u8, type_str, "models.response")) {
@@ -1605,6 +1622,15 @@ fn deserializeCapabilities(
     if (obj.get("sources")) |value| {
         result.sources = try deserializeSources(value, allocator);
     }
+    if (obj.get("limits")) |value| {
+        if (value != .object) return DecodeError.InvalidField;
+        const active = try optionalUnsigned(value.object, "max_active_runs_per_session");
+        const queued = try optionalUnsigned(value.object, "max_queued_runs_per_session");
+        result.limits = .{
+            .max_active_runs_per_session = if (active) |count| std.math.cast(u32, count) orelse return DecodeError.InvalidField else null,
+            .max_queued_runs_per_session = if (queued) |count| std.math.cast(u32, count) orelse return DecodeError.InvalidField else null,
+        };
+    }
     if (obj.get("layers")) |layers| {
         if (layers != .object) return DecodeError.InvalidField;
         if (layers.object.get("agent_loop")) |agent_loop| {
@@ -2230,6 +2256,31 @@ test "a capabilities response carries the tool sources it declares" {
     defer decoded.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), decoded.payload.capabilities_response.sources.len);
     try std.testing.expectEqualStrings("native", decoded.payload.capabilities_response.sources[0].kind);
+}
+
+test "a models request carries the degraded features its caller opts into" {
+    const allocator = std.testing.allocator;
+
+    var decoded = try roundTrip(.{ .id = "models", .session_id = "s", .payload = .{ .models_request = .{
+        .session_id = "s",
+        .allow_degraded_features = &.{"models.list"},
+    } } }, allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expect(decoded.payload.models_request.allowsDegraded("models.list"));
+    try std.testing.expect(!decoded.payload.models_request.allowsDegraded("run.instructions"));
+}
+
+test "a capabilities response carries the run limits it discloses" {
+    const allocator = std.testing.allocator;
+
+    var decoded = try roundTrip(.{ .id = "cap", .payload = .{ .capabilities_response = .{
+        .endpoint = .{ .id = "opencode.server" },
+        .limits = .{ .max_active_runs_per_session = 2, .max_queued_runs_per_session = 1 },
+    } } }, allocator);
+    defer decoded.deinit(allocator);
+    const limits = decoded.payload.capabilities_response.limits.?;
+    try std.testing.expectEqual(@as(?u32, 2), limits.max_active_runs_per_session);
+    try std.testing.expectEqual(@as(?u32, 1), limits.max_queued_runs_per_session);
 }
 
 test "an admission names the messages it admitted" {
