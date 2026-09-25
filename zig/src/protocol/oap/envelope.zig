@@ -1682,7 +1682,7 @@ fn deserializeCallResolve(obj: std.json.ObjectMap, allocator: std.mem.Allocator)
     errdefer allocator.free(requested_by);
     const responded_by = try requiredOwnedString(obj, "responded_by", allocator);
     errdefer allocator.free(responded_by);
-    const result_json = try optionalRawJson(obj, "result", allocator);
+    const result_json: ?[]const u8 = if (obj.get("result")) |value| try json_encode.valueAlloc(allocator, value) else null;
     errdefer if (result_json) |owned| allocator.free(owned);
     const failure: ?oap_types.ProtocolError = if (obj.get("error")) |raised|
         try deserializeProtocolError(raised, allocator)
@@ -2616,4 +2616,13 @@ test "a model run sequence at genesis round trips its null run_id, and a settled
     defer allocator.free(encoded);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\"model_run_sequence\":{\"run_id\":null,\"sequence\":0}") != null);
     try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(prefix ++ "{\"settled\":[{\"run_id\":null,\"sequence\":1}]}}}", allocator));
+}
+
+test "a call resolve's string result keeps its quotes, so it re-encodes as a string" {
+    const allocator = std.testing.allocator;
+    var decoded = try deserializeEnvelope(
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.resolve.request","id":"c1","payload":{"interaction_id":"i","session_id":"s","run_id":"r","tool_call_id":"t","requested_by":"e","responded_by":"u","result":"123"}}
+    , allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqualStrings("\"123\"", decoded.payload.call_resolve_request.result_json.?);
 }
