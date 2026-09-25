@@ -368,30 +368,35 @@ pub const Session = struct {
             .status = if (running) .running else .idle,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
+            .transcript_cursor = if (self.reducer.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.cursor}) else null,
             .updated_at_ms = wallClock(),
         };
     }
 
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const self = cast(ptr);
-        if (!std.mem.eql(u8, request.session_id, self.id) or request.messages.len != 1 or request.delivery != .auto) return error.InvalidSubmission;
-        const message = request.messages[0];
-        if (message.role != .user) return error.InvalidSubmission;
-        const prompt = switch (message.content) {
-            .text => |content| try self.owned().dupe(u8, content),
-            .parts => return error.InvalidSubmission,
-        };
+        if (request.session_id.len == 0 or request.messages.len == 0 or request.delivery != .auto) return error.InvalidSubmission;
+        var blocks = std.json.Array.init(self.owned());
+        const message_ids = try arena.alloc([]const u8, request.messages.len);
+        for (request.messages, message_ids) |message, *slot| {
+            if (message.role != .user) return error.InvalidSubmission;
+            slot.* = if (message.id) |carried| carried else try self.reducer.counters.nextID(arena, "message");
+            switch (message.content) {
+                .text => |content| try blocks.append(try textBlock(self.owned(), content)),
+                .parts => |parts| for (parts) |part| switch (part) {
+                    .text => |content| try blocks.append(try textBlock(self.owned(), content)),
+                    else => return error.InvalidSubmission,
+                },
+            }
+        }
         if (self.closed()) return error.SessionClosed;
-        session.submit(&self.reducer) catch |err| return switch (err) {
+        if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
+        if (self.reducer.reserved and !self.reducer.terminal) return error.RunActive;
+        session.submitAs(&self.reducer, .{ .mint_request_id = false }) catch |err| return switch (err) {
             error.RunActive => error.RunActive,
             error.SessionClosed, error.SessionUnusable => error.SessionClosed,
             else => lift(err),
         };
-        var block: std.json.ObjectMap = .empty;
-        try block.put(self.owned(), "type", .{ .string = "text" });
-        try block.put(self.owned(), "text", .{ .string = prompt });
-        var blocks = std.json.Array.init(self.owned());
-        try blocks.append(.{ .object = block });
         var params: std.json.ObjectMap = .empty;
         try params.put(self.owned(), "sessionId", .{ .string = self.id });
         try params.put(self.owned(), "contentBlocks", .{ .array = blocks });
@@ -403,7 +408,8 @@ pub const Session = struct {
             if (!self.reducer.started) session.abortSubmission(&self.reducer);
             return err;
         };
-        session.receipt(&self.reducer, text(result, "messageId")) catch |err| return lift(err);
+        const receipt = try arena.dupe(u8, text(result, "messageId"));
+        session.receipt(&self.reducer, try self.owned().dupe(u8, receipt)) catch |err| return lift(err);
         const started = monotonic();
         while (!self.reducer.started) {
             if (self.reducer.terminal or self.ended or self.reducer.unusable) return refusal.fail(error.BackendFailed, "the deepseek harness did not start the turn");
@@ -413,14 +419,12 @@ pub const Session = struct {
             }
             _ = try self.step(self.owner.config.poll_ns);
         }
-        const message_id = try arena.dupe(u8, self.reducer.message_id);
         const run_id = try arena.dupe(u8, self.reducer.run_id);
         const model_id = try arena.dupe(u8, self.reducer.model);
-        const message_ids = try arena.dupe([]const u8, &.{message_id});
         return .{
             .session_id = self.id,
             .accepted = true,
-            .submission_id = message_id,
+            .submission_id = receipt,
             .requested_delivery = .auto,
             .effective_delivery = .start,
             .delivery_resolution = "session_idle",
@@ -487,6 +491,13 @@ pub const Session = struct {
         }
     }
 };
+
+fn textBlock(allocator: std.mem.Allocator, content: []const u8) !std.json.Value {
+    var block: std.json.ObjectMap = .empty;
+    try block.put(allocator, "type", .{ .string = "text" });
+    try block.put(allocator, "text", .{ .string = try allocator.dupe(u8, content) });
+    return .{ .object = block };
+}
 
 fn member(value: std.json.Value, key: []const u8) ?std.json.Value {
     if (value != .object) return null;

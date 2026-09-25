@@ -218,6 +218,34 @@ jobs:
         if: always()
         run: ./scripts/check-no-test-litter.sh
 
+  backend-parity:
+    name: Parity - oapx served backends against goap
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build oapx
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-parity
+
+      - name: Require each backend to answer and write its child exactly as goap does
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
+        run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
+
   memory-conformance:
     name: Conformance - oapx memory backend
     needs: [unit-tests]

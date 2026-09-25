@@ -523,12 +523,20 @@ pub const Endpoint = struct {
         const fallback = mapped.fallback;
         if (refusal.feature.len > 0) try details.append(arena, .{ .key = "feature", .value = refusal.feature });
         if (refusal.reason.len > 0) try details.append(arena, .{ .key = "reason", .value = refusal.reason });
+        if (refusal.tool.len > 0) try details.append(arena, .{ .key = "tool", .value = refusal.tool });
         if (refusal.field.len > 0) try details.append(arena, .{ .key = "field", .value = refusal.field });
+        if (refusal.source.len > 0) try details.append(arena, .{ .key = "source", .value = refusal.source });
         if (refusal.model_id.len > 0) try details.append(arena, .{ .key = "model_id", .value = refusal.model_id });
         if (refusal.backend.len > 0) try details.append(arena, .{ .key = "backend", .value = refusal.backend });
         var message = if (refusal.message.len > 0) refusal.message else fallback;
         if (failure == error.UnsupportedFeature and refusal.message.len == 0 and refusal.feature.len > 0) {
-            message = try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
+            message = if (refusal.detail.len > 0)
+                try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s}): {s}", .{ refusal.feature, refusal.reason, refusal.detail })
+            else
+                try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
+        }
+        if (failure == error.ModelNotFound and refusal.message.len == 0 and refusal.model_id.len > 0) {
+            message = try std.fmt.allocPrint(arena, "adapter: model is not in the effective catalog: \"{s}\"", .{refusal.model_id});
         }
         if (failure == error.CapabilityDegraded and refusal.message.len == 0) {
             message = try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} is degraded and was not opted into", .{refusal.feature});
@@ -752,19 +760,19 @@ const Mapped = struct { code: []const u8, fallback: []const u8 };
 
 fn codeFor(failure: contract.Failure) Mapped {
     return switch (failure) {
-        error.UnsupportedFeature => .{ .code = "unsupported_feature", .fallback = "unsupported input" },
-        error.CapabilityDegraded => .{ .code = "capability_degraded", .fallback = "the feature is degraded and was not opted into" },
-        error.ModelNotFound => .{ .code = "model_not_found", .fallback = "the model is not in the effective catalog" },
-        error.SessionClosed => .{ .code = "session_closed", .fallback = "the session is closed" },
-        error.RunActive => .{ .code = "run_active", .fallback = "a run is already active" },
-        error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "the submission cannot be delivered to this backend" },
-        error.RunNotFound => .{ .code = "run_not_found", .fallback = "run not found" },
-        error.RunTerminal => .{ .code = "run_terminal", .fallback = "run already completed or failed" },
-        error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "interaction not found" },
-        error.InvalidResolution => .{ .code = "resolution_rejected", .fallback = "invalid interaction resolution" },
+        error.UnsupportedFeature => .{ .code = "unsupported_feature", .fallback = "adapter: unsupported input" },
+        error.CapabilityDegraded => .{ .code = "capability_degraded", .fallback = "adapter: unsupported input: the feature is degraded and was not opted into" },
+        error.ModelNotFound => .{ .code = "model_not_found", .fallback = "adapter: model is not in the effective catalog" },
+        error.SessionClosed => .{ .code = "session_closed", .fallback = "adapter: session closed" },
+        error.RunActive => .{ .code = "run_active", .fallback = "adapter: a run is already active" },
+        error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "adapter: invalid submission" },
+        error.RunNotFound => .{ .code = "run_not_found", .fallback = "adapter: run not found" },
+        error.RunTerminal => .{ .code = "run_terminal", .fallback = "adapter: run already completed or failed" },
+        error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "adapter: interaction not found" },
+        error.InvalidResolution => .{ .code = "resolution_rejected", .fallback = "adapter: invalid interaction resolution" },
         error.ToolCatalogUnavailable => .{ .code = "tool_catalog_unavailable", .fallback = "adapter: no portable tool catalog is served" },
         error.Unavailable => .{ .code = "unavailable", .fallback = "this backend is unavailable" },
-        error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "replay cursor is newer than the run" },
+        error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "adapter: replay cursor is newer than the run" },
         error.BackendFailed, error.OutOfMemory => .{ .code = "internal", .fallback = "the backend failed" },
     };
 }
