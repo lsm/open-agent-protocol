@@ -292,8 +292,9 @@ pinned only by Zig unit tests against hand-written bytes.
    member reassigns is merged across the reset in Zig, where Go starts again.
 5. **No journal.** Like the other Zig ports the reducer keeps no journal and
    has no `Resume`. The descriptor the corpus pins is byte-identical to Go's,
-   so it still advertises `run.resume` and `run.replay` as `degraded`; the
-   served endpoint advertises both `unavailable` under its own revision.
+   so it advertises `run.resume` and `run.replay` as `degraded`, and the served
+   endpoint does too under the same revision: the `oapx` endpoint journals 256
+   events per session and answers the replay control from them.
 6. **Endpoint checks.** Unadvertised controls, the session id, delivery,
    degraded opt-in and metadata are refused before a submission reaches the
    reducer, as are tools and tool sources at open. Call failures come back as a
@@ -325,8 +326,9 @@ What differs from the Go adapter:
 
 | Area | oapx | Go adapter | Why |
 | --- | --- | --- | --- |
-| Capability revision | `codex-appserver-8d7cc24-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` | `codex-appserver-8d7cc24-oap-v1`, both `degraded` | oapx keeps no journal, and a revision names one descriptor. The replay control answers `unsupported_control`. |
 | Request bound | `initialize`, `thread/start`, `turn/start` and `turn/interrupt` are awaited at most 60 s; past that the request is answered `internal` and the session is abandoned, its child stopped | context-bound | The endpoint serves one request at a time, so a request cannot wait unbounded. A late answer would otherwise settle the next request. |
 | Session memory | The reducer's arena holds every frame and envelope until the session closes | garbage-collected | No compaction yet: a long-lived session grows without bound. |
 | Configuration | Without `--config`, `codex` from `PATH` with only `HOME` and `PATH`, stating no approval policy or sandbox, so Codex applies its own defaults | `goap serve` needs a `--config` entry | Member names are exact; Go's decoder matches them case-insensitively. |
 | Transport failure text | `codex app-server rpc: <error>` or the child's departure | Go's error text | The run still fails `native_transport_closed`, inferred. |
+| State | No `transcript_cursor` | Carries one | The Zig wire type has no member for it yet. |
+| Cancel answer | `cancelling` and a `run.status.updated`, then `run.cancelled` | The same, except that when `turn/completed` directly follows the `turn/interrupt` answer, usually `cancelled` and no status update | Go settles the run on its reader goroutine while the cancel waits for the lock; the endpoint answers before reading the next frame. `go/cmd/goap/testdata/parity/codex` delays the completion so both answer alike. |

@@ -10,10 +10,9 @@ const session = @import("session.zig");
 const rpc = @import("rpc.zig");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.deepseek_harness_oapx_capability_revision;
+pub const capability_revision = harness_pins.deepseek_harness_capability_revision;
 pub const server_name = "deepseek-harness-sdk-runtime";
 pub const server_version = harness_pins.deepseek_harness_admits[0];
-const journal_reason = "oapx keeps no journal for this backend";
 
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .unavailable, .reason = "selected SDK wire has no interaction channel" },
@@ -23,8 +22,8 @@ const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "adapter-owned one-shot initialization freeze" },
     .{ .key = "run.cancel", .level = .unavailable, .reason = "selected SDK wire has no cancel request" },
     .{ .key = "run.reconciliation", .level = .degraded, .reason = "live status corroboration only" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
-    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps are explicit and there is no native replay request" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "selected SDK wire has no resume request; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .degraded, .reason = "accepted only for known idle sessions and normalized to start" },
@@ -680,10 +679,10 @@ const Probe = struct {
     }
 };
 
-test "the descriptor carries resume and replay unavailable under its own revision" {
-    try testing.expect(!std.mem.eql(u8, capability_revision, session.capability_revision));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.replay"));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.resume"));
+test "the descriptor serves resume and replay from the endpoint journal under the Go adapter's revision" {
+    try testing.expectEqualStrings(session.capability_revision, capability_revision);
+    try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.replay"));
+    try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.resume"));
     for (features[1..], features[0 .. features.len - 1]) |later, earlier| try testing.expect(std.mem.lessThan(u8, earlier.key, later.key));
 }
 
