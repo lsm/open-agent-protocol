@@ -10,8 +10,7 @@ const session = @import("session");
 const rpc = @import("rpc");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.hermes_oapx_capability_revision;
-const journal_reason = "oapx keeps no journal for this backend";
+pub const capability_revision = harness_pins.hermes_capability_revision;
 
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .degraded, .reason = "approval gates surface as input interactions" },
@@ -21,8 +20,8 @@ const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .native, .reason = "gateway.ready frame with replay epoch before any input" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "session.interrupt intent; settlement via message.complete interrupted" },
     .{ .key = "run.reconciliation", .level = .degraded, .reason = "session.info running/turn_started_at corroboration" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
-    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps are explicit and the native events.since ring is not consulted" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "the native recovery family is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.streaming", .level = .native, .reason = "immediate frames on stdio; post-scrubber provenance disclosed" },
     .{ .key = "session.message.delivery.auto", .level = .degraded, .reason = "accepted only for known idle sessions" },
@@ -815,10 +814,10 @@ fn kinds(allocator: std.mem.Allocator, events: []const contract.Event) ![]const 
     return names;
 }
 
-test "the descriptor carries resume and replay unavailable under its own revision" {
-    try testing.expect(!std.mem.eql(u8, capability_revision, session.capability_revision));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.replay"));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.resume"));
+test "the descriptor serves resume and replay from the endpoint journal under the Go adapter's revision" {
+    try testing.expectEqualStrings(session.capability_revision, capability_revision);
+    try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.replay"));
+    try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.resume"));
     for (features[1..], features[0 .. features.len - 1]) |later, earlier| try testing.expect(std.mem.lessThan(u8, earlier.key, later.key));
 }
 

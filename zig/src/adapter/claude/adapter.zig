@@ -10,7 +10,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.claude_code_oapx_capability_revision;
+pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const pinned_version = harness_pins.claude_code_endpoint_version;
 pub const denied_message = "Denied by the operator";
 const harness_owner = session.harness_owner;
@@ -28,8 +28,8 @@ const features = [_]contract.Feature{
     .{ .key = "run.streaming", .level = .native, .reason = "stream_event deltas with --include-partial-messages always on" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.cancel", .level = .degraded, .reason = "interrupt intent; settlement only via terminal_reason aborted_*" },
-    .{ .key = "run.resume", .level = .unavailable, .reason = "oapx keeps no journal for this backend" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = "oapx keeps no journal for this backend" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "native conversation resume is not exercised; OAP resume replays the adapter journal" },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps are explicit and transcript persistence is not event replay" },
     .{ .key = "run.reconciliation", .level = .degraded, .reason = "system/init and session state frames corroborate" },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "enforced per call: a PreToolUse hook, and the can_use_tool gate behind it, refuse an excluded tool before it runs and the call settles refused_by_policy; not retained past the run" },
     .{ .key = "action.tools", .level = .degraded, .reason = "tool_use/tool_result projection; started synthesized; tool_progress observed-only" },

@@ -26,23 +26,36 @@ const Denial = struct {
 const Cursor = struct {
     run_id: []u8,
     delivered: u64 = 0,
+    latest: u64 = 0,
     lost: bool = false,
+};
+
+const Journaled = struct {
+    line: []u8,
+    cursor: usize,
+    sequence: u64,
 };
 
 const Entry = struct {
     session: contract.Session,
     cursors: std.ArrayList(Cursor) = .empty,
+    journal: std.ArrayList(Journaled) = .empty,
     state_sequence: u64 = 0,
 
     fn deinit(self: *Entry, allocator: std.mem.Allocator) void {
         for (self.cursors.items) |cursor| allocator.free(cursor.run_id);
         self.cursors.deinit(allocator);
+        for (self.journal.items) |kept| allocator.free(kept.line);
+        self.journal.deinit(allocator);
         self.session.close();
     }
 };
 
+pub const default_journal_capacity = 256;
+
 pub const Options = struct {
     frame_limit: usize = default_frame_limit,
+    journal_capacity: usize = default_journal_capacity,
 };
 
 const Served = (contract.Failure || error{ Denied, FrameTooLarge });
@@ -51,6 +64,7 @@ pub const Endpoint = struct {
     allocator: std.mem.Allocator,
     adapter: contract.Adapter,
     frame_limit: usize,
+    journal_capacity: usize,
     participant: ?[]u8 = null,
     ids: u64 = 0,
     entries: std.ArrayList(Entry) = .empty,
@@ -58,7 +72,7 @@ pub const Endpoint = struct {
     denial: Denial = .{ .code = "internal", .message = "" },
 
     pub fn init(allocator: std.mem.Allocator, adapter: contract.Adapter, options: Options) Endpoint {
-        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit };
+        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity };
     }
 
     pub fn deinit(self: *Endpoint) void {
@@ -550,11 +564,12 @@ pub const Endpoint = struct {
         const entry = self.find(addressed) orelse {
             return self.writeControl(.{ .control = "replay.error", .id = id, .session_id = addressed, .run_id = run_id, .code = "unknown_session", .message = "no session is open under that session_id" });
         };
-        const replayer = entry.session.vtable.replay orelse {
-            return self.writeControl(.{ .control = "replay.error", .id = id, .session_id = addressed, .run_id = run_id, .code = "unsupported_control", .message = "this backend keeps no journal to replay from" });
-        };
         var refusal = contract.Refusal{};
-        const replayed = replayer(entry.session.ptr, arena, run_id orelse "", after, &refusal) catch |failure| {
+        const replaying = if (entry.session.vtable.replay) |replayer|
+            replayer(entry.session.ptr, arena, run_id orelse "", after, &refusal)
+        else
+            self.replayJournal(entry, arena, run_id orelse "", after);
+        const replayed = replaying catch |failure| {
             if (failure == error.OutOfMemory) return error.OutOfMemory;
             const code: []const u8 = switch (failure) {
                 error.RunNotFound => "run_not_found",
@@ -576,8 +591,9 @@ pub const Endpoint = struct {
                 .message = "the requested replay cursor is no longer retained; ask again from oldest_available - 1",
             }),
             .events => |events| {
-                const resolved = if (events.len > 0) events[0].run_id else run_id orelse "";
+                const resolved = if (events.len > 0) events[0].run_id else if (run_id) |named| named else if (entry.cursors.items.len > 0) entry.cursors.items[entry.cursors.items.len - 1].run_id else "";
                 try self.writeControl(.{ .control = "replay.accepted", .id = id, .session_id = addressed, .run_id = resolved, .after = after });
+                if (resolved.len > 0) (try self.cursorFor(entry, resolved)).lost = false;
                 for (events) |event| try self.pushEvent(entry, event);
             },
         }
@@ -626,7 +642,48 @@ pub const Endpoint = struct {
         defer scratch.deinit();
         var events = std.ArrayList(contract.Event).empty;
         try entry.session.drain(scratch.allocator(), &events);
-        for (events.items) |event| try self.pushEvent(entry, event);
+        for (events.items) |event| {
+            try self.remember(entry, event);
+            try self.pushEvent(entry, event);
+        }
+    }
+
+    fn remember(self: *Endpoint, entry: *Entry, event: contract.Event) !void {
+        _ = try self.cursorFor(entry, event.run_id);
+        const index = self.cursorIndex(entry, event.run_id).?;
+        const cursor = &entry.cursors.items[index];
+        cursor.latest = @max(cursor.latest, event.sequence);
+        if (self.journal_capacity == 0) return;
+        const line = try self.allocator.dupe(u8, event.line);
+        errdefer self.allocator.free(line);
+        try entry.journal.ensureUnusedCapacity(self.allocator, 1);
+        if (entry.journal.items.len == self.journal_capacity) self.allocator.free(entry.journal.orderedRemove(0).line);
+        entry.journal.appendAssumeCapacity(.{ .line = line, .cursor = index, .sequence = event.sequence });
+    }
+
+    fn cursorIndex(self: *Endpoint, entry: *Entry, run_id: []const u8) ?usize {
+        _ = self;
+        for (entry.cursors.items, 0..) |cursor, index| {
+            if (std.mem.eql(u8, cursor.run_id, run_id)) return index;
+        }
+        return null;
+    }
+
+    fn replayJournal(self: *Endpoint, entry: *Entry, arena: std.mem.Allocator, run_id: []const u8, after: u64) contract.Failure!contract.Replay {
+        const index = if (run_id.len > 0) self.cursorIndex(entry, run_id) orelse return error.RunNotFound else if (entry.cursors.items.len > 0) entry.cursors.items.len - 1 else return error.RunNotFound;
+        const latest = entry.cursors.items[index].latest;
+        if (after > latest) return error.ReplayCursorFuture;
+        var oldest: u64 = 0;
+        var suffix = std.ArrayList(contract.Event).empty;
+        for (entry.journal.items) |kept| {
+            if (kept.cursor != index) continue;
+            if (oldest == 0) oldest = kept.sequence;
+            if (kept.sequence > after) try suffix.append(arena, .{ .line = kept.line, .run_id = entry.cursors.items[index].run_id, .sequence = kept.sequence });
+        }
+        if (after < latest and (oldest == 0 or after + 1 < oldest)) {
+            return .{ .gap = .{ .requested_after = after, .oldest_available = oldest, .latest_available = latest } };
+        }
+        return .{ .events = suffix.items };
     }
 
     fn cursorFor(self: *Endpoint, entry: *Entry, run_id: []const u8) !*Cursor {
@@ -653,10 +710,7 @@ pub const Endpoint = struct {
                 .run_id = cursor.run_id,
                 .after = cursor.delivered,
                 .code = "frame_limit",
-                .message = if (entry.session.vtable.replay != null)
-                    "this run's events stopped reaching the host; replay from after to continue"
-                else
-                    "this run's events after this point are dropped except its terminal; this backend keeps no journal to replay them",
+                .message = "this run's events stopped reaching the host; replay from after to continue",
             });
         }
         try self.deliver(cursor, event);
@@ -882,7 +936,7 @@ const FakeSession = struct {
         for (self.pending.items) |line| {
             const copy = try allocator.dupe(u8, line);
             const sequence: u64 = if (std.mem.indexOf(u8, line, "\"sequence\":1") != null) 1 else if (std.mem.indexOf(u8, line, "\"sequence\":2") != null) 2 else 3;
-            try out.append(allocator, .{ .line = copy, .run_id = runOf(line), .sequence = sequence });
+            try out.append(allocator, .{ .line = copy, .run_id = runOf(copy), .sequence = sequence });
         }
         for (self.pending.items) |line| self.fake.allocator.free(line);
         self.pending.clearRetainingCapacity();
@@ -1054,20 +1108,48 @@ test "a control this endpoint does not serve is answered, and the stream carries
     try testing.expectEqualStrings("capabilities.response", field(capabilities[0], &.{"type"}));
 }
 
-test "a replay against a backend that keeps no journal is answered unsupported_control" {
+test "a replay re-delivers a run's journalled suffix, refuses a future or unknown cursor, and reports a gap past capacity" {
     var harness: Harness = undefined;
-    harness.init(testing.allocator, .{});
+    harness.init(testing.allocator, .{ .journal_capacity = 2 });
     defer harness.deinit();
     _ = try harness.send(open_line);
+    harness.fake.oversized_event = true;
+    const submitted = try harness.send(framed("session.message.submit.request", "s-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
+    const run_id = field(submitted[1], &.{"run_id"});
+    const events = submitted.len - 1;
+    try testing.expect(events >= 3);
 
-    const answered = try harness.send("{\"control\":\"replay\",\"id\":\"r1\",\"session_id\":\"s1\",\"after\":0}");
-    try testing.expectEqualStrings("replay.error", field(answered[0], &.{"control"}));
-    try testing.expectEqualStrings("unsupported_control", field(answered[0], &.{"code"}));
+    const tail = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r1\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":{d}}}", .{ run_id, events - 1 }));
+    try testing.expectEqualStrings("replay.accepted", field(tail[0], &.{"control"}));
+    try testing.expectEqual(@as(usize, 2), tail.len);
+    try testing.expectEqual(@as(i64, @intCast(events)), tail[1].object.get("sequence").?.integer);
 
-    const unnamed = try harness.send("{\"control\":\"replay\",\"id\":\"r2\"}");
+    const gap = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r2\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":0}}", .{run_id}));
+    try testing.expectEqualStrings("replay.gap", field(gap[0], &.{"control"}));
+    try testing.expectEqual(@as(i64, @intCast(events - 1)), gap[0].object.get("oldest_available").?.integer);
+
+    const future = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r3\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":99}}", .{run_id}));
+    try testing.expectEqualStrings("replay_cursor_future", field(future[0], &.{"code"}));
+    const unknown_run = try harness.send("{\"control\":\"replay\",\"id\":\"r4\",\"session_id\":\"s1\",\"run_id\":\"nope\",\"after\":0}");
+    try testing.expectEqualStrings("run_not_found", field(unknown_run[0], &.{"code"}));
+
+    const unnamed = try harness.send("{\"control\":\"replay\",\"id\":\"r5\"}");
     try testing.expectEqualStrings("invalid_request", field(unnamed[0], &.{"code"}));
-    const unknown = try harness.send("{\"control\":\"replay\",\"id\":\"r3\",\"session_id\":\"nope\"}");
+    const unknown = try harness.send("{\"control\":\"replay\",\"id\":\"r6\",\"session_id\":\"nope\"}");
     try testing.expectEqualStrings("unknown_session", field(unknown[0], &.{"code"}));
+}
+
+test "a replay after a lost frame delivers the run again from the cursor" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{ .frame_limit = 800 });
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.fake.oversized_event = true;
+    const answered = try harness.send(framed("session.message.submit.request", "s-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
+    const run_id = field(answered[1], &.{"run_id"});
+    const replayed = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r1\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":2}}", .{run_id}));
+    try testing.expectEqualStrings("replay.accepted", field(replayed[0], &.{"control"}));
+    try testing.expectEqualStrings("run.completed", field(replayed[replayed.len - 1], &.{"type"}));
 }
 
 test "an envelope missing a base member draws a correlated invalid_request naming it" {
@@ -1387,7 +1469,7 @@ test "an event past the frame limit is reported lost once, later events are drop
     try testing.expectEqualStrings("stream.lost", field(answered[2], &.{"control"}));
     try testing.expectEqualStrings("frame_limit", field(answered[2], &.{"code"}));
     try testing.expectEqual(@as(i64, 1), answered[2].object.get("after").?.integer);
-    try testing.expect(std.mem.indexOf(u8, field(answered[2], &.{"message"}), "replay from after") == null);
+    try testing.expect(std.mem.indexOf(u8, field(answered[2], &.{"message"}), "replay from after") != null);
     try testing.expectEqualStrings("run.completed", field(answered[3], &.{"type"}));
 }
 
