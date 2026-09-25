@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `oapx serve agent` words its `unknown_session`, `tool_catalog_unavailable` and unadvertised or degraded `unsupported_feature` refusals as `goap serve agent` does. A codex parity fixture for `TestBackendsMatchOapx` records the remaining differences.
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
 
 ### Removed
@@ -26,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The Zig OAP types carry these members `goap` serves: `active_runs`, `transcript_cursor`, `metadata`, `sources` and `as_of` on session state; `context_window` and `providers` on models; `modes`, `constraints` and `limits` on a feature; `tools` on capabilities. The adapter contract forwards open-time `tools` and `tool_sources` and lets a backend declare feature details and a tool catalog.
+- `oapx serve agent` keeps a bounded journal of 256 events per session and answers the replay control from it for every backend, as `goap` does; a frame lost to the line bound can now be replayed. Every backend advertises `run.resume` and `run.replay` `degraded`, and codex, hermes, deepseek, opencode, pi and claude now serve exactly the Go adapter's descriptor under its revision; acp moves to `acp-v1.7.0-schema-v1.21.0-oapx-v2` until it passes attached sources.
 - `oapx serve agent --backend claude` enforces `run.tool_selection` as `goap` does: it registers the `oap_tool_selection` PreToolUse hook at `initialize`, denies a hook callback or permission ask for a tool the run's `tool_choice` excludes, and settles that call `refused_by_policy`.
 - `goap serve agent` names its stdio binding (`{"kind":"stdio","serialization":"jsonl"}`) in `capabilities.response`, as `oapx` already does.
 - On Windows, `oapx serve agent` and `serve provider` treat a console Ctrl+C, Ctrl+Break or close as end of input, as SIGINT and SIGTERM are treated elsewhere; a close gets up to 4.5 s to settle before Windows ends the process.
