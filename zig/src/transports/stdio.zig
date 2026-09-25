@@ -212,10 +212,13 @@ pub const StdioReceiver = struct {
     }
 };
 
+const Ownership = enum(u8) { running, abandoned, finished };
+
 pub const AsyncStreamHandle = struct {
     stream: *transport.ByteStream,
     thread: std.Thread,
     cancel_token: *std.atomic.Value(bool),
+    ownership: *std.atomic.Value(Ownership),
     allocator: std.mem.Allocator,
     fallback_receiver: ?*StdioReceiver = null,
 
@@ -226,9 +229,21 @@ pub const AsyncStreamHandle = struct {
 
         const thread_exited = self.stream.waitForThread(timeout_ms);
 
-        if (thread_exited) {
-            self.thread.join();
+        if (!thread_exited and self.ownership.cmpxchgStrong(.running, .abandoned, .acq_rel, .acquire) == null) {
+            self.thread.detach();
+            self.releaseFallback();
+            return false;
         }
+        self.thread.join();
+        self.releaseFallback();
+        self.allocator.destroy(self.ownership);
+        self.allocator.destroy(self.cancel_token);
+        self.stream.deinit();
+        self.allocator.destroy(self.stream);
+        return thread_exited;
+    }
+
+    fn releaseFallback(self: *Self) void {
 
         if (self.fallback_receiver) |receiver| {
             receiver.file = compat.stdio.setBlockingFile(receiver.file) catch receiver.file;
@@ -236,13 +251,6 @@ pub const AsyncStreamHandle = struct {
             self.allocator.destroy(receiver);
             self.fallback_receiver = null;
         }
-
-        self.allocator.destroy(self.cancel_token);
-
-        self.stream.deinit();
-        self.allocator.destroy(self.stream);
-
-        return thread_exited;
     }
 
     pub fn getStream(self: *Self) *transport.ByteStream {
@@ -325,6 +333,7 @@ pub const AsyncStdioReceiver = struct {
         read_buf: [4096]u8 = undefined,
         cancel_token: *std.atomic.Value(bool),
         owns_cancel_token: bool,
+        ownership: ?*std.atomic.Value(Ownership) = null,
     };
 
     fn receiveStreamFn(ctx: *anyopaque, allocator: std.mem.Allocator) !*transport.ByteStream {
@@ -360,6 +369,9 @@ pub const AsyncStdioReceiver = struct {
         const cancel_token = try allocator.create(std.atomic.Value(bool));
         cancel_token.* = std.atomic.Value(bool).init(false);
 
+        const ownership = try allocator.create(std.atomic.Value(Ownership));
+        ownership.* = std.atomic.Value(Ownership).init(.running);
+
         const thread_ctx = try allocator.create(ProducerContext);
         thread_ctx.* = .{
             .stream = stream,
@@ -368,6 +380,7 @@ pub const AsyncStdioReceiver = struct {
             .framer = LineFramer.init(allocator, self.line_limit),
             .cancel_token = cancel_token,
             .owns_cancel_token = false,
+            .ownership = ownership,
         };
 
         const thread = try std.Thread.spawn(.{}, producerThread, .{thread_ctx});
@@ -376,6 +389,7 @@ pub const AsyncStdioReceiver = struct {
             .stream = stream,
             .thread = thread,
             .cancel_token = cancel_token,
+            .ownership = ownership,
             .allocator = allocator,
             .fallback_receiver = null,
         };
@@ -387,13 +401,22 @@ pub const AsyncStdioReceiver = struct {
         const owns_cancel_token = ctx.owns_cancel_token;
         const cancel_token = ctx.cancel_token;
 
+        const ownership = ctx.ownership;
         defer {
             ctx.framer.deinit();
             if (owns_cancel_token) {
                 allocator.destroy(cancel_token);
             }
             allocator.destroy(ctx);
-            stream.markThreadDone();
+            const abandoned = if (ownership) |state| state.cmpxchgStrong(.running, .finished, .acq_rel, .acquire) != null else false;
+            if (abandoned) {
+                stream.deinit();
+                allocator.destroy(stream);
+                allocator.destroy(cancel_token);
+                allocator.destroy(ownership.?);
+            } else {
+                stream.markThreadDone();
+            }
         }
 
         while (!ctx.cancel_token.load(.acquire)) {
@@ -773,4 +796,25 @@ test "AsyncStdioReceiver legacy interface still works" {
     _ = stream.waitForThread(5000);
     stream.deinit();
     allocator.destroy(stream);
+}
+
+test "a handle whose reader is still blocked hands the stream to the reader, which frees it when its input ends" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const pipe = try compat.stdio.pipe();
+    var receiver = AsyncStdioReceiver.initWithFile(try compat.stdio.setBlockingFile(pipe[0]));
+    var handle = try receiver.receiveStreamWithHandle(std.heap.page_allocator);
+    try compat.stdio.writeAll(pipe[1], "first line\n");
+    var polled: usize = 0;
+    const first = while (polled < 1000) : (polled += 1) {
+        if (handle.getStream().poll()) |chunk| break chunk;
+        compat.time.sleepNs(std.time.ns_per_ms);
+    } else return error.LineNeverArrived;
+    var owned = first;
+    owned.deinit(std.heap.page_allocator);
+    try std.testing.expect(!handle.deinit(20));
+    compat.stdio.writeAll(pipe[1], "late line\n") catch {};
+    compat.stdio.close(pipe[1]);
+    var waited: usize = 0;
+    while (waited < 100) : (waited += 1) compat.time.sleepNs(std.time.ns_per_ms);
+    compat.stdio.close(pipe[0]);
 }
