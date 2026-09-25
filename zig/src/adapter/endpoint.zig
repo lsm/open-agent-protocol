@@ -343,6 +343,12 @@ pub const Endpoint = struct {
     }
 
     fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
+        if (payload.tool_sources_json) |text| {
+            if (try attachmentDecodeDefect(arena, text)) |defect| {
+                const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
+                return self.deny("invalid_payload", message, &.{});
+            }
+        }
         try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
         const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
@@ -822,6 +828,51 @@ fn refuseAttachment(arena: std.mem.Allocator, refusal: *contract.Refusal, source
     const message = try std.fmt.allocPrint(arena, "tool source \"{s}\": {s}", .{ source, reason });
     refusal.* = .{ .feature = contract.feature_tool_sources_attach, .reason = contract.reason_unsatisfiable, .source = source, .message = message };
     return error.UnsupportedFeature;
+}
+
+fn attachmentDecodeDefect(arena: std.mem.Allocator, text: []const u8) !?[]const u8 {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return null;
+    };
+    if (document == .null) return null;
+    if (document != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources of type []protocol.ToolSourceAttachment", .{goKind(document)});
+    const texts = [_][]const u8{ "id", "kind", "display_name", "protocol", "endpoint", "command" };
+    const lists = [_][]const u8{ "args", "environment" };
+    for (document.array.items, 0..) |attachment, index| {
+        if (attachment == .null) continue;
+        if (attachment != .object) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tool_sources.{d} of type protocol.ToolSourceAttachment", .{ goKind(attachment), index });
+        var members = attachment.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            for (texts) |field_name| {
+                if (std.mem.eql(u8, name, field_name) and value != .string) {
+                    return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources.{d}.{s} of type string", .{ goKind(value), index, name });
+                }
+            }
+            for (lists) |field_name| {
+                if (!std.mem.eql(u8, name, field_name)) continue;
+                if (value != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources.{d}.{s} of type []string", .{ goKind(value), index, name });
+                for (value.array.items, 0..) |item, position| {
+                    if (item != .string and item != .null) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tool_sources.{d}.{s}.{d} of type string", .{ goKind(item), index, name, position });
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn goKind(value: std.json.Value) []const u8 {
+    return switch (value) {
+        .null => "null",
+        .bool => "bool",
+        .integer, .float, .number_string => "number",
+        .string => "string",
+        .array => "array",
+        .object => "object",
+    };
 }
 
 fn configuredValue(arena: std.mem.Allocator, configured: contract.ConfiguredSource, caller: ?std.json.Value) !std.json.Value {

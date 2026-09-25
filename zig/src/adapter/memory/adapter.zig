@@ -776,7 +776,7 @@ pub const Session = struct {
             try terminal.put("error", failure.value());
             try self.emit(run, "action.call.failed", terminal.value(), false);
         } else {
-            try terminal.put("result", try parseValue(a, settled.result_json orelse "null"));
+            try terminal.put("result", try parseWritten(a, settled.result_json orelse "null"));
             try self.emit(run, "action.call.completed", terminal.value(), false);
         }
         return self.requestInput(run);
@@ -1127,6 +1127,7 @@ fn toolFeatures(keep: std.mem.Allocator, carried: ?std.json.Value) ![]oap_types.
         result[filled] = .{ .key = declared.key_ptr.*, .level = level, .reason = optionalString(support, "reason"), .scope = optionalString(support, "scope"), .modes = modes, .constraints_json = constraints_json, .limits_json = limits_json };
         filled += 1;
     }
+    std.mem.sort(oap_types.Feature, result[0..filled], {}, lessFeature);
     return result[0..filled];
 }
 
@@ -1154,6 +1155,10 @@ fn featureObjectJson(keep: std.mem.Allocator, support: std.json.Value, key: []co
     try sorted.ensureTotalCapacity(keep, keys.len);
     for (keys) |name| sorted.putAssumeCapacity(name, carried.object.get(name).?);
     return try json_encode.valueAlloc(keep, .{ .object = sorted });
+}
+
+fn lessFeature(_: void, left: oap_types.Feature, right: oap_types.Feature) bool {
+    return std.mem.order(u8, left.key, right.key) == .lt;
 }
 
 fn lessKey(_: void, left: []const u8, right: []const u8) bool {
@@ -1238,6 +1243,13 @@ const Payload = struct {
         try self.put("responded_by", .{ .string = session.participant });
     }
 };
+
+fn parseWritten(allocator: std.mem.Allocator, text: []const u8) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{ .parse_numbers = false }) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.InvalidResolution,
+    };
+}
 
 fn parseValue(allocator: std.mem.Allocator, text: []const u8) !std.json.Value {
     return std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch |err| switch (err) {
@@ -1679,12 +1691,14 @@ test "an open with provided tools, a submit and a settled call free everything t
     try testing.checkAllAllocationFailures(testing.allocator, provideAndSettle, .{});
 }
 
-test "a provided tool keeps its declared feature modes, constraints and limits, and a null $schema is admitted" {
+test "a provided tool keeps its declared features sorted by key with their modes, constraints and limits, and a null $schema is admitted" {
     var probe: Probe = undefined;
-    try probe.initWith("[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":null,\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\",\"features\":{\"x\":{\"level\":\"degraded\",\"modes\":[\"session_open\"],\"constraints\":{\"b\":1.50,\"a\":2},\"limits\":{\"max\":3}}}}]", attached_local);
+    try probe.initWith("[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":null,\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\",\"features\":{\"z\":{\"level\":\"native\"},\"x\":{\"level\":\"degraded\",\"modes\":[\"session_open\"],\"constraints\":{\"b\":1.50,\"a\":2},\"limits\":{\"max\":3}}}}]", attached_local);
     defer probe.deinit();
     var refusal = contract.Refusal{};
     const listed_tools = try probe.session.vtable.tools.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1" }, &refusal);
+    try testing.expectEqual(@as(usize, 2), listed_tools.tools[1].features.len);
+    try testing.expectEqualStrings("z", listed_tools.tools[1].features[1].key);
     const feature = listed_tools.tools[1].features[0];
     try testing.expectEqualStrings("x", feature.key);
     try testing.expectEqual(@as(usize, 1), feature.modes.len);
