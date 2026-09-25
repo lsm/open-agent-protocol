@@ -238,10 +238,12 @@ Go (`go/adapter/hermes`) and Zig (`zig/src/adapter/hermes`), in parity:
   choices within the enum, one clarify form, a named `env_var` and `prompt`.
 - Go's native types gain the additive members above, and the closed event
   vocabulary follows the contracts registry.
-- Capability revisions: `hermes-v2026.9.24-oap-v1` (Go) and
-  `hermes-v2026.9.24-oapx-v1` (Zig). Support levels are unchanged. The
-  `user_input` reason now says the gates are server requests withdrawn by
-  `request.cancel`.
+- The capability revision is `hermes-v2026.9.24-oap-v1`, which the served Zig
+  backend carries too: the catalog no longer records an
+  `oapx_capability_revision` for any harness, and every served backend now
+  serves the Go adapter's descriptor. Support levels are unchanged either
+  side of the pin move. The `user_input` reason now says the gates are server
+  requests withdrawn by `request.cancel`.
 
 ## Corpus (`fixtures/adapters/hermes-v2026.9.24`)
 
