@@ -356,8 +356,9 @@ Provenance of the native side at this pin:
   event stream of one real `prompt` against the released v0.87.1
   `pi-darwin-arm64` binary behind the loopback Responses mock (frames after
   the `prompt` response, less `agent_start`, which the corpus client emits
-  itself). Its system message carries the recording host's paths in the
-  `docs` and `cwd` sections.
+  itself). The binary was run from `/tmp/oap-pi/pi` with `HOME` and the
+  workspace under `/tmp/oap-pi/home`, so the `docs` and `cwd` sections name
+  only those neutral paths.
 - The other ten cases are **carried forward unchanged** from
   `fixtures/adapters/pi-v0.85.1`, which this pin removes with the retired
   version (last present at `f326b24e21e0`): none contains a frame whose shape changed
