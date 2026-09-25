@@ -7,7 +7,6 @@
       "status": "current",
       "endpoint_version": "v0.85.1",
       "capability_revision": "pi-v0.85.1-oap-v1",
-      "oapx_capability_revision": "pi-v0.85.1-oapx-v1",
       "admits": ["0.85.1"],
       "ledgers": ["research/pi-v0.85.1-mapping.md"],
       "corpus": "fixtures/adapters/pi-v0.85.1",

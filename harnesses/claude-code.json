@@ -7,7 +7,6 @@
       "status": "current",
       "endpoint_version": "v2.1.280",
       "capability_revision": "claude-code-2.1.280-oap-v3",
-      "oapx_capability_revision": "claude-code-2.1.280-oapx-v1",
       "admits": ["2.1.280"],
       "ledgers": [
         "research/claude-code-agent-sdk-2.1.280-mapping.md",
