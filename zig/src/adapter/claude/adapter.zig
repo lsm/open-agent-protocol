@@ -856,8 +856,7 @@ test "an admission waits for the turn's echo and names the run it started" {
     try testing.expect(std.mem.indexOf(u8, events[0].line, "\"type\":\"run.started\"") != null);
     try testing.expectEqualStrings(admission.run_id.?, events[0].run_id);
     try testing.expectEqual(@as(u64, 1), events[0].sequence);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"content\":\"fix it\"") != null);
+    _ = try probe.waitWritten("\"content\":\"fix it\"");
 }
 
 test "an allowed ask reaches the child with the tool's own input, and the run completes on the stream" {
@@ -879,8 +878,7 @@ test "an allowed ask reaches the child with the tool's own input, and the run co
     try testing.expect(std.mem.indexOf(u8, completed.line, "answered allow") != null);
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
 
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"touch /tmp/x\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"touch /tmp/x\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}");
 }
 
 test "a tool input nested past 256 levels reaches the call, the prompt and the child whole" {
@@ -923,8 +921,7 @@ test "a denied ask reaches the child as the operator's refusal" {
     try probe.answer(try probe.pumpUntil("user.input.requested", &seen), "deny", &refusal);
     const completed = try probe.pumpUntil("run.completed", &seen);
     try testing.expect(std.mem.indexOf(u8, completed.line, "answered deny") != null);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"deny\",\"message\":\"Denied by the operator\"},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"deny\",\"message\":\"Denied by the operator\"},\"subtype\":\"success\"},\"type\":\"control_response\"}");
 }
 
 test "a resolution that misnames its gate, run, session, responder, requester or answer is refused before anything is written" {
@@ -1003,8 +1000,7 @@ test "a cancel the child never receipts is refused once its bound passes, and th
     try testing.expectError(error.BackendFailed, probe.handle.?.cancel(probe.arena.allocator(), admission.run_id.?, &refusal));
     try testing.expectEqualStrings("the claude child did not answer interrupt within 150 ms", refusal.message);
     try testing.expectEqual(contract.Activity.running, probe.handle.?.activity());
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"subtype\":\"interrupt\"") != null);
+    _ = try probe.waitWritten("\"subtype\":\"interrupt\"");
 }
 
 test "a child that dies before echoing the turn refuses the admission and closes the session" {
@@ -1087,8 +1083,7 @@ test "text parts are joined with newlines into the one turn the child reads" {
     var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = &messages, .delivery = .auto };
     _ = try probe.handle.?.submit(probe.arena.allocator(), &request, &refusal);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"content\":\"first\\nsecond\"") != null);
+    _ = try probe.waitWritten("\"content\":\"first\\nsecond\"");
 }
 
 test "an ask the child raises outside any run is refused back to the child and ends the session" {
@@ -1299,8 +1294,7 @@ test "a PreToolUse hook for a tool the run's tool_choice excludes is denied and 
     try testing.expect(std.mem.indexOf(u8, failed.line, "\"code\":\"refused_by_policy\"") != null);
     try testing.expect(std.mem.indexOf(u8, failed.line, "hook said true") != null);
     _ = try probe.pumpUntil("run.completed", &seen);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"hook-1\",\"response\":{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Bash is excluded by this run's tool_choice\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"hook-1\",\"response\":{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Bash is excluded by this run's tool_choice\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}");
 }
 
 test "a PreToolUse hook for a permitted tool continues and the call completes" {
@@ -1312,8 +1306,7 @@ test "a PreToolUse hook for a permitted tool continues and the call completes" {
     _ = try probe.submitChoosing("go", "{\"allowed\":[\"Bash\"]}", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("action.call.completed", &seen);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"hook-1\",\"response\":{},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"hook-1\",\"response\":{},\"subtype\":\"success\"},\"type\":\"control_response\"}");
 }
 
 test "a hook callback the adapter did not register is refused and ends the run as external activity" {
@@ -1326,8 +1319,7 @@ test "a hook callback the adapter did not register is refused and ends the run a
     var seen = std.ArrayList(contract.Event).empty;
     const failed = try probe.pumpUntil("run.failed", &seen);
     try testing.expect(std.mem.indexOf(u8, failed.line, "hook callback \\\"someone_else\\\"") != null);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"error\":\"claude adapter: unregistered hook callback\"") != null);
+    _ = try probe.waitWritten("\"error\":\"claude adapter: unregistered hook callback\"");
 }
 
 test "a permission ask for an excluded tool is denied without opening a gate" {
@@ -1340,8 +1332,7 @@ test "a permission ask for an excluded tool is denied without opening a gate" {
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.completed", &seen);
     for (seen.items) |event| try testing.expect(std.mem.indexOf(u8, event.line, "\"user.input.requested\"") == null);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"behavior\":\"deny\",\"message\":\"Bash is excluded by this run's tool_choice\"") != null);
+    _ = try probe.waitWritten("\"behavior\":\"deny\",\"message\":\"Bash is excluded by this run's tool_choice\"");
 }
 
 test "a tool_choice that is not the typed policy is refused under run.tool_selection" {
