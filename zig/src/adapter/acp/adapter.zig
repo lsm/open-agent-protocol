@@ -10,7 +10,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.acp_oapx_capability_revision;
+pub const capability_revision = harness_pins.acp_capability_revision;
 pub const acp_protocol_version: i64 = 1;
 pub const client_name = "open-agent-protocol";
 pub const client_version = "0.1";
@@ -29,6 +29,7 @@ const features = [_]contract.Feature{
     .{ .key = "run.reconciliation", .level = .emulated, .reason = "state is adapter-owned" },
     .{ .key = "run.replay", .level = .degraded, .reason = "bounded process-memory journal; gaps are explicit" },
     .{ .key = "action.tools", .level = .degraded, .reason = "observed ACP presentation tool calls only; no catalog" },
+    .{ .key = contract.feature_tool_sources_attach, .level = .native, .reason = "session/new carries the MCP server array; stdio descriptors only at this pin", .modes = &.{"session_open"}, .limits_json = "{\"transports\":[\"process\"]}" },
     .{ .key = "action.tools.execute", .level = .degraded, .reason = "observed tool lifecycle is normalized" },
     .{ .key = "action.permissions", .level = .native, .reason = "ACP permission choice semantics with synthesized portable identity" },
 };
@@ -84,6 +85,113 @@ pub const Adapter = struct {
     }
 };
 
+const Attached = struct {
+    servers: []const std.json.Value = &.{},
+    sources: []const oap_types.ToolSourceDescriptor = &.{},
+};
+
+fn attach(owner: *Adapter, arena: std.mem.Allocator, sources_json: ?[]const u8, refusal: *contract.Refusal) contract.Failure!Attached {
+    const text = sources_json orelse return .{};
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{ .allocate = .alloc_always }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return error.InvalidSubmission;
+    };
+    if (document != .array or document.array.items.len == 0) return .{};
+    const items = document.array.items;
+    const servers = try arena.alloc(std.json.Value, items.len);
+    const sources = try arena.alloc(oap_types.ToolSourceDescriptor, items.len);
+    for (items, servers, sources, 0..) |item, *server, *source, index| {
+        const id = memberText(item, "id");
+        if (id.len == 0) return refuseAttachment(refusal, "", "an attachment needs an id");
+        for (items[0..index]) |earlier| {
+            if (std.mem.eql(u8, memberText(earlier, "id"), id)) return refuseAttachment(refusal, id, "the id already names a configured or attached MCP server");
+        }
+        if (!std.mem.eql(u8, memberText(item, "kind"), "process")) return refuseAttachment(refusal, id, "ACP v1 accepts stdio MCP descriptors only at this pin");
+        const environment = memberArray(item, "environment");
+        for (environment, 0..) |entry, position| {
+            for (environment[0..position]) |prior| {
+                if (std.mem.eql(u8, envName(textOf(prior)), envName(textOf(entry)))) {
+                    return refuseAttachment(refusal, id, try std.fmt.allocPrint(arena, "environment names {s} twice", .{envName(textOf(entry))}));
+                }
+            }
+        }
+        const command = memberText(item, "command");
+        if (command.len == 0) {
+            return refusal.fail(error.InvalidResolution, try std.fmt.allocPrint(arena, "adapter: invalid interaction resolution: tool source \"{s}\" declares a process source with no command", .{id}));
+        }
+        var native: std.json.ObjectMap = .empty;
+        try native.put(arena, "name", .{ .string = id });
+        try native.put(arena, "command", .{ .string = command });
+        const args = memberArray(item, "args");
+        if (args.len > 0) {
+            var listed = std.json.Array.init(arena);
+            for (args) |arg| try listed.append(.{ .string = textOf(arg) });
+            try native.put(arena, "args", .{ .array = listed });
+        }
+        var env = std.json.Array.init(arena);
+        for (environment) |entry| {
+            const carried = textOf(entry);
+            const name = envName(carried);
+            const value = if (carried.len > name.len) carried[name.len + 1 ..] else allowlisted(owner.config.environment, name) orelse continue;
+            var variable: std.json.ObjectMap = .empty;
+            try variable.put(arena, "name", .{ .string = name });
+            try variable.put(arena, "value", .{ .string = value });
+            try env.append(.{ .object = variable });
+        }
+        if (env.items.len > 0) try native.put(arena, "env", .{ .array = env });
+        server.* = .{ .object = native };
+        source.* = .{ .id = id, .kind = "process", .display_name = optionalText(item, "display_name"), .protocol = optionalText(item, "protocol"), .endpoint = optionalText(item, "endpoint") };
+    }
+    return .{ .servers = servers, .sources = sources };
+}
+
+fn refuseAttachment(refusal: *contract.Refusal, source: []const u8, detail: []const u8) contract.Failure {
+    refusal.* = .{ .feature = contract.feature_tool_sources_attach, .reason = contract.reason_unsatisfiable, .source = source, .detail = detail };
+    return error.UnsupportedFeature;
+}
+
+fn ownedSource(allocator: std.mem.Allocator, source: oap_types.ToolSourceDescriptor) !oap_types.ToolSourceDescriptor {
+    const id = try allocator.dupe(u8, source.id);
+    const kind = try allocator.dupe(u8, source.kind);
+    const display_name = if (source.display_name) |text| try allocator.dupe(u8, text) else null;
+    const protocol_name = if (source.protocol) |text| try allocator.dupe(u8, text) else null;
+    const endpoint = if (source.endpoint) |text| try allocator.dupe(u8, text) else null;
+    return .{ .id = id, .kind = kind, .display_name = display_name, .protocol = protocol_name, .endpoint = endpoint };
+}
+
+fn allowlisted(environment: []const []const u8, name: []const u8) ?[]const u8 {
+    for (environment) |entry| {
+        const cut = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        if (std.mem.eql(u8, entry[0..cut], name)) return entry[cut + 1 ..];
+    }
+    return null;
+}
+
+fn envName(entry: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, entry, '=') orelse return entry;
+    return entry[0..cut];
+}
+
+fn textOf(value: std.json.Value) []const u8 {
+    return if (value == .string) value.string else "";
+}
+
+fn memberText(value: std.json.Value, key: []const u8) []const u8 {
+    if (value != .object) return "";
+    return textOf(value.object.get(key) orelse return "");
+}
+
+fn optionalText(value: std.json.Value, key: []const u8) ?[]const u8 {
+    const text = memberText(value, key);
+    return if (text.len > 0) text else null;
+}
+
+fn memberArray(value: std.json.Value, key: []const u8) []const std.json.Value {
+    if (value != .object) return &.{};
+    const carried = value.object.get(key) orelse return &.{};
+    return if (carried == .array) carried.array.items else &.{};
+}
+
 const Ask = struct {
     native_id: std.json.Value,
     interaction_id: []const u8,
@@ -113,10 +221,16 @@ pub const Session = struct {
     scanned: usize = 0,
     ended: bool = false,
     reaped: bool = false,
+    servers: []const std.json.Value = &.{},
+    sources: []oap_types.ToolSourceDescriptor = &.{},
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
+        const attached = try attach(owner, arena, request.tool_sources_json, refusal);
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
+        self.servers = attached.servers;
+        self.sources = try self.owned().alloc(oap_types.ToolSourceDescriptor, attached.sources.len);
+        for (attached.sources, self.sources) |source, *slot| slot.* = try ownedSource(self.owned(), source);
         const initialized = try self.call(arena, "initialize", try self.initializeParams(), refusal);
         const version = memberOf(initialized, "protocolVersion");
         const capabilities = memberOf(initialized, "agentCapabilities");
@@ -256,7 +370,9 @@ pub const Session = struct {
     fn sessionNewParams(self: *Session) !std.json.Value {
         var params = self.object();
         try self.put(&params, "cwd", .{ .string = self.owner.config.working_directory });
-        try self.put(&params, "mcpServers", .{ .array = std.json.Array.init(self.owned()) });
+        var servers = std.json.Array.init(self.owned());
+        try servers.appendSlice(self.servers);
+        try self.put(&params, "mcpServers", .{ .array = servers });
         return .{ .object = params };
     }
 
@@ -487,6 +603,7 @@ pub const Session = struct {
             .status = if (live) .running else .idle,
             .active_run_id = active_run_id,
             .updated_at_ms = wallClock(),
+            .sources = try arena.dupe(oap_types.ToolSourceDescriptor, self.sources),
         };
     }
 
@@ -777,7 +894,11 @@ const Probe = struct {
     }
 
     fn open(self: *Probe, refusal: *contract.Refusal) !contract.Session {
-        const live = try self.adapter.adapter().vtable.open(&self.adapter, self.arena.allocator(), .{ .session_id = "s1", .participant = "user" }, refusal);
+        return self.openAttaching(null, refusal);
+    }
+
+    fn openAttaching(self: *Probe, sources_json: ?[]const u8, refusal: *contract.Refusal) !contract.Session {
+        const live = try self.adapter.adapter().vtable.open(&self.adapter, self.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tool_sources_json = sources_json }, refusal);
         self.handle = live;
         return live;
     }
@@ -965,4 +1086,46 @@ test "a permission request still open when its run settles is answered cancelled
     _ = try probe.pumpUntil("run.completed", &seen);
     _ = try probe.waitWritten("{\"id\":\"permission-1\",\"jsonrpc\":\"2.0\",\"result\":{\"outcome\":{\"outcome\":\"cancelled\"}}}");
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
+}
+
+test "attached process sources reach session/new as MCP servers, allowlisted environment resolved, and state lists them" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.openAttaching("[{\"id\":\"fs\",\"kind\":\"process\",\"display_name\":\"Files\",\"protocol\":\"mcp\",\"command\":\"/bin/fs\",\"args\":[\"-v\"],\"environment\":[\"PATH\",\"LIT=1\",\"MISSING\"]}]", &refusal);
+    const scratch = probe.arena.allocator();
+    const written = try probe.fake.written(scratch);
+    const want = try std.fmt.allocPrint(scratch,
+        \\{{"id":2,"jsonrpc":"2.0","method":"session/new","params":{{"cwd":"{s}","mcpServers":[{{"name":"fs","command":"/bin/fs","args":["-v"],"env":[{{"name":"PATH","value":"/usr/bin:/bin"}},{{"name":"LIT","value":"1"}}]}}]}}}}
+    , .{probe.fake.cwd});
+    try testing.expect(std.mem.indexOf(u8, written, want) != null);
+    const state = try probe.handle.?.state(scratch, &refusal);
+    try testing.expectEqual(@as(usize, 1), state.sources.len);
+    try testing.expectEqualStrings("fs", state.sources[0].id);
+    try testing.expectEqualStrings("process", state.sources[0].kind);
+    try testing.expectEqualStrings("Files", state.sources[0].display_name.?);
+    try testing.expectEqualStrings("mcp", state.sources[0].protocol.?);
+}
+
+test "an attachment ACP cannot carry is refused naming the source and why, before the agent starts" {
+    const cases = [_]struct { json: []const u8, failure: contract.Failure, source: []const u8, detail: []const u8, message: []const u8 = "" }{
+        .{ .json = "[{\"kind\":\"process\",\"command\":\"/bin/x\"}]", .failure = error.UnsupportedFeature, .source = "", .detail = "an attachment needs an id" },
+        .{ .json = "[{\"id\":\"a\",\"kind\":\"process\",\"command\":\"/bin/x\"},{\"id\":\"a\",\"kind\":\"process\",\"command\":\"/bin/y\"}]", .failure = error.UnsupportedFeature, .source = "a", .detail = "the id already names a configured or attached MCP server" },
+        .{ .json = "[{\"id\":\"notes\",\"kind\":\"local\"}]", .failure = error.UnsupportedFeature, .source = "notes", .detail = "ACP v1 accepts stdio MCP descriptors only at this pin" },
+        .{ .json = "[{\"id\":\"a\",\"kind\":\"process\",\"command\":\"/bin/x\",\"environment\":[\"K=1\",\"K\"]}]", .failure = error.UnsupportedFeature, .source = "a", .detail = "environment names K twice" },
+        .{ .json = "[{\"id\":\"a\",\"kind\":\"process\"}]", .failure = error.InvalidResolution, .source = "", .detail = "", .message = "adapter: invalid interaction resolution: tool source \"a\" declares a process source with no command" },
+    };
+    for (cases) |case| {
+        var probe: Probe = undefined;
+        try probe.init(fake_prelude ++ fake_idle);
+        defer probe.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(case.failure, probe.openAttaching(case.json, &refusal));
+        try testing.expectEqualStrings(case.source, refusal.source);
+        try testing.expectEqualStrings(case.detail, refusal.detail);
+        try testing.expectEqualStrings(case.message, refusal.message);
+        if (case.failure == error.UnsupportedFeature) try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
+        try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
+    }
 }
