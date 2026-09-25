@@ -37,6 +37,9 @@ func TestBackendsMatchOapx(t *testing.T) {
 			scenario := readLines(t, filepath.Join(dir, "scenario.jsonl"))
 			wantOut, wantChild := exchangeWithChild(t, dir, backend, scenario, goap, "serve", "agent")
 			gotOut, gotChild := exchangeWithChild(t, dir, backend, scenario, oapx, "serve", "agent")
+			if len(wantOut) < len(scenario) {
+				t.Fatalf("goap wrote %d lines for %d requests; the fixture does not start", len(wantOut), len(scenario))
+			}
 			if missing, extra := lineDifference(wantOut, gotOut); len(missing)+len(extra) > 0 {
 				t.Errorf("oapx answers differently\n--- only goap\n%s\n--- only oapx\n%s", strings.Join(missing, "\n"), strings.Join(extra, "\n"))
 			}
