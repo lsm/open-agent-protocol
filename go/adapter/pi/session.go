@@ -47,6 +47,7 @@ type runState struct {
 	id           protocol.RunID
 	status       protocol.RunStatus
 	next         uint64
+	submissionID protocol.SubmissionID
 	started      bool
 	terminal     bool
 	cancelIntent bool
@@ -276,7 +277,7 @@ func (s *Session) Submit(ctx context.Context, req protocol.MessageSubmitRequest)
 
 		return protocol.MessageSubmitResponse{}, stream, ctx.Err()
 	}
-	response := protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: protocol.SubmissionID(s.ids.NewID("submission")), RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: model, MessageIDs: messageIDs}
+	response := protocol.MessageSubmitResponse{SessionID: req.SessionID, Accepted: true, SubmissionID: run.submissionID, RequestedDelivery: protocol.DeliveryAuto, EffectiveDelivery: protocol.DeliveryStart, DeliveryResolution: "session_idle", Admission: protocol.AdmissionStarted, RunID: run.id, Status: protocol.RunRunning, ModelID: model, MessageIDs: messageIDs}
 	return response, stream, nil
 }
 
@@ -471,6 +472,7 @@ func (s *Session) applyEvent(event native.Event) {
 				return
 			}
 		}
+		run.submissionID = protocol.SubmissionID(s.ids.NewID("submission"))
 		run.signalStart(nil)
 		pending := run.pending
 		pendingUI := run.pendingUI

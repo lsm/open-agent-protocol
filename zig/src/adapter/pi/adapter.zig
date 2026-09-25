@@ -476,6 +476,7 @@ pub const Session = struct {
         reducer.responder = self.participant;
         reducer.revision = capability_revision;
         reducer.model_id = self.current_model;
+        reducer.mints_submission = true;
         self.bound = 0;
         self.unbound.clearRetainingCapacity();
         reducer.counters.shared = &self.owner.ids;
@@ -504,7 +505,7 @@ pub const Session = struct {
             }
             _ = try self.step(self.owner.config.poll_ns);
         }
-        const submission_id = try arena.dupe(u8, try reducer.counters.nextID(self.owned(), "submission"));
+        const submission_id = try arena.dupe(u8, reducer.submission_id);
         const run_id = try arena.dupe(u8, reducer.run_id);
         const model_id: ?[]const u8 = if (self.current_model.len > 0) try arena.dupe(u8, self.current_model) else null;
         return .{

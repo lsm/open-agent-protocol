@@ -69,6 +69,11 @@ pub const CancelResponse = struct { session_id: []const u8, run_id: []const u8, 
 
 const Part = struct { reasoning: bool, text: []const u8 };
 
+pub const Settled = struct {
+    run_id: []const u8,
+    sequence: u64,
+};
+
 pub const Run = struct {
     id: []const u8,
     message_id: []const u8,
@@ -80,6 +85,7 @@ pub const Run = struct {
     holding: bool = false,
     held: std.ArrayList(std.json.Value) = .empty,
     start_published: bool = false,
+    published_seq: u64 = 0,
     queued_admission: bool = true,
     cancel_requested: bool = false,
     settling: bool = false,
@@ -159,6 +165,8 @@ pub const Reducer = struct {
     catalog: std.ArrayList([]const u8) = .empty,
     settlements: std.ArrayList(Settlement) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
+    last_seq: i64 = 0,
+    settled: std.ArrayList(Settled) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options, client: Native) Reducer {
         return .{ .arena = arena, .options = options, .client = client };
@@ -350,6 +358,7 @@ pub const Reducer = struct {
             return self.abandon(null, "opencode_foreign_session", "durable event belongs to another session", "");
         }
         const seen = try self.reduced.getOrPut(self.allocator(), event.durable.seq);
+        if (!seen.found_existing and event.durable.seq > self.last_seq) self.last_seq = event.durable.seq;
         if (seen.found_existing) return;
         const run = self.reductionTarget();
         switch (event.kind) {
@@ -800,6 +809,16 @@ pub const Reducer = struct {
         const kind = envelope.object.get("type").?.string;
         if (std.mem.eql(u8, kind, "run.started")) run.start_published = true;
         try self.envelopes.append(self.allocator(), envelope);
+        const carried = envelope.object.get("sequence") orelse return;
+        const sequence: u64 = switch (carried) {
+            .integer => |value| @intCast(value),
+            .number_string => |text| std.fmt.parseInt(u64, text, 10) catch return,
+            else => return,
+        };
+        if (sequence > run.published_seq) run.published_seq = sequence;
+        if (std.mem.eql(u8, kind, "run.completed") or std.mem.eql(u8, kind, "run.failed") or std.mem.eql(u8, kind, "run.cancelled")) {
+            try self.settled.append(self.allocator(), .{ .run_id = run.id, .sequence = sequence });
+        }
     }
 };
 

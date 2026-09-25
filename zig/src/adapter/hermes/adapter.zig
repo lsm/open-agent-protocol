@@ -386,11 +386,14 @@ pub const Session = struct {
         const reducer = self.live();
         const active_run_id: ?[]const u8 = if (reducer) |running| try arena.dupe(u8, running.run.?.id) else null;
         const model = self.owner.config.model;
+        const current_model_id: ?[]const u8 = if (model.len > 0) try arena.dupe(u8, model) else null;
+        const transcript_cursor: ?[]const u8 = if (self.reducer) |present| (if (present.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{present.cursor}) else null) else null;
         return .{
             .session_id = self.id,
             .status = if (reducer == null) .idle else if (self.waiting()) .waiting_for_input else .running,
             .active_run_id = active_run_id,
-            .current_model_id = if (model.len > 0) try arena.dupe(u8, model) else null,
+            .current_model_id = current_model_id,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
         };
     }
