@@ -1,6 +1,6 @@
 # Claude Code / Claude Agent SDK 2.1.280 mapping ledger
 
-Status: the Claude Code adapter's pin. This ledger moves the adapter from
+Status: retired on 2026-09-24 by [the 2.1.282 ledger](claude-code-agent-sdk-2.1.282-mapping.md), which moved the pin and removed this corpus. This ledger moves the adapter from
 2.1.263 to 2.1.280 and records only what the move changed or settled.
 [The 2.1.263 ledger](claude-code-agent-sdk-2.1.263-mapping.md) remains the
 mapping of record for every surface not restated here. Since 2026-09-24 the

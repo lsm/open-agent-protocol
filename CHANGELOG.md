@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Claude Code pin moves to 2.1.282 (Agent SDK 0.3.282; Python SDK 0.2.159, the newest, which bundles 2.1.281). Captures of all seventeen probes against 2.1.280 and 2.1.282 differ only in `system/init` (new optional `view_mode`, `per_turn_effort_active`, a built-in plugin, the `focus` command), so no adapter code changes; the capability revisions become `claude-code-2.1.282-oap-v1` and `claude-code-2.1.282-oapx-v1` for the new endpoint version. The corpus moves to `fixtures/adapters/claude-code-2.1.282`; 2.1.280 is retired and its corpus removed. Recorded in [`research/claude-code-agent-sdk-2.1.282-mapping.md`](research/claude-code-agent-sdk-2.1.282-mapping.md).
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
 
 ### Removed
