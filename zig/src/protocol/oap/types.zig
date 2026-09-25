@@ -690,6 +690,7 @@ pub const SessionState = struct {
     current_model_id: ?[]const u8 = null,
     transcript_cursor: ?[]const u8 = null,
     updated_at_ms: ?i64 = null,
+    metadata_json: ?[]const u8 = null,
     sources: []ToolSourceDescriptor = &.{},
     as_of: ?SessionCapture = null,
 
@@ -700,6 +701,7 @@ pub const SessionState = struct {
         allocator.free(self.active_runs);
         if (self.current_model_id) |value| allocator.free(value);
         if (self.transcript_cursor) |value| allocator.free(value);
+        if (self.metadata_json) |value| allocator.free(value);
         for (self.sources) |*entry| entry.deinit(allocator);
         allocator.free(self.sources);
         if (self.as_of) |*capture| capture.deinit(allocator);

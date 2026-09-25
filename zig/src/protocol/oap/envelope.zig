@@ -155,6 +155,10 @@ fn serializeSessionState(w: *json_writer.JsonWriter, state: oap_types.SessionSta
     if (state.current_model_id) |value| try w.writeStringField("current_model_id", value);
     if (state.transcript_cursor) |value| try w.writeStringField("transcript_cursor", value);
     if (state.updated_at_ms) |value| try w.writeIntField("updated_at_ms", value);
+    if (state.metadata_json) |metadata| {
+        try w.writeKey("metadata");
+        try writeJsonValueOrString(w, metadata);
+    }
     if (state.sources.len > 0) try serializeSources(w, state.sources);
     if (state.as_of) |capture| {
         try w.writeKey("as_of");
@@ -909,11 +913,13 @@ fn deserializeSessionState(obj: std.json.ObjectMap, allocator: std.mem.Allocator
         for (state.active_runs) |*entry| entry.deinit(allocator);
         allocator.free(state.active_runs);
         if (state.transcript_cursor) |owned| allocator.free(owned);
+        if (state.metadata_json) |owned| allocator.free(owned);
         for (state.sources) |*entry| entry.deinit(allocator);
         allocator.free(state.sources);
     }
     if (obj.get("active_runs")) |value| state.active_runs = try deserializeActiveRuns(value, allocator);
     state.transcript_cursor = try optionalOwnedString(obj, "transcript_cursor", allocator);
+    state.metadata_json = try optionalObjectJson(obj, "metadata", allocator);
     if (obj.get("sources")) |value| state.sources = try deserializeSources(value, allocator);
     if (obj.get("as_of")) |value| state.as_of = try deserializeSessionCapture(value, allocator);
     return state;
@@ -2545,7 +2551,7 @@ test "every new payload decoder frees what it built when an allocation fails" {
             "\"requested_delivery\":\"auto\",\"effective_delivery\":\"start\",\"admission\":\"started\",\"run_id\":\"r\",\"message_ids\":[\"m1\",\"m2\"]}}",
         prefix ++ "session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"queued\",\"active_runs\":[{\"run_id\":\"r\",\"status\":\"queued\"," ++
             "\"relationship\":\"primary\",\"queue_position\":1,\"as_of_sequence\":0,\"admitted_submit_requests\":[\"a\"],\"pending_interactions\":[\"p\"]," ++
-            "\"acknowledged_interactions\":[\"k\"]}],\"transcript_cursor\":\"4\",\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}]," ++
+            "\"acknowledged_interactions\":[\"k\"]}],\"transcript_cursor\":\"4\",\"metadata\":{\"k\":1},\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}]," ++
             "\"as_of\":{\"admitted_submit_requests\":[\"a\"],\"settled\":[{\"run_id\":\"q\",\"sequence\":3}],\"model_run_sequence\":{\"run_id\":\"q\",\"sequence\":2}}}}",
         prefix ++ "models.response\",\"payload\":{\"session_id\":\"s\",\"models\":[{\"id\":\"m\",\"context_window\":8192}]," ++
             "\"providers\":[{\"id\":\"p\",\"display_name\":\"P\",\"wire\":\"w\",\"kind\":\"direct\"}]}}",
@@ -2562,7 +2568,7 @@ test "session state, models and capabilities round trip the members goap serves"
     const line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
         "\",\"id\":\"e-1\",\"type\":\"session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"waiting_for_input\",\"active_run_id\":\"r\"," ++
         "\"active_runs\":[{\"run_id\":\"r\",\"status\":\"running\",\"relationship\":\"primary\",\"as_of_sequence\":4,\"pending_interactions\":[\"p\"]}]," ++
-        "\"transcript_cursor\":\"4\",\"updated_at_ms\":7,\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}}}";
+        "\"transcript_cursor\":\"4\",\"updated_at_ms\":7,\"metadata\":{\"claude_native_session_id\":\"n-1\"},\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}}}";
     var decoded = try deserializeEnvelope(line, allocator);
     defer decoded.deinit(allocator);
     const state = decoded.payload.session_state_response;
@@ -2574,6 +2580,7 @@ test "session state, models and capabilities round trip the members goap serves"
     defer allocator.free(encoded);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\"active_runs\":[{\"run_id\":\"r\",\"status\":\"running\",\"relationship\":\"primary\",\"as_of_sequence\":4,\"pending_interactions\":[\"p\"]}]") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"updated_at_ms\":7,\"metadata\":{\"claude_native_session_id\":\"n-1\"},") != null);
 
     var models = try roundTrip(.{ .id = "m", .payload = .{ .models_response = .{
         .session_id = "s",
