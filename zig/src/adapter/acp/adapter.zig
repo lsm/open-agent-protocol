@@ -598,12 +598,15 @@ pub const Session = struct {
         if (self.ended) return error.SessionClosed;
         const live = if (self.reducer.run) |run| !run.terminal else false;
         const active_run_id: ?[]const u8 = if (live) try arena.dupe(u8, self.reducer.run.?.id) else null;
+        const sources = try arena.dupe(oap_types.ToolSourceDescriptor, self.sources);
+        const transcript_cursor: ?[]const u8 = if (self.reducer.last_sequence > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_sequence}) else null;
         return .{
             .session_id = self.id,
             .status = if (live) .running else .idle,
             .active_run_id = active_run_id,
             .updated_at_ms = wallClock(),
-            .sources = try arena.dupe(oap_types.ToolSourceDescriptor, self.sources),
+            .sources = sources,
+            .transcript_cursor = transcript_cursor,
         };
     }
 
