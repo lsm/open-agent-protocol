@@ -3,12 +3,16 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -60,28 +64,139 @@ func readLines(t *testing.T, path string) []string {
 func exchangeWithChild(t *testing.T, fixture, backend string, scenario []string, binary string, args ...string) ([]string, string) {
 	t.Helper()
 	work := t.TempDir()
-	child, err := os.ReadFile(filepath.Join(fixture, "child.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(work, "child.sh"), child, 0o755); err != nil {
-		t.Fatal(err)
+	var server *fakeOpenCode
+	if child, err := os.ReadFile(filepath.Join(fixture, "child.sh")); err == nil {
+		if err := os.WriteFile(filepath.Join(work, "child.sh"), child, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		server = startFakeOpenCode(t)
 	}
 	registry, err := os.ReadFile(filepath.Join(fixture, "registry.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(work, "registry.json"), []byte(strings.ReplaceAll(string(registry), "@DIR@", work)), 0o644); err != nil {
+	resolved := strings.ReplaceAll(string(registry), "@DIR@", work)
+	if server != nil {
+		resolved = strings.ReplaceAll(resolved, "@URL@", server.url)
+	}
+	if err := os.WriteFile(filepath.Join(work, "registry.json"), []byte(resolved), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, append(args, "--backend", backend, "--config", filepath.Join(work, "registry.json"))...)
 	cmd.Dir = work
 	out := settledExchange(t, cmd, scenario)
+	if server != nil {
+		return out, server.transcript()
+	}
 	written, err := os.ReadFile(filepath.Join(work, "stdin.log"))
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
 	return out, strings.ReplaceAll(string(written), work, "@DIR@")
+}
+
+const fakeOpenCodeSession = "ses_fake00000000000000"
+
+type fakeOpenCode struct {
+	url    string
+	mu     sync.Mutex
+	posts  []string
+	gets   map[string]bool
+	seq    int
+	stream chan string
+}
+
+func startFakeOpenCode(t *testing.T) *fakeOpenCode {
+	t.Helper()
+	fake := &fakeOpenCode{gets: map[string]bool{}, stream: make(chan string, 64)}
+	server := httptest.NewServer(http.HandlerFunc(fake.serve))
+	t.Cleanup(server.Close)
+	fake.url = server.URL
+	return fake
+}
+
+func (f *fakeOpenCode) transcript() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	gets := make([]string, 0, len(f.gets))
+	for path := range f.gets {
+		gets = append(gets, path)
+	}
+	sort.Strings(gets)
+	return strings.Join(f.posts, "\n") + "\n--- GET\n" + strings.Join(gets, "\n")
+}
+
+func (f *fakeOpenCode) serve(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	path := r.URL.RequestURI()
+	f.mu.Lock()
+	if r.Method == http.MethodGet {
+		f.gets[path] = true
+	} else {
+		f.posts = append(f.posts, r.Method+" "+path+" "+string(body))
+	}
+	f.mu.Unlock()
+	switch {
+	case strings.HasPrefix(path, "/api/session/"+fakeOpenCodeSession+"/event"):
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		flusher.Flush()
+		for {
+			select {
+			case line := <-f.stream:
+				fmt.Fprintf(w, "data: %s\n\n", line)
+				flusher.Flush()
+			case <-r.Context().Done():
+				return
+			}
+		}
+	case r.Method == http.MethodPost && path == "/api/session":
+		writeJSON(w, `{"data":{"id":"`+fakeOpenCodeSession+`","projectID":"prj_fake","model":{"id":"fixture","providerID":"fixture"},"time":{"created":1,"updated":1}}}`)
+	case strings.HasSuffix(path, "/prompt"):
+		var prompt struct {
+			ID       string `json:"id"`
+			Delivery string `json:"delivery"`
+			Prompt   struct {
+				Text string `json:"text"`
+			} `json:"prompt"`
+		}
+		_ = json.Unmarshal(body, &prompt)
+		f.mu.Lock()
+		turn := f.seq
+		f.mu.Unlock()
+		writeJSON(w, fmt.Sprintf(`{"data":{"admittedSeq":1,"id":%q,"sessionID":"%s","prompt":{"text":%q},"delivery":%q,"timeCreated":1,"promotedSeq":%d}}`, prompt.ID, fakeOpenCodeSession, prompt.Prompt.Text, prompt.Delivery, turn+1))
+		for _, event := range []string{
+			`"prompted",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","messageID":"%MSG%","prompt":{"text":"hello"},"delivery":"steer"}`,
+			`"step.started",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","assistantMessageID":"msg_a1","agent":"build","model":{"id":"fixture","providerID":"fixture"}}`,
+			`"text.ended",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","assistantMessageID":"msg_a1","textID":"t1","text":"done"}`,
+			`"step.ended",` + `"data":{"timestamp":%SEQ%,"sessionID":"` + fakeOpenCodeSession + `","assistantMessageID":"msg_a1","finish":"stop","cost":0,"tokens":{"input":2,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}`,
+		} {
+			f.mu.Lock()
+			f.seq++
+			seq := fmt.Sprint(f.seq)
+			f.mu.Unlock()
+			kind, data, _ := strings.Cut(event, ",")
+			line := `{"id":"evt_` + seq + `","type":"session.next.` + strings.Trim(kind, `"`) + `","durable":{"aggregateID":"` + fakeOpenCodeSession + `","seq":` + seq + `,"version":1},` + data + `}`
+			line = strings.ReplaceAll(strings.ReplaceAll(line, "%SEQ%", seq), "%MSG%", prompt.ID)
+			f.stream <- line
+		}
+	case strings.HasSuffix(path, "/interrupt"):
+		w.WriteHeader(http.StatusNoContent)
+	case path == "/api/session/active":
+		writeJSON(w, `{"data":{}}`)
+	case strings.Contains(path, "/history"):
+		writeJSON(w, `{"data":[],"hasMore":false}`)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, "{}")
+	}
+}
+
+func writeJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, body)
 }
 
 func settledExchange(t *testing.T, cmd *exec.Cmd, lines []string) []string {
