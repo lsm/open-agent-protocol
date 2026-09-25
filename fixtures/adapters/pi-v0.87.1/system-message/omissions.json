@@ -1,0 +1,37 @@
+[
+  {
+    "index": 1,
+    "type": "turn_start",
+    "reason": "Pi turn boundaries are diagnostics with no OAP core projection"
+  },
+  {
+    "index": 2,
+    "type": "message_start",
+    "reason": "Pi message_start opens a transcript message; the reducer projects the matching message_end or deltas"
+  },
+  {
+    "index": 3,
+    "type": "message_end",
+    "reason": "Pi system prompt and tool declarations are harness transcript state with no OAP core projection"
+  },
+  {
+    "index": 4,
+    "type": "message_start",
+    "reason": "Pi message_start opens a transcript message; the reducer projects the matching message_end or deltas"
+  },
+  {
+    "index": 5,
+    "type": "message_end",
+    "reason": "Pi echoes the submitted user message; OAP already carries it on message.submit"
+  },
+  {
+    "index": 6,
+    "type": "message_start",
+    "reason": "Pi message_start opens a transcript message; the reducer projects the matching message_end or deltas"
+  },
+  {
+    "index": 11,
+    "type": "turn_end",
+    "reason": "Pi turn boundaries are diagnostics with no OAP core projection"
+  }
+]

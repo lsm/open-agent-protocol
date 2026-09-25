@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
+- Pi is pinned to `v0.87.1` (capability revisions `pi-v0.87.1-oap-v1` and `pi-v0.87.1-oapx-v1`); `v0.85.1` is retired with its corpus. Pi now emits `system` role messages carrying the system prompt and tool declarations, which both adapters refused as an unknown role, failing the first run of every session. The Go adapter and the Zig port accept them and project nothing from them. The advertised surface is unchanged. The new corpus carries ten cases forward and adds a `system-message` case recorded from the released binary; the wire differences are in [`research/pi-v0.87.1-mapping.md`](research/pi-v0.87.1-mapping.md).
 
 ### Removed
 
