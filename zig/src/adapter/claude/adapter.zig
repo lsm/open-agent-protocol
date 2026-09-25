@@ -10,7 +10,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.claude_code_oapx_capability_revision;
+pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const pinned_version = harness_pins.claude_code_endpoint_version;
 pub const denied_message = "Denied by the operator";
 const harness_owner = session.harness_owner;
