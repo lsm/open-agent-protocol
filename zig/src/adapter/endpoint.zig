@@ -480,7 +480,7 @@ pub const Endpoint = struct {
         const entry = try self.entryFor(arena, request);
         if (payload.session_id) |scoped| try self.requireScope(arena, scoped, entry);
         const lister = entry.session.vtable.tools orelse
-            return self.deny("tool_catalog_unavailable", "no portable tool catalog is served", &.{});
+            return self.deny("tool_catalog_unavailable", "adapter: no portable tool catalog is served", &.{});
         const catalog = try lister(entry.session.ptr, arena, payload, refusal);
         try self.respond(arena, request, .{
             .id = "",
