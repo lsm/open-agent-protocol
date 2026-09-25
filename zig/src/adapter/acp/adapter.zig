@@ -160,11 +160,17 @@ fn ownedSource(allocator: std.mem.Allocator, source: oap_types.ToolSourceDescrip
 }
 
 fn allowlisted(environment: []const []const u8, name: []const u8) ?[]const u8 {
+    var found: ?[]const u8 = null;
     for (environment) |entry| {
         const cut = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
-        if (std.mem.eql(u8, entry[0..cut], name)) return entry[cut + 1 ..];
+        if (std.mem.eql(u8, entry[0..cut], name)) found = entry[cut + 1 ..];
     }
-    return null;
+    return found;
+}
+
+test "an allowlisted name listed twice resolves to its last value, as goap's map does" {
+    try testing.expectEqualStrings("2", allowlisted(&.{ "K=1", "OTHER=x", "K=2" }, "K").?);
+    try testing.expect(allowlisted(&.{"K"}, "K") == null);
 }
 
 fn envName(entry: []const u8) []const u8 {
