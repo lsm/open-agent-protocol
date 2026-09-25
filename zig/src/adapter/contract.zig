@@ -33,6 +33,9 @@ pub const Refusal = struct {
     feature: []const u8 = "",
     reason: []const u8 = "",
     field: []const u8 = "",
+    tool: []const u8 = "",
+    source: []const u8 = "",
+    detail: []const u8 = "",
     model_id: []const u8 = "",
     backend: []const u8 = "",
     message: []const u8 = "",
@@ -89,6 +92,17 @@ pub const Descriptor = struct {
     }
 };
 
+pub const ConfiguredSource = struct {
+    id: []const u8,
+    kind: []const u8,
+    display_name: []const u8 = "",
+    protocol: []const u8 = "",
+    endpoint: []const u8 = "",
+    command: []const u8 = "",
+    args: []const []const u8 = &.{},
+    environment: []const []const u8 = &.{},
+};
+
 pub const OpenRequest = struct {
     session_id: []const u8 = "",
     participant: []const u8,
@@ -143,7 +157,7 @@ pub const Session = struct {
         tools: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *Refusal) Failure!oap_types.ToolsListResponse = null,
         models: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *Refusal) Failure!oap_types.ModelsResponse = null,
         switch_model: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *Refusal) Failure!Switched = null,
-        resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
+        resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
     };
 

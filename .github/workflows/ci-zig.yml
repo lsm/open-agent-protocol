@@ -219,7 +219,7 @@ jobs:
         run: ./scripts/check-no-test-litter.sh
 
   memory-conformance:
-    name: Conformance - oapx memory backend
+    name: Conformance and parity - oapx memory backend
     needs: [unit-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -243,6 +243,11 @@ jobs:
 
       - name: Run goap conformance against oapx serve agent --backend memory
         run: go run ./go/cmd/goap conformance --command "/tmp/oapx-memory/bin/oapx serve agent --backend memory"
+
+      - name: Require oapx's memory backend to answer exactly as goap's
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-memory/bin/oapx
+        run: go test ./go/cmd/goap/ -run TestMemoryBackendMatchesOapx -v
 
   # =============================================================================
   rust-sdk:

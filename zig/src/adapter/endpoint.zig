@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
 const json_writer = @import("json_writer");
@@ -56,6 +57,7 @@ pub const default_journal_capacity = 256;
 pub const Options = struct {
     frame_limit: usize = default_frame_limit,
     journal_capacity: usize = default_journal_capacity,
+    tool_sources: []const contract.ConfiguredSource = &.{},
 };
 
 const Served = (contract.Failure || error{ Denied, FrameTooLarge });
@@ -65,6 +67,7 @@ pub const Endpoint = struct {
     adapter: contract.Adapter,
     frame_limit: usize,
     journal_capacity: usize,
+    tool_sources: []const contract.ConfiguredSource,
     participant: ?[]u8 = null,
     ids: u64 = 0,
     entries: std.ArrayList(Entry) = .empty,
@@ -72,7 +75,7 @@ pub const Endpoint = struct {
     denial: Denial = .{ .code = "internal", .message = "" },
 
     pub fn init(allocator: std.mem.Allocator, adapter: contract.Adapter, options: Options) Endpoint {
-        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity };
+        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity, .tool_sources = options.tool_sources };
     }
 
     pub fn deinit(self: *Endpoint) void {
@@ -347,13 +350,14 @@ pub const Endpoint = struct {
                 return self.deny("session_exists", message, &.{});
             }
         }
+        const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         const session = try self.adapter.open(arena, .{
             .session_id = payload.session_id orelse "",
             .participant = self.controlParticipant(),
             .allow_degraded_features = payload.allow_degraded_features,
             .tools_json = payload.tools_json,
-            .tool_sources_json = payload.tool_sources_json,
+            .tool_sources_json = tool_sources_json,
         }, refusal);
         if (self.find(session.id()) != null) {
             session.close();
@@ -478,7 +482,7 @@ pub const Endpoint = struct {
         try self.requireScope(arena, payload.session_id, entry);
         const resolver = entry.session.vtable.resolve_call orelse
             return refusal.unsupported(contract.feature_tools_provide, contract.reason_unadvertised);
-        const result = try resolver(entry.session.ptr, arena, payload, refusal);
+        const result = try resolver(entry.session.ptr, arena, request.id, payload, refusal);
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),
@@ -523,12 +527,20 @@ pub const Endpoint = struct {
         const fallback = mapped.fallback;
         if (refusal.feature.len > 0) try details.append(arena, .{ .key = "feature", .value = refusal.feature });
         if (refusal.reason.len > 0) try details.append(arena, .{ .key = "reason", .value = refusal.reason });
+        if (refusal.tool.len > 0) try details.append(arena, .{ .key = "tool", .value = refusal.tool });
         if (refusal.field.len > 0) try details.append(arena, .{ .key = "field", .value = refusal.field });
+        if (refusal.source.len > 0) try details.append(arena, .{ .key = "source", .value = refusal.source });
         if (refusal.model_id.len > 0) try details.append(arena, .{ .key = "model_id", .value = refusal.model_id });
         if (refusal.backend.len > 0) try details.append(arena, .{ .key = "backend", .value = refusal.backend });
         var message = if (refusal.message.len > 0) refusal.message else fallback;
         if (failure == error.UnsupportedFeature and refusal.message.len == 0 and refusal.feature.len > 0) {
-            message = try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
+            message = if (refusal.detail.len > 0)
+                try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s}): {s}", .{ refusal.feature, refusal.reason, refusal.detail })
+            else
+                try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
+        }
+        if (failure == error.ModelNotFound and refusal.message.len == 0 and refusal.model_id.len > 0) {
+            message = try std.fmt.allocPrint(arena, "adapter: model is not in the effective catalog: \"{s}\"", .{refusal.model_id});
         }
         if (failure == error.CapabilityDegraded and refusal.message.len == 0) {
             message = try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} is degraded and was not opted into", .{refusal.feature});
@@ -645,6 +657,62 @@ pub const Endpoint = struct {
         try self.outbound.append(self.allocator, line);
     }
 
+    fn resolveAttachments(self: *Endpoint, arena: std.mem.Allocator, carried: ?[]const u8, refusal: *contract.Refusal) Served!?[]const u8 {
+        const text = carried orelse return null;
+        const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return text;
+        };
+        if (document != .array) return text;
+        var resolved = std.json.Array.init(arena);
+        for (document.array.items) |attachment| {
+            if (attachment != .object) return text;
+            const id = memberString(attachment, "id");
+            const kind = memberString(attachment, "kind");
+            const args = attachment.object.get("args");
+            if (memberString(attachment, "command").len > 0 or (args != null and args.? == .array and args.?.array.items.len > 0)) {
+                return refuseAttachment(arena, refusal, id, "the daemon does not accept a command or arguments from the wire; name an operator-configured source by id");
+            }
+            const environment = attachment.object.get("environment");
+            if (environment) |listed_environment| {
+                if (listed_environment == .array) {
+                    for (listed_environment.array.items) |entry| {
+                        if (entry == .string and std.mem.indexOfScalar(u8, entry.string, '=') != null) {
+                            return refuseAttachment(arena, refusal, id, "the daemon accepts only the bare NAME allowlist form in environment");
+                        }
+                    }
+                }
+            }
+            const configured = self.configuredSource(id) orelse {
+                if (std.mem.eql(u8, kind, "process")) return refuseAttachment(arena, refusal, id, "no tool source of that id is configured on this daemon");
+                try resolved.append(attachment);
+                continue;
+            };
+            const members = [_]struct { name: []const u8, operator: []const u8 }{
+                .{ .name = "kind", .operator = configured.kind },
+                .{ .name = "display_name", .operator = configured.display_name },
+                .{ .name = "protocol", .operator = configured.protocol },
+                .{ .name = "endpoint", .operator = configured.endpoint },
+            };
+            for (members) |member| {
+                const wire = memberString(attachment, member.name);
+                if (wire.len > 0 and !std.mem.eql(u8, wire, member.operator)) {
+                    const reason = try std.fmt.allocPrint(arena, "the daemon does not accept {s} from the wire for a configured source; name it by id", .{member.name});
+                    return refuseAttachment(arena, refusal, id, reason);
+                }
+            }
+            try resolved.append(try configuredValue(arena, configured, environment));
+        }
+        return try json_encode.valueAlloc(arena, .{ .array = resolved });
+    }
+
+    fn configuredSource(self: *Endpoint, id: []const u8) ?contract.ConfiguredSource {
+        for (self.tool_sources) |source| {
+            if (std.mem.eql(u8, source.id, id)) return source;
+        }
+        return null;
+    }
+
     fn drainAll(self: *Endpoint) !void {
         for (self.entries.items) |*entry| try self.drainEntry(entry);
     }
@@ -750,21 +818,69 @@ fn settlesRun(allocator: std.mem.Allocator, line: []const u8) !bool {
 
 const Mapped = struct { code: []const u8, fallback: []const u8 };
 
+fn memberString(value: std.json.Value, key: []const u8) []const u8 {
+    const carried = value.object.get(key) orelse return "";
+    return if (carried == .string) carried.string else "";
+}
+
+fn refuseAttachment(arena: std.mem.Allocator, refusal: *contract.Refusal, source: []const u8, reason: []const u8) Served {
+    const message = try std.fmt.allocPrint(arena, "tool source \"{s}\": {s}", .{ source, reason });
+    refusal.* = .{ .feature = contract.feature_tool_sources_attach, .reason = contract.reason_unsatisfiable, .source = source, .message = message };
+    return error.UnsupportedFeature;
+}
+
+fn configuredValue(arena: std.mem.Allocator, configured: contract.ConfiguredSource, caller: ?std.json.Value) !std.json.Value {
+    var map: std.json.ObjectMap = .empty;
+    try map.put(arena, "id", .{ .string = configured.id });
+    try map.put(arena, "kind", .{ .string = configured.kind });
+    if (configured.display_name.len > 0) try map.put(arena, "display_name", .{ .string = configured.display_name });
+    if (configured.protocol.len > 0) try map.put(arena, "protocol", .{ .string = configured.protocol });
+    if (configured.endpoint.len > 0) try map.put(arena, "endpoint", .{ .string = configured.endpoint });
+    if (configured.command.len > 0) try map.put(arena, "command", .{ .string = configured.command });
+    if (configured.args.len > 0) {
+        var args = std.json.Array.init(arena);
+        for (configured.args) |arg| try args.append(.{ .string = arg });
+        try map.put(arena, "args", .{ .array = args });
+    }
+    var environment = std.json.Array.init(arena);
+    for (configured.environment) |entry| try environment.append(.{ .string = entry });
+    if (caller) |carried| {
+        if (carried == .array) {
+            for (carried.array.items) |entry| {
+                if (entry != .string) continue;
+                const name = envName(entry.string);
+                var present = false;
+                for (environment.items) |existing| {
+                    if (std.mem.eql(u8, envName(existing.string), name)) present = true;
+                }
+                if (!present) try environment.append(entry);
+            }
+        }
+    }
+    if (environment.items.len > 0) try map.put(arena, "environment", .{ .array = environment });
+    return .{ .object = map };
+}
+
+fn envName(entry: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, entry, '=') orelse return entry;
+    return entry[0..cut];
+}
+
 fn codeFor(failure: contract.Failure) Mapped {
     return switch (failure) {
-        error.UnsupportedFeature => .{ .code = "unsupported_feature", .fallback = "unsupported input" },
-        error.CapabilityDegraded => .{ .code = "capability_degraded", .fallback = "the feature is degraded and was not opted into" },
-        error.ModelNotFound => .{ .code = "model_not_found", .fallback = "the model is not in the effective catalog" },
-        error.SessionClosed => .{ .code = "session_closed", .fallback = "the session is closed" },
-        error.RunActive => .{ .code = "run_active", .fallback = "a run is already active" },
-        error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "the submission cannot be delivered to this backend" },
-        error.RunNotFound => .{ .code = "run_not_found", .fallback = "run not found" },
-        error.RunTerminal => .{ .code = "run_terminal", .fallback = "run already completed or failed" },
-        error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "interaction not found" },
-        error.InvalidResolution => .{ .code = "resolution_rejected", .fallback = "invalid interaction resolution" },
+        error.UnsupportedFeature => .{ .code = "unsupported_feature", .fallback = "adapter: unsupported input" },
+        error.CapabilityDegraded => .{ .code = "capability_degraded", .fallback = "adapter: unsupported input: the feature is degraded and was not opted into" },
+        error.ModelNotFound => .{ .code = "model_not_found", .fallback = "adapter: model is not in the effective catalog" },
+        error.SessionClosed => .{ .code = "session_closed", .fallback = "adapter: session closed" },
+        error.RunActive => .{ .code = "run_active", .fallback = "adapter: a run is already active" },
+        error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "adapter: invalid submission" },
+        error.RunNotFound => .{ .code = "run_not_found", .fallback = "adapter: run not found" },
+        error.RunTerminal => .{ .code = "run_terminal", .fallback = "adapter: run already completed or failed" },
+        error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "adapter: interaction not found" },
+        error.InvalidResolution => .{ .code = "resolution_rejected", .fallback = "adapter: invalid interaction resolution" },
         error.ToolCatalogUnavailable => .{ .code = "tool_catalog_unavailable", .fallback = "adapter: no portable tool catalog is served" },
         error.Unavailable => .{ .code = "unavailable", .fallback = "this backend is unavailable" },
-        error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "replay cursor is newer than the run" },
+        error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "adapter: replay cursor is newer than the run" },
         error.BackendFailed, error.OutOfMemory => .{ .code = "internal", .fallback = "the backend failed" },
     };
 }
@@ -1573,4 +1689,30 @@ fn driveConversation(allocator: std.mem.Allocator) !void {
 
 test "a whole conversation frees everything it built when any allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, driveConversation, .{});
+}
+
+test "attachments resolve as the hub resolves them: configured by id, local passed through, wire commands and literal environment refused" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var unavailable = contract.Unavailable{ .backend = "x", .message = "x" };
+    var endpoint = Endpoint.init(testing.allocator, unavailable.adapter(), .{ .tool_sources = &.{.{ .id = "fs", .kind = "process", .display_name = "Filesystem", .protocol = "mcp", .command = "/bin/fs", .environment = &.{"TOKEN"} }} });
+    defer endpoint.deinit();
+    var refusal = contract.Refusal{};
+
+    const resolved = (try endpoint.resolveAttachments(arena, "[{\"id\":\"fs\",\"environment\":[\"EXTRA\"]},{\"id\":\"notes\",\"kind\":\"local\"}]", &refusal)).?;
+    try testing.expectEqualStrings("[{\"id\":\"fs\",\"kind\":\"process\",\"display_name\":\"Filesystem\",\"protocol\":\"mcp\",\"command\":\"/bin/fs\",\"environment\":[\"TOKEN\",\"EXTRA\"]},{\"id\":\"notes\",\"kind\":\"local\"}]", resolved);
+
+    const refused = [_]struct { json: []const u8, reason: []const u8 }{
+        .{ .json = "[{\"id\":\"other\",\"kind\":\"process\"}]", .reason = "tool source \"other\": no tool source of that id is configured on this daemon" },
+        .{ .json = "[{\"id\":\"notes\",\"kind\":\"local\",\"command\":\"/bin/sh\"}]", .reason = "tool source \"notes\": the daemon does not accept a command or arguments from the wire; name an operator-configured source by id" },
+        .{ .json = "[{\"id\":\"notes\",\"kind\":\"local\",\"environment\":[\"A=1\"]}]", .reason = "tool source \"notes\": the daemon accepts only the bare NAME allowlist form in environment" },
+        .{ .json = "[{\"id\":\"fs\",\"endpoint\":\"stdio:elsewhere\"}]", .reason = "tool source \"fs\": the daemon does not accept endpoint from the wire for a configured source; name it by id" },
+    };
+    for (refused) |case| {
+        refusal = .{};
+        try testing.expectError(error.UnsupportedFeature, endpoint.resolveAttachments(arena, case.json, &refusal));
+        try testing.expectEqualStrings(case.reason, refusal.message);
+        try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
+    }
 }

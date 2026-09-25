@@ -6,7 +6,7 @@ const json_encode = @import("json_encode");
 const jsonschema = @import("jsonschema");
 
 pub const endpoint_id = "reference.memory";
-pub const capability_revision = "reference-memory-oapx-v1";
+pub const capability_revision = "reference-memory-v11";
 pub const model_primary = "reference-model-a";
 pub const model_secondary = "reference-model-b";
 pub const journal_capacity = 64;
@@ -17,18 +17,34 @@ const profile = "open-agent-protocol.agent-control-core";
 const scripted_tool = "scripted_tool";
 const scripted_owner = "reference-adapter";
 const scripted_source = "reference-native";
+const synthetic_mcp_source = "reference-mcp";
 const fixed_result = "{\"ok\":true}";
 const golden_arguments = "{\"operation\":\"golden\"}";
 const scripted_schema = "{\"type\":\"object\",\"properties\":{\"operation\":{\"type\":\"string\"}}}";
-const open_time_reason = "the oapx adapter contract carries no open-time tool or source list";
+const max_provided_tools = 2;
+const max_attached_sources = 2;
+const provided_name_pattern = "^[a-z][a-z0-9_]*$";
+const provided_dialect = "https://json-schema.org/draft/2020-12/schema";
+const attach_transports = [_][]const u8{ "process", "local" };
 
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .emulated, .reason = "the reference adapter exposes an interactive scripted gate" },
-    .{ .key = contract.feature_tool_sources_attach, .level = .unavailable, .reason = open_time_reason },
+    .{
+        .key = contract.feature_tool_sources_attach,
+        .level = .emulated,
+        .reason = "sources are described and published back; the reference adapter runs no client for them",
+        .modes = &.{"session_open"},
+        .limits_json = "{\"max_sources\":2,\"transports\":[\"process\",\"local\"]}",
+    },
     .{ .key = "action.tools", .level = .emulated, .reason = "the reference adapter projects the scripted tool lifecycle" },
     .{ .key = "action.tools.execute", .level = .emulated, .reason = "the reference adapter executes a fixed deterministic script" },
-    .{ .key = contract.feature_tools_list, .level = .emulated, .reason = "the reference catalog is the scripted tool" },
-    .{ .key = contract.feature_tools_provide, .level = .unavailable, .reason = open_time_reason },
+    .{ .key = contract.feature_tools_list, .level = .emulated, .reason = "the reference catalog is the scripted tool plus the session's attached sources" },
+    .{
+        .key = contract.feature_tools_provide,
+        .level = .emulated,
+        .reason = "provided tools are called by the script and executed by the control layer through the resolve pair",
+        .limits_json = "{\"max_tools\":2,\"name_pattern\":\"^[a-z][a-z0-9_]*$\",\"schema_dialect\":\"https://json-schema.org/draft/2020-12/schema\"}",
+    },
     .{ .key = "capabilities", .level = .native },
     .{ .key = contract.feature_models_list, .level = .native, .reason = "the reference adapter serves its fixed catalog, which is exactly the set its model gate admits" },
     .{ .key = "protocol.initialize", .level = .native },
@@ -40,7 +56,12 @@ const features = [_]contract.Feature{
     .{ .key = "run.resume", .level = .degraded, .reason = "reattachment and replay use a bounded process-memory journal" },
     .{ .key = "run.status", .level = .native },
     .{ .key = "run.streaming", .level = .native },
-    .{ .key = "run.structured_output", .level = .emulated, .reason = "the scripted result is fixed, so only a schema that object satisfies is admitted" },
+    .{
+        .key = "run.structured_output",
+        .level = .emulated,
+        .reason = "the scripted result is fixed, so only a schema that object satisfies is admitted",
+        .constraints_json = "{\"fixed_result\":{\"ok\":true}}",
+    },
     .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "the policy filters the scripted tool and is not retained past the run" },
     .{ .key = "session.message.delivery.auto", .level = .native },
     .{ .key = "session.message.delivery.queue", .level = .emulated, .reason = "a busy session reserves one second run and promotes it when the started run settles" },
@@ -54,13 +75,28 @@ const features = [_]contract.Feature{
 
 const declared_sources = [_]oap_types.ToolSourceDescriptor{
     .{ .id = scripted_source, .kind = "native", .display_name = "Reference Adapter Script" },
-    .{ .id = "reference-mcp", .kind = "process", .display_name = "Reference Synthetic MCP Source", .protocol = "mcp", .endpoint = "stdio:reference-tool-source" },
+    .{ .id = synthetic_mcp_source, .kind = "process", .display_name = "Reference Synthetic MCP Source", .protocol = "mcp", .endpoint = "stdio:reference-tool-source" },
 };
+
+var scripted_features = [_]oap_types.Feature{
+    .{ .key = "action.permissions", .level = .emulated, .reason = "the scripted call is gated" },
+    .{ .key = "action.tools.execute", .level = .emulated, .reason = "the reference adapter executes a fixed deterministic script" },
+};
+
+const scripted_catalog = [_]oap_types.ToolDefinition{.{
+    .name = scripted_tool,
+    .description = "The deterministic scripted tool the reference adapter calls.",
+    .input_schema_json = scripted_schema,
+    .execution_owner = scripted_owner,
+    .source = scripted_source,
+    .features = &scripted_features,
+}};
 
 pub const descriptor = contract.Descriptor{
     .endpoint = .{ .id = endpoint_id, .name = "Deterministic In-Memory Reference Adapter", .version = protocol_version, .adapter = "process-memory-script" },
     .capability_revision = capability_revision,
     .features = &features,
+    .tools = &scripted_catalog,
     .sources = &declared_sources,
     .limits = .{ .max_active_runs_per_session = 2, .max_queued_runs_per_session = 1 },
 };
@@ -91,10 +127,9 @@ pub const Adapter = struct {
     }
 
     fn open(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
-        _ = arena;
         const self: *Adapter = @ptrCast(@alignCast(ptr));
         if (request.participant.len == 0) return refusal.fail(error.InvalidSubmission, "open requires a non-empty participant id");
-        const session = try Session.create(self, request);
+        const session = try Session.create(self, arena, request, refusal);
         return session.handle();
     }
 
@@ -104,35 +139,46 @@ pub const Adapter = struct {
     }
 };
 
-const Stage = enum { permission, input, terminal };
+const Stage = enum { permission, call, input, terminal };
+
+const Arm = enum { started, result, @"error" };
+
+const Settled = struct {
+    arm: Arm,
+    request_id: []const u8,
+    result_json: ?[]const u8 = null,
+    code: []const u8 = "",
+    message: []const u8 = "",
+};
 
 const Run = struct {
-    id: []u8,
-    permission_id: []u8,
-    input_id: []u8,
-    tool_call_id: []u8,
+    id: []const u8,
+    permission_id: []const u8,
+    input_id: []const u8,
+    tool_call_id: []const u8,
+    call_id: []const u8 = "",
+    provided: ?oap_types.ToolDefinition = null,
     status: oap_types.RunStatus = .running,
     stage: Stage = .permission,
     started: bool = false,
+    queued_admission: bool = false,
     terminal: bool = false,
-    pending: bool = false,
+    pending: []const u8 = "",
+    acknowledged: bool = false,
+    settled: ?Settled = null,
+    settlement_id: []const u8 = "",
     next_sequence: u64 = 1,
     model: []const u8 = "",
-    instructions: ?[]u8 = null,
+    instructions: ?[]const u8 = null,
     structured: bool = false,
     calls_tool: bool = true,
 
-    fn destroy(self: *Run, gpa: std.mem.Allocator) void {
-        gpa.free(self.id);
-        gpa.free(self.permission_id);
-        gpa.free(self.input_id);
-        gpa.free(self.tool_call_id);
-        if (self.instructions) |owned| gpa.free(owned);
-        gpa.destroy(self);
-    }
-
     fn live(self: *const Run) bool {
         return !self.terminal;
+    }
+
+    fn reservation(self: *const Run) bool {
+        return self.queued_admission and !self.started;
     }
 };
 
@@ -147,29 +193,38 @@ const Controls = struct {
     instructions: ?[]const u8 = null,
     structured: bool = false,
     calls_tool: bool = true,
+    elected: ?oap_types.ToolDefinition = null,
 };
 
 pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
-    id: []u8,
-    participant: []u8,
+    keep: std.heap.ArenaAllocator,
+    id: []const u8,
+    participant: []const u8,
     current_model: []const u8 = "",
     updated_at_ms: i64,
+    transcript_cursor: u64 = 0,
+    attached: []oap_types.ToolSourceDescriptor = &.{},
+    provided: []oap_types.ToolDefinition = &.{},
     active: ?*Run = null,
     reserved: ?*Run = null,
     runs: std.ArrayList(*Run) = .empty,
+    settled: std.ArrayList(oap_types.RunPosition) = .empty,
     journal: std.ArrayList(Journaled) = .empty,
     outbox: std.ArrayList(Journaled) = .empty,
 
-    fn create(owner: *Adapter, request: contract.OpenRequest) contract.Failure!*Session {
+    fn create(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const gpa = owner.allocator;
         const self = try gpa.create(Session);
         errdefer gpa.destroy(self);
-        const id = if (request.session_id.len > 0) try gpa.dupe(u8, request.session_id) else try owner.nextID(gpa, "session");
-        errdefer gpa.free(id);
-        const participant = try gpa.dupe(u8, request.participant);
-        self.* = .{ .owner = owner, .gpa = gpa, .id = id, .participant = participant, .updated_at_ms = owner.now_ms() };
+        self.* = .{ .owner = owner, .gpa = gpa, .keep = std.heap.ArenaAllocator.init(gpa), .id = "", .participant = "", .updated_at_ms = owner.now_ms() };
+        errdefer self.keep.deinit();
+        const keep = self.keep.allocator();
+        self.participant = try keep.dupe(u8, request.participant);
+        self.attached = try admitToolSources(keep, arena, request.tool_sources_json, refusal);
+        self.provided = try self.admitProvidedTools(arena, request.tools_json, refusal);
+        self.id = if (request.session_id.len > 0) try keep.dupe(u8, request.session_id) else try owner.nextID(keep, "session");
         return self;
     }
 
@@ -190,6 +245,7 @@ pub const Session = struct {
         .tools = tools,
         .models = models,
         .switch_model = switchModel,
+        .resolve_call = resolveCall,
         .replay = replay,
     };
 
@@ -203,14 +259,11 @@ pub const Session = struct {
 
     fn destroy(self: *Session) void {
         const gpa = self.gpa;
-        for (self.runs.items) |run| run.destroy(gpa);
-        self.runs.deinit(gpa);
         for (self.journal.items) |entry| gpa.free(entry.line);
         self.journal.deinit(gpa);
         for (self.outbox.items) |entry| gpa.free(entry.line);
         self.outbox.deinit(gpa);
-        gpa.free(self.participant);
-        gpa.free(self.id);
+        self.keep.deinit();
         gpa.destroy(self);
     }
 
@@ -225,37 +278,77 @@ pub const Session = struct {
         return if (self.active) |run| run.live() else false;
     }
 
+    fn sessionSources(self: *Session, arena: std.mem.Allocator) ![]oap_types.ToolSourceDescriptor {
+        const sources = try arena.alloc(oap_types.ToolSourceDescriptor, declared_sources.len + self.attached.len);
+        @memcpy(sources[0..declared_sources.len], &declared_sources);
+        @memcpy(sources[declared_sources.len..], self.attached);
+        return sources;
+    }
+
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
         _ = refusal;
-        const self = cast(ptr);
-        return self.snapshot(arena);
+        return cast(ptr).snapshot(arena);
     }
 
     fn snapshot(self: *Session, arena: std.mem.Allocator) contract.Failure!oap_types.SessionState {
-        var status: oap_types.SessionStatus = .idle;
-        var active_run_id: ?[]const u8 = null;
-        if (self.active) |run| {
-            if (run.live() and run.started) {
-                status = if (run.status == .waiting_for_input or run.pending) .waiting_for_input else .running;
-                active_run_id = try arena.dupe(u8, run.id);
+        var entries = std.ArrayList(oap_types.ActiveRun).empty;
+        var started: ?*Run = null;
+        var position: u64 = 0;
+        for ([_]?*Run{ self.active, self.reserved }) |candidate| {
+            const run = candidate orelse continue;
+            if (!run.live()) continue;
+            if (!run.reservation()) {
+                try entries.append(arena, try self.activeEntry(arena, run, null));
+                started = run;
+                continue;
             }
+            position += 1;
+            try entries.append(arena, try self.activeEntry(arena, run, position));
         }
-        if (active_run_id == null) {
-            const queued = (if (self.active) |run| run.live() else false) or (if (self.reserved) |run| run.live() else false);
-            if (queued) status = .queued;
-        }
-        return .{
+        var result = oap_types.SessionState{
             .session_id = self.id,
-            .status = status,
-            .active_run_id = active_run_id,
+            .status = .idle,
+            .active_runs = entries.items,
             .current_model_id = if (self.current_model.len > 0) self.current_model else null,
+            .transcript_cursor = if (self.transcript_cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.transcript_cursor}) else null,
             .updated_at_ms = self.updated_at_ms,
+            .sources = try self.sessionSources(arena),
+            .as_of = if (self.settled.items.len > 0) .{ .settled = self.settled.items } else null,
         };
+        if (started) |run| {
+            result.status = if (run.status == .waiting_for_input or run.pending.len > 0) .waiting_for_input else .running;
+            result.active_run_id = run.id;
+        } else if (entries.items.len > 0) {
+            result.status = .queued;
+        }
+        return result;
+    }
+
+    fn activeEntry(self: *Session, arena: std.mem.Allocator, run: *Run, position: ?u64) !oap_types.ActiveRun {
+        _ = self;
+        const pending: []const []const u8 = if (run.pending.len > 0) try arena.dupe([]const u8, &.{run.pending}) else &.{};
+        const acknowledged: []const []const u8 = if (run.acknowledged and run.pending.len > 0 and std.mem.eql(u8, run.pending, run.call_id)) try arena.dupe([]const u8, &.{run.call_id}) else &.{};
+        return .{
+            .run_id = run.id,
+            .status = if (run.reservation()) .queued else run.status,
+            .relationship = "primary",
+            .queue_position = position,
+            .as_of_sequence = run.next_sequence - 1,
+            .pending_interactions = pending,
+            .acknowledged_interactions = acknowledged,
+        };
+    }
+
+    fn callable(self: *Session, arena: std.mem.Allocator) ![]const []const u8 {
+        const names = try arena.alloc([]const u8, 1 + self.provided.len);
+        names[0] = scripted_tool;
+        for (self.provided, names[1..]) |tool, *slot| slot.* = tool.name;
+        return names;
     }
 
     fn submit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
         const self = cast(ptr);
-        var controls = try admitControls(arena, request, refusal);
+        var controls = try self.admitControls(arena, request, refusal);
         if (request.session_id.len == 0 or request.messages.len == 0) return error.InvalidSubmission;
         if (request.delivery != .auto and request.delivery != .queue) return error.InvalidSubmission;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
@@ -267,9 +360,29 @@ pub const Session = struct {
         }
         if (!is_busy and request.delivery != .queue and controls.model.len == 0) controls.model = self.current_model;
 
+        const keep = self.keep.allocator();
         const reservation = is_busy or request.delivery == .queue;
-        try self.runs.ensureUnusedCapacity(self.gpa, 1);
-        const run = try self.newRun(controls, reservation);
+        try self.runs.ensureUnusedCapacity(keep, 1);
+        const run = try keep.create(Run);
+        run.* = .{
+            .id = try self.owner.nextID(keep, "run"),
+            .permission_id = try self.owner.nextID(keep, "permission"),
+            .input_id = try self.owner.nextID(keep, "input"),
+            .tool_call_id = try self.owner.nextID(keep, "tool-call"),
+            .model = controls.model,
+            .instructions = if (controls.instructions) |text| try keep.dupe(u8, text) else null,
+            .structured = controls.structured,
+            .calls_tool = controls.calls_tool,
+            .queued_admission = reservation,
+            .status = if (reservation) .queued else .running,
+        };
+        if (!controls.calls_tool) {
+            run.stage = .input;
+        } else if (self.provided.len > 0) {
+            run.stage = .call;
+            run.call_id = try self.owner.nextID(keep, "call");
+            run.provided = controls.elected;
+        }
         self.runs.appendAssumeCapacity(run);
         if (is_busy) self.reserved = run else self.active = run;
         self.updated_at_ms = self.owner.now_ms();
@@ -287,7 +400,7 @@ pub const Session = struct {
             .effective_delivery = .start,
             .delivery_resolution = "session_idle",
             .admission = .started,
-            .run_id = try arena.dupe(u8, run.id),
+            .run_id = run.id,
             .status = .running,
             .model_id = if (controls.model.len > 0) controls.model else null,
             .message_ids = message_ids,
@@ -296,41 +409,13 @@ pub const Session = struct {
             admission.effective_delivery = .queue;
             admission.admission = .queued;
             admission.status = .queued;
-            admission.delivery_resolution = if (is_busy) "session_busy" else "session_idle";
+            if (is_busy) admission.delivery_resolution = "session_busy";
         }
         if (!is_busy) try self.emitInitial(run);
         return admission;
     }
 
-    fn newRun(self: *Session, controls: Controls, reservation: bool) !*Run {
-        const gpa = self.gpa;
-        const run = try gpa.create(Run);
-        errdefer gpa.destroy(run);
-        const run_id = try self.owner.nextID(gpa, "run");
-        errdefer gpa.free(run_id);
-        const permission_id = try self.owner.nextID(gpa, "permission");
-        errdefer gpa.free(permission_id);
-        const input_id = try self.owner.nextID(gpa, "input");
-        errdefer gpa.free(input_id);
-        const tool_call_id = try self.owner.nextID(gpa, "tool-call");
-        errdefer gpa.free(tool_call_id);
-        const instructions = if (controls.instructions) |text| try gpa.dupe(u8, text) else null;
-        run.* = .{
-            .id = run_id,
-            .permission_id = permission_id,
-            .input_id = input_id,
-            .tool_call_id = tool_call_id,
-            .stage = if (controls.calls_tool) .permission else .input,
-            .model = controls.model,
-            .instructions = instructions,
-            .structured = controls.structured,
-            .calls_tool = controls.calls_tool,
-            .status = if (reservation) .queued else .running,
-        };
-        return run;
-    }
-
-    fn admitControls(arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!Controls {
+    fn admitControls(self: *Session, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!Controls {
         var controls = Controls{ .instructions = request.instructions };
         if (request.model_id) |model| {
             if (!std.mem.eql(u8, model, model_primary) and !std.mem.eql(u8, model, model_secondary)) return refusal.missingModel(model);
@@ -338,27 +423,42 @@ pub const Session = struct {
         }
         if (request.output_schema_json) |schema| {
             if (try outputSchemaDefect(arena, schema)) |detail| {
-                refusal.* = .{ .feature = "run.structured_output", .reason = contract.reason_unsatisfiable, .field = "output_schema", .message = detail };
+                refusal.* = .{ .feature = "run.structured_output", .reason = contract.reason_unsatisfiable, .field = "output_schema", .detail = detail };
                 return error.UnsupportedFeature;
             }
             controls.structured = true;
         }
-        if (request.tool_choice_json) |choice| {
-            const policy = parseToolChoice(arena, choice) catch |err| {
-                if (err == error.OutOfMemory) return error.OutOfMemory;
-                refusal.* = .{ .feature = "run.tool_selection", .reason = contract.reason_unsatisfiable, .message = "tool_choice is not the typed policy" };
-                return error.UnsupportedFeature;
+        const catalog = try self.callable(arena);
+        var choice: ?contract.ToolChoice = null;
+        if (request.tool_choice_json) |text| {
+            const parsed = contract.parseToolChoice(arena, text) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidPolicy => {
+                    refusal.* = .{ .feature = "run.tool_selection", .reason = contract.reason_unsatisfiable, .detail = "tool_choice is not the typed policy" };
+                    return error.UnsupportedFeature;
+                },
             };
-            if (policy.allowed) |allowed| {
+            if (parsed.allowed) |allowed| {
                 for (allowed) |name| {
-                    if (!std.mem.eql(u8, name, scripted_tool)) {
-                        const detail = try std.fmt.allocPrint(arena, "allowed names a tool outside the catalog: {s}", .{name});
-                        refusal.* = .{ .feature = "run.tool_selection", .reason = contract.reason_unsatisfiable, .message = detail };
+                    if (!listed(catalog, name)) {
+                        refusal.* = .{ .feature = "run.tool_selection", .reason = contract.reason_unsatisfiable, .tool = name, .detail = "allowed names a tool outside the catalog" };
                         return error.UnsupportedFeature;
                     }
                 }
             }
-            controls.calls_tool = policy.permits(scripted_tool);
+            choice = parsed;
+        }
+        controls.calls_tool = false;
+        if (self.provided.len > 0) {
+            for (self.provided) |tool| {
+                if (choice == null or choice.?.permits(tool.name)) {
+                    controls.elected = tool;
+                    controls.calls_tool = true;
+                    break;
+                }
+            }
+        } else {
+            controls.calls_tool = choice == null or choice.?.permits(scripted_tool);
         }
         return controls;
     }
@@ -383,7 +483,14 @@ pub const Session = struct {
         try self.emitDelta(a, run, text);
         if (!run.calls_tool) return self.requestInput(run);
 
-        var call = try self.callPayload(a, run, true);
+        if (run.call_id.len > 0) {
+            var provided = try self.providedCall(a, run, "");
+            try provided.put("arguments_json", try parseValue(a, golden_arguments));
+            return self.emit(run, "action.call.requested", provided.value(), false);
+        }
+
+        var call = try self.scriptedCall(a, run, false);
+        try call.put("arguments_json", try parseValue(a, golden_arguments));
         try self.emit(run, "action.call.requested", call.value(), false);
 
         var permission = Payload.init(a);
@@ -409,27 +516,30 @@ pub const Session = struct {
         try self.emit(run, "content.delta", delta.value(), false);
     }
 
-    fn callPayload(self: *Session, a: std.mem.Allocator, run: *Run, with_arguments: bool) contract.Failure!Payload {
+    fn scriptedCall(self: *Session, a: std.mem.Allocator, run: *Run, answered: bool) contract.Failure!Payload {
         var call = Payload.init(a);
         try call.run(self, run);
         try call.put("tool_call_id", .{ .string = run.tool_call_id });
         try call.put("requested_by", .{ .string = endpoint_id });
+        if (answered) try call.put("responded_by", .{ .string = self.participant });
         try call.put("execution_owner", .{ .string = scripted_owner });
         try call.put("source", .{ .string = scripted_source });
         try call.put("name", .{ .string = scripted_tool });
-        if (with_arguments) try call.put("arguments_json", try parseValue(a, golden_arguments));
         return call;
     }
 
-    fn cancelledCall(self: *Session, a: std.mem.Allocator, run: *Run) contract.Failure!Payload {
+    fn providedCall(self: *Session, a: std.mem.Allocator, run: *Run, request_id: []const u8) contract.Failure!Payload {
+        const tool = run.provided.?;
         var call = Payload.init(a);
+        try call.put("interaction_id", .{ .string = run.call_id });
+        if (request_id.len > 0) try call.put("request_id", .{ .string = request_id });
         try call.run(self, run);
         try call.put("tool_call_id", .{ .string = run.tool_call_id });
         try call.put("requested_by", .{ .string = endpoint_id });
         try call.put("responded_by", .{ .string = self.participant });
-        try call.put("execution_owner", .{ .string = scripted_owner });
-        try call.put("source", .{ .string = scripted_source });
-        try call.put("name", .{ .string = scripted_tool });
+        try call.put("execution_owner", .{ .string = tool.execution_owner });
+        if (tool.source) |source| try call.put("source", .{ .string = source });
+        try call.put("name", .{ .string = tool.name });
         return call;
     }
 
@@ -496,7 +606,7 @@ pub const Session = struct {
                 run.stage = .terminal;
                 return self.resolveInput(run, request.answers);
             },
-            .terminal => return error.InteractionNotFound,
+            .call, .terminal => return error.InteractionNotFound,
         }
     }
 
@@ -513,16 +623,17 @@ pub const Session = struct {
         try resolved.put("granted", .{ .bool = granted });
         try self.emit(run, "action.permission.resolved", resolved.value(), false);
         if (!granted) {
-            var call = try self.cancelledCall(a, run);
+            var call = try self.scriptedCall(a, run, true);
             try self.emit(run, "action.call.cancelled", call.value(), false);
             var failure = Payload.init(a);
             try failure.run(self, run);
             try failure.put("error", try parseValue(a, "{\"code\":\"permission_denied\",\"message\":\"scripted tool permission denied\"}"));
             return self.emit(run, "run.failed", failure.value(), true);
         }
-        var started = try self.callPayload(a, run, true);
+        var started = try self.scriptedCall(a, run, false);
+        try started.put("arguments_json", try parseValue(a, golden_arguments));
         try self.emit(run, "action.call.started", started.value(), false);
-        var completed = try self.callPayload(a, run, false);
+        var completed = try self.scriptedCall(a, run, false);
         try completed.put("result", try parseValue(a, fixed_result));
         try self.emit(run, "action.call.completed", completed.value(), false);
         return self.requestInput(run);
@@ -536,19 +647,19 @@ pub const Session = struct {
         try resolved.interaction(self, run.input_id);
         try resolved.run(self, run);
         try resolved.put("status", .{ .string = "submitted" });
-        var listed = std.json.Array.init(a);
+        var listed_answers = std.json.Array.init(a);
         for (answers) |answer| {
-            var entry = Payload.init(a);
-            try entry.put("question_id", .{ .string = answer.question_id });
-            if (answer.text) |text| try entry.put("text", .{ .string = text });
+            var answered = Payload.init(a);
+            try answered.put("question_id", .{ .string = answer.question_id });
+            if (answer.text) |text| try answered.put("text", .{ .string = text });
             if (answer.selected_option_ids.len > 0) {
                 var selected = std.json.Array.init(a);
                 for (answer.selected_option_ids) |option| try selected.append(.{ .string = option });
-                try entry.put("selected_option_ids", .{ .array = selected });
+                try answered.put("selected_option_ids", .{ .array = selected });
             }
-            try listed.append(entry.value());
+            try listed_answers.append(answered.value());
         }
-        try resolved.put("answers", .{ .array = listed });
+        try resolved.put("answers", .{ .array = listed_answers });
         try self.emit(run, "user.input.resolved", resolved.value(), false);
 
         const final_text = "The golden script completed.";
@@ -573,6 +684,98 @@ pub const Session = struct {
         if (run.model.len > 0) try completed.put("model_id", .{ .string = run.model });
         if (run.structured) try completed.put("result", try parseValue(a, fixed_result));
         try self.emit(run, "run.completed", completed.value(), true);
+    }
+
+    fn resolveCall(ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *contract.Refusal) contract.Failure!oap_types.CallResolveResponse {
+        _ = refusal;
+        const self = cast(ptr);
+        var answer = oap_types.CallResolveResponse{
+            .interaction_id = request.interaction_id,
+            .session_id = request.session_id,
+            .run_id = request.run_id,
+            .tool_call_id = request.tool_call_id,
+            .accepted = false,
+        };
+        const run = self.findRun(request.run_id) orelse return refused(answer, "unknown_interaction", null);
+        if (run.call_id.len == 0 or !std.mem.eql(u8, request.interaction_id, run.call_id) or !std.mem.eql(u8, request.session_id, self.id)) return refused(answer, "unknown_interaction", null);
+        if (!std.mem.eql(u8, request.responded_by, self.participant) or !std.mem.eql(u8, request.requested_by, endpoint_id) or !std.mem.eql(u8, request.tool_call_id, run.tool_call_id)) return refused(answer, "wrong_responder", null);
+        var arms: usize = 0;
+        var arm: Arm = .started;
+        if (request.started) {
+            arms += 1;
+            arm = .started;
+        }
+        if (request.result_json != null) {
+            arms += 1;
+            arm = .result;
+        }
+        if (request.err != null) {
+            arms += 1;
+            arm = .@"error";
+        }
+        if (arms != 1) return refused(answer, "unknown_interaction", null);
+        if (run.settled) |settled| {
+            const settlement = if (run.settlement_id.len > 0) run.settlement_id else settled.request_id;
+            if (arm == .started and run.settlement_id.len == 0) return refused(answer, "late_acknowledgement", null);
+            return refused(answer, "already_resolved", settlement);
+        }
+        if (run.terminal or run.stage != .call) return refused(answer, "already_resolved", run.settlement_id);
+        if (arm == .started and run.acknowledged) return refused(answer, "repeated_acknowledgement", null);
+
+        answer.accepted = true;
+        const keep = self.keep.allocator();
+        if (arm == .started) {
+            run.acknowledged = true;
+            var scratch = std.heap.ArenaAllocator.init(self.gpa);
+            defer scratch.deinit();
+            var call = try self.providedCall(scratch.allocator(), run, request_id);
+            try call.put("arguments_json", try parseValue(scratch.allocator(), golden_arguments));
+            try self.emit(run, "action.call.started", call.value(), false);
+            return answer;
+        }
+        var settled = Settled{ .arm = arm, .request_id = try keep.dupe(u8, request_id) };
+        if (request.result_json) |result| settled.result_json = try keep.dupe(u8, result);
+        if (request.err) |failure| {
+            settled.code = try keep.dupe(u8, failure.code);
+            settled.message = try keep.dupe(u8, failure.message);
+        }
+        run.settled = settled;
+        run.stage = .input;
+        try self.settleCall(run);
+        _ = arena;
+        return answer;
+    }
+
+    fn refused(answer: oap_types.CallResolveResponse, reason: []const u8, settlement: ?[]const u8) oap_types.CallResolveResponse {
+        var refusal = answer;
+        refusal.accepted = false;
+        refusal.reason = reason;
+        if (std.mem.eql(u8, reason, "already_resolved")) refusal.settlement_id = settlement;
+        return refusal;
+    }
+
+    fn settleCall(self: *Session, run: *Run) contract.Failure!void {
+        const settled = run.settled.?;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        if (!run.acknowledged) {
+            var started = try self.providedCall(a, run, settled.request_id);
+            try started.put("arguments_json", try parseValue(a, golden_arguments));
+            try self.emit(run, "action.call.started", started.value(), false);
+        }
+        var terminal = try self.providedCall(a, run, settled.request_id);
+        if (settled.arm == .@"error") {
+            var failure = Payload.init(a);
+            try failure.put("code", .{ .string = settled.code });
+            try failure.put("message", .{ .string = settled.message });
+            try terminal.put("error", failure.value());
+            try self.emit(run, "action.call.failed", terminal.value(), false);
+        } else {
+            try terminal.put("result", try parseValue(a, settled.result_json orelse "null"));
+            try self.emit(run, "action.call.completed", terminal.value(), false);
+        }
+        return self.requestInput(run);
     }
 
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
@@ -603,6 +806,10 @@ pub const Session = struct {
         try status.put("status", .{ .string = "cancelling" });
         try status.put("updated_at_ms", .{ .integer = self.owner.now_ms() });
         try self.emit(run, "run.status.updated", status.value(), false);
+        if (run.stage == .call) {
+            var call = try self.providedCall(a, run, "");
+            try self.emit(run, "action.call.cancelled", call.value(), false);
+        }
         switch (run.stage) {
             .permission => {
                 var resolved = Payload.init(a);
@@ -612,7 +819,7 @@ pub const Session = struct {
                 try resolved.put("outcome", .{ .string = "cancelled" });
                 try resolved.put("reason", try parseValue(a, "{\"code\":\"run_cancelled\",\"message\":\"run cancellation closed the permission request\"}"));
                 try self.emit(run, "action.permission.resolved", resolved.value(), false);
-                var call = try self.cancelledCall(a, run);
+                var call = try self.scriptedCall(a, run, true);
                 try self.emit(run, "action.call.cancelled", call.value(), false);
             },
             .input => {
@@ -622,7 +829,7 @@ pub const Session = struct {
                 try resolved.put("status", .{ .string = "cancelled" });
                 try self.emit(run, "user.input.resolved", resolved.value(), false);
             },
-            .terminal => {},
+            .call, .terminal => {},
         }
         var cancelled = Payload.init(a);
         try cancelled.run(self, run);
@@ -633,8 +840,7 @@ pub const Session = struct {
 
     fn emit(self: *Session, run: *Run, kind: []const u8, payload: std.json.Value, terminal: bool) contract.Failure!void {
         if (run.terminal) return;
-        const gpa = self.gpa;
-        var scratch = std.heap.ArenaAllocator.init(gpa);
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
         defer scratch.deinit();
         const a = scratch.allocator();
         const event_id = try self.owner.nextID(a, "event");
@@ -653,18 +859,28 @@ pub const Session = struct {
         try envelope.put("run_id", .{ .string = run.id });
         if (run.calls_tool and carriesToolCall(kind)) try envelope.put("tool_call_id", .{ .string = run.tool_call_id });
         try envelope.put("capability_revision", .{ .string = capability_revision });
-        try self.store(run, try json_encode.valueAlloc(gpa, envelope.value()), sequence);
+        try self.store(run, try json_encode.valueAlloc(self.gpa, envelope.value()), sequence);
         run.next_sequence += 1;
+        self.transcript_cursor = sequence;
         self.updated_at_ms = now;
 
-        if (std.mem.eql(u8, kind, "action.permission.requested") or std.mem.eql(u8, kind, "user.input.requested")) run.pending = true;
-        if (std.mem.eql(u8, kind, "action.permission.resolved") or std.mem.eql(u8, kind, "user.input.resolved")) run.pending = false;
+        if (std.mem.eql(u8, kind, "action.permission.requested")) run.pending = run.permission_id;
+        if (std.mem.eql(u8, kind, "user.input.requested")) run.pending = run.input_id;
+        if (std.mem.eql(u8, kind, "action.permission.resolved") or std.mem.eql(u8, kind, "user.input.resolved")) run.pending = "";
+        if (std.mem.eql(u8, kind, "action.call.requested") and run.call_id.len > 0) run.pending = run.call_id;
+        if (run.call_id.len > 0 and std.mem.eql(u8, run.pending, run.call_id) and
+            (std.mem.eql(u8, kind, "action.call.completed") or std.mem.eql(u8, kind, "action.call.failed") or std.mem.eql(u8, kind, "action.call.cancelled")))
+        {
+            run.pending = "";
+            run.settlement_id = try self.keep.allocator().dupe(u8, event_id);
+        }
         if (!terminal) return;
         run.terminal = true;
-        run.pending = false;
+        run.pending = "";
         if (std.mem.eql(u8, kind, "run.completed")) run.status = .completed;
         if (std.mem.eql(u8, kind, "run.failed")) run.status = .failed;
         if (std.mem.eql(u8, kind, "run.cancelled")) run.status = .cancelled;
+        try self.settled.append(self.keep.allocator(), .{ .run_id = run.id, .sequence = sequence });
         if (self.active == run) self.active = null;
         if (self.reserved == run) self.reserved = null;
         if (self.active == null) {
@@ -712,10 +928,10 @@ pub const Session = struct {
     fn drain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
         const self = cast(ptr);
         try out.ensureUnusedCapacity(allocator, self.outbox.items.len);
-        for (self.outbox.items) |entry| {
-            out.appendAssumeCapacity(try copyEvent(allocator, entry));
+        for (self.outbox.items) |queued| {
+            out.appendAssumeCapacity(try copyEvent(allocator, queued));
         }
-        for (self.outbox.items) |entry| self.gpa.free(entry.line);
+        for (self.outbox.items) |queued| self.gpa.free(queued.line);
         self.outbox.clearRetainingCapacity();
     }
 
@@ -723,7 +939,7 @@ pub const Session = struct {
         const self = cast(ptr);
         const run = self.active orelse return .idle;
         if (!run.live()) return .idle;
-        return if (run.pending or run.status == .waiting_for_input) .waiting else .running;
+        return if (run.pending.len > 0 or run.status == .waiting_for_input) .waiting else .running;
     }
 
     fn close(ptr: *anyopaque) void {
@@ -733,33 +949,27 @@ pub const Session = struct {
     fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ToolsListResponse {
         _ = refusal;
         const self = cast(ptr);
-        if (request.session_id) |named| {
-            if (named.len > 0 and !std.mem.eql(u8, named, self.id)) return error.RunNotFound;
-        }
-        const tool_features = try arena.dupe(oap_types.Feature, &.{
-            .{ .key = "action.permissions", .level = .emulated, .reason = "the scripted call is gated" },
-            .{ .key = "action.tools.execute", .level = .emulated, .reason = "the reference adapter executes a fixed deterministic script" },
-        });
-        const definitions = try arena.dupe(oap_types.ToolDefinition, &.{.{
-            .name = scripted_tool,
-            .description = "The deterministic scripted tool the reference adapter calls.",
-            .input_schema_json = scripted_schema,
-            .execution_owner = scripted_owner,
-            .source = scripted_source,
-            .features = tool_features,
-        }});
-        return .{ .session_id = request.session_id, .sources = try arena.dupe(oap_types.ToolSourceDescriptor, &declared_sources), .tools = definitions };
+        const named = request.session_id orelse "";
+        if (named.len > 0 and !std.mem.eql(u8, named, self.id)) return error.RunNotFound;
+        const sources = if (named.len > 0) try self.sessionSources(arena) else try arena.dupe(oap_types.ToolSourceDescriptor, &declared_sources);
+        const definitions = try arena.alloc(oap_types.ToolDefinition, 1 + if (named.len > 0) self.provided.len else 0);
+        definitions[0] = scripted_catalog[0];
+        if (named.len > 0) @memcpy(definitions[1..], self.provided);
+        return .{ .session_id = request.session_id, .sources = sources, .tools = definitions };
     }
 
     fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ModelsResponse {
         _ = refusal;
         const self = cast(ptr);
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
-        const listed = try arena.dupe(oap_types.ModelDescriptor, &.{
-            .{ .id = model_primary, .display_name = "Reference Model A", .provider_id = "reference", .default = true },
-            .{ .id = model_secondary, .display_name = "Reference Model B", .provider_id = "reference" },
+        const catalog = try arena.dupe(oap_types.ModelDescriptor, &.{
+            .{ .id = model_primary, .display_name = "Reference Model A", .provider_id = "reference", .context_window = 8192, .default = true },
+            .{ .id = model_secondary, .display_name = "Reference Model B", .provider_id = "reference", .context_window = 8192 },
         });
-        return .{ .session_id = self.id, .current_model_id = if (self.current_model.len > 0) self.current_model else null, .models = listed };
+        const providers = try arena.dupe(oap_types.ProviderDescriptor, &.{
+            .{ .id = "reference", .display_name = "Reference Provider", .wire = "openai-chat-completions", .kind = "direct" },
+        });
+        return .{ .session_id = self.id, .current_model_id = if (self.current_model.len > 0) self.current_model else null, .models = catalog, .providers = providers };
     }
 
     fn switchModel(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *contract.Refusal) contract.Failure!contract.Switched {
@@ -783,12 +993,12 @@ pub const Session = struct {
         if (after > latest) return error.ReplayCursorFuture;
         var oldest: u64 = 0;
         var suffix = std.ArrayList(contract.Event).empty;
-        for (self.journal.items) |entry| {
-            if (!std.mem.eql(u8, entry.run_id, run.id)) continue;
-            if (oldest == 0) oldest = entry.sequence;
-            if (entry.sequence > after) {
+        for (self.journal.items) |kept| {
+            if (!std.mem.eql(u8, kept.run_id, run.id)) continue;
+            if (oldest == 0) oldest = kept.sequence;
+            if (kept.sequence > after) {
                 try suffix.ensureUnusedCapacity(allocator, 1);
-                suffix.appendAssumeCapacity(try copyEvent(allocator, entry));
+                suffix.appendAssumeCapacity(try copyEvent(allocator, kept));
             }
         }
         if (after < latest and (oldest == 0 or after + 1 < oldest)) {
@@ -796,7 +1006,172 @@ pub const Session = struct {
         }
         return .{ .events = suffix.items };
     }
+
+    fn admitProvidedTools(self: *Session, arena: std.mem.Allocator, carried: ?[]const u8, refusal: *contract.Refusal) contract.Failure![]oap_types.ToolDefinition {
+        const text = carried orelse return &.{};
+        const keep = self.keep.allocator();
+        const document = std.json.parseFromSliceLeaky(std.json.Value, keep, text, .{ .allocate = .alloc_always }) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return refuseTool(arena, refusal, "", "the provided tools are not a list of tool definitions");
+        };
+        if (document != .array) return refuseTool(arena, refusal, "", "the provided tools are not a list of tool definitions");
+        const items = document.array.items;
+        if (items.len == 0) return &.{};
+        if (items.len > max_provided_tools) {
+            return refuseTool(arena, refusal, try keep.dupe(u8, stringOf(items[max_provided_tools], "name")), try std.fmt.allocPrint(keep, "at most {d} tools may be provided", .{max_provided_tools}));
+        }
+        const sources = try self.sessionSources(arena);
+        const provided = try keep.alloc(oap_types.ToolDefinition, items.len);
+        for (items, provided, 0..) |item, *slot, index| {
+            if (item != .object) return refuseTool(arena, refusal, "", "a provided tool needs a name");
+            const name = stringOf(item, "name");
+            const owner = stringOf(item, "execution_owner");
+            const source = stringOf(item, "source");
+            if (name.len == 0) return refuseTool(arena, refusal, "", "a provided tool needs a name");
+            if (!std.mem.eql(u8, owner, self.participant)) return refuseTool(arena, refusal, name, "execution_owner must be the opening participant");
+            if (source.len > 0 and !sourceListed(sources, source)) return refuseTool(arena, refusal, name, try std.fmt.allocPrint(keep, "source {s} resolves to no declared or attached source", .{source}));
+            if (std.mem.eql(u8, name, scripted_tool) or providedNamed(provided[0..index], name)) return refuseTool(arena, refusal, name, "the name already resolves to a catalog entry");
+            if (!namePatternMatches(name)) return refuseTool(arena, refusal, name, "the name is outside the disclosed name_pattern " ++ provided_name_pattern);
+            const schema = item.object.get("input_schema");
+            if (!admissibleDialect(schema)) return refuseTool(arena, refusal, name, "the input schema declares a dialect outside the disclosed " ++ provided_dialect);
+            slot.* = .{
+                .name = name,
+                .description = if (stringOf(item, "description").len > 0) stringOf(item, "description") else null,
+                .input_schema_json = if (schema) |value| try json_encode.valueAlloc(keep, value) else "null",
+                .execution_owner = owner,
+                .source = if (source.len > 0) source else null,
+                .features = try toolFeatures(keep, item.object.get("features")),
+            };
+        }
+        return provided;
+    }
 };
+
+fn refuseTool(arena: std.mem.Allocator, refusal: *contract.Refusal, tool: []const u8, detail: []const u8) contract.Failure {
+    refusal.* = .{ .feature = contract.feature_tools_provide, .reason = contract.reason_unsatisfiable, .tool = try arena.dupe(u8, tool), .detail = try arena.dupe(u8, detail) };
+    return error.UnsupportedFeature;
+}
+
+fn refuseSource(arena: std.mem.Allocator, refusal: *contract.Refusal, source: []const u8, detail: []const u8) contract.Failure {
+    refusal.* = .{ .feature = contract.feature_tool_sources_attach, .reason = contract.reason_unsatisfiable, .source = try arena.dupe(u8, source), .detail = try arena.dupe(u8, detail) };
+    return error.UnsupportedFeature;
+}
+
+fn admitToolSources(keep: std.mem.Allocator, arena: std.mem.Allocator, carried: ?[]const u8, refusal: *contract.Refusal) contract.Failure![]oap_types.ToolSourceDescriptor {
+    const text = carried orelse return &.{};
+    const document = std.json.parseFromSliceLeaky(std.json.Value, keep, text, .{ .allocate = .alloc_always }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return refuseSource(arena, refusal, "", "the tool sources are not a list of attachments");
+    };
+    if (document != .array) return refuseSource(arena, refusal, "", "the tool sources are not a list of attachments");
+    const items = document.array.items;
+    if (items.len == 0) return &.{};
+    if (items.len > max_attached_sources) {
+        return refuseSource(arena, refusal, stringOf(items[max_attached_sources], "id"), try std.fmt.allocPrint(keep, "at most {d} sources may be attached", .{max_attached_sources}));
+    }
+    const attached = try keep.alloc(oap_types.ToolSourceDescriptor, items.len);
+    for (items, attached, 0..) |item, *slot, index| {
+        const id = stringOf(item, "id");
+        const kind = stringOf(item, "kind");
+        if (id.len == 0 or kind.len == 0) return refuseSource(arena, refusal, id, "an attachment needs an id and a kind");
+        if (sourceListed(&declared_sources, id) or sourceListed(attached[0..index], id)) return refuseSource(arena, refusal, id, "the id already resolves to a declared or attached source");
+        if (!listed(&attach_transports, kind)) return refuseSource(arena, refusal, id, try std.fmt.allocPrint(keep, "kind {s} is outside the disclosed transports", .{kind}));
+        if (try duplicateEnvironmentName(keep, item)) |name| return refuseSource(arena, refusal, id, try std.fmt.allocPrint(keep, "environment names {s} twice", .{name}));
+        slot.* = .{
+            .id = id,
+            .kind = kind,
+            .display_name = optionalString(item, "display_name"),
+            .protocol = optionalString(item, "protocol"),
+            .endpoint = optionalString(item, "endpoint"),
+        };
+    }
+    return attached;
+}
+
+fn duplicateEnvironmentName(keep: std.mem.Allocator, item: std.json.Value) !?[]const u8 {
+    _ = keep;
+    if (item != .object) return null;
+    const environment = item.object.get("environment") orelse return null;
+    if (environment != .array or environment.array.items.len < 2) return null;
+    for (environment.array.items, 0..) |entry, index| {
+        if (entry != .string) continue;
+        const name = envName(entry.string);
+        for (environment.array.items[0..index]) |earlier| {
+            if (earlier == .string and std.mem.eql(u8, envName(earlier.string), name)) return name;
+        }
+    }
+    return null;
+}
+
+fn envName(entry: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, entry, '=') orelse return entry;
+    return entry[0..cut];
+}
+
+fn toolFeatures(keep: std.mem.Allocator, carried: ?std.json.Value) ![]oap_types.Feature {
+    const value = carried orelse return &.{};
+    if (value != .object) return &.{};
+    const result = try keep.alloc(oap_types.Feature, value.object.count());
+    var filled: usize = 0;
+    var it = value.object.iterator();
+    while (it.next()) |declared| {
+        const support = declared.value_ptr.*;
+        const level = std.meta.stringToEnum(oap_types.SupportLevel, stringOf(support, "level")) orelse continue;
+        result[filled] = .{ .key = declared.key_ptr.*, .level = level, .reason = optionalString(support, "reason"), .scope = optionalString(support, "scope") };
+        filled += 1;
+    }
+    return result[0..filled];
+}
+
+fn stringOf(value: std.json.Value, key: []const u8) []const u8 {
+    if (value != .object) return "";
+    const carried = value.object.get(key) orelse return "";
+    return if (carried == .string) carried.string else "";
+}
+
+fn optionalString(value: std.json.Value, key: []const u8) ?[]const u8 {
+    const text = stringOf(value, key);
+    return if (text.len > 0) text else null;
+}
+
+fn sourceListed(sources: []const oap_types.ToolSourceDescriptor, id: []const u8) bool {
+    for (sources) |source| {
+        if (std.mem.eql(u8, source.id, id)) return true;
+    }
+    return false;
+}
+
+fn providedNamed(tools: []const oap_types.ToolDefinition, name: []const u8) bool {
+    for (tools) |tool| {
+        if (std.mem.eql(u8, tool.name, name)) return true;
+    }
+    return false;
+}
+
+fn namePatternMatches(name: []const u8) bool {
+    if (name.len == 0 or name[0] < 'a' or name[0] > 'z') return false;
+    for (name[1..]) |c| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+fn admissibleDialect(schema: ?std.json.Value) bool {
+    const value = schema orelse return true;
+    if (value == .null) return true;
+    if (value != .object) return false;
+    const declared = value.object.get("$schema") orelse return true;
+    if (declared != .string) return false;
+    return declared.string.len == 0 or std.mem.eql(u8, declared.string, provided_dialect);
+}
+
+fn listed(names: []const []const u8, name: []const u8) bool {
+    for (names) |candidate| {
+        if (std.mem.eql(u8, candidate, name)) return true;
+    }
+    return false;
+}
 
 const Payload = struct {
     allocator: std.mem.Allocator,
@@ -829,59 +1204,8 @@ const Payload = struct {
 fn parseValue(allocator: std.mem.Allocator, text: []const u8) !std.json.Value {
     return std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
-        else => unreachable,
+        else => error.InvalidResolution,
     };
-}
-
-const ToolChoice = struct {
-    allowed: ?[]const []const u8 = null,
-    disallowed: []const []const u8 = &.{},
-
-    fn permits(self: ToolChoice, name: []const u8) bool {
-        if (self.allowed) |allowed| {
-            if (!contains(allowed, name)) return false;
-        }
-        return !contains(self.disallowed, name);
-    }
-};
-
-fn contains(names: []const []const u8, name: []const u8) bool {
-    for (names) |candidate| {
-        if (std.mem.eql(u8, candidate, name)) return true;
-    }
-    return false;
-}
-
-fn parseToolChoice(arena: std.mem.Allocator, text: []const u8) !ToolChoice {
-    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
-        if (err == error.OutOfMemory) return error.OutOfMemory;
-        return error.InvalidPolicy;
-    };
-    if (document != .object) return error.InvalidPolicy;
-    var choice = ToolChoice{};
-    var carried: usize = 0;
-    var it = document.object.iterator();
-    while (it.next()) |entry| {
-        const names = try stringList(arena, entry.value_ptr.*);
-        if (std.mem.eql(u8, entry.key_ptr.*, "allowed")) {
-            choice.allowed = names;
-        } else if (std.mem.eql(u8, entry.key_ptr.*, "disallowed")) {
-            choice.disallowed = names;
-        } else return error.InvalidPolicy;
-        carried += 1;
-    }
-    if (carried != 1) return error.InvalidPolicy;
-    return choice;
-}
-
-fn stringList(arena: std.mem.Allocator, value: std.json.Value) ![]const []const u8 {
-    if (value != .array) return error.InvalidPolicy;
-    const names = try arena.alloc([]const u8, value.array.items.len);
-    for (value.array.items, names) |item, *slot| {
-        if (item != .string) return error.InvalidPolicy;
-        slot.* = item.string;
-    }
-    return names;
 }
 
 fn outputSchemaDefect(arena: std.mem.Allocator, text: []const u8) error{OutOfMemory}!?[]const u8 {
@@ -908,7 +1232,7 @@ fn outputSchemaDefect(arena: std.mem.Allocator, text: []const u8) error{OutOfMem
         else => return "output_schema is not valid JSON",
     };
     var validator = jsonschema.Validator.init(arena, &registry);
-    const result = try parseValue(arena, fixed_result);
+    const result = parseValue(arena, fixed_result) catch return error.OutOfMemory;
     const failure = validator.validate("output_schema", result) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return "output_schema uses a construct oapx's schema engine does not evaluate",
@@ -930,12 +1254,28 @@ const Probe = struct {
     seen: std.ArrayList(contract.Event) = .empty,
 
     fn init(self: *Probe) !void {
+        return self.initWith(null, null);
+    }
+
+    fn initWith(self: *Probe, tools_json: ?[]const u8, sources_json: ?[]const u8) !void {
         self.adapter = Adapter.init(testing.allocator);
         self.adapter.now_ms = fixedClock;
         self.arena = std.heap.ArenaAllocator.init(testing.allocator);
         self.seen = .empty;
         var refusal = contract.Refusal{};
-        self.session = try self.adapter.adapter().open(self.arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &refusal);
+        self.session = self.adapter.adapter().open(self.arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = tools_json, .tool_sources_json = sources_json }, &refusal) catch |err| {
+            self.arena.deinit();
+            return err;
+        };
+    }
+
+    fn resolveCall(self: *Probe, run_id: []const u8, call_id: []const u8, tool_call_id: []const u8, arm: []const u8) contract.Failure!oap_types.CallResolveResponse {
+        var refusal = contract.Refusal{};
+        var request = oap_types.CallResolveRequest{ .interaction_id = call_id, .session_id = "s1", .run_id = run_id, .tool_call_id = tool_call_id, .requested_by = endpoint_id, .responded_by = "user" };
+        if (std.mem.eql(u8, arm, "started")) request.started = true;
+        if (std.mem.eql(u8, arm, "result")) request.result_json = "{\"hits\":1}";
+        if (std.mem.eql(u8, arm, "error")) request.err = .{ .code = "tool_failed", .message = "no hits" };
+        return self.session.vtable.resolve_call.?(self.session.ptr, self.a(), "req-9", &request, &refusal);
     }
 
     fn deinit(self: *Probe) void {
@@ -1192,4 +1532,111 @@ fn submitAndSettle(allocator: std.mem.Allocator) !void {
 
 test "a submit, a queued submit and the promoting cancel free everything they built when an allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, submitAndSettle, .{});
+}
+
+const provided_lookup = "[{\"name\":\"lookup\",\"input_schema\":{\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\"}]";
+const attached_local = "[{\"id\":\"att1\",\"kind\":\"local\",\"display_name\":\"Attached\"}]";
+
+test "a provided tool is called through the resolve pair: acknowledge, settle, then the input gate" {
+    var probe: Probe = undefined;
+    try probe.initWith(provided_lookup, attached_local);
+    defer probe.deinit();
+    const admitted = try probe.submit();
+    const run_id = admitted.run_id.?;
+    try testing.expectEqual(contract.Activity.waiting, probe.session.activity());
+    const wrong = try probe.resolveCall(run_id, "call-9", "tool-call-4", "started");
+    try testing.expectEqualStrings("unknown_interaction", wrong.reason.?);
+    const acknowledged = try probe.resolveCall(run_id, "call-5", "tool-call-4", "started");
+    try testing.expect(acknowledged.accepted);
+    const again = try probe.resolveCall(run_id, "call-5", "tool-call-4", "started");
+    try testing.expectEqualStrings("repeated_acknowledgement", again.reason.?);
+    const settled = try probe.resolveCall(run_id, "call-5", "tool-call-4", "result");
+    try testing.expect(settled.accepted);
+    const late = try probe.resolveCall(run_id, "call-5", "tool-call-4", "error");
+    try testing.expectEqualStrings("already_resolved", late.reason.?);
+    try testing.expect(late.settlement_id != null);
+    const kinds = try probe.types();
+    try expectTypes(&.{ "run.started", "content.delta", "action.call.requested", "action.call.started", "action.call.completed", "user.input.requested", "run.status.updated" }, kinds);
+    try testing.expect(std.mem.indexOf(u8, probe.seen.items[4].line, "\"request_id\":\"req-9\"") != null);
+    try testing.expect(std.mem.indexOf(u8, probe.seen.items[4].line, "\"result\":{\"hits\":1}") != null);
+}
+
+test "an unacknowledged error settlement starts the call before failing it" {
+    var probe: Probe = undefined;
+    try probe.initWith(provided_lookup, attached_local);
+    defer probe.deinit();
+    const admitted = try probe.submit();
+    const settled = try probe.resolveCall(admitted.run_id.?, "call-5", "tool-call-4", "error");
+    try testing.expect(settled.accepted);
+    const kinds = try probe.types();
+    try expectTypes(&.{ "action.call.started", "action.call.failed", "user.input.requested" }, kinds[3..6]);
+    const late_ack = try probe.resolveCall(admitted.run_id.?, "call-5", "tool-call-4", "started");
+    try testing.expectEqualStrings("already_resolved", late_ack.reason.?);
+}
+
+test "state reports the queued run, the pending call, the cursor, the sources and what settled" {
+    var probe: Probe = undefined;
+    try probe.initWith(provided_lookup, attached_local);
+    defer probe.deinit();
+    _ = try probe.submit();
+    _ = try probe.submit();
+    var refusal = contract.Refusal{};
+    const busy = try probe.session.state(probe.a(), &refusal);
+    try testing.expectEqual(@as(usize, 2), busy.active_runs.len);
+    try testing.expectEqualStrings("call-5", busy.active_runs[0].pending_interactions[0]);
+    try testing.expectEqual(@as(?u64, 1), busy.active_runs[1].queue_position);
+    try testing.expectEqual(oap_types.RunStatus.queued, busy.active_runs[1].status);
+    try testing.expectEqualStrings("3", busy.transcript_cursor.?);
+    try testing.expectEqual(@as(usize, 3), busy.sources.len);
+    _ = try probe.session.cancel(probe.a(), "run-1", &refusal);
+    const after = try probe.session.state(probe.a(), &refusal);
+    try testing.expectEqualStrings("run-1", after.as_of.?.settled[0].run_id.?);
+    try testing.expectEqualStrings(busy.active_runs[1].run_id, after.active_run_id.?);
+}
+
+test "an open whose tools or sources break a disclosed limit is refused naming the offender" {
+    const cases = [_]struct { tools: ?[]const u8, sources: ?[]const u8, feature: []const u8, offender: []const u8 }{
+        .{ .tools = "[{\"name\":\"Bad\",\"execution_owner\":\"user\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "Bad" },
+        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"someone\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
+        .{ .tools = "[{\"name\":\"scripted_tool\",\"execution_owner\":\"user\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "scripted_tool" },
+        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"user\",\"source\":\"nowhere\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
+        .{ .tools = "[{\"name\":\"x\",\"execution_owner\":\"user\",\"input_schema\":{\"$schema\":\"http://json-schema.org/draft-07/schema#\"}}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "x" },
+        .{ .tools = "[{\"name\":\"a\",\"execution_owner\":\"user\"},{\"name\":\"b\",\"execution_owner\":\"user\"},{\"name\":\"c\",\"execution_owner\":\"user\"}]", .sources = null, .feature = contract.feature_tools_provide, .offender = "c" },
+        .{ .tools = null, .sources = "[{\"id\":\"reference-mcp\",\"kind\":\"local\"}]", .feature = contract.feature_tool_sources_attach, .offender = "reference-mcp" },
+        .{ .tools = null, .sources = "[{\"id\":\"s\",\"kind\":\"http\"}]", .feature = contract.feature_tool_sources_attach, .offender = "s" },
+        .{ .tools = null, .sources = "[{\"id\":\"s\",\"kind\":\"local\",\"environment\":[\"A\",\"A\"]}]", .feature = contract.feature_tool_sources_attach, .offender = "s" },
+        .{ .tools = null, .sources = "[{\"id\":\"a\",\"kind\":\"local\"},{\"id\":\"b\",\"kind\":\"local\"},{\"id\":\"c\",\"kind\":\"local\"}]", .feature = contract.feature_tool_sources_attach, .offender = "c" },
+    };
+    for (cases) |case| {
+        var adapter = Adapter.init(testing.allocator);
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var refusal = contract.Refusal{};
+        try testing.expectError(error.UnsupportedFeature, adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = case.tools, .tool_sources_json = case.sources }, &refusal));
+        try testing.expectEqualStrings(case.feature, refusal.feature);
+        try testing.expectEqualStrings(case.offender, if (refusal.tool.len > 0) refusal.tool else refusal.source);
+    }
+}
+
+fn provideAndSettle(allocator: std.mem.Allocator) !void {
+    var adapter = Adapter.init(allocator);
+    adapter.now_ms = fixedClock;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var refusal = contract.Refusal{};
+    const session = try adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = provided_lookup, .tool_sources_json = attached_local }, &refusal);
+    defer session.close();
+    const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
+    const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
+    const admitted = try session.submit(arena.allocator(), &request, &refusal);
+    var call = oap_types.CallResolveRequest{ .interaction_id = "call-5", .session_id = "s1", .run_id = admitted.run_id.?, .tool_call_id = "tool-call-4", .requested_by = endpoint_id, .responded_by = "user", .result_json = "{}" };
+    _ = try session.vtable.resolve_call.?(session.ptr, arena.allocator(), "req-1", &call, &refusal);
+    var state_refusal = contract.Refusal{};
+    _ = try session.state(arena.allocator(), &state_refusal);
+    var drained = std.ArrayList(contract.Event).empty;
+    try session.drain(arena.allocator(), &drained);
+}
+
+test "an open with provided tools, a submit and a settled call free everything they built when an allocation fails" {
+    try testing.checkAllAllocationFailures(testing.allocator, provideAndSettle, .{});
 }

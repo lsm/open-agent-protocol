@@ -61,9 +61,9 @@ harness-default tool posture, so every gated tool call still reaches the host
 as a `user.input` gate. `--config <path>` takes the entry of that name from a
 registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
-`--backend memory` serves the in-memory reference script and passes
-`goap conformance`; unlike `goap`'s, it cannot take provided tools or attached
-tool sources at open, since the Zig adapter contract carries neither. What each cannot do through this path is
+`--backend memory` serves the in-memory reference script and answers exactly as
+`goap`'s does: CI runs `goap conformance` against it and a parity test that
+feeds both the same traffic and requires identical output. What each cannot do through this path is
 recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.280-mapping.md),
 [codex](research/codex-app-server-8d7cc24-mapping.md),
 [acp](research/acp-v1.7.0-mapping.md). Without `--config`, codex runs `codex`
