@@ -311,6 +311,7 @@ pub const ToolDefinition = struct {
     execution_owner: []const u8,
     source: ?[]const u8 = null,
     features: []Feature = &.{},
+    annotations_json: ?[]const u8 = null,
 
     pub fn deinit(self: *ToolDefinition, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -318,6 +319,7 @@ pub const ToolDefinition = struct {
         allocator.free(self.input_schema_json);
         allocator.free(self.execution_owner);
         if (self.source) |value| allocator.free(value);
+        if (self.annotations_json) |value| allocator.free(value);
         for (self.features) |*entry| entry.deinit(allocator);
         allocator.free(self.features);
     }

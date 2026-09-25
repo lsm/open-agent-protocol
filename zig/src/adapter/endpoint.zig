@@ -343,6 +343,12 @@ pub const Endpoint = struct {
     }
 
     fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
+        if (payload.tools_json) |text| {
+            if (try toolsDecodeDefect(arena, text)) |defect| {
+                const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
+                return self.deny("invalid_payload", message, &.{});
+            }
+        }
         if (payload.tool_sources_json) |text| {
             if (try attachmentDecodeDefect(arena, text)) |defect| {
                 const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
@@ -862,6 +868,70 @@ fn attachmentDecodeDefect(arena: std.mem.Allocator, text: []const u8) !?[]const 
         }
     }
     return null;
+}
+
+fn toolsDecodeDefect(arena: std.mem.Allocator, text: []const u8) !?[]const u8 {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return null;
+    };
+    if (document == .null) return null;
+    if (document != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tools of type []protocol.ToolDefinition", .{goKind(document)});
+    for (document.array.items, 0..) |tool, index| {
+        if (tool == .null) continue;
+        if (tool != .object) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tools.{d} of type protocol.ToolDefinition", .{ goKind(tool), index });
+        const path = try std.fmt.allocPrint(arena, "SessionOpenRequest.tools.{d}", .{index});
+        var members = tool.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            if (std.mem.eql(u8, name, "name") or std.mem.eql(u8, name, "description") or std.mem.eql(u8, name, "source")) {
+                if (value != .string) return try fieldDefect(arena, value, path, name, "string");
+            } else if (std.mem.eql(u8, name, "execution_owner")) {
+                if (value != .string) return try fieldDefect(arena, value, path, name, "protocol.ParticipantID");
+            } else if (std.mem.eql(u8, name, "annotations")) {
+                if (value != .object) return try fieldDefect(arena, value, path, name, "map[string]jsontext.Value");
+            } else if (std.mem.eql(u8, name, "features")) {
+                if (value != .object) return try fieldDefect(arena, value, path, name, "map[string]protocol.FeatureSupport");
+                if (try featuresDefect(arena, value, try std.fmt.allocPrint(arena, "{s}.features", .{path}))) |defect| return defect;
+            }
+        }
+    }
+    return null;
+}
+
+fn featuresDefect(arena: std.mem.Allocator, features: std.json.Value, path: []const u8) !?[]const u8 {
+    var declared = features.object.iterator();
+    while (declared.next()) |entry| {
+        const support = entry.value_ptr.*;
+        if (support == .null) continue;
+        if (support != .object) return try fieldDefect(arena, support, path, entry.key_ptr.*, "protocol.FeatureSupport");
+        const at = try std.fmt.allocPrint(arena, "{s}.{s}", .{ path, entry.key_ptr.* });
+        var members = support.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            if (std.mem.eql(u8, name, "level")) {
+                if (value != .string) return try fieldDefect(arena, value, at, name, "protocol.SupportLevel");
+            } else if (std.mem.eql(u8, name, "reason") or std.mem.eql(u8, name, "scope")) {
+                if (value != .string) return try fieldDefect(arena, value, at, name, "string");
+            } else if (std.mem.eql(u8, name, "modes")) {
+                if (value != .array) return try fieldDefect(arena, value, at, name, "[]string");
+                for (value.array.items, 0..) |item, position| {
+                    if (item != .string and item != .null) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into {s}.modes.{d} of type string", .{ goKind(item), at, position });
+                }
+            } else if (std.mem.eql(u8, name, "constraints") or std.mem.eql(u8, name, "limits")) {
+                if (value != .object) return try fieldDefect(arena, value, at, name, "map[string]jsontext.Value");
+            }
+        }
+    }
+    return null;
+}
+
+fn fieldDefect(arena: std.mem.Allocator, value: std.json.Value, path: []const u8, name: []const u8, type_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field {s}.{s} of type {s}", .{ goKind(value), path, name, type_name });
 }
 
 fn goKind(value: std.json.Value) []const u8 {
@@ -1774,4 +1844,23 @@ test "a mistyped attachment member is worded as goap's decoder words it, first d
     try testing.expectEqualStrings("cannot unmarshal number into SessionOpenRequest.tool_sources.0 of type protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "[5]")).?);
     try testing.expectEqualStrings("cannot unmarshal number into Go struct field SessionOpenRequest.tool_sources of type []protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "5")).?);
     try testing.expect((try attachmentDecodeDefect(a, "[{\"id\":\"n\",\"kind\":\"local\",\"environment\":null,\"extra\":1}]")) == null);
+}
+
+test "a mistyped provided tool member is worded as goap's decoder words it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { json: []const u8, want: []const u8 }{
+        .{ .json = "5", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools of type []protocol.ToolDefinition" },
+        .{ .json = "[5]", .want = "cannot unmarshal number into SessionOpenRequest.tools.0 of type protocol.ToolDefinition" },
+        .{ .json = "[{\"name\":\"a\",\"description\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.description of type string" },
+        .{ .json = "[{\"name\":\"a\",\"execution_owner\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.execution_owner of type protocol.ParticipantID" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":5}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x of type protocol.FeatureSupport" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"level\":5}}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x.level of type protocol.SupportLevel" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"modes\":[1]}}}]", .want = "cannot unmarshal number into SessionOpenRequest.tools.0.features.x.modes.0 of type string" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"constraints\":5}}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x.constraints of type map[string]jsontext.Value" },
+        .{ .json = "[{\"name\":\"a\",\"annotations\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.annotations of type map[string]jsontext.Value" },
+    };
+    for (cases) |case| try testing.expectEqualStrings(case.want, (try toolsDecodeDefect(a, case.json)).?);
+    try testing.expect((try toolsDecodeDefect(a, "[{\"name\":\"a\",\"features\":{\"x\":null},\"extra\":1}]")) == null);
 }

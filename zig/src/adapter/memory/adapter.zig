@@ -1045,6 +1045,7 @@ pub const Session = struct {
                 .execution_owner = owner,
                 .source = if (source.len > 0) source else null,
                 .features = try toolFeatures(keep, item.object.get("features")),
+                .annotations_json = try featureObjectJson(keep, item, "annotations"),
             };
         }
         return provided;
@@ -1691,12 +1692,13 @@ test "an open with provided tools, a submit and a settled call free everything t
     try testing.checkAllAllocationFailures(testing.allocator, provideAndSettle, .{});
 }
 
-test "a provided tool keeps its declared features sorted by key with their modes, constraints and limits, and a null $schema is admitted" {
+test "a provided tool keeps its annotations and its features sorted by key with their modes, constraints and limits, and a null $schema is admitted" {
     var probe: Probe = undefined;
-    try probe.initWith("[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":null,\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\",\"features\":{\"z\":{\"level\":\"native\"},\"x\":{\"level\":\"degraded\",\"modes\":[\"session_open\"],\"constraints\":{\"b\":1.50,\"a\":2},\"limits\":{\"max\":3}}}}]", attached_local);
+    try probe.initWith("[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":null,\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\",\"annotations\":{\"z\":1,\"a\":{\"k\":2.50}},\"features\":{\"z\":{\"level\":\"native\"},\"x\":{\"level\":\"degraded\",\"modes\":[\"session_open\"],\"constraints\":{\"b\":1.50,\"a\":2},\"limits\":{\"max\":3}}}}]", attached_local);
     defer probe.deinit();
     var refusal = contract.Refusal{};
     const listed_tools = try probe.session.vtable.tools.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1" }, &refusal);
+    try testing.expectEqualStrings("{\"a\":{\"k\":2.50},\"z\":1}", listed_tools.tools[1].annotations_json.?);
     try testing.expectEqual(@as(usize, 2), listed_tools.tools[1].features.len);
     try testing.expectEqualStrings("z", listed_tools.tools[1].features[1].key);
     const feature = listed_tools.tools[1].features[0];

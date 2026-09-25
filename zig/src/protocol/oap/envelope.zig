@@ -253,6 +253,10 @@ fn serializeToolDefinition(w: *json_writer.JsonWriter, tool: oap_types.ToolDefin
     try w.writeStringField("execution_owner", tool.execution_owner);
     if (tool.source) |value| try w.writeStringField("source", value);
     if (tool.features.len > 0) try serializeFeatureMap(w, tool.features);
+    if (tool.annotations_json) |annotations| {
+        try w.writeKey("annotations");
+        try w.writeRawJson(annotations);
+    }
     try w.endObject();
 }
 
@@ -1536,6 +1540,11 @@ fn deserializeToolDefinition(value: std.json.Value, allocator: std.mem.Allocator
         try deserializeFeatureMap(declared, allocator)
     else
         &.{};
+    errdefer {
+        for (features) |*entry| entry.deinit(allocator);
+        allocator.free(features);
+    }
+    const annotations_json = try optionalObjectJson(obj, "annotations", allocator);
     return .{
         .name = name,
         .description = description,
@@ -1543,6 +1552,7 @@ fn deserializeToolDefinition(value: std.json.Value, allocator: std.mem.Allocator
         .execution_owner = execution_owner,
         .source = source,
         .features = features,
+        .annotations_json = annotations_json,
     };
 }
 
