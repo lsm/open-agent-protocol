@@ -106,6 +106,8 @@ pub const Reducer = struct {
     identity: Identity = .{},
     clock: i64 = 0,
     current_model: []const u8,
+    native_session_id: []const u8 = "",
+    last_sequence: i64 = 0,
     run: ?Run = null,
     tools: std.ArrayList(Tool) = .empty,
     catalog: std.ArrayList(CatalogEntry) = .empty,
@@ -133,6 +135,10 @@ pub const Reducer = struct {
         const counter = self.options.counter orelse &self.ids;
         counter.* += 1;
         return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, counter.* });
+    }
+
+    pub fn mintTurn(self: *Reducer) ![]const u8 {
+        return self.nextID("turn");
     }
 
     fn now(self: *Reducer) i64 {
@@ -223,10 +229,9 @@ pub const Reducer = struct {
     pub fn submitAs(self: *Reducer, submission_uuid: []const u8, identity: Identity) !void {
         if (self.unusable) return error.SessionClosed;
         if (self.run != null) return error.RunActive;
-        const minted_submission = try self.nextID("submission");
-        const submission_id = if (identity.submission_id.len > 0) identity.submission_id else minted_submission;
-        self.identity = identity;
         const message_id = try self.nextID("message");
+        const submission_id = if (identity.submission_id.len > 0) identity.submission_id else message_id;
+        self.identity = identity;
         self.run = Run{
             .submission_id = submission_id,
             .message_id = message_id,
@@ -293,6 +298,7 @@ pub const Reducer = struct {
         const tool_call_id = correlation.tool_call_id;
         const in_reply_to = correlation.in_reply_to;
         run.sequence += 1;
+        self.last_sequence = run.sequence;
         const id = try self.nextID("event");
         var envelope = self.object();
         try self.put(&envelope, "protocol", str(protocol_name));
@@ -829,6 +835,7 @@ pub const Reducer = struct {
             return;
         }
         if (message.kind != .observation) return;
+        try self.associate(message);
         if (self.run) |run| {
             if (self.unusable) return;
             if (!run.started) {
@@ -844,6 +851,14 @@ pub const Reducer = struct {
             return;
         }
         try self.observeIdle(message);
+    }
+
+    fn associate(self: *Reducer, message: rpc.Message) !void {
+        if (message.object != .object) return;
+        const carried = rpc.lookup(message.object.object, "session_id") orelse return;
+        if (carried != .string or carried.string.len == 0) return;
+        if (std.mem.eql(u8, carried.string, self.native_session_id)) return;
+        self.native_session_id = try self.allocator().dupe(u8, carried.string);
     }
 
     fn observeIdle(self: *Reducer, message: rpc.Message) !void {
@@ -1184,7 +1199,7 @@ fn startedModels(reducer: *Reducer, arena: std.mem.Allocator) ![]const []const u
     return models.items;
 }
 
-test "ids are allocated from one counter across four kinds" {
+test "ids are allocated from one counter and the submission reuses the message id" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var reducer = Reducer.init(&arena, .{});
@@ -1195,10 +1210,10 @@ test "ids are allocated from one counter across four kinds" {
         \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
 
-    try testing.expectEqualStrings("submission-1", reducer.run.?.submission_id);
-    try testing.expectEqualStrings("message-2", reducer.run.?.message_id);
-    try testing.expectEqualStrings("run-3", reducer.run.?.id);
-    try testing.expectEqualStrings("event-4", reducer.envelopes.items[0].object.get("id").?.string);
+    try testing.expectEqualStrings("message-1", reducer.run.?.submission_id);
+    try testing.expectEqualStrings("message-1", reducer.run.?.message_id);
+    try testing.expectEqualStrings("run-2", reducer.run.?.id);
+    try testing.expectEqualStrings("event-3", reducer.envelopes.items[0].object.get("id").?.string);
 }
 
 test "a run reports the model captured at submit, not the one init later published" {
@@ -2416,7 +2431,7 @@ test "an injected run id takes the place of the minted one without taking its le
     const injected_ids = try envelopeIDs(&injected, scratch);
 
     try testing.expectEqualStrings("run.started", minted.envelopes.items[0].object.get("type").?.string);
-    try testing.expectEqualStrings("run-3", minted.envelopes.items[0].object.get("run_id").?.string);
+    try testing.expectEqualStrings("run-2", minted.envelopes.items[0].object.get("run_id").?.string);
     try testing.expectEqualStrings("01JB0RUN", injected.envelopes.items[0].object.get("run_id").?.string);
 
     try testing.expectEqual(minted_ids.len, injected_ids.len);

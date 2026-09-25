@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -93,8 +94,10 @@ func exchangeWithChild(t *testing.T, fixture, backend string, scenario []string,
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	return out, strings.ReplaceAll(string(written), work, "@DIR@")
+	return out, requestEntropy.ReplaceAllString(strings.ReplaceAll(string(written), work, "@DIR@"), "${1}_@ENTROPY@\"")
 }
+
+var requestEntropy = regexp.MustCompile(`("request_id":"req_[0-9]+)_[0-9a-f]{8}"`)
 
 const fakeOpenCodeSession = "ses_fake00000000000000"
 
