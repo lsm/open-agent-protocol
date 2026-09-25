@@ -8527,6 +8527,9 @@ fn runOapProviderMode(
         .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
     });
     defer server.deinit();
+    var output = bounded_output.Output.init(stdout, std.math.maxInt(u64));
+    try output.start();
+    defer output.deinit();
 
     var grant_channels = std.ArrayList(OapGrantChannel).empty;
     defer {
@@ -8580,7 +8583,7 @@ fn runOapProviderMode(
             }
 
             server.handleLine(line) catch |err| {
-                _ = try drainOapProviderOutbound(stdout, allocator, &server);
+                _ = try drainOapProviderOutbound(&output, allocator, &server);
                 try compat.stdio.writeAll(stderr, OAP_PROVIDER_EXHAUSTED_MESSAGE);
                 return err;
             };
@@ -8598,25 +8601,25 @@ fn runOapProviderMode(
 
         if (try pumpOapInferences(allocator, &server, &running, idle_ttl_ms)) did_work = true;
 
-        if (try drainOapProviderOutbound(stdout, allocator, &server)) did_work = true;
+        if (try drainOapProviderOutbound(&output, allocator, &server)) did_work = true;
 
         if (stdin_stream.isDone() and !stdin_stream.hasPending() and running.items.len == 0 and !did_work) break;
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
     }
 
-    _ = try drainOapProviderOutbound(stdout, allocator, &server);
+    _ = try drainOapProviderOutbound(&output, allocator, &server);
 }
 
 fn drainOapProviderOutbound(
-    stdout: std.Io.File,
+    stdout: *bounded_output.Output,
     allocator: std.mem.Allocator,
     server: *oap_provider_server.Server,
 ) !bool {
     var wrote = false;
     while (server.popOutbound()) |line| {
         defer allocator.free(line);
-        try compat.stdio.writeAll(stdout, line);
-        try compat.stdio.writeAll(stdout, "\n");
+        try stdout.writeAll(line);
+        try stdout.writeAll("\n");
         wrote = true;
     }
     return wrote;
@@ -8767,6 +8770,11 @@ fn runOapMode(
     defer _ = stdin_handle.deinit(STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
+    if (!serve_provider) unblockOutput(stdout);
+    var output = bounded_output.Output.init(stdout, if (serve_provider) std.math.maxInt(u64) else backend_write_stall_ns);
+    try output.start();
+    defer output.deinit();
+    if (!serve_provider) output.stall_notice = .{ .file = stderr, .message = OUTPUT_STALLED_MESSAGE };
     var native_lines = std.ArrayList([]const u8).empty;
     defer {
         clearOwnedLines(allocator, &native_lines);
@@ -8801,7 +8809,7 @@ fn runOapMode(
                 }
                 if (try isProviderOapLine(allocator, line)) {
                     provider_server.handleLine(line) catch |err| {
-                        _ = try drainOapProviderOutbound(stdout, allocator, &provider_server);
+                        _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
                         try compat.stdio.writeAll(stderr, OAP_PROVIDER_EXHAUSTED_MESSAGE);
                         return err;
                     };
@@ -8815,7 +8823,7 @@ fn runOapMode(
             }
             oap.handleLine(line) catch |err| switch (err) {
                 error.MalformedLine, error.UnaddressableEnvelope => {
-                    _ = try writeOapOutbound(stdout, allocator, &oap);
+                    _ = try writeOapOutbound(&output, allocator, &oap);
                     const message = if (err == error.MalformedLine)
                         OAP_MALFORMED_LINE_MESSAGE
                     else
@@ -8877,9 +8885,9 @@ fn runOapMode(
             did_work = true;
         }
 
-        if (try writeOapOutbound(stdout, allocator, &oap)) did_work = true;
-        if (try writeOapAuthOutbound(stdout, allocator, &auth_adapter)) did_work = true;
-        if (serve_provider and try drainOapProviderOutbound(stdout, allocator, &provider_server)) did_work = true;
+        if (try writeOapOutbound(&output, allocator, &oap)) did_work = true;
+        if (try writeOapAuthOutbound(&output, allocator, &auth_adapter)) did_work = true;
+        if (serve_provider and try drainOapProviderOutbound(&output, allocator, &provider_server)) did_work = true;
 
         if (oapInputDrained(stdin_stream) and !did_work and running_inferences.items.len == 0 and !stdio_loop.hasActiveProviderStreams() and
             !stdio_loop.hasActiveAgentRuns() and !stdio_loop.hasActiveAuthFlows() and oap_auth_server.activeFlowCount() == 0)
@@ -8890,20 +8898,21 @@ fn runOapMode(
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
     }
 
-    _ = try writeOapOutbound(stdout, allocator, &oap);
-    _ = try writeOapAuthOutbound(stdout, allocator, &auth_adapter);
-    if (serve_provider) _ = try drainOapProviderOutbound(stdout, allocator, &provider_server);
+    _ = try writeOapOutbound(&output, allocator, &oap);
+    _ = try writeOapAuthOutbound(&output, allocator, &auth_adapter);
+    if (serve_provider) _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
 }
 
 fn writeOapAuthOutbound(
-    stdout: std.Io.File,
+    stdout: *bounded_output.Output,
     allocator: std.mem.Allocator,
     adapter: *oap_auth_adapter.Adapter,
 ) !bool {
     var wrote = false;
     while (adapter.popOutbound()) |line| {
         defer allocator.free(line);
-        try compat.stdio.writeLine(stdout, line);
+        try stdout.writeAll(line);
+        try stdout.writeAll("\n");
         wrote = true;
     }
     return wrote;
@@ -8914,6 +8923,7 @@ const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
 const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent --backend: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const OUTPUT_STALLED_MESSAGE = "oapx serve agent: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_OUTPUT_STALLED_MESSAGE = "oapx serve agent --backend: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
 
@@ -9147,13 +9157,6 @@ fn writeEndpointOutbound(stdout: *bounded_output.Output, allocator: std.mem.Allo
     return wrote;
 }
 
-fn flushBackend(stdout: *bounded_output.Output, stderr: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !void {
-    _ = writeEndpointOutbound(stdout, allocator, endpoint) catch |err| {
-        if (err == error.OutputStalled) try compat.stdio.writeAll(stderr, BACKEND_OUTPUT_STALLED_MESSAGE);
-        return err;
-    };
-}
-
 fn unblockOutput(stdout: std.Io.File) void {
     if (@import("builtin").os.tag == .windows) return;
     const status = stdout.stat(backendIo()) catch return;
@@ -9163,7 +9166,6 @@ fn unblockOutput(stdout: std.Io.File) void {
 
 fn backendFatalMessage(err: anyerror) ?[]const u8 {
     return switch (err) {
-        error.OutputStalled => BACKEND_OUTPUT_STALLED_MESSAGE,
         error.MalformedLine => BACKEND_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => BACKEND_FRAME_TOO_LARGE_MESSAGE,
@@ -9241,6 +9243,7 @@ fn runBackendMode(
     var output = bounded_output.Output.init(stdout, backend_write_stall_ns);
     try output.start();
     defer output.deinit();
+    output.stall_notice = .{ .file = stderr, .message = BACKEND_OUTPUT_STALLED_MESSAGE };
     var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{});
     defer endpoint.deinit();
 
@@ -9257,16 +9260,16 @@ fn runBackendMode(
             const line = std.mem.trim(u8, owned.data, " \t\r\n");
             if (line.len == 0) continue;
             endpoint.handleLine(line) catch |err| {
-                try flushBackend(&output, stderr, allocator, &endpoint);
+                _ = try writeEndpointOutbound(&output, allocator, &endpoint);
                 if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
                 return err;
             };
-            try flushBackend(&output, stderr, allocator, &endpoint);
+            _ = try writeEndpointOutbound(&output, allocator, &endpoint);
             did_work = true;
         }
         if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
             const failure = stdin_stream.getError() orelse break;
-            try flushBackend(&output, stderr, allocator, &endpoint);
+            _ = try writeEndpointOutbound(&output, allocator, &endpoint);
             if (std.mem.eql(u8, failure, "stdio line too large")) {
                 try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
                 return error.FrameTooLarge;
@@ -9278,10 +9281,10 @@ fn runBackendMode(
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
         }
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
-        try flushBackend(&output, stderr, allocator, &endpoint);
+        _ = try writeEndpointOutbound(&output, allocator, &endpoint);
     }
     try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
-    try flushBackend(&output, stderr, allocator, &endpoint);
+    _ = try writeEndpointOutbound(&output, allocator, &endpoint);
 }
 
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
@@ -9349,14 +9352,15 @@ fn emitOapRuntimeFailure(
 }
 
 fn writeOapOutbound(
-    stdout: std.Io.File,
+    stdout: *bounded_output.Output,
     allocator: std.mem.Allocator,
     oap: *oap_server.Server,
 ) !bool {
     var wrote = false;
     while (oap.popOutbound()) |line| {
         defer allocator.free(line);
-        try compat.stdio.writeLine(stdout, line);
+        try stdout.writeAll(line);
+        try stdout.writeAll("\n");
         wrote = true;
     }
     return wrote;
@@ -9455,6 +9459,22 @@ const BackendRun = struct {
 
     fn run(self: *BackendRun) void {
         runBackendMode(self.allocator, self.name, self.config_path, self.stdin_file, self.stdout_file, self.stderr_file) catch |err| {
+            self.err = err;
+        };
+        compat.stdio.close(self.stdin_file);
+        compat.stdio.close(self.stdout_file);
+        compat.stdio.close(self.stderr_file);
+    }
+};
+
+const BuiltinRun = struct {
+    stdin_file: std.Io.File,
+    stdout_file: std.Io.File,
+    stderr_file: std.Io.File,
+    err: ?anyerror = null,
+
+    fn run(self: *BuiltinRun) void {
+        runOapMode(std.heap.page_allocator, &.{}, self.stdin_file, self.stdout_file, self.stderr_file, false) catch |err| {
             self.err = err;
         };
         compat.stdio.close(self.stdin_file);
@@ -10447,6 +10467,33 @@ test "a SIGTERM ends the served backend as end of input does, exiting clean" {
 
     try std.testing.expect(runner.err == null);
     try std.testing.expectEqual(@as(usize, 0), complained.len);
+}
+
+test "the built-in agent loop stops once its unread stdout passes the stall bound, saying why" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const stdin_pipe = try compat.stdio.pipe();
+    const stdout_pipe = try compat.stdio.pipe();
+    const stderr_pipe = try compat.stdio.pipe();
+    const bound = backend_write_stall_ns;
+    backend_write_stall_ns = 300 * std.time.ns_per_ms;
+    defer backend_write_stall_ns = bound;
+
+    var runner = BuiltinRun{ .stdin_file = stdin_pipe[0], .stdout_file = stdout_pipe[1], .stderr_file = stderr_pipe[1] };
+    const thread = try std.Thread.spawn(.{}, BuiltinRun.run, .{&runner});
+    var sent: usize = 0;
+    while (sent < 400) : (sent += 1) {
+        compat.stdio.writeLine(stdin_pipe[1], "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}") catch break;
+    }
+    const complained = try readAllFrom(allocator, stderr_pipe[0]);
+    defer allocator.free(complained);
+    compat.stdio.close(stderr_pipe[0]);
+    thread.join();
+    compat.stdio.close(stdout_pipe[0]);
+    compat.stdio.close(stdin_pipe[1]);
+
+    try std.testing.expectEqual(@as(?anyerror, error.OutputStalled), runner.err);
+    try std.testing.expectEqualStrings(OUTPUT_STALLED_MESSAGE, complained);
 }
 
 test "a served backend whose stdout nobody reads stops once the stall bound passes, saying why" {
