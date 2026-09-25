@@ -8912,6 +8912,7 @@ const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
 const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent --backend: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const BACKEND_OUTPUT_STALLED_MESSAGE = "oapx serve agent --backend: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
 
 fn backendClock() u64 {
@@ -9131,18 +9132,49 @@ fn opencodeBackendConfig(
     return .{ .endpoint = entry.endpoint, .agent = entry.agent };
 }
 
+var backend_write_stall_ns: u64 = 2 * 60 * std.time.ns_per_s;
+const pipe_atomic_bytes = 512;
+
 fn writeEndpointOutbound(stdout: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
     var wrote = false;
     while (endpoint.popOutbound()) |line| {
         defer allocator.free(line);
-        try compat.stdio.writeLine(stdout, line);
+        try writeBounded(stdout, line);
+        try writeBounded(stdout, "\n");
         wrote = true;
     }
     return wrote;
 }
 
+fn flushBackend(stdout: std.Io.File, stderr: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !void {
+    _ = writeEndpointOutbound(stdout, allocator, endpoint) catch |err| {
+        if (err == error.OutputStalled) try compat.stdio.writeAll(stderr, BACKEND_OUTPUT_STALLED_MESSAGE);
+        return err;
+    };
+}
+
+fn writeBounded(file: std.Io.File, bytes: []const u8) !void {
+    if (@import("builtin").os.tag == .windows) return compat.stdio.writeAll(file, bytes);
+    var at: usize = 0;
+    var progressed = backendClock();
+    while (at < bytes.len) {
+        var fds = [_]std.posix.pollfd{.{ .fd = file.handle, .events = std.posix.POLL.OUT, .revents = 0 }};
+        const ready = try std.posix.poll(&fds, 50);
+        if (ready == 0 or fds[0].revents & std.posix.POLL.OUT == 0) {
+            if (fds[0].revents & (std.posix.POLL.ERR | std.posix.POLL.HUP) != 0) return error.BrokenPipe;
+            if (backendClock() -| progressed > backend_write_stall_ns) return error.OutputStalled;
+            continue;
+        }
+        const end = @min(bytes.len, at + pipe_atomic_bytes);
+        try compat.stdio.writeAll(file, bytes[at..end]);
+        at = end;
+        progressed = backendClock();
+    }
+}
+
 fn backendFatalMessage(err: anyerror) ?[]const u8 {
     return switch (err) {
+        error.OutputStalled => BACKEND_OUTPUT_STALLED_MESSAGE,
         error.MalformedLine => BACKEND_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => BACKEND_FRAME_TOO_LARGE_MESSAGE,
@@ -9218,16 +9250,16 @@ fn runBackendMode(
             const line = std.mem.trim(u8, owned.data, " \t\r\n");
             if (line.len == 0) continue;
             endpoint.handleLine(line) catch |err| {
-                _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+                try flushBackend(stdout, stderr, allocator, &endpoint);
                 if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
                 return err;
             };
-            _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+            try flushBackend(stdout, stderr, allocator, &endpoint);
             did_work = true;
         }
         if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
             const failure = stdin_stream.getError() orelse break;
-            _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+            try flushBackend(stdout, stderr, allocator, &endpoint);
             if (std.mem.eql(u8, failure, "stdio line too large")) {
                 try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
                 return error.FrameTooLarge;
@@ -9239,10 +9271,10 @@ fn runBackendMode(
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
         }
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
-        _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+        try flushBackend(stdout, stderr, allocator, &endpoint);
     }
     try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
-    _ = try writeEndpointOutbound(stdout, allocator, &endpoint);
+    try flushBackend(stdout, stderr, allocator, &endpoint);
 }
 
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
@@ -10375,4 +10407,38 @@ test "a JSON report names the phase of each finding and never claims completenes
     try std.testing.expectEqualStrings("schema", diagnostic.get("phase").?.string);
     try std.testing.expectEqualStrings("schema_invalid", diagnostic.get("code").?.string);
     try std.testing.expectEqual(@as(i64, 2), diagnostic.get("index").?.integer);
+}
+
+test "a served backend whose stdout nobody reads stops once the stall bound passes, saying why" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const stdin_pipe = try compat.stdio.pipe();
+    const stdout_pipe = try compat.stdio.pipe();
+    const stderr_pipe = try compat.stdio.pipe();
+    const bound = backend_write_stall_ns;
+    backend_write_stall_ns = 300 * std.time.ns_per_ms;
+    defer backend_write_stall_ns = bound;
+
+    var runner = BackendRun{
+        .allocator = std.heap.page_allocator,
+        .name = "memory",
+        .config_path = null,
+        .stdin_file = stdin_pipe[0],
+        .stdout_file = stdout_pipe[1],
+        .stderr_file = stderr_pipe[1],
+    };
+    const thread = try std.Thread.spawn(.{}, BackendRun.run, .{&runner});
+    var sent: usize = 0;
+    while (sent < 400) : (sent += 1) {
+        compat.stdio.writeLine(stdin_pipe[1], "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}") catch break;
+    }
+    const complained = try readAllFrom(allocator, stderr_pipe[0]);
+    defer allocator.free(complained);
+    compat.stdio.close(stderr_pipe[0]);
+    thread.join();
+    compat.stdio.close(stdout_pipe[0]);
+    compat.stdio.close(stdin_pipe[1]);
+
+    try std.testing.expectEqual(@as(?anyerror, error.OutputStalled), runner.err);
+    try std.testing.expectEqualStrings(BACKEND_OUTPUT_STALLED_MESSAGE, complained);
 }
