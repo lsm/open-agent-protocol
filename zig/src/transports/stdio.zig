@@ -827,12 +827,13 @@ test "a handle whose reader is still blocked hands the stream to the reader, whi
 
 test "a stdin handle that fails to allocate part way leaks nothing it already built" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const pipe = try compat.stdio.pipe();
-    defer compat.stdio.close(pipe[0]);
-    defer compat.stdio.close(pipe[1]);
     var fail_index: usize = 0;
     var refused: usize = 0;
     while (fail_index < 16) : (fail_index += 1) {
+        const pipe = try compat.stdio.pipe();
+        defer compat.stdio.close(pipe[0]);
+        var write_open = true;
+        defer if (write_open) compat.stdio.close(pipe[1]);
         var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
         var receiver = AsyncStdioReceiver.initWithFile(pipe[0]);
         var handle = receiver.receiveStreamWithHandle(failing.allocator()) catch |err| {
@@ -840,6 +841,8 @@ test "a stdin handle that fails to allocate part way leaks nothing it already bu
             refused += 1;
             continue;
         };
+        compat.stdio.close(pipe[1]);
+        write_open = false;
         try std.testing.expect(handle.deinit(1000));
         break;
     }
