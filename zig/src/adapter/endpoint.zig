@@ -1764,3 +1764,14 @@ test "attachments resolve as the hub resolves them: configured by id, local pass
         try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
     }
 }
+
+test "a mistyped attachment member is worded as goap's decoder words it, first defect in document order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("cannot unmarshal string into Go struct field SessionOpenRequest.tool_sources.0.environment of type []string", (try attachmentDecodeDefect(a, "[{\"id\":\"n\",\"kind\":\"local\",\"environment\":\"PATH\"}]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into SessionOpenRequest.tool_sources.1.args.0 of type string", (try attachmentDecodeDefect(a, "[{\"id\":\"a\",\"kind\":\"local\"},{\"id\":\"n\",\"kind\":\"local\",\"args\":[1],\"command\":5}]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into SessionOpenRequest.tool_sources.0 of type protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "[5]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into Go struct field SessionOpenRequest.tool_sources of type []protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "5")).?);
+    try testing.expect((try attachmentDecodeDefect(a, "[{\"id\":\"n\",\"kind\":\"local\",\"environment\":null,\"extra\":1}]")) == null);
+}
