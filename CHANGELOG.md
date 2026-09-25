@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
+- The OpenCode pin moves from `v1.18.29` to `v1.18.32` (revisions `opencode-v1.18.32-oap-v2` and `opencode-v1.18.32-oapx-v1`); v1.18.29 is retired. The session API, its SSE events and every corpus-cited source blob are unchanged between the tags, so the fifteen corpus cases carry forward with their native lines untouched and neither adapter changes. See [`research/opencode-v1.18.32-mapping.md`](research/opencode-v1.18.32-mapping.md).
 
 ### Removed
 
