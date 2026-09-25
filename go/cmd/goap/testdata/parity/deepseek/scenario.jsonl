@@ -1,0 +1,4 @@
+{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"protocol.initialize.request","id":"i1","payload":{"protocol_versions":["0.1"],"profiles":["open-agent-protocol.agent-control-core"],"participant":{"id":"user"}}}
+{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s1"}}
+{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"s1","session_id":"s1","payload":{"session_id":"s1","delivery":"auto","messages":[{"role":"user","content":"hello"}]}}
+{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.request","id":"st1","session_id":"s1","payload":{"session_id":"s1"}}
