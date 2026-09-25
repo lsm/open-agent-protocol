@@ -320,11 +320,13 @@ pub const Session = struct {
         const current = self.reducer.state;
         const active_run_id: ?[]const u8 = if (current.active_run_id.len > 0) try arena.dupe(u8, current.active_run_id) else null;
         const current_model_id: ?[]const u8 = if (current.current_model_id.len > 0) try arena.dupe(u8, current.current_model_id) else null;
+        const transcript_cursor: ?[]const u8 = if (current.transcript_cursor.len > 0) try arena.dupe(u8, current.transcript_cursor) else null;
         return .{
             .session_id = self.id,
             .status = std.meta.stringToEnum(oap_types.SessionStatus, current.status) orelse .running,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = if (current.updated_at_ms > 0) current.updated_at_ms else null,
         };
     }
@@ -740,6 +742,21 @@ test "a turn is admitted on its turn/start answer and settles on turn/completed"
         try testing.expect(std.mem.indexOf(u8, event.line, "\"capability_revision\":\"" ++ capability_revision ++ "\"") != null);
     }
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
+}
+
+test "state reports the settled run's last sequence as its transcript cursor" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const fresh = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expect(fresh.transcript_cursor == null);
+    _ = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    const settled = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(probe.arena.allocator(), "{d}", .{completed.sequence}), settled.transcript_cursor.?);
 }
 
 test "a second submission while a run is live is refused run_active" {

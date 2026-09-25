@@ -377,8 +377,10 @@ pub const Session = struct {
         const self = cast(ptr);
         if (request.session_id.len == 0 or request.messages.len == 0 or request.delivery != .auto) return error.InvalidSubmission;
         var blocks = std.json.Array.init(self.owned());
-        for (request.messages) |message| {
+        const message_ids = try arena.alloc([]const u8, request.messages.len);
+        for (request.messages, message_ids) |message, *slot| {
             if (message.role != .user) return error.InvalidSubmission;
+            slot.* = if (message.id) |carried| carried else try self.reducer.counters.nextID(arena, "message");
             switch (message.content) {
                 .text => |content| try blocks.append(try textBlock(self.owned(), content)),
                 .parts => |parts| for (parts) |part| switch (part) {
@@ -390,10 +392,6 @@ pub const Session = struct {
         if (self.closed()) return error.SessionClosed;
         if (!std.mem.eql(u8, request.session_id, self.id)) return error.RunNotFound;
         if (self.reducer.reserved and !self.reducer.terminal) return error.RunActive;
-        const message_ids = try arena.alloc([]const u8, request.messages.len);
-        for (request.messages, message_ids) |message, *slot| {
-            slot.* = if (message.id) |carried| carried else try self.reducer.counters.nextID(arena, "message");
-        }
         session.submitAs(&self.reducer, .{ .mint_request_id = false }) catch |err| return switch (err) {
             error.RunActive => error.RunActive,
             error.SessionClosed, error.SessionUnusable => error.SessionClosed,
@@ -411,7 +409,7 @@ pub const Session = struct {
             return err;
         };
         const receipt = try arena.dupe(u8, text(result, "messageId"));
-        session.receipt(&self.reducer, receipt) catch |err| return lift(err);
+        session.receipt(&self.reducer, try self.owned().dupe(u8, receipt)) catch |err| return lift(err);
         const started = monotonic();
         while (!self.reducer.started) {
             if (self.reducer.terminal or self.ended or self.reducer.unusable) return refusal.fail(error.BackendFailed, "the deepseek harness did not start the turn");

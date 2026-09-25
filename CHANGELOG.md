@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A parity test drives `goap serve agent` and `oapx serve agent` against the same scripted fake child for each served backend and requires identical answers and identical bytes written to the child; CI runs it. DeepSeek and Hermes are covered first. Endpoint refusals now carry `goap`'s wording (`adapter: ...`, `no session "<id>"`) and name the offending `tool` or `source`, and for DeepSeek `oapx` now accepts several messages and text parts as `goap` does, answers with the harness receipt as `submission_id` and the request's own message ids, and refuses a submit addressed to another session `run_not_found`.
+- A parity test drives `goap serve agent` and `oapx serve agent` against the same scripted fake child for each served backend and requires identical answers and identical bytes written to the child; CI runs it. DeepSeek and Hermes are covered first. Endpoint refusals now carry `goap`'s wording (`adapter: ...`, `no session "<id>"`), carry the `tool`, `source` and `detail` a backend's refusal names, and for DeepSeek `oapx` now accepts several messages and text parts as `goap` does, answers with the harness receipt as `submission_id` and the request's own message ids, and refuses a submit addressed to another session `run_not_found`.
 - `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
 
 ### Changed
