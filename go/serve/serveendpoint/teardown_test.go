@@ -391,3 +391,22 @@ func TestAddressableEnvelopeIsAnsweredNotFatal(t *testing.T) {
 		})
 	}
 }
+
+func TestCapabilitiesNameTheStdioBinding(t *testing.T) {
+	registry, err := serve.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(serve.New(registry, serve.Options{}), Options{Adapter: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &syncBuffer{}
+	line := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"c1","payload":{}}`
+	if err := server.Run(context.Background(), strings.NewReader(line+"\n"), out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"bindings":[{"kind":"stdio","serialization":"jsonl"}]`) {
+		t.Fatalf("capabilities.response does not name the stdio binding it arrived on: %q", out.String())
+	}
+}
