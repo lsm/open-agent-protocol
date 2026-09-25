@@ -194,10 +194,26 @@ func (s *Server) open(ctx context.Context, e protocol.Envelope) (protocol.Envelo
 	if err := e.DecodePayload(&request); err != nil {
 		return protocol.Envelope{}, &refusal{code: "invalid_payload", message: err.Error()}
 	}
+	if _, err := serve.SubscribeGate(ctx, s.hub, s.adapter, "", request); err != nil {
+		return protocol.Envelope{}, err
+	}
+	if _, err := serve.AttachmentGate(ctx, s.hub, s.adapter, "", request); err != nil {
+		return protocol.Envelope{}, err
+	}
+	if request.Message != nil {
+		return protocol.Envelope{}, &base.UnsupportedControlError{Feature: "session.message.submit", Reason: base.ControlUnsatisfiable, Field: "message"}
+	}
+	attachments, unresolvable := serve.ResolveAttachments(s.hub, request.ToolSources)
+	if unresolvable != nil {
+		return protocol.Envelope{}, &refusal{code: "unsupported_feature", message: unresolvable.Error(), details: map[string]any{
+			"feature": protocol.FeatureToolSourcesAttach, "reason": base.ControlUnsatisfiable, "source": unresolvable.Source,
+		}}
+	}
 	open := base.OpenRequest{
 		SessionID:             request.SessionID,
 		Participant:           protocol.Participant{ID: s.controlParticipant()},
 		AllowDegradedFeatures: request.AllowDegradedFeatures,
+		ToolSources:           attachments,
 		Tools:                 request.Tools,
 	}
 	entry, state, err := s.hub.Open(ctx, s.adapter, open)
