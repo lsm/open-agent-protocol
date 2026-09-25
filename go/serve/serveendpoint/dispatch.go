@@ -180,7 +180,11 @@ func (s *Server) capabilities(ctx context.Context, e protocol.Envelope) (protoco
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
-	answer, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, s.nextID("response"), descriptor.Capabilities)
+	capabilities := descriptor.Capabilities
+	if len(capabilities.Bindings) == 0 {
+		capabilities.Bindings = []protocol.Binding{{Kind: "stdio", Serialization: "jsonl"}}
+	}
+	answer, err := protocol.NewEnvelope(protocol.TypeCapabilitiesResponse, s.nextID("response"), capabilities)
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
