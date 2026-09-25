@@ -340,12 +340,16 @@ pub const AsyncStdioReceiver = struct {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
         const stream = try allocator.create(transport.ByteStream);
+        errdefer allocator.destroy(stream);
         stream.* = transport.ByteStream.init(allocator);
+        errdefer stream.deinit();
 
         const cancel_token = try allocator.create(std.atomic.Value(bool));
+        errdefer allocator.destroy(cancel_token);
         cancel_token.* = std.atomic.Value(bool).init(false);
 
         const thread_ctx = try allocator.create(ProducerContext);
+        errdefer allocator.destroy(thread_ctx);
         thread_ctx.* = .{
             .stream = stream,
             .file = self.file,
@@ -354,6 +358,7 @@ pub const AsyncStdioReceiver = struct {
             .cancel_token = cancel_token,
             .owns_cancel_token = true,
         };
+        errdefer thread_ctx.framer.deinit();
 
         const thread = try std.Thread.spawn(.{}, producerThread, .{thread_ctx});
 
@@ -364,15 +369,20 @@ pub const AsyncStdioReceiver = struct {
 
     pub fn receiveStreamWithHandle(self: *Self, allocator: std.mem.Allocator) !AsyncStreamHandle {
         const stream = try allocator.create(transport.ByteStream);
+        errdefer allocator.destroy(stream);
         stream.* = transport.ByteStream.init(allocator);
+        errdefer stream.deinit();
 
         const cancel_token = try allocator.create(std.atomic.Value(bool));
+        errdefer allocator.destroy(cancel_token);
         cancel_token.* = std.atomic.Value(bool).init(false);
 
         const ownership = try allocator.create(std.atomic.Value(Ownership));
+        errdefer allocator.destroy(ownership);
         ownership.* = std.atomic.Value(Ownership).init(.running);
 
         const thread_ctx = try allocator.create(ProducerContext);
+        errdefer allocator.destroy(thread_ctx);
         thread_ctx.* = .{
             .stream = stream,
             .file = self.file,
@@ -382,6 +392,7 @@ pub const AsyncStdioReceiver = struct {
             .owns_cancel_token = false,
             .ownership = ownership,
         };
+        errdefer thread_ctx.framer.deinit();
 
         const thread = try std.Thread.spawn(.{}, producerThread, .{thread_ctx});
 
@@ -817,4 +828,28 @@ test "a handle whose reader is still blocked hands the stream to the reader, whi
     var waited: usize = 0;
     while (waited < 100) : (waited += 1) compat.time.sleepNs(std.time.ns_per_ms);
     compat.stdio.close(pipe[0]);
+}
+
+test "a stdin handle that fails to allocate part way leaks nothing it already built" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var fail_index: usize = 0;
+    var refused: usize = 0;
+    while (fail_index < 16) : (fail_index += 1) {
+        const pipe = try compat.stdio.pipe();
+        defer compat.stdio.close(pipe[0]);
+        var write_open = true;
+        defer if (write_open) compat.stdio.close(pipe[1]);
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = fail_index });
+        var receiver = AsyncStdioReceiver.initWithFile(pipe[0]);
+        var handle = receiver.receiveStreamWithHandle(failing.allocator()) catch |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            refused += 1;
+            continue;
+        };
+        compat.stdio.close(pipe[1]);
+        write_open = false;
+        try std.testing.expect(handle.deinit(1000));
+        break;
+    }
+    try std.testing.expect(refused >= 4);
 }
