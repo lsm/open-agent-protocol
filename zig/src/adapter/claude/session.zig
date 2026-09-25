@@ -724,6 +724,7 @@ pub const Reducer = struct {
             self.run = null;
             return;
         }
+        try self.sweepRun();
         var failure = self.object();
         try self.put(&failure, "code", str(code));
         try self.put(&failure, "message", str(message));
@@ -1701,8 +1702,9 @@ test "a tool lifecycle the oracle refuses fails the run here too" {
         \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a2"}
     );
     const after_duplicate = try emittedTypes(&duplicated, scratch);
-    try testing.expectEqual(@as(usize, 4), after_duplicate.len);
-    try testing.expectEqualStrings("run.failed", after_duplicate[3]);
+    try testing.expectEqual(@as(usize, 5), after_duplicate.len);
+    try testing.expectEqualStrings("action.call.cancelled", after_duplicate[3]);
+    try testing.expectEqualStrings("run.failed", after_duplicate[4]);
     try testing.expectEqualStrings("claude_tool_lifecycle", failureCodeOf(&duplicated).?);
     try testing.expectEqualStrings("duplicate tool call", failureMessageOf(&duplicated).?);
 
@@ -1797,7 +1799,8 @@ test "a call the failed run left open is not swept into the next run" {
     try observeText(&reducer, scratch,
         \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
     );
-    try testing.expectEqualStrings("run.failed", reducer.envelopes.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("action.call.cancelled", reducer.envelopes.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("run.failed", reducer.envelopes.items[4].object.get("type").?.string);
     const refused_at = reducer.envelopes.items.len;
 
     try startedRun(&reducer, scratch, "turn-2");
@@ -2627,4 +2630,23 @@ test "compaction frees what it built when any allocation fails" {
     defer source.deinit();
     const reducer = try settledSession(&source);
     try testing.checkAllAllocationFailures(testing.allocator, compactProbe, .{&reducer});
+}
+
+test "a policy-denied call still open when the child dies settles refused_by_policy before the run fails" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try reducer.refusedByPolicy("t1");
+    try reducer.transportFailed("the child exited");
+    const kinds = try emittedTypes(&reducer, scratch);
+    try testing.expectEqualStrings("action.call.failed", kinds[kinds.len - 2]);
+    try testing.expectEqualStrings("run.failed", kinds[kinds.len - 1]);
+    const settled = reducer.envelopes.items[kinds.len - 2].object.get("payload").?.object.get("error").?.object;
+    try testing.expectEqualStrings(refused_by_policy, settled.get("code").?.string);
 }
