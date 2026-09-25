@@ -340,12 +340,16 @@ pub const AsyncStdioReceiver = struct {
         const self: *Self = @ptrCast(@alignCast(ctx));
 
         const stream = try allocator.create(transport.ByteStream);
+        errdefer allocator.destroy(stream);
         stream.* = transport.ByteStream.init(allocator);
+        errdefer stream.deinit();
 
         const cancel_token = try allocator.create(std.atomic.Value(bool));
+        errdefer allocator.destroy(cancel_token);
         cancel_token.* = std.atomic.Value(bool).init(false);
 
         const thread_ctx = try allocator.create(ProducerContext);
+        errdefer allocator.destroy(thread_ctx);
         thread_ctx.* = .{
             .stream = stream,
             .file = self.file,
@@ -354,6 +358,7 @@ pub const AsyncStdioReceiver = struct {
             .cancel_token = cancel_token,
             .owns_cancel_token = true,
         };
+        errdefer thread_ctx.framer.deinit();
 
         const thread = try std.Thread.spawn(.{}, producerThread, .{thread_ctx});
 

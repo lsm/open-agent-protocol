@@ -40,8 +40,10 @@ pub const Output = struct {
 
     pub fn start(self: *Output) Error!void {
         if (!is_windows) return;
-        self.watchdog.writer = win.OpenThread(win.thread_terminate, .FALSE, win.GetCurrentThreadId()) orelse return error.Unexpected;
-        errdefer std.os.windows.CloseHandle(self.watchdog.writer.?);
+        const writer = win.OpenThread(win.thread_terminate, .FALSE, win.GetCurrentThreadId()) orelse return error.Unexpected;
+        errdefer std.os.windows.CloseHandle(writer);
+        self.watchdog.writer = writer;
+        errdefer self.watchdog.writer = null;
         self.watchdog.thread = try std.Thread.spawn(.{}, watch, .{self});
     }
 
