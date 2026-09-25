@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -10,7 +11,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = "codex-appserver-8d7cc24-oapx-v1";
+pub const capability_revision = harness_pins.codex_app_server_oapx_capability_revision;
 const journal_reason = "oapx keeps no journal for this backend";
 const app_server_args = [_][]const u8{ "app-server", "--listen", "stdio://" };
 

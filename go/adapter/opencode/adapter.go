@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/harnesses"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -15,13 +16,16 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
-const (
-	endpointID   = "opencode.server"
-	PinnedTag    = native.PinnedTag
-	PinnedCommit = "16747470f976aca3d362ad730bcd3fe82ecc2c9a"
+var (
+	pin                = harnesses.Current("opencode")
+	PinnedTag          = pin.EndpointVersion
+	PinnedCommit       = pin.Source("opencode").Commit
+	CapabilityRevision = pin.CapabilityRevision
+	CorpusDirectory    = pin.Corpus
+)
 
-	CapabilityRevision  = "opencode-v1.18.29-oap-v2"
-	CorpusDirectory     = "fixtures/adapters/opencode-v1.18.29"
+const (
+	endpointID          = "opencode.server"
 	defaultJournalCap   = 256
 	defaultHistoryLimit = 100
 

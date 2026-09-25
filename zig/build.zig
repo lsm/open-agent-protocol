@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     const version_options = b.addOptions();
     version_options.addOption([]const u8, "version", version);
     const version_module = version_options.createModule();
+    const harness_pins_mod = harnessPinsModule(b);
     const zigzag_dep = b.dependency("zigzag", .{
         .target = target,
         .optimize = optimize,
@@ -129,6 +130,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    pi_corpus_mod.addImport("harness_pins", harness_pins_mod);
     pi_corpus_mod.addImport("corpus", adapter_corpus_mod);
     pi_corpus_mod.addOptions("build_options", gate_options);
     const pi_corpus_test = b.addTest(.{ .root_module = pi_corpus_mod });
@@ -138,6 +140,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    deepseek_session_mod.addImport("harness_pins", harness_pins_mod);
     deepseek_session_mod.addImport("corpus", adapter_corpus_mod);
     deepseek_session_mod.addOptions("build_options", gate_options);
     const deepseek_session_test = b.addTest(.{ .root_module = deepseek_session_mod });
@@ -290,6 +294,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    hermes_session_mod.addImport("harness_pins", harness_pins_mod);
     const hermes_session_test = b.addTest(.{ .root_module = hermes_session_mod });
     hermes_session_mod.addImport("rpc", hermes_rpc_mod);
     hermes_session_mod.addImport("goquote", adapter_goquote_mod);
@@ -299,6 +304,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    hermes_corpus_mod.addImport("harness_pins", harness_pins_mod);
     hermes_corpus_mod.addImport("corpus", adapter_corpus_mod);
     hermes_corpus_mod.addImport("rpc", hermes_rpc_mod);
     hermes_corpus_mod.addImport("session", hermes_session_mod);
@@ -318,6 +324,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    acp_session_mod.addImport("harness_pins", harness_pins_mod);
     acp_session_mod.addImport("rpc", acp_rpc_mod);
     deepseek_session_mod.addImport("goquote", adapter_goquote_mod);
     deepseek_session_mod.addImport("gojson", adapter_gojson_mod);
@@ -331,6 +339,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    claude_session_mod.addImport("harness_pins", harness_pins_mod);
     claude_rpc_mod.addImport("goquote", adapter_goquote_mod);
     claude_rpc_mod.addImport("gojson", adapter_gojson_mod);
     claude_session_mod.addImport("rpc", claude_rpc_mod);
@@ -350,6 +360,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    acp_corpus_mod.addImport("harness_pins", harness_pins_mod);
     acp_corpus_mod.addImport("rpc", acp_rpc_mod);
     acp_corpus_mod.addImport("session", acp_session_mod);
     acp_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
@@ -370,6 +382,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    claude_corpus_mod.addImport("harness_pins", harness_pins_mod);
     claude_corpus_mod.addImport("rpc", claude_rpc_mod);
     claude_corpus_mod.addImport("session", claude_session_mod);
     claude_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
@@ -387,6 +401,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    opencode_native_mod.addImport("harness_pins", harness_pins_mod);
     opencode_native_mod.addImport("gojson", adapter_gojson_mod);
     opencode_native_mod.addImport("goquote", adapter_goquote_mod);
     opencode_native_mod.addImport("gomarshal", adapter_gomarshal_mod);
@@ -409,6 +425,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    opencode_session_mod.addImport("harness_pins", harness_pins_mod);
     opencode_session_mod.addImport("native", opencode_native_mod);
     opencode_session_mod.addImport("gomarshal", adapter_gomarshal_mod);
     const opencode_session_test = b.addTest(.{ .root_module = opencode_session_mod });
@@ -427,6 +445,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    opencode_corpus_mod.addImport("harness_pins", harness_pins_mod);
     opencode_corpus_mod.addImport("adapter_corpus", adapter_corpus_mod);
     opencode_corpus_mod.addImport("native", opencode_native_mod);
     opencode_corpus_mod.addImport("httpapi", opencode_httpapi_mod);
@@ -449,6 +469,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    codex_native_mod.addImport("harness_pins", harness_pins_mod);
     codex_native_mod.addImport("gojson", adapter_gojson_mod);
     const codex_native_test = b.addTest(.{ .root_module = codex_native_mod });
 
@@ -457,6 +479,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    codex_session_mod.addImport("harness_pins", harness_pins_mod);
     codex_session_mod.addImport("rpc", codex_rpc_mod);
     codex_session_mod.addImport("native", codex_native_mod);
     const codex_session_test = b.addTest(.{ .root_module = codex_session_mod });
@@ -466,6 +490,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    codex_corpus_mod.addImport("harness_pins", harness_pins_mod);
     codex_corpus_mod.addImport("rpc", codex_rpc_mod);
     codex_corpus_mod.addImport("native", codex_native_mod);
     codex_corpus_mod.addImport("session", codex_session_mod);
@@ -1173,6 +1199,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+
+    claude_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const claude_adapter_test = b.addTest(.{ .root_module = claude_adapter_mod });
 
     const acp_adapter_mod = b.createModule(.{
@@ -1189,6 +1217,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+
+    acp_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const acp_adapter_test = b.addTest(.{ .root_module = acp_adapter_mod });
 
     const pi_adapter_mod = b.createModule(.{
@@ -1203,6 +1233,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+
+    pi_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const pi_adapter_test = b.addTest(.{ .root_module = pi_adapter_mod });
 
     const codex_adapter_mod = b.createModule(.{
@@ -1220,6 +1252,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+
+    codex_adapter_mod.addImport("harness_pins", harness_pins_mod);
     codex_adapter_mod.addAnonymousImport("codex_conversation", .{
         .root_source_file = b.path("../fixtures/adapters/codex-appserver-writes/conversation.json"),
     });
@@ -1254,6 +1288,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
+
+    hermes_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const hermes_adapter_test = b.addTest(.{ .root_module = hermes_adapter_mod });
 
     const hermes_endpoint_test = b.addTest(.{
@@ -1285,6 +1321,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "goquote", .module = adapter_goquote_mod },
         },
     });
+
+    deepseek_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const deepseek_adapter_test = b.addTest(.{ .root_module = deepseek_adapter_mod });
 
     const deepseek_endpoint_test = b.addTest(.{
@@ -1317,6 +1355,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "client", .module = opencode_client_mod },
         },
     });
+
+    opencode_adapter_mod.addImport("harness_pins", harness_pins_mod);
     const opencode_adapter_test = b.addTest(.{ .root_module = opencode_adapter_mod });
 
     const opencode_endpoint_test = b.addTest(.{
@@ -3019,4 +3059,55 @@ fn macOsSdkDir(b: *std.Build) ?[]const u8 {
     const sdkroot = std.mem.trim(u8, run_result.stdout, " \t\r\n");
     if (sdkroot.len == 0) return null;
     return b.allocator.dupe(u8, sdkroot) catch null;
+}
+
+fn harnessPinsModule(b: *std.Build) *std.Build.Module {
+    const Version = struct {
+        label: []const u8,
+        status: []const u8,
+        endpoint_version: ?[]const u8 = null,
+        capability_revision: ?[]const u8 = null,
+        oapx_capability_revision: ?[]const u8 = null,
+        corpus: ?[]const u8 = null,
+        admits: ?[]const []const u8 = null,
+        sources: []const struct { component: []const u8, tag: ?[]const u8 = null, commit: []const u8, tree: ?[]const u8 = null } = &.{},
+        artifacts: []const struct { component: []const u8, platform: []const u8, kind: []const u8, sha256: []const u8 } = &.{},
+    };
+    const Entry = struct { versions: []const Version };
+    const options = b.addOptions();
+    const ids = [_][]const u8{ "acp", "claude-code", "codex-app-server", "deepseek-harness", "hermes", "opencode", "pi" };
+    for (ids) |id| {
+        const path = b.fmt("../harnesses/{s}.json", .{id});
+        const bytes = b.build_root.handle.readFileAlloc(b.graph.io, path, b.allocator, .limited(1 << 20)) catch |err| std.debug.panic("reading {s}: {t}", .{ path, err });
+        const entry = std.json.parseFromSliceLeaky(Entry, b.allocator, bytes, .{ .ignore_unknown_fields = true }) catch |err| std.debug.panic("parsing {s}: {t}", .{ path, err });
+        const prefix = b.dupe(id);
+        std.mem.replaceScalar(u8, prefix, '-', '_');
+        var current: ?Version = null;
+        for (entry.versions) |version| {
+            if (!std.mem.eql(u8, version.status, "current")) continue;
+            if (current != null) std.debug.panic("{s} has more than one current version", .{path});
+            current = version;
+        }
+        const pin = current orelse std.debug.panic("{s} has no current version", .{path});
+        options.addOption([]const u8, b.fmt("{s}_label", .{prefix}), pin.label);
+        options.addOption([]const u8, b.fmt("{s}_endpoint_version", .{prefix}), pin.endpoint_version orelse std.debug.panic("{s}: current version has no endpoint_version", .{path}));
+        options.addOption([]const u8, b.fmt("{s}_capability_revision", .{prefix}), pin.capability_revision orelse std.debug.panic("{s}: current version has no capability_revision", .{path}));
+        options.addOption([]const u8, b.fmt("{s}_oapx_capability_revision", .{prefix}), pin.oapx_capability_revision orelse std.debug.panic("{s}: current version has no oapx_capability_revision", .{path}));
+        options.addOption([]const u8, b.fmt("{s}_corpus", .{prefix}), pin.corpus orelse std.debug.panic("{s}: current version has no corpus", .{path}));
+        options.addOption([]const []const u8, b.fmt("{s}_admits", .{prefix}), pin.admits orelse &.{});
+        for (pin.sources) |source| {
+            const name = b.fmt("{s}_{s}", .{ prefix, source.component });
+            std.mem.replaceScalar(u8, name, '-', '_');
+            options.addOption([]const u8, b.fmt("{s}_commit", .{name}), source.commit);
+            if (source.tag) |tag| options.addOption([]const u8, b.fmt("{s}_tag", .{name}), tag);
+            if (source.tree) |tree| options.addOption([]const u8, b.fmt("{s}_tree", .{name}), tree);
+        }
+        for (pin.artifacts) |artifact| {
+            if (!std.mem.eql(u8, artifact.platform, "any")) continue;
+            const name = b.fmt("{s}_{s}_{s}_sha256", .{ prefix, artifact.component, artifact.kind });
+            std.mem.replaceScalar(u8, name, '-', '_');
+            options.addOption([]const u8, name, artifact.sha256);
+        }
+    }
+    return options.createModule();
 }

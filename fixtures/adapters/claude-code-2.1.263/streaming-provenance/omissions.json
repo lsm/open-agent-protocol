@@ -1,3 +1,0 @@
-[
-  {"index": 9, "type": "observe:assistant", "reason": "complete-frame text duplicates the streamed deltas; the frame is scanned for tool_use blocks only"}
-]

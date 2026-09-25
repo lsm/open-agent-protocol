@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -9,9 +10,9 @@ const session = @import("session.zig");
 const rpc = @import("rpc.zig");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = "deepseek-harness-47f9438-oapx-v1";
+pub const capability_revision = harness_pins.deepseek_harness_oapx_capability_revision;
 pub const server_name = "deepseek-harness-sdk-runtime";
-pub const server_version = "0.0.1";
+pub const server_version = harness_pins.deepseek_harness_admits[0];
 const journal_reason = "oapx keeps no journal for this backend";
 
 const features = [_]contract.Feature{
@@ -35,7 +36,7 @@ const features = [_]contract.Feature{
 };
 
 pub const descriptor = contract.Descriptor{
-    .endpoint = .{ .id = endpoint_id, .name = "DeepSeek Harness SDK Adapter", .version = "47f9438", .adapter = "deepseek-harness-jsonrpc" },
+    .endpoint = .{ .id = endpoint_id, .name = "DeepSeek Harness SDK Adapter", .version = harness_pins.deepseek_harness_endpoint_version, .adapter = "deepseek-harness-jsonrpc" },
     .capability_revision = capability_revision,
     .features = &features,
 };

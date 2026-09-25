@@ -1,8 +1,9 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const rpc = @import("rpc");
 const goquote = @import("goquote");
 
-pub const capability_revision = "hermes-v2026.8.31-oap-v2";
+pub const capability_revision = harness_pins.hermes_capability_revision;
 pub const protocol_name = "open-agent-protocol";
 pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";

@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -10,7 +11,7 @@ const httpapi = @import("httpapi");
 const client = @import("client");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = "opencode-v1.18.29-oapx-v1";
+pub const capability_revision = harness_pins.opencode_oapx_capability_revision;
 const journal_reason = "oapx keeps no journal for this backend";
 
 const features = [_]contract.Feature{
@@ -35,7 +36,7 @@ const features = [_]contract.Feature{
 };
 
 pub const descriptor = contract.Descriptor{
-    .endpoint = .{ .id = endpoint_id, .name = "OpenCode Server Adapter", .version = "v1.18.29", .adapter = "opencode-http-sse" },
+    .endpoint = .{ .id = endpoint_id, .name = "OpenCode Server Adapter", .version = harness_pins.opencode_endpoint_version, .adapter = "opencode-http-sse" },
     .capability_revision = capability_revision,
     .features = &features,
     .limits = .{ .max_active_runs_per_session = session.max_active_runs, .max_queued_runs_per_session = session.max_queued_runs },

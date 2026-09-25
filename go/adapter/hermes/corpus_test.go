@@ -24,11 +24,14 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var (
+	hmCorpusTag        = pin.Source("hermes-agent").Tag
+	hmCorpusCommit     = pin.Source("hermes-agent").Commit
+	hmCorpusCommitTree = pin.Source("hermes-agent").Tree
+)
+
 const (
 	hmCorpusRepository = "https://github.com/NousResearch/hermes-agent"
-	hmCorpusTag        = "v2026.8.31"
-	hmCorpusCommit     = "29112bef099274229cadff79cdff7bf7b99c4b77"
-	hmCorpusCommitTree = "daaffc303ae437041b7f76be17c5f61b14f2ce99"
 
 	hmBlobEntry          = "27fd051b8aff7cb6e6ddd9103eb14c06d7b2c0e8"
 	hmBlobTransport      = "ce93e518a3d5255f9729de80cadb4377747d0d6d"

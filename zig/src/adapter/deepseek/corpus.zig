@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const corpus = @import("corpus");
 const session = @import("session.zig");
 const rpc = @import("rpc.zig");
@@ -80,7 +81,7 @@ fn decodeFrame(scratch: std.mem.Allocator, item: corpus.Step) !?rpc.Kind {
 pub const CorpusCase = struct { id: []const u8, path: []const u8 };
 
 const Driver = struct {
-    pub const corpus_relative = "fixtures/adapters/deepseek-harness-47f9438";
+    pub const corpus_relative = harness_pins.deepseek_harness_corpus;
     pub const blank_expectation = corpus.BlankExpectation.zero_byte_only;
     pub const Reducer = session.Reducer;
     pub const Case = CorpusCase;

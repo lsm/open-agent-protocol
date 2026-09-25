@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -9,8 +10,8 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = "claude-code-2.1.280-oapx-v1";
-pub const pinned_version = "v2.1.280";
+pub const capability_revision = harness_pins.claude_code_oapx_capability_revision;
+pub const pinned_version = harness_pins.claude_code_endpoint_version;
 pub const denied_message = "Denied by the operator";
 const harness_owner = session.harness_owner;
 const native_source = session.native_source;
