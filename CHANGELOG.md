@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
+
 ### Changed
 
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
@@ -18,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `oapx serve agent --backend memory` serves the deterministic in-memory reference script instead of answering `unavailable`, and passes `goap conformance`. It advertises `action.tools.provide` and `action.tool_sources.attach` unavailable, because the Zig adapter contract carries no open-time tools or sources, and reports its own capability revision, `reference-memory-oapx-v1`.
+- `goap serve agent` names its stdio binding (`{"kind":"stdio","serialization":"jsonl"}`) in `capabilities.response`, as `oapx` already does.
 - On Windows, `oapx serve agent` and `serve provider` treat a console Ctrl+C, Ctrl+Break or close as end of input, as SIGINT and SIGTERM are treated elsewhere; a close gets up to 4.5 s to settle before Windows ends the process.
 - `oapx serve agent` and `oapx serve provider` without `--backend` treat SIGINT and SIGTERM as end of input, as both stdio drafts require: they stop reading, settle what they admitted, flush and exit. Before, a signal killed the built-in loop outright.
 - `oapx serve agent` without `--backend` now enforces the same two-minute output-stall bound: it writes one line to stderr and exits non-zero. `serve provider` keeps unbounded writes, since its binding sets no bound.
