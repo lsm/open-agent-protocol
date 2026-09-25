@@ -1,0 +1,14 @@
+[
+  {"index":3,"type":"event/session.info","reason":"session metadata snapshot; reconciliation evidence only"},
+  {"index":6,"type":"event/sessions.changed","reason":"global session-list signal; unsequenced, not session-scoped"},
+  {"index":7,"type":"event/session.title","reason":"title generation; not projected in v1"},
+  {"index":10,"type":"event/tool.generating","reason":"tool-call argument streaming hint; the call is projected at tool.start"},
+  {"index":19,"type":"event/tool.generating","reason":"tool-call argument streaming hint; the call is projected at tool.start"},
+  {"index":28,"type":"event/tool.generating","reason":"tool-call argument streaming hint; the call is projected at tool.start"},
+  {"index":29,"type":"event/session.usage","reason":"usage ticker; run usage is taken from message.complete"},
+  {"index":38,"type":"event/tool.generating","reason":"tool-call argument streaming hint; the call is projected at tool.start"},
+  {"index":49,"type":"event/reasoning.available","reason":"post-turn reasoning summary; the reasoning deltas were already projected"},
+  {"index":51,"type":"event/session.info","reason":"session metadata snapshot; reconciliation evidence only"},
+  {"index":52,"type":"event/status.update","reason":"status line text; not projected in v1"},
+  {"index":53,"type":"event/sessions.changed","reason":"global session-list signal; unsequenced, not session-scoped"}
+]

@@ -22,10 +22,11 @@ const (
 	MethodPromptBackground  = "prompt.background"
 	MethodSubagentSteer     = "subagent.steer"
 	MethodSubagentInterrupt = "subagent.interrupt"
-	MethodApprovalRespond   = "approval.respond"
-	MethodClarifyRespond    = "clarify.respond"
-	MethodSudoRespond       = "sudo.respond"
-	MethodSecretRespond     = "secret.respond"
+
+	RequestApproval = "approval"
+	RequestClarify  = "clarify"
+	RequestSudo     = "sudo"
+	RequestSecret   = "secret"
 )
 
 var ErrInvalid = errors.New("hermes native: invalid pinned message")
@@ -68,6 +69,7 @@ type MessageCompletePayload struct {
 	Recoverable       bool            `json:"recoverable,omitempty"`
 	ErrorSurface      *ErrorSurface   `json:"error_surface,omitempty"`
 	Partial           bool            `json:"partial,omitempty"`
+	PersistedTurn     json.RawMessage `json:"persisted_turn,omitempty"`
 }
 
 type ErrorSurface struct {
@@ -75,8 +77,19 @@ type ErrorSurface struct {
 	Code      string `json:"code"`
 	Retryable bool   `json:"retryable"`
 
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Provider string   `json:"provider,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	ResetsAt *float64 `json:"resets_at,omitempty"`
+}
+
+func (e *ErrorSurface) UnmarshalJSON(data []byte) error {
+	type surfaceAlias ErrorSurface
+	var value surfaceAlias
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*e = ErrorSurface(value)
+	return nil
 }
 
 type Usage struct {
@@ -111,11 +124,13 @@ type UsageTickPayload struct {
 }
 
 type ToolStartPayload struct {
-	ToolID   string         `json:"tool_id"`
-	Name     string         `json:"name"`
-	Context  string         `json:"context"`
-	Args     map[string]any `json:"args,omitempty"`
-	ArgsText string         `json:"args_text,omitempty"`
+	ToolID   string          `json:"tool_id"`
+	Name     string          `json:"name"`
+	Context  string          `json:"context"`
+	Args     map[string]any  `json:"args,omitempty"`
+	ArgsText string          `json:"args_text,omitempty"`
+	Preview  string          `json:"preview,omitempty"`
+	Labels   json.RawMessage `json:"labels,omitempty"`
 }
 
 type ToolCompletePayload struct {
@@ -127,17 +142,21 @@ type ToolCompletePayload struct {
 	Summary    string          `json:"summary,omitempty"`
 	ResultText string          `json:"result_text,omitempty"`
 	InlineDiff string          `json:"inline_diff,omitempty"`
+	Todos      json.RawMessage `json:"todos,omitempty"`
+	Revision   *int64          `json:"revision,omitempty"`
+	Labels     json.RawMessage `json:"labels,omitempty"`
 }
 
-type ApprovalRequestPayload struct {
+type ApprovalRequestParams struct {
+	SessionID      string   `json:"session_id"`
+	RequestID      string   `json:"request_id"`
 	Command        string   `json:"command"`
-	PatternKey     string   `json:"pattern_key,omitempty"`
-	PatternKeys    []string `json:"pattern_keys,omitempty"`
 	Description    string   `json:"description,omitempty"`
-	AllowPermanent bool     `json:"allow_permanent,omitempty"`
-	AllowSession   bool     `json:"allow_session,omitempty"`
-	SmartDenied    bool     `json:"smart_denied,omitempty"`
 	Choices        []string `json:"choices"`
+	AllowPermanent *bool    `json:"allow_permanent,omitempty"`
+	AllowSession   *bool    `json:"allow_session,omitempty"`
+	SmartDenied    *bool    `json:"smart_denied,omitempty"`
+	ToolName       string   `json:"tool_name,omitempty"`
 }
 
 type ClarifyQuestion struct {
@@ -147,27 +166,47 @@ type ClarifyQuestion struct {
 	MultiSelect bool     `json:"multi_select,omitempty"`
 }
 
-type ClarifyRequestPayload struct {
-	RequestID   string            `json:"request_id"`
+type ClarifyRequestParams struct {
+	SessionID   string            `json:"session_id"`
 	Question    string            `json:"question,omitempty"`
 	Choices     []string          `json:"choices,omitempty"`
 	MultiSelect bool              `json:"multi_select,omitempty"`
 	Questions   []ClarifyQuestion `json:"questions,omitempty"`
+	Answers     map[string]string `json:"answers,omitempty"`
 }
 
-type SudoRequestPayload struct {
-	RequestID string `json:"request_id"`
+type SudoRequestParams struct {
+	SessionID string `json:"session_id"`
+	Command   string `json:"command,omitempty"`
 }
 
-type SecretRequestPayload struct {
-	RequestID string          `json:"request_id"`
-	Prompt    string          `json:"prompt"`
+type SecretRequestParams struct {
+	SessionID string          `json:"session_id"`
 	EnvVar    string          `json:"env_var"`
+	Prompt    string          `json:"prompt"`
 	Metadata  json.RawMessage `json:"metadata,omitempty"`
 }
 
-type ExpirePayload struct {
-	RequestID string `json:"request_id"`
+type ApprovalResult struct {
+	Choice string `json:"choice"`
+}
+
+type ClarifyAnswerResult struct {
+	Answer string `json:"answer"`
+}
+
+type ClarifyAnswersResult struct {
+	Answers map[string]string `json:"answers"`
+}
+
+type ValueResult struct {
+	Value string `json:"value"`
+}
+
+type RequestCancelPayload struct {
+	ID     string `json:"id"`
+	Method string `json:"method"`
+	Reason string `json:"reason"`
 }
 
 type ErrorPayload struct {
@@ -198,6 +237,7 @@ type SubagentPayload struct {
 	ToolName        string          `json:"tool_name,omitempty"`
 	ToolPreview     string          `json:"tool_preview,omitempty"`
 	Text            string          `json:"text,omitempty"`
+	DelegationID    string          `json:"delegation_id,omitempty"`
 }
 
 type TaskCompletePayload struct {
@@ -225,6 +265,7 @@ type SessionCreateResult struct {
 	SessionID       string          `json:"session_id"`
 	StoredSessionID string          `json:"stored_session_id"`
 	MessageCount    int64           `json:"message_count"`
+	Messages        json.RawMessage `json:"messages"`
 	Info            json.RawMessage `json:"info"`
 }
 
@@ -300,39 +341,16 @@ type EventsSinceParams struct {
 }
 
 type EventsSinceResult struct {
-	Events    []Event `json:"events"`
-	LatestSeq int64   `json:"latest_seq"`
-	Truncated bool    `json:"truncated"`
-	Count     int64   `json:"count"`
-	Epoch     string  `json:"epoch"`
+	Events       []Event           `json:"events"`
+	LatestSeq    int64             `json:"latest_seq"`
+	Truncated    bool              `json:"truncated"`
+	Count        int64             `json:"count"`
+	Epoch        string            `json:"epoch"`
+	OpenRequests []json.RawMessage `json:"open_requests"`
 }
 
 type SessionCloseResult struct {
 	Closed bool `json:"closed"`
-}
-
-type ApprovalRespondParams struct {
-	SessionID string `json:"session_id"`
-	Choice    string `json:"choice"`
-	All       bool   `json:"all,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
-}
-
-type ApprovalRespondResult struct {
-	Resolved bool `json:"resolved"`
-}
-
-type RespondParams struct {
-	RequestID  string `json:"request_id"`
-	QuestionID string `json:"question_id,omitempty"`
-	Answer     string `json:"answer,omitempty"`
-	Password   string `json:"password,omitempty"`
-	Value      string `json:"value,omitempty"`
-}
-
-type RespondResult struct {
-	Status    string   `json:"status"`
-	Remaining []string `json:"remaining,omitempty"`
 }
 
 const (
@@ -348,41 +366,30 @@ const (
 	EventToolComplete       = "tool.complete"
 	EventSessionUsage       = "session.usage"
 	EventSessionInfo        = "session.info"
-	EventApprovalRequest    = "approval.request"
-	EventClarifyRequest     = "clarify.request"
-	EventSudoRequest        = "sudo.request"
-	EventSecretRequest      = "secret.request"
-	EventSecretExpire       = "secret.expire"
-	EventSudoExpire         = "sudo.expire"
-	EventClarifyExpire      = "clarify.expire"
+	EventRequestCancel      = "request.cancel"
 	EventSubagentComplete   = "subagent.complete"
 	EventBTWComplete        = "btw.complete"
 	EventBackgroundComplete = "background.complete"
 )
 
 var observedEvents = map[string]bool{
-	"reasoning.available": true, "tool.generating": true, "tool.output_risk": true,
-	"todo.updated": true, "session.title": true, "session.resume_progress": true,
-	"status.update": true, "notification.show": true, "notification.clear": true,
-	"notice": true, "review.summary": true, "reaction": true,
-	"mcp.setup.request": true, "terminal.read.request": true,
-	"preview.read.request": true, "preview.act.request": true,
-	"window.read.request": true, "tour.request": true,
-	"terminal.read.expire": true, "preview.read.expire": true,
-	"preview.act.expire": true, "window.read.expire": true,
-	"mcp.setup.expire": true, "tour.expire": true,
-	"subagent.spawn_requested": true, "subagent.progress": true,
-	"subagent.thinking": true, "subagent.tool": true,
-	"skin.changed": true, "pet.changed": true, "cron.changed": true,
-	"sessions.changed": true, "platforms.changed": true, "pairing.changed": true,
-	"bot_relay.outbox.pending": true, "session.reclaimed": true,
-	"agent.terminal.output": true, "terminal.close": true,
-	"preview.restart.progress": true, "preview.restart.complete": true,
-	"browser.progress": true, "voice.interrupted": true, "voice.transcript": true,
-	"voice.status": true, "wake.detected": true, "preview.open": true,
-	"preview.close": true, "pane.reveal": true, "layout.apply": true,
-	"tip.show": true, "message.reaction": true, "pet.generate.progress": true,
-	"pet.hatch.progress": true, "billing.step_up.verification": true,
+	"agent.terminal.output": true, "billing.step_up.verification": true, "bot_relay.outbox.pending": true,
+	"browser.controller.cancel": true, "browser.controller.command": true, "browser.progress": true,
+	"connection.request": true, "connection.update": true, "cron.changed": true,
+	"display.install.done": true, "display.install.log": true, "display.lease": true, "display.status": true,
+	"layout.apply": true, "message.reaction": true, "moa.aggregating": true, "moa.phase": true,
+	"moa.progress": true, "moa.reference": true, "notice": true, "notification.clear": true,
+	"notification.show": true, "pairing.changed": true, "pane.reveal": true, "pet.changed": true,
+	"pet.generate.progress": true, "pet.hatch.progress": true, "platforms.changed": true,
+	"preview.close": true, "preview.open": true, "preview.restart.complete": true,
+	"preview.restart.progress": true, "reaction": true, "reasoning.available": true,
+	"review.summary": true, "session.control.update": true, "session.reclaimed": true,
+	"session.resume_progress": true, "session.title": true, "sessions.changed": true,
+	"setup.ready": true, "skin.changed": true, "status.update": true, "subagent.progress": true,
+	"subagent.spawn_requested": true, "subagent.start": true, "subagent.thinking": true,
+	"subagent.tool": true, "terminal.close": true, "tip.show": true, "todo.updated": true,
+	"tool.generating": true, "tool.output_risk": true, "voice.interrupted": true,
+	"voice.status": true, "voice.transcript": true, "wake.detected": true,
 }
 
 func DecodeNotification(method string, data []byte) (any, error) {
@@ -458,46 +465,10 @@ func (event Event) Validate() error {
 		if delta.Verbose && event.Type != EventReasoningDelta {
 			return fmt.Errorf("%w: verbose is reasoning.delta-only", ErrInvalid)
 		}
-	case EventApprovalRequest:
-		approval, _ := target.(*ApprovalRequestPayload)
-		if approval.Command == "" || len(approval.Choices) == 0 {
-			return fmt.Errorf("%w: approval.request requires command and choices", ErrInvalid)
-		}
-		for _, choice := range approval.Choices {
-			switch choice {
-			case "once", "session", "always", "deny":
-			default:
-				return fmt.Errorf("%w: approval choice %q", ErrInvalid, choice)
-			}
-		}
-	case EventClarifyRequest:
-		clarify, _ := target.(*ClarifyRequestPayload)
-		if clarify.RequestID == "" {
-			return fmt.Errorf("%w: clarify.request requires request_id", ErrInvalid)
-		}
-		single := clarify.Question != "" || len(clarify.Choices) > 0
-		batch := len(clarify.Questions) > 0
-		if single == batch {
-			return fmt.Errorf("%w: clarify.request needs exactly one form", ErrInvalid)
-		}
-		if batch {
-			for _, question := range clarify.Questions {
-				if question.Qid == "" || question.Question == "" || len(question.Choices) == 0 {
-					return fmt.Errorf("%w: invalid clarify batch question", ErrInvalid)
-				}
-			}
-		}
-	case EventSudoRequest:
-		if sudo, _ := target.(*SudoRequestPayload); sudo.RequestID == "" {
-			return fmt.Errorf("%w: sudo.request requires request_id", ErrInvalid)
-		}
-	case EventSecretRequest:
-		if secret, _ := target.(*SecretRequestPayload); secret.RequestID == "" || secret.Prompt == "" || secret.EnvVar == "" {
-			return fmt.Errorf("%w: invalid secret.request", ErrInvalid)
-		}
-	case EventSecretExpire, EventSudoExpire, EventClarifyExpire:
-		if expire, _ := target.(*ExpirePayload); expire.RequestID == "" {
-			return fmt.Errorf("%w: expire requires request_id", ErrInvalid)
+	case EventRequestCancel:
+		cancel, _ := target.(*RequestCancelPayload)
+		if cancel.ID == "" || cancel.Method == "" {
+			return fmt.Errorf("%w: request.cancel requires id and method", ErrInvalid)
 		}
 	case EventError:
 		if failure, _ := target.(*ErrorPayload); failure.Message == "" {
@@ -522,8 +493,6 @@ func knownEvent(eventType string) bool {
 var runScopedEvents = map[string]bool{
 	EventMessageStart: true, EventMessageDelta: true, EventReasoningDelta: true, EventThinkingDelta: true,
 	EventMessageComplete: true, EventToolStart: true, EventToolComplete: true,
-	EventApprovalRequest: true, EventClarifyRequest: true, EventSudoRequest: true, EventSecretRequest: true,
-	EventSecretExpire: true, EventSudoExpire: true, EventClarifyExpire: true,
 }
 
 func IsRunScoped(eventType string) bool { return runScopedEvents[eventType] }
@@ -550,22 +519,72 @@ func payloadTarget(eventType string) (any, bool) {
 		return &UsageTickPayload{}, true
 	case EventSessionInfo:
 		return nil, true
-	case EventApprovalRequest:
-		return &ApprovalRequestPayload{}, true
-	case EventClarifyRequest:
-		return &ClarifyRequestPayload{}, true
-	case EventSudoRequest:
-		return &SudoRequestPayload{}, true
-	case EventSecretRequest:
-		return &SecretRequestPayload{}, true
-	case EventSecretExpire, EventSudoExpire, EventClarifyExpire:
-		return &ExpirePayload{}, true
+	case EventRequestCancel:
+		return &RequestCancelPayload{}, true
 	case EventSubagentComplete:
 		return &SubagentPayload{}, true
 	case EventBTWComplete, EventBackgroundComplete:
 		return &TaskCompletePayload{}, true
 	}
 	return nil, false
+}
+
+func DecodeServerRequest(method string, params []byte) (any, error) {
+	switch method {
+	case RequestApproval:
+		var request ApprovalRequestParams
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, fmt.Errorf("%w: invalid approval request: %v", ErrInvalid, err)
+		}
+		if request.SessionID == "" || request.RequestID == "" || (request.Command == "" && request.Description == "") || len(request.Choices) == 0 {
+			return nil, fmt.Errorf("%w: approval request requires session_id, request_id, a command and choices", ErrInvalid)
+		}
+		for _, choice := range request.Choices {
+			switch choice {
+			case "once", "session", "always", "deny":
+			default:
+				return nil, fmt.Errorf("%w: approval choice %q", ErrInvalid, choice)
+			}
+		}
+		return &request, nil
+	case RequestClarify:
+		var request ClarifyRequestParams
+		if err := DecodeStrict(params, &request); err != nil {
+			return nil, fmt.Errorf("%w: invalid clarify request: %v", ErrInvalid, err)
+		}
+		single := request.Question != "" || len(request.Choices) > 0
+		batch := len(request.Questions) > 0
+		if request.SessionID == "" || single == batch {
+			return nil, fmt.Errorf("%w: clarify request needs a session and exactly one form", ErrInvalid)
+		}
+		for _, question := range request.Questions {
+			if question.Qid == "" || question.Question == "" {
+				return nil, fmt.Errorf("%w: invalid clarify batch question", ErrInvalid)
+			}
+		}
+		return &request, nil
+	case RequestSudo:
+		var request SudoRequestParams
+		if err := DecodeStrict(params, &request); err != nil || request.SessionID == "" {
+			return nil, fmt.Errorf("%w: invalid sudo request", ErrInvalid)
+		}
+		return &request, nil
+	case RequestSecret:
+		var request SecretRequestParams
+		if err := DecodeStrict(params, &request); err != nil || request.SessionID == "" || request.EnvVar == "" || request.Prompt == "" {
+			return nil, fmt.Errorf("%w: invalid secret request", ErrInvalid)
+		}
+		return &request, nil
+	}
+	return nil, nil
+}
+
+func RequestSessionID(params []byte) string {
+	var probe struct {
+		SessionID string `json:"session_id"`
+	}
+	_ = json.Unmarshal(params, &probe)
+	return probe.SessionID
 }
 
 func hexOnly(value string) bool {

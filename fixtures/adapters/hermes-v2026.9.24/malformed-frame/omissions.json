@@ -1,0 +1,5 @@
+[
+  {"index":6,"type":"event/session.info","reason":"session metadata snapshot; reconciliation evidence only"},
+  {"index":8,"type":"event/sessions.changed","reason":"global session-list signal; unsequenced, not session-scoped"},
+  {"index":9,"type":"event/session.title","reason":"title generation; not projected in v1"}
+]

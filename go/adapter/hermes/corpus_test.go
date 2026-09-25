@@ -33,14 +33,16 @@ var (
 const (
 	hmCorpusRepository = "https://github.com/NousResearch/hermes-agent"
 
-	hmBlobEntry          = "27fd051b8aff7cb6e6ddd9103eb14c06d7b2c0e8"
-	hmBlobTransport      = "ce93e518a3d5255f9729de80cadb4377747d0d6d"
-	hmBlobServer         = "4e846e36e339172123248fafdac762f204604fd8"
-	hmBlobEventReplay    = "0ec4e2a86b4a4fa75c51b25297cba74d6fd9198e"
-	hmBlobStdinRecovery  = "80c77aeb0dcae31afa1d5c21d3abb7e2cc976962"
-	hmBlobWS             = "988733a9b14e178289b446c11e6eb31f30a4b91b"
-	hmBlobMethodsPrompt  = "3525ffcfdd4ed06a27c97092a28cf9a04d63efc8"
-	hmBlobMethodsSession = "485456a87f61918c3c53891bb4c05cebddff0a40"
+	hmBlobEntry          = "aebfbeb8026b4471d00e34072b8efb51cfd58c67"
+	hmBlobTransport      = "5051d6da51ff0f1323e466f049f09323056cfe03"
+	hmBlobServer         = "475d106c4a9bcf7606921d951ee3d4e08ef63642"
+	hmBlobEventReplay    = "b603a67120bd1f9f9b9c66f50331d4467bf47bd4"
+	hmBlobStdinRecovery  = "add5e841df4bead308a96bd8b0f0e3c5475bd167"
+	hmBlobWS             = "b90253e0c0a319ffcb1ed2d689fc759d56458509"
+	hmBlobMethodsPrompt  = "aefcf692321dc828672cd30ea336a97fd69eb69e"
+	hmBlobMethodsSession = "a41aeff7b731f99a69dfc8556b5ade04d30a83f7"
+	hmBlobServerRequests = "5aaa044fe2257e8e818008047308b0d95bbac360"
+	hmTreeContracts      = "1eceb85deeeb499c3f00231c6fdedd91a1631753"
 )
 
 var hmLedgerFixtures = map[string]bool{
@@ -57,13 +59,13 @@ var hmLedgerFixtures = map[string]bool{
 	"tool-lifecycle": true, "tool-failure-in-result": true,
 
 	"approval-gate": true, "approval-choices": true, "clarify-gate": true,
-	"sudo-gate": true, "secret-gate": true, "expire-sibling": true,
+	"sudo-gate": true, "secret-gate": true, "expire-sibling": true, "clarify-batch": true,
 
 	"btw-delivery": true, "background-prompt": true,
 
 	"steer-run": true, "steer-rejected": true, "subagent-steer": true, "subagent-interrupt": true,
 
-	"subagent-lifecycle": true, "subagent-complete-failed": true, "child-mirror-not-terminal": true,
+	"subagent-lifecycle": true, "subagent-complete-failed": true, "child-mirror-not-terminal": true, "background-reentry": true,
 
 	"replay-in-window": true, "replay-truncated": true, "replay-unknown-session": true, "epoch-restart": true,
 
@@ -85,6 +87,8 @@ type hmCorpusSources struct {
 	WsPy             string `json:"ws_py_blob"`
 	MethodsPromptPy  string `json:"methods_prompt_py_blob"`
 	MethodsSessionPy string `json:"methods_session_py_blob"`
+	ServerRequestsPy string `json:"server_requests_py_blob"`
+	ContractsTree    string `json:"contracts_tree"`
 }
 
 type hmCorpusManifest struct {
@@ -130,15 +134,16 @@ type hmFrame struct {
 	Raw            json.RawMessage `json:"raw"`
 }
 type hmControl struct {
-	Type   string `json:"type"`
-	Op     string `json:"op,omitempty"`
-	Error  string `json:"error,omitempty"`
-	Kind   string `json:"kind,omitempty"`
-	Answer string `json:"answer,omitempty"`
-	Status string `json:"status,omitempty"`
-	Expect string `json:"expect,omitempty"`
-	RunID  string `json:"run_id,omitempty"`
-	After  uint64 `json:"after,omitempty"`
+	Type    string   `json:"type"`
+	Op      string   `json:"op,omitempty"`
+	Error   string   `json:"error,omitempty"`
+	Kind    string   `json:"kind,omitempty"`
+	Answer  string   `json:"answer,omitempty"`
+	Answers []string `json:"answers,omitempty"`
+	Status  string   `json:"status,omitempty"`
+	Expect  string   `json:"expect,omitempty"`
+	RunID   string   `json:"run_id,omitempty"`
+	After   uint64   `json:"after,omitempty"`
 }
 type hmCorpusMapping struct {
 	Index          int    `json:"index"`
@@ -173,6 +178,8 @@ func pinnedHMSources() hmCorpusSources {
 		WsPy:             hmBlobWS,
 		MethodsPromptPy:  hmBlobMethodsPrompt,
 		MethodsSessionPy: hmBlobMethodsSession,
+		ServerRequestsPy: hmBlobServerRequests,
+		ContractsTree:    hmTreeContracts,
 	}
 }
 
@@ -233,7 +240,8 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	t.Helper()
 	execution := hmExecution{nativeWrites: map[string]int{}}
 	client := newHMCorpusClient()
-	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return client, "sess0001", nil }), Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: hmJournalCapacity(definition)})
+	nativeID := hmNativeSessionID(decoded)
+	implementation, err := New(Config{Factory: ClientFactoryFunc(func(context.Context) (Client, string, error) { return client, nativeID, nil }), Model: "hermes-test", Clock: &testClock{}, IDs: &testIDs{}, JournalCapacity: hmJournalCapacity(definition)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,6 +263,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	var settled []hmSubmit
 	var resumes []hmResume
 	var pendingResolve chan error
+	var pendingCancel chan error
 
 	waitReap := func() {
 		if pending == nil {
@@ -282,6 +291,20 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 		}
 		pendingResolve = nil
 	}
+	joinCancel := func() {
+		if pendingCancel == nil {
+			return
+		}
+		select {
+		case err := <-pendingCancel:
+			if err != nil {
+				t.Fatalf("cancel failed: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("cancel did not settle")
+		}
+		pendingCancel = nil
+	}
 	for i, frame := range frames {
 		switch frame.Action {
 		case "submit":
@@ -303,6 +326,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 		case "reply":
 			client.replies <- hmReply{result: decoded[i].Message.Result}
 			joinResolve()
+			joinCancel()
 		case "reply-error":
 			if decoded[i].Message.Error == nil {
 				t.Fatalf("frame %d: expected JSON-RPC error response", i+1)
@@ -312,6 +336,14 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 			client.deliver(t, decoded[i])
 		case "expect-write":
 			message := decoded[i].Message
+			if message.Kind == rpc.MessageResponse {
+				answer := client.lastAnswer(t)
+				if answer.id != message.ID || !hmJSONEqual(answer.result, message.Result) {
+					t.Fatalf("frame %d: adapter answered %s %s, want %s %s", i+1, answer.id, answer.result, message.ID, message.Result)
+				}
+				joinResolve()
+				break
+			}
 			call := client.lastCall(t)
 			if call.method != message.Method || !hmJSONEqual(call.params, message.Params) {
 				t.Fatalf("frame %d: adapter wrote %s %s, want %s %s", i+1, call.method, call.params, message.Method, message.Params)
@@ -327,7 +359,20 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 				channel := make(chan error, 1)
 				pendingResolve = channel
 				go func() { channel <- session.Resolve(context.Background(), hmResolutionFor(binding, *control)) }()
-				client.awaitCall(t, hmRespondMethod(control.Kind))
+				client.awaitAnswer(t)
+			case "cancel":
+				waitReap()
+				if len(settled) == 0 || settled[len(settled)-1].err != nil {
+					t.Fatalf("frame %d: no admitted run to cancel", i+1)
+				}
+				runID := settled[len(settled)-1].admission.RunID
+				channel := make(chan error, 1)
+				pendingCancel = channel
+				go func() {
+					_, err := session.Cancel(context.Background(), runID)
+					channel <- err
+				}()
+				client.awaitCall(t, native.MethodSessionInterrupt)
 			case "assert-state":
 				state, err := session.State(context.Background())
 				if err != nil {
@@ -410,6 +455,7 @@ func runHermesFakeCase(t *testing.T, definition hmCorpusCase, frames []hmFrame, 
 	}
 	waitReap()
 	joinResolve()
+	joinCancel()
 	for index, result := range settled {
 		delivered := execution.record(t, result.admission, result.stream, result.err)
 		for _, resume := range resumes {
@@ -673,15 +719,23 @@ func (e *hmExecution) validate(t *testing.T, admission protocol.MessageSubmitRes
 }
 
 type hmCorpusClient struct {
-	in      chan rpc.InboundMessage
-	done    chan struct{}
-	replies chan hmReply
-	started chan string
-	mu      sync.Mutex
-	closed  bool
-	dead    bool
-	err     error
-	calls   []hmRecordedCall
+	in       chan rpc.InboundMessage
+	done     chan struct{}
+	replies  chan hmReply
+	started  chan string
+	answered chan struct{}
+	mu       sync.Mutex
+	closed   bool
+	dead     bool
+	err      error
+	calls    []hmRecordedCall
+	answers  []hmRecordedAnswer
+}
+
+type hmRecordedAnswer struct {
+	id     rpc.RequestID
+	result json.RawMessage
+	code   int64
 }
 
 type hmReply struct {
@@ -695,30 +749,81 @@ type hmRecordedCall struct {
 }
 
 func newHMCorpusClient() *hmCorpusClient {
-	return &hmCorpusClient{in: make(chan rpc.InboundMessage, 64), done: make(chan struct{}), replies: make(chan hmReply, 8), started: make(chan string, 8)}
+	return &hmCorpusClient{in: make(chan rpc.InboundMessage, 64), done: make(chan struct{}), replies: make(chan hmReply, 8), started: make(chan string, 8), answered: make(chan struct{}, 8)}
 }
 
 func hmAllowedMethod(method string) bool {
 	switch method {
-	case native.MethodSessionCreate, native.MethodPromptSubmit, native.MethodApprovalRespond, native.MethodClarifyRespond,
-		native.MethodSudoRespond, native.MethodSecretRespond, native.MethodSessionInterrupt:
+	case native.MethodSessionCreate, native.MethodPromptSubmit, native.MethodSessionInterrupt:
 		return true
 	}
 	return false
 }
 
-func hmRespondMethod(kind string) string {
+func hmGateKind(kind string) bool {
 	switch kind {
-	case "approval":
-		return native.MethodApprovalRespond
-	case "clarify":
-		return native.MethodClarifyRespond
-	case "sudo":
-		return native.MethodSudoRespond
-	case "secret":
-		return native.MethodSecretRespond
+	case native.RequestApproval, native.RequestClarify, native.RequestSudo, native.RequestSecret:
+		return true
 	}
-	return ""
+	return false
+}
+
+func hmNativeSessionID(decoded []hmDecodedFrame) string {
+	for _, entry := range decoded {
+		if entry.Message == nil || entry.Message.Kind != rpc.MessageRequest || entry.Message.Method != native.MethodPromptSubmit {
+			continue
+		}
+		var params native.PromptSubmitParams
+		if json.Unmarshal(entry.Message.Params, &params) == nil && params.SessionID != "" {
+			return params.SessionID
+		}
+	}
+	return "sess0001"
+}
+
+func (c *hmCorpusClient) Respond(_ context.Context, request *rpc.IncomingRequest, result any) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.answers = append(c.answers, hmRecordedAnswer{id: request.ID, result: data})
+	c.mu.Unlock()
+	c.answered <- struct{}{}
+	return nil
+}
+
+func (c *hmCorpusClient) RespondError(_ context.Context, request *rpc.IncomingRequest, code int64, _ string) error {
+	c.mu.Lock()
+	c.answers = append(c.answers, hmRecordedAnswer{id: request.ID, code: code})
+	c.mu.Unlock()
+	c.answered <- struct{}{}
+	return nil
+}
+
+func (c *hmCorpusClient) lastAnswer(t *testing.T) hmRecordedAnswer {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.answers) == 0 {
+		t.Fatal("no server-request answer was recorded")
+	}
+	return c.answers[len(c.answers)-1]
+}
+
+func (c *hmCorpusClient) answerCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.answers)
+}
+
+func (c *hmCorpusClient) awaitAnswer(t *testing.T) {
+	t.Helper()
+	select {
+	case <-c.answered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the adapter did not answer the server request")
+	}
 }
 
 func (c *hmCorpusClient) Call(_ context.Context, method string, params any, result any) error {
@@ -818,7 +923,11 @@ func (c *hmCorpusClient) deliver(t *testing.T, decoded hmDecodedFrame) {
 	if dead {
 		t.Fatal("observation delivered after transport closure")
 	}
-	c.in <- rpc.InboundMessage{Notification: &rpc.NotificationMessage{Method: decoded.Message.Method, Params: decoded.Message.Params, Value: decoded.Notification}}
+	if decoded.Message.Kind == rpc.MessageRequest {
+		c.in <- rpc.InboundMessage{Request: &rpc.IncomingRequest{ID: decoded.Message.ID, Method: decoded.Message.Method, Params: decoded.Message.Params}}
+	} else {
+		c.in <- rpc.InboundMessage{Notification: &rpc.NotificationMessage{Method: decoded.Message.Method, Params: decoded.Message.Params, Value: decoded.Notification}}
+	}
 	c.barrier(t)
 }
 func (c *hmCorpusClient) barrier(t *testing.T) {
@@ -866,14 +975,25 @@ func hmFindInteraction(t *testing.T, session base.Session, kind string) *inputSt
 }
 
 func hmResolutionFor(binding *inputState, control hmControl) base.InteractionResolution {
-	question := binding.questions[0]
-	answer := protocol.InputAnswer{QuestionID: question.ID}
-	if binding.kind == "approval" || binding.kind == "clarify" {
-		answer.SelectedOptionIDs = []string{control.Answer}
-	} else {
-		answer.Text = control.Answer
+	values := control.Answers
+	if len(values) == 0 {
+		values = []string{control.Answer}
 	}
-	return base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding.id, SessionID: "session", Answers: []protocol.InputAnswer{answer}}}
+	answers := make([]protocol.InputAnswer, 0, len(values))
+	for i, value := range values {
+		if i >= len(binding.questions) {
+			break
+		}
+		question := binding.questions[i]
+		answer := protocol.InputAnswer{QuestionID: question.ID}
+		if question.Kind == protocol.InputText {
+			answer.Text = value
+		} else {
+			answer.SelectedOptionIDs = []string{value}
+		}
+		answers = append(answers, answer)
+	}
+	return base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding.id, SessionID: "session", Answers: answers}}
 }
 
 func hmAssertCapabilities(t *testing.T, definition hmCorpusCase, descriptor base.Descriptor) {
@@ -902,6 +1022,7 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 	frames := make([]hmFrame, 0, len(lines))
 	decoded := make([]hmDecodedFrame, 0, len(lines))
 	methodByID := map[string]string{}
+	requestByID := map[string]string{}
 	for i, line := range lines {
 		var frame hmFrame
 		hmDecodeStrict(t, line, &frame, fmt.Sprintf("%s frame %d", filename, i+1))
@@ -910,6 +1031,10 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 		case "gateway-to-host":
 			wire := hmWireBytes(t, frame.Raw, filename, i+1)
 			message, decodeErr := rpc.NewDecoder(bytes.NewReader(append(append([]byte(nil), wire...), '\n')), rpc.DefaultFrameLimit).Decode()
+			if decodeErr == nil && message.Kind == rpc.MessageRequest {
+				id, _ := message.ID.MarshalJSON()
+				requestByID[string(id)] = message.Method
+			}
 			if decodeErr == nil && message.Kind == rpc.MessageNotification {
 				value, nativeErr := native.DecodeNotification(message.Method, message.Params)
 				if nativeErr != nil {
@@ -946,8 +1071,8 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 			if err != nil {
 				t.Fatalf("frame %d request decode: %v", i+1, err)
 			}
-			if message.Kind != rpc.MessageRequest {
-				t.Fatalf("frame %d: host frame is not a request", i+1)
+			if message.Kind != rpc.MessageRequest && message.Kind != rpc.MessageResponse {
+				t.Fatalf("frame %d: host frame is neither a request nor an answer", i+1)
 			}
 			encoded, err := message.MarshalJSON()
 			if err != nil {
@@ -957,7 +1082,15 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 				t.Fatalf("frame %d is not canonical outbound JSON", i+1)
 			}
 			id, _ := message.ID.MarshalJSON()
-			methodByID[string(id)] = message.Method
+			if message.Kind == rpc.MessageRequest {
+				methodByID[string(id)] = message.Method
+			} else {
+				method, ok := requestByID[string(id)]
+				if !ok {
+					t.Fatalf("frame %d: answer to unknown server request %s", i+1, id)
+				}
+				entry.RequestMethod = method
+			}
 			entry.Message = &message
 		case "harness-control":
 			var control hmControl
@@ -970,9 +1103,10 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 			case "oap_control":
 				switch control.Op {
 				case "resolve":
-					if hmRespondMethod(control.Kind) == "" || control.Answer == "" {
+					if !hmGateKind(control.Kind) || (control.Answer == "") == (len(control.Answers) == 0) {
 						t.Fatalf("frame %d invalid resolve control", i+1)
 					}
+				case "cancel":
 				case "assert-state":
 					if control.Status != "idle" && control.Status != "running" {
 						t.Fatalf("frame %d invalid assert-state status", i+1)
@@ -1012,7 +1146,7 @@ func hmLoadFrames(t *testing.T, filename string) ([]hmFrame, []hmDecodedFrame) {
 	}
 
 	for i := range decoded {
-		if frames[i].Direction != "gateway-to-host" || decoded[i].Message == nil || decoded[i].Notification != nil {
+		if frames[i].Direction != "gateway-to-host" || decoded[i].Message == nil || decoded[i].Notification != nil || decoded[i].Message.Kind == rpc.MessageRequest {
 			continue
 		}
 		if decoded[i].Message.Kind == rpc.MessageResponse || decoded[i].Message.Kind == rpc.MessageError {
@@ -1089,6 +1223,9 @@ func hmFrameType(frame hmFrame, decoded hmDecodedFrame) string {
 		}
 		return "oap_control:" + decoded.Control.Op
 	case "host-to-gateway":
+		if decoded.Message != nil && decoded.Message.Kind == rpc.MessageResponse {
+			return "answer:" + decoded.RequestMethod
+		}
 		if decoded.Message != nil {
 			return "request:" + decoded.Message.Method
 		}
@@ -1099,6 +1236,9 @@ func hmFrameType(frame hmFrame, decoded hmDecodedFrame) string {
 		}
 		if decoded.Event != nil {
 			return "event/" + decoded.Event.Type
+		}
+		if decoded.Message != nil && decoded.Message.Kind == rpc.MessageRequest {
+			return "server-request:" + decoded.Message.Method
 		}
 		if decoded.Message != nil && (decoded.Message.Kind == rpc.MessageResponse || decoded.Message.Kind == rpc.MessageError) {
 			return "response:" + decoded.RequestMethod
@@ -1160,6 +1300,36 @@ func hmEventIndexes(decoded []hmDecodedFrame, typ string) []int {
 		}
 	}
 	return out
+}
+
+func hmHasRequest(decoded []hmDecodedFrame, method string) bool {
+	for i := range decoded {
+		if decoded[i].Message != nil && decoded[i].Message.Kind == rpc.MessageRequest && decoded[i].Message.Method == method && decoded[i].RequestMethod == "" {
+			if _, ok := decoded[i].Message.ID.StringValue(); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hmAnswered(frames []hmFrame, decoded []hmDecodedFrame, method string) bool {
+	for i := range decoded {
+		if frames[i].Direction == "host-to-gateway" && frames[i].Action == "expect-write" && decoded[i].RequestMethod == method {
+			return true
+		}
+	}
+	return false
+}
+
+func hmResolvedWith(execution hmExecution, status protocol.UserInputResolutionStatus) bool {
+	for _, envelope := range execution.envelopes {
+		var payload protocol.UserInputResolvedPayload
+		if envelope.Type == protocol.TypeUserInputResolved && envelope.DecodePayload(&payload) == nil && payload.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func hmHasEvent(decoded []hmDecodedFrame, typ string) bool {
@@ -1496,24 +1666,9 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			ok = failureRiding && hmEnvelopeCount(*execution, protocol.TypeActionCallCompleted) >= 2 &&
 				hmEnvelopeCount(*execution, protocol.TypeActionCallFailed) == 0
 		case "approval-gate", "clarify-gate", "sudo-gate", "secret-gate":
-			var event string
-			switch label {
-			case "approval-gate":
-				event = native.EventApprovalRequest
-			case "clarify-gate":
-				event = native.EventClarifyRequest
-			case "sudo-gate":
-				event = native.EventSudoRequest
-			case "secret-gate":
-				event = native.EventSecretRequest
-			}
-			method := hmRespondMethod(strings.TrimSuffix(label, "-gate"))
-			if label == "approval-gate" {
-				method = native.MethodApprovalRespond
-			}
-			resolved := hmEnvelopeCount(*execution, protocol.TypeUserInputResolved)
-			ok = hmHasEvent(decoded, event) && hmWrote(*execution, method) &&
-				hmEnvelopeCount(*execution, protocol.TypeUserInputRequested) > 0 && resolved > 0
+			kind := strings.TrimSuffix(label, "-gate")
+			ok = hmHasRequest(decoded, kind) && hmAnswered(frames, decoded, kind) &&
+				hmEnvelopeCount(*execution, protocol.TypeUserInputRequested) > 0 && hmResolvedWith(*execution, protocol.InputSubmitted)
 		case "approval-choices":
 			options := false
 			for _, envelope := range execution.envelopes {
@@ -1534,22 +1689,49 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 				}
 				options = strings.Join(ids, ",") == "once,session,always,deny"
 			}
-			ok = options && hmHasEvent(decoded, native.EventApprovalRequest)
+			ok = options && hmHasRequest(decoded, native.RequestApproval)
 		case "expire-sibling":
-			ok = hmHasEvent(decoded, native.EventClarifyExpire) && !hmWrote(*execution, native.MethodClarifyRespond) &&
-				hmEnvelopeCount(*execution, protocol.TypeUserInputResolved) > 0 &&
-				hmEnvelopeCount(*execution, protocol.TypeRunCompleted) > 0
-			cancelled := false
-			for _, envelope := range execution.envelopes {
-				if envelope.Type != protocol.TypeUserInputResolved {
-					continue
-				}
-				var payload protocol.UserInputResolvedPayload
-				if envelope.DecodePayload(&payload) == nil && payload.Status == protocol.InputCancelled {
-					cancelled = true
+			ok = hmHasEvent(decoded, native.EventRequestCancel) && hmHasRequest(decoded, native.RequestClarify) && !hmAnswered(frames, decoded, native.RequestClarify) &&
+				hmResolvedWith(*execution, protocol.InputCancelled) && hmWrote(*execution, native.MethodSessionInterrupt)
+			terminal := false
+			for _, events := range execution.runs {
+				if _, code := hmRunTerminal(events); code == "hermes_interrupted" {
+					terminal = true
 				}
 			}
-			ok = ok && cancelled
+			ok = ok && terminal
+		case "clarify-batch":
+			covered := false
+			for i := range decoded {
+				if frames[i].Direction != "host-to-gateway" || decoded[i].RequestMethod != native.RequestClarify || decoded[i].Message == nil {
+					continue
+				}
+				var answers native.ClarifyAnswersResult
+				covered = native.DecodeStrict(decoded[i].Message.Result, &answers) == nil && len(answers.Answers) >= 2
+			}
+			questions := 0
+			for _, envelope := range execution.envelopes {
+				var payload protocol.UserInputRequestedPayload
+				if envelope.Type == protocol.TypeUserInputRequested && envelope.DecodePayload(&payload) == nil {
+					questions = len(payload.Questions)
+				}
+			}
+			ok = covered && questions >= 2 && hmResolvedWith(*execution, protocol.InputSubmitted) && hmEnvelopeCount(*execution, protocol.TypeRunCompleted) == 1
+		case "background-reentry":
+			completeIndex, reentry := -1, false
+			for i := range decoded {
+				if decoded[i].Event == nil {
+					continue
+				}
+				if decoded[i].Event.Type == native.EventMessageComplete && completeIndex < 0 {
+					completeIndex = i
+				}
+				if completeIndex >= 0 && i > completeIndex && decoded[i].Event.Type == native.EventMessageStart {
+					reentry = true
+				}
+			}
+			ok = reentry && hmHasEvent(decoded, "subagent.start") && execution.submitClosed &&
+				hmEnvelopeCount(*execution, protocol.TypeRunCompleted) == 1 && len(execution.admissions) == 1
 		case "steer-run":
 			level, advertised := hmDescriptorLevel(*execution, "session.message.delivery.steer")
 			ok = execution.overlapRejected && !hmWrote(*execution, native.MethodSessionSteer) &&
@@ -1890,7 +2072,7 @@ func TestHermesCorpusPinConstants(t *testing.T) {
 	if hmCorpusTag == "" || hmCorpusCommit == "" || hmCorpusCommitTree == "" || CapabilityRevision == "" || PinnedVersion == "" {
 		t.Fatal("missing Hermes corpus pin")
 	}
-	if hmBlobEntry == "" || hmBlobTransport == "" || hmBlobServer == "" || hmBlobEventReplay == "" || hmBlobStdinRecovery == "" || hmBlobWS == "" || hmBlobMethodsPrompt == "" || hmBlobMethodsSession == "" {
+	if hmBlobEntry == "" || hmBlobTransport == "" || hmBlobServer == "" || hmBlobEventReplay == "" || hmBlobStdinRecovery == "" || hmBlobWS == "" || hmBlobMethodsPrompt == "" || hmBlobMethodsSession == "" || hmBlobServerRequests == "" || hmTreeContracts == "" {
 		t.Fatal("missing Hermes corpus source pin")
 	}
 }
@@ -1990,24 +2172,24 @@ func hmServerScript(script string) hmServerParts {
 		if frame.Action != "auto" && frame.Action != "decode-error" {
 			continue
 		}
+		wire := string(frame.Raw)
 		trimmed := bytes.TrimSpace(frame.Raw)
 		if len(trimmed) > 0 && trimmed[0] == '"' {
-
 			var literal string
-			if json.Unmarshal(trimmed, &literal) == nil {
-				parts.script = append(parts.script, literal)
+			if json.Unmarshal(trimmed, &literal) != nil {
+				continue
 			}
-			continue
+			wire = literal
 		}
 		var object map[string]json.RawMessage
-		if json.Unmarshal(frame.Raw, &object) != nil {
-			continue
-		}
-		if _, hasID := object["id"]; hasID {
-			parts.responses[string(object["id"])] = string(frame.Raw)
+		if frame.Action == "decode-error" || json.Unmarshal([]byte(wire), &object) != nil {
+			parts.script = append(parts.script, wire)
 			continue
 		}
 		if _, hasMethod := object["method"]; !hasMethod {
+			if id, hasID := object["id"]; hasID {
+				parts.responses[string(bytes.TrimSpace(id))] = wire
+			}
 			continue
 		}
 		var params struct {
@@ -2015,10 +2197,10 @@ func hmServerScript(script string) hmServerParts {
 		}
 		_ = json.Unmarshal(object["params"], &params)
 		if params.Type == native.EventGatewayReady {
-			parts.ready = string(frame.Raw)
+			parts.ready = wire
 			continue
 		}
-		parts.script = append(parts.script, string(frame.Raw))
+		parts.script = append(parts.script, wire)
 	}
 	return parts
 }

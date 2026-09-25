@@ -2,6 +2,7 @@ package hermes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func verifiedHermesRoot(t *testing.T) string {
 	t.Helper()
 	root := os.Getenv("OAP_HERMES_ROOT")
 	if root == "" || !filepath.IsAbs(root) {
-		t.Fatal("OAP_HERMES_ROOT must be an absolute path to the pinned hermes-agent checkout (release v2026.8.31)")
+		t.Fatal("OAP_HERMES_ROOT must be an absolute path to the pinned hermes-agent checkout (release " + pin.Source("hermes-agent").Tag + ")")
 	}
 	entry := filepath.Join(root, "tui_gateway", "entry.py")
 	if _, err := os.Stat(entry); err != nil {
@@ -192,6 +193,86 @@ func TestHermesProcessAgainstChatMock(t *testing.T) {
 	closed = true
 }
 
+func TestHermesProcessApprovalAgainstChatMock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping opt-in Hermes process integration in short mode")
+	}
+	if os.Getenv("OAP_HERMES_INTEGRATION") != "1" {
+		t.Skip("set OAP_HERMES_INTEGRATION=1 with absolute OAP_HERMES_BIN (python interpreter) and OAP_HERMES_ROOT (pinned hermes-agent checkout) to run; optionally set OAP_HERMES_SHA256 (64 hex characters) for exact-artifact evidence")
+	}
+	isolated := t.TempDir()
+	target := filepath.Join(isolated, "absent")
+	mock := providertest.New(t, providertest.Config{OpenAIKey: hermesMockSecret})
+	arguments, err := json.Marshal(map[string]string{"command": "rm -rf " + target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.EnqueueToolCall(providertest.OpenAIChatCompletion, providertest.ToolCall{ID: "call_approval", Name: "terminal", Arguments: string(arguments)})
+	mock.Enqueue(providertest.OpenAIChatCompletion, providertest.Success)
+	root := verifiedHermesRoot(t)
+	environment := hermesEnvironment(t, isolated, mock.OpenAIBaseURL())
+	writeHermesLoopbackConfig(t, isolated, mock.OpenAIBaseURL())
+	implementation := newPinnedHermes(t, root, environment, hermesLoopbackModel)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	session, err := implementation.Open(ctx, base.OpenRequest{SessionID: "hermes-approval-session", Participant: protocol.Participant{ID: "integration-user"}})
+	if err != nil {
+		t.Fatalf("open pinned gateway: %v", err)
+	}
+	defer func() { _ = session.Close(context.Background()) }()
+	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{
+		SessionID: "hermes-approval-session", Delivery: protocol.DeliveryAuto,
+		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("Delete the fixture directory.")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []protocol.Envelope
+	var requested protocol.UserInputRequestedPayload
+	for requested.InteractionID == "" {
+		select {
+		case result, ok := <-stream:
+			if !ok {
+				t.Fatalf("run ended before the approval gate: %v", events)
+			}
+			if result.Error != nil {
+				t.Fatal(result.Error)
+			}
+			events = append(events, result.Envelope)
+			if result.Envelope.Type == protocol.TypeUserInputRequested {
+				if err := result.Envelope.DecodePayload(&requested); err != nil {
+					t.Fatal(err)
+				}
+			}
+		case <-ctx.Done():
+			t.Fatal("no approval gate arrived")
+		}
+	}
+	if len(requested.Questions) != 1 || requested.Questions[0].ID != "choice" || !strings.Contains(requested.Description, target) {
+		t.Fatalf("approval gate = %+v", requested)
+	}
+	if err := session.Resolve(ctx, base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: requested.InteractionID, SessionID: "hermes-approval-session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
+		t.Fatalf("resolve through the server-request answer: %v", err)
+	}
+	events = append(events, adaptertest.Drain(t, stream, 60*time.Second)...)
+	adaptertest.AssertRunEvents(t, admission, CapabilityRevision, events)
+	submitted := false
+	for _, event := range events {
+		var resolved protocol.UserInputResolvedPayload
+		if event.Type == protocol.TypeUserInputResolved && event.DecodePayload(&resolved) == nil && resolved.Status == protocol.InputSubmitted {
+			submitted = true
+		}
+	}
+	if !submitted || events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("resolved=%v terminal=%s", submitted, events[len(events)-1].Type)
+	}
+	requests := mock.RequestsFor(providertest.OpenAIChatCompletion)
+	if len(requests) != 2 || !strings.Contains(string(requests[1].Body), "denied") {
+		t.Fatalf("provider requests = %d; the denial did not reach the model", len(requests))
+	}
+}
+
 func writeHermesLoopbackConfig(t *testing.T, root, baseURL string) {
 	t.Helper()
 	directory := filepath.Join(root, "home", ".hermes")
@@ -207,7 +288,12 @@ func writeHermesLoopbackConfig(t *testing.T, root, baseURL string) {
 		"    key_env: OPENAI_API_KEY\n" +
 		"    api_mode: chat\n" +
 		"    models:\n" +
-		"      - " + hermesLoopbackModel + "\n"
+		"      - " + hermesLoopbackModel + "\n" +
+		"approvals:\n" +
+		"  mode: manual\n" +
+		"auxiliary:\n" +
+		"  title_generation:\n" +
+		"    enabled: false\n"
 	if err := os.WriteFile(filepath.Join(directory, "config.yaml"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}

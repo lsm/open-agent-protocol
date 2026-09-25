@@ -62,6 +62,7 @@ pub const Interaction = struct {
     run_id: []const u8,
     kind: []const u8,
     request_id: []const u8 = "",
+    batch: bool = false,
     requested: []const u8 = "",
     resolved: bool = false,
     questions: []const Question = &.{},
@@ -70,7 +71,17 @@ pub const Interaction = struct {
 const Observation = struct {
     kind: []const u8,
     payload: std.json.Value,
+    request_id: ?[]const u8 = null,
 };
+
+const gate_methods = [_][]const u8{ "approval", "clarify", "sudo", "secret" };
+
+fn gateMethod(method: []const u8) bool {
+    for (gate_methods) |name| {
+        if (std.mem.eql(u8, name, method)) return true;
+    }
+    return false;
+}
 
 const Run = struct {
     id: []const u8 = "",
@@ -95,6 +106,7 @@ pub const Reducer = struct {
     unusable: bool = false,
     interactions: std.ArrayList(Interaction) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
+    unanswerable: std.ArrayList([]const u8) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options };
@@ -185,6 +197,10 @@ pub const Reducer = struct {
         self.buffered = .empty;
         for (replay.items) |observation| {
             if (self.run == null or self.run.?.terminal) return;
+            if (observation.request_id) |request_id| {
+                try self.openInteraction(observation.kind, request_id, observation.payload);
+                continue;
+            }
             try self.applyRunEvent(observation.kind, observation.payload);
         }
     }
@@ -237,7 +253,7 @@ pub const Reducer = struct {
     }
 
     pub fn observe(self: *Reducer, message: rpc.Message, parsed: std.json.Value) !void {
-        if (message.kind == .request) return self.disown("reverse request");
+        if (message.kind == .request) return self.serverRequest(message.method, parsed);
         if (message.kind != .notification) return;
         if (!std.mem.eql(u8, message.method, "event")) return self.disown("non-event notification");
         if (parsed != .object) return;
@@ -260,6 +276,34 @@ pub const Reducer = struct {
         if (self.unusable) return;
         const payload = params.object.get("payload") orelse std.json.Value{ .null = {} };
         try self.applyEvent(kind.string, payload);
+    }
+
+    fn serverRequest(self: *Reducer, method: []const u8, parsed: std.json.Value) !void {
+        const params: std.json.Value = if (parsed == .object) (parsed.object.get("params") orelse .null) else .null;
+        const native_id = if (params == .object) stringMember(params.object, "session_id") else "";
+        if (!std.mem.eql(u8, native_id, self.options.native_id)) {
+            try self.disown(try std.fmt.allocPrint(self.allocator(), "{s} request for foreign session {s}", .{ method, goquote.quote(self.allocator(), native_id) }));
+            return;
+        }
+        const carried = if (parsed == .object) parsed.object.get("id") else null;
+        if (carried == null or carried.? != .string) {
+            try self.disown(try std.fmt.allocPrint(self.allocator(), "{s} request with a non-string id", .{method}));
+            return;
+        }
+        const request_id = carried.?.string;
+        if (!gateMethod(method)) {
+            try self.unanswerable.append(self.allocator(), request_id);
+            return;
+        }
+        if (self.unusable) return;
+        const run = self.active() orelse {
+            return self.disown(try std.fmt.allocPrint(self.allocator(), "{s} request without an owned run", .{method}));
+        };
+        if (!run.started) {
+            try self.buffered.append(self.allocator(), .{ .kind = method, .payload = params, .request_id = request_id });
+            return;
+        }
+        try self.openInteraction(method, request_id, params);
     }
 
     fn applyEvent(self: *Reducer, kind: []const u8, payload: std.json.Value) !void {
@@ -308,11 +352,7 @@ pub const Reducer = struct {
             try self.endTool(payload);
             return;
         }
-        if (std.mem.eql(u8, kind, "approval.request") or std.mem.eql(u8, kind, "clarify.request") or std.mem.eql(u8, kind, "sudo.request") or std.mem.eql(u8, kind, "secret.request")) {
-            try self.openInteraction(kind, payload);
-            return;
-        }
-        if (std.mem.eql(u8, kind, "clarify.expire") or std.mem.eql(u8, kind, "sudo.expire") or std.mem.eql(u8, kind, "secret.expire")) {
+        if (std.mem.eql(u8, kind, "request.cancel")) {
             try self.expireInteraction(payload);
             return;
         }
@@ -419,6 +459,7 @@ pub const Reducer = struct {
             return;
         }
         const text = stringMember(payload.object, "text");
+        if (text.len == 0) return;
 
         var part = self.object();
         try self.put(&part, "type", str(part_kind));
@@ -584,56 +625,47 @@ pub const Reducer = struct {
         return .{ .object = body };
     }
 
-    fn openInteraction(self: *Reducer, kind: []const u8, payload: std.json.Value) !void {
+    fn openInteraction(self: *Reducer, method: []const u8, request_id: []const u8, payload: std.json.Value) !void {
         const run = self.active() orelse return;
         if (!run.started) return;
-        const id = try self.nextID("interaction");
-        var binding = Interaction{ .id = id, .run_id = run.id, .kind = "" };
+        var binding = Interaction{ .id = "", .run_id = run.id, .kind = method, .request_id = request_id };
         var title: []const u8 = "";
         var description: []const u8 = "";
         var questions = std.ArrayList(Question).empty;
+        const refused = try std.fmt.allocPrint(self.allocator(), "invalid {s} gate", .{method});
 
-        if (std.mem.eql(u8, kind, "approval.request")) {
-            const members = [_]Member{
-                .{ .name = "command", .kind = .string },
-                .{ .name = "pattern_key", .kind = .string },
-                .{ .name = "pattern_keys", .kind = .strings },
-                .{ .name = "description", .kind = .string },
-                .{ .name = "allow_permanent", .kind = .boolean },
-                .{ .name = "allow_session", .kind = .boolean },
-                .{ .name = "smart_denied", .kind = .boolean },
-                .{ .name = "choices", .kind = .strings },
-            };
-            const fields = strictObject(payload, &members) orelse {
-                try self.failRun("hermes_invalid_event", "invalid approval gate");
+        if (std.mem.eql(u8, method, "approval")) {
+            if (payload != .object or !approvalShape(payload.object)) {
+                try self.failRun("hermes_invalid_event", refused);
                 return;
-            };
-            const command = stringMember(fields, "command");
-            binding.kind = "approval";
-            title = "Command approval";
-            description = command;
-            var options: []const Option = &.{};
-            if (fields.get("choices")) |choices| {
-                if (choices == .array) options = try self.optionsFrom(choices.array);
             }
-            try questions.append(self.allocator(), .{ .id = "choice", .prompt = command, .kind = "single_choice", .options = options });
-        } else if (std.mem.eql(u8, kind, "clarify.request")) {
+            title = "Command approval";
+            description = stringMember(payload.object, "command");
+            if (description.len == 0) description = stringMember(payload.object, "description");
+            const options = try self.optionsFrom(payload.object.get("choices").?.array);
+            try questions.append(self.allocator(), .{ .id = "choice", .prompt = description, .kind = "single_choice", .options = options });
+        } else if (std.mem.eql(u8, method, "clarify")) {
             const members = [_]Member{
-                .{ .name = "request_id", .kind = .string },
+                .{ .name = "session_id", .kind = .string },
                 .{ .name = "question", .kind = .string },
                 .{ .name = "choices", .kind = .strings },
                 .{ .name = "multi_select", .kind = .boolean },
                 .{ .name = "questions", .kind = .objects },
+                .{ .name = "answers", .kind = .any },
             };
             const fields = strictObject(payload, &members) orelse {
-                try self.failRun("hermes_invalid_event", "invalid clarify gate");
+                try self.failRun("hermes_invalid_event", refused);
                 return;
             };
-            binding.kind = "clarify";
-            binding.request_id = stringMember(fields, "request_id");
             title = "Clarification";
+            const single = stringMember(fields, "question").len > 0 or nonEmptyArray(fields.get("choices"));
             const batch = batched(fields);
+            if (single == (batch != null)) {
+                try self.failRun("hermes_invalid_event", refused);
+                return;
+            }
             if (batch) |entries| {
+                binding.batch = true;
                 const question_members = [_]Member{
                     .{ .name = "qid", .kind = .string },
                     .{ .name = "question", .kind = .string },
@@ -642,45 +674,56 @@ pub const Reducer = struct {
                 };
                 for (entries.items) |entry| {
                     const carried = strictObject(entry, &question_members) orelse {
-                        try self.failRun("hermes_invalid_event", "invalid clarify gate");
+                        try self.failRun("hermes_invalid_event", refused);
                         return;
                     };
+                    if (stringMember(carried, "qid").len == 0 or stringMember(carried, "question").len == 0) {
+                        try self.failRun("hermes_invalid_event", refused);
+                        return;
+                    }
                     try questions.append(self.allocator(), try self.questionFrom(stringMember(carried, "qid"), stringMember(carried, "question"), carried.get("choices"), boolMember(carried, "multi_select")));
                 }
             } else {
                 try questions.append(self.allocator(), try self.questionFrom("answer", stringMember(fields, "question"), fields.get("choices"), boolMember(fields, "multi_select")));
             }
-        } else if (std.mem.eql(u8, kind, "sudo.request")) {
-            binding.kind = "sudo";
-            binding.request_id = requestIDProbe(payload);
+        } else if (std.mem.eql(u8, method, "sudo")) {
+            const members = [_]Member{
+                .{ .name = "session_id", .kind = .string },
+                .{ .name = "command", .kind = .string },
+            };
+            const fields = strictObject(payload, &members) orelse {
+                try self.failRun("hermes_invalid_event", refused);
+                return;
+            };
             title = "Password required";
+            description = stringMember(fields, "command");
             try questions.append(self.allocator(), .{ .id = "password", .prompt = "Enter the sudo password", .kind = "text" });
         } else {
             const members = [_]Member{
-                .{ .name = "request_id", .kind = .string },
+                .{ .name = "session_id", .kind = .string },
                 .{ .name = "prompt", .kind = .string },
                 .{ .name = "env_var", .kind = .string },
                 .{ .name = "metadata", .kind = .any },
             };
             const fields = strictObject(payload, &members) orelse {
-                try self.failRun("hermes_invalid_event", "invalid secret gate");
+                try self.failRun("hermes_invalid_event", refused);
                 return;
             };
-            binding.kind = "secret";
-            binding.request_id = stringMember(fields, "request_id");
+            if (stringMember(fields, "prompt").len == 0 or stringMember(fields, "env_var").len == 0) {
+                try self.failRun("hermes_invalid_event", refused);
+                return;
+            }
             title = "Secret required";
             description = stringMember(fields, "env_var");
             try questions.append(self.allocator(), .{ .id = "value", .prompt = stringMember(fields, "prompt"), .kind = "text" });
         }
 
-        if (binding.request_id.len == 0 and !std.mem.eql(u8, binding.kind, "approval")) {
-            try self.failRun("hermes_invalid_event", "gate without request_id");
-            return;
-        }
         if (!answerableSet(questions.items)) {
             try self.failRun("hermes_invalid_event", "gate with a question nobody can answer");
             return;
         }
+        const id = try self.nextID("interaction");
+        binding.id = id;
         binding.questions = questions.items;
         try self.interactions.append(self.allocator(), binding);
         const at = self.interactions.items.len - 1;
@@ -701,14 +744,18 @@ pub const Reducer = struct {
 
     fn expireInteraction(self: *Reducer, payload: std.json.Value) !void {
         const run = self.active() orelse return;
-        const members = [_]Member{.{ .name = "request_id", .kind = .string }};
+        const members = [_]Member{
+            .{ .name = "id", .kind = .string },
+            .{ .name = "method", .kind = .string },
+            .{ .name = "reason", .kind = .string },
+        };
         const fields = strictObject(payload, &members) orelse {
-            try self.failRun("hermes_invalid_event", "invalid expire");
+            try self.failRun("hermes_invalid_event", "invalid request cancel");
             return;
         };
-        const request_id = stringMember(fields, "request_id");
-        if (request_id.len == 0) {
-            try self.failRun("hermes_invalid_event", "expire without request_id");
+        const request_id = stringMember(fields, "id");
+        if (request_id.len == 0 or stringMember(fields, "method").len == 0) {
+            try self.failRun("hermes_invalid_event", "invalid request cancel");
             return;
         }
         for (self.interactions.items, 0..) |binding, at| {
@@ -753,10 +800,8 @@ pub const Reducer = struct {
 
     fn runScoped(kind: []const u8) bool {
         const scoped = [_][]const u8{
-            "message.start",    "message.delta",  "reasoning.delta", "thinking.delta",
-            "message.complete", "tool.start",     "tool.complete",   "approval.request",
-            "clarify.request",  "sudo.request",   "secret.request",  "secret.expire",
-            "sudo.expire",      "clarify.expire",
+            "message.start",    "message.delta", "reasoning.delta", "thinking.delta",
+            "message.complete", "tool.start",    "tool.complete",
         };
         for (scoped) |name| {
             if (std.mem.eql(u8, name, kind)) return true;
@@ -853,10 +898,39 @@ fn batched(object: std.json.ObjectMap) ?std.json.Array {
     return value.array;
 }
 
-fn requestIDProbe(payload: std.json.Value) []const u8 {
-    if (payload != .object) return "";
-    const value = payload.object.get("request_id") orelse return "";
-    return if (value == .string) value.string else "";
+fn nonEmptyArray(value: ?std.json.Value) bool {
+    const present = value orelse return false;
+    return present == .array and present.array.items.len > 0;
+}
+
+fn approvalShape(fields: std.json.ObjectMap) bool {
+    const typed = [_]Member{
+        .{ .name = "session_id", .kind = .string },
+        .{ .name = "request_id", .kind = .string },
+        .{ .name = "command", .kind = .string },
+        .{ .name = "description", .kind = .string },
+        .{ .name = "choices", .kind = .strings },
+        .{ .name = "allow_permanent", .kind = .boolean },
+        .{ .name = "allow_session", .kind = .boolean },
+        .{ .name = "smart_denied", .kind = .boolean },
+        .{ .name = "tool_name", .kind = .string },
+    };
+    for (typed) |member| {
+        const value = fields.get(member.name) orelse continue;
+        if (!memberMatches(member.kind, value)) return false;
+    }
+    if (stringMember(fields, "session_id").len == 0 or stringMember(fields, "request_id").len == 0) return false;
+    if (stringMember(fields, "command").len == 0 and stringMember(fields, "description").len == 0) return false;
+    const choices = fields.get("choices") orelse return false;
+    if (choices != .array or choices.array.items.len == 0) return false;
+    const known = [_][]const u8{ "once", "session", "always", "deny" };
+    for (choices.array.items) |choice| {
+        if (choice != .string) return false;
+        for (known) |name| {
+            if (std.mem.eql(u8, name, choice.string)) break;
+        } else return false;
+    }
+    return true;
 }
 
 fn boolMember(map: std.json.ObjectMap, key: []const u8) bool {
@@ -950,11 +1024,59 @@ fn feedEvent(reducer: *Reducer, scratch: std.mem.Allocator, kind: []const u8, pa
     try feed(reducer, scratch, try event(scratch, reducer.last_seq + 1, kind, payload));
 }
 
+var gate_serial: usize = 0;
+
+fn feedGate(reducer: *Reducer, scratch: std.mem.Allocator, method: []const u8, payload: []const u8) !void {
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, payload, .{});
+    var params: std.json.ObjectMap = .empty;
+    var id: []const u8 = "";
+    if (parsed == .object) {
+        var entries = parsed.object.iterator();
+        while (entries.next()) |entry| {
+            const carried = entry.value_ptr.*;
+            if (!std.mem.eql(u8, method, "approval") and std.mem.eql(u8, entry.key_ptr.*, "request_id") and carried == .string) {
+                id = carried.string;
+                continue;
+            }
+            try params.put(scratch, entry.key_ptr.*, carried);
+        }
+    }
+    if (params.get("session_id") == null) try params.put(scratch, "session_id", .{ .string = "sess0001" });
+    if (std.mem.eql(u8, method, "approval") and params.get("request_id") == null) try params.put(scratch, "request_id", .{ .string = "0123456789abcdef0123456789abcdef" });
+    if (id.len == 0) {
+        gate_serial += 1;
+        id = try std.fmt.allocPrint(scratch, "srq-{d}", .{gate_serial});
+    }
+    var request: std.json.ObjectMap = .empty;
+    try request.put(scratch, "jsonrpc", .{ .string = "2.0" });
+    try request.put(scratch, "id", .{ .string = id });
+    try request.put(scratch, "method", .{ .string = method });
+    try request.put(scratch, "params", .{ .object = params });
+    try feed(reducer, scratch, try std.json.Stringify.valueAlloc(scratch, std.json.Value{ .object = request }, .{}));
+}
+
+fn feedCancel(reducer: *Reducer, scratch: std.mem.Allocator, method: []const u8, payload: []const u8) !void {
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, payload, .{});
+    var cancel: std.json.ObjectMap = .empty;
+    if (parsed == .object) {
+        var entries = parsed.object.iterator();
+        while (entries.next()) |entry| {
+            const key = if (std.mem.eql(u8, entry.key_ptr.*, "request_id")) "id" else entry.key_ptr.*;
+            try cancel.put(scratch, key, entry.value_ptr.*);
+        }
+    }
+    try cancel.put(scratch, "method", .{ .string = method });
+    try cancel.put(scratch, "reason", .{ .string = "timeout" });
+    const body = try std.json.Stringify.valueAlloc(scratch, std.json.Value{ .object = cancel }, .{});
+    try feed(reducer, scratch, try event(scratch, reducer.last_seq + 1, "request.cancel", body));
+}
+
 fn feedBare(reducer: *Reducer, scratch: std.mem.Allocator, kind: []const u8) !void {
     try feed(reducer, scratch, try bare(scratch, reducer.last_seq + 1, kind));
 }
 
 fn openRun(arena: *std.heap.ArenaAllocator) !Reducer {
+    gate_serial = 0;
     var reducer = Reducer.init(arena, .{});
     reducer.open();
     try reducer.submit();
@@ -963,9 +1085,9 @@ fn openRun(arena: *std.heap.ArenaAllocator) !Reducer {
     return reducer;
 }
 
-fn gate(arena: *std.heap.ArenaAllocator, kind: []const u8, payload: []const u8) !Reducer {
+fn gate(arena: *std.heap.ArenaAllocator, method: []const u8, payload: []const u8) !Reducer {
     var reducer = try openRun(arena);
-    try feedEvent(&reducer, arena.allocator(), kind, payload);
+    try feedGate(&reducer, arena.allocator(), method, payload);
     return reducer;
 }
 
@@ -996,7 +1118,7 @@ fn expectGateRefused(kind: []const u8, payload: []const u8, code: []const u8, me
 test "an approval gate carries the command as both its description and its only prompt" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"rm -rf /tmp/x","choices":["once","deny"]}
     );
 
@@ -1026,7 +1148,7 @@ test "an approval gate carries the command as both its description and its only 
 test "a gate announces itself and then parks the run on the interaction it opened" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once"]}
     );
 
@@ -1044,7 +1166,7 @@ test "a gate announces itself and then parks the run on the interaction it opene
 test "a clarify gate offers the choices it carries and falls back to free text without them" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var offered = try gate(&arena, "clarify.request",
+    var offered = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}
     );
     const asked = questionsAt(&offered, 1).items[0].object;
@@ -1054,7 +1176,7 @@ test "a clarify gate offers the choices it carries and falls back to free text w
     try testing.expectEqualStrings("which?", asked.get("prompt").?.string);
     try testing.expectEqualStrings("single_choice", asked.get("kind").?.string);
 
-    var free = try gate(&arena, "clarify.request",
+    var free = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?"}
     );
     const open_ended = questionsAt(&free, 1).items[0].object;
@@ -1065,7 +1187,7 @@ test "a clarify gate offers the choices it carries and falls back to free text w
 test "an empty choice list makes a question free text even when it asks for several answers" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":[],"multi_select":true}
     );
 
@@ -1075,7 +1197,7 @@ test "an empty choice list makes a question free text even when it asks for seve
 test "a batch clarify gate mints one question per entry and reads each entry's own multi_select" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"two","question":"second?","choices":["b","c"],"multi_select":true}]}
     );
 
@@ -1088,22 +1210,16 @@ test "a batch clarify gate mints one question per entry and reads each entry's o
     try testing.expectEqualStrings("multi_choice", questions.items[1].object.get("kind").?.string);
 }
 
-test "a batch entry wins over the single form even when both are present" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    var reducer = try gate(&arena, "clarify.request",
-        \\{"request_id":"aaaa1111","question":"ignored","choices":["z"],"questions":[{"qid":"one","question":"first?","choices":["a"]}]}
-    );
-
-    const questions = questionsAt(&reducer, 1);
-    try testing.expectEqual(@as(usize, 1), questions.items.len);
-    try testing.expectEqualStrings("one", questions.items[0].object.get("id").?.string);
+test "a clarify carrying both the single and the batch form is refused" {
+    try expectGateRefused("clarify",
+        \\{"question":"ignored","choices":["z"],"questions":[{"qid":"one","question":"first?","choices":["a"]}]}
+    , "hermes_invalid_event", "invalid clarify gate");
 }
 
 test "the sudo gate asks for a password and the secret gate names the variable it fills" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var sudo = try gate(&arena, "sudo.request",
+    var sudo = try gate(&arena, "sudo",
         \\{"request_id":"bbbb2222"}
     );
     const password = questionsAt(&sudo, 1).items[0].object;
@@ -1113,7 +1229,7 @@ test "the sudo gate asks for a password and the secret gate names the variable i
     try testing.expectEqualStrings("Enter the sudo password", password.get("prompt").?.string);
     try testing.expectEqualStrings("text", password.get("kind").?.string);
 
-    var secret = try gate(&arena, "secret.request",
+    var secret = try gate(&arena, "secret",
         \\{"request_id":"cccc3333","prompt":"CI token","env_var":"CI_TOKEN"}
     );
     const value = questionsAt(&secret, 1).items[0].object;
@@ -1123,51 +1239,69 @@ test "the sudo gate asks for a password and the secret gate names the variable i
     try testing.expectEqualStrings("CI token", value.get("prompt").?.string);
 }
 
-test "only an approval gate may arrive without a request id" {
+test "an approval names its queue entry, and every gate is keyed by a string JSON-RPC id" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var approval = try gate(&arena, "approval.request",
+    const scratch = arena.allocator();
+    var approval = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once"]}
     );
     try testing.expectEqualStrings("user.input.requested", typeAt(&approval, 1));
+    try testing.expectEqualStrings("srq-1", approval.interactions.items[0].request_id);
 
-    try expectGateRefused("clarify.request",
-        \\{"question":"which?","choices":["a"]}
-    , "hermes_invalid_event", "gate without request_id");
-    try expectGateRefused("sudo.request", "{}", "hermes_invalid_event", "gate without request_id");
-    try expectGateRefused("secret.request",
-        \\{"prompt":"CI token","env_var":"CI_TOKEN"}
-    , "hermes_invalid_event", "gate without request_id");
+    try expectGateRefused("approval",
+        \\{"command":"ls","choices":["once"],"request_id":null}
+    , "hermes_invalid_event", "invalid approval gate");
+
+    var numbered = try openRun(&arena);
+    try feed(&numbered, scratch,
+        \\{"jsonrpc":"2.0","id":7,"method":"clarify","params":{"session_id":"sess0001","question":"which?","choices":["a"]}}
+    );
+    try testing.expect(numbered.unusable);
+    try testing.expectEqualStrings("clarify request with a non-string id", payloadAt(&numbered, 1).get("error").?.object.get("message").?.string);
 }
 
 test "a gate payload is refused member by member, and each kind names itself when it is" {
-    try expectGateRefused("approval.request",
-        \\{"command":"ls","choices":["once"],"unknown":1}
+    try expectGateRefused("approval",
+        \\{"command":"ls","choices":["maybe"]}
     , "hermes_invalid_event", "invalid approval gate");
-    try expectGateRefused("approval.request",
+    try expectGateRefused("approval",
         \\{"command":7,"choices":["once"]}
     , "hermes_invalid_event", "invalid approval gate");
-    try expectGateRefused("approval.request",
+    try expectGateRefused("approval",
         \\{"command":"ls","choices":[7]}
     , "hermes_invalid_event", "invalid approval gate");
-    try expectGateRefused("approval.request",
+    try expectGateRefused("approval",
         \\{"command":"ls","choices":["once"],"allow_session":"yes"}
     , "hermes_invalid_event", "invalid approval gate");
-    try expectGateRefused("clarify.request",
+    try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","question":"which?","multi_select":1}
     , "hermes_invalid_event", "invalid clarify gate");
-    try expectGateRefused("clarify.request",
+    try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"],"unknown":1}]}
     , "hermes_invalid_event", "invalid clarify gate");
-    try expectGateRefused("secret.request",
+    try expectGateRefused("secret",
         \\{"request_id":"cccc3333","prompt":"CI token","env_var":"CI_TOKEN","unknown":1}
     , "hermes_invalid_event", "invalid secret gate");
+    try expectGateRefused("sudo",
+        \\{"command":"sudo true","unknown":1}
+    , "hermes_invalid_event", "invalid sudo gate");
+}
+
+test "an approval tolerates members its contract leaves open" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "approval",
+        \\{"command":"rm -rf /tmp/x","pattern_key":"delete in root path","pattern_keys":["delete in root path"],"description":"delete in root path","allow_permanent":true,"allow_session":true,"choices":["once","session","always","deny"],"future_member":1}
+    );
+    try testing.expectEqualStrings("user.input.requested", typeAt(&reducer, 1));
+    try testing.expectEqualStrings("rm -rf /tmp/x", payloadAt(&reducer, 1).get("description").?.string);
 }
 
 test "a null member is absent to the decoder, as it is to encoding/json" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once"],"description":null,"pattern_keys":null,"smart_denied":null}
     );
 
@@ -1175,12 +1309,15 @@ test "a null member is absent to the decoder, as it is to encoding/json" {
     try testing.expectEqualStrings("ls", payloadAt(&reducer, 1).get("description").?.string);
 }
 
-test "the sudo gate reads its request id leniently where the others decode it strictly" {
-    try expectGateRefused("sudo.request",
-        \\{"request_id":7,"extra":true}
-    , "hermes_invalid_event", "gate without request_id");
-    try expectGateRefused("secret.request",
-        \\{"request_id":7,"prompt":"CI token","env_var":"CI_TOKEN"}
+test "the sudo gate describes itself with the command it asks for" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try gate(&arena, "sudo",
+        \\{"command":"sudo true"}
+    );
+    try testing.expectEqualStrings("sudo true", payloadAt(&reducer, 1).get("description").?.string);
+    try expectGateRefused("secret",
+        \\{"prompt":"CI token","env_var":7}
     , "hermes_invalid_event", "invalid secret gate");
 }
 
@@ -1191,7 +1328,7 @@ test "a gate that arrives before the run started emits nothing and mints nothing
     reducer.open();
     try reducer.submit();
     try reducer.admit();
-    try feedEvent(&reducer, arena.allocator(), "approval.request",
+    try feedGate(&reducer, arena.allocator(), "approval",
         \\{"command":"ls","choices":["once"]}
     );
 
@@ -1200,17 +1337,17 @@ test "a gate that arrives before the run started emits nothing and mints nothing
     try testing.expectEqual(@as(usize, 1), reducer.ids);
 }
 
-test "an expire settles the gate carrying its request id and leaves every other one open" {
+test "a request.cancel settles the gate whose id it names and leaves every other one open" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"dddd4444","question":"which?","choices":["a","b"]}
     );
-    try feedEvent(&reducer, scratch, "secret.request",
+    try feedGate(&reducer, scratch, "secret",
         \\{"request_id":"eeee5555","prompt":"CI token","env_var":"CI_TOKEN"}
     );
-    try feedEvent(&reducer, scratch, "clarify.expire",
+    try feedCancel(&reducer, scratch, "clarify",
         \\{"request_id":"dddd4444"}
     );
 
@@ -1226,37 +1363,37 @@ test "an expire settles the gate carrying its request id and leaves every other 
     try testing.expect(payloadAt(&reducer, 6).get("pending_user_input_id") == null);
     try testing.expect(!reducer.interactions.items[1].resolved);
 
-    try feedEvent(&reducer, scratch, "clarify.expire",
+    try feedCancel(&reducer, scratch, "clarify",
         \\{"request_id":"dddd4444"}
     );
     try testing.expectEqual(@as(usize, 7), reducer.envelopes.items.len);
 }
 
-test "an expire naming no open gate is silent, and a malformed one fails the run" {
+test "a request.cancel naming no open gate is silent, and a malformed one fails the run" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"dddd4444","question":"which?","choices":["a"]}
     );
-    try feedEvent(&reducer, scratch, "clarify.expire",
+    try feedCancel(&reducer, scratch, "clarify",
         \\{"request_id":"ffff6666"}
     );
     try testing.expectEqual(@as(usize, 3), reducer.envelopes.items.len);
 
-    try feedEvent(&reducer, scratch, "clarify.expire",
+    try feedCancel(&reducer, scratch, "clarify",
         \\{"request_id":"dddd4444","unknown":1}
     );
     try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
     try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 3));
     try testing.expectEqualStrings("run.failed", typeAt(&reducer, 4));
-    try testing.expectEqualStrings("invalid expire", payloadAt(&reducer, 4).get("error").?.object.get("message").?.string);
+    try testing.expectEqualStrings("invalid request cancel", payloadAt(&reducer, 4).get("error").?.object.get("message").?.string);
 }
 
 test "a resolution echoes the answers it was given and returns the run to running" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once","deny"]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1279,7 +1416,7 @@ test "a resolution echoes the answers it was given and returns the run to runnin
 test "a free-text answer carries text where a choice answer carries option ids" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "sudo.request",
+    var reducer = try gate(&arena, "sudo",
         \\{"request_id":"bbbb2222"}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1293,7 +1430,7 @@ test "a free-text answer carries text where a choice answer carries option ids" 
 test "a resolution is refused unless every answer suits the question it names" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once","deny"]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1310,7 +1447,7 @@ test "a resolution is refused unless every answer suits the question it names" {
 test "a multi-choice answer takes several distinct options but never the same one twice" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a","b"],"multi_select":true}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1324,7 +1461,7 @@ test "a gate resolves once, and an expired one is already spoken for" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1332,7 +1469,7 @@ test "a gate resolves once, and an expired one is already spoken for" {
     try testing.expectError(Error.InteractionNotFound, reducer.resolve(interaction, &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
     try testing.expectError(Error.InteractionNotFound, reducer.resolve("interaction-z", &[_]Answer{.{ .question_id = "answer", .selected_option_ids = &[_][]const u8{"a"} }}));
 
-    try feedEvent(&reducer, scratch, "clarify.expire",
+    try feedCancel(&reducer, scratch, "clarify",
         \\{"request_id":"aaaa1111"}
     );
     try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
@@ -1342,7 +1479,7 @@ test "a settled run refuses a resolution instead of emitting past its terminal" 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1360,10 +1497,10 @@ test "the pending gate a driver looks up is the open one of that kind" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
-    try feedEvent(&reducer, scratch, "sudo.request",
+    try feedGate(&reducer, scratch, "sudo",
         \\{"request_id":"bbbb2222"}
     );
 
@@ -1378,7 +1515,7 @@ test "a gate left open by one run is not answerable from the next" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const stranded = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1397,7 +1534,7 @@ test "a gate left open by one run is not answerable from the next" {
 test "a batch resolution matches each answer to the question it names, in any order" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"two","question":"second?","choices":["b"]}]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1415,7 +1552,7 @@ test "a batch resolution matches each answer to the question it names, in any or
 test "a batch resolution answering one question twice leaves the other unanswered and is refused" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"two","question":"second?","choices":["b"]}]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1435,7 +1572,7 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const stranded = reducer.pendingInteraction("clarify").?.id;
@@ -1447,7 +1584,7 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
     try reducer.submit();
     try reducer.admit();
     try feedBare(&reducer, scratch, "message.start");
-    try feedEvent(&reducer, scratch, "clarify.request",
+    try feedGate(&reducer, scratch, "clarify",
         \\{"request_id":"bbbb2222","question":"again?","choices":["b"]}
     );
 
@@ -1457,33 +1594,33 @@ test "a gate stranded by a settled run is not offered in place of the new run's 
 }
 
 test "a gate whose question carries no id, no prompt or no choice is refused, not emitted" {
-    try expectGateRefused("approval.request",
+    try expectGateRefused("approval",
         \\{"command":"ls"}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
-    try expectGateRefused("approval.request",
+    , "hermes_invalid_event", "invalid approval gate");
+    try expectGateRefused("approval",
         \\{"command":"ls","choices":[]}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
-    try expectGateRefused("approval.request",
+    , "hermes_invalid_event", "invalid approval gate");
+    try expectGateRefused("approval",
         \\{"command":"","choices":["once"]}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
-    try expectGateRefused("clarify.request",
+    , "hermes_invalid_event", "invalid approval gate");
+    try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","question":""}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
-    try expectGateRefused("clarify.request",
+    , "hermes_invalid_event", "invalid clarify gate");
+    try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"","question":"first?","choices":["a"]}]}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
-    try expectGateRefused("clarify.request",
+    , "hermes_invalid_event", "invalid clarify gate");
+    try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"","choices":["a"]}]}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
-    try expectGateRefused("secret.request",
+    , "hermes_invalid_event", "invalid clarify gate");
+    try expectGateRefused("secret",
         \\{"request_id":"cccc3333","prompt":"","env_var":"CI_TOKEN"}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
+    , "hermes_invalid_event", "invalid secret gate");
 }
 
 test "a clarify gate with an empty choice list is free text, not a choice with nothing to choose" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":[]}
     );
 
@@ -1491,21 +1628,21 @@ test "a clarify gate with an empty choice list is free text, not a choice with n
     try testing.expectEqualStrings("text", questionsAt(&reducer, 1).items[0].object.get("kind").?.string);
 }
 
-test "an expire that names no request fails the run rather than cancelling an approval" {
+test "a request.cancel that names no request fails the run rather than cancelling an approval" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once"]}
     );
     try testing.expect(!reducer.interactions.items[0].resolved);
 
-    try feedEvent(&reducer, scratch, "clarify.expire", "{}");
+    try feedCancel(&reducer, scratch, "clarify", "{}");
 
     try testing.expectEqual(@as(usize, 5), reducer.envelopes.items.len);
     try testing.expectEqualStrings("user.input.resolved", typeAt(&reducer, 3));
     try testing.expectEqualStrings("run.failed", typeAt(&reducer, 4));
-    try testing.expectEqualStrings("expire without request_id", payloadAt(&reducer, 4).get("error").?.object.get("message").?.string);
+    try testing.expectEqualStrings("invalid request cancel", payloadAt(&reducer, 4).get("error").?.object.get("message").?.string);
 }
 
 test "an event for another gateway session is not this session's to reduce" {
@@ -1557,7 +1694,7 @@ test "a session that has seen someone else's traffic takes no further instructio
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
-    var reducer = try gate(&arena, "clarify.request",
+    var reducer = try gate(&arena, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     const interaction = payloadAt(&reducer, 1).get("interaction_id").?.string;
@@ -1571,16 +1708,16 @@ test "a session that has seen someone else's traffic takes no further instructio
 }
 
 test "a choice that is the empty string is no choice at all" {
-    try expectGateRefused("clarify.request",
+    try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":[""]}
     , "hermes_invalid_event", "gate with a question nobody can answer");
-    try expectGateRefused("approval.request",
+    try expectGateRefused("approval",
         \\{"command":"ls","choices":["once",""]}
-    , "hermes_invalid_event", "gate with a question nobody can answer");
+    , "hermes_invalid_event", "invalid approval gate");
 }
 
 test "a batch that asks the same question twice can never be answered, so it is refused" {
-    try expectGateRefused("clarify.request",
+    try expectGateRefused("clarify",
         \\{"request_id":"aaaa1111","questions":[{"qid":"one","question":"first?","choices":["a"]},{"qid":"one","question":"second?","choices":["b"]}]}
     , "hermes_invalid_event", "gate with a question nobody can answer");
 }
@@ -1594,7 +1731,7 @@ test "an event that arrives before the turn opens is kept and replayed, not drop
     try reducer.submit();
     try reducer.admit();
 
-    try feedEvent(&reducer, scratch, "clarify.request",
+    try feedGate(&reducer, scratch, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     try testing.expectEqual(@as(usize, 0), reducer.envelopes.items.len);
@@ -1640,10 +1777,19 @@ test "traffic the pinned protocol never carries disowns the session" {
 
     var reverse = try openRun(&arena);
     try feed(&reverse, scratch,
-        \\{"jsonrpc":"2.0","id":7,"method":"gateway.ask","params":{}}
+        \\{"jsonrpc":"2.0","id":"srq-7","method":"gateway.ask","params":{}}
     );
     try testing.expect(reverse.unusable);
-    try testing.expectEqualStrings("reverse request", payloadAt(&reverse, 1).get("error").?.object.get("message").?.string);
+    try testing.expectEqualStrings("gateway.ask request for foreign session \"\"", payloadAt(&reverse, 1).get("error").?.object.get("message").?.string);
+
+    var unmapped = try openRun(&arena);
+    try feed(&unmapped, scratch,
+        \\{"jsonrpc":"2.0","id":"srq-8","method":"tour","params":{"session_id":"sess0001"}}
+    );
+    try testing.expect(!unmapped.unusable);
+    try testing.expectEqual(@as(usize, 1), unmapped.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 1), unmapped.unanswerable.items.len);
+    try testing.expectEqualStrings("srq-8", unmapped.unanswerable.items[0]);
 
     var stranger = try openRun(&arena);
     try feed(&stranger, scratch,
@@ -1734,7 +1880,7 @@ test "a transport that dies takes the session with it, started run or not" {
     reserved.open();
     try reserved.submit();
     try reserved.admit();
-    try feedEvent(&reserved, scratch, "clarify.request",
+    try feedGate(&reserved, scratch, "clarify",
         \\{"request_id":"aaaa1111","question":"which?","choices":["a"]}
     );
     try testing.expectEqual(@as(usize, 1), reserved.buffered.items.len);
@@ -1760,14 +1906,14 @@ test "an injected run id replaces the minted one without skipping it" {
     ;
 
     var minted = try openRun(&arena);
-    try feedEvent(&minted, scratch, "approval.request", approval);
+    try feedGate(&minted, scratch, "approval", approval);
 
     var injected = Reducer.init(&arena, .{});
     injected.open();
     try injected.submitAs(.{ .run_id = "run-supplied" });
     try injected.admit();
     try feedBare(&injected, scratch, "message.start");
-    try feedEvent(&injected, scratch, "approval.request", approval);
+    try feedGate(&injected, scratch, "approval", approval);
 
     try testing.expectEqualStrings("run-supplied", payloadAt(&injected, 0).get("run_id").?.string);
     try testing.expect(!std.mem.eql(u8, "run-supplied", payloadAt(&minted, 0).get("run_id").?.string));
@@ -1789,7 +1935,7 @@ test "the endpoint and revision the options name are what the envelopes carry" {
     try reducer.submit();
     try reducer.admit();
     try feedBare(&reducer, scratch, "message.start");
-    try feedEvent(&reducer, scratch, "approval.request",
+    try feedGate(&reducer, scratch, "approval",
         \\{"command":"rm -rf /tmp/x","choices":["once","deny"]}
     );
 
@@ -1803,7 +1949,7 @@ test "a transport death settles the run's open children before its terminal" {
     defer arena.deinit();
     const scratch = arena.allocator();
 
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once","deny"]}
     );
     try feedEvent(&reducer, scratch, "tool.start",
@@ -1836,7 +1982,7 @@ test "a run settles its open children before its own terminal" {
     defer arena.deinit();
     const scratch = arena.allocator();
 
-    var reducer = try gate(&arena, "approval.request",
+    var reducer = try gate(&arena, "approval",
         \\{"command":"ls","choices":["once","deny"]}
     );
     try feedEvent(&reducer, scratch, "tool.start",

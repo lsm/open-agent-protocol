@@ -1,0 +1,9 @@
+[
+  {"index":6,"type":"event/session.info","reason":"session metadata snapshot; reconciliation evidence only"},
+  {"index":8,"type":"event/sessions.changed","reason":"global session-list signal; unsequenced, not session-scoped"},
+  {"index":9,"type":"event/session.title","reason":"title generation; not projected in v1"},
+  {"index":14,"type":"event/reasoning.available","reason":"post-turn reasoning summary; the reasoning deltas were already projected"},
+  {"index":15,"type":"event/session.usage","reason":"usage ticker; run usage is taken from message.complete"},
+  {"index":17,"type":"event/session.info","reason":"session metadata snapshot; reconciliation evidence only"},
+  {"index":18,"type":"event/status.update","reason":"status line text; not projected in v1"}
+]
