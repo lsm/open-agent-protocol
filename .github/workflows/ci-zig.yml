@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, transport, protocol, providers, utils, makai-cli, tui, tools, agent-types, agent-loop, agent-mod, agent-bridge, agent-unit, agent-chain, validation, adapter, bounded-output]
+        group: [core, transport, protocol, providers, utils, makai-cli, tui, tools, agent-types, agent-loop, agent-mod, agent-bridge, agent-unit, agent-chain, validation, adapter, stdio-host]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -422,7 +422,7 @@ jobs:
   # =============================================================================
 
   windows-unit:
-    name: Unit Tests - bounded-output (windows)
+    name: Unit Tests - stdio-host (windows)
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -434,9 +434,9 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Run bounded-output unit tests
+      - name: Run stdio-host unit tests
         shell: bash
-        run: zig build --build-file zig/build.zig test-unit-bounded-output --summary all
+        run: zig build --build-file zig/build.zig test-unit-stdio-host --summary all
 
   cross-compile-smoke:
     name: Cross-compile - ${{ matrix.target }}
