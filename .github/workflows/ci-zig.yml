@@ -61,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, transport, protocol, providers, utils, makai-cli, tui, tools, agent-types, agent-loop, agent-mod, agent-bridge, agent-unit, agent-chain, validation, adapter]
+        group: [core, transport, protocol, providers, utils, makai-cli, tui, tools, agent-types, agent-loop, agent-mod, agent-bridge, agent-unit, agent-chain, validation, adapter, bounded-output]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -420,6 +420,23 @@ jobs:
   # does aarch64-linux. The x86_64-linux release target is already compiled
   # natively by the unit-test jobs and is not repeated here.
   # =============================================================================
+
+  windows-unit:
+    name: Unit Tests - bounded-output (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run bounded-output unit tests
+        shell: bash
+        run: zig build --build-file zig/build.zig test-unit-bounded-output --summary all
 
   cross-compile-smoke:
     name: Cross-compile - ${{ matrix.target }}
