@@ -1,0 +1,1 @@
+{"adapters":{"deepseek":{"type":"deepseek","executable":"@DIR@/child.sh","working_directory":"@DIR@","provider":"fixture-provider","model":"deepseek-chat","environment":["PATH"]}}}

@@ -7,7 +7,6 @@
       "status": "current",
       "endpoint_version": "0.0.1",
       "capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oap-v1",
-      "oapx_capability_revision": "deepseek-harness-dsh-v0.1.7-rc.2-oapx-v1",
       "admits": ["0.0.1"],
       "ledgers": ["research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md", "research/deepseek-harness-47f9438-mapping.md"],
       "corpus": "fixtures/adapters/deepseek-harness-dsh-v0.1.7-rc.2",

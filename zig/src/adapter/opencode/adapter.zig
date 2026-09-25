@@ -11,8 +11,7 @@ const httpapi = @import("httpapi");
 const client = @import("client");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.opencode_oapx_capability_revision;
-const journal_reason = "oapx keeps no journal for this backend";
+pub const capability_revision = harness_pins.opencode_capability_revision;
 
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .unavailable, .reason = "durable stream carries no permission events; the polling surface is unexercised" },
@@ -23,8 +22,8 @@ const features = [_]contract.Feature{
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "OpenCode has no initialize handshake; OpenAPI and catalogs describe the server" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "interrupt is intent with idle no-op; settlement derived from durable evidence and the active set" },
     .{ .key = "run.reconciliation", .level = .emulated, .reason = "adapter-owned projection over active and durable sequence" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
-    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; the native durable cursor is exposed as the transcript cursor" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "conversation resume exists natively but is not exercised; OAP resume replays the adapter journal" },
     .{ .key = "run.status", .level = .native, .reason = "session.active and durable step events" },
     .{ .key = "run.streaming", .level = .degraded, .reason = "durable stream carries full-value text.ended boundaries, not live deltas" },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "no native auto; maps to steer which starts immediately when idle" },
@@ -53,6 +52,17 @@ pub const Config = struct {
     settle_poll_min_ns: u64 = 10 * std.time.ns_per_ms,
     settle_poll_max_ns: u64 = 500 * std.time.ns_per_ms,
 };
+
+fn runStatus(status: session.Status) oap_types.RunStatus {
+    return switch (status) {
+        .queued => .queued,
+        .running => .running,
+        .cancelling => .cancelling,
+        .completed => .completed,
+        .failed => .failed,
+        .cancelled => .cancelled,
+    };
+}
 
 fn wallClock() i64 {
     return compat.time.nowMillis();
@@ -296,17 +306,37 @@ pub const Session = struct {
         _ = refusal;
         const self = cast(ptr);
         if (self.reducer.unusable) return error.SessionClosed;
-        const current = self.reducer.active;
-        const running = current != null and !current.?.terminal;
         const model = self.reducer.options.model;
-        const active_run_id: ?[]const u8 = if (running) try arena.dupe(u8, current.?.id) else null;
         const current_model_id: ?[]const u8 = if (model.len > 0) try arena.dupe(u8, model) else null;
+        var entries = std.ArrayList(oap_types.ActiveRun).empty;
+        var started: ?[]const u8 = null;
+        var position: u64 = 0;
+        for ([_]?*session.Run{ self.reducer.active, self.reducer.reserved }) |candidate| {
+            const run = candidate orelse continue;
+            if (run.terminal and !run.holding) continue;
+            const reservation = run.queued_admission and !run.start_published;
+            if (!reservation) started = run.id else position += 1;
+            try entries.append(arena, .{
+                .run_id = try arena.dupe(u8, run.id),
+                .status = if (reservation) .queued else runStatus(run.status),
+                .relationship = "primary",
+                .queue_position = if (reservation) position else null,
+                .as_of_sequence = if (reservation) run.published_seq else run.next - 1,
+            });
+        }
+        const settled = try arena.alloc(oap_types.RunPosition, self.reducer.settled.items.len);
+        for (self.reducer.settled.items, settled) |entry, *slot| slot.* = .{ .run_id = try arena.dupe(u8, entry.run_id), .sequence = entry.sequence };
+        const active_run_id: ?[]const u8 = if (started) |id| try arena.dupe(u8, id) else null;
+        const transcript_cursor: ?[]const u8 = if (self.reducer.last_seq > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.last_seq}) else null;
         return .{
             .session_id = self.id,
-            .status = if (running) .running else if (self.reducer.reserved != null) .queued else .idle,
+            .status = if (started != null) .running else if (entries.items.len > 0) .queued else .idle,
             .active_run_id = active_run_id,
+            .active_runs = entries.items,
             .current_model_id = current_model_id,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = wallClock(),
+            .as_of = if (settled.len > 0) .{ .settled = settled } else null,
         };
     }
 
@@ -701,10 +731,10 @@ fn kinds(allocator: std.mem.Allocator, events: []const contract.Event) ![]const 
     return names;
 }
 
-test "the descriptor carries resume and replay unavailable under its own revision" {
-    try testing.expect(!std.mem.eql(u8, capability_revision, session.capability_revision));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.replay"));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.resume"));
+test "the descriptor serves resume and replay from the endpoint journal under the Go adapter's revision" {
+    try testing.expectEqualStrings(session.capability_revision, capability_revision);
+    try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.replay"));
+    try testing.expectEqual(oap_types.SupportLevel.degraded, descriptor.level("run.resume"));
     for (features[1..], features[0 .. features.len - 1]) |later, earlier| try testing.expect(std.mem.lessThan(u8, earlier.key, later.key));
 }
 

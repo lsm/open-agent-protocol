@@ -187,9 +187,11 @@ in wire order, so there the proof lands live and never reached the bug.
 
 ## Capability revision
 
-`deepseek-harness-dsh-v0.1.7-rc.2-oap-v1` and
-`deepseek-harness-dsh-v0.1.7-rc.2-oapx-v1`, replacing
-`deepseek-harness-47f9438-oap-v2` and `-oapx-v1`; endpoint version `0.0.1`.
+`deepseek-harness-dsh-v0.1.7-rc.2-oap-v1`, replacing
+`deepseek-harness-47f9438-oap-v2`; endpoint version `0.0.1`. There is no
+separate `oapx` revision any more: the Zig backend serves the Go adapter's
+descriptor under this revision, and the catalog entry carries no
+`oapx_capability_revision`.
 The descriptor's features are unchanged, but the pin moved and what
 `action.call.completed.result` carries changed shape, so the revision names
 the pin it describes, as every other harness's does. Every expectation in the

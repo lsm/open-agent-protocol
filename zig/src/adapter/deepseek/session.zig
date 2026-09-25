@@ -38,6 +38,7 @@ pub const Counters = struct {
 
 pub const Identity = struct {
     run_id: []const u8 = "",
+    mint_request_id: bool = true,
 };
 
 pub const ToolState = struct {
@@ -93,6 +94,7 @@ pub const Reducer = struct {
     closed: bool = false,
     reserved: bool = false,
     emitted: std.ArrayList(std.json.Value) = .empty,
+    cursor: u64 = 0,
 
     pub fn init(arena: std.mem.Allocator) Reducer {
         return .{ .arena = arena };
@@ -136,6 +138,7 @@ pub const Reducer = struct {
         if (std.mem.startsWith(u8, kind, "action.call.")) {
             if (payload.object.get("tool_call_id")) |carried| try map.put(self.arena, "tool_call_id", carried);
         }
+        self.cursor = self.sequence;
         self.sequence += 1;
         try self.emitted.append(self.arena, .{ .object = map.* });
         if (terminal) self.terminal = true;
@@ -208,7 +211,7 @@ pub fn submitAs(reducer: *Reducer, identity: Identity) !void {
     if (reducer.unusable) return Error.SessionUnusable;
     if (reducer.reserved and !reducer.terminal) return Error.RunActive;
     reducer.reserved = true;
-    _ = try reducer.counters.nextID(reducer.arena, "message");
+    if (identity.mint_request_id) _ = try reducer.counters.nextID(reducer.arena, "message");
     reducer.message_id = try reducer.counters.nextID(reducer.arena, "message");
     reducer.identity = identity;
     reducer.run_id = "";

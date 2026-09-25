@@ -54,7 +54,9 @@ const pi_adapter = @import("pi_adapter");
 const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
+const memory_adapter = @import("memory_adapter");
 const bounded_output = @import("bounded_output");
+const endpoint_signals = @import("endpoint_signals");
 
 pub const VERSION = @import("version_options").version;
 
@@ -2748,7 +2750,7 @@ fn printUsage(file: std.Io.File) !void {
         \\                   loop, or an ACP agent, Hermes gateway, DeepSeek harness
         \\                   or OpenCode server named by a --config entry;
         \\                   --config reads an oap-serve.json registry entry.
-        \\                   Other backends answer unavailable.
+        \\                   --backend memory serves the in-memory reference script.
         \\  serve provider   Serve model-provider-core over stdio, one envelope per line
         \\                   Use --specimens to print one of every envelope it emits.
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
@@ -8515,6 +8517,7 @@ fn runOapProviderMode(
     stderr: std.Io.File,
     answers_specimens: bool,
 ) !void {
+    endpoint_signals.install() catch {};
     var registry = api_registry.ApiRegistry.init(allocator);
     defer registry.deinit();
     try register_builtins.registerBuiltInApiProviders(&registry);
@@ -8527,6 +8530,9 @@ fn runOapProviderMode(
         .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
     });
     defer server.deinit();
+    var output = bounded_output.Output.init(stdout, std.math.maxInt(u64));
+    try output.start();
+    defer output.deinit();
 
     var grant_channels = std.ArrayList(OapGrantChannel).empty;
     defer {
@@ -8552,13 +8558,13 @@ fn runOapProviderMode(
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(STDIO_THREAD_JOIN_TIMEOUT_MS);
+    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
     while (true) {
         var did_work = false;
 
-        while (stdin_stream.poll()) |chunk| {
+        while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
             var mutable_chunk = chunk;
             defer mutable_chunk.deinit(allocator);
 
@@ -8580,7 +8586,7 @@ fn runOapProviderMode(
             }
 
             server.handleLine(line) catch |err| {
-                _ = try drainOapProviderOutbound(stdout, allocator, &server);
+                _ = try drainOapProviderOutbound(&output, allocator, &server);
                 try compat.stdio.writeAll(stderr, OAP_PROVIDER_EXHAUSTED_MESSAGE);
                 return err;
             };
@@ -8598,25 +8604,25 @@ fn runOapProviderMode(
 
         if (try pumpOapInferences(allocator, &server, &running, idle_ttl_ms)) did_work = true;
 
-        if (try drainOapProviderOutbound(stdout, allocator, &server)) did_work = true;
+        if (try drainOapProviderOutbound(&output, allocator, &server)) did_work = true;
 
-        if (stdin_stream.isDone() and !stdin_stream.hasPending() and running.items.len == 0 and !did_work) break;
+        if (oapInputEnded(stdin_stream) and running.items.len == 0 and !did_work) break;
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
     }
 
-    _ = try drainOapProviderOutbound(stdout, allocator, &server);
+    _ = try drainOapProviderOutbound(&output, allocator, &server);
 }
 
 fn drainOapProviderOutbound(
-    stdout: std.Io.File,
+    stdout: *bounded_output.Output,
     allocator: std.mem.Allocator,
     server: *oap_provider_server.Server,
 ) !bool {
     var wrote = false;
     while (server.popOutbound()) |line| {
         defer allocator.free(line);
-        try compat.stdio.writeAll(stdout, line);
-        try compat.stdio.writeAll(stdout, "\n");
+        try stdout.writeAll(line);
+        try stdout.writeAll("\n");
         wrote = true;
     }
     return wrote;
@@ -8631,6 +8637,10 @@ fn isProviderOapLine(allocator: std.mem.Allocator, line: []const u8) !bool {
     if (parsed.value != .object) return false;
     const profile = parsed.value.object.get("profile") orelse return false;
     return profile == .string and std.mem.eql(u8, profile.string, provider_profile);
+}
+
+fn oapInputEnded(stream: *transport.ByteStream) bool {
+    return endpoint_signals.received() or oapInputDrained(stream);
 }
 
 fn oapInputDrained(stream: *transport.ByteStream) bool {
@@ -8674,13 +8684,13 @@ fn runOapMode(
         try printUsage(stderr);
         return err;
     };
+    endpoint_signals.install() catch {};
     if (parsed.backend) |name| {
         if (serve_provider) {
             try compat.stdio.writeAll(stderr, "--backend serves agent-control-core alone; serve agent,provider runs the built-in loop\n\n");
             try printUsage(stderr);
             return error.InvalidArgument;
         }
-        installBackendSignals();
         return runBackendMode(allocator, name, parsed.config_path, stdin, stdout, stderr);
     }
 
@@ -8764,9 +8774,14 @@ fn runOapMode(
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFile(stdin);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(STDIO_THREAD_JOIN_TIMEOUT_MS);
+    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
+    if (!serve_provider) unblockOutput(stdout);
+    var output = bounded_output.Output.init(stdout, if (serve_provider) std.math.maxInt(u64) else backend_write_stall_ns);
+    try output.start();
+    defer output.deinit();
+    if (!serve_provider) output.stall_notice = .{ .file = stderr, .message = OUTPUT_STALLED_MESSAGE };
     var native_lines = std.ArrayList([]const u8).empty;
     defer {
         clearOwnedLines(allocator, &native_lines);
@@ -8782,7 +8797,7 @@ fn runOapMode(
     while (true) {
         var did_work = false;
 
-        while (stdin_stream.poll()) |chunk| {
+        while (if (endpoint_signals.received()) null else stdin_stream.poll()) |chunk| {
             var mutable_chunk = chunk;
             defer mutable_chunk.deinit(allocator);
 
@@ -8801,7 +8816,7 @@ fn runOapMode(
                 }
                 if (try isProviderOapLine(allocator, line)) {
                     provider_server.handleLine(line) catch |err| {
-                        _ = try drainOapProviderOutbound(stdout, allocator, &provider_server);
+                        _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
                         try compat.stdio.writeAll(stderr, OAP_PROVIDER_EXHAUSTED_MESSAGE);
                         return err;
                     };
@@ -8815,7 +8830,7 @@ fn runOapMode(
             }
             oap.handleLine(line) catch |err| switch (err) {
                 error.MalformedLine, error.UnaddressableEnvelope => {
-                    _ = try writeOapOutbound(stdout, allocator, &oap);
+                    _ = try writeOapOutbound(&output, allocator, &oap);
                     const message = if (err == error.MalformedLine)
                         OAP_MALFORMED_LINE_MESSAGE
                     else
@@ -8848,7 +8863,7 @@ fn runOapMode(
             if (try pumpOapInferences(allocator, &provider_server, &running_inferences, provider_idle_ttl_ms)) did_work = true;
         }
 
-        if (oapInputDrained(stdin_stream)) {
+        if (oapInputEnded(stdin_stream)) {
             stdio_loop.markStdinDisconnected();
             if (!auth_input_closed) {
                 try auth_adapter.cancelAllOnDisconnect();
@@ -8877,11 +8892,11 @@ fn runOapMode(
             did_work = true;
         }
 
-        if (try writeOapOutbound(stdout, allocator, &oap)) did_work = true;
-        if (try writeOapAuthOutbound(stdout, allocator, &auth_adapter)) did_work = true;
-        if (serve_provider and try drainOapProviderOutbound(stdout, allocator, &provider_server)) did_work = true;
+        if (try writeOapOutbound(&output, allocator, &oap)) did_work = true;
+        if (try writeOapAuthOutbound(&output, allocator, &auth_adapter)) did_work = true;
+        if (serve_provider and try drainOapProviderOutbound(&output, allocator, &provider_server)) did_work = true;
 
-        if (oapInputDrained(stdin_stream) and !did_work and running_inferences.items.len == 0 and !stdio_loop.hasActiveProviderStreams() and
+        if (oapInputEnded(stdin_stream) and !did_work and running_inferences.items.len == 0 and !stdio_loop.hasActiveProviderStreams() and
             !stdio_loop.hasActiveAgentRuns() and !stdio_loop.hasActiveAuthFlows() and oap_auth_server.activeFlowCount() == 0)
         {
             break;
@@ -8890,30 +8905,31 @@ fn runOapMode(
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
     }
 
-    _ = try writeOapOutbound(stdout, allocator, &oap);
-    _ = try writeOapAuthOutbound(stdout, allocator, &auth_adapter);
-    if (serve_provider) _ = try drainOapProviderOutbound(stdout, allocator, &provider_server);
+    _ = try writeOapOutbound(&output, allocator, &oap);
+    _ = try writeOapAuthOutbound(&output, allocator, &auth_adapter);
+    if (serve_provider) _ = try drainOapProviderOutbound(&output, allocator, &provider_server);
 }
 
 fn writeOapAuthOutbound(
-    stdout: std.Io.File,
+    stdout: *bounded_output.Output,
     allocator: std.mem.Allocator,
     adapter: *oap_auth_adapter.Adapter,
 ) !bool {
     var wrote = false;
     while (adapter.popOutbound()) |line| {
         defer allocator.free(line);
-        try compat.stdio.writeLine(stdout, line);
+        try stdout.writeAll(line);
+        try stdout.writeAll("\n");
         wrote = true;
     }
     return wrote;
 }
 
-const unported_backends = [_][]const u8{"memory"};
 const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
 const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent --backend: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+const OUTPUT_STALLED_MESSAGE = "oapx serve agent: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_OUTPUT_STALLED_MESSAGE = "oapx serve agent --backend: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
 
@@ -8930,19 +8946,13 @@ fn writeBackendRefusal(stderr: std.Io.File, arena: std.mem.Allocator, comptime f
     try compat.stdio.writeAll(stderr, message);
 }
 
-fn unportedBackend(kind: []const u8) bool {
-    for (unported_backends) |known| {
-        if (std.mem.eql(u8, known, kind)) return true;
-    }
-    return false;
-}
-
 fn backendEntry(
     arena: std.mem.Allocator,
     name: []const u8,
     config_path: ?[]const u8,
     environ: *const std.process.Environ.Map,
     stderr: std.Io.File,
+    sources: *[]const adapter_config.ToolSource,
 ) !adapter_config.AdapterEntry {
     const path = config_path orelse {
         if (std.mem.eql(u8, name, "claude")) return adapter_config.builtinClaude(arena, environ);
@@ -8960,6 +8970,7 @@ fn backendEntry(
         try writeBackendRefusal(stderr, arena, "{s}: {s}", .{ path, diagnostic.message });
         return error.BackendRefused;
     };
+    sources.* = file.tool_sources;
     return file.adapter(name) orelse {
         try writeBackendRefusal(stderr, arena, "--config {s} names no adapter \"{s}\"", .{ path, name });
         return error.BackendRefused;
@@ -9147,13 +9158,6 @@ fn writeEndpointOutbound(stdout: *bounded_output.Output, allocator: std.mem.Allo
     return wrote;
 }
 
-fn flushBackend(stdout: *bounded_output.Output, stderr: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !void {
-    _ = writeEndpointOutbound(stdout, allocator, endpoint) catch |err| {
-        if (err == error.OutputStalled) try compat.stdio.writeAll(stderr, BACKEND_OUTPUT_STALLED_MESSAGE);
-        return err;
-    };
-}
-
 fn unblockOutput(stdout: std.Io.File) void {
     if (@import("builtin").os.tag == .windows) return;
     const status = stdout.stat(backendIo()) catch return;
@@ -9171,20 +9175,6 @@ fn backendFatalMessage(err: anyerror) ?[]const u8 {
     };
 }
 
-var backend_signalled = std.atomic.Value(bool).init(false);
-
-fn onBackendSignal(signal: std.posix.SIG) callconv(.c) void {
-    _ = signal;
-    backend_signalled.store(true, .release);
-}
-
-fn installBackendSignals() void {
-    if (@import("builtin").os.tag == .windows) return;
-    const action = std.posix.Sigaction{ .handler = .{ .handler = onBackendSignal }, .mask = std.posix.sigemptyset(), .flags = 0 };
-    std.posix.sigaction(std.posix.SIG.INT, &action, null);
-    std.posix.sigaction(std.posix.SIG.TERM, &action, null);
-}
-
 fn runBackendMode(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -9197,7 +9187,12 @@ fn runBackendMode(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var environ = try compat.createEnvMap(arena);
-    const entry = try backendEntry(arena, name, config_path, &environ, stderr);
+    var configured_sources: []const adapter_config.ToolSource = &.{};
+    const entry = try backendEntry(arena, name, config_path, &environ, stderr, &configured_sources);
+    const tool_sources = try arena.alloc(adapter_contract.ConfiguredSource, configured_sources.len);
+    for (configured_sources, tool_sources) |source, *slot| {
+        slot.* = .{ .id = source.id, .kind = source.kind, .display_name = source.display_name, .protocol = source.protocol, .endpoint = source.endpoint, .command = source.command, .args = source.args, .environment = source.environment };
+    }
 
     var claude: claude_adapter.Adapter = undefined;
     var codex: codex_adapter.Adapter = undefined;
@@ -9206,7 +9201,7 @@ fn runBackendMode(
     var deepseek: deepseek_adapter.Adapter = undefined;
     var opencode: opencode_adapter.Adapter = undefined;
     var hermes: hermes_adapter.Adapter = undefined;
-    var unavailable: adapter_contract.Unavailable = undefined;
+    var memory: memory_adapter.Adapter = undefined;
     const served = if (std.mem.eql(u8, entry.kind, "claude")) claude_served: {
         claude = claude_adapter.Adapter.init(allocator, try claudeBackendConfig(arena, entry, &environ, stderr));
         break :claude_served claude.adapter();
@@ -9228,12 +9223,11 @@ fn runBackendMode(
     } else if (std.mem.eql(u8, entry.kind, "hermes")) hermes_served: {
         hermes = hermes_adapter.Adapter.init(allocator, try hermesBackendConfig(arena, entry, &environ, stderr));
         break :hermes_served hermes.adapter();
-    } else if (unportedBackend(entry.kind)) unported_served: {
-        const message = try std.fmt.allocPrint(arena, "oapx has no {s} backend yet; goap serve carries it", .{entry.kind});
-        unavailable = .{ .backend = name, .message = message };
-        break :unported_served unavailable.adapter();
+    } else if (std.mem.eql(u8, entry.kind, "memory")) memory_served: {
+        memory = memory_adapter.Adapter.init(allocator);
+        break :memory_served memory.adapter();
     } else {
-        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode", .{ name, entry.kind });
+        try writeBackendRefusal(stderr, arena, "backend \"{s}\" is of type \"{s}\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory", .{ name, entry.kind });
         return error.BackendRefused;
     };
 
@@ -9241,15 +9235,16 @@ fn runBackendMode(
     var output = bounded_output.Output.init(stdout, backend_write_stall_ns);
     try output.start();
     defer output.deinit();
-    var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{});
+    output.stall_notice = .{ .file = stderr, .message = BACKEND_OUTPUT_STALLED_MESSAGE };
+    var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{ .tool_sources = tool_sources });
     defer endpoint.deinit();
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(if (backend_signalled.load(.acquire)) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
+    defer _ = stdin_handle.deinit(if (endpoint_signals.received()) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
-    while (!backend_signalled.load(.acquire)) {
+    while (!endpoint_signals.received()) {
         var did_work = false;
         while (stdin_stream.poll()) |chunk| {
             var owned = chunk;
@@ -9257,16 +9252,16 @@ fn runBackendMode(
             const line = std.mem.trim(u8, owned.data, " \t\r\n");
             if (line.len == 0) continue;
             endpoint.handleLine(line) catch |err| {
-                try flushBackend(&output, stderr, allocator, &endpoint);
+                _ = try writeEndpointOutbound(&output, allocator, &endpoint);
                 if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
                 return err;
             };
-            try flushBackend(&output, stderr, allocator, &endpoint);
+            _ = try writeEndpointOutbound(&output, allocator, &endpoint);
             did_work = true;
         }
         if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
             const failure = stdin_stream.getError() orelse break;
-            try flushBackend(&output, stderr, allocator, &endpoint);
+            _ = try writeEndpointOutbound(&output, allocator, &endpoint);
             if (std.mem.eql(u8, failure, "stdio line too large")) {
                 try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
                 return error.FrameTooLarge;
@@ -9278,10 +9273,10 @@ fn runBackendMode(
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
         }
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
-        try flushBackend(&output, stderr, allocator, &endpoint);
+        _ = try writeEndpointOutbound(&output, allocator, &endpoint);
     }
     try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
-    try flushBackend(&output, stderr, allocator, &endpoint);
+    _ = try writeEndpointOutbound(&output, allocator, &endpoint);
 }
 
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
@@ -9349,14 +9344,15 @@ fn emitOapRuntimeFailure(
 }
 
 fn writeOapOutbound(
-    stdout: std.Io.File,
+    stdout: *bounded_output.Output,
     allocator: std.mem.Allocator,
     oap: *oap_server.Server,
 ) !bool {
     var wrote = false;
     while (oap.popOutbound()) |line| {
         defer allocator.free(line);
-        try compat.stdio.writeLine(stdout, line);
+        try stdout.writeAll(line);
+        try stdout.writeAll("\n");
         wrote = true;
     }
     return wrote;
@@ -9463,6 +9459,22 @@ const BackendRun = struct {
     }
 };
 
+const BuiltinRun = struct {
+    stdin_file: std.Io.File,
+    stdout_file: std.Io.File,
+    stderr_file: std.Io.File,
+    err: ?anyerror = null,
+
+    fn run(self: *BuiltinRun) void {
+        runOapMode(std.heap.page_allocator, &.{}, self.stdin_file, self.stdout_file, self.stderr_file, false) catch |err| {
+            self.err = err;
+        };
+        compat.stdio.close(self.stdin_file);
+        compat.stdio.close(self.stdout_file);
+        compat.stdio.close(self.stderr_file);
+    }
+};
+
 fn readAllFrom(allocator: std.mem.Allocator, file: std.Io.File) ![]u8 {
     var collected = std.ArrayList(u8).empty;
     errdefer collected.deinit(allocator);
@@ -9479,7 +9491,7 @@ fn readAllFrom(allocator: std.mem.Allocator, file: std.Io.File) ![]u8 {
     return collected.toOwnedSlice(allocator);
 }
 
-test "an unported backend answers each request unavailable, naming itself, and exits clean at end of input" {
+test "the memory backend answers capabilities as the reference endpoint and exits clean at end of input" {
     const allocator = std.testing.allocator;
     const stdin_pipe = try compat.stdio.pipe();
     const stdout_pipe = try compat.stdio.pipe();
@@ -9509,10 +9521,10 @@ test "an unported backend answers each request unavailable, naming itself, and e
     try std.testing.expectEqual(@as(usize, 0), complained.len);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, std.mem.trimEnd(u8, written, "\n"), .{});
     defer parsed.deinit();
-    const failure = parsed.value.object.get("payload").?.object.get("error").?.object;
     try std.testing.expectEqualStrings("q1", parsed.value.object.get("in_reply_to").?.string);
-    try std.testing.expectEqualStrings("unavailable", failure.get("code").?.string);
-    try std.testing.expectEqualStrings("memory", failure.get("details").?.object.get("backend").?.string);
+    try std.testing.expectEqualStrings("capabilities.response", parsed.value.object.get("type").?.string);
+    try std.testing.expectEqualStrings(memory_adapter.capability_revision, parsed.value.object.get("capability_revision").?.string);
+    try std.testing.expectEqualStrings(memory_adapter.endpoint_id, parsed.value.object.get("payload").?.object.get("endpoint").?.object.get("id").?.string);
 }
 
 fn refusedBackend(allocator: std.mem.Allocator, name: []const u8, config_path: ?[]const u8) ![]u8 {
@@ -9545,7 +9557,7 @@ test "a backend oapx does not know, or a --config entry it cannot serve, is refu
     const allocator = std.testing.allocator;
     const unknown = try refusedBackend(allocator, "nonesuch", null);
     defer allocator.free(unknown);
-    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek and opencode\n", unknown);
+    try std.testing.expectEqualStrings("oapx serve agent: backend \"nonesuch\" is of type \"nonesuch\", which oapx does not know; it serves claude, codex, pi, acp, hermes, deepseek, opencode and memory\n", unknown);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -10422,8 +10434,8 @@ test "a SIGTERM ends the served backend as end of input does, exiting clean" {
     const stdin_pipe = try compat.stdio.pipe();
     const stdout_pipe = try compat.stdio.pipe();
     const stderr_pipe = try compat.stdio.pipe();
-    installBackendSignals();
-    defer backend_signalled.store(false, .release);
+    endpoint_signals.install() catch {};
+    defer endpoint_signals.reset();
 
     var runner = BackendRun{
         .allocator = std.heap.page_allocator,
@@ -10447,6 +10459,61 @@ test "a SIGTERM ends the served backend as end of input does, exiting clean" {
 
     try std.testing.expect(runner.err == null);
     try std.testing.expectEqual(@as(usize, 0), complained.len);
+}
+
+test "a SIGTERM ends the built-in agent loop as end of input does, after its answer is out" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const stdin_pipe = try compat.stdio.pipe();
+    const stdout_pipe = try compat.stdio.pipe();
+    const stderr_pipe = try compat.stdio.pipe();
+    defer endpoint_signals.reset();
+
+    var runner = BuiltinRun{ .stdin_file = stdin_pipe[0], .stdout_file = stdout_pipe[1], .stderr_file = stderr_pipe[1] };
+    const thread = try std.Thread.spawn(.{}, BuiltinRun.run, .{&runner});
+    try compat.stdio.writeLine(stdin_pipe[1], "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
+    var first: [1]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), try compat.stdio.read(stdout_pipe[0], &first));
+    try std.posix.raise(std.posix.SIG.TERM);
+    const rest = try readAllFrom(allocator, stdout_pipe[0]);
+    defer allocator.free(rest);
+    compat.stdio.close(stdout_pipe[0]);
+    const complained = try readAllFrom(allocator, stderr_pipe[0]);
+    defer allocator.free(complained);
+    compat.stdio.close(stderr_pipe[0]);
+    thread.join();
+    compat.stdio.close(stdin_pipe[1]);
+
+    try std.testing.expect(runner.err == null);
+    try std.testing.expect(std.mem.indexOf(u8, rest, "\"capabilities.response\"") != null);
+    try std.testing.expectEqual(@as(usize, 0), complained.len);
+}
+
+test "the built-in agent loop stops once its unread stdout passes the stall bound, saying why" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const stdin_pipe = try compat.stdio.pipe();
+    const stdout_pipe = try compat.stdio.pipe();
+    const stderr_pipe = try compat.stdio.pipe();
+    const bound = backend_write_stall_ns;
+    backend_write_stall_ns = 300 * std.time.ns_per_ms;
+    defer backend_write_stall_ns = bound;
+
+    var runner = BuiltinRun{ .stdin_file = stdin_pipe[0], .stdout_file = stdout_pipe[1], .stderr_file = stderr_pipe[1] };
+    const thread = try std.Thread.spawn(.{}, BuiltinRun.run, .{&runner});
+    var sent: usize = 0;
+    while (sent < 400) : (sent += 1) {
+        compat.stdio.writeLine(stdin_pipe[1], "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}") catch break;
+    }
+    const complained = try readAllFrom(allocator, stderr_pipe[0]);
+    defer allocator.free(complained);
+    compat.stdio.close(stderr_pipe[0]);
+    thread.join();
+    compat.stdio.close(stdout_pipe[0]);
+    compat.stdio.close(stdin_pipe[1]);
+
+    try std.testing.expectEqual(@as(?anyerror, error.OutputStalled), runner.err);
+    try std.testing.expectEqualStrings(OUTPUT_STALLED_MESSAGE, complained);
 }
 
 test "a served backend whose stdout nobody reads stops once the stall bound passes, saying why" {
