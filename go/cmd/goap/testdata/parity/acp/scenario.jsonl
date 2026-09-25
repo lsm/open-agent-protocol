@@ -3,5 +3,5 @@
 {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o0","payload":{"session_id":"bad","tool_sources":[{"id":"notes","kind":"local"}]}}
 {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s1","tool_sources":[{"id":"fs"}]}}
 {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.request","id":"st0","session_id":"s1","payload":{"session_id":"s1"}}
-{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"m1","session_id":"s1","payload":{"session_id":"s1","delivery":"auto","messages":[{"role":"user","content":"read it"}]}}
+{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.message.submit.request","id":"m1","session_id":"s1","payload":{"session_id":"s1","delivery":"auto","messages":[{"role":"user","content":"read <a> & b c"}]}}
 {"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.state.request","id":"st1","session_id":"s1","payload":{"session_id":"s1"}}
