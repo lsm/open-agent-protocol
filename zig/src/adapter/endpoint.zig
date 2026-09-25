@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
 const json_writer = @import("json_writer");
@@ -56,6 +57,7 @@ pub const default_journal_capacity = 256;
 pub const Options = struct {
     frame_limit: usize = default_frame_limit,
     journal_capacity: usize = default_journal_capacity,
+    tool_sources: []const contract.ConfiguredSource = &.{},
 };
 
 const Served = (contract.Failure || error{ Denied, FrameTooLarge });
@@ -65,6 +67,7 @@ pub const Endpoint = struct {
     adapter: contract.Adapter,
     frame_limit: usize,
     journal_capacity: usize,
+    tool_sources: []const contract.ConfiguredSource,
     participant: ?[]u8 = null,
     ids: u64 = 0,
     entries: std.ArrayList(Entry) = .empty,
@@ -72,7 +75,7 @@ pub const Endpoint = struct {
     denial: Denial = .{ .code = "internal", .message = "" },
 
     pub fn init(allocator: std.mem.Allocator, adapter: contract.Adapter, options: Options) Endpoint {
-        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity };
+        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity, .tool_sources = options.tool_sources };
     }
 
     pub fn deinit(self: *Endpoint) void {
@@ -340,29 +343,37 @@ pub const Endpoint = struct {
     }
 
     fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
-        if (payload.session_id) |requested| {
-            if (self.find(requested) != null) {
-                const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{requested});
-                return self.deny("session_exists", message, &.{});
+        if (payload.tools_json) |text| {
+            if (try toolsDecodeDefect(arena, text)) |defect| {
+                const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
+                return self.deny("invalid_payload", message, &.{});
             }
         }
+        if (payload.tool_sources_json) |text| {
+            if (try attachmentDecodeDefect(arena, text)) |defect| {
+                const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
+                return self.deny("invalid_payload", message, &.{});
+            }
+        }
+        try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
+        const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         const session = try self.adapter.open(arena, .{
             .session_id = payload.session_id orelse "",
             .participant = self.controlParticipant(),
             .allow_degraded_features = payload.allow_degraded_features,
             .tools_json = payload.tools_json,
-            .tool_sources_json = payload.tool_sources_json,
+            .tool_sources_json = tool_sources_json,
         }, refusal);
-        if (self.find(session.id()) != null) {
-            session.close();
-            return self.deny("session_exists", "the backend opened a session under an id already in use", &.{});
-        }
         const state_now = session.state(arena, refusal) catch |failure| {
             session.close();
             return failure;
         };
+        if (self.find(session.id()) != null) {
+            const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{session.id()});
+            session.close();
+            return self.deny("session_exists", message, &.{});
+        }
         self.entries.appendAssumeCapacity(.{ .session = session });
         try self.respond(arena, request, .{
             .id = "",
@@ -478,7 +489,7 @@ pub const Endpoint = struct {
         try self.requireScope(arena, payload.session_id, entry);
         const resolver = entry.session.vtable.resolve_call orelse
             return refusal.unsupported(contract.feature_tools_provide, contract.reason_unadvertised);
-        const result = try resolver(entry.session.ptr, arena, payload, refusal);
+        const result = try resolver(entry.session.ptr, arena, request.id, payload, refusal);
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),
@@ -653,6 +664,62 @@ pub const Endpoint = struct {
         try self.outbound.append(self.allocator, line);
     }
 
+    fn resolveAttachments(self: *Endpoint, arena: std.mem.Allocator, carried: ?[]const u8, refusal: *contract.Refusal) Served!?[]const u8 {
+        const text = carried orelse return null;
+        const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return text;
+        };
+        if (document != .array) return text;
+        var resolved = std.json.Array.init(arena);
+        for (document.array.items) |attachment| {
+            if (attachment != .object) return text;
+            const id = memberString(attachment, "id");
+            const kind = memberString(attachment, "kind");
+            const args = attachment.object.get("args");
+            if (memberString(attachment, "command").len > 0 or (args != null and args.? == .array and args.?.array.items.len > 0)) {
+                return refuseAttachment(arena, refusal, id, "the daemon does not accept a command or arguments from the wire; name an operator-configured source by id");
+            }
+            const environment = attachment.object.get("environment");
+            if (environment) |listed_environment| {
+                if (listed_environment == .array) {
+                    for (listed_environment.array.items) |entry| {
+                        if (entry == .string and std.mem.indexOfScalar(u8, entry.string, '=') != null) {
+                            return refuseAttachment(arena, refusal, id, "the daemon accepts only the bare NAME allowlist form in environment");
+                        }
+                    }
+                }
+            }
+            const configured = self.configuredSource(id) orelse {
+                if (std.mem.eql(u8, kind, "process")) return refuseAttachment(arena, refusal, id, "no tool source of that id is configured on this daemon");
+                try resolved.append(attachment);
+                continue;
+            };
+            const members = [_]struct { name: []const u8, operator: []const u8 }{
+                .{ .name = "kind", .operator = configured.kind },
+                .{ .name = "display_name", .operator = configured.display_name },
+                .{ .name = "protocol", .operator = configured.protocol },
+                .{ .name = "endpoint", .operator = configured.endpoint },
+            };
+            for (members) |member| {
+                const wire = memberString(attachment, member.name);
+                if (wire.len > 0 and !std.mem.eql(u8, wire, member.operator)) {
+                    const reason = try std.fmt.allocPrint(arena, "the daemon does not accept {s} from the wire for a configured source; name it by id", .{member.name});
+                    return refuseAttachment(arena, refusal, id, reason);
+                }
+            }
+            try resolved.append(try configuredValue(arena, configured, environment));
+        }
+        return try json_encode.valueAlloc(arena, .{ .array = resolved });
+    }
+
+    fn configuredSource(self: *Endpoint, id: []const u8) ?contract.ConfiguredSource {
+        for (self.tool_sources) |source| {
+            if (std.mem.eql(u8, source.id, id)) return source;
+        }
+        return null;
+    }
+
     fn drainAll(self: *Endpoint) !void {
         for (self.entries.items) |*entry| try self.drainEntry(entry);
     }
@@ -757,6 +824,163 @@ fn settlesRun(allocator: std.mem.Allocator, line: []const u8) !bool {
 }
 
 const Mapped = struct { code: []const u8, fallback: []const u8 };
+
+fn memberString(value: std.json.Value, key: []const u8) []const u8 {
+    const carried = value.object.get(key) orelse return "";
+    return if (carried == .string) carried.string else "";
+}
+
+fn refuseAttachment(arena: std.mem.Allocator, refusal: *contract.Refusal, source: []const u8, reason: []const u8) Served {
+    const message = try std.fmt.allocPrint(arena, "tool source \"{s}\": {s}", .{ source, reason });
+    refusal.* = .{ .feature = contract.feature_tool_sources_attach, .reason = contract.reason_unsatisfiable, .source = source, .message = message };
+    return error.UnsupportedFeature;
+}
+
+fn attachmentDecodeDefect(arena: std.mem.Allocator, text: []const u8) !?[]const u8 {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return null;
+    };
+    if (document == .null) return null;
+    if (document != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources of type []protocol.ToolSourceAttachment", .{goKind(document)});
+    const texts = [_][]const u8{ "id", "kind", "display_name", "protocol", "endpoint", "command" };
+    const lists = [_][]const u8{ "args", "environment" };
+    for (document.array.items, 0..) |attachment, index| {
+        if (attachment == .null) continue;
+        if (attachment != .object) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tool_sources.{d} of type protocol.ToolSourceAttachment", .{ goKind(attachment), index });
+        var members = attachment.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            for (texts) |field_name| {
+                if (std.mem.eql(u8, name, field_name) and value != .string) {
+                    return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources.{d}.{s} of type string", .{ goKind(value), index, name });
+                }
+            }
+            for (lists) |field_name| {
+                if (!std.mem.eql(u8, name, field_name)) continue;
+                if (value != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources.{d}.{s} of type []string", .{ goKind(value), index, name });
+                for (value.array.items, 0..) |item, position| {
+                    if (item != .string and item != .null) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tool_sources.{d}.{s}.{d} of type string", .{ goKind(item), index, name, position });
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn toolsDecodeDefect(arena: std.mem.Allocator, text: []const u8) !?[]const u8 {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return null;
+    };
+    if (document == .null) return null;
+    if (document != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tools of type []protocol.ToolDefinition", .{goKind(document)});
+    for (document.array.items, 0..) |tool, index| {
+        if (tool == .null) continue;
+        if (tool != .object) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tools.{d} of type protocol.ToolDefinition", .{ goKind(tool), index });
+        const path = try std.fmt.allocPrint(arena, "SessionOpenRequest.tools.{d}", .{index});
+        var members = tool.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            if (std.mem.eql(u8, name, "name") or std.mem.eql(u8, name, "description") or std.mem.eql(u8, name, "source")) {
+                if (value != .string) return try fieldDefect(arena, value, path, name, "string");
+            } else if (std.mem.eql(u8, name, "execution_owner")) {
+                if (value != .string) return try fieldDefect(arena, value, path, name, "protocol.ParticipantID");
+            } else if (std.mem.eql(u8, name, "annotations")) {
+                if (value != .object) return try fieldDefect(arena, value, path, name, "map[string]jsontext.Value");
+            } else if (std.mem.eql(u8, name, "features")) {
+                if (value != .object) return try fieldDefect(arena, value, path, name, "map[string]protocol.FeatureSupport");
+                if (try featuresDefect(arena, value, try std.fmt.allocPrint(arena, "{s}.features", .{path}))) |defect| return defect;
+            }
+        }
+    }
+    return null;
+}
+
+fn featuresDefect(arena: std.mem.Allocator, features: std.json.Value, path: []const u8) !?[]const u8 {
+    var declared = features.object.iterator();
+    while (declared.next()) |entry| {
+        const support = entry.value_ptr.*;
+        if (support == .null) continue;
+        if (support != .object) return try fieldDefect(arena, support, path, entry.key_ptr.*, "protocol.FeatureSupport");
+        const at = try std.fmt.allocPrint(arena, "{s}.{s}", .{ path, entry.key_ptr.* });
+        var members = support.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            if (std.mem.eql(u8, name, "level")) {
+                if (value != .string) return try fieldDefect(arena, value, at, name, "protocol.SupportLevel");
+            } else if (std.mem.eql(u8, name, "reason") or std.mem.eql(u8, name, "scope")) {
+                if (value != .string) return try fieldDefect(arena, value, at, name, "string");
+            } else if (std.mem.eql(u8, name, "modes")) {
+                if (value != .array) return try fieldDefect(arena, value, at, name, "[]string");
+                for (value.array.items, 0..) |item, position| {
+                    if (item != .string and item != .null) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into {s}.modes.{d} of type string", .{ goKind(item), at, position });
+                }
+            } else if (std.mem.eql(u8, name, "constraints") or std.mem.eql(u8, name, "limits")) {
+                if (value != .object) return try fieldDefect(arena, value, at, name, "map[string]jsontext.Value");
+            }
+        }
+    }
+    return null;
+}
+
+fn fieldDefect(arena: std.mem.Allocator, value: std.json.Value, path: []const u8, name: []const u8, type_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field {s}.{s} of type {s}", .{ goKind(value), path, name, type_name });
+}
+
+fn goKind(value: std.json.Value) []const u8 {
+    return switch (value) {
+        .null => "null",
+        .bool => "bool",
+        .integer, .float, .number_string => "number",
+        .string => "string",
+        .array => "array",
+        .object => "object",
+    };
+}
+
+fn configuredValue(arena: std.mem.Allocator, configured: contract.ConfiguredSource, caller: ?std.json.Value) !std.json.Value {
+    var map: std.json.ObjectMap = .empty;
+    try map.put(arena, "id", .{ .string = configured.id });
+    try map.put(arena, "kind", .{ .string = configured.kind });
+    if (configured.display_name.len > 0) try map.put(arena, "display_name", .{ .string = configured.display_name });
+    if (configured.protocol.len > 0) try map.put(arena, "protocol", .{ .string = configured.protocol });
+    if (configured.endpoint.len > 0) try map.put(arena, "endpoint", .{ .string = configured.endpoint });
+    if (configured.command.len > 0) try map.put(arena, "command", .{ .string = configured.command });
+    if (configured.args.len > 0) {
+        var args = std.json.Array.init(arena);
+        for (configured.args) |arg| try args.append(.{ .string = arg });
+        try map.put(arena, "args", .{ .array = args });
+    }
+    var environment = std.json.Array.init(arena);
+    for (configured.environment) |entry| try environment.append(.{ .string = entry });
+    if (caller) |carried| {
+        if (carried == .array) {
+            for (carried.array.items) |entry| {
+                if (entry != .string) continue;
+                const name = envName(entry.string);
+                var present = false;
+                for (environment.items) |existing| {
+                    if (std.mem.eql(u8, envName(existing.string), name)) present = true;
+                }
+                if (!present) try environment.append(entry);
+            }
+        }
+    }
+    if (environment.items.len > 0) try map.put(arena, "environment", .{ .array = environment });
+    return .{ .object = map };
+}
+
+fn envName(entry: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, entry, '=') orelse return entry;
+    return entry[0..cut];
+}
 
 fn codeFor(failure: contract.Failure) Mapped {
     return switch (failure) {
@@ -1278,7 +1502,7 @@ test "a session-scoped request must name a session this endpoint opened" {
     try testing.expectEqualStrings("s1", field(unknown[0], &.{"session_id"}));
 }
 
-test "a second open under an id already open is refused session_exists without reaching the backend" {
+test "a second open under an id already open reaches the backend as goap's hub does, then is refused session_exists and the duplicate closed" {
     var harness: Harness = undefined;
     harness.init(testing.allocator, .{});
     defer harness.deinit();
@@ -1286,7 +1510,9 @@ test "a second open under an id already open is refused session_exists without r
     _ = try harness.send(open_line);
     const again = try harness.send(framed("session.open.request", "open-2", "", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("session_exists", field(again[0], &.{ "payload", "error", "code" }));
-    try testing.expectEqual(@as(usize, 1), harness.fake.opened);
+    try testing.expectEqualStrings("session \"s1\" already exists", field(again[0], &.{ "payload", "error", "message" }));
+    try testing.expectEqual(@as(usize, 2), harness.fake.opened);
+    try testing.expectEqual(@as(usize, 1), harness.fake.closed);
 }
 
 test "an open electing a feature the descriptor lacks is refused before any session exists" {
@@ -1581,4 +1807,60 @@ fn driveConversation(allocator: std.mem.Allocator) !void {
 
 test "a whole conversation frees everything it built when any allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, driveConversation, .{});
+}
+
+test "attachments resolve as the hub resolves them: configured by id, local passed through, wire commands and literal environment refused" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var unavailable = contract.Unavailable{ .backend = "x", .message = "x" };
+    var endpoint = Endpoint.init(testing.allocator, unavailable.adapter(), .{ .tool_sources = &.{.{ .id = "fs", .kind = "process", .display_name = "Filesystem", .protocol = "mcp", .command = "/bin/fs", .environment = &.{"TOKEN"} }} });
+    defer endpoint.deinit();
+    var refusal = contract.Refusal{};
+
+    const resolved = (try endpoint.resolveAttachments(arena, "[{\"id\":\"fs\",\"environment\":[\"EXTRA\"]},{\"id\":\"notes\",\"kind\":\"local\"}]", &refusal)).?;
+    try testing.expectEqualStrings("[{\"id\":\"fs\",\"kind\":\"process\",\"display_name\":\"Filesystem\",\"protocol\":\"mcp\",\"command\":\"/bin/fs\",\"environment\":[\"TOKEN\",\"EXTRA\"]},{\"id\":\"notes\",\"kind\":\"local\"}]", resolved);
+
+    const refused = [_]struct { json: []const u8, reason: []const u8 }{
+        .{ .json = "[{\"id\":\"other\",\"kind\":\"process\"}]", .reason = "tool source \"other\": no tool source of that id is configured on this daemon" },
+        .{ .json = "[{\"id\":\"notes\",\"kind\":\"local\",\"command\":\"/bin/sh\"}]", .reason = "tool source \"notes\": the daemon does not accept a command or arguments from the wire; name an operator-configured source by id" },
+        .{ .json = "[{\"id\":\"notes\",\"kind\":\"local\",\"environment\":[\"A=1\"]}]", .reason = "tool source \"notes\": the daemon accepts only the bare NAME allowlist form in environment" },
+        .{ .json = "[{\"id\":\"fs\",\"endpoint\":\"stdio:elsewhere\"}]", .reason = "tool source \"fs\": the daemon does not accept endpoint from the wire for a configured source; name it by id" },
+    };
+    for (refused) |case| {
+        refusal = .{};
+        try testing.expectError(error.UnsupportedFeature, endpoint.resolveAttachments(arena, case.json, &refusal));
+        try testing.expectEqualStrings(case.reason, refusal.message);
+        try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
+    }
+}
+
+test "a mistyped attachment member is worded as goap's decoder words it, first defect in document order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("cannot unmarshal string into Go struct field SessionOpenRequest.tool_sources.0.environment of type []string", (try attachmentDecodeDefect(a, "[{\"id\":\"n\",\"kind\":\"local\",\"environment\":\"PATH\"}]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into SessionOpenRequest.tool_sources.1.args.0 of type string", (try attachmentDecodeDefect(a, "[{\"id\":\"a\",\"kind\":\"local\"},{\"id\":\"n\",\"kind\":\"local\",\"args\":[1],\"command\":5}]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into SessionOpenRequest.tool_sources.0 of type protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "[5]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into Go struct field SessionOpenRequest.tool_sources of type []protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "5")).?);
+    try testing.expect((try attachmentDecodeDefect(a, "[{\"id\":\"n\",\"kind\":\"local\",\"environment\":null,\"extra\":1}]")) == null);
+}
+
+test "a mistyped provided tool member is worded as goap's decoder words it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { json: []const u8, want: []const u8 }{
+        .{ .json = "5", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools of type []protocol.ToolDefinition" },
+        .{ .json = "[5]", .want = "cannot unmarshal number into SessionOpenRequest.tools.0 of type protocol.ToolDefinition" },
+        .{ .json = "[{\"name\":\"a\",\"description\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.description of type string" },
+        .{ .json = "[{\"name\":\"a\",\"execution_owner\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.execution_owner of type protocol.ParticipantID" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":5}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x of type protocol.FeatureSupport" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"level\":5}}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x.level of type protocol.SupportLevel" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"modes\":[1]}}}]", .want = "cannot unmarshal number into SessionOpenRequest.tools.0.features.x.modes.0 of type string" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"constraints\":5}}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x.constraints of type map[string]jsontext.Value" },
+        .{ .json = "[{\"name\":\"a\",\"annotations\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.annotations of type map[string]jsontext.Value" },
+    };
+    for (cases) |case| try testing.expectEqualStrings(case.want, (try toolsDecodeDefect(a, case.json)).?);
+    try testing.expect((try toolsDecodeDefect(a, "[{\"name\":\"a\",\"features\":{\"x\":null},\"extra\":1}]")) == null);
 }

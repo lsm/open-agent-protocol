@@ -253,6 +253,10 @@ fn serializeToolDefinition(w: *json_writer.JsonWriter, tool: oap_types.ToolDefin
     try w.writeStringField("execution_owner", tool.execution_owner);
     if (tool.source) |value| try w.writeStringField("source", value);
     if (tool.features.len > 0) try serializeFeatureMap(w, tool.features);
+    if (tool.annotations_json) |annotations| {
+        try w.writeKey("annotations");
+        try w.writeRawJson(annotations);
+    }
     try w.endObject();
 }
 
@@ -617,6 +621,28 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
 }
 
 pub fn deserializeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_types.Envelope {
+    var envelope = try decodeEnvelope(line, allocator);
+    errdefer envelope.deinit(allocator);
+    switch (envelope.payload) {
+        .call_resolve_request => |*payload| if (payload.result_json) |loose| {
+            const written = try writtenResult(line, allocator);
+            allocator.free(loose);
+            payload.result_json = written;
+        },
+        else => {},
+    }
+    return envelope;
+}
+
+fn writtenResult(line: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    const root = try std.json.parseFromSliceLeaky(std.json.Value, scratch.allocator(), line, .{ .parse_numbers = false });
+    const result = root.object.get("payload").?.object.get("result").?;
+    return json_encode.valueAlloc(allocator, result);
+}
+
+fn decodeEnvelope(line: []const u8, allocator: std.mem.Allocator) !oap_types.Envelope {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| {
         if (err == error.OutOfMemory) return error.OutOfMemory;
         return DecodeError.InvalidEnvelope;
@@ -1514,6 +1540,11 @@ fn deserializeToolDefinition(value: std.json.Value, allocator: std.mem.Allocator
         try deserializeFeatureMap(declared, allocator)
     else
         &.{};
+    errdefer {
+        for (features) |*entry| entry.deinit(allocator);
+        allocator.free(features);
+    }
+    const annotations_json = try optionalObjectJson(obj, "annotations", allocator);
     return .{
         .name = name,
         .description = description,
@@ -1521,6 +1552,7 @@ fn deserializeToolDefinition(value: std.json.Value, allocator: std.mem.Allocator
         .execution_owner = execution_owner,
         .source = source,
         .features = features,
+        .annotations_json = annotations_json,
     };
 }
 
@@ -1682,7 +1714,7 @@ fn deserializeCallResolve(obj: std.json.ObjectMap, allocator: std.mem.Allocator)
     errdefer allocator.free(requested_by);
     const responded_by = try requiredOwnedString(obj, "responded_by", allocator);
     errdefer allocator.free(responded_by);
-    const result_json = try optionalRawJson(obj, "result", allocator);
+    const result_json: ?[]const u8 = if (obj.get("result")) |value| try json_encode.valueAlloc(allocator, value) else null;
     errdefer if (result_json) |owned| allocator.free(owned);
     const failure: ?oap_types.ProtocolError = if (obj.get("error")) |raised|
         try deserializeProtocolError(raised, allocator)
@@ -2616,4 +2648,22 @@ test "a model run sequence at genesis round trips its null run_id, and a settled
     defer allocator.free(encoded);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "\"model_run_sequence\":{\"run_id\":null,\"sequence\":0}") != null);
     try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(prefix ++ "{\"settled\":[{\"run_id\":null,\"sequence\":1}]}}}", allocator));
+}
+
+test "a call resolve's string result keeps its quotes, so it re-encodes as a string" {
+    const allocator = std.testing.allocator;
+    var decoded = try deserializeEnvelope(
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.resolve.request","id":"c1","payload":{"interaction_id":"i","session_id":"s","run_id":"r","tool_call_id":"t","requested_by":"e","responded_by":"u","result":"123"}}
+    , allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqualStrings("\"123\"", decoded.payload.call_resolve_request.result_json.?);
+}
+
+test "a call resolve's result keeps its numbers as written" {
+    const allocator = std.testing.allocator;
+    var decoded = try deserializeEnvelope(
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"action.call.resolve.request","id":"c1","payload":{"interaction_id":"i","session_id":"s","run_id":"r","tool_call_id":"t","requested_by":"e","responded_by":"u","result":{"price":1.50,"big":1e2}}}
+    , allocator);
+    defer decoded.deinit(allocator);
+    try std.testing.expectEqualStrings("{\"price\":1.50,\"big\":1e2}", decoded.payload.call_resolve_request.result_json.?);
 }

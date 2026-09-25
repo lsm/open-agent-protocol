@@ -1176,6 +1176,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
     const adapter_endpoint_test = b.addTest(.{ .root_module = adapter_endpoint_mod });

@@ -8952,6 +8952,7 @@ fn backendEntry(
     config_path: ?[]const u8,
     environ: *const std.process.Environ.Map,
     stderr: std.Io.File,
+    sources: *[]const adapter_config.ToolSource,
 ) !adapter_config.AdapterEntry {
     const path = config_path orelse {
         if (std.mem.eql(u8, name, "claude")) return adapter_config.builtinClaude(arena, environ);
@@ -8969,6 +8970,7 @@ fn backendEntry(
         try writeBackendRefusal(stderr, arena, "{s}: {s}", .{ path, diagnostic.message });
         return error.BackendRefused;
     };
+    sources.* = file.tool_sources;
     return file.adapter(name) orelse {
         try writeBackendRefusal(stderr, arena, "--config {s} names no adapter \"{s}\"", .{ path, name });
         return error.BackendRefused;
@@ -9185,7 +9187,12 @@ fn runBackendMode(
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var environ = try compat.createEnvMap(arena);
-    const entry = try backendEntry(arena, name, config_path, &environ, stderr);
+    var configured_sources: []const adapter_config.ToolSource = &.{};
+    const entry = try backendEntry(arena, name, config_path, &environ, stderr, &configured_sources);
+    const tool_sources = try arena.alloc(adapter_contract.ConfiguredSource, configured_sources.len);
+    for (configured_sources, tool_sources) |source, *slot| {
+        slot.* = .{ .id = source.id, .kind = source.kind, .display_name = source.display_name, .protocol = source.protocol, .endpoint = source.endpoint, .command = source.command, .args = source.args, .environment = source.environment };
+    }
 
     var claude: claude_adapter.Adapter = undefined;
     var codex: codex_adapter.Adapter = undefined;
@@ -9229,7 +9236,7 @@ fn runBackendMode(
     try output.start();
     defer output.deinit();
     output.stall_notice = .{ .file = stderr, .message = BACKEND_OUTPUT_STALLED_MESSAGE };
-    var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{});
+    var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{ .tool_sources = tool_sources });
     defer endpoint.deinit();
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
