@@ -252,11 +252,17 @@ pub const Feature = struct {
     level: SupportLevel,
     scope: ?[]const u8 = null,
     reason: ?[]const u8 = null,
+    modes: []const []const u8 = &.{},
+    constraints_json: ?[]const u8 = null,
+    limits_json: ?[]const u8 = null,
 
     pub fn deinit(self: *Feature, allocator: std.mem.Allocator) void {
         allocator.free(self.key);
         if (self.scope) |value| allocator.free(value);
         if (self.reason) |value| allocator.free(value);
+        freeStringList(allocator, self.modes);
+        if (self.constraints_json) |value| allocator.free(value);
+        if (self.limits_json) |value| allocator.free(value);
     }
 };
 
@@ -492,6 +498,7 @@ pub const CapabilitiesResponse = struct {
     requested_delivery_modes: []const RequestedDelivery = &.{},
     effective_delivery_modes: []const EffectiveDelivery = &.{},
     degradation: []Degradation = &.{},
+    tools: []ToolDefinition = &.{},
     sources: []ToolSourceDescriptor = &.{},
     limits: ?Limits = null,
 
@@ -507,6 +514,8 @@ pub const CapabilitiesResponse = struct {
         allocator.free(self.effective_delivery_modes);
         for (self.degradation) |*record| record.deinit(allocator);
         allocator.free(self.degradation);
+        for (self.tools) |*tool| tool.deinit(allocator);
+        allocator.free(self.tools);
         for (self.sources) |*source| source.deinit(allocator);
         allocator.free(self.sources);
     }
@@ -569,6 +578,7 @@ pub const ModelDescriptor = struct {
     id: []const u8,
     display_name: ?[]const u8 = null,
     provider_id: ?[]const u8 = null,
+    context_window: ?u64 = null,
     default: bool = false,
 
     pub fn deinit(self: *ModelDescriptor, allocator: std.mem.Allocator) void {
@@ -578,16 +588,36 @@ pub const ModelDescriptor = struct {
     }
 };
 
+pub const ProviderDescriptor = struct {
+    id: []const u8,
+    display_name: ?[]const u8 = null,
+    wire: ?[]const u8 = null,
+    kind: ?[]const u8 = null,
+    endpoint: ?[]const u8 = null,
+    service_id: ?[]const u8 = null,
+    upstream_provider_id: ?[]const u8 = null,
+
+    pub fn deinit(self: *ProviderDescriptor, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        inline for (.{ "display_name", "wire", "kind", "endpoint", "service_id", "upstream_provider_id" }) |name| {
+            if (@field(self, name)) |value| allocator.free(value);
+        }
+    }
+};
+
 pub const ModelsResponse = struct {
     session_id: []const u8,
     current_model_id: ?[]const u8 = null,
     models: []ModelDescriptor,
+    providers: []ProviderDescriptor = &.{},
 
     pub fn deinit(self: *ModelsResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         if (self.current_model_id) |value| allocator.free(value);
         for (self.models) |*model| model.deinit(allocator);
         allocator.free(self.models);
+        for (self.providers) |*provider| provider.deinit(allocator);
+        allocator.free(self.providers);
     }
 };
 
@@ -615,17 +645,64 @@ pub const SessionModelSwitchResponse = struct {
     }
 };
 
+pub const ActiveRun = struct {
+    run_id: []const u8,
+    status: RunStatus,
+    relationship: []const u8,
+    queue_position: ?u64 = null,
+    as_of_sequence: ?u64 = null,
+    admitted_submit_requests: []const []const u8 = &.{},
+    pending_interactions: []const []const u8 = &.{},
+    acknowledged_interactions: []const []const u8 = &.{},
+
+    pub fn deinit(self: *ActiveRun, allocator: std.mem.Allocator) void {
+        allocator.free(self.run_id);
+        allocator.free(self.relationship);
+        freeStringList(allocator, self.admitted_submit_requests);
+        freeStringList(allocator, self.pending_interactions);
+        freeStringList(allocator, self.acknowledged_interactions);
+    }
+};
+
+pub const RunPosition = struct {
+    run_id: []const u8,
+    sequence: u64,
+};
+
+pub const SessionCapture = struct {
+    admitted_submit_requests: []const []const u8 = &.{},
+    settled: []const RunPosition = &.{},
+    model_run_sequence: ?RunPosition = null,
+
+    pub fn deinit(self: *SessionCapture, allocator: std.mem.Allocator) void {
+        freeStringList(allocator, self.admitted_submit_requests);
+        for (self.settled) |entry| allocator.free(entry.run_id);
+        allocator.free(self.settled);
+        if (self.model_run_sequence) |position| allocator.free(position.run_id);
+    }
+};
+
 pub const SessionState = struct {
     session_id: []const u8,
     status: SessionStatus,
     active_run_id: ?[]const u8 = null,
+    active_runs: []ActiveRun = &.{},
     current_model_id: ?[]const u8 = null,
+    transcript_cursor: ?[]const u8 = null,
     updated_at_ms: ?i64 = null,
+    sources: []ToolSourceDescriptor = &.{},
+    as_of: ?SessionCapture = null,
 
     pub fn deinit(self: *SessionState, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
         if (self.active_run_id) |value| allocator.free(value);
+        for (self.active_runs) |*entry| entry.deinit(allocator);
+        allocator.free(self.active_runs);
         if (self.current_model_id) |value| allocator.free(value);
+        if (self.transcript_cursor) |value| allocator.free(value);
+        for (self.sources) |*entry| entry.deinit(allocator);
+        allocator.free(self.sources);
+        if (self.as_of) |*capture| capture.deinit(allocator);
     }
 };
 

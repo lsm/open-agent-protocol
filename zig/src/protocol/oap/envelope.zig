@@ -135,8 +135,50 @@ fn serializeSessionState(w: *json_writer.JsonWriter, state: oap_types.SessionSta
     try w.writeStringField("session_id", state.session_id);
     try w.writeStringField("status", @tagName(state.status));
     if (state.active_run_id) |value| try w.writeStringField("active_run_id", value);
+    if (state.active_runs.len > 0) {
+        try w.writeKey("active_runs");
+        try w.beginArray();
+        for (state.active_runs) |entry| {
+            try w.beginObject();
+            try w.writeStringField("run_id", entry.run_id);
+            try w.writeStringField("status", @tagName(entry.status));
+            try w.writeStringField("relationship", entry.relationship);
+            if (entry.queue_position) |position| try w.writeIntField("queue_position", position);
+            if (entry.as_of_sequence) |sequence| try w.writeIntField("as_of_sequence", sequence);
+            if (entry.admitted_submit_requests.len > 0) try serializeStringArray(w, "admitted_submit_requests", entry.admitted_submit_requests);
+            if (entry.pending_interactions.len > 0) try serializeStringArray(w, "pending_interactions", entry.pending_interactions);
+            if (entry.acknowledged_interactions.len > 0) try serializeStringArray(w, "acknowledged_interactions", entry.acknowledged_interactions);
+            try w.endObject();
+        }
+        try w.endArray();
+    }
     if (state.current_model_id) |value| try w.writeStringField("current_model_id", value);
+    if (state.transcript_cursor) |value| try w.writeStringField("transcript_cursor", value);
     if (state.updated_at_ms) |value| try w.writeIntField("updated_at_ms", value);
+    if (state.sources.len > 0) try serializeSources(w, state.sources);
+    if (state.as_of) |capture| {
+        try w.writeKey("as_of");
+        try w.beginObject();
+        if (capture.admitted_submit_requests.len > 0) try serializeStringArray(w, "admitted_submit_requests", capture.admitted_submit_requests);
+        if (capture.settled.len > 0) {
+            try w.writeKey("settled");
+            try w.beginArray();
+            for (capture.settled) |entry| try serializeRunPosition(w, entry);
+            try w.endArray();
+        }
+        if (capture.model_run_sequence) |position| {
+            try w.writeKey("model_run_sequence");
+            try serializeRunPosition(w, position);
+        }
+        try w.endObject();
+    }
+}
+
+fn serializeRunPosition(w: *json_writer.JsonWriter, position: oap_types.RunPosition) !void {
+    try w.beginObject();
+    try w.writeStringField("run_id", position.run_id);
+    try w.writeIntField("sequence", position.sequence);
+    try w.endObject();
 }
 
 fn serializeEndpoint(w: *json_writer.JsonWriter, endpoint: oap_types.Endpoint) !void {
@@ -164,6 +206,15 @@ fn serializeFeatureMap(w: *json_writer.JsonWriter, features: []const oap_types.F
         try w.writeStringField("level", @tagName(feature.level));
         if (feature.scope) |scope| try w.writeStringField("scope", scope);
         if (feature.reason) |reason| try w.writeStringField("reason", reason);
+        if (feature.modes.len > 0) try serializeStringArray(w, "modes", feature.modes);
+        if (feature.constraints_json) |constraints| {
+            try w.writeKey("constraints");
+            try writeJsonValueOrString(w, constraints);
+        }
+        if (feature.limits_json) |limits| {
+            try w.writeKey("limits");
+            try writeJsonValueOrString(w, limits);
+        }
         try w.endObject();
     }
     try w.endObject();
@@ -289,6 +340,12 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 }
                 try w.endArray();
             }
+            if (value.tools.len > 0) {
+                try w.writeKey("tools");
+                try w.beginArray();
+                for (value.tools) |tool| try serializeToolDefinition(w, tool);
+                try w.endArray();
+            }
             if (value.sources.len > 0) try serializeSources(w, value.sources);
             if (value.limits) |limits| {
                 try w.writeKey("limits");
@@ -314,10 +371,24 @@ fn serializePayload(w: *json_writer.JsonWriter, payload: oap_types.Payload) !voi
                 try w.writeStringField("id", model.id);
                 if (model.display_name) |name| try w.writeStringField("display_name", name);
                 if (model.provider_id) |provider_id| try w.writeStringField("provider_id", provider_id);
+                if (model.context_window) |window| try w.writeIntField("context_window", window);
                 if (model.default) try w.writeBoolField("default", true);
                 try w.endObject();
             }
             try w.endArray();
+            if (value.providers.len > 0) {
+                try w.writeKey("providers");
+                try w.beginArray();
+                for (value.providers) |provider| {
+                    try w.beginObject();
+                    try w.writeStringField("id", provider.id);
+                    inline for (.{ "display_name", "wire", "kind", "endpoint", "service_id", "upstream_provider_id" }) |name| {
+                        if (@field(provider, name)) |member| try w.writeStringField(name, member);
+                    }
+                    try w.endObject();
+                }
+                try w.endArray();
+            }
         },
         .session_open_request => |value| {
             if (value.session_id) |session_id| try w.writeStringField("session_id", session_id);
@@ -822,13 +893,97 @@ fn deserializeSessionState(obj: std.json.ObjectMap, allocator: std.mem.Allocator
     const current_model_id = try optionalOwnedString(obj, "current_model_id", allocator);
     errdefer if (current_model_id) |owned| allocator.free(owned);
     const updated_at_ms = try optionalInteger(obj, "updated_at_ms");
-    return .{
+    var state = oap_types.SessionState{
         .session_id = session_id,
         .status = status,
         .active_run_id = active_run_id,
         .current_model_id = current_model_id,
         .updated_at_ms = updated_at_ms,
     };
+    errdefer {
+        for (state.active_runs) |*entry| entry.deinit(allocator);
+        allocator.free(state.active_runs);
+        if (state.transcript_cursor) |owned| allocator.free(owned);
+        for (state.sources) |*entry| entry.deinit(allocator);
+        allocator.free(state.sources);
+    }
+    if (obj.get("active_runs")) |value| state.active_runs = try deserializeActiveRuns(value, allocator);
+    state.transcript_cursor = try optionalOwnedString(obj, "transcript_cursor", allocator);
+    if (obj.get("sources")) |value| state.sources = try deserializeSources(value, allocator);
+    if (obj.get("as_of")) |value| state.as_of = try deserializeSessionCapture(value, allocator);
+    return state;
+}
+
+fn optionalStringArray(obj: std.json.ObjectMap, key: []const u8, allocator: std.mem.Allocator) ![]const []const u8 {
+    if (obj.get(key) == null) return &.{};
+    return deserializeStringArray(obj, key, allocator);
+}
+
+fn deserializeActiveRuns(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.ActiveRun {
+    if (value != .array) return DecodeError.InvalidField;
+    const runs = try allocator.alloc(oap_types.ActiveRun, value.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (runs[0..filled]) |*entry| entry.deinit(allocator);
+        allocator.free(runs);
+    }
+    for (value.array.items) |item| {
+        if (item != .object) return DecodeError.InvalidField;
+        const status = try requiredEnum(oap_types.RunStatus, item.object, "status");
+        const queue_position = try optionalUnsigned(item.object, "queue_position");
+        const as_of_sequence = try optionalUnsigned(item.object, "as_of_sequence");
+        const run_id = try requiredOwnedString(item.object, "run_id", allocator);
+        errdefer allocator.free(run_id);
+        const relationship = try requiredOwnedString(item.object, "relationship", allocator);
+        errdefer allocator.free(relationship);
+        const admitted = try optionalStringArray(item.object, "admitted_submit_requests", allocator);
+        errdefer oap_types.freeStringList(allocator, admitted);
+        const pending = try optionalStringArray(item.object, "pending_interactions", allocator);
+        errdefer oap_types.freeStringList(allocator, pending);
+        const acknowledged = try optionalStringArray(item.object, "acknowledged_interactions", allocator);
+        runs[filled] = .{
+            .run_id = run_id,
+            .status = status,
+            .relationship = relationship,
+            .queue_position = queue_position,
+            .as_of_sequence = as_of_sequence,
+            .admitted_submit_requests = admitted,
+            .pending_interactions = pending,
+            .acknowledged_interactions = acknowledged,
+        };
+        filled += 1;
+    }
+    return runs;
+}
+
+fn deserializeRunPosition(value: std.json.Value, allocator: std.mem.Allocator) !oap_types.RunPosition {
+    if (value != .object) return DecodeError.InvalidField;
+    const sequence = (try optionalUnsigned(value.object, "sequence")) orelse return DecodeError.MissingField;
+    const run_id = try requiredOwnedString(value.object, "run_id", allocator);
+    return .{ .run_id = run_id, .sequence = sequence };
+}
+
+fn deserializeSessionCapture(value: std.json.Value, allocator: std.mem.Allocator) !oap_types.SessionCapture {
+    if (value != .object) return DecodeError.InvalidField;
+    var capture = oap_types.SessionCapture{};
+    errdefer capture.deinit(allocator);
+    capture.admitted_submit_requests = try optionalStringArray(value.object, "admitted_submit_requests", allocator);
+    if (value.object.get("settled")) |settled| {
+        if (settled != .array) return DecodeError.InvalidField;
+        const positions = try allocator.alloc(oap_types.RunPosition, settled.array.items.len);
+        var filled: usize = 0;
+        errdefer {
+            for (positions[0..filled]) |entry| allocator.free(entry.run_id);
+            allocator.free(positions);
+        }
+        for (settled.array.items) |item| {
+            positions[filled] = try deserializeRunPosition(item, allocator);
+            filled += 1;
+        }
+        capture.settled = positions;
+    }
+    if (value.object.get("model_run_sequence")) |position| capture.model_run_sequence = try deserializeRunPosition(position, allocator);
+    return capture;
 }
 
 fn deserializeEndpoint(value: std.json.Value, allocator: std.mem.Allocator) !oap_types.Endpoint {
@@ -947,14 +1102,17 @@ fn deserializePayload(
                 .id = id,
                 .display_name = display_name,
                 .provider_id = provider_id,
+                .context_window = try optionalUnsigned(item.object, "context_window"),
                 .default = if (default_value) |value| value.bool else false,
             };
             built = index + 1;
         }
+        const providers: []oap_types.ProviderDescriptor = if (obj.get("providers")) |value| try deserializeProviders(value, allocator) else &.{};
         return .{ .models_response = .{
             .session_id = session_id,
             .current_model_id = current_model_id,
             .models = models,
+            .providers = providers,
         } };
     }
     if (std.mem.eql(u8, type_str, "session.open.request")) {
@@ -1204,6 +1362,12 @@ fn deserializePayload(
     return DecodeError.UnknownEnvelopeType;
 }
 
+fn optionalObjectJson(obj: std.json.ObjectMap, key: []const u8, allocator: std.mem.Allocator) !?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    if (value != .object) return DecodeError.InvalidField;
+    return try ownedRawJson(value, allocator);
+}
+
 fn electedArrayJson(obj: std.json.ObjectMap, key: []const u8, allocator: std.mem.Allocator) !?[]const u8 {
     const value = obj.get(key) orelse return null;
     if (value != .array) return DecodeError.InvalidField;
@@ -1255,10 +1419,37 @@ fn deserializeFeatureMap(value: std.json.Value, allocator: std.mem.Allocator) ![
         const scope = try optionalOwnedString(entry.value_ptr.object, "scope", allocator);
         errdefer if (scope) |owned| allocator.free(owned);
         const reason = try optionalOwnedString(entry.value_ptr.object, "reason", allocator);
-        features[filled] = .{ .key = key, .level = level, .scope = scope, .reason = reason };
+        errdefer if (reason) |owned| allocator.free(owned);
+        const modes = try optionalStringArray(entry.value_ptr.object, "modes", allocator);
+        errdefer oap_types.freeStringList(allocator, modes);
+        const constraints_json = try optionalObjectJson(entry.value_ptr.object, "constraints", allocator);
+        errdefer if (constraints_json) |owned| allocator.free(owned);
+        const limits_json = try optionalObjectJson(entry.value_ptr.object, "limits", allocator);
+        features[filled] = .{ .key = key, .level = level, .scope = scope, .reason = reason, .modes = modes, .constraints_json = constraints_json, .limits_json = limits_json };
         filled += 1;
     }
     return features;
+}
+
+fn deserializeProviders(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.ProviderDescriptor {
+    if (value != .array) return DecodeError.InvalidField;
+    const providers = try allocator.alloc(oap_types.ProviderDescriptor, value.array.items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (providers[0..filled]) |*entry| entry.deinit(allocator);
+        allocator.free(providers);
+    }
+    for (value.array.items) |item| {
+        if (item != .object) return DecodeError.InvalidField;
+        var provider = oap_types.ProviderDescriptor{ .id = try requiredOwnedString(item.object, "id", allocator) };
+        errdefer provider.deinit(allocator);
+        inline for (.{ "display_name", "wire", "kind", "endpoint", "service_id", "upstream_provider_id" }) |name| {
+            @field(provider, name) = try optionalOwnedString(item.object, name, allocator);
+        }
+        providers[filled] = provider;
+        filled += 1;
+    }
+    return providers;
 }
 
 fn deserializeSources(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.ToolSourceDescriptor {
@@ -1618,6 +1809,20 @@ fn deserializeCapabilities(
     }
     if (obj.get("features")) |value| {
         result.features = try deserializeFeatureMap(value, allocator);
+    }
+    if (obj.get("tools")) |value| {
+        if (value != .array) return DecodeError.InvalidField;
+        const tools = try allocator.alloc(oap_types.ToolDefinition, value.array.items.len);
+        var filled: usize = 0;
+        errdefer {
+            for (tools[0..filled]) |*tool| tool.deinit(allocator);
+            allocator.free(tools);
+        }
+        for (value.array.items) |item| {
+            tools[filled] = try deserializeToolDefinition(item, allocator);
+            filled += 1;
+        }
+        result.tools = tools;
     }
     if (obj.get("sources")) |value| {
         result.sources = try deserializeSources(value, allocator);
@@ -2329,8 +2534,56 @@ test "every new payload decoder frees what it built when an allocation fails" {
             "\"sources\":[{\"id\":\"n\",\"kind\":\"native\"},{\"id\":\"m\",\"kind\":\"process\",\"protocol\":\"mcp\",\"endpoint\":\"x\"}]}}",
         prefix ++ "session.message.submit.response\",\"payload\":{\"session_id\":\"s\",\"accepted\":true,\"submission_id\":\"sub\"," ++
             "\"requested_delivery\":\"auto\",\"effective_delivery\":\"start\",\"admission\":\"started\",\"run_id\":\"r\",\"message_ids\":[\"m1\",\"m2\"]}}",
+        prefix ++ "session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"queued\",\"active_runs\":[{\"run_id\":\"r\",\"status\":\"queued\"," ++
+            "\"relationship\":\"primary\",\"queue_position\":1,\"as_of_sequence\":0,\"admitted_submit_requests\":[\"a\"],\"pending_interactions\":[\"p\"]," ++
+            "\"acknowledged_interactions\":[\"k\"]}],\"transcript_cursor\":\"4\",\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}]," ++
+            "\"as_of\":{\"admitted_submit_requests\":[\"a\"],\"settled\":[{\"run_id\":\"q\",\"sequence\":3}],\"model_run_sequence\":{\"run_id\":\"q\",\"sequence\":2}}}}",
+        prefix ++ "models.response\",\"payload\":{\"session_id\":\"s\",\"models\":[{\"id\":\"m\",\"context_window\":8192}]," ++
+            "\"providers\":[{\"id\":\"p\",\"display_name\":\"P\",\"wire\":\"w\",\"kind\":\"direct\"}]}}",
+        prefix ++ "capabilities.response\",\"payload\":{\"endpoint\":{\"id\":\"e\"},\"features\":{\"a\":{\"level\":\"emulated\",\"modes\":[\"session_open\"]," ++
+            "\"constraints\":{\"fixed_result\":{\"ok\":true}},\"limits\":{\"max_sources\":2}}},\"tools\":[{\"name\":\"t\",\"input_schema\":{},\"execution_owner\":\"o\"}]}}",
     };
     for (lines) |line| {
         try std.testing.checkAllAllocationFailures(std.testing.allocator, decodeAndRelease, .{line});
     }
+}
+
+test "session state, models and capabilities round trip the members goap serves" {
+    const allocator = std.testing.allocator;
+    const line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+        "\",\"id\":\"e-1\",\"type\":\"session.state.response\",\"payload\":{\"session_id\":\"s\",\"status\":\"waiting_for_input\",\"active_run_id\":\"r\"," ++
+        "\"active_runs\":[{\"run_id\":\"r\",\"status\":\"running\",\"relationship\":\"primary\",\"as_of_sequence\":4,\"pending_interactions\":[\"p\"]}]," ++
+        "\"transcript_cursor\":\"4\",\"updated_at_ms\":7,\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}}}";
+    var decoded = try deserializeEnvelope(line, allocator);
+    defer decoded.deinit(allocator);
+    const state = decoded.payload.session_state_response;
+    try std.testing.expectEqual(@as(?u64, 4), state.active_runs[0].as_of_sequence);
+    try std.testing.expectEqualStrings("p", state.active_runs[0].pending_interactions[0]);
+    try std.testing.expectEqualStrings("4", state.transcript_cursor.?);
+    try std.testing.expectEqual(@as(u64, 12), state.as_of.?.settled[0].sequence);
+    const encoded = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"active_runs\":[{\"run_id\":\"r\",\"status\":\"running\",\"relationship\":\"primary\",\"as_of_sequence\":4,\"pending_interactions\":[\"p\"]}]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"sources\":[{\"id\":\"n\",\"kind\":\"native\"}],\"as_of\":{\"settled\":[{\"run_id\":\"q\",\"sequence\":12}]}") != null);
+
+    var models = try roundTrip(.{ .id = "m", .payload = .{ .models_response = .{
+        .session_id = "s",
+        .models = @constCast(&[_]oap_types.ModelDescriptor{.{ .id = "a", .context_window = 8192, .default = true }}),
+        .providers = @constCast(&[_]oap_types.ProviderDescriptor{.{ .id = "reference", .wire = "openai-chat-completions", .kind = "direct" }}),
+    } } }, allocator);
+    defer models.deinit(allocator);
+    try std.testing.expectEqual(@as(?u64, 8192), models.payload.models_response.models[0].context_window);
+    try std.testing.expectEqualStrings("direct", models.payload.models_response.providers[0].kind.?);
+
+    var capabilities = try roundTrip(.{ .id = "c", .payload = .{ .capabilities_response = .{
+        .endpoint = .{ .id = "e" },
+        .features = @constCast(&[_]oap_types.Feature{.{ .key = "action.tool_sources.attach", .level = .emulated, .modes = &.{"session_open"}, .limits_json = "{\"max_sources\":2}", .constraints_json = "{\"fixed_result\":{\"ok\":true}}" }}),
+        .tools = @constCast(&[_]oap_types.ToolDefinition{.{ .name = "scripted_tool", .input_schema_json = "{\"type\":\"object\"}", .execution_owner = "o" }}),
+    } } }, allocator);
+    defer capabilities.deinit(allocator);
+    const feature = capabilities.payload.capabilities_response.features[0];
+    try std.testing.expectEqualStrings("session_open", feature.modes[0]);
+    try std.testing.expectEqualStrings("{\"max_sources\":2}", feature.limits_json.?);
+    try std.testing.expectEqualStrings("{\"fixed_result\":{\"ok\":true}}", feature.constraints_json.?);
+    try std.testing.expectEqualStrings("scripted_tool", capabilities.payload.capabilities_response.tools[0].name);
 }

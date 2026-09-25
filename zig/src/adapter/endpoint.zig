@@ -296,10 +296,19 @@ pub const Endpoint = struct {
     fn capabilities(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, descriptor: contract.Descriptor) Served!void {
         const features = try arena.alloc(oap_types.Feature, descriptor.features.len);
         for (descriptor.features, features) |declared, *feature| {
-            feature.* = .{ .key = declared.key, .level = declared.level, .scope = declared.scope, .reason = declared.reason };
+            feature.* = .{
+                .key = declared.key,
+                .level = declared.level,
+                .scope = declared.scope,
+                .reason = declared.reason,
+                .modes = declared.modes,
+                .constraints_json = declared.constraints_json,
+                .limits_json = declared.limits_json,
+            };
         }
         const bindings = try arena.dupe(oap_types.Binding, &.{.{ .kind = "stdio", .serialization = "jsonl" }});
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, descriptor.sources);
+        const catalog = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
         try self.respond(arena, request, .{
             .id = "",
             .capability_revision = descriptor.capability_revision,
@@ -309,6 +318,7 @@ pub const Endpoint = struct {
                 .profiles = &.{oap_types.PROFILE},
                 .bindings = bindings,
                 .features = features,
+                .tools = catalog,
                 .sources = sources,
                 .limits = descriptor.limits,
             } },
@@ -328,6 +338,8 @@ pub const Endpoint = struct {
             .session_id = payload.session_id orelse "",
             .participant = self.controlParticipant(),
             .allow_degraded_features = payload.allow_degraded_features,
+            .tools_json = payload.tools_json,
+            .tool_sources_json = payload.tool_sources_json,
         }, refusal);
         if (self.find(session.id()) != null) {
             session.close();
