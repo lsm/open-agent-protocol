@@ -1010,7 +1010,7 @@ pub const Session = struct {
     fn admitProvidedTools(self: *Session, arena: std.mem.Allocator, carried: ?[]const u8, refusal: *contract.Refusal) contract.Failure![]oap_types.ToolDefinition {
         const text = carried orelse return &.{};
         const keep = self.keep.allocator();
-        const document = std.json.parseFromSliceLeaky(std.json.Value, keep, text, .{ .allocate = .alloc_always }) catch |err| {
+        const document = std.json.parseFromSliceLeaky(std.json.Value, keep, text, .{ .allocate = .alloc_always, .parse_numbers = false }) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             return refuseTool(arena, refusal, "", "the provided tools are not a list of tool definitions");
         };
@@ -1144,7 +1144,16 @@ fn featureObjectJson(keep: std.mem.Allocator, support: std.json.Value, key: []co
     if (support != .object) return null;
     const carried = support.object.get(key) orelse return null;
     if (carried != .object) return null;
-    return try std.json.Stringify.valueAlloc(keep, carried, .{});
+    const keys = try keep.dupe([]const u8, carried.object.keys());
+    std.mem.sort([]const u8, keys, {}, lessKey);
+    var sorted: std.json.ObjectMap = .empty;
+    try sorted.ensureTotalCapacity(keep, keys.len);
+    for (keys) |name| sorted.putAssumeCapacity(name, carried.object.get(name).?);
+    return try json_encode.valueAlloc(keep, .{ .object = sorted });
+}
+
+fn lessKey(_: void, left: []const u8, right: []const u8) bool {
+    return std.mem.order(u8, left, right) == .lt;
 }
 
 fn stringOf(value: std.json.Value, key: []const u8) []const u8 {
@@ -1668,7 +1677,7 @@ test "an open with provided tools, a submit and a settled call free everything t
 
 test "a provided tool keeps its declared feature modes, constraints and limits, and a null $schema is admitted" {
     var probe: Probe = undefined;
-    try probe.initWith("[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":null,\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\",\"features\":{\"x\":{\"level\":\"degraded\",\"modes\":[\"session_open\"],\"constraints\":{\"b\":1,\"a\":2},\"limits\":{\"max\":3}}}}]", attached_local);
+    try probe.initWith("[{\"name\":\"lookup\",\"input_schema\":{\"$schema\":null,\"type\":\"object\"},\"execution_owner\":\"user\",\"source\":\"att1\",\"features\":{\"x\":{\"level\":\"degraded\",\"modes\":[\"session_open\"],\"constraints\":{\"b\":1.50,\"a\":2},\"limits\":{\"max\":3}}}}]", attached_local);
     defer probe.deinit();
     var refusal = contract.Refusal{};
     const listed_tools = try probe.session.vtable.tools.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1" }, &refusal);
@@ -1676,6 +1685,6 @@ test "a provided tool keeps its declared feature modes, constraints and limits, 
     try testing.expectEqualStrings("x", feature.key);
     try testing.expectEqual(@as(usize, 1), feature.modes.len);
     try testing.expectEqualStrings("session_open", feature.modes[0]);
-    try testing.expectEqualStrings("{\"b\":1,\"a\":2}", feature.constraints_json.?);
+    try testing.expectEqualStrings("{\"a\":2,\"b\":1.50}", feature.constraints_json.?);
     try testing.expectEqualStrings("{\"max\":3}", feature.limits_json.?);
 }

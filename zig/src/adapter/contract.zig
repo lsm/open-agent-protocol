@@ -325,8 +325,8 @@ pub fn parseToolChoice(arena: std.mem.Allocator, text: []const u8) error{ OutOfM
         if (value != .array) return error.InvalidPolicy;
         const listed = try arena.alloc([]const u8, value.array.items.len);
         for (value.array.items, listed) |item, *slot| {
-            if (item != .string) return error.InvalidPolicy;
-            slot.* = item.string;
+            if (item != .string and item != .null) return error.InvalidPolicy;
+            slot.* = if (item == .string) item.string else "";
         }
         if (std.mem.eql(u8, entry.key_ptr.*, "allowed")) {
             choice.allowed = listed;
@@ -346,16 +346,17 @@ pub fn toolChoiceDefect(arena: std.mem.Allocator, text: []const u8) error{OutOfM
         return generic;
     };
     if (document == .null) return "tool_choice is null, which is not the typed policy";
-    if (document != .object) return generic;
+    if (document != .object) return std.fmt.allocPrint(arena, "{s}: json: cannot unmarshal {s} into Go value of type protocol.ToolChoice", .{ generic, goKind(document) });
     var it = document.object.iterator();
     while (it.next()) |entry| {
-        const known = std.mem.eql(u8, entry.key_ptr.*, "allowed") or std.mem.eql(u8, entry.key_ptr.*, "disallowed");
-        if (!known) return std.fmt.allocPrint(arena, "{s}: json: unknown field \"{s}\"", .{ generic, entry.key_ptr.* });
+        const key = entry.key_ptr.*;
+        const known = std.mem.eql(u8, key, "allowed") or std.mem.eql(u8, key, "disallowed");
+        if (!known) return std.fmt.allocPrint(arena, "{s}: json: unknown field \"{s}\"", .{ generic, key });
         const value = entry.value_ptr.*;
         if (value == .null) continue;
-        if (value != .array) return generic;
-        for (value.array.items) |item| {
-            if (item != .string) return generic;
+        if (value != .array) return std.fmt.allocPrint(arena, "{s}: json: cannot unmarshal {s} into Go struct field ToolChoice.{s} of type []string", .{ generic, goKind(value), key });
+        for (value.array.items, 0..) |item, index| {
+            if (item != .string and item != .null) return std.fmt.allocPrint(arena, "{s}: json: cannot unmarshal {s} into ToolChoice.{s}.{d} of type string", .{ generic, goKind(item), key, index });
         }
     }
     const allowed = document.object.get("allowed");
@@ -365,6 +366,17 @@ pub fn toolChoiceDefect(arena: std.mem.Allocator, text: []const u8) error{OutOfM
     if (allowed) |value| if (value == .null) return "tool_choice allowed is null, which is not a list of tool names";
     if (disallowed) |value| if (value == .null) return "tool_choice disallowed is null, which is not a list of tool names";
     return generic;
+}
+
+fn goKind(value: std.json.Value) []const u8 {
+    return switch (value) {
+        .null => "null",
+        .bool => "bool",
+        .integer, .float, .number_string => "number",
+        .string => "string",
+        .array => "array",
+        .object => "object",
+    };
 }
 
 pub const QuestionKind = enum { text, single_choice, multi_choice };
@@ -586,4 +598,25 @@ test "an input answer is valid only in the shape its question asks for" {
     for (cases) |case| {
         try testing.expectEqual(case.valid, validInputAnswer(case.question, case.answer));
     }
+}
+
+test "a malformed tool_choice is worded as goap's decoder words it, first defect in document order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const cases = [_]struct { text: []const u8, want: []const u8 }{
+        .{ .text = "5", .want = "tool_choice is not the typed policy: json: cannot unmarshal number into Go value of type protocol.ToolChoice" },
+        .{ .text = "[]", .want = "tool_choice is not the typed policy: json: cannot unmarshal array into Go value of type protocol.ToolChoice" },
+        .{ .text = "{\"allowed\":\"x\"}", .want = "tool_choice is not the typed policy: json: cannot unmarshal string into Go struct field ToolChoice.allowed of type []string" },
+        .{ .text = "{\"allowed\":[true]}", .want = "tool_choice is not the typed policy: json: cannot unmarshal bool into ToolChoice.allowed.0 of type string" },
+        .{ .text = "{\"disallowed\":[\"a\",{}]}", .want = "tool_choice is not the typed policy: json: cannot unmarshal object into ToolChoice.disallowed.1 of type string" },
+        .{ .text = "{\"x\":1,\"allowed\":5}", .want = "tool_choice is not the typed policy: json: unknown field \"x\"" },
+        .{ .text = "{\"allowed\":5,\"x\":1}", .want = "tool_choice is not the typed policy: json: cannot unmarshal number into Go struct field ToolChoice.allowed of type []string" },
+        .{ .text = "null", .want = "tool_choice is null, which is not the typed policy" },
+        .{ .text = "{}", .want = "tool_choice carries neither allowed nor disallowed" },
+        .{ .text = "{\"allowed\":[],\"disallowed\":[]}", .want = "tool_choice allowed and disallowed are mutually exclusive" },
+        .{ .text = "{\"disallowed\":null}", .want = "tool_choice disallowed is null, which is not a list of tool names" },
+    };
+    for (cases) |case| try testing.expectEqualStrings(case.want, try toolChoiceDefect(arena.allocator(), case.text));
+    const nulled = try parseToolChoice(arena.allocator(), "{\"allowed\":[null]}");
+    try testing.expectEqualStrings("", nulled.allowed.?[0]);
 }
