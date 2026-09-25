@@ -136,10 +136,11 @@ Compared frame by frame, after removing ids, paths, timings and costs:
 ## What changed in the adapter
 
 Nothing in the adapter code of either tree. The catalog moves the pin, and
-with it the endpoint version `v2.1.282`; since a revision names one
-descriptor, the capability revision is `claude-code-2.1.282-oap-v1` and the
-oapx revision `claude-code-2.1.282-oapx-v1`. The advertised features are the
-2.1.280 revision's.
+with it the endpoint version `v2.1.282` and the capability revision
+`claude-code-2.1.282-oap-v1`. The advertised features are the 2.1.280
+revision's. The Zig served backend reads the same revision from the catalog
+and serves the Go adapter's descriptor under it, so there is no second
+revision to move.
 
 ## Corpus at 2.1.282
 

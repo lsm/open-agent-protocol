@@ -391,3 +391,58 @@ func TestAddressableEnvelopeIsAnsweredNotFatal(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenHonoursItsElectionsInsteadOfDroppingThem(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    []string
+	}{
+		{name: "a local tool source is attached", payload: `{"session_id":"a","tool_sources":[{"id":"notes","kind":"local","display_name":"Notes"}]}`, want: []string{`"session.open.response"`, `"id":"notes"`}},
+		{name: "an unconfigured process source is refused", payload: `{"session_id":"b","tool_sources":[{"id":"fs","kind":"process"}]}`, want: []string{`"unsupported_feature"`, `"source":"fs"`, `no tool source of that id is configured`}},
+		{name: "a wire command is refused", payload: `{"session_id":"c","tool_sources":[{"id":"fs","kind":"local","command":"/bin/sh"}]}`, want: []string{`"unsupported_feature"`, `does not accept a command`}},
+		{name: "a compound open is refused, not dropped", payload: `{"session_id":"d","message":{"delivery":"auto","messages":[{"role":"user","content":"hi"}]}}`, want: []string{`"unsupported_feature"`, `"field":"message"`, `"feature":"session.message.submit"`}},
+		{name: "a subscription the adapter streams anyway is admitted", payload: `{"session_id":"e","subscribe":true}`, want: []string{`"session.open.response"`}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			registry, err := serve.DefaultRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			server, err := New(serve.New(registry, serve.Options{}), Options{Adapter: "memory"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := &syncBuffer{}
+			line := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":` + testCase.payload + `}`
+			if err := server.Run(context.Background(), strings.NewReader(line+"\n"), out); err != nil {
+				t.Fatal(err)
+			}
+			for _, fragment := range testCase.want {
+				if !strings.Contains(out.String(), fragment) {
+					t.Fatalf("want %s in %q", fragment, out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestCapabilitiesNameTheStdioBinding(t *testing.T) {
+	registry, err := serve.DefaultRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := New(serve.New(registry, serve.Options{}), Options{Adapter: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &syncBuffer{}
+	line := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"capabilities.request","id":"c1","payload":{}}`
+	if err := server.Run(context.Background(), strings.NewReader(line+"\n"), out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"bindings":[{"kind":"stdio","serialization":"jsonl"}]`) {
+		t.Fatalf("capabilities.response does not name the stdio binding it arrived on: %q", out.String())
+	}
+}

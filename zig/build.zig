@@ -249,6 +249,12 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const endpoint_signals_mod = b.createModule(.{
+        .root_source_file = b.path("src/transports/endpoint_signals.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const claude_rpc_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/claude/rpc.zig"),
         .target = target,
@@ -1170,6 +1176,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
         },
     });
     const adapter_endpoint_test = b.addTest(.{ .root_module = adapter_endpoint_mod });
@@ -1306,6 +1313,20 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    const memory_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/memory/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "jsonschema", .module = jsonschema_mod },
+        },
+    });
+    const memory_adapter_test = b.addTest(.{ .root_module = memory_adapter_mod });
 
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
@@ -2505,7 +2526,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "deepseek_adapter", .module = deepseek_adapter_mod },
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
+            .{ .name = "memory_adapter", .module = memory_adapter_mod },
             .{ .name = "bounded_output", .module = bounded_output_mod },
+            .{ .name = "endpoint_signals", .module = endpoint_signals_mod },
         },
     });
 
@@ -2516,6 +2539,7 @@ pub fn build(b: *std.Build) void {
     const makai_cli_test = b.addTest(.{ .root_module = makai_cli_module });
     const makai_cli_test_run = b.addRunArtifact(makai_cli_test);
     const bounded_output_test_run = b.addRunArtifact(b.addTest(.{ .root_module = bounded_output_mod }));
+    const endpoint_signals_test_run = b.addRunArtifact(b.addTest(.{ .root_module = endpoint_signals_mod }));
     const auth_cli_test = b.addTest(.{ .root_module = auth_cli_mod });
     const auth_cli_test_run = b.addRunArtifact(auth_cli_test);
     b.installArtifact(makai_cli);
@@ -2603,6 +2627,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(acp_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_adapter_test).step);
+    test_step.dependOn(&b.addRunArtifact(memory_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(memory_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_adapter_test).step);
@@ -2660,6 +2686,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(retry_test).step);
     test_step.dependOn(&b.addRunArtifact(oom_test).step);
     test_step.dependOn(&bounded_output_test_run.step);
+    test_step.dependOn(&endpoint_signals_test_run.step);
     test_step.dependOn(&b.addRunArtifact(sanitize_test).step);
     test_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_provider_defs_test).step);
@@ -2894,8 +2921,9 @@ pub fn build(b: *std.Build) void {
     test_unit_makai_cli_step.dependOn(&auth_cli_test_run.step);
     test_unit_makai_cli_step.dependOn(&makai_cli_test_run.step);
 
-    const test_unit_bounded_output_step = b.step("test-unit-bounded-output", "Run bounded output unit tests");
-    test_unit_bounded_output_step.dependOn(&bounded_output_test_run.step);
+    const test_unit_stdio_host_step = b.step("test-unit-stdio-host", "Run the stdio host's output bound and signal unit tests");
+    test_unit_stdio_host_step.dependOn(&bounded_output_test_run.step);
+    test_unit_stdio_host_step.dependOn(&endpoint_signals_test_run.step);
 
     const test_unit_tools_step = b.step("test-unit-tools", "Run agent tool unit tests");
     test_unit_tools_step.dependOn(&b.addRunArtifact(tools_common_test).step);
@@ -3092,7 +3120,7 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
         options.addOption([]const u8, b.fmt("{s}_label", .{prefix}), pin.label);
         options.addOption([]const u8, b.fmt("{s}_endpoint_version", .{prefix}), pin.endpoint_version orelse std.debug.panic("{s}: current version has no endpoint_version", .{path}));
         options.addOption([]const u8, b.fmt("{s}_capability_revision", .{prefix}), pin.capability_revision orelse std.debug.panic("{s}: current version has no capability_revision", .{path}));
-        options.addOption([]const u8, b.fmt("{s}_oapx_capability_revision", .{prefix}), pin.oapx_capability_revision orelse std.debug.panic("{s}: current version has no oapx_capability_revision", .{path}));
+        if (pin.oapx_capability_revision) |revision| options.addOption([]const u8, b.fmt("{s}_oapx_capability_revision", .{prefix}), revision);
         options.addOption([]const u8, b.fmt("{s}_corpus", .{prefix}), pin.corpus orelse std.debug.panic("{s}: current version has no corpus", .{path}));
         options.addOption([]const []const u8, b.fmt("{s}_admits", .{prefix}), pin.admits orelse &.{});
         for (pin.sources) |source| {

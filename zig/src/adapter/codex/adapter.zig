@@ -11,23 +11,14 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.codex_app_server_oapx_capability_revision;
-const journal_reason = "oapx keeps no journal for this backend";
+pub const capability_revision = session.capability_revision;
 const app_server_args = [_][]const u8{ "app-server", "--listen", "stdio://" };
-
-fn journalled(name: []const u8) bool {
-    return std.mem.eql(u8, name, "run.replay") or std.mem.eql(u8, name, "run.resume");
-}
 
 const features = table: {
     @setEvalBranchQuota(20000);
     var built: [session.features.len]contract.Feature = undefined;
     for (session.features, &built) |feature, *slot| {
-        slot.* = if (journalled(feature.name)) .{
-            .key = feature.name,
-            .level = .unavailable,
-            .reason = journal_reason,
-        } else .{
+        slot.* = .{
             .key = feature.name,
             .level = std.meta.stringToEnum(oap_types.SupportLevel, feature.level).?,
             .reason = if (feature.reason.len > 0) feature.reason else null,
@@ -329,11 +320,13 @@ pub const Session = struct {
         const current = self.reducer.state;
         const active_run_id: ?[]const u8 = if (current.active_run_id.len > 0) try arena.dupe(u8, current.active_run_id) else null;
         const current_model_id: ?[]const u8 = if (current.current_model_id.len > 0) try arena.dupe(u8, current.current_model_id) else null;
+        const transcript_cursor: ?[]const u8 = if (current.transcript_cursor.len > 0) try arena.dupe(u8, current.transcript_cursor) else null;
         return .{
             .session_id = self.id,
             .status = std.meta.stringToEnum(oap_types.SessionStatus, current.status) orelse .running,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
+            .transcript_cursor = transcript_cursor,
             .updated_at_ms = if (current.updated_at_ms > 0) current.updated_at_ms else null,
         };
     }
@@ -695,21 +688,15 @@ fn kinds(allocator: std.mem.Allocator, events: []const contract.Event) ![]const 
     return names;
 }
 
-test "the descriptor is the Go adapter's with resume and replay unavailable, under its own revision" {
-    try testing.expect(!std.mem.eql(u8, capability_revision, session.capability_revision));
+test "the descriptor is the Go adapter's, under its revision" {
+    try testing.expectEqualStrings(session.capability_revision, capability_revision);
     try testing.expectEqual(session.features.len, descriptor.features.len);
     for (session.features, descriptor.features) |pinned, served| {
         try testing.expectEqualStrings(pinned.name, served.key);
-        if (journalled(pinned.name)) {
-            try testing.expectEqual(oap_types.SupportLevel.unavailable, served.level);
-            continue;
-        }
         try testing.expectEqualStrings(pinned.level, @tagName(served.level));
         try testing.expectEqualStrings(pinned.reason, served.reason orelse "");
         try testing.expectEqualStrings(pinned.scope, served.scope orelse "");
     }
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.replay"));
-    try testing.expectEqual(oap_types.SupportLevel.unavailable, descriptor.level("run.resume"));
 }
 
 test "an open writes the pinned initialize, initialized and thread/start frames before handing the session out" {
@@ -755,6 +742,21 @@ test "a turn is admitted on its turn/start answer and settles on turn/completed"
         try testing.expect(std.mem.indexOf(u8, event.line, "\"capability_revision\":\"" ++ capability_revision ++ "\"") != null);
     }
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
+}
+
+test "state reports the settled run's last sequence as its transcript cursor" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const fresh = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expect(fresh.transcript_cursor == null);
+    _ = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    const settled = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(probe.arena.allocator(), "{d}", .{completed.sequence}), settled.transcript_cursor.?);
 }
 
 test "a second submission while a run is live is refused run_active" {

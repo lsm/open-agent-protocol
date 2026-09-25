@@ -88,6 +88,7 @@ pub const Reducer = struct {
     identity: Identity = .{},
     ids: usize = 0,
     clock: i64 = 0,
+    cursor: i64 = 0,
     run: ?Run = null,
     tools: std.ArrayList(Tool) = .empty,
     last_seq: i64 = 0,
@@ -204,6 +205,7 @@ pub const Reducer = struct {
         try self.put(&envelope, "id", str(id));
         try self.put(&envelope, "payload", payload);
         try self.put(&envelope, "sequence", int(run.sequence));
+        self.cursor = run.sequence;
         try self.put(&envelope, "timestamp_ms", int(self.now()));
         if (in_reply_to.len > 0) try self.put(&envelope, "in_reply_to", str(in_reply_to));
         try self.put(&envelope, "session_id", str(self.options.session_id));

@@ -352,13 +352,13 @@ every tool.
 admitted under, the call settles `refused_by_policy`, no gate opens, the file
 is not written, and the run completes.
 
-The Zig port carries the new revision and does not implement the control or
-register the hook, so its descriptor lacks `run.tool_selection`. A revision
-names one descriptor, so this is a recorded divergence until the port follows.
-Because the Zig port registers no hook, a live child never sends it a
-`hook_callback`, and the Zig corpus driver passes over the `hook_callback`
-frames the corpora now carry (see *Hook callbacks in the corpus*) instead of
-feeding them to a reducer that would fail the run on them.
+The Zig served backend implements the control as Go does: it registers the
+same hook in `initialize`, answers `hook_callback` and `can_use_tool` for an
+excluded tool with the same deny frames, and settles the call
+`refused_by_policy`, with `run.tool_selection` advertised in Go's words. The Zig
+corpus driver still passes over the `hook_callback` frames the corpora carry
+(see *Hook callbacks in the corpus*), since the corpus reducer replays without
+a policy.
 
 ## Corpus recorded at 2.1.280
 
@@ -556,7 +556,8 @@ The Zig port now serves a live child as well as replaying the corpus:
 over the endpoint stdio binding. It spawns the same argv, writes the same
 `initialize`, answers `can_use_tool` with the same `control_response` frames
 (`updatedInput` echoes the ask's own input; a deny carries `Denied by the
-operator`), and cancels with `interrupt`. An ask outside an owned run, and one
+operator`), enforces a run's `tool_choice` through the `oap_tool_selection`
+PreToolUse hook, and cancels with `interrupt`. An ask outside an owned run, and one
 left open when its run settles, is refused back to the child with the Go
 adapter's messages. Against a scripted child, `goap conformance` passes every
 check but the two model-switch checks, and `goap validate` and `oapx validate`
@@ -566,7 +567,6 @@ What differs from the Go adapter, or cannot be done through this path:
 
 | Area | oapx | Go adapter | Why |
 | --- | --- | --- | --- |
-| Capability revision | `claude-code-2.1.280-oapx-v1`: Go's descriptor with `run.resume` and `run.replay` `unavailable` | `claude-code-2.1.280-oap-v3`, both `degraded` | oapx keeps no journal, and a revision names one descriptor. The replay control answers `unsupported_control`. |
 | `models.request`, `session.model.switch.request` | `unsupported_feature` | the same | The CLI's model control is unexercised in both trees, so both fail the conformance runner's model-switch checks. |
 | Tool sources and provided tools at open | `unsupported_feature`, before any child starts | the same | Not advertised. |
 | Admission | A turn the child has not echoed within 10 minutes is abandoned: the child is stopped and the session closes | waits on the caller's context, and a cancelled wait closes the session | The endpoint serves one request at a time, so a submit cannot wait unbounded. |

@@ -915,6 +915,10 @@ func (s *memorySession) Resolve(ctx context.Context, resolution InteractionResol
 		s.mu.Unlock()
 		return ErrInteractionResolved
 	}
+	if !run.started {
+		s.mu.Unlock()
+		return ErrInteractionNotFound
+	}
 	if resolution.RespondedBy != run.respondedBy {
 		s.mu.Unlock()
 		return ErrWrongResponder

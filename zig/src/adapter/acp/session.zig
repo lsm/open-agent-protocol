@@ -117,6 +117,7 @@ pub const Reducer = struct {
     messages: std.ArrayList(MessageBinding) = .empty,
     envelopes: std.ArrayList(std.json.Value) = .empty,
     admission: Admission = .{},
+    last_sequence: i64 = 0,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options };
@@ -214,6 +215,7 @@ pub const Reducer = struct {
     fn emitEnvelope(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, in_reply_to: []const u8) ![]const u8 {
         const id = try self.nextID("event");
         run.sequence += 1;
+        self.last_sequence = run.sequence;
         var envelope = self.object();
         try self.put(&envelope, "protocol", str(protocol_name));
         try self.put(&envelope, "version", str(protocol_version));
