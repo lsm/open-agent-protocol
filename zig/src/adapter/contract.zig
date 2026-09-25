@@ -272,6 +272,53 @@ pub fn refuseUnadvertisedOpen(descriptor: Descriptor, request: *const oap_types.
     if (request.message_json != null) return refusal.unsupportedField(feature_submit, reason_unsatisfiable, "message");
 }
 
+pub const ToolChoice = struct {
+    allowed: ?[]const []const u8 = null,
+    disallowed: []const []const u8 = &.{},
+
+    pub fn permits(self: ToolChoice, name: []const u8) bool {
+        if (self.allowed) |allowed| {
+            if (!names(allowed, name)) return false;
+        }
+        return !names(self.disallowed, name);
+    }
+
+    fn names(listed: []const []const u8, name: []const u8) bool {
+        for (listed) |candidate| {
+            if (std.mem.eql(u8, candidate, name)) return true;
+        }
+        return false;
+    }
+};
+
+pub fn parseToolChoice(arena: std.mem.Allocator, text: []const u8) error{ OutOfMemory, InvalidPolicy }!ToolChoice {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{ .allocate = .alloc_always }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return error.InvalidPolicy;
+    };
+    if (document != .object) return error.InvalidPolicy;
+    var choice = ToolChoice{};
+    var carried: usize = 0;
+    var it = document.object.iterator();
+    while (it.next()) |entry| {
+        const value = entry.value_ptr.*;
+        if (value != .array) return error.InvalidPolicy;
+        const listed = try arena.alloc([]const u8, value.array.items.len);
+        for (value.array.items, listed) |item, *slot| {
+            if (item != .string) return error.InvalidPolicy;
+            slot.* = item.string;
+        }
+        if (std.mem.eql(u8, entry.key_ptr.*, "allowed")) {
+            choice.allowed = listed;
+        } else if (std.mem.eql(u8, entry.key_ptr.*, "disallowed")) {
+            choice.disallowed = listed;
+        } else return error.InvalidPolicy;
+        carried += 1;
+    }
+    if (carried != 1) return error.InvalidPolicy;
+    return choice;
+}
+
 pub const QuestionKind = enum { text, single_choice, multi_choice };
 
 pub const Question = struct {
