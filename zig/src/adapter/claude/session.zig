@@ -36,6 +36,27 @@ pub const Identity = struct {
 
 pub const Decision = enum { allow, deny };
 
+pub const ToolPolicy = struct {
+    allowed: ?[]const []const u8 = null,
+    disallowed: []const []const u8 = &.{},
+
+    fn excludes(self: ToolPolicy, name: []const u8) bool {
+        if (self.allowed) |allowed| {
+            if (!listedName(allowed, name)) return true;
+        }
+        return listedName(self.disallowed, name);
+    }
+};
+
+fn listedName(names: []const []const u8, name: []const u8) bool {
+    for (names) |candidate| {
+        if (std.mem.eql(u8, candidate, name)) return true;
+    }
+    return false;
+}
+
+pub const refused_by_policy = "refused_by_policy";
+
 const Run = struct {
     id: []const u8 = "",
     message_id: []const u8 = "",
@@ -85,6 +106,8 @@ pub const Reducer = struct {
     identity: Identity = .{},
     clock: i64 = 0,
     current_model: []const u8,
+    native_session_id: []const u8 = "",
+    last_sequence: i64 = 0,
     run: ?Run = null,
     tools: std.ArrayList(Tool) = .empty,
     catalog: std.ArrayList(CatalogEntry) = .empty,
@@ -97,6 +120,8 @@ pub const Reducer = struct {
     envelopes: std.ArrayList(std.json.Value) = .empty,
     servers: std.ArrayList([]const u8) = .empty,
     started: ?Started = null,
+    policy: ToolPolicy = .{},
+    policy_denied: std.ArrayList([]const u8) = .empty,
 
     pub fn init(arena: *std.heap.ArenaAllocator, options: Options) Reducer {
         return .{ .arena = arena, .options = options, .current_model = options.model };
@@ -112,6 +137,10 @@ pub const Reducer = struct {
         return std.fmt.allocPrint(self.allocator(), "{s}-{d}", .{ kind, counter.* });
     }
 
+    pub fn mintTurn(self: *Reducer) ![]const u8 {
+        return self.nextID("turn");
+    }
+
     fn now(self: *Reducer) i64 {
         self.clock += 1;
         if (self.options.now_ms) |read| return read();
@@ -125,6 +154,30 @@ pub const Reducer = struct {
             if (std.mem.eql(u8, gate.run_id, run.id)) return true;
         }
         return false;
+    }
+
+    pub fn excludes(self: *const Reducer, tool_name: []const u8) bool {
+        const run = self.run orelse return false;
+        return run.started and self.policy.excludes(tool_name);
+    }
+
+    pub fn refusedByPolicy(self: *Reducer, tool_use_id: []const u8) !void {
+        if (tool_use_id.len == 0) return;
+        try self.policy_denied.append(self.allocator(), try self.allocator().dupe(u8, tool_use_id));
+    }
+
+    fn takeDenial(self: *Reducer, tool_use_id: []const u8) bool {
+        for (self.policy_denied.items, 0..) |denied, index| {
+            if (!std.mem.eql(u8, denied, tool_use_id)) continue;
+            _ = self.policy_denied.orderedRemove(index);
+            return true;
+        }
+        return false;
+    }
+
+    pub fn hookCallback(self: *Reducer, callback_id: []const u8) !void {
+        const what = try std.fmt.allocPrint(self.allocator(), "hook callback \"{s}\"", .{callback_id});
+        try self.foreignActivity(what);
     }
 
     pub fn gateFor(self: *const Reducer, request_id: []const u8) ?[]const u8 {
@@ -145,6 +198,8 @@ pub const Reducer = struct {
         kept.unusable = self.unusable;
         kept.catalog_known = self.catalog_known;
         kept.current_model = try kept_allocator.dupe(u8, self.current_model);
+        kept.native_session_id = try kept_allocator.dupe(u8, self.native_session_id);
+        kept.last_sequence = self.last_sequence;
         try kept.tools.ensureTotalCapacity(kept_allocator, self.tools.items.len);
         for (self.tools.items) |tool| {
             const native_id = try kept_allocator.dupe(u8, tool.native_id);
@@ -176,10 +231,9 @@ pub const Reducer = struct {
     pub fn submitAs(self: *Reducer, submission_uuid: []const u8, identity: Identity) !void {
         if (self.unusable) return error.SessionClosed;
         if (self.run != null) return error.RunActive;
-        const minted_submission = try self.nextID("submission");
-        const submission_id = if (identity.submission_id.len > 0) identity.submission_id else minted_submission;
-        self.identity = identity;
         const message_id = try self.nextID("message");
+        const submission_id = if (identity.submission_id.len > 0) identity.submission_id else message_id;
+        self.identity = identity;
         self.run = Run{
             .submission_id = submission_id,
             .message_id = message_id,
@@ -246,6 +300,7 @@ pub const Reducer = struct {
         const tool_call_id = correlation.tool_call_id;
         const in_reply_to = correlation.in_reply_to;
         run.sequence += 1;
+        self.last_sequence = run.sequence;
         const id = try self.nextID("event");
         var envelope = self.object();
         try self.put(&envelope, "protocol", str(protocol_name));
@@ -331,9 +386,10 @@ pub const Reducer = struct {
         }
         tool.terminal = true;
         var payload = try self.toolPayload(run, tool.*);
+        const refused = self.takeDenial(native_id);
         if (is_error) {
             var failure = self.object();
-            try self.put(&failure, "code", str("claude_tool_error"));
+            try self.put(&failure, "code", str(if (refused) refused_by_policy else "claude_tool_error"));
             try self.put(&failure, "message", str(toolResultText(content)));
             try self.put(&payload, "error", .{ .object = failure });
             _ = try self.emitCorrelated(run, "action.call.failed", .{ .object = payload }, tool.id, tool.started_event);
@@ -676,6 +732,7 @@ pub const Reducer = struct {
             self.run = null;
             return;
         }
+        try self.sweepRun();
         var failure = self.object();
         try self.put(&failure, "code", str(code));
         try self.put(&failure, "message", str(message));
@@ -727,7 +784,15 @@ pub const Reducer = struct {
         for (self.tools.items) |*tool| {
             if (!std.mem.eql(u8, tool.run_id, run.id) or tool.terminal) continue;
             tool.terminal = true;
-            const payload = try self.toolPayload(run, tool.*);
+            var payload = try self.toolPayload(run, tool.*);
+            if (self.takeDenial(tool.native_id)) {
+                var failure = self.object();
+                try self.put(&failure, "code", str(refused_by_policy));
+                try self.put(&failure, "message", str("refused by the run's tool_choice"));
+                try self.put(&payload, "error", .{ .object = failure });
+                _ = try self.emitCorrelated(run, "action.call.failed", .{ .object = payload }, tool.id, tool.started_event);
+                continue;
+            }
             _ = try self.emitCorrelated(run, "action.call.cancelled", .{ .object = payload }, tool.id, tool.started_event);
         }
         var kept_gates = std.ArrayList(Gate).empty;
@@ -772,6 +837,7 @@ pub const Reducer = struct {
             return;
         }
         if (message.kind != .observation) return;
+        try self.associate(message);
         if (self.run) |run| {
             if (self.unusable) return;
             if (!run.started) {
@@ -787,6 +853,14 @@ pub const Reducer = struct {
             return;
         }
         try self.observeIdle(message);
+    }
+
+    fn associate(self: *Reducer, message: rpc.Message) !void {
+        if (message.object != .object) return;
+        const carried = rpc.lookup(message.object.object, "session_id") orelse return;
+        if (carried != .string or carried.string.len == 0) return;
+        if (std.mem.eql(u8, carried.string, self.native_session_id)) return;
+        self.native_session_id = try self.allocator().dupe(u8, carried.string);
     }
 
     fn observeIdle(self: *Reducer, message: rpc.Message) !void {
@@ -1127,7 +1201,7 @@ fn startedModels(reducer: *Reducer, arena: std.mem.Allocator) ![]const []const u
     return models.items;
 }
 
-test "ids are allocated from one counter across four kinds" {
+test "ids are allocated from one counter and the submission reuses the message id" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var reducer = Reducer.init(&arena, .{});
@@ -1138,10 +1212,10 @@ test "ids are allocated from one counter across four kinds" {
         \\{"type":"stream_event","session_id":"s","event":{"type":"message_start"},"uuid":"e1","user_message_uuid":"turn-1"}
     );
 
-    try testing.expectEqualStrings("submission-1", reducer.run.?.submission_id);
-    try testing.expectEqualStrings("message-2", reducer.run.?.message_id);
-    try testing.expectEqualStrings("run-3", reducer.run.?.id);
-    try testing.expectEqualStrings("event-4", reducer.envelopes.items[0].object.get("id").?.string);
+    try testing.expectEqualStrings("message-1", reducer.run.?.submission_id);
+    try testing.expectEqualStrings("message-1", reducer.run.?.message_id);
+    try testing.expectEqualStrings("run-2", reducer.run.?.id);
+    try testing.expectEqualStrings("event-3", reducer.envelopes.items[0].object.get("id").?.string);
 }
 
 test "a run reports the model captured at submit, not the one init later published" {
@@ -1645,8 +1719,9 @@ test "a tool lifecycle the oracle refuses fails the run here too" {
         \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a2"}
     );
     const after_duplicate = try emittedTypes(&duplicated, scratch);
-    try testing.expectEqual(@as(usize, 4), after_duplicate.len);
-    try testing.expectEqualStrings("run.failed", after_duplicate[3]);
+    try testing.expectEqual(@as(usize, 5), after_duplicate.len);
+    try testing.expectEqualStrings("action.call.cancelled", after_duplicate[3]);
+    try testing.expectEqualStrings("run.failed", after_duplicate[4]);
     try testing.expectEqualStrings("claude_tool_lifecycle", failureCodeOf(&duplicated).?);
     try testing.expectEqualStrings("duplicate tool call", failureMessageOf(&duplicated).?);
 
@@ -1741,7 +1816,8 @@ test "a call the failed run left open is not swept into the next run" {
     try observeText(&reducer, scratch,
         \\{"type":"user","session_id":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"nobody","content":"out"}]},"uuid":"u1"}
     );
-    try testing.expectEqualStrings("run.failed", reducer.envelopes.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("action.call.cancelled", reducer.envelopes.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("run.failed", reducer.envelopes.items[4].object.get("type").?.string);
     const refused_at = reducer.envelopes.items.len;
 
     try startedRun(&reducer, scratch, "turn-2");
@@ -2357,7 +2433,7 @@ test "an injected run id takes the place of the minted one without taking its le
     const injected_ids = try envelopeIDs(&injected, scratch);
 
     try testing.expectEqualStrings("run.started", minted.envelopes.items[0].object.get("type").?.string);
-    try testing.expectEqualStrings("run-3", minted.envelopes.items[0].object.get("run_id").?.string);
+    try testing.expectEqualStrings("run-2", minted.envelopes.items[0].object.get("run_id").?.string);
     try testing.expectEqualStrings("01JB0RUN", injected.envelopes.items[0].object.get("run_id").?.string);
 
     try testing.expectEqual(minted_ids.len, injected_ids.len);
@@ -2507,10 +2583,11 @@ fn settledSession(arena: *std.heap.ArenaAllocator) !Reducer {
     return reducer;
 }
 
-test "a compacted reducer keeps what later runs consult and none of what the settled run held" {
+test "a compacted reducer keeps what later runs and state consult and none of what the settled run held" {
     var source = std.heap.ArenaAllocator.init(testing.allocator);
     var reducer = try settledSession(&source);
     const ids_before = reducer.ids;
+    const cursor_before = reducer.last_sequence;
 
     var target = std.heap.ArenaAllocator.init(testing.allocator);
     defer target.deinit();
@@ -2518,6 +2595,9 @@ test "a compacted reducer keeps what later runs consult and none of what the set
     source.deinit();
 
     try testing.expectEqual(ids_before, kept.ids);
+    try testing.expect(cursor_before > 0);
+    try testing.expectEqual(cursor_before, kept.last_sequence);
+    try testing.expectEqualStrings("s", kept.native_session_id);
     try testing.expectEqualStrings("model-a", kept.current_model);
     try testing.expectEqual(@as(usize, 0), kept.gates.items.len);
     try testing.expectEqual(@as(usize, 1), kept.tools.items.len);
@@ -2571,4 +2651,23 @@ test "compaction frees what it built when any allocation fails" {
     defer source.deinit();
     const reducer = try settledSession(&source);
     try testing.checkAllAllocationFailures(testing.allocator, compactProbe, .{&reducer});
+}
+
+test "a policy-denied call still open when the child dies settles refused_by_policy before the run fails" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = Reducer.init(&arena, .{});
+    reducer.open();
+    try startedRun(&reducer, scratch, "turn-1");
+    try observeText(&reducer, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash"}]},"uuid":"a1"}
+    );
+    try reducer.refusedByPolicy("t1");
+    try reducer.transportFailed("the child exited");
+    const kinds = try emittedTypes(&reducer, scratch);
+    try testing.expectEqualStrings("action.call.failed", kinds[kinds.len - 2]);
+    try testing.expectEqualStrings("run.failed", kinds[kinds.len - 1]);
+    const settled = reducer.envelopes.items[kinds.len - 2].object.get("payload").?.object.get("error").?.object;
+    try testing.expectEqualStrings(refused_by_policy, settled.get("code").?.string);
 }

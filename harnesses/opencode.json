@@ -7,7 +7,6 @@
       "status": "current",
       "endpoint_version": "v1.18.32",
       "capability_revision": "opencode-v1.18.32-oap-v2",
-      "oapx_capability_revision": "opencode-v1.18.32-oapx-v1",
       "ledgers": ["research/opencode-v1.18.32-mapping.md", "research/opencode-v1.18.29-mapping.md"],
       "corpus": "fixtures/adapters/opencode-v1.18.32",
       "components": [

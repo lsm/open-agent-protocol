@@ -7,7 +7,6 @@
       "status": "current",
       "endpoint_version": "v2026.8.31",
       "capability_revision": "hermes-v2026.8.31-oap-v2",
-      "oapx_capability_revision": "hermes-v2026.8.31-oapx-v1",
       "ledgers": ["research/hermes-v2026.8.31-mapping.md"],
       "corpus": "fixtures/adapters/hermes-v2026.8.31",
       "components": [

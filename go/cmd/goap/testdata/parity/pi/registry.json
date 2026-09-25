@@ -1,0 +1,1 @@
+{"adapters":{"pi":{"type":"pi","executable":"@DIR@/child.sh","working_directory":"@DIR@","environment":["PATH"]}}}

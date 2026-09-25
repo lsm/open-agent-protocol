@@ -106,11 +106,12 @@ passes to a child.
 
 ## Capability revision
 
-The advertised surface is unchanged. The revisions move only because the
-endpoint version does (Decision 0033): `opencode-v1.18.32-oap-v2` for the Go
-adapter and `opencode-v1.18.32-oapx-v1` for the `oapx` served backend. The
-suffixes are kept to say the descriptor content is the same as the v1.18.29
-revisions of the same suffix.
+The advertised surface is unchanged. The revision moves only because the
+endpoint version does (Decision 0033): `opencode-v1.18.32-oap-v2`. The `-v2`
+suffix is kept to say the descriptor content is the same as
+`opencode-v1.18.29-oap-v2`. Since the endpoint journals every served session,
+`oapx serve agent --backend opencode` serves this same descriptor under this
+same revision, so the version carries no `oapx_capability_revision`.
 
 ## Adapter changes
 

@@ -10,7 +10,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.claude_code_oapx_capability_revision;
+pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const pinned_version = harness_pins.claude_code_endpoint_version;
 pub const denied_message = "Denied by the operator";
 const harness_owner = session.harness_owner;
@@ -28,9 +28,10 @@ const features = [_]contract.Feature{
     .{ .key = "run.streaming", .level = .native, .reason = "stream_event deltas with --include-partial-messages always on" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.cancel", .level = .degraded, .reason = "interrupt intent; settlement only via terminal_reason aborted_*" },
-    .{ .key = "run.resume", .level = .unavailable, .reason = "oapx keeps no journal for this backend" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = "oapx keeps no journal for this backend" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "native conversation resume is not exercised; OAP resume replays the adapter journal" },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps are explicit and transcript persistence is not event replay" },
     .{ .key = "run.reconciliation", .level = .degraded, .reason = "system/init and session state frames corroborate" },
+    .{ .key = "run.tool_selection", .level = .emulated, .scope = "run", .reason = "enforced per call: a PreToolUse hook, and the can_use_tool gate behind it, refuse an excluded tool before it runs and the call settles refused_by_policy; not retained past the run" },
     .{ .key = "action.tools", .level = .degraded, .reason = "tool_use/tool_result projection; started synthesized; tool_progress observed-only" },
     .{ .key = "action.tools.execute", .level = .unavailable, .reason = "the CLI executes tools internally" },
     .{ .key = contract.feature_tools_list, .level = .degraded, .reason = "system/init republishes the tool and MCP server lists per turn; there is none before the first" },
@@ -246,13 +247,65 @@ pub const Session = struct {
                 try self.engine.reducer.observe(message);
             },
             .control_request => {
+                if (std.mem.eql(u8, message.subtype, "hook_callback")) return self.answerHook(message);
                 if (!std.mem.eql(u8, message.subtype, "can_use_tool")) return self.engine.reducer.observe(message);
+                if (try self.refuseExcludedAsk(message)) return;
                 try self.recordAsk(message);
                 try self.engine.reducer.observe(message);
                 try self.bindAsk(message.request_id);
             },
             .observation => try self.engine.reducer.observe(message),
         }
+    }
+
+    fn requestOf(message: rpc.Message) ?std.json.ObjectMap {
+        const request = message.object.object.get("request") orelse return null;
+        return if (request == .object) request.object else null;
+    }
+
+    fn member(map: std.json.ObjectMap, key: []const u8) []const u8 {
+        const value = map.get(key) orelse return "";
+        return if (value == .string) value.string else "";
+    }
+
+    fn policyRefusal(arena: std.mem.Allocator, tool_name: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(arena, "{s} is excluded by this run's tool_choice", .{tool_name});
+    }
+
+    fn answerHook(self: *Session, message: rpc.Message) !void {
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        const request = requestOf(message) orelse std.json.ObjectMap.empty;
+        const callback_id = member(request, "callback_id");
+        const input = if (request.get("input")) |carried| (if (carried == .object) carried.object else std.json.ObjectMap.empty) else std.json.ObjectMap.empty;
+        if (!std.mem.eql(u8, callback_id, backend.tool_selection_hook) or !std.mem.eql(u8, member(input, "hook_event_name"), backend.pre_tool_use)) {
+            try self.writeFrame(try backend.controlError(a, message.request_id, "claude adapter: unregistered hook callback"));
+            return self.engine.reducer.hookCallback(callback_id);
+        }
+        const tool_name = member(input, "tool_name");
+        if (!self.engine.reducer.excludes(tool_name)) return self.writeFrame(try backend.hookContinue(a, message.request_id));
+        try self.writeFrame(try backend.hookDeny(a, message.request_id, try policyRefusal(a, tool_name)));
+        try self.engine.reducer.refusedByPolicy(member(input, "tool_use_id"));
+    }
+
+    fn refuseExcludedAsk(self: *Session, message: rpc.Message) !bool {
+        const request = requestOf(message) orelse return false;
+        const tool_name = member(request, "tool_name");
+        if (!self.engine.reducer.excludes(tool_name)) return false;
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        const a = scratch.allocator();
+        try self.writeFrame(try backend.permissionDeny(a, message.request_id, try policyRefusal(a, tool_name)));
+        try self.engine.reducer.refusedByPolicy(member(request, "tool_use_id"));
+        return true;
+    }
+
+    fn writeFrame(self: *Session, frame: []const u8) !void {
+        if (self.engine.settled) return;
+        self.engine.writeControl(frame) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+        };
     }
 
     fn recordAsk(self: *Session, message: rpc.Message) !void {
@@ -315,7 +368,9 @@ pub const Session = struct {
 
     fn control(self: *Session, arena: std.mem.Allocator, kind: ControlKind, timeout_ns: u64, refusal: *contract.Refusal) contract.Failure!void {
         self.requests += 1;
-        const request_id = try std.fmt.allocPrint(self.gpa, "req_{d}", .{self.requests});
+        var entropy: [4]u8 = undefined;
+        compat.random.fillSecureBytes(&entropy);
+        const request_id = try std.fmt.allocPrint(self.gpa, "req_{d}_{x}", .{ self.requests, entropy });
         self.call = .{ .request_id = request_id };
         defer self.clearCall();
         const frame = switch (kind) {
@@ -357,12 +412,16 @@ pub const Session = struct {
         const active = if (reducer.run) |run| run.started else false;
         const active_run_id: ?[]const u8 = if (active) try arena.dupe(u8, reducer.run.?.id) else null;
         const current_model_id: ?[]const u8 = if (reducer.current_model.len > 0) try arena.dupe(u8, reducer.current_model) else null;
+        const metadata_json: ?[]const u8 = if (reducer.native_session_id.len > 0) try std.json.Stringify.valueAlloc(arena, .{ .claude_native_session_id = reducer.native_session_id }, .{}) else null;
+        const transcript_cursor: ?[]const u8 = if (reducer.last_sequence > 0) try std.fmt.allocPrint(arena, "{d}", .{reducer.last_sequence}) else null;
         return .{
             .session_id = self.id,
             .status = if (active) .running else .idle,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
             .updated_at_ms = wallClock(),
+            .transcript_cursor = transcript_cursor,
+            .metadata_json = metadata_json,
         };
     }
 
@@ -371,7 +430,18 @@ pub const Session = struct {
         const text = try submissionText(arena, request);
         if (self.engine.settled or self.engine.reducer.unusable) return error.SessionClosed;
         if (self.engine.reducer.run != null) return error.RunActive;
-        const uuid = try self.owner.mint(arena, "turn");
+        const policy: session.ToolPolicy = if (request.tool_choice_json) |choice_json| chosen: {
+            const choice = contract.parseToolChoice(self.engine.reducer.arena.allocator(), choice_json) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidPolicy => {
+                    refusal.* = .{ .feature = "run.tool_selection", .reason = contract.reason_unsatisfiable, .message = "tool_choice is not the typed policy" };
+                    return error.UnsupportedFeature;
+                },
+            };
+            break :chosen .{ .allowed = choice.allowed, .disallowed = choice.disallowed };
+        } else .{};
+        const uuid = try self.engine.reducer.mintTurn();
+        self.engine.reducer.policy = policy;
         self.engine.reducer.started = null;
         self.engine.submit(uuid, text, .{}) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -690,6 +760,12 @@ const Probe = struct {
         return self.handle.?.submit(self.arena.allocator(), &request, refusal);
     }
 
+    fn submitChoosing(self: *Probe, text: []const u8, choice: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+        const messages = try self.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = text } }});
+        const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .tool_choice_json = choice };
+        return self.handle.?.submit(self.arena.allocator(), &request, refusal);
+    }
+
     fn events(self: *Probe) ![]contract.Event {
         var drained = std.ArrayList(contract.Event).empty;
         try self.handle.?.drain(self.arena.allocator(), &drained);
@@ -737,6 +813,13 @@ const Probe = struct {
     }
 };
 
+fn expectMintedRequest(text: []const u8, prefix: []const u8, suffix: []const u8) !void {
+    try testing.expect(std.mem.startsWith(u8, text, prefix));
+    try testing.expect(std.mem.endsWith(u8, text, suffix));
+    try testing.expectEqual(prefix.len + 8 + suffix.len, text.len);
+    for (text[prefix.len .. prefix.len + 8]) |char| try testing.expect(std.ascii.isDigit(char) or (char >= 'a' and char <= 'f'));
+}
+
 test "an open runs the initialize exchange before handing the session out" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_idle);
@@ -745,20 +828,20 @@ test "an open runs the initialize exchange before handing the session out" {
     const opened = try probe.open(&refusal);
     try testing.expectEqualStrings("s1", opened.id());
     const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expectEqualStrings("{\"request\":{\"hooks\":null,\"subtype\":\"initialize\"},\"request_id\":\"req_1\",\"type\":\"control_request\"}\n", written);
+    try expectMintedRequest(written, "{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"oap_tool_selection\"]}]},\"subtype\":\"initialize\"},\"request_id\":\"req_1_", "\",\"type\":\"control_request\"}\n");
 }
 
 test "an open whose initialize the child refuses, or leaves unanswered at exit, is refused naming why" {
     var refused: Probe = undefined;
     try refused.init(
         \\#!/bin/sh
-        \\read -r line; printf '{"type":"control_response","response":{"subtype":"error","request_id":"req_1","error":"hooks are off"}}\n'; read -r rest
+        \\read -r line; id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p'); printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"hooks are off"}}\n' "$id"; read -r rest
         \\
     );
     defer refused.deinit();
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, refused.open(&refusal));
-    try testing.expectEqualStrings("claude rpc error for request req_1: hooks are off", refusal.message);
+    try expectMintedRequest(refusal.message, "claude rpc error for request req_1_", ": hooks are off");
 
     var gone: Probe = undefined;
     try gone.init("#!/bin/sh\nread -r line; exit 3\n");
@@ -786,8 +869,7 @@ test "an admission waits for the turn's echo and names the run it started" {
     try testing.expect(std.mem.indexOf(u8, events[0].line, "\"type\":\"run.started\"") != null);
     try testing.expectEqualStrings(admission.run_id.?, events[0].run_id);
     try testing.expectEqual(@as(u64, 1), events[0].sequence);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"content\":\"fix it\"") != null);
+    _ = try probe.waitWritten("\"content\":\"fix it\"");
 }
 
 test "an allowed ask reaches the child with the tool's own input, and the run completes on the stream" {
@@ -809,8 +891,7 @@ test "an allowed ask reaches the child with the tool's own input, and the run co
     try testing.expect(std.mem.indexOf(u8, completed.line, "answered allow") != null);
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
 
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"touch /tmp/x\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"allow\",\"updatedInput\":{\"command\":\"touch /tmp/x\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}");
 }
 
 test "a tool input nested past 256 levels reaches the call, the prompt and the child whole" {
@@ -853,8 +934,7 @@ test "a denied ask reaches the child as the operator's refusal" {
     try probe.answer(try probe.pumpUntil("user.input.requested", &seen), "deny", &refusal);
     const completed = try probe.pumpUntil("run.completed", &seen);
     try testing.expect(std.mem.indexOf(u8, completed.line, "answered deny") != null);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"deny\",\"message\":\"Denied by the operator\"},\"subtype\":\"success\"},\"type\":\"control_response\"}") != null);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"ask-1\",\"response\":{\"behavior\":\"deny\",\"message\":\"Denied by the operator\"},\"subtype\":\"success\"},\"type\":\"control_response\"}");
 }
 
 test "a resolution that misnames its gate, run, session, responder, requester or answer is refused before anything is written" {
@@ -910,7 +990,7 @@ test "a cancel interrupts the child and is acknowledged once the child receipts 
     try testing.expect(acknowledged.accepted);
     try testing.expectEqual(oap_types.RunStatus.cancelling, acknowledged.status);
     const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":\"req_2\",\"type\":\"control_request\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":\"req_2_") != null);
 
     var seen = std.ArrayList(contract.Event).empty;
     const cancelled = try probe.pumpUntil("run.cancelled", &seen);
@@ -933,8 +1013,7 @@ test "a cancel the child never receipts is refused once its bound passes, and th
     try testing.expectError(error.BackendFailed, probe.handle.?.cancel(probe.arena.allocator(), admission.run_id.?, &refusal));
     try testing.expectEqualStrings("the claude child did not answer interrupt within 150 ms", refusal.message);
     try testing.expectEqual(contract.Activity.running, probe.handle.?.activity());
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"subtype\":\"interrupt\"") != null);
+    _ = try probe.waitWritten("\"subtype\":\"interrupt\"");
 }
 
 test "a child that dies before echoing the turn refuses the admission and closes the session" {
@@ -1017,8 +1096,7 @@ test "text parts are joined with newlines into the one turn the child reads" {
     var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = &messages, .delivery = .auto };
     _ = try probe.handle.?.submit(probe.arena.allocator(), &request, &refusal);
-    const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "\"content\":\"first\\nsecond\"") != null);
+    _ = try probe.waitWritten("\"content\":\"first\\nsecond\"");
 }
 
 test "an ask the child raises outside any run is refused back to the child and ends the session" {
@@ -1091,7 +1169,7 @@ test "the tool catalog needs the degraded opt-in and lists the latest init once 
     try testing.expectEqualStrings("mcp", after.sources[1].protocol.?);
 }
 
-test "state reports the live run and the model the latest init named" {
+test "state reports the live run, the model and native session the latest init named, and the last sequence as its cursor" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_gated_turn ++ fake_idle);
     defer probe.deinit();
@@ -1102,12 +1180,20 @@ test "state reports the live run and the model the latest init named" {
     try testing.expectEqual(oap_types.SessionStatus.idle, idle.status);
     try testing.expect(idle.active_run_id == null);
     try testing.expect(idle.current_model_id == null);
+    try testing.expect(idle.metadata_json == null);
+    try testing.expect(idle.transcript_cursor == null);
 
     const admission = try probe.submit("fix it", &refusal);
     const running = try probe.handle.?.state(probe.arena.allocator(), &refusal);
     try testing.expectEqual(oap_types.SessionStatus.running, running.status);
     try testing.expectEqualStrings(admission.run_id.?, running.active_run_id.?);
     try testing.expectEqualStrings("claude-fake", running.current_model_id.?);
+    try testing.expectEqualStrings("{\"claude_native_session_id\":\"native-1\"}", running.metadata_json.?);
+
+    var seen = std.ArrayList(contract.Event).empty;
+    const waiting = try probe.pumpUntil("run.status.updated", &seen);
+    const waited = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(probe.arena.allocator(), "{d}", .{waiting.sequence}), waited.transcript_cursor.?);
 }
 
 test "each event is drained once, a settled session's arena is compacted, and the next run counts from one" {
@@ -1201,4 +1287,81 @@ test "building a session and its child leaks nothing, and fails only for want of
         try testing.expect(failing.has_induced_failure);
         try testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
     }
+}
+
+fn fakeHookedTurn(comptime callback: []const u8) []const u8 {
+    return "take; uuid=$(field uuid)\n" ++
+        "printf '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"native-1\",\"tools\":[\"Bash\"],\"mcp_servers\":[],\"model\":\"claude-fake\",\"uuid\":\"i1\"}\\n'\n" ++
+        "printf '{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\"},\"session_id\":\"native-1\",\"parent_tool_use_id\":null,\"uuid\":\"e1\",\"user_message_uuid\":\"%s\"}\\n' \"$uuid\"\n" ++
+        "printf '{\"type\":\"assistant\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-fake\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_h\",\"name\":\"Bash\",\"input\":{}}]},\"parent_tool_use_id\":null,\"session_id\":\"native-1\",\"uuid\":\"a1\"}\\n'\n" ++
+        "printf '{\"type\":\"control_request\",\"request_id\":\"hook-1\",\"request\":{\"subtype\":\"hook_callback\",\"callback_id\":\"" ++ callback ++ "\",\"tool_use_id\":\"toolu_h\",\"input\":{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_use_id\":\"toolu_h\"}}}\\n'\n" ++
+        "take; case \"$line\" in *'\"permissionDecision\":\"deny\"'*) refused=true ;; *) refused=false ;; esac\n" ++
+        "printf '{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"toolu_h\",\"type\":\"tool_result\",\"content\":\"hook said %s\",\"is_error\":%s}]},\"parent_tool_use_id\":null,\"session_id\":\"native-1\",\"uuid\":\"u1\"}\\n' \"$refused\" \"$refused\"\n" ++
+        "printf '{\"type\":\"result\",\"subtype\":\"success\",\"duration_ms\":12,\"is_error\":false,\"num_turns\":1,\"session_id\":\"native-1\",\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":7,\"output_tokens\":5},\"terminal_reason\":\"completed\",\"result\":\"ok\",\"user_message_uuid\":\"%s\",\"queued_turn_count\":0,\"uuid\":\"r1\"}\\n' \"$uuid\"\n";
+}
+
+const fake_hooked_turn = fakeHookedTurn("oap_tool_selection");
+const fake_stray_hook_turn = fakeHookedTurn("someone_else");
+
+test "a PreToolUse hook for a tool the run's tool_choice excludes is denied and the call settles refused_by_policy" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_hooked_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submitChoosing("go", "{\"disallowed\":[\"Bash\"]}", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const failed = try probe.pumpUntil("action.call.failed", &seen);
+    try testing.expect(std.mem.indexOf(u8, failed.line, "\"code\":\"refused_by_policy\"") != null);
+    try testing.expect(std.mem.indexOf(u8, failed.line, "hook said true") != null);
+    _ = try probe.pumpUntil("run.completed", &seen);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"hook-1\",\"response\":{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Bash is excluded by this run's tool_choice\"}},\"subtype\":\"success\"},\"type\":\"control_response\"}");
+}
+
+test "a PreToolUse hook for a permitted tool continues and the call completes" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_hooked_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submitChoosing("go", "{\"allowed\":[\"Bash\"]}", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("action.call.completed", &seen);
+    _ = try probe.waitWritten("{\"response\":{\"request_id\":\"hook-1\",\"response\":{},\"subtype\":\"success\"},\"type\":\"control_response\"}");
+}
+
+test "a hook callback the adapter did not register is refused and ends the run as external activity" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_stray_hook_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("go", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    try testing.expect(std.mem.indexOf(u8, failed.line, "hook callback \\\"someone_else\\\"") != null);
+    _ = try probe.waitWritten("\"error\":\"claude adapter: unregistered hook callback\"");
+}
+
+test "a permission ask for an excluded tool is denied without opening a gate" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_gated_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submitChoosing("go", "{\"allowed\":[\"Read\"]}", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+    for (seen.items) |event| try testing.expect(std.mem.indexOf(u8, event.line, "\"user.input.requested\"") == null);
+    _ = try probe.waitWritten("\"behavior\":\"deny\",\"message\":\"Bash is excluded by this run's tool_choice\"");
+}
+
+test "a tool_choice that is not the typed policy is refused under run.tool_selection" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    try testing.expectError(error.UnsupportedFeature, probe.submitChoosing("go", "{\"allowed\":[\"Bash\"],\"disallowed\":[]}", &refusal));
+    try testing.expectEqualStrings("run.tool_selection", refusal.feature);
 }

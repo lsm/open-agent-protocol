@@ -10,8 +10,7 @@ const session = @import("session.zig");
 const rpc = @import("rpc.zig");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = harness_pins.pi_oapx_capability_revision;
-const journal_reason = "oapx keeps no journal for this backend";
+pub const capability_revision = harness_pins.pi_capability_revision;
 
 const features = [_]contract.Feature{
     .{ .key = "action.permissions", .level = .unavailable, .reason = "extension dialogs are generic user input, not permissions" },
@@ -20,9 +19,9 @@ const features = [_]contract.Feature{
     .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor synthesized for the pinned RPC vocabulary" },
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "Pi has no negotiation; readiness is a get_state handshake" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "abort intent is local; agent_settled remains terminal authority" },
-    .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state is read at open; afterwards the state is the adapter projection of Pi events" },
-    .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
-    .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
+    .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state reconciles streaming state" },
+    .{ .key = "run.replay", .level = .degraded, .reason = "bounded adapter journal; gaps explicit" },
+    .{ .key = "run.resume", .level = .degraded, .reason = "bounded process-memory replay" },
     .{ .key = "run.status", .level = .emulated },
     .{ .key = "run.streaming", .level = .native },
     .{ .key = "session.message.delivery.auto", .level = .emulated, .reason = "idle auto is normalized to native prompt/start" },
@@ -30,7 +29,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi steering semantics safely" },
     .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
     .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
-    .{ .key = "session.state", .level = .emulated, .reason = "adapter projection of Pi events; get_state is read only at open" },
+    .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
 };
 
 pub const descriptor = contract.Descriptor{
@@ -108,11 +107,15 @@ pub const Session = struct {
     reducer_arena: *std.heap.ArenaAllocator,
     transport: *process.Transport,
     reducer: ?*session.Reducer = null,
+    settled_cursor: u64 = 0,
     current_model: []const u8 = "",
+    native_session: []const u8 = "",
     next_request: usize = 0,
     awaited: []const u8 = "",
     reply: ?Reply = null,
     asks: std.ArrayList(Ask) = .empty,
+    unbound: std.ArrayList(Ask) = .empty,
+    bound: usize = 0,
     statuses: std.StringHashMapUnmanaged([]const u8) = .empty,
     unusable: bool = false,
     ended: bool = false,
@@ -123,10 +126,11 @@ pub const Session = struct {
         errdefer self.destroy();
         const state_data = try self.command(arena, "get_state", null, refusal);
         const native_session = memberOf(state_data, "sessionId") orelse std.json.Value.null;
-        if (native_session != .string or native_session.string.len == 0) return refusal.fail(error.BackendFailed, "the Pi agent's get_state named no session");
+        if (invalidState(state_data)) |reason| return refusal.fail(error.BackendFailed, reason);
         const streaming = memberOf(state_data, "isStreaming") orelse std.json.Value.null;
         if (streaming == .bool and streaming.bool) return refusal.fail(error.BackendFailed, "the Pi agent was already streaming when the session opened");
         self.current_model = modelOf(self.owned(), memberOf(state_data, "model")) catch |err| return lift(err);
+        self.native_session = try self.owned().dupe(u8, native_session.string);
         return self;
     }
 
@@ -331,6 +335,7 @@ pub const Session = struct {
             },
             .event => if (self.reducer) |reducer| {
                 session.apply(reducer, received.value) catch |err| return lift(err);
+                try self.bindAsks();
             },
             .extension_ui_request => try self.extensionRequest(received.value),
         }
@@ -350,12 +355,8 @@ pub const Session = struct {
             .text
         else
             null;
-        const reducer = self.live() orelse return self.dismiss(native_id, dialog);
-        if (!reducer.started) return self.dismiss(native_id, dialog);
-        const opened_before = reducer.interactions.items.len;
-        session.applyExtension(reducer, request) catch |err| return lift(err);
-        if (reducer.interactions.items.len == opened_before) return;
-        const interaction = reducer.interactions.items[reducer.interactions.items.len - 1];
+        const reducer = self.live() orelse return;
+        const kind = dialog orelse return;
         var labels = std.ArrayList([]const u8).empty;
         if (memberOf(request, "options")) |options| {
             if (options == .array) {
@@ -364,16 +365,23 @@ pub const Session = struct {
                 }
             }
         }
-        try self.asks.append(self.owned(), .{
+        try self.unbound.append(self.owned(), .{
             .native_id = try self.owned().dupe(u8, native_id),
-            .interaction_id = interaction.id,
-            .dialog = dialog orelse .text,
+            .interaction_id = "",
+            .dialog = kind,
             .labels = labels.items,
         });
+        session.applyExtension(reducer, request) catch |err| return lift(err);
+        try self.bindAsks();
     }
 
-    fn dismiss(self: *Session, native_id: []const u8, dialog: ?Dialog) contract.Failure!void {
-        if (dialog != null) _ = try self.send(try self.extensionAnswer(native_id, .cancelled));
+    fn bindAsks(self: *Session) contract.Failure!void {
+        const reducer = self.reducer orelse return;
+        while (self.bound < reducer.interactions.items.len and self.unbound.items.len > 0) : (self.bound += 1) {
+            var ask = self.unbound.orderedRemove(0);
+            ask.interaction_id = reducer.interactions.items[self.bound].id;
+            try self.asks.append(self.owned(), ask);
+        }
     }
 
     const Outcome = union(enum) { value: []const u8, confirmed: bool, cancelled };
@@ -392,8 +400,13 @@ pub const Session = struct {
 
     fn settleAsks(self: *Session) contract.Failure!void {
         if (self.live() != null and !self.ended) return;
-        for (self.asks.items) |ask| _ = try self.send(try self.extensionAnswer(ask.native_id, .cancelled));
         self.asks.clearRetainingCapacity();
+        self.unbound.clearRetainingCapacity();
+    }
+
+    fn cursor(self: *Session) u64 {
+        const reducer = self.reducer orelse return self.settled_cursor;
+        return if (reducer.sequence > 1) reducer.sequence - 1 else self.settled_cursor;
     }
 
     fn recordTerminal(self: *Session) contract.Failure!void {
@@ -413,8 +426,15 @@ pub const Session = struct {
     }
 
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
-        _ = refusal;
         const self = cast(ptr);
+        if (self.ended or self.unusable) return error.SessionClosed;
+        const state_data = try self.command(arena, "get_state", null, refusal);
+        const native_session = memberOf(state_data, "sessionId") orelse std.json.Value.null;
+        if (invalidState(state_data)) |reason| return refusal.fail(error.BackendFailed, reason);
+        if (!std.mem.eql(u8, native_session.string, self.native_session)) {
+            self.unusable = true;
+            return refusal.fail(error.BackendFailed, "the Pi agent's native session changed");
+        }
         if (self.ended or self.unusable) return error.SessionClosed;
         const reducer = self.live();
         const active_run_id: ?[]const u8 = if (reducer) |running| try arena.dupe(u8, running.run_id) else null;
@@ -424,6 +444,7 @@ pub const Session = struct {
             .status = if (reducer == null) .idle else if (self.asks.items.len > 0) .waiting_for_input else .running,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
+            .transcript_cursor = if (self.cursor() > 0) try std.fmt.allocPrint(arena, "{d}", .{self.cursor()}) else null,
             .updated_at_ms = wallClock(),
         };
     }
@@ -454,6 +475,10 @@ pub const Session = struct {
         reducer.session_id = self.id;
         reducer.responder = self.participant;
         reducer.revision = capability_revision;
+        reducer.model_id = self.current_model;
+        reducer.mints_submission = true;
+        self.bound = 0;
+        self.unbound.clearRetainingCapacity();
         reducer.counters.shared = &self.owner.ids;
         reducer.counters.now_ms = wallClock;
         const message_ids = try arena.alloc([]const u8, request.messages.len);
@@ -463,6 +488,7 @@ pub const Session = struct {
         }
         reducer.run_id = try reducer.counters.nextID(self.owned(), "run");
         reducer.message_id = try reducer.counters.nextID(self.owned(), "message");
+        self.settled_cursor = self.cursor();
         self.reducer = reducer;
 
         _ = self.command(arena, "prompt", joined, refusal) catch |err| {
@@ -479,7 +505,7 @@ pub const Session = struct {
             }
             _ = try self.step(self.owner.config.poll_ns);
         }
-        const submission_id = try arena.dupe(u8, try reducer.counters.nextID(self.owned(), "submission"));
+        const submission_id = try arena.dupe(u8, reducer.submission_id);
         const run_id = try arena.dupe(u8, reducer.run_id);
         const model_id: ?[]const u8 = if (self.current_model.len > 0) try arena.dupe(u8, self.current_model) else null;
         return .{
@@ -617,6 +643,25 @@ pub const Session = struct {
     }
 };
 
+fn invalidState(data: std.json.Value) ?[]const u8 {
+    const native_session = memberOf(data, "sessionId") orelse std.json.Value.null;
+    if (native_session != .string or native_session.string.len == 0) return "the Pi agent's get_state named no session";
+    for ([_][]const u8{ "messageCount", "pendingMessageCount" }) |key| {
+        const count = memberOf(data, key) orelse continue;
+        if (count != .integer or count.integer < 0) return "the Pi agent's get_state reported a negative count";
+    }
+    for ([_][]const u8{ "steeringMode", "followUpMode" }) |key| {
+        if (!oneOf(textOf(data, key), &.{ "all", "one-at-a-time" })) return "the Pi agent's get_state reported an invalid queue mode";
+    }
+    if (!oneOf(textOf(data, "thinkingLevel"), &.{ "off", "minimal", "low", "medium", "high", "xhigh", "max" })) return "the Pi agent's get_state reported an invalid thinking level";
+    return null;
+}
+
+fn oneOf(text: []const u8, allowed: []const []const u8) bool {
+    for (allowed) |candidate| if (std.mem.eql(u8, text, candidate)) return true;
+    return false;
+}
+
 fn memberOf(value: std.json.Value, key: []const u8) ?std.json.Value {
     if (value != .object) return null;
     return value.object.get(key);
@@ -716,7 +761,7 @@ pub const fake_prelude =
     \\printf '%s\n' "$*" >"$(dirname "$0")/argv.log"
     \\exec 3>>"$(dirname "$0")/stdin.log"
     \\take() { IFS= read -r line || exit 0; printf '%s\n' "$line" >&3; }
-    \\take; printf '{"type":"response","id":"req_1","command":"get_state","success":true,"data":{"sessionId":"native-session","isStreaming":false,"model":{"id":"model","provider":"fixture"}}}\n'
+    \\take; printf '{"type":"response","id":"req_1","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false,"model":{"id":"model","provider":"fixture"}}}\n'
     \\
 ;
 
@@ -820,6 +865,18 @@ test "an open asks get_state and takes the model it reports, and the prompt reac
     , written);
 }
 
+test "run.started names the model get_state reported, as Go does" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("hello", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const started = try probe.pumpUntil("run.started", &seen);
+    try testing.expectEqualStrings("fixture/model", (try probe.payloadOf(started)).get("model_id").?.string);
+}
+
 test "a turn is admitted on agent_start and settles on agent_end, citing the served revision" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
@@ -899,7 +956,7 @@ test "a Pi agent already streaming at open refuses the session" {
     var probe: Probe = undefined;
     try probe.init(
         \\#!/bin/sh
-        \\IFS= read -r line; printf '{"type":"response","id":"req_1","command":"get_state","success":true,"data":{"sessionId":"native-session","isStreaming":true}}\n'
+        \\IFS= read -r line; printf '{"type":"response","id":"req_1","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":true}}\n'
         \\while IFS= read -r line; do :; done
         \\
     );
@@ -924,21 +981,54 @@ test "a Pi agent that dies mid-run fails the run with its exit and closes the se
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
 }
 
-test "a dialog still open when its run settles is answered cancelled" {
+test "a dialog still open when its run settles resolves cancelled and writes Pi nothing, as Go does" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_prompt_accepted ++
         \\printf '{"type":"extension_ui_request","id":"ui-1","method":"confirm","title":"Proceed?","message":"Continue"}\n'
         \\
     ++
         "printf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[" ++ assistant_hello ++ "],\"willRetry\":false}'\n" ++
-        "printf '{\"type\":\"agent_settled\"}\\n'\n" ++ fake_idle);
+        "printf '{\"type\":\"agent_settled\"}\\n'\n" ++
+        \\take; printf '{"type":"response","id":"req_3","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
     defer probe.deinit();
     var refusal = contract.Refusal{};
     _ = try probe.open(&refusal);
     _ = try probe.submit("go", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
     _ = try probe.pumpUntil("run.completed", &seen);
-    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-1\",\"cancelled\":true}");
+    const resolved = seen.items[seen.items.len - 2];
+    try testing.expect(std.mem.indexOf(u8, resolved.line, "\"type\":\"user.input.resolved\"") != null);
+    try testing.expectEqualStrings("cancelled", (try probe.payloadOf(resolved)).get("status").?.string);
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"prompt","message":"go","streamingBehavior":"steer"}
+        \\{"id":"req_3","type":"get_state"}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
+}
+
+test "a dialog raised outside a run is ignored and writes Pi nothing, as Go does" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"extension_ui_request","id":"ui-9","method":"confirm","title":"Idle?","message":"No run"}\n'
+        \\printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    _ = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"get_state"}
+        \\{"id":"req_3","type":"get_state"}
+        \\
+    , try probe.fake.written(probe.arena.allocator()));
 }
 
 test "the child runs with extensions disabled, and an explicit extension argument refuses the open" {
@@ -975,13 +1065,13 @@ test "a prompt Pi refuses closes the session rather than leaving an unstarted ru
     try testing.expectError(error.SessionClosed, probe.submit("again", &refusal));
 }
 
-test "a dialog raised before agent_start is answered cancelled and never surfaces" {
+test "a dialog raised before agent_start surfaces once the run starts and its answer reaches Pi, as Go does" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++
         \\take; printf '{"type":"response","id":"req_2","command":"prompt","success":true}\n'
         \\printf '{"type":"extension_ui_request","id":"ui-0","method":"confirm","title":"Early?","message":"Before start"}\n'
-        \\take
         \\printf '{"type":"agent_start"}\n'
+        \\take
         \\
     ++ "printf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[" ++ assistant_hello ++ "],\"willRetry\":false}'\n" ++
         "printf '{\"type\":\"agent_settled\"}\\n'\n" ++ fake_idle);
@@ -990,9 +1080,20 @@ test "a dialog raised before agent_start is answered cancelled and never surface
     _ = try probe.open(&refusal);
     _ = try probe.submit("hello", &refusal);
     var seen = std.ArrayList(contract.Event).empty;
+    const asked = try probe.pumpUntil("user.input.requested", &seen);
+    const payload = try probe.payloadOf(asked);
+    const answers = try probe.arena.allocator().dupe(oap_types.InputAnswer, &.{.{ .question_id = "value", .selected_option_ids = try probe.arena.allocator().dupe([]const u8, &.{"no"}) }});
+    const request = oap_types.UserInputResolveRequest{
+        .interaction_id = payload.get("interaction_id").?.string,
+        .requested_by = payload.get("requested_by").?.string,
+        .responded_by = payload.get("responded_by").?.string,
+        .session_id = payload.get("session_id").?.string,
+        .run_id = payload.get("run_id").?.string,
+        .answers = answers,
+    };
+    try probe.handle.?.resolve(probe.arena.allocator(), .{ .input = &request }, &refusal);
+    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-0\",\"confirmed\":false}");
     _ = try probe.pumpUntil("run.completed", &seen);
-    for (seen.items) |event| try testing.expect(std.mem.indexOf(u8, event.line, "user.input.requested") == null);
-    _ = try probe.waitWritten("{\"type\":\"extension_ui_response\",\"id\":\"ui-0\",\"cancelled\":true}");
 }
 
 test "an abort Pi refuses fails the run with pi_abort_failed, as Go does" {
@@ -1012,4 +1113,103 @@ test "an abort Pi refuses fails the run with pi_abort_failed, as Go does" {
     try testing.expectEqualStrings("pi_abort_failed", failure.get("code").?.string);
     try testing.expectEqualStrings("pi abort failed: busy", failure.get("message").?.string);
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
+}
+
+test "a state request reads get_state again, idle and mid-run, and answers the adapter projection with the last sequence as its cursor" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"prompt","success":true}\n'
+        \\printf '{"type":"agent_start"}\n'
+        \\take; printf '{"type":"response","id":"req_4","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"native-session","isStreaming":true}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const idle = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.idle, idle.status);
+    try testing.expectEqualStrings("fixture/model", idle.current_model_id.?);
+    try testing.expect(idle.transcript_cursor == null);
+    const admitted = try probe.submit("long", &refusal);
+    const running = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.running, running.status);
+    try testing.expectEqualStrings(admitted.run_id.?, running.active_run_id.?);
+    try testing.expectEqualStrings("1", running.transcript_cursor.?);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"get_state"}
+        \\{"id":"req_3","type":"prompt","message":"long","streamingBehavior":"steer"}
+        \\{"id":"req_4","type":"get_state"}
+        \\
+    , written);
+}
+
+test "a get_state naming another native session makes the session unusable" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"thinkingLevel":"off","steeringMode":"all","followUpMode":"one-at-a-time","messageCount":0,"pendingMessageCount":0,"sessionId":"other-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    try testing.expectError(error.BackendFailed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+    try testing.expectEqualStrings("the Pi agent's native session changed", refusal.message);
+    try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+    try testing.expectError(error.SessionClosed, probe.submit("again", &refusal));
+}
+
+fn stateData(comptime session_id: []const u8, comptime counts: []const u8, comptime steering: []const u8, comptime follow_up: []const u8, comptime thinking: []const u8) []const u8 {
+    return "\"thinkingLevel\":\"" ++ thinking ++ "\",\"steeringMode\":\"" ++ steering ++ "\",\"followUpMode\":\"" ++ follow_up ++ "\"," ++ counts ++ ",\"sessionId\":\"" ++ session_id ++ "\"";
+}
+
+const valid_counts = "\"messageCount\":0,\"pendingMessageCount\":0";
+
+fn expectRefusedGetState(data: []const u8, message: []const u8) !void {
+    const at_open = try std.fmt.allocPrint(testing.allocator, "#!/bin/sh\nIFS= read -r line; printf '%s\\n' '{{\"type\":\"response\",\"id\":\"req_1\",\"command\":\"get_state\",\"success\":true,\"data\":{{{s}}}}}'\nwhile IFS= read -r line; do :; done\n", .{data});
+    defer testing.allocator.free(at_open);
+    var opening: Probe = undefined;
+    try opening.init(at_open);
+    defer opening.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.BackendFailed, opening.open(&refusal));
+    try testing.expectEqualStrings(message, refusal.message);
+
+    const on_state = try std.fmt.allocPrint(testing.allocator, "{s}take; printf '%s\\n' '{{\"type\":\"response\",\"id\":\"req_2\",\"command\":\"get_state\",\"success\":true,\"data\":{{{s}}}}}'\n" ++
+        "take; printf '%s\\n' '{{\"type\":\"response\",\"id\":\"req_3\",\"command\":\"get_state\",\"success\":true,\"data\":{{\"thinkingLevel\":\"max\",\"steeringMode\":\"one-at-a-time\",\"followUpMode\":\"all\",\"sessionId\":\"native-session\"}}}}'\n{s}", .{ fake_prelude, data, fake_idle });
+    defer testing.allocator.free(on_state);
+    var probe: Probe = undefined;
+    try probe.init(on_state);
+    defer probe.deinit();
+    _ = try probe.open(&refusal);
+    try testing.expectError(error.BackendFailed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+    try testing.expectEqualStrings(message, refusal.message);
+    const after = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.idle, after.status);
+}
+
+test "a get_state naming no session is refused at open and on a state request, which leaves the session usable" {
+    try expectRefusedGetState(stateData("", valid_counts, "all", "all", "off"), "the Pi agent's get_state named no session");
+}
+
+test "a get_state with a negative messageCount is refused at open and on a state request" {
+    try expectRefusedGetState(stateData("native-session", "\"messageCount\":-1,\"pendingMessageCount\":0", "all", "all", "off"), "the Pi agent's get_state reported a negative count");
+}
+
+test "a get_state with a negative pendingMessageCount is refused at open and on a state request" {
+    try expectRefusedGetState(stateData("native-session", "\"messageCount\":0,\"pendingMessageCount\":-1", "all", "all", "off"), "the Pi agent's get_state reported a negative count");
+}
+
+test "a get_state with an unknown steeringMode is refused at open and on a state request" {
+    try expectRefusedGetState(stateData("native-session", valid_counts, "some", "all", "off"), "the Pi agent's get_state reported an invalid queue mode");
+}
+
+test "a get_state with an unknown followUpMode is refused at open and on a state request" {
+    try expectRefusedGetState(stateData("native-session", valid_counts, "all", "some", "off"), "the Pi agent's get_state reported an invalid queue mode");
+}
+
+test "a get_state with an unknown thinkingLevel is refused at open and on a state request" {
+    try expectRefusedGetState(stateData("native-session", valid_counts, "all", "all", "extreme"), "the Pi agent's get_state reported an invalid thinking level");
 }

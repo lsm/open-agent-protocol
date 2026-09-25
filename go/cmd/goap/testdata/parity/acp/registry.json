@@ -1,0 +1,1 @@
+{"adapters":{"acp":{"type":"acp","executable":"@DIR@/child.sh","working_directory":"@DIR@","environment":["PATH","LIST_ME=from-adapter"]}},"tool_sources":{"fs":{"kind":"process","protocol":"mcp","display_name":"Filesystem","endpoint":"stdio:fs","command":"/bin/fs","args":["--root","/tmp"],"environment":["FS_TOKEN=secret"]}}}

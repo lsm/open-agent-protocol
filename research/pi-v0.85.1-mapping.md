@@ -330,18 +330,22 @@ were fully exercised without finding a mismatch.
 The Zig port (`zig/src/adapter/pi/adapter.zig`) drives the same reducer as the
 corpus, one per run. Where it differs from the Go adapter:
 
-- It advertises revision `pi-v0.85.1-oapx-v1`, with `run.resume` and
-  `run.replay` `unavailable`: it keeps no journal.
+- It advertises the Go adapter's revision, with `run.resume` and `run.replay`
+  `degraded` as Go does: the `oapx` endpoint keeps a bounded journal of 256
+  events per session and answers the replay control from it.
 - The child runs with `--no-extensions` and explicit extension arguments
   refuse the open, per P0 policy 4, so no dialog is expected. One that arrives
-  anyway before `agent_start`, outside a run, or still open when the run settles
-  or the child exits is answered `cancelled`; one inside a started run surfaces
-  as `user.input`, though `action.permissions` stays `unavailable` as in Go.
+  anyway is handled as in Go: before `agent_start` it waits and surfaces as
+  `user.input` once the run starts, outside a run it is ignored, and one still
+  open when the run settles resolves `cancelled` with nothing written to Pi.
+  `action.permissions` stays `unavailable` as in Go.
 - A submission carrying image parts is refused `invalid_submission`; Go
   forwards inline images in the native prompt. Only text parts are served.
-- `get_state` is read only at open. Go corroborates each `State` call with it;
-  the port answers from its projection of Pi events, and its `session.state` and
-  `run.reconciliation` reasons say so.
+- Like Go, each state request reads `get_state` again and answers the adapter
+  projection; a reply naming another native session makes the session
+  unusable. As in Go, a reply with no session, a negative count, an unknown
+  queue mode or an unknown thinking level is refused at open and on each state
+  request; a refused state request leaves the session usable.
 - A prompt Pi refuses closes the session without a `run.failed`: the run was
   never announced, so there is no one to report it to.
 - Without `--config` it runs `pi` from `PATH` with only `HOME` and `PATH`.
