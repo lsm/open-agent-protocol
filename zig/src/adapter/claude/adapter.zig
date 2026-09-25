@@ -368,7 +368,9 @@ pub const Session = struct {
 
     fn control(self: *Session, arena: std.mem.Allocator, kind: ControlKind, timeout_ns: u64, refusal: *contract.Refusal) contract.Failure!void {
         self.requests += 1;
-        const request_id = try std.fmt.allocPrint(self.gpa, "req_{d}", .{self.requests});
+        var entropy: [4]u8 = undefined;
+        compat.random.fillSecureBytes(&entropy);
+        const request_id = try std.fmt.allocPrint(self.gpa, "req_{d}_{x}", .{ self.requests, entropy });
         self.call = .{ .request_id = request_id };
         defer self.clearCall();
         const frame = switch (kind) {
@@ -410,12 +412,16 @@ pub const Session = struct {
         const active = if (reducer.run) |run| run.started else false;
         const active_run_id: ?[]const u8 = if (active) try arena.dupe(u8, reducer.run.?.id) else null;
         const current_model_id: ?[]const u8 = if (reducer.current_model.len > 0) try arena.dupe(u8, reducer.current_model) else null;
+        const metadata_json: ?[]const u8 = if (reducer.native_session_id.len > 0) try std.json.Stringify.valueAlloc(arena, .{ .claude_native_session_id = reducer.native_session_id }, .{}) else null;
+        const transcript_cursor: ?[]const u8 = if (reducer.last_sequence > 0) try std.fmt.allocPrint(arena, "{d}", .{reducer.last_sequence}) else null;
         return .{
             .session_id = self.id,
             .status = if (active) .running else .idle,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
             .updated_at_ms = wallClock(),
+            .transcript_cursor = transcript_cursor,
+            .metadata_json = metadata_json,
         };
     }
 
@@ -434,7 +440,7 @@ pub const Session = struct {
             };
             break :chosen .{ .allowed = choice.allowed, .disallowed = choice.disallowed };
         } else .{};
-        const uuid = try self.owner.mint(arena, "turn");
+        const uuid = try self.engine.reducer.mintTurn();
         self.engine.reducer.policy = policy;
         self.engine.reducer.started = null;
         self.engine.submit(uuid, text, .{}) catch |err| switch (err) {
@@ -807,6 +813,13 @@ const Probe = struct {
     }
 };
 
+fn expectMintedRequest(text: []const u8, prefix: []const u8, suffix: []const u8) !void {
+    try testing.expect(std.mem.startsWith(u8, text, prefix));
+    try testing.expect(std.mem.endsWith(u8, text, suffix));
+    try testing.expectEqual(prefix.len + 8 + suffix.len, text.len);
+    for (text[prefix.len .. prefix.len + 8]) |char| try testing.expect(std.ascii.isDigit(char) or (char >= 'a' and char <= 'f'));
+}
+
 test "an open runs the initialize exchange before handing the session out" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_idle);
@@ -815,20 +828,20 @@ test "an open runs the initialize exchange before handing the session out" {
     const opened = try probe.open(&refusal);
     try testing.expectEqualStrings("s1", opened.id());
     const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expectEqualStrings("{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"oap_tool_selection\"]}]},\"subtype\":\"initialize\"},\"request_id\":\"req_1\",\"type\":\"control_request\"}\n", written);
+    try expectMintedRequest(written, "{\"request\":{\"hooks\":{\"PreToolUse\":[{\"matcher\":null,\"hookCallbackIds\":[\"oap_tool_selection\"]}]},\"subtype\":\"initialize\"},\"request_id\":\"req_1_", "\",\"type\":\"control_request\"}\n");
 }
 
 test "an open whose initialize the child refuses, or leaves unanswered at exit, is refused naming why" {
     var refused: Probe = undefined;
     try refused.init(
         \\#!/bin/sh
-        \\read -r line; printf '{"type":"control_response","response":{"subtype":"error","request_id":"req_1","error":"hooks are off"}}\n'; read -r rest
+        \\read -r line; id=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p'); printf '{"type":"control_response","response":{"subtype":"error","request_id":"%s","error":"hooks are off"}}\n' "$id"; read -r rest
         \\
     );
     defer refused.deinit();
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, refused.open(&refusal));
-    try testing.expectEqualStrings("claude rpc error for request req_1: hooks are off", refusal.message);
+    try expectMintedRequest(refusal.message, "claude rpc error for request req_1_", ": hooks are off");
 
     var gone: Probe = undefined;
     try gone.init("#!/bin/sh\nread -r line; exit 3\n");
@@ -977,7 +990,7 @@ test "a cancel interrupts the child and is acknowledged once the child receipts 
     try testing.expect(acknowledged.accepted);
     try testing.expectEqual(oap_types.RunStatus.cancelling, acknowledged.status);
     const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":\"req_2\",\"type\":\"control_request\"}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "{\"request\":{\"subtype\":\"interrupt\"},\"request_id\":\"req_2_") != null);
 
     var seen = std.ArrayList(contract.Event).empty;
     const cancelled = try probe.pumpUntil("run.cancelled", &seen);
@@ -1156,7 +1169,7 @@ test "the tool catalog needs the degraded opt-in and lists the latest init once 
     try testing.expectEqualStrings("mcp", after.sources[1].protocol.?);
 }
 
-test "state reports the live run and the model the latest init named" {
+test "state reports the live run, the model and native session the latest init named, and the last sequence as its cursor" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_gated_turn ++ fake_idle);
     defer probe.deinit();
@@ -1167,12 +1180,20 @@ test "state reports the live run and the model the latest init named" {
     try testing.expectEqual(oap_types.SessionStatus.idle, idle.status);
     try testing.expect(idle.active_run_id == null);
     try testing.expect(idle.current_model_id == null);
+    try testing.expect(idle.metadata_json == null);
+    try testing.expect(idle.transcript_cursor == null);
 
     const admission = try probe.submit("fix it", &refusal);
     const running = try probe.handle.?.state(probe.arena.allocator(), &refusal);
     try testing.expectEqual(oap_types.SessionStatus.running, running.status);
     try testing.expectEqualStrings(admission.run_id.?, running.active_run_id.?);
     try testing.expectEqualStrings("claude-fake", running.current_model_id.?);
+    try testing.expectEqualStrings("{\"claude_native_session_id\":\"native-1\"}", running.metadata_json.?);
+
+    var seen = std.ArrayList(contract.Event).empty;
+    const waiting = try probe.pumpUntil("run.status.updated", &seen);
+    const waited = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqualStrings(try std.fmt.allocPrint(probe.arena.allocator(), "{d}", .{waiting.sequence}), waited.transcript_cursor.?);
 }
 
 test "each event is drained once, a settled session's arena is compacted, and the next run counts from one" {
