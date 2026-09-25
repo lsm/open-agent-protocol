@@ -54,6 +54,7 @@ const pi_adapter = @import("pi_adapter");
 const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
+const bounded_output = @import("bounded_output");
 
 pub const VERSION = @import("version_options").version;
 
@@ -9134,20 +9135,19 @@ fn opencodeBackendConfig(
 }
 
 var backend_write_stall_ns: u64 = 2 * 60 * std.time.ns_per_s;
-const pipe_atomic_bytes = 512;
 
-fn writeEndpointOutbound(stdout: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
+fn writeEndpointOutbound(stdout: *bounded_output.Output, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !bool {
     var wrote = false;
     while (endpoint.popOutbound()) |line| {
         defer allocator.free(line);
-        try writeBounded(stdout, line);
-        try writeBounded(stdout, "\n");
+        try stdout.writeAll(line);
+        try stdout.writeAll("\n");
         wrote = true;
     }
     return wrote;
 }
 
-fn flushBackend(stdout: std.Io.File, stderr: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !void {
+fn flushBackend(stdout: *bounded_output.Output, stderr: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !void {
     _ = writeEndpointOutbound(stdout, allocator, endpoint) catch |err| {
         if (err == error.OutputStalled) try compat.stdio.writeAll(stderr, BACKEND_OUTPUT_STALLED_MESSAGE);
         return err;
@@ -9159,32 +9159,6 @@ fn unblockOutput(stdout: std.Io.File) void {
     const status = stdout.stat(backendIo()) catch return;
     if (status.kind != .named_pipe and status.kind != .unix_domain_socket) return;
     compat.stdio.setNonBlocking(stdout) catch {};
-}
-
-fn writeBounded(file: std.Io.File, bytes: []const u8) !void {
-    if (@import("builtin").os.tag == .windows) return compat.stdio.writeAll(file, bytes);
-    var at: usize = 0;
-    var progressed = backendClock();
-    while (at < bytes.len) {
-        var fds = [_]std.posix.pollfd{.{ .fd = file.handle, .events = std.posix.POLL.OUT, .revents = 0 }};
-        const ready = try std.posix.poll(&fds, 50);
-        if (ready == 0 or fds[0].revents & std.posix.POLL.OUT == 0) {
-            if (fds[0].revents & (std.posix.POLL.ERR | std.posix.POLL.HUP) != 0) return error.BrokenPipe;
-            if (backendClock() -| progressed > backend_write_stall_ns) return error.OutputStalled;
-            continue;
-        }
-        const end = @min(bytes.len, at + pipe_atomic_bytes);
-        const written = std.posix.system.write(file.handle, bytes[at..end].ptr, end - at);
-        switch (std.posix.errno(written)) {
-            .SUCCESS => {
-                at += @intCast(written);
-                progressed = backendClock();
-            },
-            .AGAIN, .INTR => {},
-            .PIPE => return error.BrokenPipe,
-            else => |err| return std.posix.unexpectedErrno(err),
-        }
-    }
 }
 
 fn backendFatalMessage(err: anyerror) ?[]const u8 {
@@ -9264,6 +9238,9 @@ fn runBackendMode(
     };
 
     unblockOutput(stdout);
+    var output = bounded_output.Output.init(stdout, backend_write_stall_ns);
+    try output.start();
+    defer output.deinit();
     var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{});
     defer endpoint.deinit();
 
@@ -9280,16 +9257,16 @@ fn runBackendMode(
             const line = std.mem.trim(u8, owned.data, " \t\r\n");
             if (line.len == 0) continue;
             endpoint.handleLine(line) catch |err| {
-                try flushBackend(stdout, stderr, allocator, &endpoint);
+                try flushBackend(&output, stderr, allocator, &endpoint);
                 if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
                 return err;
             };
-            try flushBackend(stdout, stderr, allocator, &endpoint);
+            try flushBackend(&output, stderr, allocator, &endpoint);
             did_work = true;
         }
         if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
             const failure = stdin_stream.getError() orelse break;
-            try flushBackend(stdout, stderr, allocator, &endpoint);
+            try flushBackend(&output, stderr, allocator, &endpoint);
             if (std.mem.eql(u8, failure, "stdio line too large")) {
                 try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
                 return error.FrameTooLarge;
@@ -9301,10 +9278,10 @@ fn runBackendMode(
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
         }
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
-        try flushBackend(stdout, stderr, allocator, &endpoint);
+        try flushBackend(&output, stderr, allocator, &endpoint);
     }
     try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
-    try flushBackend(stdout, stderr, allocator, &endpoint);
+    try flushBackend(&output, stderr, allocator, &endpoint);
 }
 
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
@@ -10504,28 +10481,4 @@ test "a served backend whose stdout nobody reads stops once the stall bound pass
 
     try std.testing.expectEqual(@as(?anyerror, error.OutputStalled), runner.err);
     try std.testing.expectEqualStrings(BACKEND_OUTPUT_STALLED_MESSAGE, complained);
-}
-
-test "a pipe with less room than one atomic chunk counts as a stall, not a write error" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    const pipe = try compat.stdio.pipe();
-    defer compat.stdio.close(pipe[0]);
-    defer compat.stdio.close(pipe[1]);
-    unblockOutput(pipe[1]);
-    const filler = [_]u8{'x'} ** 4096;
-    while (true) {
-        const written = std.posix.system.write(pipe[1].handle, &filler, filler.len);
-        if (std.posix.errno(written) == .AGAIN) break;
-        try std.testing.expectEqual(std.posix.E.SUCCESS, std.posix.errno(written));
-    }
-    while (true) {
-        const written = std.posix.system.write(pipe[1].handle, &filler, 1);
-        if (std.posix.errno(written) == .AGAIN) break;
-    }
-    var drained: [100]u8 = undefined;
-    _ = try compat.stdio.read(pipe[0], &drained);
-    const bound = backend_write_stall_ns;
-    backend_write_stall_ns = 200 * std.time.ns_per_ms;
-    defer backend_write_stall_ns = bound;
-    try std.testing.expectError(error.OutputStalled, writeBounded(pipe[1], &filler));
 }
