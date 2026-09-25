@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const corpus = @import("corpus");
 const session = @import("session.zig");
 const rpc = @import("rpc.zig");
@@ -80,7 +81,7 @@ pub const CorpusCase = struct {
 };
 
 const Driver = struct {
-    pub const corpus_relative = "fixtures/adapters/pi-v0.85.1";
+    pub const corpus_relative = harness_pins.pi_corpus;
     pub const blank_expectation = corpus.BlankExpectation.zero_byte_only;
     pub const Reducer = session.Reducer;
     pub const Case = CorpusCase;

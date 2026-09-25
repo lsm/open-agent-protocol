@@ -22,8 +22,9 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var piCommitTree = pin.Source("pi").Tree
+
 const (
-	piCommitTree       = "346294a615d2d0ad4f6e5fbccb4cee4ccd7b2d6c"
 	piRPCTypesBlob     = "1cbd49a898382f0fbb409a7d241ad694b2f59e0d"
 	piRPCModeBlob      = "fc8083bedc67824dd7ff1a5a154f1a08b28c4098"
 	piAgentSessionBlob = "ac2bd4b18dbe4d888e48309ad7bb63f1166179b5"

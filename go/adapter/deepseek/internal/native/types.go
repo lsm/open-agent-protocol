@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/harnesses"
 	"io"
 )
 
+var ServerVersion = harnesses.Current("deepseek-harness").Admits[0]
+
 const (
-	ServerName    = "deepseek-harness-sdk-runtime"
-	ServerVersion = "0.0.1"
+	ServerName = "deepseek-harness-sdk-runtime"
 
 	MethodInitialize       = "initialize"
 	MethodSessionPrompt    = "session/prompt"

@@ -1,9 +1,10 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const rpc = @import("rpc");
 const native = @import("native");
 
-pub const codex_commit = "8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9";
-pub const capability_revision = "codex-appserver-8d7cc24-oap-v1";
+pub const codex_commit = harness_pins.codex_app_server_endpoint_version;
+pub const capability_revision = harness_pins.codex_app_server_capability_revision;
 pub const adapter_name = "codex-appserver-stdio";
 pub const endpoint_id = "codex.app-server";
 pub const endpoint_name = "Codex app-server Adapter";

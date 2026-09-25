@@ -1,8 +1,9 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const rpc = @import("rpc");
 const json_encode = @import("json_encode");
 
-pub const capability_revision = "claude-code-2.1.280-oap-v3";
+pub const capability_revision = harness_pins.claude_code_capability_revision;
 pub const cost_extension = "com.anthropic.claude-code.cost";
 const protocol_name = "open-agent-protocol";
 pub const protocol_version = "0.1";

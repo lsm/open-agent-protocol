@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -9,7 +10,7 @@ const compat = @import("compat");
 const json_encode = @import("json_encode");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = "acp-v1.7.0-schema-v1.21.0-oapx-v1";
+pub const capability_revision = harness_pins.acp_oapx_capability_revision;
 pub const acp_protocol_version: i64 = 1;
 pub const client_name = "open-agent-protocol";
 pub const client_version = "0.1";
@@ -34,7 +35,7 @@ const features = [_]contract.Feature{
 };
 
 pub const descriptor = contract.Descriptor{
-    .endpoint = .{ .id = endpoint_id, .name = "ACP v1 Adapter", .version = "1.7.0", .adapter = "acp-v1-stdio" },
+    .endpoint = .{ .id = endpoint_id, .name = "ACP v1 Adapter", .version = harness_pins.acp_endpoint_version, .adapter = "acp-v1-stdio" },
     .capability_revision = capability_revision,
     .features = &features,
 };

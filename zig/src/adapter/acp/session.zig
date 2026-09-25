@@ -1,9 +1,10 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const rpc = @import("rpc");
 const gojson = @import("gojson");
 const goquote = @import("goquote");
 
-pub const capability_revision = "acp-v1.7.0-schema-v1.21.0-oap-v3";
+pub const capability_revision = harness_pins.acp_capability_revision;
 pub const protocol_name = "open-agent-protocol";
 pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";

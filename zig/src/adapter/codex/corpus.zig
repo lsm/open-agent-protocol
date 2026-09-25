@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const rpc = @import("rpc");
 const native = @import("native");
 const session = @import("session");
@@ -6,9 +7,9 @@ const corpus = @import("adapter_corpus");
 const semantic = @import("semantic");
 const jsonschema = @import("jsonschema");
 
-const corpus_relative = "fixtures/adapters/codex-appserver";
+const corpus_relative = harness_pins.codex_app_server_corpus;
 const writes_relative = "fixtures/adapters/codex-appserver-writes/conversation.json";
-const schema_tree_sha256 = "d31125f254f93a9c6300e50c86ffbd3cc6ad388ef5b8833ecbd0a47371a344b6";
+const schema_tree_sha256 = harness_pins.codex_app_server_codex_source_tree_sha256;
 const participant = "user";
 
 const Case = struct {

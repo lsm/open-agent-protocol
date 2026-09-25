@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/harnesses"
 	"sync/atomic"
 	"time"
 
@@ -14,11 +15,15 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var (
+	pin                = harnesses.Current("hermes")
+	PinnedVersion      = pin.EndpointVersion
+	CapabilityRevision = pin.CapabilityRevision
+	CorpusDirectory    = pin.Corpus
+)
+
 const (
 	endpointID             = "hermes.gateway"
-	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "hermes-v2026.8.31-oap-v2"
-	CorpusDirectory        = "fixtures/adapters/hermes-v2026.8.31"
 	defaultJournalCapacity = 256
 	relayCapacity          = 256
 )

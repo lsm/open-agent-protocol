@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/harnesses"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -15,11 +16,15 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var (
+	pin                = harnesses.Current("deepseek-harness")
+	PinnedVersion      = pin.EndpointVersion
+	CapabilityRevision = pin.CapabilityRevision
+	CorpusDirectory    = pin.Corpus
+)
+
 const (
 	endpointID             = "deepseek.harness"
-	PinnedVersion          = native.ServerVersion
-	CapabilityRevision     = "deepseek-harness-47f9438-oap-v2"
-	CorpusDirectory        = "fixtures/adapters/deepseek-harness-47f9438"
 	defaultJournalCapacity = 256
 )
 

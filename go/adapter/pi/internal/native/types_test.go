@@ -6,12 +6,6 @@ import (
 	"testing"
 )
 
-func TestPinnedIdentity(t *testing.T) {
-	if Version != "v0.85.1" || Commit != "d981de1229ef899957bbe968bc8dcda02a21f477" {
-		t.Fatalf("pin=%s %s", Version, Commit)
-	}
-}
-
 func TestAllPinnedCommandsValidate(t *testing.T) {
 	message, provider, model, path, entry, name, bash := "m", "p", "m", "/x", "e", "n", "ls"
 	commands := []Command{

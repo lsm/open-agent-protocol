@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/harnesses"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,12 +17,16 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var (
+	pin                = harnesses.Current("pi")
+	PinnedVersion      = pin.EndpointVersion
+	PinnedCommit       = pin.Source("pi").Commit
+	CapabilityRevision = pin.CapabilityRevision
+	CorpusDirectory    = pin.Corpus
+)
+
 const (
 	endpointID             = "pi.rpc"
-	PinnedVersion          = native.Version
-	PinnedCommit           = native.Commit
-	CapabilityRevision     = "pi-v0.85.1-oap-v1"
-	CorpusDirectory        = "fixtures/adapters/pi-v0.85.1"
 	defaultJournalCapacity = 256
 )
 

@@ -8,12 +8,7 @@ import (
 	"io"
 )
 
-const (
-	Version = "v0.85.1"
-	Commit  = "d981de1229ef899957bbe968bc8dcda02a21f477"
-)
-
-var ErrInvalid = errors.New("pi native: invalid v0.85.1 message")
+var ErrInvalid = errors.New("pi native: invalid message")
 
 type CommandType string
 

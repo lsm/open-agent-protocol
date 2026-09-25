@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
+
+### Removed
+
+- The Claude Code 2.1.263 floor: its corpus and catalog version. Its ledger stays as the base the 2.1.280 ledger builds on.
+
 ### Added
 
 - `oapx serve agent --backend` treats SIGINT and SIGTERM as end of input, as [`drafts/endpoint-stdio.md`](drafts/endpoint-stdio.md) requires and `goap` already does: it settles what it admitted, flushes, closes each session so its child is stopped, and exits 0. Before, a signal killed `oapx` outright and could leave a backend child running. The output-stall bound is still not implemented.
