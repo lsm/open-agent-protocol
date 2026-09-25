@@ -8679,6 +8679,7 @@ fn runOapMode(
             try printUsage(stderr);
             return error.InvalidArgument;
         }
+        installBackendSignals();
         return runBackendMode(allocator, name, parsed.config_path, stdin, stdout, stderr);
     }
 
@@ -9196,6 +9197,20 @@ fn backendFatalMessage(err: anyerror) ?[]const u8 {
     };
 }
 
+var backend_signalled = std.atomic.Value(bool).init(false);
+
+fn onBackendSignal(signal: std.posix.SIG) callconv(.c) void {
+    _ = signal;
+    backend_signalled.store(true, .release);
+}
+
+fn installBackendSignals() void {
+    if (@import("builtin").os.tag == .windows) return;
+    const action = std.posix.Sigaction{ .handler = .{ .handler = onBackendSignal }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    std.posix.sigaction(std.posix.SIG.INT, &action, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &action, null);
+}
+
 fn runBackendMode(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -9254,10 +9269,10 @@ fn runBackendMode(
 
     var async_receiver = stdio.AsyncStdioReceiver.initWithFileAndLimit(stdin, adapter_endpoint.default_frame_limit);
     var stdin_handle = try async_receiver.receiveStreamWithHandle(allocator);
-    defer _ = stdin_handle.deinit(STDIO_THREAD_JOIN_TIMEOUT_MS);
+    defer _ = stdin_handle.deinit(if (backend_signalled.load(.acquire)) 0 else STDIO_THREAD_JOIN_TIMEOUT_MS);
     const stdin_stream = stdin_handle.getStream();
 
-    while (true) {
+    while (!backend_signalled.load(.acquire)) {
         var did_work = false;
         while (stdin_stream.poll()) |chunk| {
             var owned = chunk;
@@ -10422,6 +10437,39 @@ test "a JSON report names the phase of each finding and never claims completenes
     try std.testing.expectEqualStrings("schema", diagnostic.get("phase").?.string);
     try std.testing.expectEqualStrings("schema_invalid", diagnostic.get("code").?.string);
     try std.testing.expectEqual(@as(i64, 2), diagnostic.get("index").?.integer);
+}
+
+test "a SIGTERM ends the served backend as end of input does, exiting clean" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const stdin_pipe = try compat.stdio.pipe();
+    const stdout_pipe = try compat.stdio.pipe();
+    const stderr_pipe = try compat.stdio.pipe();
+    installBackendSignals();
+    defer backend_signalled.store(false, .release);
+
+    var runner = BackendRun{
+        .allocator = std.heap.page_allocator,
+        .name = "memory",
+        .config_path = null,
+        .stdin_file = stdin_pipe[0],
+        .stdout_file = stdout_pipe[1],
+        .stderr_file = stderr_pipe[1],
+    };
+    const thread = try std.Thread.spawn(.{}, BackendRun.run, .{&runner});
+    try compat.stdio.writeLine(stdin_pipe[1], "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"capabilities.request\",\"id\":\"q1\",\"payload\":{}}");
+    try std.posix.raise(std.posix.SIG.TERM);
+    const written = try readAllFrom(allocator, stdout_pipe[0]);
+    defer allocator.free(written);
+    compat.stdio.close(stdout_pipe[0]);
+    const complained = try readAllFrom(allocator, stderr_pipe[0]);
+    defer allocator.free(complained);
+    compat.stdio.close(stderr_pipe[0]);
+    thread.join();
+    compat.stdio.close(stdin_pipe[1]);
+
+    try std.testing.expect(runner.err == null);
+    try std.testing.expectEqual(@as(usize, 0), complained.len);
 }
 
 test "a served backend whose stdout nobody reads stops once the stall bound passes, saying why" {
