@@ -30,9 +30,9 @@
       "tool_call_id": "tool-call-e",
       "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
-      "name": "read_file",
+      "name": "read",
       "arguments_json": {
-        "path": "a.txt"
+        "file_path": "/private/tmp/claude-501/-Users-lsm-focus-open-agent-protocol--claude-worktrees-epic-burnell-f7702d/91afac84-e60b-4efa-a0b2-6d72e0913554/scratchpad/rec-tools/workspace/a.txt"
       }
     },
     "sequence": 2,
@@ -54,7 +54,7 @@
       "tool_call_id": "tool-call-e",
       "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
-      "name": "read_file"
+      "name": "read"
     },
     "sequence": 3,
     "timestamp_ms": 5,
@@ -76,17 +76,11 @@
       "tool_call_id": "tool-call-e",
       "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
-      "name": "read_file",
+      "name": "read",
       "result": [
         {
-          "type": "tool-result",
-          "toolCallId": "c1",
-          "content": [
-            {
-              "type": "text",
-              "text": "tool output"
-            }
-          ]
+          "type": "text",
+          "text": "\u003cpath\u003e/private/tmp/claude-501/-Users-lsm-focus-open-agent-protocol--claude-worktrees-epic-burnell-f7702d/91afac84-e60b-4efa-a0b2-6d72e0913554/scratchpad/rec-tools/workspace/a.txt\u003c/path\u003e\n\u003ctype\u003efile\u003c/type\u003e\n\u003ccontent\u003e\n1: tool output\n\n(End of file - total 1 lines)\n\u003c/content\u003e"
         }
       ]
     },
@@ -102,21 +96,15 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.completed",
+    "type": "content.delta",
     "id": "event-i",
     "payload": {
       "session_id": "session",
       "run_id": "run-c",
-      "final_response": {
-        "id": "message-b",
-        "role": "assistant",
-        "content": "done"
-      },
-      "stop_reason": "completed",
-      "usage": {
-        "input_tokens": 2,
-        "output_tokens": 2,
-        "total_tokens": 4
+      "message_id": "message-b",
+      "part": {
+        "type": "text",
+        "text": "done"
       }
     },
     "sequence": 5,
@@ -129,19 +117,46 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "run.started",
-    "id": "event-m",
+    "type": "run.completed",
+    "id": "event-j",
     "payload": {
       "session_id": "session",
-      "run_id": "run-l",
+      "run_id": "run-c",
+      "final_response": {
+        "id": "message-b",
+        "role": "assistant",
+        "content": "done"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "total_tokens": 2
+      }
+    },
+    "sequence": 6,
+    "timestamp_ms": 8,
+    "session_id": "session",
+    "run_id": "run-c",
+    "capability_revision": "deepseek-harness-47f9438-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-n",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-m",
       "status": "running",
       "model_id": "deepseek-chat",
-      "started_at_ms": 8
+      "started_at_ms": 9
     },
     "sequence": 1,
-    "timestamp_ms": 9,
+    "timestamp_ms": 10,
     "session_id": "session",
-    "run_id": "run-l",
+    "run_id": "run-m",
     "capability_revision": "deepseek-harness-47f9438-oap-v2"
   },
   {
@@ -149,23 +164,23 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.requested",
-    "id": "event-o",
+    "id": "event-p",
     "payload": {
       "session_id": "session",
-      "run_id": "run-l",
-      "tool_call_id": "tool-call-n",
+      "run_id": "run-m",
+      "tool_call_id": "tool-call-o",
       "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
-      "name": "read_file",
+      "name": "read",
       "arguments_json": {
-        "path": "b.txt"
+        "file_path": "/private/tmp/claude-501/-Users-lsm-focus-open-agent-protocol--claude-worktrees-epic-burnell-f7702d/91afac84-e60b-4efa-a0b2-6d72e0913554/scratchpad/rec-tools/workspace/b.txt"
       }
     },
     "sequence": 2,
-    "timestamp_ms": 10,
+    "timestamp_ms": 11,
     "session_id": "session",
-    "run_id": "run-l",
-    "tool_call_id": "tool-call-n",
+    "run_id": "run-m",
+    "tool_call_id": "tool-call-o",
     "capability_revision": "deepseek-harness-47f9438-oap-v2"
   },
   {
@@ -173,21 +188,21 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.started",
-    "id": "event-p",
+    "id": "event-q",
     "payload": {
       "session_id": "session",
-      "run_id": "run-l",
-      "tool_call_id": "tool-call-n",
+      "run_id": "run-m",
+      "tool_call_id": "tool-call-o",
       "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
-      "name": "read_file"
+      "name": "read"
     },
     "sequence": 3,
-    "timestamp_ms": 11,
-    "in_reply_to": "event-o",
+    "timestamp_ms": 12,
+    "in_reply_to": "event-p",
     "session_id": "session",
-    "run_id": "run-l",
-    "tool_call_id": "tool-call-n",
+    "run_id": "run-m",
+    "tool_call_id": "tool-call-o",
     "capability_revision": "deepseek-harness-47f9438-oap-v2"
   },
   {
@@ -195,25 +210,46 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.failed",
-    "id": "event-q",
+    "id": "event-r",
     "payload": {
       "session_id": "session",
-      "run_id": "run-l",
-      "tool_call_id": "tool-call-n",
+      "run_id": "run-m",
+      "tool_call_id": "tool-call-o",
       "requested_by": "deepseek.harness",
       "execution_owner": "deepseek-harness",
-      "name": "read_file",
+      "name": "read",
       "error": {
-        "code": "ENOENT",
-        "message": "ToolError"
+        "code": "FS_NOT_FOUND",
+        "message": "FsError"
       }
     },
     "sequence": 4,
-    "timestamp_ms": 12,
-    "in_reply_to": "event-p",
+    "timestamp_ms": 13,
+    "in_reply_to": "event-q",
     "session_id": "session",
-    "run_id": "run-l",
-    "tool_call_id": "tool-call-n",
+    "run_id": "run-m",
+    "tool_call_id": "tool-call-o",
+    "capability_revision": "deepseek-harness-47f9438-oap-v2"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-s",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-m",
+      "message_id": "message-l",
+      "part": {
+        "type": "text",
+        "text": "failed"
+      }
+    },
+    "sequence": 5,
+    "timestamp_ms": 14,
+    "session_id": "session",
+    "run_id": "run-m",
     "capability_revision": "deepseek-harness-47f9438-oap-v2"
   },
   {
@@ -221,26 +257,26 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-r",
+    "id": "event-t",
     "payload": {
       "session_id": "session",
-      "run_id": "run-l",
+      "run_id": "run-m",
       "final_response": {
-        "id": "message-k",
+        "id": "message-l",
         "role": "assistant",
         "content": "failed"
       },
       "stop_reason": "completed",
       "usage": {
-        "input_tokens": 2,
+        "input_tokens": 1,
         "output_tokens": 1,
-        "total_tokens": 3
+        "total_tokens": 2
       }
     },
-    "sequence": 5,
-    "timestamp_ms": 13,
+    "sequence": 6,
+    "timestamp_ms": 15,
     "session_id": "session",
-    "run_id": "run-l",
+    "run_id": "run-m",
     "capability_revision": "deepseek-harness-47f9438-oap-v2"
   }
 ]

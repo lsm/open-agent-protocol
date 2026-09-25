@@ -22,29 +22,59 @@ import (
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/native"
 	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/rpc"
 	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/open-agent-protocol/harnesses"
 )
 
 const (
-	dshCorpusRepository = "https://github.com/deepseek-ai/deepseek-harness"
-	dshCorpusTag        = "fb2c4b9"
-	dshCorpusCommit     = "fb2c4b9e698e30edb738bca4cf0618587db7d203"
-	dshCorpusCommitTree = "bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38"
-
-	dshBlobSDKProtocolTypes     = "605b97cc6945397563e6351e03ffde7a9436b23f"
-	dshBlobSDKProtocolTransport = "36574f46bf3e34738be045408e25bb79932ff609"
-	dshBlobSDKServer            = "1cc17059c9254c6bd4f809441bd9e43bc26a7d2d"
-	dshBlobCoreSessionTypes     = "139fccd5a5660a8d0c4e1ef95f4e4d64b274230f"
-	dshBlobCoreKnownEvents      = "dd6411240b0527ec98d5ff51bcfb3e8b5f47e715"
-	dshBlobCoreAgentTypes       = "d0be69ac58747a042ac937a250878705bcbf0d8f"
-	dshBlobCoreAgentInbox       = "db89cd3072677ebd6acbd40f7d496bab15c19cef"
-	dshBlobCoreAgentRuntime     = "31338e8d8da6ccb2e99fd459abbe2238bf5c1736"
-	dshBlobCoreAgentLoop        = "06e1f51b57277ba296698b6c8b810f0e455e3695"
-	dshBlobLLMMessage           = "6f920fe0191d17c0a272fbc881eb7e37f8142815"
-	dshBlobLLMTypes             = "bfddde7fc4b2a08144e2f76f8ca59e61a2b4e37f"
-	dshBlobLLMAssistantStream   = "5d878020e8a2eab1a1a84d1867bf2923a409527a"
-	dshBlobCoreSessionInvariant = "6ed0b6b3c5abf84dd4129281ed6029880c7e6ad3"
-	dshBlobCoreSessionSurface   = "5d8ce74fe2461cb2f777a7bc7556795f337f0c03"
+	dshCorpusRepository  = "https://github.com/deepseek-ai/deepseek-harness"
+	dshCarriedTag        = "fb2c4b9"
+	dshCarriedCommit     = "fb2c4b9e698e30edb738bca4cf0618587db7d203"
+	dshCarriedCommitTree = "bd7dd6d90010a35d3d6ff9f12c1f6207d5b6fe38"
 )
+
+var dshCurrentSource = harnesses.Current("deepseek-harness").Source("deepseek-harness")
+
+var dshCarriedSources = dshCorpusSources{
+	SDKProtocolTypes:     "605b97cc6945397563e6351e03ffde7a9436b23f",
+	SDKProtocolTransport: "36574f46bf3e34738be045408e25bb79932ff609",
+	SDKServer:            "1cc17059c9254c6bd4f809441bd9e43bc26a7d2d",
+	CoreSessionTypes:     "139fccd5a5660a8d0c4e1ef95f4e4d64b274230f",
+	CoreKnownEvents:      "dd6411240b0527ec98d5ff51bcfb3e8b5f47e715",
+	CoreAgentTypes:       "d0be69ac58747a042ac937a250878705bcbf0d8f",
+	CoreAgentInbox:       "db89cd3072677ebd6acbd40f7d496bab15c19cef",
+	CoreAgentRuntime:     "31338e8d8da6ccb2e99fd459abbe2238bf5c1736",
+	CoreAgentLoop:        "06e1f51b57277ba296698b6c8b810f0e455e3695",
+	LLMMessage:           "6f920fe0191d17c0a272fbc881eb7e37f8142815",
+	LLMTypes:             "bfddde7fc4b2a08144e2f76f8ca59e61a2b4e37f",
+	LLMAssistantStream:   "5d878020e8a2eab1a1a84d1867bf2923a409527a",
+	CoreSessionInvariant: "6ed0b6b3c5abf84dd4129281ed6029880c7e6ad3",
+	CoreSessionSurface:   "5d8ce74fe2461cb2f777a7bc7556795f337f0c03",
+}
+
+var dshCurrentSources = dshCorpusSources{
+	SDKProtocolTypes:     "605b97cc6945397563e6351e03ffde7a9436b23f",
+	SDKProtocolTransport: "36574f46bf3e34738be045408e25bb79932ff609",
+	SDKServer:            "50567c32e78067d7d82cd5c8429e945ca3c7d237",
+	CoreSessionTypes:     "593c86d52a5c26d531913ffaff9aac651732c2da",
+	CoreKnownEvents:      "adaca29255a181c793a73476baddc25324083cb2",
+	CoreAgentTypes:       "5cbc81df38c81be4f5c4d85e6a2c8acd5108ed95",
+	CoreAgentInbox:       "ef00887a544c2dededb484ff7b9ce0efe83dea21",
+	CoreAgentRuntime:     "2118507b8cc617a920e7ceae9f98d06daa2d4780",
+	CoreAgentLoop:        "bcd7ad17a82699c395c3a14855cdee6ed4a2b905",
+	LLMMessage:           "d96a63edb6d78d64508875ebc1cc6a1cc5a824b6",
+	LLMTypes:             "54453607f5c07f31baea3e6fd722f94cec71ad5d",
+	LLMAssistantStream:   "7fca34c5d5bf432f7fad81bd48edfbdaf5083e83",
+	CoreSessionInvariant: "154c95343862f5929c8b55e7df72d120b934ef13",
+	CoreSessionSurface:   "eeedca77b9bafacaf5d2d358c2bdaa6915988d8b",
+}
+
+func dshCurrentProvenance() dshCorpusProvenance {
+	return dshCorpusProvenance{Repository: dshCorpusRepository, Tag: dshCurrentSource.Tag, Commit: dshCurrentSource.Commit, CommitTree: dshCurrentSource.Tree, Sources: dshCurrentSources}
+}
+
+func dshCarriedProvenance() dshCorpusProvenance {
+	return dshCorpusProvenance{Repository: dshCorpusRepository, Tag: dshCarriedTag, Commit: dshCarriedCommit, CommitTree: dshCarriedCommitTree, Sources: dshCarriedSources}
+}
 
 var dshLedgerFixtures = map[string]bool{
 	"initialize-minimal": true, "initialize-repeat-rejected": true, "initialize-before-prompt": true,
@@ -149,29 +179,11 @@ type dshDecodedFrame struct {
 	RequestMethod string
 }
 
-func pinnedDSHSources() dshCorpusSources {
-	return dshCorpusSources{
-		SDKProtocolTypes:     dshBlobSDKProtocolTypes,
-		SDKProtocolTransport: dshBlobSDKProtocolTransport,
-		SDKServer:            dshBlobSDKServer,
-		CoreSessionTypes:     dshBlobCoreSessionTypes,
-		CoreKnownEvents:      dshBlobCoreKnownEvents,
-		CoreAgentTypes:       dshBlobCoreAgentTypes,
-		CoreAgentInbox:       dshBlobCoreAgentInbox,
-		CoreAgentRuntime:     dshBlobCoreAgentRuntime,
-		CoreAgentLoop:        dshBlobCoreAgentLoop,
-		LLMMessage:           dshBlobLLMMessage,
-		LLMTypes:             dshBlobLLMTypes,
-		LLMAssistantStream:   dshBlobLLMAssistantStream,
-		CoreSessionInvariant: dshBlobCoreSessionInvariant,
-		CoreSessionSurface:   dshBlobCoreSessionSurface,
-	}
-}
-
 func TestDSHEvidenceCorpus(t *testing.T) {
 	root := dshCorpusRoot(t)
 	manifest := dshLoadJSON[dshCorpusManifest](t, filepath.Join(root, "manifest.json"))
-	if manifest.Version != 1 || manifest.Adapter != "deepseek-harness-jsonrpc" || manifest.Tag != dshCorpusTag || manifest.Commit != dshCorpusCommit || manifest.CommitTree != dshCorpusCommitTree || manifest.Sources != pinnedDSHSources() {
+	current := dshCurrentProvenance()
+	if manifest.Version != 1 || manifest.Adapter != "deepseek-harness-jsonrpc" || manifest.Tag != current.Tag || manifest.Commit != current.Commit || manifest.CommitTree != current.CommitTree || manifest.Sources != current.Sources {
 		t.Fatalf("corpus provenance pin mismatch: %+v", manifest)
 	}
 	seenIDs, seenPaths, covered := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -203,7 +215,7 @@ func runDSHCorpusCase(t *testing.T, root string, entry dshCorpusManifestCase) {
 	dir := filepath.Join(root, entry.Path)
 	definition := dshLoadJSON[dshCorpusCase](t, filepath.Join(dir, "case.json"))
 	p := definition.Provenance
-	if definition.Version != 1 || definition.ID != entry.ID || p.Repository != dshCorpusRepository || p.Tag != dshCorpusTag || p.Commit != dshCorpusCommit || p.CommitTree != dshCorpusCommitTree || p.Sources != pinnedDSHSources() || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
+	if definition.Version != 1 || definition.ID != entry.ID || (p != dshCurrentProvenance() && p != dshCarriedProvenance()) || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
 		t.Fatalf("invalid case metadata: %+v", definition)
 	}
 	dshAssertCapabilities(t, definition, descriptorFromProbe(t))
@@ -1161,10 +1173,10 @@ func assertDSHLedgerEvidence(t *testing.T, labels []string, definition dshCorpus
 				}
 				var message native.UserMessage
 				if native.DecodeStrict(decoded[i].Event.Data, &message) == nil {
-					if message.Source.Kind != "user" {
-						synthetic = true
-					} else if message.Source.Plugin == "" {
+					if message.Source.DirectUser() {
 						direct = true
+					} else {
+						synthetic = true
 					}
 				}
 			}
@@ -1438,11 +1450,13 @@ func dshCorpusRoot(t *testing.T) string {
 }
 
 func TestDSHCorpusPinConstants(t *testing.T) {
-	if dshCorpusTag == "" || dshCorpusCommit == "" || dshCorpusCommitTree == "" || CapabilityRevision == "" || PinnedVersion == "" {
+	if dshCurrentSource.Tag == "" || dshCurrentSource.Commit == "" || dshCurrentSource.Tree == "" || CapabilityRevision == "" || PinnedVersion == "" {
 		t.Fatal("missing DeepSeek corpus pin")
 	}
-	if dshBlobSDKProtocolTypes == "" || dshBlobSDKProtocolTransport == "" || dshBlobSDKServer == "" || dshBlobCoreSessionTypes == "" || dshBlobCoreKnownEvents == "" || dshBlobCoreAgentTypes == "" || dshBlobCoreAgentInbox == "" || dshBlobCoreAgentRuntime == "" || dshBlobCoreAgentLoop == "" || dshBlobLLMMessage == "" || dshBlobLLMTypes == "" || dshBlobLLMAssistantStream == "" || dshBlobCoreSessionInvariant == "" || dshBlobCoreSessionSurface == "" {
-		t.Fatal("missing DeepSeek corpus source pin")
+	for _, sources := range []dshCorpusSources{dshCurrentSources, dshCarriedSources} {
+		if sources.SDKProtocolTypes == "" || sources.SDKProtocolTransport == "" || sources.SDKServer == "" || sources.CoreSessionTypes == "" || sources.CoreKnownEvents == "" || sources.CoreAgentTypes == "" || sources.CoreAgentInbox == "" || sources.CoreAgentRuntime == "" || sources.CoreAgentLoop == "" || sources.LLMMessage == "" || sources.LLMTypes == "" || sources.LLMAssistantStream == "" || sources.CoreSessionInvariant == "" || sources.CoreSessionSurface == "" {
+			t.Fatal("missing DeepSeek corpus source pin")
+		}
 	}
 }
 

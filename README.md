@@ -54,7 +54,7 @@ the default path; the old Makai wire is available only by explicit opt-in.
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.280),
 `--backend codex` a Codex app-server child (pinned `8d7cc24`), `--backend pi` a
 Pi RPC child (pinned 0.85.1), an `acp`
-entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), a `deepseek` entry a DeepSeek harness (pinned `47f9438`), and an `opencode` entry an OpenCode server (pinned `v1.18.29`), behind the same stdio door instead of the built-in loop, following
+entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v1.18.29`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
 harness-default tool posture, so every gated tool call still reaches the host
@@ -665,7 +665,7 @@ Research:
 - [Pinned Codex app-server mapping](research/codex-app-server-8d7cc24-mapping.md)
 - [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.85.1-mapping.md)
-- [Pinned DeepSeek Harness mapping](research/deepseek-harness-47f9438-mapping.md)
+- [Pinned DeepSeek Harness mapping](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md), over the [47f9438 base mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.8.31-mapping.md)
 - [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.280-mapping.md), over the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
@@ -735,15 +735,14 @@ artifact provenance is required. The gate never downloads an executable and
 passes no ambient credentials to it.
 
 DeepSeek Harness real-process checks follow the same opt-in gate. Provide an
-absolute runtime built from the pinned source commit in
-`OAP_DEEPSEEK_HARNESS_BIN` — the build emits
-`deepseek-harness-sdk-runtime-linux-x64` from the pinned release — then set
+absolute runtime built from, or launched over, the pinned source commit in
+`OAP_DEEPSEEK_HARNESS_BIN` (the release publishes no binary), then set
 `OAP_DEEPSEEK_HARNESS_SMOKE=1` for the credential-free initialize/shutdown
 check or `OAP_DEEPSEEK_HARNESS_INTEGRATION=1` for the loopback-provider path.
 The gates never download a runtime and pass no ambient credentials. The
 runtime boots the shipped `sdk` profile (`--profile sdk`) against an isolated
-`DSH_HOME`; the loopback gate redirects the stock deepseek provider with
-`DEEPSEEK_BASE_URL`. The wire `serverInfo` version and any release text are
+`DSH_HOME`; the loopback gate redirects the stock deepseek provider, which
+speaks the Messages API, with `DEEPSEEK_BASE_URL`. The wire `serverInfo` version and any release text are
 runtime-version evidence only; the pinned source commit and tree in the
 mapping ledger remain the provenance. Set `OAP_DEEPSEEK_HARNESS_SHA256` to the
 expected 64-character artifact digest when exact artifact provenance is

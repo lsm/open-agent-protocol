@@ -297,6 +297,7 @@ const observed_only_events = [_][]const u8{
     "compaction/start",
     "compaction/summary",
     "deliverables/presented",
+    "developer/message",
     "feedback/message-delete",
     "feedback/message-put",
     "feedback/record",
@@ -328,6 +329,7 @@ const observed_only_events = [_][]const u8{
     "tool/ptc-dispatch",
     "tool/ptc-dispatch-start",
     "web/deepseek-search-llm-request",
+    "workspace/changes",
 };
 
 const ignored_events = [_][]const u8{
@@ -684,18 +686,9 @@ pub fn transportFailed(reducer: *Reducer, message: []const u8) !void {
 }
 
 fn directUser(source: std.json.Value) bool {
-    if (source != .object) return false;
-    if (!std.mem.eql(u8, textOf(source, "kind"), "user")) return false;
-    for ([_][]const u8{ "plugin", "provider", "model", "callId", "form", "summary" }) |name| {
-        const carried = memberOf(source, name) orelse continue;
-        if (carried == .null) continue;
-        if (carried != .string) return false;
-        if (carried.string.len != 0) return false;
-    }
-    for ([_][]const u8{ "sections", "replayState" }) |name| {
-        if (memberOf(source, name) != null) return false;
-    }
-    return true;
+    if (source != .object or source.object.count() != 1) return false;
+    const kind = source.object.get("kind") orelse return false;
+    return kind == .string and std.mem.eql(u8, kind.string, "user");
 }
 
 pub fn receipt(reducer: *Reducer, message_id: []const u8) !void {
@@ -945,14 +938,6 @@ fn validBlock(arena: std.mem.Allocator, block: Block) error{OutOfMemory}!bool {
         return bare and block.text.len == 0 and !block.attachment and block.tool_call_id.len == 0 and block.offloaded == null and
             block.id.len != 0 and block.name.len != 0 and try singleUniqueValue(arena, block.arguments);
     }
-    if (std.mem.eql(u8, block.kind, "tool-result")) {
-        if (block.text.len != 0 or block.attachment or !unnamed or block.tool_call_id.len == 0 or block.offloaded != null) return false;
-        const count = block.content orelse return false;
-        for (block.backing.items[0..count]) |nested| {
-            if (!try validBlock(arena, nested)) return false;
-        }
-        return true;
-    }
     return false;
 }
 
@@ -993,10 +978,6 @@ fn validBlockRaw(arena: std.mem.Allocator, value: std.json.Value) error{OutOfMem
     if (oneOf(&.{ "text", "reasoning" }, kind)) return object.contains("text");
     if (std.mem.eql(u8, kind, "image")) return validAttachment(object.get("attachment") orelse return false);
     if (std.mem.eql(u8, kind, "tool-call")) return object.contains("id") and object.contains("name") and object.contains("arguments");
-    if (std.mem.eql(u8, kind, "tool-result")) {
-        if (!object.contains("toolCallId")) return false;
-        return validBlocksRaw(arena, object.get("content") orelse return false);
-    }
     return false;
 }
 
@@ -1317,11 +1298,13 @@ fn evaluateAdmission(reducer: *Reducer) !void {
     reducer.pending.clearRetainingCapacity();
     try start(reducer);
     var turn_end_seq: i64 = 0;
+    const admitted_step = reducer.step;
     for (replayed) |event| {
         if (reducer.terminal) break;
         const kind = textOf(event, "type");
         if (std.mem.eql(u8, kind, "turn/end")) turn_end_seq = numberOf(event, "seq");
-        if (std.mem.eql(u8, kind, "turn/start") or std.mem.eql(u8, kind, "step/start") or std.mem.eql(u8, kind, "user/message")) continue;
+        if (std.mem.eql(u8, kind, "turn/start") or std.mem.eql(u8, kind, "user/message")) continue;
+        if (std.mem.eql(u8, kind, "step/start") and numberOf(memberOf(event, "data") orelse std.json.Value{ .null = {} }, "step") <= admitted_step) continue;
         try applyEvent(reducer, event);
     }
     try drainBuffered(reducer, turn_end_seq);
@@ -1529,6 +1512,29 @@ test "a final tool call the port cannot hold settles as the assistant event's re
 fn lastKind(reducer: *Reducer) []const u8 {
     if (reducer.emitted.items.len == 0) return "";
     return textOf(reducer.emitted.items[reducer.emitted.items.len - 1], "type");
+}
+
+test "a retrospective admission replays the steps after the admitted one" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var reducer = Reducer.init(a);
+    openSession(&reducer);
+    try submit(&reducer);
+    for ([_][]const u8{
+        "{\"type\":\"agent/inbox/spliced\",\"seq\":1,\"data\":{\"inserted\":[{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}]}}",
+        "{\"type\":\"turn/start\",\"seq\":2,\"data\":{\"turn\":1}}",
+        "{\"type\":\"step/start\",\"seq\":3,\"data\":{\"turn\":1,\"step\":1}}",
+        "{\"type\":\"user/message\",\"seq\":4,\"data\":{\"id\":\"m-1\",\"source\":{\"kind\":\"user\"}}}",
+        "{\"type\":\"step/end\",\"seq\":5,\"data\":{\"turn\":1,\"step\":1}}",
+        "{\"type\":\"step/start\",\"seq\":6,\"data\":{\"turn\":1,\"step\":2}}",
+        "{\"type\":\"assistant/message\",\"seq\":7,\"data\":{\"turn\":1,\"step\":2,\"message\":{\"id\":\"a\",\"role\":\"assistant\",\"source\":{\"kind\":\"model\",\"provider\":\"p\",\"model\":\"m\"},\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]},\"stream\":[]}}",
+        "{\"type\":\"step/end\",\"seq\":8,\"data\":{\"turn\":1,\"step\":2}}",
+        "{\"type\":\"turn/end\",\"seq\":9,\"data\":{\"turn\":1,\"reason\":{\"kind\":\"completed\"}}}",
+    }) |text| try observe(&reducer, try parse(a, text));
+    try receipt(&reducer, "m-1");
+    try observeStatus(&reducer, "idle");
+    try std.testing.expectEqualStrings("run.completed", lastKind(&reducer));
 }
 
 test "event members the oracle refuses at decode fail the run with its text, and its admitted neighbours pass" {
@@ -2327,16 +2333,18 @@ fn admitsWithSource(a: std.mem.Allocator, source_text: []const u8) !bool {
     return reducer.started;
 }
 
-test "any present sections or replayState disqualifies the ownership proof" {
+test "a source carrying any member besides kind disqualifies the ownership proof" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     try std.testing.expect(try admitsWithSource(a, "{\"kind\":\"user\"}"));
-    try std.testing.expect(try admitsWithSource(a, "{\"kind\":\"user\",\"plugin\":\"\"}"));
-    try std.testing.expect(try admitsWithSource(a, "{\"kind\":\"user\",\"plugin\":null}"));
 
     for ([_][]const u8{
+        "{\"kind\":\"user\",\"plugin\":\"\"}",
+        "{\"kind\":\"user\",\"plugin\":null}",
+        "{\"kind\":\"user\",\"rpcId\":\"r\"}",
+        "{\"kind\":\"runtime-context\"}",
         "{\"kind\":\"user\",\"sections\":[]}",
         "{\"kind\":\"user\",\"sections\":null}",
         "{\"kind\":\"user\",\"sections\":{}}",
@@ -2528,6 +2536,16 @@ test "params the codec refuses are refused with the codec's text, and only an ar
 
 test "lastAssistantMessage blocks the oracle refuses are refused here with its words" {
     const cases = [_]struct { params: []const u8, said: []const u8 }{
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"isError\":true}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"isError\":null}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"text\":\"\"}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"isError\":true,\"ISERROR\":null}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"CONTENT\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"bogus\"}],\"content\":[{\"type\":\"text\",\"text\":\"y\"}]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[{\"type\":\"text\",\"text\":\"y\"}],\"Content\":[null]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"CONTENT\":[{\"type\":\"text\",\"text\":\"x\",\"id\":\"i\"},{\"type\":\"text\",\"text\":\"z\"}],\"Content\":[],\"content\":[{\"type\":\"text\",\"text\":\"y\"}]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
+        .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"CONTENT\":[{\"type\":\"text\",\"text\":\"x\",\"id\":\"i\"}],\"Content\":null,\"content\":[{\"type\":\"text\",\"text\":\"y\"}]}]}", .said = "invalid subagent.finished lastAssistantMessage" },
         .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":null}", .said = "invalid subagent.finished lastAssistantMessage" },
         .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"bogus\"}]}", .said = "invalid subagent.finished lastAssistantMessage" },
         .{ .params = "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"text\"}]}", .said = "invalid subagent.finished lastAssistantMessage" },
@@ -2689,34 +2707,24 @@ test "lastAssistantMessage blocks the oracle admits are admitted here" {
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"{}\",\"toolCallId\":\"\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"{}\",\"content\":null}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"{}\",\"isError\":null}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[]}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[{\"type\":\"text\",\"text\":\"x\"}]}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"isError\":true}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"isError\":null}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"text\":\"\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"text\",\"text\":\"x\",\"TEXT\":\"y\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastassistantmessage\":[{\"type\":\"bogus\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastassistantmessage\":null}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[],\"LASTASSISTANTMESSAGE\":[{\"type\":\"bogus\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"image\",\"attachment\":{\"attachmentId\":\"a\",\"mediaType\":\"m\"},\"ATTACHMENT\":null}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"image\",\"attachment\":{\"attachmentId\":\"a\",\"mediaType\":\"m\"},\"OFFLOADED\":true}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[],\"isError\":true,\"ISERROR\":null}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"text\",\"text\":\"x\",\"isError\":true,\"ISERROR\":null}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"text\",\"TYPE\":null,\"text\":\"x\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"{\",\"ARGUMENTS\":\"{}\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"[{\\\"a\\\":1},{\\\"a\\\":2}]\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"image\",\"attachment\":{\"attachmentId\":\"a\",\"mediaType\":\"m\",\"attachmentid\":\"b\"}}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"image\",\"attachment\":{\"attachmentId\":\"a\",\"MediaType\":\"m\"}}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"CONTENT\":[{\"type\":\"text\",\"text\":\"x\"},{\"type\":\"bogus\"}],\"content\":[{\"type\":\"text\",\"text\":\"y\"}]}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"content\":[{\"type\":\"text\",\"text\":\"y\"}],\"Content\":[null]}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"text\",\"text\":\"x\",\"TEXT\":null}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"text\",\"text\":\"x\",\"Type\":null}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"image\",\"attachment\":{\"attachmentId\":\"a\",\"mediaType\":\"m\"},\"Offloaded\":null,\"offloaded\":true}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"\\\"\\\\ud800\\\"\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"\\t{\\\"a\\\":[1,{\\\"a\\\":2}]}\\n\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-call\",\"id\":\"i\",\"name\":\"n\",\"arguments\":\"{\\\"a\\\":{},\\\"b\\\":{\\\"a\\\":1}}\"}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"CONTENT\":[{\"type\":\"text\",\"text\":\"x\",\"id\":\"i\"},{\"type\":\"text\",\"text\":\"z\"}],\"Content\":[],\"content\":[{\"type\":\"text\",\"text\":\"y\"}]}]}",
-        "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"tool-result\",\"toolCallId\":\"t\",\"CONTENT\":[{\"type\":\"text\",\"text\":\"x\",\"id\":\"i\"}],\"Content\":null,\"content\":[{\"type\":\"text\",\"text\":\"y\"}]}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"reasoning\",\"text\":\"x\",\"toolCallId\":\"\"}]}",
         "{\"provider\":\"p\",\"agentId\":\"a\",\"parentSessionId\":\"session\",\"childSessionId\":\"c\",\"status\":\"ok\",\"stopReason\":\"completed\",\"lastAssistantMessage\":[{\"type\":\"image\",\"attachment\":{\"attachmentId\":\"a\",\"mediaType\":\"m\",\"MediaType\":null}}]}",
     };
