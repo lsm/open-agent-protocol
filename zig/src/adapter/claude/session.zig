@@ -198,6 +198,8 @@ pub const Reducer = struct {
         kept.unusable = self.unusable;
         kept.catalog_known = self.catalog_known;
         kept.current_model = try kept_allocator.dupe(u8, self.current_model);
+        kept.native_session_id = try kept_allocator.dupe(u8, self.native_session_id);
+        kept.last_sequence = self.last_sequence;
         try kept.tools.ensureTotalCapacity(kept_allocator, self.tools.items.len);
         for (self.tools.items) |tool| {
             const native_id = try kept_allocator.dupe(u8, tool.native_id);
@@ -2581,10 +2583,11 @@ fn settledSession(arena: *std.heap.ArenaAllocator) !Reducer {
     return reducer;
 }
 
-test "a compacted reducer keeps what later runs consult and none of what the settled run held" {
+test "a compacted reducer keeps what later runs and state consult and none of what the settled run held" {
     var source = std.heap.ArenaAllocator.init(testing.allocator);
     var reducer = try settledSession(&source);
     const ids_before = reducer.ids;
+    const cursor_before = reducer.last_sequence;
 
     var target = std.heap.ArenaAllocator.init(testing.allocator);
     defer target.deinit();
@@ -2592,6 +2595,9 @@ test "a compacted reducer keeps what later runs consult and none of what the set
     source.deinit();
 
     try testing.expectEqual(ids_before, kept.ids);
+    try testing.expect(cursor_before > 0);
+    try testing.expectEqual(cursor_before, kept.last_sequence);
+    try testing.expectEqualStrings("s", kept.native_session_id);
     try testing.expectEqualStrings("model-a", kept.current_model);
     try testing.expectEqual(@as(usize, 0), kept.gates.items.len);
     try testing.expectEqual(@as(usize, 1), kept.tools.items.len);
