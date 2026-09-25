@@ -335,9 +335,10 @@ corpus, one per run. Where it differs from the Go adapter:
   events per session and answers the replay control from it.
 - The child runs with `--no-extensions` and explicit extension arguments
   refuse the open, per P0 policy 4, so no dialog is expected. One that arrives
-  anyway before `agent_start`, outside a run, or still open when the run settles
-  or the child exits is answered `cancelled`; one inside a started run surfaces
-  as `user.input`, though `action.permissions` stays `unavailable` as in Go.
+  anyway is handled as in Go: before `agent_start` it waits and surfaces as
+  `user.input` once the run starts, outside a run it is ignored, and one still
+  open when the run settles resolves `cancelled` with nothing written to Pi.
+  `action.permissions` stays `unavailable` as in Go.
 - A submission carrying image parts is refused `invalid_submission`; Go
   forwards inline images in the native prompt. Only text parts are served.
 - Like Go, each state request reads `get_state` again and answers the adapter
