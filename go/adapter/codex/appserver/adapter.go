@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/harnesses"
 	"sync/atomic"
 	"time"
 
@@ -13,11 +14,15 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var (
+	pin                = harnesses.Current("codex-app-server")
+	CodexCommit        = pin.EndpointVersion
+	CapabilityRevision = pin.CapabilityRevision
+	CorpusDirectory    = pin.Corpus
+)
+
 const (
 	endpointID             = "codex.app-server"
-	CodexCommit            = "8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9"
-	CapabilityRevision     = "codex-appserver-8d7cc24-oap-v1"
-	CorpusDirectory        = "fixtures/adapters/codex-appserver"
 	defaultJournalCapacity = 256
 )
 

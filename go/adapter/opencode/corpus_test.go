@@ -23,8 +23,9 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var opencodeCommitTree = pin.Source("opencode").Tree
+
 const (
-	opencodeCommitTree    = "6d8cc725d9c0945d7259b78e2f60cdec6c493a26"
 	opencodeSessionEvent  = "3a559c3e38a401218ac36e3f79051172df4dbe3d"
 	opencodeSessionInput  = "40babac105f66671baeb59679e275f6536a5ae26"
 	opencodeDeliveryBlob  = "9b678dabf9f910b173f2b2cfddebacbd11922264"

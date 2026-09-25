@@ -9,8 +9,6 @@ import (
 	"regexp"
 )
 
-const PinnedTag = "v1.18.29"
-
 var (
 	ErrInvalidWire = errors.New("opencode native: invalid wire payload")
 

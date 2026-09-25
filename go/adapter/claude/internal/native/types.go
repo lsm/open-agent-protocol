@@ -6,8 +6,6 @@ import (
 	"fmt"
 )
 
-const ReleaseTag = "v2.1.280"
-
 const (
 	TypeUser             = "user"
 	TypeAssistant        = "assistant"

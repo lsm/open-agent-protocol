@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/harnesses"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -17,11 +18,15 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
+var (
+	pin                = harnesses.Current("claude-code")
+	PinnedVersion      = pin.EndpointVersion
+	CapabilityRevision = pin.CapabilityRevision
+	CorpusDirectory    = pin.Corpus
+)
+
 const (
 	endpointID             = "claude-code.cli"
-	PinnedVersion          = native.ReleaseTag
-	CapabilityRevision     = "claude-code-2.1.280-oap-v3"
-	CorpusDirectory        = "fixtures/adapters/claude-code-2.1.280"
 	defaultJournalCapacity = 256
 	initializeTimeout      = 60 * time.Second
 )

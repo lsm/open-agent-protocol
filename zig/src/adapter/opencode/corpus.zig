@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const adapter_corpus = @import("adapter_corpus");
 const native = @import("native");
 const httpapi = @import("httpapi");
@@ -9,7 +10,7 @@ const semantic = @import("semantic");
 
 const testing = std.testing;
 
-pub const corpus_relative = "fixtures/adapters/opencode-v1.18.29";
+pub const corpus_relative = harness_pins.opencode_corpus;
 pub const goldens_relative = "go/adapter/opencode/testdata/port-goldens.json";
 const native_session = "ses_fake00000000000000";
 

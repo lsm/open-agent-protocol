@@ -7,6 +7,7 @@
       "status": "current",
       "endpoint_version": "8d7cc24a87f4aa66aa434eb4f25f4f4bafc0e0a9",
       "capability_revision": "codex-appserver-8d7cc24-oap-v1",
+      "oapx_capability_revision": "codex-appserver-8d7cc24-oapx-v1",
       "ledgers": ["research/codex-app-server-8d7cc24-mapping.md"],
       "corpus": "fixtures/adapters/codex-appserver",
       "components": [

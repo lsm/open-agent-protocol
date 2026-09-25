@@ -35,24 +35,24 @@ type ccCorpusPin struct {
 }
 
 var ccCurrentCorpus = ccCorpusPin{dir: CorpusDirectory, sources: ccCorpusSources{
-	CLIVersion:        "2.1.280",
-	NPMTarballSHA256:  "1326e6b8cf00404fc3f9bd101d806b3fdec9588264e5a1aa8d98d1f7afe50170",
-	LauncherCjsSHA256: "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e",
-	LinuxTarballSHA:   "3d95573100e302f79d536ef3eb64f5da0d537433af6ae8de571dfeda6d52bfd3",
-	LinuxBinarySHA:    "1e08503dbdf3c2cb0d706d32f3408277388d1c76ef108673e8fe42c1b322925b",
-	LinuxBinaryBytes:  233709640,
-	DarwinTarballSHA:  "76170ceef79015e118fdea65e3b11663342153d3559f301ab8e6a7dfecc7f4a3",
-	DarwinBinarySHA:   "387a5c5dcdbb815085edf0baf79591f9d8894efe922bceaf3d75b1b08055229d",
-	DarwinBinaryBytes: 217254576,
-	BuildCommit:       "80abbfe7d7232280011ff01a21ae3338f4c6e372",
+	CLIVersion:        pin.Component("cli").Version,
+	NPMTarballSHA256:  pin.Artifact("cli", "any", "npm-tarball").SHA256,
+	LauncherCjsSHA256: pin.Artifact("cli", "any", "file").SHA256,
+	LinuxTarballSHA:   pin.Artifact("cli", "linux-x64", "npm-tarball").SHA256,
+	LinuxBinarySHA:    pin.Artifact("cli", "linux-x64", "binary").SHA256,
+	LinuxBinaryBytes:  pin.Artifact("cli", "linux-x64", "binary").Bytes,
+	DarwinTarballSHA:  pin.Artifact("cli", "darwin-arm64", "npm-tarball").SHA256,
+	DarwinBinarySHA:   pin.Artifact("cli", "darwin-arm64", "binary").SHA256,
+	DarwinBinaryBytes: pin.Artifact("cli", "darwin-arm64", "binary").Bytes,
+	BuildCommit:       pin.Source("cli").Commit,
 	BuildDate:         "2026-09-21T20:55:27Z",
-	TSSDKVersion:      "0.3.280",
-	TSSDKTarballSHA:   "5d3f5706261215c352d8b41606fb320f92a63cf252f020b47e7eed598bcb7ba8",
-	TSSDKDtsSHA:       "b7ac9c0ed0db5c1792a5394e72c75d69d85f4ce9edc0279487ec55d32eabfa76",
+	TSSDKVersion:      pin.Component("typescript-sdk").Version,
+	TSSDKTarballSHA:   pin.Artifact("typescript-sdk", "any", "npm-tarball").SHA256,
+	TSSDKDtsSHA:       pin.Artifact("typescript-sdk", "any", "file").SHA256,
 	TSRepository:      ccTSRepository,
-	PySDKVersion:      "0.2.158",
-	PySDKCommit:       "2c24c8248d0b52d44ff352854d7b679ac37b0db7",
-	PySDKTree:         "698715c4e378cd259f3513eb44c3932fa56d502c",
+	PySDKVersion:      pin.Component("python-sdk").Version,
+	PySDKCommit:       pin.Source("python-sdk").Commit,
+	PySDKTree:         pin.Source("python-sdk").Tree,
 	PyPyprojectBlob:   "916afbc6977b9d1572fd0d970d362c7f31da39d2",
 	PyRepository:      ccPyRepository,
 	PyClientPy:        "f3155011c17fb5ca5d44ff21a43ecd66dca51282",
@@ -60,34 +60,6 @@ var ccCurrentCorpus = ccCorpusPin{dir: CorpusDirectory, sources: ccCorpusSources
 	PyQueryPy:         "63bac7d43eedab56e4d7adbb68e1e6d92d21eb6d",
 	PyParserPy:        "931cc2a632f296aab43f3f98209020138431ce7d",
 	PyTransportPy:     "7e53b8131c7e003543ebf005dc4dd5c28f9986d9",
-	PyResumePy:        "a50e578fdaea7b10de83697fe355145b7351cecc",
-	PyStorePy:         "bb6a2155b08ad546227eba9f2349d95bffd910fa",
-	PyStoreValPy:      "16addd216281eecaadaedbe7ed361ad8205d0433",
-}}
-
-var ccFloorCorpus = ccCorpusPin{dir: "fixtures/adapters/claude-code-2.1.263", sources: ccCorpusSources{
-	CLIVersion:        "2.1.263",
-	NPMTarballSHA256:  "b325aaaf748065ebce116c50893120384ce6ec56c1133f42f45177f8d1030c66",
-	LauncherCjsSHA256: "61ad63033d9c8155d5e60a29f45dc4665afa07631c0b108e62cc83bf45ba490e",
-	LinuxTarballSHA:   "8b6207348ad56fdcde085a0ad1f7cff0dfe06ce2c6c1bf97f69f1a1a7b6d0945",
-	LinuxBinarySHA:    "26d020351e8112f4006790f3cfce43b4c9df0c1bb1d0e542364d64151b81d5ba",
-	LinuxBinaryBytes:  215662064,
-	BuildCommit:       "37ae3f38d765199d54a6913cd61c6c9ad8576cc6",
-	BuildDate:         "2026-09-06T01:17:56Z",
-	TSSDKVersion:      "0.3.263",
-	TSSDKTarballSHA:   "e1d6b68b557fc3c57430cafa8cc65eea9d40ff7348b238fe2c431284d727901d",
-	TSSDKDtsSHA:       "59560e31f91e47ed93e7cbcaa846e3fc3c96d8dcc41ea36cda64de96c0c4edf4",
-	TSRepository:      ccTSRepository,
-	PySDKVersion:      "0.2.152",
-	PySDKCommit:       "efd4d865ef1795daffee3cd24cce45307aed8a51",
-	PySDKTree:         "d617ca6d630c7bab54f3c0cd1376dcbb938103a2",
-	PyPyprojectBlob:   "ebece50404bb77b0d02aa47be14375fde76eea60",
-	PyRepository:      ccPyRepository,
-	PyClientPy:        "bba76b10e4c2ecb6b0d526ad302122b7549c3ac4",
-	PyTypesPy:         "308b76cb7fd928d124666c255b253c92c343f15d",
-	PyQueryPy:         "4d5f0070e0568778255a39cc6351aaf40429da7c",
-	PyParserPy:        "931cc2a632f296aab43f3f98209020138431ce7d",
-	PyTransportPy:     "58abc438ddadc7406330a32d90f743ae60d10c69",
 	PyResumePy:        "a50e578fdaea7b10de83697fe355145b7351cecc",
 	PyStorePy:         "bb6a2155b08ad546227eba9f2349d95bffd910fa",
 	PyStoreValPy:      "16addd216281eecaadaedbe7ed361ad8205d0433",
@@ -220,7 +192,7 @@ type ccDecodedFrame struct {
 }
 
 func TestClaudeEvidenceCorpus(t *testing.T) {
-	for _, pin := range []ccCorpusPin{ccCurrentCorpus, ccFloorCorpus} {
+	for _, pin := range []ccCorpusPin{ccCurrentCorpus} {
 		t.Run(path.Base(pin.dir), func(t *testing.T) {
 			runClaudeEvidenceCorpus(t, pin)
 		})
@@ -1642,7 +1614,7 @@ func TestClaudeCorpusPinConstants(t *testing.T) {
 	if CapabilityRevision == "" || PinnedVersion == "" {
 		t.Fatal("missing Claude Code adapter pin")
 	}
-	for _, pin := range []ccCorpusPin{ccCurrentCorpus, ccFloorCorpus} {
+	for _, pin := range []ccCorpusPin{ccCurrentCorpus} {
 		s := pin.sources
 		if pin.dir != "fixtures/adapters/claude-code-"+s.CLIVersion || s.NPMTarballSHA256 == "" || s.LinuxTarballSHA == "" || s.LinuxBinarySHA == "" || s.LinuxBinaryBytes == 0 || s.BuildCommit == "" || s.BuildDate == "" {
 			t.Fatalf("missing Claude Code corpus pin: %+v", pin)

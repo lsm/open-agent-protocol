@@ -1,13 +1,14 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const native = @import("native");
 const gomarshal = @import("gomarshal");
 
-pub const capability_revision = "opencode-v1.18.29-oap-v2";
+pub const capability_revision = harness_pins.opencode_capability_revision;
 pub const protocol_name = "open-agent-protocol";
 pub const protocol_version = "0.1";
 pub const profile = "open-agent-protocol.agent-control-core";
 pub const endpoint_id = "opencode.server";
-pub const pinned_commit = "16747470f976aca3d362ad730bcd3fe82ecc2c9a";
+pub const pinned_commit = harness_pins.opencode_opencode_commit;
 pub const cost_extension = "io.github.anomalyco.opencode.cost";
 pub const max_active_runs = 2;
 pub const max_queued_runs = 1;

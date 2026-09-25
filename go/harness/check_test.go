@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -52,6 +53,18 @@ func harnessNamed(t *testing.T, catalog *Catalog, id string) *Harness {
 	return nil
 }
 
+func currentOf(t *testing.T, catalog *Catalog, id string) *Version {
+	t.Helper()
+	entry := harnessNamed(t, catalog, id)
+	for i := range entry.Versions {
+		if entry.Versions[i].Status == StatusCurrent {
+			return &entry.Versions[i]
+		}
+	}
+	t.Fatalf("%s has no current version", id)
+	return nil
+}
+
 func versionLabelled(t *testing.T, entry *Harness, label string) *Version {
 	t.Helper()
 	for i := range entry.Versions {
@@ -81,7 +94,7 @@ func TestAHarnessWithoutExactlyOneCurrentVersionFails(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		catalog := loadCatalog(t)
 		pins := pinsFor(catalog)
-		versionLabelled(t, harnessNamed(t, &catalog, "claude-code"), "2.1.280").Status = StatusSupported
+		currentOf(t, &catalog, "claude-code").Status = StatusSupported
 		assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeCurrentCount, "0 current versions")
 	})
 	t.Run("two", func(t *testing.T) {
@@ -96,39 +109,45 @@ func TestARevisionRepeatedWithinAHarnessFails(t *testing.T) {
 	catalog := loadCatalog(t)
 	pins := pinsFor(catalog)
 	claude := harnessNamed(t, &catalog, "claude-code")
-	repeat := *versionLabelled(t, claude, "2.1.280")
-	repeat.Label, repeat.Status = "2.1.281", StatusSupported
+	repeat := *currentOf(t, &catalog, "claude-code")
+	repeat.Label, repeat.Status = repeat.Label+"-repeat", StatusSupported
 	claude.Versions = append(claude.Versions, repeat)
-	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeDuplicateRevision, "claude-code-2.1.280-oap-v3")
+	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeDuplicateRevision, repeat.CapabilityRevision)
 }
 
 func TestARevisionItsCorpusDoesNotCarryFails(t *testing.T) {
 	t.Run("current", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").CapabilityRevision = "pi-v0.85.1-oap-v9"
-		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeCorpusRevision, `"pi-v0.85.1-oap-v1", the catalog says "pi-v0.85.1-oap-v9"`)
+		pi := currentOf(t, &catalog, "pi")
+		recorded := pi.CapabilityRevision
+		pi.CapabilityRevision = recorded + "-mutated"
+		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeCorpusRevision, fmt.Sprintf("%q, the catalog says %q", recorded, pi.CapabilityRevision))
 	})
 	t.Run("floor", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "claude-code"), "2.1.263").Corpus = "fixtures/adapters/pi-v0.85.1"
-		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeCorpusRevision, `"pi-v0.85.1-oap-v1", the catalog says "claude-code-2.1.280-oap-v3"`)
+		pi, claude := *currentOf(t, &catalog, "pi"), currentOf(t, &catalog, "claude-code")
+		floor := Version{Label: "floor", Status: StatusFloor, Ledgers: claude.Ledgers, Corpus: pi.Corpus}
+		entry := harnessNamed(t, &catalog, "claude-code")
+		entry.Versions = append(entry.Versions, floor)
+		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeCorpusRevision, fmt.Sprintf("%q, the catalog says %q", pi.CapabilityRevision, claude.CapabilityRevision))
 	})
 }
 
 func TestAPathThatDoesNotExistFails(t *testing.T) {
 	t.Run("corpus", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").Corpus = "fixtures/adapters/pi-v0.0.0"
+		currentOf(t, &catalog, "pi").Corpus = "fixtures/adapters/pi-v0.0.0"
 		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeMissingPath, "corpus fixtures/adapters/pi-v0.0.0")
 	})
 	t.Run("corpus that is a file", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").Corpus = "fixtures/adapters/pi-v0.85.1/manifest.json"
+		pi := currentOf(t, &catalog, "pi")
+		pi.Corpus += "/manifest.json"
 		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeMissingPath, "is not a directory")
 	})
 	t.Run("ledger", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").Ledgers = []string{"research/pi-v0.0.0-mapping.md"}
+		currentOf(t, &catalog, "pi").Ledgers = []string{"research/pi-v0.0.0-mapping.md"}
 		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeMissingPath, "ledger research/pi-v0.0.0-mapping.md")
 	})
 }
@@ -137,35 +156,36 @@ func TestADigestNoLedgerRecordsFails(t *testing.T) {
 	unrecorded := strings.Repeat("a", 64)
 	t.Run("artifact", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").Artifacts[0].SHA256 = unrecorded
+		currentOf(t, &catalog, "pi").Artifacts[0].SHA256 = unrecorded
 		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeUnledgeredDigest, "pi-linux-x64.tar.gz sha256 "+unrecorded)
 	})
 	t.Run("source commit", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").Sources[0].Commit = unrecorded[:40]
+		currentOf(t, &catalog, "pi").Sources[0].Commit = unrecorded[:40]
 		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeUnledgeredDigest, "pi commit "+unrecorded[:40])
 	})
 	t.Run("recorded only in another version's ledger", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		claude := harnessNamed(t, &catalog, "claude-code")
-		floor := versionLabelled(t, claude, "2.1.263")
-		floor.Artifacts[0].SHA256 = versionLabelled(t, claude, "2.1.280").Artifacts[0].SHA256
-		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeUnledgeredDigest, "@anthropic-ai/claude-code@2.1.263")
+		pi := currentOf(t, &catalog, "pi")
+		artifact := currentOf(t, &catalog, "claude-code").Artifacts[0]
+		artifact.Component = pi.Artifacts[0].Component
+		pi.Artifacts = append(pi.Artifacts, artifact)
+		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeUnledgeredDigest, artifact.Name)
 	})
 }
 
 func TestAGoAdapterRevisionOtherThanTheCurrentVersionsFails(t *testing.T) {
 	catalog := loadCatalog(t)
 	pins := pinsFor(catalog)
-	pins["pi"] = AdapterPin{CapabilityRevision: "pi-v0.85.1-oap-v0", Corpus: pins["pi"].Corpus}
-	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeAdapterRevision, `CapabilityRevision is "pi-v0.85.1-oap-v0"`)
+	pins["pi"] = AdapterPin{CapabilityRevision: pins["pi"].CapabilityRevision + "-mutated", Corpus: pins["pi"].Corpus}
+	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeAdapterRevision, fmt.Sprintf("CapabilityRevision is %q", pins["pi"].CapabilityRevision))
 }
 
 func TestAGoAdapterCorpusOtherThanTheCurrentVersionsFails(t *testing.T) {
 	catalog := loadCatalog(t)
 	pins := pinsFor(catalog)
-	pins["claude-code"] = AdapterPin{CapabilityRevision: pins["claude-code"].CapabilityRevision, Corpus: "fixtures/adapters/claude-code-2.1.263"}
-	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeAdapterCorpus, `CorpusDirectory is "fixtures/adapters/claude-code-2.1.263"`)
+	pins["claude-code"] = AdapterPin{CapabilityRevision: pins["claude-code"].CapabilityRevision, Corpus: pins["pi"].Corpus}
+	assertOnly(t, Check(repositoryTree(t), catalog, pins), CodeAdapterCorpus, fmt.Sprintf("CorpusDirectory is %q", pins["pi"].Corpus))
 }
 
 func TestAGoAdapterPinnedToAHarnessTheCatalogLacksFails(t *testing.T) {
@@ -182,10 +202,10 @@ func TestALabelKeyingTwoVersionsFails(t *testing.T) {
 }
 
 func TestCorpusFromNamingNoOtherVersionFails(t *testing.T) {
-	for _, label := range []string{"dsh-v0.1.4", "dsh-v0.1.6-alpha.2"} {
+	for _, label := range []string{"dsh-v0.1.4", currentOf(t, func() *Catalog { c := loadCatalog(t); return &c }(), "deepseek-harness").Label} {
 		t.Run(label, func(t *testing.T) {
 			catalog := loadCatalog(t)
-			versionLabelled(t, harnessNamed(t, &catalog, "deepseek-harness"), "dsh-v0.1.6-alpha.2").CorpusFrom = label
+			currentOf(t, &catalog, "deepseek-harness").CorpusFrom = label
 			assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeCorpusFrom, label)
 		})
 	}
@@ -194,12 +214,12 @@ func TestCorpusFromNamingNoOtherVersionFails(t *testing.T) {
 func TestAnArtifactOrSourceNamingAnUnlistedComponentFails(t *testing.T) {
 	t.Run("artifact", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").Artifacts[0].Component = "pi-cli"
+		currentOf(t, &catalog, "pi").Artifacts[0].Component = "pi-cli"
 		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeUnknownComponent, `artifact pi-linux-x64.tar.gz names component "pi-cli"`)
 	})
 	t.Run("source", func(t *testing.T) {
 		catalog := loadCatalog(t)
-		versionLabelled(t, harnessNamed(t, &catalog, "pi"), "v0.85.1").Sources[0].Component = "pi-cli"
+		currentOf(t, &catalog, "pi").Sources[0].Component = "pi-cli"
 		assertOnly(t, Check(repositoryTree(t), catalog, pinsFor(catalog)), CodeUnknownComponent, `names component "pi-cli"`)
 	})
 }

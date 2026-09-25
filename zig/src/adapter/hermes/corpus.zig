@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const corpus = @import("corpus");
 const session = @import("session");
 const rpc = @import("rpc");
@@ -43,7 +44,7 @@ pub const CorpusCase = struct { id: []const u8, path: []const u8, skipped_resume
 const resume_expectations = [_][]const u8{ "replay", "gap", "run-not-found" };
 
 const Driver = struct {
-    pub const corpus_relative = "fixtures/adapters/hermes-v2026.8.31";
+    pub const corpus_relative = harness_pins.hermes_corpus;
     pub const blank_expectation = corpus.BlankExpectation.empty_array_only;
     pub const Reducer = session.Reducer;
     pub const Case = CorpusCase;

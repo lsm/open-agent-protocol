@@ -24,10 +24,11 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
-const (
-	acpCommitSHA256     = "272bf799f35a258c6a4107a0410ed361e83683d3"
-	acpSpecTreeSHA256   = "a23fba5f3ec62d4aeddec67f183a781e68acc89bc87dac8ffb98a440d20e1995"
-	acpSchemaTreeSHA256 = "135854daf9d2b934c9498771d8084d3bf3174c6cf1db29b9d1a3ad1ec8a8dff3"
+var (
+	acpRelease          = pin.Source("agent-client-protocol").Tag
+	acpCommitSHA256     = pin.Source("agent-client-protocol").Commit
+	acpSpecTreeSHA256   = pin.Artifact("agent-client-protocol", "any", "source-tree").SHA256
+	acpSchemaTreeSHA256 = pin.Artifact("agent-client-protocol-schema", "any", "source-tree").SHA256
 )
 
 var acpEvidenceFixtures = map[string]bool{
@@ -164,7 +165,7 @@ func (c *corpusClient) Close() error {
 func TestACPEvidenceCorpus(t *testing.T) {
 	root := acpCorpusRoot(t)
 	manifest := acpLoadJSON[acpCorpusManifest](t, filepath.Join(root, "manifest.json"))
-	if manifest.Version != 1 || manifest.Adapter != "acp-v1-stdio" || manifest.ACPVersion != ACPVersion || manifest.ACPRelease != "v1.7.0" || manifest.SchemaRelease != SchemaVersion || manifest.Commit != acpCommitSHA256 || manifest.SpecTreeSHA256 != acpSpecTreeSHA256 || manifest.SchemaTreeSHA256 != acpSchemaTreeSHA256 {
+	if manifest.Version != 1 || manifest.Adapter != "acp-v1-stdio" || manifest.ACPVersion != ACPVersion || manifest.ACPRelease != acpRelease || manifest.SchemaRelease != SchemaVersion || manifest.Commit != acpCommitSHA256 || manifest.SpecTreeSHA256 != acpSpecTreeSHA256 || manifest.SchemaTreeSHA256 != acpSchemaTreeSHA256 {
 		t.Fatalf("corpus provenance pin mismatch: %+v", manifest)
 	}
 	seenIDs, seenPaths, covered := map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -195,7 +196,7 @@ func TestACPEvidenceCorpus(t *testing.T) {
 func runACPCorpusCase(t *testing.T, root string, entry acpCorpusManifestCase) {
 	dir := filepath.Join(root, entry.Path)
 	definition := acpLoadJSON[acpCorpusCase](t, filepath.Join(dir, "case.json"))
-	if definition.Version != 1 || definition.ID != entry.ID || definition.Provenance.Repository != "https://github.com/agentclientprotocol/agent-client-protocol" || definition.Provenance.Release != "v1.7.0" || definition.Provenance.Commit != acpCommitSHA256 || definition.Provenance.SchemaRelease != SchemaVersion || definition.Provenance.SchemaSHA256 != acpSchemaTreeSHA256 || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
+	if definition.Version != 1 || definition.ID != entry.ID || definition.Provenance.Repository != "https://github.com/agentclientprotocol/agent-client-protocol" || definition.Provenance.Release != acpRelease || definition.Provenance.Commit != acpCommitSHA256 || definition.Provenance.SchemaRelease != SchemaVersion || definition.Provenance.SchemaSHA256 != acpSchemaTreeSHA256 || len(definition.Capabilities) == 0 || len(definition.IdentityMap) == 0 {
 		t.Fatalf("invalid case metadata: %+v", definition)
 	}
 	paths := acpPaths(t, dir, definition)

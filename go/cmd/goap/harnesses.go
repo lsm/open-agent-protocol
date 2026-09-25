@@ -32,7 +32,8 @@ func checkHarnesses(stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	findings := harness.Check(os.DirFS(repositoryRoot()), catalog, adapterPins)
+	tree := os.DirFS(repositoryRoot())
+	findings := append(harness.Check(tree, catalog, adapterPins), harness.CheckLiterals(tree, catalog)...)
 	if len(findings) > 0 {
 		errs := make([]error, len(findings))
 		for i, finding := range findings {

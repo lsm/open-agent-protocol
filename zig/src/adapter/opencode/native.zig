@@ -1,10 +1,11 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const json_encode = @import("json_encode");
 const gojson = @import("gojson");
 const goquote = @import("goquote");
 const gomarshal = @import("gomarshal");
 
-pub const pinned_tag = "v1.18.29";
+pub const pinned_tag = harness_pins.opencode_endpoint_version;
 
 pub const Error = error{ InvalidWire, UnsupportedType } || std.mem.Allocator.Error;
 

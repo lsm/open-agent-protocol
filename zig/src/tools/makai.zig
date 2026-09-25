@@ -8923,7 +8923,10 @@ const backend_config_read_limit = 1024 * 1024;
 
 const BACKEND_MALFORMED_LINE_MESSAGE = "oapx serve agent --backend: stdin carried a line that is not an OAP envelope or control frame; the stream's framing is in doubt and the endpoint will not resynchronise\n";
 const BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE = "oapx serve agent --backend: stdin carried an envelope with no id; every response this binding defines is correlated by in_reply_to, so no refusal could be addressed to it\n";
+<<<<<<< HEAD
 const OUTPUT_STALLED_MESSAGE = "oapx serve agent: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
+=======
+>>>>>>> 3b8f0473edd64b1e89cbd0f3d4fd9af9218ecb56
 const BACKEND_OUTPUT_STALLED_MESSAGE = "oapx serve agent --backend: stdout made no progress within the stall bound; no host is reading it, so the endpoint stops rather than hold events it cannot deliver\n";
 const BACKEND_FRAME_TOO_LARGE_MESSAGE = "oapx serve agent --backend: a frame exceeded the 1 MiB line bound; the endpoint will not truncate it or resynchronise\n";
 
@@ -9157,6 +9160,16 @@ fn writeEndpointOutbound(stdout: *bounded_output.Output, allocator: std.mem.Allo
     return wrote;
 }
 
+<<<<<<< HEAD
+=======
+fn flushBackend(stdout: *bounded_output.Output, stderr: std.Io.File, allocator: std.mem.Allocator, endpoint: *adapter_endpoint.Endpoint) !void {
+    _ = writeEndpointOutbound(stdout, allocator, endpoint) catch |err| {
+        if (err == error.OutputStalled) try compat.stdio.writeAll(stderr, BACKEND_OUTPUT_STALLED_MESSAGE);
+        return err;
+    };
+}
+
+>>>>>>> 3b8f0473edd64b1e89cbd0f3d4fd9af9218ecb56
 fn unblockOutput(stdout: std.Io.File) void {
     if (@import("builtin").os.tag == .windows) return;
     const status = stdout.stat(backendIo()) catch return;
@@ -9166,6 +9179,7 @@ fn unblockOutput(stdout: std.Io.File) void {
 
 fn backendFatalMessage(err: anyerror) ?[]const u8 {
     return switch (err) {
+        error.OutputStalled => BACKEND_OUTPUT_STALLED_MESSAGE,
         error.MalformedLine => BACKEND_MALFORMED_LINE_MESSAGE,
         error.UnaddressableEnvelope => BACKEND_UNADDRESSABLE_ENVELOPE_MESSAGE,
         error.FrameTooLarge => BACKEND_FRAME_TOO_LARGE_MESSAGE,
@@ -9243,7 +9257,10 @@ fn runBackendMode(
     var output = bounded_output.Output.init(stdout, backend_write_stall_ns);
     try output.start();
     defer output.deinit();
+<<<<<<< HEAD
     output.stall_notice = .{ .file = stderr, .message = BACKEND_OUTPUT_STALLED_MESSAGE };
+=======
+>>>>>>> 3b8f0473edd64b1e89cbd0f3d4fd9af9218ecb56
     var endpoint = adapter_endpoint.Endpoint.init(allocator, served, .{});
     defer endpoint.deinit();
 
@@ -9260,16 +9277,28 @@ fn runBackendMode(
             const line = std.mem.trim(u8, owned.data, " \t\r\n");
             if (line.len == 0) continue;
             endpoint.handleLine(line) catch |err| {
+<<<<<<< HEAD
                 _ = try writeEndpointOutbound(&output, allocator, &endpoint);
                 if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
                 return err;
             };
             _ = try writeEndpointOutbound(&output, allocator, &endpoint);
+=======
+                try flushBackend(&output, stderr, allocator, &endpoint);
+                if (backendFatalMessage(err)) |message| try compat.stdio.writeAll(stderr, message);
+                return err;
+            };
+            try flushBackend(&output, stderr, allocator, &endpoint);
+>>>>>>> 3b8f0473edd64b1e89cbd0f3d4fd9af9218ecb56
             did_work = true;
         }
         if (stdin_stream.isDone() and !stdin_stream.hasPending()) {
             const failure = stdin_stream.getError() orelse break;
+<<<<<<< HEAD
             _ = try writeEndpointOutbound(&output, allocator, &endpoint);
+=======
+            try flushBackend(&output, stderr, allocator, &endpoint);
+>>>>>>> 3b8f0473edd64b1e89cbd0f3d4fd9af9218ecb56
             if (std.mem.eql(u8, failure, "stdio line too large")) {
                 try compat.stdio.writeAll(stderr, BACKEND_FRAME_TOO_LARGE_MESSAGE);
                 return error.FrameTooLarge;
@@ -9281,10 +9310,17 @@ fn runBackendMode(
             if (try endpoint.pump(if (did_work) 0 else STDIO_IDLE_SLEEP_NS)) did_work = true;
         }
         if (!did_work) compat.time.sleepNs(STDIO_IDLE_SLEEP_NS);
+<<<<<<< HEAD
         _ = try writeEndpointOutbound(&output, allocator, &endpoint);
     }
     try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
     _ = try writeEndpointOutbound(&output, allocator, &endpoint);
+=======
+        try flushBackend(&output, stderr, allocator, &endpoint);
+    }
+    try endpoint.finish(adapter_endpoint.default_settle_window_ns, backendClock);
+    try flushBackend(&output, stderr, allocator, &endpoint);
+>>>>>>> 3b8f0473edd64b1e89cbd0f3d4fd9af9218ecb56
 }
 
 const OAP_EOF_MESSAGE = "the makai host reached end of input before the run settled";
@@ -10469,6 +10505,7 @@ test "a SIGTERM ends the served backend as end of input does, exiting clean" {
     try std.testing.expectEqual(@as(usize, 0), complained.len);
 }
 
+<<<<<<< HEAD
 test "the built-in agent loop stops once its unread stdout passes the stall bound, saying why" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;
@@ -10496,6 +10533,8 @@ test "the built-in agent loop stops once its unread stdout passes the stall boun
     try std.testing.expectEqualStrings(OUTPUT_STALLED_MESSAGE, complained);
 }
 
+=======
+>>>>>>> 3b8f0473edd64b1e89cbd0f3d4fd9af9218ecb56
 test "a served backend whose stdout nobody reads stops once the stall bound passes, saying why" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     const allocator = std.testing.allocator;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -9,7 +10,7 @@ const session = @import("session");
 const rpc = @import("rpc");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = "hermes-v2026.8.31-oapx-v1";
+pub const capability_revision = harness_pins.hermes_oapx_capability_revision;
 const journal_reason = "oapx keeps no journal for this backend";
 
 const features = [_]contract.Feature{
@@ -34,7 +35,7 @@ const features = [_]contract.Feature{
 };
 
 pub const descriptor = contract.Descriptor{
-    .endpoint = .{ .id = endpoint_id, .name = "Hermes Gateway Adapter", .version = "v2026.8.31", .adapter = "hermes-tui-gateway" },
+    .endpoint = .{ .id = endpoint_id, .name = "Hermes Gateway Adapter", .version = harness_pins.hermes_endpoint_version, .adapter = "hermes-tui-gateway" },
     .capability_revision = capability_revision,
     .features = &features,
 };

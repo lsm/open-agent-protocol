@@ -142,6 +142,12 @@ entirely before or after a port, as Decision 0019 requires.
   during a port.
 - The claude 2.1.280 corpus that is being recorded now is the first version to
   land under these rules.
+- Both trees read their pins from the catalog. Go embeds it
+  (`harnesses.Current`); `zig/build.zig` reads it into a generated
+  `harness_pins` module. The Zig served backends' own revision is the
+  version's `oapx_capability_revision`. `goap check` fails when a Go or Zig
+  string literal equals any value a non-retired version records, so moving a
+  pin edits the catalog, the corpus and the ledger, and no source file.
 
 ## What this decision does not admit
 

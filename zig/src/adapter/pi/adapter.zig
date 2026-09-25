@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const builtin = @import("builtin");
 const contract = @import("contract");
 const oap_types = @import("oap_types");
@@ -9,7 +10,7 @@ const session = @import("session.zig");
 const rpc = @import("rpc.zig");
 
 pub const endpoint_id = session.endpoint_id;
-pub const capability_revision = "pi-v0.85.1-oapx-v1";
+pub const capability_revision = harness_pins.pi_oapx_capability_revision;
 const journal_reason = "oapx keeps no journal for this backend";
 
 const features = [_]contract.Feature{
@@ -33,7 +34,7 @@ const features = [_]contract.Feature{
 };
 
 pub const descriptor = contract.Descriptor{
-    .endpoint = .{ .id = endpoint_id, .name = "Pi RPC Adapter", .version = "0.85.1", .adapter = "pi-rpc-stdio" },
+    .endpoint = .{ .id = endpoint_id, .name = "Pi RPC Adapter", .version = harness_pins.pi_endpoint_version, .adapter = "pi-rpc-stdio" },
     .capability_revision = capability_revision,
     .features = &features,
 };

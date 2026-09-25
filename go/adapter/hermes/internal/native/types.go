@@ -9,9 +9,6 @@ import (
 )
 
 const (
-	ReleaseTag    = "v2026.8.31"
-	ReleaseCommit = "29112bef099274229cadff79cdff7bf7b99c4b77"
-
 	NotifyEvent = "event"
 
 	MethodSessionCreate     = "session.create"

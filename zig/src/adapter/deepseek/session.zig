@@ -1,8 +1,9 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const goquote = @import("goquote");
 const gojson = @import("gojson");
 
-pub const capability_revision = "deepseek-harness-47f9438-oap-v2";
+pub const capability_revision = harness_pins.deepseek_harness_capability_revision;
 pub const endpoint_id = "deepseek.harness";
 pub const execution_owner = "deepseek-harness";
 const protocol_name = "open-agent-protocol";

@@ -23,7 +23,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
-const codexSchemaTreeSHA256 = "d31125f254f93a9c6300e50c86ffbd3cc6ad388ef5b8833ecbd0a47371a344b6"
+var codexSchemaTreeSHA256 = pin.Artifact("codex", "any", "source-tree").SHA256
 
 var codexReducerFixtures = map[string]bool{
 	"completed-text":        true,

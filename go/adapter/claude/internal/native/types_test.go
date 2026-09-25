@@ -163,8 +163,8 @@ func TestStreamEventDeltas(t *testing.T) {
 }
 
 func TestSystemVocabulary(t *testing.T) {
-	init := mustDecode(t, TypeSystem, SystemInit, `{"type":"system","subtype":"init","cwd":"/w","session_id":"`+sessionID+`","tools":["Task","Bash"],"mcp_servers":[],"model":"claude-sonnet-4-5","permissionMode":"default","slash_commands":[],"apiKeySource":"ANTHROPIC_API_KEY","claude_code_version":"2.1.280","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1","mcp_read_resource_v1","mcp_tool_ui_meta_v1"],"uuid":"i1"}`).(*InitFrame)
-	if init.SessionID != sessionID || len(init.Capabilities) != 5 || init.ClaudeCodeVersion != "2.1.280" {
+	init := mustDecode(t, TypeSystem, SystemInit, `{"type":"system","subtype":"init","cwd":"/w","session_id":"`+sessionID+`","tools":["Task","Bash"],"mcp_servers":[],"model":"claude-sonnet-4-5","permissionMode":"default","slash_commands":[],"apiKeySource":"ANTHROPIC_API_KEY","claude_code_version":"2.1.999","capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1","msg_lifecycle_v1","mcp_read_resource_v1","mcp_tool_ui_meta_v1"],"uuid":"i1"}`).(*InitFrame)
+	if init.SessionID != sessionID || len(init.Capabilities) != 5 || init.ClaudeCodeVersion != "2.1.999" {
 		t.Fatalf("init = %+v", init)
 	}
 	if _, err := decode(t, TypeSystem, SystemInit, `{"type":"system","subtype":"init","session_id":"s"}`); err == nil {

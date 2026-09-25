@@ -1,4 +1,5 @@
 const std = @import("std");
+const harness_pins = @import("harness_pins");
 const rpc = @import("rpc");
 const session = @import("session");
 const corpus = @import("adapter_corpus");
@@ -20,7 +21,7 @@ fn containsName(names: []const []const u8, candidate: []const u8) bool {
 }
 
 const Driver = struct {
-    pub const corpus_relative = "fixtures/adapters/acp-v1";
+    pub const corpus_relative = harness_pins.acp_corpus;
     pub const blank_expectation = corpus.BlankExpectation.empty_array_only;
     pub const Reducer = session.Reducer;
 

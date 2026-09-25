@@ -654,8 +654,9 @@ Which upstream versions each adapter is proven against lives once, in
 ([Decision 0033](decisions/0033-harness-pins-are-data.md)). A version records
 its status (one `current`; `supported`, `floor`, `retired`), endpoint version,
 capability revision, ledgers, corpus, and artifact digests per platform.
-`goap check` fails offline when the catalog disagrees with a ledger, a corpus's
-expectations or a Go adapter's constants.
+Go and Zig both read their pins from it, so moving a pin touches no source
+file. `goap check` fails offline when the catalog disagrees with a ledger or a
+corpus's expectations, or when Go or Zig source spells a pin value as a literal.
 
 Research:
 
