@@ -124,13 +124,27 @@ func zigLiterals(tree fs.FS, name string) []sourceLiteral {
 		return nil
 	}
 	var literals []sourceLiteral
+	var multiline []string
+	start := 0
 	for i, line := range strings.Split(string(src), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), `\\`) {
+		trimmed := strings.TrimSpace(line)
+		if content, ok := strings.CutPrefix(trimmed, `\\`); ok {
+			if multiline == nil {
+				start = i + 1
+			}
+			multiline = append(multiline, content)
 			continue
+		}
+		if multiline != nil {
+			literals = append(literals, sourceLiteral{text: strings.Join(multiline, "\n"), line: start})
+			multiline = nil
 		}
 		for _, match := range zigString.FindAllStringSubmatch(line, -1) {
 			literals = append(literals, sourceLiteral{text: match[1], line: i + 1})
 		}
+	}
+	if multiline != nil {
+		literals = append(literals, sourceLiteral{text: strings.Join(multiline, "\n"), line: start})
 	}
 	return literals
 }
