@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A parity test drives `goap serve agent` and `oapx serve agent` against the same scripted fake child for each served backend and requires identical answers and identical bytes written to the child; CI runs it. DeepSeek and Hermes are covered first. Endpoint refusals now carry `goap`'s wording (`adapter: ...`, `no session "<id>"`), carry the `tool`, `source` and `detail` a backend's refusal names, and for DeepSeek `oapx` now accepts several messages and text parts as `goap` does, answers with the harness receipt as `submission_id` and the request's own message ids, and refuses a submit addressed to another session `run_not_found`.
-- `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
+- `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Its state reports the last run sequence as `transcript_cursor`. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
 
 ### Changed
 
+- `oapx serve agent --backend pi` handles Pi dialogs as the Go adapter does: one raised before `agent_start` surfaces once the run starts, one outside a run is ignored, and one still open at settlement resolves `cancelled` without an `extension_ui_response`. Its `run.started` now names the model, as Go's does.
 - `oapx serve agent` words its `unknown_session`, `tool_catalog_unavailable` and unadvertised or degraded `unsupported_feature` refusals as `goap serve agent` does. A codex parity fixture for `TestBackendsMatchOapx` records the remaining differences.
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
 
