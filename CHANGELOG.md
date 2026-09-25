@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
+
 ### Changed
 
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
@@ -18,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `oapx serve agent --backend claude` enforces `run.tool_selection` as `goap` does: it registers the `oap_tool_selection` PreToolUse hook at `initialize`, denies a hook callback or permission ask for a tool the run's `tool_choice` excludes, and settles that call `refused_by_policy`.
+- `goap serve agent` names its stdio binding (`{"kind":"stdio","serialization":"jsonl"}`) in `capabilities.response`, as `oapx` already does.
+- On Windows, `oapx serve agent` and `serve provider` treat a console Ctrl+C, Ctrl+Break or close as end of input, as SIGINT and SIGTERM are treated elsewhere; a close gets up to 4.5 s to settle before Windows ends the process.
 - `oapx serve agent` and `oapx serve provider` without `--backend` treat SIGINT and SIGTERM as end of input, as both stdio drafts require: they stop reading, settle what they admitted, flush and exit. Before, a signal killed the built-in loop outright.
 - `oapx serve agent` without `--backend` now enforces the same two-minute output-stall bound: it writes one line to stderr and exits non-zero. `serve provider` keeps unbounded writes, since its binding sets no bound.
 - `oapx serve agent --backend` stops when its stdout makes no progress for two minutes, the bound [`drafts/endpoint-stdio.md`](drafts/endpoint-stdio.md) sets and `goap` uses: it writes one line to stderr and exits non-zero. Before, a host that stopped reading left the endpoint blocked in a write forever. A piped or socket stdout is made non-blocking, and writes go out after `poll` reports it writable, in chunks no larger than `PIPE_BUF`, so no write can block past the bound. On Windows a watchdog thread cancels a write blocked past the bound with `CancelSynchronousIo`; its tests run on a `windows-latest` CI job.
