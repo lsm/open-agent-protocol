@@ -77,7 +77,11 @@ pub const Output = struct {
                     at += @intCast(written);
                     progressed = clock();
                 },
-                .AGAIN, .INTR => {},
+                .AGAIN => {
+                    if (clock() -| progressed > self.stall_ns) return error.OutputStalled;
+                    compat.time.sleepNs(std.time.ns_per_ms);
+                },
+                .INTR => {},
                 .PIPE => return error.BrokenPipe,
                 else => |err| return std.posix.unexpectedErrno(err),
             }
