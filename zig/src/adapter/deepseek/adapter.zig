@@ -368,6 +368,7 @@ pub const Session = struct {
             .status = if (running) .running else .idle,
             .active_run_id = active_run_id,
             .current_model_id = current_model_id,
+            .transcript_cursor = if (self.reducer.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{self.reducer.cursor}) else null,
             .updated_at_ms = wallClock(),
         };
     }

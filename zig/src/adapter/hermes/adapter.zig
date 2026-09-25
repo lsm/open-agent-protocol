@@ -391,6 +391,7 @@ pub const Session = struct {
             .status = if (reducer == null) .idle else if (self.waiting()) .waiting_for_input else .running,
             .active_run_id = active_run_id,
             .current_model_id = if (model.len > 0) try arena.dupe(u8, model) else null,
+            .transcript_cursor = if (self.reducer) |present| (if (present.cursor > 0) try std.fmt.allocPrint(arena, "{d}", .{present.cursor}) else null) else null,
             .updated_at_ms = wallClock(),
         };
     }
