@@ -3,13 +3,32 @@
   "name": "Agent Client Protocol",
   "versions": [
     {
-      "label": "v1.7.0",
+      "label": "v1.9.1",
       "status": "current",
-      "endpoint_version": "1.7.0",
-      "capability_revision": "acp-v1.7.0-schema-v1.21.0-oap-v3",
-      "oapx_capability_revision": "acp-v1.7.0-schema-v1.21.0-oapx-v1",
+      "endpoint_version": "1.9.1",
+      "capability_revision": "acp-v1.9.1-schema-v1.23.0-oap-v3",
+      "oapx_capability_revision": "acp-v1.9.1-schema-v1.23.0-oapx-v1",
+      "ledgers": ["research/acp-v1.9.1-mapping.md", "research/acp-v1.7.0-mapping.md"],
+      "corpus": "fixtures/adapters/acp-v1.9.1",
+      "corpus_from": "v1.7.0",
+      "components": [
+        { "name": "agent-client-protocol", "version": "v1.9.1", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
+        { "name": "agent-client-protocol-schema", "version": "schema-v1.23.0", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
+        { "name": "cagent", "version": "v1.143.0", "repository": "https://github.com/docker/cagent" }
+      ],
+      "artifacts": [
+        { "component": "agent-client-protocol", "platform": "any", "kind": "source-tree", "name": "schema/v1 agent-client-protocol-schema/src/v1 docs/protocol/v1", "sha256": "676ed241ba56ffbc6d17d0ca05cc28b1d33290dd1052048599e9b7dd10183de7" },
+        { "component": "agent-client-protocol-schema", "platform": "any", "kind": "source-tree", "name": "schema/v1", "sha256": "d9a3a86abf71a3b3f995fb91f37778fa264df5a711a056c3dc8a6dde3ebc2ce9" }
+      ],
+      "sources": [
+        { "component": "agent-client-protocol", "tag": "v1.9.1", "commit": "7e87dc205a7325bd07d0249fd20bb7486ee6ba95" },
+        { "component": "cagent", "tag": "v1.143.0", "commit": "d27c65ce59e6474fb4a57d0fa879fc53f5bf3f1a", "tree": "7f30826b2e13ca967595c9e63a2d223d8aaab40f" }
+      ]
+    },
+    {
+      "label": "v1.7.0",
+      "status": "retired",
       "ledgers": ["research/acp-v1.7.0-mapping.md"],
-      "corpus": "fixtures/adapters/acp-v1",
       "components": [
         { "name": "agent-client-protocol", "version": "v1.7.0", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
         { "name": "agent-client-protocol-schema", "version": "schema-v1.21.0", "repository": "https://github.com/agentclientprotocol/agent-client-protocol" },
