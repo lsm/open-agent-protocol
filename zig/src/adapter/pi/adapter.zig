@@ -20,7 +20,7 @@ const features = [_]contract.Feature{
     .{ .key = "capabilities", .level = .emulated, .reason = "conservative descriptor synthesized for the pinned RPC vocabulary" },
     .{ .key = "protocol.initialize", .level = .emulated, .reason = "Pi has no negotiation; readiness is a get_state handshake" },
     .{ .key = "run.cancel", .level = .degraded, .reason = "abort intent is local; agent_settled remains terminal authority" },
-    .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state is read at open; afterwards the state is the adapter projection of Pi events" },
+    .{ .key = "run.reconciliation", .level = .emulated, .reason = "get_state reconciles streaming state" },
     .{ .key = "run.replay", .level = .unavailable, .reason = journal_reason },
     .{ .key = "run.resume", .level = .unavailable, .reason = journal_reason },
     .{ .key = "run.status", .level = .emulated },
@@ -30,7 +30,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.delivery.steer", .level = .unavailable, .reason = "v0.1 admission cannot expose Pi steering semantics safely" },
     .{ .key = "session.message.submit", .level = .emulated, .reason = "successful prompt response proves admission only" },
     .{ .key = "session.open", .level = .emulated, .reason = "one ready Pi process is associated with one OAP session" },
-    .{ .key = "session.state", .level = .emulated, .reason = "adapter projection of Pi events; get_state is read only at open" },
+    .{ .key = "session.state", .level = .emulated, .reason = "adapter projection reconciled with get_state" },
 };
 
 pub const descriptor = contract.Descriptor{
@@ -109,6 +109,7 @@ pub const Session = struct {
     transport: *process.Transport,
     reducer: ?*session.Reducer = null,
     current_model: []const u8 = "",
+    native_session: []const u8 = "",
     next_request: usize = 0,
     awaited: []const u8 = "",
     reply: ?Reply = null,
@@ -127,6 +128,7 @@ pub const Session = struct {
         const streaming = memberOf(state_data, "isStreaming") orelse std.json.Value.null;
         if (streaming == .bool and streaming.bool) return refusal.fail(error.BackendFailed, "the Pi agent was already streaming when the session opened");
         self.current_model = modelOf(self.owned(), memberOf(state_data, "model")) catch |err| return lift(err);
+        self.native_session = try self.owned().dupe(u8, native_session.string);
         return self;
     }
 
@@ -413,8 +415,15 @@ pub const Session = struct {
     }
 
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
-        _ = refusal;
         const self = cast(ptr);
+        if (self.ended or self.unusable) return error.SessionClosed;
+        const state_data = try self.command(arena, "get_state", null, refusal);
+        const native_session = memberOf(state_data, "sessionId") orelse std.json.Value.null;
+        if (native_session != .string or native_session.string.len == 0) return refusal.fail(error.BackendFailed, "the Pi agent's get_state named no session");
+        if (!std.mem.eql(u8, native_session.string, self.native_session)) {
+            self.unusable = true;
+            return refusal.fail(error.BackendFailed, "the Pi agent's native session changed");
+        }
         if (self.ended or self.unusable) return error.SessionClosed;
         const reducer = self.live();
         const active_run_id: ?[]const u8 = if (reducer) |running| try arena.dupe(u8, running.run_id) else null;
@@ -1012,4 +1021,48 @@ test "an abort Pi refuses fails the run with pi_abort_failed, as Go does" {
     try testing.expectEqualStrings("pi_abort_failed", failure.get("code").?.string);
     try testing.expectEqualStrings("pi abort failed: busy", failure.get("message").?.string);
     try testing.expectEqual(contract.Activity.idle, probe.handle.?.activity());
+}
+
+test "a state request reads get_state again, idle and mid-run, and answers the adapter projection" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"sessionId":"native-session","isStreaming":false}}\n'
+        \\take; printf '{"type":"response","id":"req_3","command":"prompt","success":true}\n'
+        \\printf '{"type":"agent_start"}\n'
+        \\take; printf '{"type":"response","id":"req_4","command":"get_state","success":true,"data":{"sessionId":"native-session","isStreaming":true}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const idle = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.idle, idle.status);
+    try testing.expectEqualStrings("fixture/model", idle.current_model_id.?);
+    const admitted = try probe.submit("long", &refusal);
+    const running = try probe.handle.?.state(probe.arena.allocator(), &refusal);
+    try testing.expectEqual(oap_types.SessionStatus.running, running.status);
+    try testing.expectEqualStrings(admitted.run_id.?, running.active_run_id.?);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"get_state"}
+        \\{"id":"req_3","type":"prompt","message":"long","streamingBehavior":"steer"}
+        \\{"id":"req_4","type":"get_state"}
+        \\
+    , written);
+}
+
+test "a get_state naming another native session makes the session unusable" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take; printf '{"type":"response","id":"req_2","command":"get_state","success":true,"data":{"sessionId":"other-session","isStreaming":false}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    try testing.expectError(error.BackendFailed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+    try testing.expectEqualStrings("the Pi agent's native session changed", refusal.message);
+    try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
+    try testing.expectError(error.SessionClosed, probe.submit("again", &refusal));
 }
