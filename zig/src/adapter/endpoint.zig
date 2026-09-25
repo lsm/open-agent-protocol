@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_encode = @import("json_encode");
 const oap_types = @import("oap_types");
 const oap_envelope = @import("oap_envelope");
 const json_writer = @import("json_writer");
@@ -26,23 +27,37 @@ const Denial = struct {
 const Cursor = struct {
     run_id: []u8,
     delivered: u64 = 0,
+    latest: u64 = 0,
     lost: bool = false,
+};
+
+const Journaled = struct {
+    line: []u8,
+    cursor: usize,
+    sequence: u64,
 };
 
 const Entry = struct {
     session: contract.Session,
     cursors: std.ArrayList(Cursor) = .empty,
+    journal: std.ArrayList(Journaled) = .empty,
     state_sequence: u64 = 0,
 
     fn deinit(self: *Entry, allocator: std.mem.Allocator) void {
         for (self.cursors.items) |cursor| allocator.free(cursor.run_id);
         self.cursors.deinit(allocator);
+        for (self.journal.items) |kept| allocator.free(kept.line);
+        self.journal.deinit(allocator);
         self.session.close();
     }
 };
 
+pub const default_journal_capacity = 256;
+
 pub const Options = struct {
     frame_limit: usize = default_frame_limit,
+    journal_capacity: usize = default_journal_capacity,
+    tool_sources: []const contract.ConfiguredSource = &.{},
 };
 
 const Served = (contract.Failure || error{ Denied, FrameTooLarge });
@@ -51,6 +66,8 @@ pub const Endpoint = struct {
     allocator: std.mem.Allocator,
     adapter: contract.Adapter,
     frame_limit: usize,
+    journal_capacity: usize,
+    tool_sources: []const contract.ConfiguredSource,
     participant: ?[]u8 = null,
     ids: u64 = 0,
     entries: std.ArrayList(Entry) = .empty,
@@ -58,7 +75,7 @@ pub const Endpoint = struct {
     denial: Denial = .{ .code = "internal", .message = "" },
 
     pub fn init(allocator: std.mem.Allocator, adapter: contract.Adapter, options: Options) Endpoint {
-        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit };
+        return .{ .allocator = allocator, .adapter = adapter, .frame_limit = options.frame_limit, .journal_capacity = options.journal_capacity, .tool_sources = options.tool_sources };
     }
 
     pub fn deinit(self: *Endpoint) void {
@@ -256,9 +273,9 @@ pub const Endpoint = struct {
         try self.outbound.append(self.allocator, line);
     }
 
-    fn entryFor(self: *Endpoint, request: *const oap_types.Envelope) error{Denied}!*Entry {
+    fn entryFor(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope) Served!*Entry {
         const addressed = request.session_id orelse return self.deny("invalid_request", "this request must name its session", &.{});
-        return self.find(addressed) orelse self.deny("unknown_session", "no session is open under the addressed session_id", &.{});
+        return self.find(addressed) orelse self.deny("unknown_session", try std.fmt.allocPrint(arena, "no session \"{s}\"", .{addressed}), &.{});
     }
 
     fn requireScope(self: *Endpoint, arena: std.mem.Allocator, payload_session: []const u8, entry: *Entry) Served!void {
@@ -296,10 +313,19 @@ pub const Endpoint = struct {
     fn capabilities(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, descriptor: contract.Descriptor) Served!void {
         const features = try arena.alloc(oap_types.Feature, descriptor.features.len);
         for (descriptor.features, features) |declared, *feature| {
-            feature.* = .{ .key = declared.key, .level = declared.level, .scope = declared.scope, .reason = declared.reason };
+            feature.* = .{
+                .key = declared.key,
+                .level = declared.level,
+                .scope = declared.scope,
+                .reason = declared.reason,
+                .modes = declared.modes,
+                .constraints_json = declared.constraints_json,
+                .limits_json = declared.limits_json,
+            };
         }
         const bindings = try arena.dupe(oap_types.Binding, &.{.{ .kind = "stdio", .serialization = "jsonl" }});
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, descriptor.sources);
+        const catalog = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
         try self.respond(arena, request, .{
             .id = "",
             .capability_revision = descriptor.capability_revision,
@@ -309,6 +335,7 @@ pub const Endpoint = struct {
                 .profiles = &.{oap_types.PROFILE},
                 .bindings = bindings,
                 .features = features,
+                .tools = catalog,
                 .sources = sources,
                 .limits = descriptor.limits,
             } },
@@ -316,27 +343,37 @@ pub const Endpoint = struct {
     }
 
     fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
-        if (payload.session_id) |requested| {
-            if (self.find(requested) != null) {
-                const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{requested});
-                return self.deny("session_exists", message, &.{});
+        if (payload.tools_json) |text| {
+            if (try toolsDecodeDefect(arena, text)) |defect| {
+                const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
+                return self.deny("invalid_payload", message, &.{});
             }
         }
+        if (payload.tool_sources_json) |text| {
+            if (try attachmentDecodeDefect(arena, text)) |defect| {
+                const message = try std.fmt.allocPrint(arena, "decode session.open.request payload: json: {s}", .{defect});
+                return self.deny("invalid_payload", message, &.{});
+            }
+        }
+        try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
+        const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         const session = try self.adapter.open(arena, .{
             .session_id = payload.session_id orelse "",
             .participant = self.controlParticipant(),
             .allow_degraded_features = payload.allow_degraded_features,
+            .tools_json = payload.tools_json,
+            .tool_sources_json = tool_sources_json,
         }, refusal);
-        if (self.find(session.id()) != null) {
-            session.close();
-            return self.deny("session_exists", "the backend opened a session under an id already in use", &.{});
-        }
         const state_now = session.state(arena, refusal) catch |failure| {
             session.close();
             return failure;
         };
+        if (self.find(session.id()) != null) {
+            const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{session.id()});
+            session.close();
+            return self.deny("session_exists", message, &.{});
+        }
         self.entries.appendAssumeCapacity(.{ .session = session });
         try self.respond(arena, request, .{
             .id = "",
@@ -347,7 +384,7 @@ pub const Endpoint = struct {
     }
 
     fn state(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         const current = try entry.session.state(arena, refusal);
         try self.respond(arena, request, .{
             .id = "",
@@ -358,7 +395,7 @@ pub const Endpoint = struct {
     }
 
     fn switchModel(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionModelSwitchRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const switcher = entry.session.vtable.switch_model orelse
             return refusal.unsupported(contract.feature_model_switch, contract.reason_unadvertised);
@@ -385,7 +422,7 @@ pub const Endpoint = struct {
     }
 
     fn submit(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.MessageSubmitRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         try contract.refuseUnadvertisedControls(descriptor, payload, refusal);
         const admission = try entry.session.submit(arena, payload, refusal);
@@ -399,7 +436,7 @@ pub const Endpoint = struct {
     }
 
     fn cancel(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.RunCancelRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const acknowledged = try entry.session.cancel(arena, payload.run_id, refusal);
         try self.respond(arena, request, .{
@@ -412,7 +449,7 @@ pub const Endpoint = struct {
     }
 
     fn resolveInput(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.UserInputResolveRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         try entry.session.resolve(arena, .{ .input = payload }, refusal);
         try self.respond(arena, request, .{
@@ -430,7 +467,7 @@ pub const Endpoint = struct {
     }
 
     fn resolvePermission(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.PermissionResolveRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         try entry.session.resolve(arena, .{ .permission = payload }, refusal);
         try self.respond(arena, request, .{
@@ -448,11 +485,11 @@ pub const Endpoint = struct {
     }
 
     fn resolveCall(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.CallResolveRequest, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const resolver = entry.session.vtable.resolve_call orelse
             return refusal.unsupported(contract.feature_tools_provide, contract.reason_unadvertised);
-        const result = try resolver(entry.session.ptr, arena, payload, refusal);
+        const result = try resolver(entry.session.ptr, arena, request.id, payload, refusal);
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),
@@ -463,7 +500,7 @@ pub const Endpoint = struct {
     }
 
     fn models(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ModelsRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const lister = entry.session.vtable.models orelse
             return refusal.unsupported(contract.feature_models_list, contract.reason_unadvertised);
@@ -477,10 +514,10 @@ pub const Endpoint = struct {
     }
 
     fn tools(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ToolsListRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
-        const entry = try self.entryFor(request);
+        const entry = try self.entryFor(arena, request);
         if (payload.session_id) |scoped| try self.requireScope(arena, scoped, entry);
         const lister = entry.session.vtable.tools orelse
-            return self.deny("tool_catalog_unavailable", "no portable tool catalog is served", &.{});
+            return self.deny("tool_catalog_unavailable", "adapter: no portable tool catalog is served", &.{});
         const catalog = try lister(entry.session.ptr, arena, payload, refusal);
         try self.respond(arena, request, .{
             .id = "",
@@ -497,15 +534,23 @@ pub const Endpoint = struct {
         const fallback = mapped.fallback;
         if (refusal.feature.len > 0) try details.append(arena, .{ .key = "feature", .value = refusal.feature });
         if (refusal.reason.len > 0) try details.append(arena, .{ .key = "reason", .value = refusal.reason });
+        if (refusal.tool.len > 0) try details.append(arena, .{ .key = "tool", .value = refusal.tool });
         if (refusal.field.len > 0) try details.append(arena, .{ .key = "field", .value = refusal.field });
+        if (refusal.source.len > 0) try details.append(arena, .{ .key = "source", .value = refusal.source });
         if (refusal.model_id.len > 0) try details.append(arena, .{ .key = "model_id", .value = refusal.model_id });
         if (refusal.backend.len > 0) try details.append(arena, .{ .key = "backend", .value = refusal.backend });
         var message = if (refusal.message.len > 0) refusal.message else fallback;
         if (failure == error.UnsupportedFeature and refusal.message.len == 0 and refusal.feature.len > 0) {
-            message = try std.fmt.allocPrint(arena, "unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
+            message = if (refusal.detail.len > 0)
+                try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s}): {s}", .{ refusal.feature, refusal.reason, refusal.detail })
+            else
+                try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} ({s})", .{ refusal.feature, refusal.reason });
+        }
+        if (failure == error.ModelNotFound and refusal.message.len == 0 and refusal.model_id.len > 0) {
+            message = try std.fmt.allocPrint(arena, "adapter: model is not in the effective catalog: \"{s}\"", .{refusal.model_id});
         }
         if (failure == error.CapabilityDegraded and refusal.message.len == 0) {
-            message = try std.fmt.allocPrint(arena, "unsupported input: {s} is degraded and was not opted into", .{refusal.feature});
+            message = try std.fmt.allocPrint(arena, "adapter: unsupported input: {s} is degraded and was not opted into", .{refusal.feature});
         }
         return self.deny(code, message, details.items);
     }
@@ -550,11 +595,12 @@ pub const Endpoint = struct {
         const entry = self.find(addressed) orelse {
             return self.writeControl(.{ .control = "replay.error", .id = id, .session_id = addressed, .run_id = run_id, .code = "unknown_session", .message = "no session is open under that session_id" });
         };
-        const replayer = entry.session.vtable.replay orelse {
-            return self.writeControl(.{ .control = "replay.error", .id = id, .session_id = addressed, .run_id = run_id, .code = "unsupported_control", .message = "this backend keeps no journal to replay from" });
-        };
         var refusal = contract.Refusal{};
-        const replayed = replayer(entry.session.ptr, arena, run_id orelse "", after, &refusal) catch |failure| {
+        const replaying = if (entry.session.vtable.replay) |replayer|
+            replayer(entry.session.ptr, arena, run_id orelse "", after, &refusal)
+        else
+            self.replayJournal(entry, arena, run_id orelse "", after);
+        const replayed = replaying catch |failure| {
             if (failure == error.OutOfMemory) return error.OutOfMemory;
             const code: []const u8 = switch (failure) {
                 error.RunNotFound => "run_not_found",
@@ -576,8 +622,9 @@ pub const Endpoint = struct {
                 .message = "the requested replay cursor is no longer retained; ask again from oldest_available - 1",
             }),
             .events => |events| {
-                const resolved = if (events.len > 0) events[0].run_id else run_id orelse "";
+                const resolved = if (events.len > 0) events[0].run_id else if (run_id) |named| named else if (entry.cursors.items.len > 0) entry.cursors.items[entry.cursors.items.len - 1].run_id else "";
                 try self.writeControl(.{ .control = "replay.accepted", .id = id, .session_id = addressed, .run_id = resolved, .after = after });
+                if (resolved.len > 0) (try self.cursorFor(entry, resolved)).lost = false;
                 for (events) |event| try self.pushEvent(entry, event);
             },
         }
@@ -617,6 +664,62 @@ pub const Endpoint = struct {
         try self.outbound.append(self.allocator, line);
     }
 
+    fn resolveAttachments(self: *Endpoint, arena: std.mem.Allocator, carried: ?[]const u8, refusal: *contract.Refusal) Served!?[]const u8 {
+        const text = carried orelse return null;
+        const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            return text;
+        };
+        if (document != .array) return text;
+        var resolved = std.json.Array.init(arena);
+        for (document.array.items) |attachment| {
+            if (attachment != .object) return text;
+            const id = memberString(attachment, "id");
+            const kind = memberString(attachment, "kind");
+            const args = attachment.object.get("args");
+            if (memberString(attachment, "command").len > 0 or (args != null and args.? == .array and args.?.array.items.len > 0)) {
+                return refuseAttachment(arena, refusal, id, "the daemon does not accept a command or arguments from the wire; name an operator-configured source by id");
+            }
+            const environment = attachment.object.get("environment");
+            if (environment) |listed_environment| {
+                if (listed_environment == .array) {
+                    for (listed_environment.array.items) |entry| {
+                        if (entry == .string and std.mem.indexOfScalar(u8, entry.string, '=') != null) {
+                            return refuseAttachment(arena, refusal, id, "the daemon accepts only the bare NAME allowlist form in environment");
+                        }
+                    }
+                }
+            }
+            const configured = self.configuredSource(id) orelse {
+                if (std.mem.eql(u8, kind, "process")) return refuseAttachment(arena, refusal, id, "no tool source of that id is configured on this daemon");
+                try resolved.append(attachment);
+                continue;
+            };
+            const members = [_]struct { name: []const u8, operator: []const u8 }{
+                .{ .name = "kind", .operator = configured.kind },
+                .{ .name = "display_name", .operator = configured.display_name },
+                .{ .name = "protocol", .operator = configured.protocol },
+                .{ .name = "endpoint", .operator = configured.endpoint },
+            };
+            for (members) |member| {
+                const wire = memberString(attachment, member.name);
+                if (wire.len > 0 and !std.mem.eql(u8, wire, member.operator)) {
+                    const reason = try std.fmt.allocPrint(arena, "the daemon does not accept {s} from the wire for a configured source; name it by id", .{member.name});
+                    return refuseAttachment(arena, refusal, id, reason);
+                }
+            }
+            try resolved.append(try configuredValue(arena, configured, environment));
+        }
+        return try json_encode.valueAlloc(arena, .{ .array = resolved });
+    }
+
+    fn configuredSource(self: *Endpoint, id: []const u8) ?contract.ConfiguredSource {
+        for (self.tool_sources) |source| {
+            if (std.mem.eql(u8, source.id, id)) return source;
+        }
+        return null;
+    }
+
     fn drainAll(self: *Endpoint) !void {
         for (self.entries.items) |*entry| try self.drainEntry(entry);
     }
@@ -626,7 +729,48 @@ pub const Endpoint = struct {
         defer scratch.deinit();
         var events = std.ArrayList(contract.Event).empty;
         try entry.session.drain(scratch.allocator(), &events);
-        for (events.items) |event| try self.pushEvent(entry, event);
+        for (events.items) |event| {
+            try self.remember(entry, event);
+            try self.pushEvent(entry, event);
+        }
+    }
+
+    fn remember(self: *Endpoint, entry: *Entry, event: contract.Event) !void {
+        _ = try self.cursorFor(entry, event.run_id);
+        const index = self.cursorIndex(entry, event.run_id).?;
+        const cursor = &entry.cursors.items[index];
+        cursor.latest = @max(cursor.latest, event.sequence);
+        if (self.journal_capacity == 0) return;
+        const line = try self.allocator.dupe(u8, event.line);
+        errdefer self.allocator.free(line);
+        try entry.journal.ensureUnusedCapacity(self.allocator, 1);
+        if (entry.journal.items.len == self.journal_capacity) self.allocator.free(entry.journal.orderedRemove(0).line);
+        entry.journal.appendAssumeCapacity(.{ .line = line, .cursor = index, .sequence = event.sequence });
+    }
+
+    fn cursorIndex(self: *Endpoint, entry: *Entry, run_id: []const u8) ?usize {
+        _ = self;
+        for (entry.cursors.items, 0..) |cursor, index| {
+            if (std.mem.eql(u8, cursor.run_id, run_id)) return index;
+        }
+        return null;
+    }
+
+    fn replayJournal(self: *Endpoint, entry: *Entry, arena: std.mem.Allocator, run_id: []const u8, after: u64) contract.Failure!contract.Replay {
+        const index = if (run_id.len > 0) self.cursorIndex(entry, run_id) orelse return error.RunNotFound else if (entry.cursors.items.len > 0) entry.cursors.items.len - 1 else return error.RunNotFound;
+        const latest = entry.cursors.items[index].latest;
+        if (after > latest) return error.ReplayCursorFuture;
+        var oldest: u64 = 0;
+        var suffix = std.ArrayList(contract.Event).empty;
+        for (entry.journal.items) |kept| {
+            if (kept.cursor != index) continue;
+            if (oldest == 0) oldest = kept.sequence;
+            if (kept.sequence > after) try suffix.append(arena, .{ .line = kept.line, .run_id = entry.cursors.items[index].run_id, .sequence = kept.sequence });
+        }
+        if (after < latest and (oldest == 0 or after + 1 < oldest)) {
+            return .{ .gap = .{ .requested_after = after, .oldest_available = oldest, .latest_available = latest } };
+        }
+        return .{ .events = suffix.items };
     }
 
     fn cursorFor(self: *Endpoint, entry: *Entry, run_id: []const u8) !*Cursor {
@@ -653,10 +797,7 @@ pub const Endpoint = struct {
                 .run_id = cursor.run_id,
                 .after = cursor.delivered,
                 .code = "frame_limit",
-                .message = if (entry.session.vtable.replay != null)
-                    "this run's events stopped reaching the host; replay from after to continue"
-                else
-                    "this run's events after this point are dropped except its terminal; this backend keeps no journal to replay them",
+                .message = "this run's events stopped reaching the host; replay from after to continue",
             });
         }
         try self.deliver(cursor, event);
@@ -684,21 +825,178 @@ fn settlesRun(allocator: std.mem.Allocator, line: []const u8) !bool {
 
 const Mapped = struct { code: []const u8, fallback: []const u8 };
 
+fn memberString(value: std.json.Value, key: []const u8) []const u8 {
+    const carried = value.object.get(key) orelse return "";
+    return if (carried == .string) carried.string else "";
+}
+
+fn refuseAttachment(arena: std.mem.Allocator, refusal: *contract.Refusal, source: []const u8, reason: []const u8) Served {
+    const message = try std.fmt.allocPrint(arena, "tool source \"{s}\": {s}", .{ source, reason });
+    refusal.* = .{ .feature = contract.feature_tool_sources_attach, .reason = contract.reason_unsatisfiable, .source = source, .message = message };
+    return error.UnsupportedFeature;
+}
+
+fn attachmentDecodeDefect(arena: std.mem.Allocator, text: []const u8) !?[]const u8 {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return null;
+    };
+    if (document == .null) return null;
+    if (document != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources of type []protocol.ToolSourceAttachment", .{goKind(document)});
+    const texts = [_][]const u8{ "id", "kind", "display_name", "protocol", "endpoint", "command" };
+    const lists = [_][]const u8{ "args", "environment" };
+    for (document.array.items, 0..) |attachment, index| {
+        if (attachment == .null) continue;
+        if (attachment != .object) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tool_sources.{d} of type protocol.ToolSourceAttachment", .{ goKind(attachment), index });
+        var members = attachment.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            for (texts) |field_name| {
+                if (std.mem.eql(u8, name, field_name) and value != .string) {
+                    return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources.{d}.{s} of type string", .{ goKind(value), index, name });
+                }
+            }
+            for (lists) |field_name| {
+                if (!std.mem.eql(u8, name, field_name)) continue;
+                if (value != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tool_sources.{d}.{s} of type []string", .{ goKind(value), index, name });
+                for (value.array.items, 0..) |item, position| {
+                    if (item != .string and item != .null) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tool_sources.{d}.{s}.{d} of type string", .{ goKind(item), index, name, position });
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn toolsDecodeDefect(arena: std.mem.Allocator, text: []const u8) !?[]const u8 {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{}) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return null;
+    };
+    if (document == .null) return null;
+    if (document != .array) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field SessionOpenRequest.tools of type []protocol.ToolDefinition", .{goKind(document)});
+    for (document.array.items, 0..) |tool, index| {
+        if (tool == .null) continue;
+        if (tool != .object) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into SessionOpenRequest.tools.{d} of type protocol.ToolDefinition", .{ goKind(tool), index });
+        const path = try std.fmt.allocPrint(arena, "SessionOpenRequest.tools.{d}", .{index});
+        var members = tool.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            if (std.mem.eql(u8, name, "name") or std.mem.eql(u8, name, "description") or std.mem.eql(u8, name, "source")) {
+                if (value != .string) return try fieldDefect(arena, value, path, name, "string");
+            } else if (std.mem.eql(u8, name, "execution_owner")) {
+                if (value != .string) return try fieldDefect(arena, value, path, name, "protocol.ParticipantID");
+            } else if (std.mem.eql(u8, name, "annotations")) {
+                if (value != .object) return try fieldDefect(arena, value, path, name, "map[string]jsontext.Value");
+            } else if (std.mem.eql(u8, name, "features")) {
+                if (value != .object) return try fieldDefect(arena, value, path, name, "map[string]protocol.FeatureSupport");
+                if (try featuresDefect(arena, value, try std.fmt.allocPrint(arena, "{s}.features", .{path}))) |defect| return defect;
+            }
+        }
+    }
+    return null;
+}
+
+fn featuresDefect(arena: std.mem.Allocator, features: std.json.Value, path: []const u8) !?[]const u8 {
+    var declared = features.object.iterator();
+    while (declared.next()) |entry| {
+        const support = entry.value_ptr.*;
+        if (support == .null) continue;
+        if (support != .object) return try fieldDefect(arena, support, path, entry.key_ptr.*, "protocol.FeatureSupport");
+        const at = try std.fmt.allocPrint(arena, "{s}.{s}", .{ path, entry.key_ptr.* });
+        var members = support.object.iterator();
+        while (members.next()) |member| {
+            const name = member.key_ptr.*;
+            const value = member.value_ptr.*;
+            if (value == .null) continue;
+            if (std.mem.eql(u8, name, "level")) {
+                if (value != .string) return try fieldDefect(arena, value, at, name, "protocol.SupportLevel");
+            } else if (std.mem.eql(u8, name, "reason") or std.mem.eql(u8, name, "scope")) {
+                if (value != .string) return try fieldDefect(arena, value, at, name, "string");
+            } else if (std.mem.eql(u8, name, "modes")) {
+                if (value != .array) return try fieldDefect(arena, value, at, name, "[]string");
+                for (value.array.items, 0..) |item, position| {
+                    if (item != .string and item != .null) return try std.fmt.allocPrint(arena, "cannot unmarshal {s} into {s}.modes.{d} of type string", .{ goKind(item), at, position });
+                }
+            } else if (std.mem.eql(u8, name, "constraints") or std.mem.eql(u8, name, "limits")) {
+                if (value != .object) return try fieldDefect(arena, value, at, name, "map[string]jsontext.Value");
+            }
+        }
+    }
+    return null;
+}
+
+fn fieldDefect(arena: std.mem.Allocator, value: std.json.Value, path: []const u8, name: []const u8, type_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "cannot unmarshal {s} into Go struct field {s}.{s} of type {s}", .{ goKind(value), path, name, type_name });
+}
+
+fn goKind(value: std.json.Value) []const u8 {
+    return switch (value) {
+        .null => "null",
+        .bool => "bool",
+        .integer, .float, .number_string => "number",
+        .string => "string",
+        .array => "array",
+        .object => "object",
+    };
+}
+
+fn configuredValue(arena: std.mem.Allocator, configured: contract.ConfiguredSource, caller: ?std.json.Value) !std.json.Value {
+    var map: std.json.ObjectMap = .empty;
+    try map.put(arena, "id", .{ .string = configured.id });
+    try map.put(arena, "kind", .{ .string = configured.kind });
+    if (configured.display_name.len > 0) try map.put(arena, "display_name", .{ .string = configured.display_name });
+    if (configured.protocol.len > 0) try map.put(arena, "protocol", .{ .string = configured.protocol });
+    if (configured.endpoint.len > 0) try map.put(arena, "endpoint", .{ .string = configured.endpoint });
+    if (configured.command.len > 0) try map.put(arena, "command", .{ .string = configured.command });
+    if (configured.args.len > 0) {
+        var args = std.json.Array.init(arena);
+        for (configured.args) |arg| try args.append(.{ .string = arg });
+        try map.put(arena, "args", .{ .array = args });
+    }
+    var environment = std.json.Array.init(arena);
+    for (configured.environment) |entry| try environment.append(.{ .string = entry });
+    if (caller) |carried| {
+        if (carried == .array) {
+            for (carried.array.items) |entry| {
+                if (entry != .string) continue;
+                const name = envName(entry.string);
+                var present = false;
+                for (environment.items) |existing| {
+                    if (std.mem.eql(u8, envName(existing.string), name)) present = true;
+                }
+                if (!present) try environment.append(entry);
+            }
+        }
+    }
+    if (environment.items.len > 0) try map.put(arena, "environment", .{ .array = environment });
+    return .{ .object = map };
+}
+
+fn envName(entry: []const u8) []const u8 {
+    const cut = std.mem.indexOfScalar(u8, entry, '=') orelse return entry;
+    return entry[0..cut];
+}
+
 fn codeFor(failure: contract.Failure) Mapped {
     return switch (failure) {
-        error.UnsupportedFeature => .{ .code = "unsupported_feature", .fallback = "unsupported input" },
-        error.CapabilityDegraded => .{ .code = "capability_degraded", .fallback = "the feature is degraded and was not opted into" },
-        error.ModelNotFound => .{ .code = "model_not_found", .fallback = "the model is not in the effective catalog" },
-        error.SessionClosed => .{ .code = "session_closed", .fallback = "the session is closed" },
-        error.RunActive => .{ .code = "run_active", .fallback = "a run is already active" },
-        error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "the submission cannot be delivered to this backend" },
-        error.RunNotFound => .{ .code = "run_not_found", .fallback = "run not found" },
-        error.RunTerminal => .{ .code = "run_terminal", .fallback = "run already completed or failed" },
-        error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "interaction not found" },
-        error.InvalidResolution => .{ .code = "resolution_rejected", .fallback = "invalid interaction resolution" },
-        error.ToolCatalogUnavailable => .{ .code = "tool_catalog_unavailable", .fallback = "no portable tool catalog is served" },
+        error.UnsupportedFeature => .{ .code = "unsupported_feature", .fallback = "adapter: unsupported input" },
+        error.CapabilityDegraded => .{ .code = "capability_degraded", .fallback = "adapter: unsupported input: the feature is degraded and was not opted into" },
+        error.ModelNotFound => .{ .code = "model_not_found", .fallback = "adapter: model is not in the effective catalog" },
+        error.SessionClosed => .{ .code = "session_closed", .fallback = "adapter: session closed" },
+        error.RunActive => .{ .code = "run_active", .fallback = "adapter: a run is already active" },
+        error.InvalidSubmission => .{ .code = "invalid_submission", .fallback = "adapter: invalid submission" },
+        error.RunNotFound => .{ .code = "run_not_found", .fallback = "adapter: run not found" },
+        error.RunTerminal => .{ .code = "run_terminal", .fallback = "adapter: run already completed or failed" },
+        error.InteractionNotFound => .{ .code = "resolution_rejected", .fallback = "adapter: interaction not found" },
+        error.InvalidResolution => .{ .code = "resolution_rejected", .fallback = "adapter: invalid interaction resolution" },
+        error.ToolCatalogUnavailable => .{ .code = "tool_catalog_unavailable", .fallback = "adapter: no portable tool catalog is served" },
         error.Unavailable => .{ .code = "unavailable", .fallback = "this backend is unavailable" },
-        error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "replay cursor is newer than the run" },
+        error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .fallback = "adapter: replay cursor is newer than the run" },
         error.BackendFailed, error.OutOfMemory => .{ .code = "internal", .fallback = "the backend failed" },
     };
 }
@@ -882,7 +1180,7 @@ const FakeSession = struct {
         for (self.pending.items) |line| {
             const copy = try allocator.dupe(u8, line);
             const sequence: u64 = if (std.mem.indexOf(u8, line, "\"sequence\":1") != null) 1 else if (std.mem.indexOf(u8, line, "\"sequence\":2") != null) 2 else 3;
-            try out.append(allocator, .{ .line = copy, .run_id = runOf(line), .sequence = sequence });
+            try out.append(allocator, .{ .line = copy, .run_id = runOf(copy), .sequence = sequence });
         }
         for (self.pending.items) |line| self.fake.allocator.free(line);
         self.pending.clearRetainingCapacity();
@@ -1054,20 +1352,48 @@ test "a control this endpoint does not serve is answered, and the stream carries
     try testing.expectEqualStrings("capabilities.response", field(capabilities[0], &.{"type"}));
 }
 
-test "a replay against a backend that keeps no journal is answered unsupported_control" {
+test "a replay re-delivers a run's journalled suffix, refuses a future or unknown cursor, and reports a gap past capacity" {
     var harness: Harness = undefined;
-    harness.init(testing.allocator, .{});
+    harness.init(testing.allocator, .{ .journal_capacity = 2 });
     defer harness.deinit();
     _ = try harness.send(open_line);
+    harness.fake.oversized_event = true;
+    const submitted = try harness.send(framed("session.message.submit.request", "s-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
+    const run_id = field(submitted[1], &.{"run_id"});
+    const events = submitted.len - 1;
+    try testing.expect(events >= 3);
 
-    const answered = try harness.send("{\"control\":\"replay\",\"id\":\"r1\",\"session_id\":\"s1\",\"after\":0}");
-    try testing.expectEqualStrings("replay.error", field(answered[0], &.{"control"}));
-    try testing.expectEqualStrings("unsupported_control", field(answered[0], &.{"code"}));
+    const tail = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r1\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":{d}}}", .{ run_id, events - 1 }));
+    try testing.expectEqualStrings("replay.accepted", field(tail[0], &.{"control"}));
+    try testing.expectEqual(@as(usize, 2), tail.len);
+    try testing.expectEqual(@as(i64, @intCast(events)), tail[1].object.get("sequence").?.integer);
 
-    const unnamed = try harness.send("{\"control\":\"replay\",\"id\":\"r2\"}");
+    const gap = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r2\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":0}}", .{run_id}));
+    try testing.expectEqualStrings("replay.gap", field(gap[0], &.{"control"}));
+    try testing.expectEqual(@as(i64, @intCast(events - 1)), gap[0].object.get("oldest_available").?.integer);
+
+    const future = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r3\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":99}}", .{run_id}));
+    try testing.expectEqualStrings("replay_cursor_future", field(future[0], &.{"code"}));
+    const unknown_run = try harness.send("{\"control\":\"replay\",\"id\":\"r4\",\"session_id\":\"s1\",\"run_id\":\"nope\",\"after\":0}");
+    try testing.expectEqualStrings("run_not_found", field(unknown_run[0], &.{"code"}));
+
+    const unnamed = try harness.send("{\"control\":\"replay\",\"id\":\"r5\"}");
     try testing.expectEqualStrings("invalid_request", field(unnamed[0], &.{"code"}));
-    const unknown = try harness.send("{\"control\":\"replay\",\"id\":\"r3\",\"session_id\":\"nope\"}");
+    const unknown = try harness.send("{\"control\":\"replay\",\"id\":\"r6\",\"session_id\":\"nope\"}");
     try testing.expectEqualStrings("unknown_session", field(unknown[0], &.{"code"}));
+}
+
+test "a replay after a lost frame delivers the run again from the cursor" {
+    var harness: Harness = undefined;
+    harness.init(testing.allocator, .{ .frame_limit = 800 });
+    defer harness.deinit();
+    _ = try harness.send(open_line);
+    harness.fake.oversized_event = true;
+    const answered = try harness.send(framed("session.message.submit.request", "s-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"delivery\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"));
+    const run_id = field(answered[1], &.{"run_id"});
+    const replayed = try harness.send(try std.fmt.allocPrint(harness.arena.allocator(), "{{\"control\":\"replay\",\"id\":\"r1\",\"session_id\":\"s1\",\"run_id\":\"{s}\",\"after\":2}}", .{run_id}));
+    try testing.expectEqualStrings("replay.accepted", field(replayed[0], &.{"control"}));
+    try testing.expectEqualStrings("run.completed", field(replayed[replayed.len - 1], &.{"type"}));
 }
 
 test "an envelope missing a base member draws a correlated invalid_request naming it" {
@@ -1172,10 +1498,11 @@ test "a session-scoped request must name a session this endpoint opened" {
     try testing.expectEqualStrings("invalid_request", field(unnamed[0], &.{ "payload", "error", "code" }));
     const unknown = try harness.send(framed("session.state.request", "state-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("unknown_session", field(unknown[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("no session \"s1\"", field(unknown[0], &.{ "payload", "error", "message" }));
     try testing.expectEqualStrings("s1", field(unknown[0], &.{"session_id"}));
 }
 
-test "a second open under an id already open is refused session_exists without reaching the backend" {
+test "a second open under an id already open reaches the backend as goap's hub does, then is refused session_exists and the duplicate closed" {
     var harness: Harness = undefined;
     harness.init(testing.allocator, .{});
     defer harness.deinit();
@@ -1183,7 +1510,9 @@ test "a second open under an id already open is refused session_exists without r
     _ = try harness.send(open_line);
     const again = try harness.send(framed("session.open.request", "open-2", "", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("session_exists", field(again[0], &.{ "payload", "error", "code" }));
-    try testing.expectEqual(@as(usize, 1), harness.fake.opened);
+    try testing.expectEqualStrings("session \"s1\" already exists", field(again[0], &.{ "payload", "error", "message" }));
+    try testing.expectEqual(@as(usize, 2), harness.fake.opened);
+    try testing.expectEqual(@as(usize, 1), harness.fake.closed);
 }
 
 test "an open electing a feature the descriptor lacks is refused before any session exists" {
@@ -1271,9 +1600,9 @@ test "a resolution is acknowledged under the type its request named" {
 }
 
 test "each backend refusal reaches the host under its typed code and details" {
-    const cases = [_]struct { failure: contract.Failure, refusal: contract.Refusal, code: []const u8, detail: []const u8, value: []const u8 }{
-        .{ .failure = error.UnsupportedFeature, .refusal = .{ .feature = "run.tool_selection", .reason = "unadvertised" }, .code = "unsupported_feature", .detail = "feature", .value = "run.tool_selection" },
-        .{ .failure = error.CapabilityDegraded, .refusal = .{ .feature = "run.instructions" }, .code = "capability_degraded", .detail = "feature", .value = "run.instructions" },
+    const cases = [_]struct { failure: contract.Failure, refusal: contract.Refusal, code: []const u8, detail: []const u8, value: []const u8, message: []const u8 = "" }{
+        .{ .failure = error.UnsupportedFeature, .refusal = .{ .feature = "run.tool_selection", .reason = "unadvertised" }, .code = "unsupported_feature", .detail = "feature", .value = "run.tool_selection", .message = "adapter: unsupported input: run.tool_selection (unadvertised)" },
+        .{ .failure = error.CapabilityDegraded, .refusal = .{ .feature = "run.instructions" }, .code = "capability_degraded", .detail = "feature", .value = "run.instructions", .message = "adapter: unsupported input: run.instructions is degraded and was not opted into" },
         .{ .failure = error.ModelNotFound, .refusal = .{ .model_id = "ghost" }, .code = "model_not_found", .detail = "model_id", .value = "ghost" },
         .{ .failure = error.SessionClosed, .refusal = .{}, .code = "session_closed", .detail = "", .value = "" },
         .{ .failure = error.RunActive, .refusal = .{}, .code = "run_active", .detail = "", .value = "" },
@@ -1299,6 +1628,9 @@ test "each backend refusal reaches the host under its typed code and details" {
         }
         if (case.refusal.message.len > 0) {
             try testing.expectEqualStrings(case.refusal.message, field(refused[0], &.{ "payload", "error", "message" }));
+        }
+        if (case.message.len > 0) {
+            try testing.expectEqualStrings(case.message, field(refused[0], &.{ "payload", "error", "message" }));
         }
     }
 }
@@ -1339,12 +1671,14 @@ test "models, model switch, tools and call resolution are refused when the backe
     const models = try harness.send(framed("models.request", "models-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("unsupported_feature", field(models[0], &.{ "payload", "error", "code" }));
     try testing.expectEqualStrings("models.list", field(models[0], &.{ "payload", "error", "details", "feature" }));
+    try testing.expectEqualStrings("adapter: unsupported input: models.list (unadvertised)", field(models[0], &.{ "payload", "error", "message" }));
 
     const switched = try harness.send(framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"m\"}"));
     try testing.expectEqualStrings("session.model.switch", field(switched[0], &.{ "payload", "error", "details", "feature" }));
 
     const tools = try harness.send(framed("action.tools.list.request", "tools-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("tool_catalog_unavailable", field(tools[0], &.{ "payload", "error", "code" }));
+    try testing.expectEqualStrings("adapter: no portable tool catalog is served", field(tools[0], &.{ "payload", "error", "message" }));
 
     const call = try harness.send(framed("action.call.resolve.request", "call-1", ",\"session_id\":\"s1\"", "{\"interaction_id\":\"i\",\"session_id\":\"s1\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"started\":{}}"));
     try testing.expectEqualStrings("action.tools.provide", field(call[0], &.{ "payload", "error", "details", "feature" }));
@@ -1387,7 +1721,7 @@ test "an event past the frame limit is reported lost once, later events are drop
     try testing.expectEqualStrings("stream.lost", field(answered[2], &.{"control"}));
     try testing.expectEqualStrings("frame_limit", field(answered[2], &.{"code"}));
     try testing.expectEqual(@as(i64, 1), answered[2].object.get("after").?.integer);
-    try testing.expect(std.mem.indexOf(u8, field(answered[2], &.{"message"}), "replay from after") == null);
+    try testing.expect(std.mem.indexOf(u8, field(answered[2], &.{"message"}), "replay from after") != null);
     try testing.expectEqualStrings("run.completed", field(answered[3], &.{"type"}));
 }
 
@@ -1473,4 +1807,60 @@ fn driveConversation(allocator: std.mem.Allocator) !void {
 
 test "a whole conversation frees everything it built when any allocation fails" {
     try testing.checkAllAllocationFailures(testing.allocator, driveConversation, .{});
+}
+
+test "attachments resolve as the hub resolves them: configured by id, local passed through, wire commands and literal environment refused" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var unavailable = contract.Unavailable{ .backend = "x", .message = "x" };
+    var endpoint = Endpoint.init(testing.allocator, unavailable.adapter(), .{ .tool_sources = &.{.{ .id = "fs", .kind = "process", .display_name = "Filesystem", .protocol = "mcp", .command = "/bin/fs", .environment = &.{"TOKEN"} }} });
+    defer endpoint.deinit();
+    var refusal = contract.Refusal{};
+
+    const resolved = (try endpoint.resolveAttachments(arena, "[{\"id\":\"fs\",\"environment\":[\"EXTRA\"]},{\"id\":\"notes\",\"kind\":\"local\"}]", &refusal)).?;
+    try testing.expectEqualStrings("[{\"id\":\"fs\",\"kind\":\"process\",\"display_name\":\"Filesystem\",\"protocol\":\"mcp\",\"command\":\"/bin/fs\",\"environment\":[\"TOKEN\",\"EXTRA\"]},{\"id\":\"notes\",\"kind\":\"local\"}]", resolved);
+
+    const refused = [_]struct { json: []const u8, reason: []const u8 }{
+        .{ .json = "[{\"id\":\"other\",\"kind\":\"process\"}]", .reason = "tool source \"other\": no tool source of that id is configured on this daemon" },
+        .{ .json = "[{\"id\":\"notes\",\"kind\":\"local\",\"command\":\"/bin/sh\"}]", .reason = "tool source \"notes\": the daemon does not accept a command or arguments from the wire; name an operator-configured source by id" },
+        .{ .json = "[{\"id\":\"notes\",\"kind\":\"local\",\"environment\":[\"A=1\"]}]", .reason = "tool source \"notes\": the daemon accepts only the bare NAME allowlist form in environment" },
+        .{ .json = "[{\"id\":\"fs\",\"endpoint\":\"stdio:elsewhere\"}]", .reason = "tool source \"fs\": the daemon does not accept endpoint from the wire for a configured source; name it by id" },
+    };
+    for (refused) |case| {
+        refusal = .{};
+        try testing.expectError(error.UnsupportedFeature, endpoint.resolveAttachments(arena, case.json, &refusal));
+        try testing.expectEqualStrings(case.reason, refusal.message);
+        try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
+    }
+}
+
+test "a mistyped attachment member is worded as goap's decoder words it, first defect in document order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("cannot unmarshal string into Go struct field SessionOpenRequest.tool_sources.0.environment of type []string", (try attachmentDecodeDefect(a, "[{\"id\":\"n\",\"kind\":\"local\",\"environment\":\"PATH\"}]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into SessionOpenRequest.tool_sources.1.args.0 of type string", (try attachmentDecodeDefect(a, "[{\"id\":\"a\",\"kind\":\"local\"},{\"id\":\"n\",\"kind\":\"local\",\"args\":[1],\"command\":5}]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into SessionOpenRequest.tool_sources.0 of type protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "[5]")).?);
+    try testing.expectEqualStrings("cannot unmarshal number into Go struct field SessionOpenRequest.tool_sources of type []protocol.ToolSourceAttachment", (try attachmentDecodeDefect(a, "5")).?);
+    try testing.expect((try attachmentDecodeDefect(a, "[{\"id\":\"n\",\"kind\":\"local\",\"environment\":null,\"extra\":1}]")) == null);
+}
+
+test "a mistyped provided tool member is worded as goap's decoder words it" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_]struct { json: []const u8, want: []const u8 }{
+        .{ .json = "5", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools of type []protocol.ToolDefinition" },
+        .{ .json = "[5]", .want = "cannot unmarshal number into SessionOpenRequest.tools.0 of type protocol.ToolDefinition" },
+        .{ .json = "[{\"name\":\"a\",\"description\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.description of type string" },
+        .{ .json = "[{\"name\":\"a\",\"execution_owner\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.execution_owner of type protocol.ParticipantID" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":5}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x of type protocol.FeatureSupport" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"level\":5}}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x.level of type protocol.SupportLevel" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"modes\":[1]}}}]", .want = "cannot unmarshal number into SessionOpenRequest.tools.0.features.x.modes.0 of type string" },
+        .{ .json = "[{\"name\":\"a\",\"features\":{\"x\":{\"constraints\":5}}}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.features.x.constraints of type map[string]jsontext.Value" },
+        .{ .json = "[{\"name\":\"a\",\"annotations\":5}]", .want = "cannot unmarshal number into Go struct field SessionOpenRequest.tools.0.annotations of type map[string]jsontext.Value" },
+    };
+    for (cases) |case| try testing.expectEqualStrings(case.want, (try toolsDecodeDefect(a, case.json)).?);
+    try testing.expect((try toolsDecodeDefect(a, "[{\"name\":\"a\",\"features\":{\"x\":null},\"extra\":1}]")) == null);
 }

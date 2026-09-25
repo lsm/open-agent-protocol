@@ -33,6 +33,12 @@ pub const Output = struct {
     file: std.Io.File,
     stall_ns: u64,
     watchdog: Watchdog = .{},
+    stall_notice: ?Notice = null,
+
+    pub const Notice = struct {
+        file: std.Io.File,
+        message: []const u8,
+    };
 
     pub fn init(file: std.Io.File, stall_ns: u64) Output {
         return .{ .file = file, .stall_ns = stall_ns };
@@ -57,8 +63,11 @@ pub const Output = struct {
     }
 
     pub fn writeAll(self: *Output, bytes: []const u8) Error!void {
-        if (is_windows) return self.writeWindows(bytes);
-        return self.writePosix(bytes);
+        const written = if (is_windows) self.writeWindows(bytes) else self.writePosix(bytes);
+        written catch |err| {
+            if (err == error.OutputStalled) if (self.stall_notice) |notice| compat.stdio.writeAll(notice.file, notice.message) catch {};
+            return err;
+        };
     }
 
     fn writePosix(self: *Output, bytes: []const u8) Error!void {

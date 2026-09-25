@@ -46,6 +46,7 @@ const Driver = struct {
     pub fn step(reducer: *Reducer, scratch: std.mem.Allocator, s: corpus.Step, case: Case) !corpus.Handled {
         if (std.mem.eql(u8, s.action, "submit")) {
             const uuid = if (s.raw == .object) corpus.stringMember(s.raw.object, "uuid") orelse "" else "";
+            _ = try reducer.mintTurn();
             try reducer.submit(uuid);
             return .handled;
         }

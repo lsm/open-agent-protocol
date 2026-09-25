@@ -75,8 +75,10 @@ unchanged. `thread/rollback` was never called. The adapter code does not change,
 and `internal/native` in Go and its Zig counterpart are unchanged.
 
 The capability descriptor is unchanged except for the endpoint version it
-reports, which a revision names, so both revisions move:
-`codex-appserver-0.157.0-oap-v1` and `codex-appserver-0.157.0-oapx-v1`.
+reports, which a revision names, so the revision moves to
+`codex-appserver-0.157.0-oap-v1`. There is one revision: `oapx` serves the Go
+adapter's descriptor under it, and the catalog no longer carries a separate
+`oapx_capability_revision`.
 
 ## Corpus
 
