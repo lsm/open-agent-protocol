@@ -1307,6 +1307,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const memory_adapter_mod = b.createModule(.{
+        .root_source_file = b.path("src/adapter/memory/adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "jsonschema", .module = jsonschema_mod },
+        },
+    });
+    const memory_adapter_test = b.addTest(.{ .root_module = memory_adapter_mod });
+
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
         .target = target,
@@ -2505,6 +2519,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "deepseek_adapter", .module = deepseek_adapter_mod },
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
+            .{ .name = "memory_adapter", .module = memory_adapter_mod },
             .{ .name = "bounded_output", .module = bounded_output_mod },
         },
     });
@@ -2603,6 +2618,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(acp_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_adapter_test).step);
+    test_step.dependOn(&b.addRunArtifact(memory_adapter_test).step);
+    test_unit_adapter_step.dependOn(&b.addRunArtifact(memory_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hermes_adapter_test).step);
