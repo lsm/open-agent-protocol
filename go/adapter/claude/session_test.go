@@ -246,15 +246,22 @@ func TestSubmitRejectsUnappliedModelID(t *testing.T) {
 }
 
 func submit(session base.Session) chan submitOutcome {
+	return submitWith(session, helloSubmit)
+}
+
+func submitWith(session base.Session, request protocol.MessageSubmitRequest) chan submitOutcome {
 	channel := make(chan submitOutcome, 1)
 	go func() {
-		admission, stream, err := session.Submit(context.Background(), protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-		channel <- submitOutcome{admission, stream, err}
+		admission, stream, err := session.Submit(context.Background(), request)
+		channel <- submitOutcome{request, admission, stream, err}
 	}()
 	return channel
 }
 
+var helloSubmit = protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}}
+
 type submitOutcome struct {
+	request   protocol.MessageSubmitRequest
 	admission protocol.MessageSubmitResponse
 	stream    base.EventStream
 	err       error
@@ -320,14 +327,14 @@ func eventTypes(events []protocol.Envelope) []string {
 	return out
 }
 
-func assertValidTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+func assertValidTrace(t *testing.T, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithDescriptor(t, admission, testDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmit(t, request, admission, testDescriptor(t), events)
 }
 
-func assertCancelledTrace(t *testing.T, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+func assertCancelledTrace(t *testing.T, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
 	t.Helper()
-	adaptertest.AssertProtocolValidWithCancellation(t, admission, testDescriptor(t), events)
+	adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, testDescriptor(t), events)
 }
 
 func testDescriptor(t *testing.T) base.Descriptor {
@@ -370,7 +377,7 @@ func TestSubmitAdmissionViaStreamEventEcho(t *testing.T) {
 	peer.send(textDelta(uuid, "response"))
 	peer.send(resultFrame(uuid, "success", false, "completed", "fixture response", 0))
 	events := adaptertest.Drain(t, result.stream, 5*time.Second)
-	assertValidTrace(t, result.admission, events)
+	assertValidTrace(t, result.request, result.admission, events)
 	last := terminalOf(events)
 	if last.Type != protocol.TypeRunCompleted {
 		t.Fatalf("terminal = %s (%v)", last.Type, eventTypes(events))
@@ -414,7 +421,7 @@ func TestEchoOnAssistantFrameConverges(t *testing.T) {
 	if len(events) == 0 || events[0].Type != protocol.TypeRunStarted {
 		t.Fatalf("events = %v", eventTypes(events))
 	}
-	assertValidTrace(t, result.admission, events)
+	assertValidTrace(t, result.request, result.admission, events)
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -435,7 +442,7 @@ func TestBufferedObservationsReplayInWireOrder(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_00","type":"tool_result","content":"data","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u0"}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	events := adaptertest.Drain(t, result.stream, 5*time.Second)
-	assertValidTrace(t, result.admission, events)
+	assertValidTrace(t, result.request, result.admission, events)
 	if len(events) < 4 || events[0].Type != protocol.TypeRunStarted || events[1].Type != protocol.TypeActionCallRequested || events[2].Type != protocol.TypeActionCallStarted || events[3].Type != protocol.TypeActionCallCompleted {
 		t.Fatalf("order = %v", eventTypes(events))
 	}
@@ -465,7 +472,7 @@ func TestSubmittedTurnIsClientComposedUnlessPromptsExpand(t *testing.T) {
 			t.Fatal(result.err)
 		}
 		peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
-		assertValidTrace(t, result.admission, adaptertest.Drain(t, result.stream, 5*time.Second))
+		assertValidTrace(t, result.request, result.admission, adaptertest.Drain(t, result.stream, 5*time.Second))
 		if err := session.Close(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -474,7 +481,12 @@ func TestSubmittedTurnIsClientComposedUnlessPromptsExpand(t *testing.T) {
 
 func admit(t *testing.T, session base.Session, peer *wirePeer) (string, submitOutcome) {
 	t.Helper()
-	outcome := submit(session)
+	return admitWith(t, session, peer, helloSubmit)
+}
+
+func admitWith(t *testing.T, session base.Session, peer *wirePeer, request protocol.MessageSubmitRequest) (string, submitOutcome) {
+	t.Helper()
+	outcome := submitWith(session, request)
 	uuid := turnUUIDOf(t, peer.writtenUser())
 	peer.send(initFrame)
 	peer.send(streamEcho(uuid))
@@ -528,7 +540,7 @@ func TestPermissionGateAllowAndDeny(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01","type":"tool_result","content":"done","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u1"}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	var kinds []string
 	for _, event := range events {
 		if strings.HasPrefix(string(event.Type), "action.call.") {
@@ -568,7 +580,7 @@ func TestPermissionGateDenyFailsTool(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_02","type":"tool_result","content":"User denied the operation","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u2"}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "denied", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	failed := 0
 	for _, event := range events {
 		if event.Type == protocol.TypeActionCallFailed {
@@ -612,7 +624,7 @@ func TestResolveValidatesAnswerShapes(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_03","type":"tool_result","content":"User denied the operation","is_error":true}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u4"}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "denied", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -651,7 +663,7 @@ func TestResolveRejectsForeignOwnership(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_04","type":"tool_result","content":"done","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u5"}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +687,7 @@ func TestCancelSettlesOnlyOnAbortedTerminalReason(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u3"}`)
 	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r2"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertCancelledTrace(t, outcome.admission, events)
+	assertCancelledTrace(t, outcome.request, outcome.admission, events)
 	last := terminalOf(events)
 	if last.Type != protocol.TypeRunCancelled {
 		t.Fatalf("terminal = %s (%v)", last.Type, eventTypes(events))
@@ -690,7 +702,7 @@ func TestAPIErrorResultFailsRun(t *testing.T) {
 	uuid, outcome := admit(t, session, peer)
 	peer.send(`{"type":"result","subtype":"success","duration_ms":80,"duration_api_ms":0,"is_error":true,"num_turns":1,"session_id":"` + peerSession + `","stop_reason":"stop_sequence","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{},"permission_denials":[],"terminal_reason":"api_error","api_error_status":429,"result":"API Error: rate limited","user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r3"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	last := terminalOf(events)
 	if last.Type != protocol.TypeRunFailed {
 		t.Fatalf("terminal = %s", last.Type)
@@ -712,7 +724,7 @@ func TestMaxTurnsCompletesWithLimitReason(t *testing.T) {
 	uuid, outcome := admit(t, session, peer)
 	peer.send(`{"type":"result","subtype":"error_max_turns","duration_ms":500,"duration_api_ms":400,"is_error":true,"num_turns":3,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":9,"output_tokens":9},"modelUsage":{},"permission_denials":[],"errors":["Max turns reached"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r4"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	last := terminalOf(events)
 	if last.Type != protocol.TypeRunCompleted {
 		t.Fatalf("terminal = %s", last.Type)
@@ -753,7 +765,7 @@ func TestInjectedTurnCreatesNoPhantomRun(t *testing.T) {
 	uuid, outcome := admit(t, session, peer)
 	peer.send(resultFrame(uuid, "success", false, "completed", "ok", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -764,7 +776,7 @@ func TestSecondTurnSequentialDistinctRuns(t *testing.T) {
 	uuid1, outcome1 := admit(t, session, peer)
 	peer.send(resultFrame(uuid1, "success", false, "completed", "one", 0))
 	events1 := adaptertest.Drain(t, outcome1.stream, 5*time.Second)
-	assertValidTrace(t, outcome1.admission, events1)
+	assertValidTrace(t, outcome1.request, outcome1.admission, events1)
 
 	uuid2, outcome2 := admit(t, session, peer)
 	if uuid2 == uuid1 {
@@ -772,7 +784,7 @@ func TestSecondTurnSequentialDistinctRuns(t *testing.T) {
 	}
 	peer.send(resultFrame(uuid2, "success", false, "completed", "two", 0))
 	events2 := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
-	assertValidTrace(t, outcome2.admission, events2)
+	assertValidTrace(t, outcome2.request, outcome2.admission, events2)
 	if outcome1.admission.RunID == outcome2.admission.RunID {
 		t.Fatal("second submit reused the run id")
 	}
@@ -886,7 +898,7 @@ func TestQueuedTurnCountDefersTerminal(t *testing.T) {
 	}
 	peer.send(resultFrame(uuid, "success", false, "completed", "closing", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	var payload protocol.RunCompletedPayload
 	terminal := terminalOf(events)
 	if err := terminal.DecodePayload(&payload); err != nil {
@@ -915,7 +927,7 @@ func TestDeferringChildHoldsTerminalUntilSettled(t *testing.T) {
 	}
 	peer.send(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","output_file":"/out","summary":"done","uuid":"t2","session_id":"` + peerSession + `","tool_use_id":"toolu_04"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	if terminalOf(events).Type != protocol.TypeRunCompleted {
 		t.Fatalf("terminal = %s", terminalOf(events).Type)
 	}
@@ -931,7 +943,7 @@ func TestTaskUpdatedPatchIsALegalChildTerminal(t *testing.T) {
 	peer.send(resultFrame(uuid, "success", false, "completed", "spawned", 0))
 	peer.send(`{"type":"system","subtype":"task_updated","task_id":"task-2","session_id":"` + peerSession + `","patch":{"status":"killed","end_time":123}}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	terminal := terminalOf(events)
 	if terminal.Type != protocol.TypeRunCompleted {
 		t.Fatalf("terminal = %s", terminal.Type)
@@ -1162,7 +1174,7 @@ func TestASlowConsumerWithinTheJournalReceivesTheWholeRunWithoutOverflow(t *test
 		t.Fatalf("slow consumer saw %v after %d envelopes", got.err, len(got.events))
 	}
 	assertContiguousCompletedRun(t, got.events, 1, deltas)
-	assertValidTrace(t, result.admission, got.events)
+	assertValidTrace(t, result.request, result.admission, got.events)
 }
 
 func TestAResumeWithABacklogPastSixtyFourEventsCompletesWhileTheRunKeepsStreaming(t *testing.T) {
@@ -1392,7 +1404,7 @@ func TestCancelWithOpenToolAndGateSettlesBeforeTerminal(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":"[Request interrupted by user]"},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u10"}`)
 	peer.send(`{"type":"result","subtype":"error_during_execution","duration_ms":66,"duration_api_ms":0,"is_error":true,"num_turns":2,"session_id":"` + peerSession + `","stop_reason":null,"usage":{"input_tokens":7,"output_tokens":5},"modelUsage":{},"permission_denials":[],"terminal_reason":"aborted_streaming","errors":["[ede_diagnostic] result_type=user"],"user_message_uuid":"` + uuid + `","user_message_uuids":["` + uuid + `"],"queued_turn_count":0,"uuid":"r10"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertCancelledTrace(t, outcome.admission, events)
+	assertCancelledTrace(t, outcome.request, outcome.admission, events)
 	if terminalOf(events).Type != protocol.TypeRunCancelled {
 		t.Fatalf("terminal = %s", terminalOf(events).Type)
 	}
@@ -1436,7 +1448,7 @@ func TestResolveSerializesGateBeforeTerminal(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	resolvedIdx, terminalIdx := -1, -1
 	for index, event := range events {
 		switch event.Type {
@@ -1466,8 +1478,8 @@ func TestSubmitCancellationAfterWriteRetiresSession(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	channel := make(chan submitOutcome, 1)
 	go func() {
-		admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("hello")}}})
-		channel <- submitOutcome{admission, stream, err}
+		admission, stream, err := session.Submit(ctx, helloSubmit)
+		channel <- submitOutcome{helloSubmit, admission, stream, err}
 	}()
 	peer.writtenUser()
 	cancel()
@@ -1494,7 +1506,7 @@ func TestForeignTurnDeltaNotAttributed(t *testing.T) {
 	peer.send(`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"foreign"}},"session_id":"` + peerSession + `","parent_tool_use_id":null,"uuid":"e9","user_message_uuid":"other-turn","user_message_uuids":["other-turn"]}`)
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	for _, event := range events {
 		if event.Type != protocol.TypeContentDelta {
 			continue
@@ -1519,7 +1531,7 @@ func TestIdleSignalPublishesDeferredTerminal(t *testing.T) {
 	peer.send(resultFrame(uuid, "success", false, "completed", "spawned", 0))
 	peer.send(`{"type":"system","subtype":"session_state_changed","state":"idle","session_id":"` + peerSession + `","uuid":"ss1"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 	if terminalOf(events).Type != protocol.TypeRunCompleted {
 		t.Fatalf("terminal = %s", terminalOf(events).Type)
 	}
@@ -1542,7 +1554,7 @@ func TestStaleChildDoesNotDeferLaterRuns(t *testing.T) {
 	uuid2, outcome2 := admit(t, session, peer)
 	peer.send(resultFrame(uuid2, "success", false, "completed", "second", 0))
 	events2 := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
-	assertValidTrace(t, outcome2.admission, events2)
+	assertValidTrace(t, outcome2.request, outcome2.admission, events2)
 	if terminalOf(events2).Type != protocol.TypeRunCompleted {
 		t.Fatalf("run 2 terminal = %s", terminalOf(events2).Type)
 	}
@@ -1563,7 +1575,7 @@ func TestLateToolResultForPriorRunIgnored(t *testing.T) {
 	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_30","type":"tool_result","content":"late","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u31"}`)
 	peer.send(resultFrame(uuid2, "success", false, "completed", "two", 0))
 	events := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
-	assertValidTrace(t, outcome2.admission, events)
+	assertValidTrace(t, outcome2.request, outcome2.admission, events)
 	if terminalOf(events).Type != protocol.TypeRunCompleted {
 		t.Fatalf("run 2 terminal = %s (%v)", terminalOf(events).Type, eventTypes(events))
 	}
@@ -1884,35 +1896,180 @@ func TestToolPostureReachesTheSpawn(t *testing.T) {
 	}
 }
 
-func TestToolSelectionIsUnadvertisedBecauseItsProjectionFailsValidation(t *testing.T) {
-	descriptor := testDescriptor(t)
-	if support, ok := descriptor.Capabilities.Features[protocol.FeatureToolSelection]; ok && support.Level != protocol.SupportUnavailable {
-		t.Fatalf("%s is advertised as %s", protocol.FeatureToolSelection, support.Level)
-	}
+var excludesBash = protocol.MessageSubmitRequest{
+	SessionID:  "session",
+	Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
+	Delivery:   protocol.DeliveryAuto,
+	ToolChoice: json.RawMessage(`{"disallowed":["Bash"]}`),
+}
 
+func bashToolUse(id string) string {
+	return `{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"` + id + `","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-` + id + `"}`
+}
+
+func bashResult(id, content string, isError bool) string {
+	return `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"` + id + `","type":"tool_result","content":"` + content + `","is_error":` + strconv.FormatBool(isError) + `}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u-` + id + `"}`
+}
+
+func callSettlements(t *testing.T, events []protocol.Envelope) []string {
+	t.Helper()
+	var settled []string
+	for _, event := range events {
+		switch event.Type {
+		case protocol.TypeUserInputRequested:
+			t.Fatalf("an interaction opened for a policy refusal: %s", event.Payload)
+		case protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted:
+			settled = append(settled, string(event.Type))
+		case protocol.TypeActionCallFailed:
+			var payload protocol.ActionCallPayload
+			if err := event.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			settled = append(settled, string(event.Type)+":"+payload.Error.Code)
+		}
+	}
+	return settled
+}
+
+func TestToolSelectionIsAdvertisedEmulatedForTheRun(t *testing.T) {
+	support, ok := testDescriptor(t).Capabilities.Features[protocol.FeatureToolSelection]
+	if !ok || support.Level != protocol.SupportEmulated || support.Scope != protocol.ScopeRun {
+		t.Fatalf("%s = %+v, want emulated for the run", protocol.FeatureToolSelection, support)
+	}
+}
+
+func TestExcludedToolIsDeniedAtTheGateAndSettlesRefusedByPolicy(t *testing.T) {
 	_, session, peer := openWire(t)
-	uuid, outcome := admit(t, session, peer)
-	peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"toolu_09","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a9"}`)
-	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_09","type":"tool_result","content":"ok","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u9"}`)
+	uuid, outcome := admitWith(t, session, peer, excludesBash)
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	peer.send(bashToolUse("toolu_x1"))
+	peer.send(`{"type":"control_request","request_id":"ask-x1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_x1"}}`)
+	message, _ := peer.written()
+	var decision native.PermissionDeny
+	if message.Kind != rpc.KindControlResponse || json.Unmarshal(message.Response.Response, &decision) != nil || decision.Behavior != "deny" || decision.Message != policyRefusal("Bash") {
+		t.Fatalf("gate answer = %+v", message)
+	}
+	peer.send(bashResult("toolu_x1", decision.Message, true))
 	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
 
-	assertValidTrace(t, outcome.admission, events)
-
-	excluded := protocol.MessageSubmitRequest{
-		SessionID:  "session",
-		Messages:   []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("go")}},
-		Delivery:   protocol.DeliveryAuto,
-		ToolChoice: json.RawMessage(`{"disallowed":["Bash"]}`),
+	if got := strings.Join(callSettlements(t, events), ","); got != "action.call.requested,action.call.started,action.call.failed:refused_by_policy" {
+		t.Fatalf("call lifecycle = %s", got)
 	}
-	adaptertest.AssertProtocolInvalidWithSubmit(t, excluded, outcome.admission, descriptor, events, "unavailable_capability")
-
-	advertising := testDescriptor(t)
-	advertising.Capabilities.Features[protocol.FeatureToolSelection] = protocol.FeatureSupport{Level: protocol.SupportEmulated}
-	adaptertest.AssertProtocolInvalidWithSubmit(t, excluded, outcome.admission, advertising, events, "unapplied_control")
-
+	assertValidTrace(t, excludesBash, outcome.admission, events)
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExcludedToolIsDeniedAtTheHookBeforeAnyGate(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admitWith(t, session, peer, excludesBash)
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	peer.send(bashToolUse("toolu_x2"))
+	peer.send(`{"type":"control_request","request_id":"hook-x2","request":{"subtype":"hook_callback","callback_id":"` + native.ToolSelectionHook + `","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"toolu_x2"},"tool_use_id":"toolu_x2"}}`)
+	message, _ := peer.written()
+	var decision native.HookDeny
+	if message.Kind != rpc.KindControlResponse || json.Unmarshal(message.Response.Response, &decision) != nil || decision.HookSpecificOutput.PermissionDecision != "deny" || decision.HookSpecificOutput.HookEventName != native.HookPreToolUse {
+		t.Fatalf("hook answer = %+v", message)
+	}
+	peer.send(bashResult("toolu_x2", decision.HookSpecificOutput.PermissionDecisionReason, true))
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+
+	if got := strings.Join(callSettlements(t, events), ","); got != "action.call.requested,action.call.started,action.call.failed:refused_by_policy" {
+		t.Fatalf("call lifecycle = %s", got)
+	}
+	assertValidTrace(t, excludesBash, outcome.admission, events)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestADeniedCallStillOpenWhenTheRunEndsSettlesRefusedByPolicy(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admitWith(t, session, peer, excludesBash)
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	peer.send(bashToolUse("toolu_x5"))
+	peer.send(`{"type":"control_request","request_id":"hook-x5","request":{"subtype":"hook_callback","callback_id":"` + native.ToolSelectionHook + `","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"toolu_x5"},"tool_use_id":"toolu_x5"}}`)
+	peer.written()
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	if got := strings.Join(callSettlements(t, events), ","); got != "action.call.requested,action.call.started,action.call.failed:refused_by_policy" {
+		t.Fatalf("call lifecycle = %s", got)
+	}
+	assertValidTrace(t, excludesBash, outcome.admission, events)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHookContinuesATurnWithoutToolChoice(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(bashToolUse("toolu_x3"))
+	peer.send(`{"type":"control_request","request_id":"hook-x3","request":{"subtype":"hook_callback","callback_id":"` + native.ToolSelectionHook + `","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"toolu_x3"},"tool_use_id":"toolu_x3"}}`)
+	message, _ := peer.written()
+	if message.Kind != rpc.KindControlResponse || string(message.Response.Response) != `{}` {
+		t.Fatalf("hook answer = %+v", message)
+	}
+	peer.send(bashResult("toolu_x3", "ok", false))
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	if got := strings.Join(callSettlements(t, events), ","); got != "action.call.requested,action.call.started,action.call.completed" {
+		t.Fatalf("call lifecycle = %s", got)
+	}
+	assertValidTrace(t, outcome.request, outcome.admission, events)
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExcludedToolTheAdapterNeverDeniedIsNotReportedRefused(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admitWith(t, session, peer, excludesBash)
+	if outcome.err != nil {
+		t.Fatal(outcome.err)
+	}
+	peer.send(bashToolUse("toolu_x4"))
+	peer.send(bashResult("toolu_x4", "boom", true))
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	if got := strings.Join(callSettlements(t, events), ","); got != "action.call.requested,action.call.started,action.call.failed:claude_tool_error" {
+		t.Fatalf("call lifecycle = %s", got)
+	}
+	adaptertest.AssertProtocolInvalidWithSubmit(t, excludesBash, outcome.admission, testDescriptor(t), events, "unapplied_control")
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestToolChoiceIsJudgedAgainstAnUnknownCatalog(t *testing.T) {
+	if tools := testDescriptor(t).Capabilities.Tools; tools != nil {
+		t.Fatalf("the descriptor now publishes %d tools; the catalog is no longer unknown under Decision 0034", len(tools))
+	}
+	_, session, peer := openWire(t)
+	allowed := excludesBash
+	allowed.ToolChoice = json.RawMessage(`{"allowed":["Read"]}`)
+	if _, outcome := admitWith(t, session, peer, allowed); outcome.err != nil {
+		t.Fatalf("allowed naming a tool of an unknown catalog was refused: %v", outcome.err)
+	}
+	denylist := &runState{choice: &protocol.ToolChoice{Disallowed: []string{"Bash"}}}
+	if !denylist.excludes("Bash") || denylist.excludes("Read") {
+		t.Fatal("a denylist over an unknown catalog must exclude exactly the tools it names")
+	}
+	allowlist := &runState{choice: &protocol.ToolChoice{Allowed: []string{"Read"}}}
+	if allowlist.excludes("Read") || !allowlist.excludes("Bash") {
+		t.Fatal("an allowlist over an unknown catalog must permit exactly the tools it names")
+	}
+	if (&runState{}).excludes("Bash") {
+		t.Fatal("a run without tool_choice excluded a tool")
 	}
 }
 
@@ -1921,7 +2078,7 @@ func TestNamelessToolUseFailsRunInsteadOfEmittingAnInvalidTrace(t *testing.T) {
 	uuid, outcome := admit(t, session, peer)
 	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_nameless","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-nameless","user_message_uuid":"` + uuid + `"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 
 	terminal := terminalOf(events)
 	if terminal.Type != protocol.TypeRunFailed {
@@ -1951,7 +2108,7 @@ func TestNegativeDurationIsNotReported(t *testing.T) {
 		frame := strings.Replace(resultFrame(uuid, "success", false, "completed", "done", 0), `"duration_ms":130`, `"duration_ms":`+jsonInt(elapsed), 1)
 		peer.send(frame)
 		events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-		assertValidTrace(t, outcome.admission, events)
+		assertValidTrace(t, outcome.request, outcome.admission, events)
 
 		var payload protocol.RunCompletedPayload
 		terminal := terminalOf(events)
@@ -1976,7 +2133,7 @@ func TestAFailedRunSweepsToolsStartedBeforeTheFailure(t *testing.T) {
 	uuid, outcome := admit(t, session, peer)
 	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}},{"type":"tool_use","id":"toolu_nameless","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-mixed","user_message_uuid":"` + uuid + `"}`)
 	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
-	assertValidTrace(t, outcome.admission, events)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
 
 	var kinds []protocol.EnvelopeType
 	for _, e := range events {
@@ -1994,7 +2151,7 @@ func TestABlockAfterATerminalizingOneIsNotStarted(t *testing.T) {
 	_, session, peer := openWire(t)
 	uuid, outcome := admit(t, session, peer)
 	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[{"type":"tool_use","id":"toolu_nameless","input":{}},{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-rev","user_message_uuid":"` + uuid + `"}`)
-	assertValidTrace(t, outcome.admission, adaptertest.Drain(t, outcome.stream, 5*time.Second))
+	assertValidTrace(t, outcome.request, outcome.admission, adaptertest.Drain(t, outcome.stream, 5*time.Second))
 
 	impl := session.(*Session)
 	impl.mu.Lock()
@@ -2008,7 +2165,7 @@ func TestABlockAfterATerminalizingOneIsNotStarted(t *testing.T) {
 	peer.send(`{"type":"assistant","message":{"id":"m2","model":"claude-test","content":[{"type":"tool_use","id":"toolu_ok","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-rev2","user_message_uuid":"` + uuid2 + `"}`)
 	peer.send(resultFrame(uuid2, "success", false, "completed", "done", 0))
 	second := adaptertest.Drain(t, outcome2.stream, 5*time.Second)
-	assertValidTrace(t, outcome2.admission, second)
+	assertValidTrace(t, outcome2.request, outcome2.admission, second)
 	var kinds []protocol.EnvelopeType
 	for _, e := range second {
 		kinds = append(kinds, e.Type)
@@ -2038,7 +2195,7 @@ func settledWithFrame(t *testing.T, frame string) (protocol.MessageSubmitRespons
 
 func TestATerminalCarriesTheCostTheHarnessReported(t *testing.T) {
 	admission, events := settledWithFrame(t, resultFrame("REPLACE_UUID", "success", false, "completed", "done", 0))
-	assertValidTrace(t, admission, events)
+	assertValidTrace(t, helloSubmit, admission, events)
 	carried := terminalOf(events).Extensions[costExtension]
 	if carried == nil {
 		t.Fatalf("terminal carried no cost: %v", eventTypes(events))
@@ -2060,8 +2217,48 @@ func TestATerminalWithoutAReportedCostCarriesNoExtension(t *testing.T) {
 		t.Fatal("the probe frame still names a cost")
 	}
 	admission, events := settledWithFrame(t, frame)
-	assertValidTrace(t, admission, events)
+	assertValidTrace(t, helloSubmit, admission, events)
 	if len(terminalOf(events).Extensions) != 0 {
 		t.Fatalf("extensions = %v, want none when the harness reported no cost", terminalOf(events).Extensions)
+	}
+}
+
+type initializeRecorder struct {
+	Client
+	request chan any
+}
+
+func (r *initializeRecorder) Call(_ context.Context, request any, _ any) error {
+	r.request <- request
+	return errors.New("not initializing in this test")
+}
+
+type recorderBridge struct{ client Client }
+
+func (b recorderBridge) ClientHandle() Client        { return b.client }
+func (b recorderBridge) Done() <-chan struct{}       { return nil }
+func (b recorderBridge) WaitError() error            { return nil }
+func (b recorderBridge) Close(context.Context) error { return nil }
+
+func TestOpenRegistersTheToolSelectionHook(t *testing.T) {
+	peer := newWirePeer(t)
+	recorder := &initializeRecorder{Client: peer.client, request: make(chan any, 1)}
+	implementation, err := New(Config{Executable: "/bin/claude", Tools: UnrestrictedTools(), ProcessFactory: ProcessFactoryFunc(func(context.Context, rpc.ProcessConfig) (ProcessBridge, error) {
+		return recorderBridge{client: recorder}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = implementation.Open(context.Background(), base.OpenRequest{SessionID: "s", Participant: protocol.Participant{ID: "user"}})
+	initialize, ok := (<-recorder.request).(native.InitializeRequest)
+	if !ok {
+		t.Fatal("open sent no initialize request")
+	}
+	encoded, err := json.Marshal(initialize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"subtype":"initialize","hooks":{"PreToolUse":[{"matcher":null,"hookCallbackIds":["` + native.ToolSelectionHook + `"]}]}}`; string(encoded) != want {
+		t.Fatalf("initialize = %s, want %s", encoded, want)
 	}
 }

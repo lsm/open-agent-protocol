@@ -217,7 +217,7 @@ func runCorpusCase(t *testing.T, root string, entry corpusManifestCase) {
 	}
 	events := append(prefix, adaptertest.Drain(t, stream, time.Second)...)
 	if entry.ID == "interrupted-turn" {
-		adaptertest.AssertProtocolValidWithCancellation(t, admission, descriptor, events)
+		adaptertest.AssertProtocolValidWithSubmitAndCancellation(t, request, admission, descriptor, events)
 	} else {
 
 		adaptertest.AssertProtocolValidWithSubmit(t, request, admission, descriptor, events)

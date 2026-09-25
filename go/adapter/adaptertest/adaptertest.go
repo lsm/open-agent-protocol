@@ -62,29 +62,22 @@ func Drain(t testing.TB, stream adapter.EventStream, timeout time.Duration) []pr
 
 func AssertRunTrace(t testing.TB, admission protocol.MessageSubmitResponse, revision string, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertProtocolValid(t, admission, adapter.Descriptor{}, revision, envelopes, false)
+	assertProtocolValid(t, nil, admission, adapter.Descriptor{}, revision, nil, envelopes, false)
 }
 
-func AssertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, events []protocol.Envelope) {
+func AssertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertProtocolValid(t, admission, adapter.Descriptor{}, "", events, false)
+	assertProtocolValid(t, nil, admission, adapter.Descriptor{}, "", nil, envelopes, false)
 }
 
-func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
+func AssertProtocolValidWithDescriptor(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, false)
+	assertProtocolValid(t, nil, admission, descriptor, descriptor.CapabilityRevision, nil, envelopes, false)
 }
 
-func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
+func AssertProtocolValidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
-	trace, err := protocolTraceWith(&request, admission, descriptor, nil, events, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(trace, "adaptertest"); !result.Valid() {
-		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
-	}
+	assertProtocolValid(t, &request, admission, descriptor, descriptor.CapabilityRevision, nil, envelopes, false)
 }
 
 func AssertProtocolInvalidWithSubmit(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, code string) {
@@ -106,27 +99,30 @@ func AssertProtocolInvalidWithSubmit(t testing.TB, request protocol.MessageSubmi
 	t.Fatalf("adapter trace failed OAP validation, but not with %s: %v", code, result.Diagnostics)
 }
 
-func AssertProtocolValidWithCancellation(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) {
+func AssertProtocolValidWithCancellation(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertProtocolValid(t, admission, descriptor, descriptor.CapabilityRevision, events, true)
+	assertProtocolValid(t, nil, admission, descriptor, descriptor.CapabilityRevision, nil, envelopes, true)
 }
 
-func AssertProtocolValidWithCatalog(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, request protocol.ToolsListRequest, catalog adapter.ToolCatalog, events []protocol.Envelope) {
+func AssertProtocolValidWithSubmitAndCancellation(t testing.TB, request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, envelopes []protocol.Envelope) {
 	t.Helper()
-	assertRunInvariants(t, admission, descriptor.CapabilityRevision, events)
-	trace, err := protocolTraceWith(nil, admission, descriptor, &servedCatalog{request: request, catalog: catalog}, events, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result := validation.MustNew().ValidateBytes(trace, "adaptertest"); !result.Valid() {
-		t.Fatalf("adapter trace failed OAP validation: %v\ntrace: %s", result.Diagnostics, trace)
-	}
+	assertProtocolValid(t, &request, admission, descriptor, descriptor.CapabilityRevision, nil, envelopes, true)
 }
 
-func assertProtocolValid(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, revision string, events []protocol.Envelope, cancelled bool) {
+func AssertProtocolValidWithCatalog(t testing.TB, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, request protocol.ToolsListRequest, catalog adapter.ToolCatalog, envelopes []protocol.Envelope) {
+	t.Helper()
+	assertProtocolValid(t, nil, admission, descriptor, descriptor.CapabilityRevision, &servedCatalog{request: request, catalog: catalog}, envelopes, false)
+}
+
+func AssertProtocolValidWithSubmitAndCatalog(t testing.TB, submit protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, request protocol.ToolsListRequest, catalog adapter.ToolCatalog, envelopes []protocol.Envelope) {
+	t.Helper()
+	assertProtocolValid(t, &submit, admission, descriptor, descriptor.CapabilityRevision, &servedCatalog{request: request, catalog: catalog}, envelopes, false)
+}
+
+func assertProtocolValid(t testing.TB, submitted *protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, revision string, served *servedCatalog, events []protocol.Envelope, cancelled bool) {
 	t.Helper()
 	assertRunInvariants(t, admission, revision, events)
-	trace, err := protocolTrace(admission, descriptor, events, cancelled)
+	trace, err := protocolTraceWith(submitted, admission, descriptor, served, events, cancelled)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,16 +371,12 @@ func AssertInitialState(t testing.TB, implementation adapter.Adapter, request ad
 	return session
 }
 
-func ProtocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
-	return protocolTrace(admission, descriptor, events, false)
+func ProtocolTrace(request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
+	return protocolTraceWith(&request, admission, descriptor, nil, events, false)
 }
 
-func ProtocolTraceWithCancellation(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
-	return protocolTrace(admission, descriptor, events, true)
-}
-
-func protocolTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) ([]byte, error) {
-	return protocolTraceWith(nil, admission, descriptor, nil, events, cancelled)
+func ProtocolTraceWithCancellation(request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope) ([]byte, error) {
+	return protocolTraceWith(&request, admission, descriptor, nil, events, true)
 }
 
 type servedCatalog struct {
@@ -392,7 +384,20 @@ type servedCatalog struct {
 	catalog adapter.ToolCatalog
 }
 
+func submitControls(descriptor adapter.Descriptor) []string {
+	var offered []string
+	for _, key := range []string{protocol.FeatureInstructions, protocol.FeatureModelSelection, protocol.FeatureStructuredOutput, protocol.FeatureToolSelection} {
+		if support, ok := descriptor.Capabilities.EffectiveSupport(key); ok && support.Level != protocol.SupportUnavailable {
+			offered = append(offered, key)
+		}
+	}
+	return offered
+}
+
 func protocolTraceWith(submitted *protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, served *servedCatalog, events []protocol.Envelope, cancelled bool) ([]byte, error) {
+	if offered := submitControls(descriptor); submitted == nil && len(offered) > 0 {
+		return nil, fmt.Errorf("adaptertest: the descriptor offers submit controls %v, so a synthesized submit could drop the one the run was admitted with; pass the submit request the adapter received", offered)
+	}
 	var trace []protocol.Envelope
 	if descriptor.CapabilityRevision != "" {
 		request, err := protocol.NewEnvelope(protocol.TypeCapabilitiesRequest, "capabilities-request", protocol.CapabilitiesRequest{})

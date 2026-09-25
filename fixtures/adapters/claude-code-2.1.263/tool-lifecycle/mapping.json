@@ -49,77 +49,37 @@
   },
   {
     "index": 7,
+    "type": "observe:control_request/hook_callback",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run.tool_selection check (PreToolUse hook_callback)"
+  },
+  {
+    "index": 8,
+    "type": "write:control_response",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "hook continue (no policy excludes the tool)"
+  },
+  {
+    "index": 9,
     "type": "observe:tool_progress",
     "direction": "cli-to-host",
     "classification": "observed-only",
     "fidelity": "native"
   },
   {
-    "index": 8,
+    "index": 10,
     "type": "observe:user",
     "direction": "cli-to-host",
     "classification": "mapped",
     "fidelity": "native",
     "oap": "action.call.completed"
-  },
-  {
-    "index": 9,
-    "type": "observe:result/success",
-    "direction": "cli-to-host",
-    "classification": "mapped",
-    "fidelity": "native",
-    "oap": "run terminal"
-  },
-  {
-    "index": 10,
-    "type": "sync:wait-run",
-    "direction": "harness-control",
-    "classification": "mapped",
-    "fidelity": "synthesized",
-    "oap": "submission reap and stream drain"
   },
   {
     "index": 11,
-    "type": "write:user",
-    "direction": "host-to-cli",
-    "classification": "mapped",
-    "fidelity": "native",
-    "oap": "session.message.submit (auto to start)"
-  },
-  {
-    "index": 12,
-    "type": "observe:system/init",
-    "direction": "cli-to-host",
-    "classification": "mapped",
-    "fidelity": "native",
-    "oap": "state refresh (CurrentModelID)"
-  },
-  {
-    "index": 13,
-    "type": "observe:stream_event",
-    "direction": "cli-to-host",
-    "classification": "mapped",
-    "fidelity": "native",
-    "oap": "admission convergence (run.started by construction)"
-  },
-  {
-    "index": 14,
-    "type": "observe:assistant",
-    "direction": "cli-to-host",
-    "classification": "mapped",
-    "fidelity": "native",
-    "oap": "action.call.requested + synthesized started"
-  },
-  {
-    "index": 15,
-    "type": "observe:user",
-    "direction": "cli-to-host",
-    "classification": "mapped",
-    "fidelity": "native",
-    "oap": "action.call.completed"
-  },
-  {
-    "index": 16,
     "type": "observe:result/success",
     "direction": "cli-to-host",
     "classification": "mapped",
@@ -127,7 +87,7 @@
     "oap": "run terminal"
   },
   {
-    "index": 17,
+    "index": 12,
     "type": "sync:wait-run",
     "direction": "harness-control",
     "classification": "mapped",
@@ -135,7 +95,7 @@
     "oap": "submission reap and stream drain"
   },
   {
-    "index": 18,
+    "index": 13,
     "type": "write:user",
     "direction": "host-to-cli",
     "classification": "mapped",
@@ -143,7 +103,7 @@
     "oap": "session.message.submit (auto to start)"
   },
   {
-    "index": 19,
+    "index": 14,
     "type": "observe:system/init",
     "direction": "cli-to-host",
     "classification": "mapped",
@@ -151,7 +111,7 @@
     "oap": "state refresh (CurrentModelID)"
   },
   {
-    "index": 20,
+    "index": 15,
     "type": "observe:stream_event",
     "direction": "cli-to-host",
     "classification": "mapped",
@@ -159,7 +119,7 @@
     "oap": "admission convergence (run.started by construction)"
   },
   {
-    "index": 21,
+    "index": 16,
     "type": "observe:assistant",
     "direction": "cli-to-host",
     "classification": "mapped",
@@ -167,7 +127,95 @@
     "oap": "action.call.requested + synthesized started"
   },
   {
+    "index": 17,
+    "type": "observe:control_request/hook_callback",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run.tool_selection check (PreToolUse hook_callback)"
+  },
+  {
+    "index": 18,
+    "type": "write:control_response",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "hook continue (no policy excludes the tool)"
+  },
+  {
+    "index": 19,
+    "type": "observe:user",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.completed"
+  },
+  {
+    "index": 20,
+    "type": "observe:result/success",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run terminal"
+  },
+  {
+    "index": 21,
+    "type": "sync:wait-run",
+    "direction": "harness-control",
+    "classification": "mapped",
+    "fidelity": "synthesized",
+    "oap": "submission reap and stream drain"
+  },
+  {
     "index": 22,
+    "type": "write:user",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "session.message.submit (auto to start)"
+  },
+  {
+    "index": 23,
+    "type": "observe:system/init",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "state refresh (CurrentModelID)"
+  },
+  {
+    "index": 24,
+    "type": "observe:stream_event",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "admission convergence (run.started by construction)"
+  },
+  {
+    "index": 25,
+    "type": "observe:assistant",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "action.call.requested + synthesized started"
+  },
+  {
+    "index": 26,
+    "type": "observe:control_request/hook_callback",
+    "direction": "cli-to-host",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "run.tool_selection check (PreToolUse hook_callback)"
+  },
+  {
+    "index": 27,
+    "type": "write:control_response",
+    "direction": "host-to-cli",
+    "classification": "mapped",
+    "fidelity": "native",
+    "oap": "hook continue (no policy excludes the tool)"
+  },
+  {
+    "index": 28,
     "type": "observe:user",
     "direction": "cli-to-host",
     "classification": "mapped",
@@ -175,7 +223,7 @@
     "oap": "action.call.failed"
   },
   {
-    "index": 23,
+    "index": 29,
     "type": "observe:result/success",
     "direction": "cli-to-host",
     "classification": "mapped",
@@ -183,7 +231,7 @@
     "oap": "run terminal"
   },
   {
-    "index": 24,
+    "index": 30,
     "type": "sync:wait-run",
     "direction": "harness-control",
     "classification": "mapped",
@@ -191,7 +239,7 @@
     "oap": "submission reap and stream drain"
   },
   {
-    "index": 25,
+    "index": 31,
     "type": "oap_control:close",
     "direction": "harness-control",
     "classification": "mapped",

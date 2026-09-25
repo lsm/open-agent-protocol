@@ -458,7 +458,12 @@ cancelled. The adapter must therefore model a submission as possibly spanning
 - hooks and SDK-hosted MCP servers are reverse control traffic
   (`hook_callback`, `mcp_message`); the OAP adapter initially configures
   neither and advertises them unavailable, because hosting them re-creates
-  the stdin-lifetime coupling described below;
+  the stdin-lifetime coupling described below. (Superseded for hooks at the
+  2.1.280 pin: the adapter now registers one `PreToolUse` hook to enforce
+  `run.tool_selection`; see *Issue #122* in
+  [the 2.1.280 ledger](claude-code-agent-sdk-2.1.280-mapping.md) and
+  *PreToolUse hook probed at 2.1.263* below. The recorded facts here stand
+  for the adapter as first built.)
 - stdin must stay open while any reverse control may arrive; the Python SDK
   holds it until a result with no in-flight deferring tasks
   (`DEFERRING_TASK_TYPES = {local_agent, local_workflow}`, issue #1088).
@@ -1378,3 +1383,53 @@ arbitration happy paths. After the fixes, the full repository battery
 (vet, full, short, race, `oap check`, gofmt, `git diff --check`) is green,
 the corpus remains byte-stable, and both process gates re-ran green three
 times against the pinned digest-bound binary.
+
+## PreToolUse hook probed at 2.1.263
+
+The adapter now registers the `PreToolUse` hook described under *Issue #122*
+in [the 2.1.280 ledger](claude-code-agent-sdk-2.1.280-mapping.md), and this
+floor corpus's `initialize` lines carry that registration. Enforcement is
+claimed at the 2.1.280 pin; this probe establishes that the floor's
+registration and callbacks are what 2.1.263 itself does, not an edit carried
+over from 2.1.280.
+
+Probed 2026-09-24 against `@anthropic-ai/claude-code-darwin-arm64@2.1.263`:
+tarball sha256 `f1c0d2da0e49acdb26f87d9d1a6fd036d03c1d31d9ae8a5682c453c8f127f32e`
+(npm `dist.shasum` `834973ee5bfd712bbda8519b2826838b51cffcf8` and `integrity`
+both matched), binary sha256
+`ef5d2909c8af49f31ab6d5487e90316777bc2fac170adfe8160716caa8aaf4f9`
+(199,257,984 bytes), matching the `darwin-arm64` checksum and size in the
+0.3.263 SDK `manifest.json`. It self-reports `2.1.263 (Claude Code)`. The
+method is the 2.1.280 capture's: the adapter's argv, `claudeEnvironment` (a
+temporary `HOME`, `CLAUDE_CONFIG_DIR` and `TMPDIR`, dead proxies, the test's
+own key) against the `providertest` loopback, a `security` stand-in first on
+`PATH`, and a sandbox denying the keychain daemons and non-loopback
+connections.
+
+Each run wrote `initialize` with
+`{"PreToolUse":[{"matcher":null,"hookCallbackIds":["oap_tool_selection"]}]}`
+and one user turn, and the provider asked for one tool call:
+
+| Posture | Call | Hook answer | Observed |
+| --- | --- | --- | --- |
+| `--tools Bash,Read --allowedTools Bash Read` | `Bash` `pwd` | `{}` | `hook_callback`, then the command ran |
+| same | `Bash` `touch work/x` | deny | `hook_callback`, then an error `tool_result` carrying the reason; `x` not created |
+| `UnrestrictedTools()` | `Read` | `{}` | `hook_callback`, then the file's contents |
+| same | `Read` | deny | `hook_callback`, then an error `tool_result` |
+| same | `Bash` `pwd` | deny | `hook_callback`, then an error `tool_result` |
+
+`initialize` succeeded in every run. Every call raised exactly one
+`hook_callback` after the `assistant` frame naming it and before it ran, none
+raised `can_use_tool`, and each denied result carried `tool_result_meta`
+`non_execution_kind: "permission-rule"`. The request's shape is 2.1.280's:
+`callback_id`, `tool_use_id`, and an `input` of `session_id`,
+`transcript_path`, `cwd`, `prompt_id`, `permission_mode`,
+`hook_event_name: "PreToolUse"`, `tool_name`, `tool_input` and `tool_use_id`.
+
+The corpus follows. Every `initialize` keeps its recorded `success` reply,
+which the hooked request also gets (the corpus already carried it as `{}`,
+without the command list the CLI returns), and
+`tool-lifecycle` and `permission-gates` carry a `hook_callback` after each
+`tool_use` with the adapter's `{}` continue, shaped as in the 2.1.280 corpus.
+`tools-catalog-sources` carries none, for the reason the 2.1.280 ledger gives.
+

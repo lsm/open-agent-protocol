@@ -280,7 +280,8 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "demo-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run the deterministic demo")}}})
+	request := protocol.MessageSubmitRequest{SessionID: "demo-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("run the deterministic demo")}}}
+	admission, stream, err := session.Submit(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -314,7 +315,7 @@ func goldenDemo(ctx context.Context, stdout io.Writer) error {
 	if err := validateEventLifecycle(events, admission.RunID); err != nil {
 		return err
 	}
-	if err := validateDemoTrace(admission, descriptor, events, false); err != nil {
+	if err := validateDemoTrace(request, admission, descriptor, events, false); err != nil {
 		return err
 	}
 	recovery, replay, err := session.Resume(ctx, adapter.ResumeRequest{RunID: admission.RunID, AfterSequence: 9})
@@ -344,7 +345,8 @@ func cancellationDemo(ctx context.Context, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	admission, stream, err := session.Submit(ctx, protocol.MessageSubmitRequest{SessionID: "demo-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("cancel")}}})
+	request := protocol.MessageSubmitRequest{SessionID: "demo-session", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("cancel")}}}
+	admission, stream, err := session.Submit(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -367,7 +369,7 @@ func cancellationDemo(ctx context.Context, stdout io.Writer) error {
 	if err := validateEventLifecycle(events, admission.RunID); err != nil {
 		return err
 	}
-	if err := validateDemoTrace(admission, descriptor, events, ack.Accepted); err != nil {
+	if err := validateDemoTrace(request, admission, descriptor, events, ack.Accepted); err != nil {
 		return err
 	}
 	if events[len(events)-1].Type != protocol.TypeRunCancelled {
@@ -451,13 +453,13 @@ func validateEventLifecycle(events []protocol.Envelope, runID protocol.RunID) er
 	return nil
 }
 
-func validateDemoTrace(admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) error {
+func validateDemoTrace(request protocol.MessageSubmitRequest, admission protocol.MessageSubmitResponse, descriptor adapter.Descriptor, events []protocol.Envelope, cancelled bool) error {
 	var trace []byte
 	var err error
 	if cancelled {
-		trace, err = adaptertest.ProtocolTraceWithCancellation(admission, descriptor, events)
+		trace, err = adaptertest.ProtocolTraceWithCancellation(request, admission, descriptor, events)
 	} else {
-		trace, err = adaptertest.ProtocolTrace(admission, descriptor, events)
+		trace, err = adaptertest.ProtocolTrace(request, admission, descriptor, events)
 	}
 	if err != nil {
 		return err

@@ -7,6 +7,8 @@ const transport_only_actions = [_][]const u8{ "expect-write", "reply", "wait-run
 
 const reducer_blind_control_ops = [_][]const u8{ "close", "assert-state", "resume", "cancel" };
 
+const hook_callback_subtype = "hook_callback";
+
 const current_version = "2.1.280";
 const floor_version = "2.1.263";
 
@@ -49,7 +51,9 @@ fn Driver(comptime version: []const u8) type {
                 return .handled;
             }
             if (std.mem.eql(u8, s.action, "observe")) {
-                try reducer.observe(try rpc.parseMessage(scratch, s.encoded, null));
+                const message = try rpc.parseMessage(scratch, s.encoded, null);
+                if (message.kind == .control_request and std.mem.eql(u8, message.subtype, hook_callback_subtype)) return .handled;
+                try reducer.observe(message);
                 return .handled;
             }
             if (std.mem.eql(u8, s.action, "decode-error")) {

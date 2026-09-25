@@ -62,9 +62,13 @@ const (
 )
 
 const (
-	ControlInitialize = "initialize"
-	ControlInterrupt  = "interrupt"
-	ControlCanUseTool = "can_use_tool"
+	ControlInitialize   = "initialize"
+	ControlInterrupt    = "interrupt"
+	ControlCanUseTool   = "can_use_tool"
+	ControlHookCallback = "hook_callback"
+
+	HookPreToolUse    = "PreToolUse"
+	ToolSelectionHook = "oap_tool_selection"
 )
 
 var ErrInvalidFrame = errors.New("claude native: invalid frame for a known type")
@@ -504,10 +508,59 @@ func DecodeControlRequest(subtype string, raw []byte) (any, error) {
 			return nil, fmt.Errorf("%w: can_use_tool requires tool_name, input, and tool_use_id", ErrInvalidFrame)
 		}
 		return &request, nil
+	case ControlHookCallback:
+		var envelope struct {
+			Request HookCallbackRequest `json:"request"`
+		}
+		if err := unmarshal(raw, &envelope); err != nil {
+			return nil, err
+		}
+		request := envelope.Request
+		if request.CallbackID == "" {
+			return nil, fmt.Errorf("%w: hook_callback requires callback_id", ErrInvalidFrame)
+		}
+		return &request, nil
 	default:
 
 		return &UnknownFrame{Type: "control_request", Subtype: subtype}, nil
 	}
+}
+
+type HookCallbackRequest struct {
+	CallbackID string    `json:"callback_id"`
+	ToolUseID  string    `json:"tool_use_id"`
+	Input      HookInput `json:"input"`
+}
+
+type HookInput struct {
+	HookEventName string `json:"hook_event_name"`
+	ToolName      string `json:"tool_name"`
+	ToolUseID     string `json:"tool_use_id"`
+}
+
+type HookMatcher struct {
+	Matcher         *string  `json:"matcher"`
+	HookCallbackIDs []string `json:"hookCallbackIds"`
+}
+
+func ToolSelectionHooks() map[string][]HookMatcher {
+	return map[string][]HookMatcher{HookPreToolUse: {{HookCallbackIDs: []string{ToolSelectionHook}}}}
+}
+
+type HookContinue struct{}
+
+type HookDeny struct {
+	HookSpecificOutput PreToolUseDecision `json:"hookSpecificOutput"`
+}
+
+type PreToolUseDecision struct {
+	HookEventName            string `json:"hookEventName"`
+	PermissionDecision       string `json:"permissionDecision"`
+	PermissionDecisionReason string `json:"permissionDecisionReason"`
+}
+
+func DenyTool(reason string) HookDeny {
+	return HookDeny{HookSpecificOutput: PreToolUseDecision{HookEventName: HookPreToolUse, PermissionDecision: "deny", PermissionDecisionReason: reason}}
 }
 
 type InitializeRequest struct {
