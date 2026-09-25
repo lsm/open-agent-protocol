@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -125,37 +124,4 @@ func normalizedExchange(t *testing.T, cmd *exec.Cmd, lines []string) []string {
 	_ = cmd.Wait()
 	sort.Strings(out)
 	return out
-}
-
-func normalizedLine(t *testing.T, line string) string {
-	t.Helper()
-	var value any
-	if err := json.Unmarshal([]byte(line), &value); err != nil {
-		t.Fatalf("not JSON: %q", line)
-	}
-	encoded, err := json.Marshal(scrubbed(value))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(encoded)
-}
-
-func scrubbed(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		kept := make(map[string]any, len(typed))
-		for key, member := range typed {
-			if key == "id" || strings.HasSuffix(key, "_ms") {
-				continue
-			}
-			kept[key] = scrubbed(member)
-		}
-		return kept
-	case []any:
-		for index := range typed {
-			typed[index] = scrubbed(typed[index])
-		}
-		return typed
-	}
-	return value
 }
