@@ -28,6 +28,10 @@ func TestAPinSpelledInSourceFails(t *testing.T) {
 		tree := fstest.MapFS{"zig/src/adapter/pi/session.zig": {Data: []byte(fmt.Sprintf("pub const capability_revision = %q;\n", revision))}}
 		assertOnly(t, CheckLiterals(tree, catalog), CodePinLiteral, "zig/src/adapter/pi/session.zig:1")
 	})
+	t.Run("zig multiline string", func(t *testing.T) {
+		tree := fstest.MapFS{"zig/src/adapter/pi/session.zig": {Data: []byte("const x =\n    \\\\" + revision + "\n;\n")}}
+		assertOnly(t, CheckLiterals(tree, catalog), CodePinLiteral, "zig/src/adapter/pi/session.zig:2")
+	})
 	t.Run("zig build script", func(t *testing.T) {
 		tree := fstest.MapFS{"zig/build.zig": {Data: []byte(fmt.Sprintf("const pin = %q;\n", revision))}}
 		assertOnly(t, CheckLiterals(tree, catalog), CodePinLiteral, "zig/build.zig:1")
@@ -38,7 +42,7 @@ func TestAPinInsideALargerStringPasses(t *testing.T) {
 	catalog := loadCatalog(t)
 	revision := currentOf(t, &catalog, "pi").CapabilityRevision
 	tree := fstest.MapFS{
-		"go/adapter/pi/session_test.go": {Data: []byte(fmt.Sprintf("package pi\n\nconst frame = %q\n", `{"revision":"`+revision+`"}`))},
+		"go/adapter/pi/session_test.go":  {Data: []byte(fmt.Sprintf("package pi\n\nconst frame = %q\n", `{"revision":"`+revision+`"}`))},
 		"zig/src/adapter/pi/session.zig": {Data: []byte("const frame =\n    \\\\\"" + revision + "\"\n;\n")},
 		"zig/src/adapter/pi/notes.txt":   {Data: []byte(`"` + revision + `"`)},
 	}
