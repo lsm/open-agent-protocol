@@ -339,6 +339,34 @@ pub fn parseToolChoice(arena: std.mem.Allocator, text: []const u8) error{ OutOfM
     return choice;
 }
 
+pub fn toolChoiceDefect(arena: std.mem.Allocator, text: []const u8) error{OutOfMemory}![]const u8 {
+    const generic = "tool_choice is not the typed policy";
+    const document = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{ .allocate = .alloc_always }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return generic;
+    };
+    if (document == .null) return "tool_choice is null, which is not the typed policy";
+    if (document != .object) return generic;
+    var it = document.object.iterator();
+    while (it.next()) |entry| {
+        const known = std.mem.eql(u8, entry.key_ptr.*, "allowed") or std.mem.eql(u8, entry.key_ptr.*, "disallowed");
+        if (!known) return std.fmt.allocPrint(arena, "{s}: json: unknown field \"{s}\"", .{ generic, entry.key_ptr.* });
+        const value = entry.value_ptr.*;
+        if (value == .null) continue;
+        if (value != .array) return generic;
+        for (value.array.items) |item| {
+            if (item != .string) return generic;
+        }
+    }
+    const allowed = document.object.get("allowed");
+    const disallowed = document.object.get("disallowed");
+    if (allowed == null and disallowed == null) return "tool_choice carries neither allowed nor disallowed";
+    if (allowed != null and disallowed != null) return "tool_choice allowed and disallowed are mutually exclusive";
+    if (allowed) |value| if (value == .null) return "tool_choice allowed is null, which is not a list of tool names";
+    if (disallowed) |value| if (value == .null) return "tool_choice disallowed is null, which is not a list of tool names";
+    return generic;
+}
+
 pub const QuestionKind = enum { text, single_choice, multi_choice };
 
 pub const Question = struct {

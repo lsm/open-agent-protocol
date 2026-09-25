@@ -434,7 +434,7 @@ pub const Session = struct {
             const parsed = contract.parseToolChoice(arena, text) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 error.InvalidPolicy => {
-                    refusal.* = .{ .feature = "run.tool_selection", .reason = contract.reason_unsatisfiable, .detail = "tool_choice is not the typed policy" };
+                    refusal.* = .{ .feature = "run.tool_selection", .reason = contract.reason_unsatisfiable, .detail = try contract.toolChoiceDefect(arena, text) };
                     return error.UnsupportedFeature;
                 },
             };

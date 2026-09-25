@@ -344,13 +344,13 @@ pub const Endpoint = struct {
 
     fn open(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.SessionOpenRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
         try contract.refuseUnadvertisedOpen(descriptor, payload, refusal);
+        const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         if (payload.session_id) |requested| {
             if (self.find(requested) != null) {
                 const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{requested});
                 return self.deny("session_exists", message, &.{});
             }
         }
-        const tool_sources_json = try self.resolveAttachments(arena, payload.tool_sources_json, refusal);
         try self.entries.ensureUnusedCapacity(self.allocator, 1);
         const session = try self.adapter.open(arena, .{
             .session_id = payload.session_id orelse "",
