@@ -655,8 +655,10 @@ because nothing settles the run between the prompt and its answer, and
 - The transport: sockets, the 250 ms subscription grace and the pump
   goroutine. The codec they call is ported and pinned.
 - The state projection (`State`, `active_runs`, `as_of.settled`, the
-  transcript cursor), the journal and `Resume`, and `Close`. The corpus driver
-  refuses a case that declares `replay_after`, and none does.
+  transcript cursor) and `Close` are carried by the served backend. It keeps
+  no journal of its own: the `oapx` endpoint's 256-event journal answers
+  `run.resume` and `run.replay`, as the descriptor's `degraded` level says.
+  The corpus driver refuses a case that declares `replay_after`, and none does.
 - Request-level refusal of unadvertised controls and message shapes. That is
   the adapter contract's job, and `submit` takes the text and delivery.
 
