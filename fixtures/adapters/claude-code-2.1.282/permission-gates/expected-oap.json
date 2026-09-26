@@ -1,0 +1,458 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "running",
+      "model_id": "claude-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "arguments_json": {
+        "command": "touch /tmp/x"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-7",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash"
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "in_reply_to": "event-6",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.requested",
+    "id": "event-9",
+    "payload": {
+      "interaction_id": "interaction-8",
+      "requested_by": "claude-code.cli",
+      "responded_by": "user",
+      "session_id": "session",
+      "run_id": "run-3",
+      "title": "Use Bash",
+      "description": "touch /tmp/x",
+      "questions": [
+        {
+          "id": "decision",
+          "prompt": "Bash {\"command\":\"touch /tmp/x\"}",
+          "kind": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "id": "allow",
+              "label": "Allow"
+            },
+            {
+              "id": "deny",
+              "label": "Deny"
+            }
+          ]
+        }
+      ],
+      "allow_cancel": true
+    },
+    "sequence": 4,
+    "timestamp_ms": 6,
+    "session_id": "session",
+    "run_id": "run-3",
+    "turn_id": "interaction-8",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.status.updated",
+    "id": "event-10",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "waiting_for_input",
+      "pending_user_input_id": "interaction-8",
+      "updated_at_ms": 7
+    },
+    "sequence": 5,
+    "timestamp_ms": 8,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.resolved",
+    "id": "event-11",
+    "payload": {
+      "interaction_id": "interaction-8",
+      "requested_by": "claude-code.cli",
+      "responded_by": "user",
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "submitted",
+      "answers": [
+        {
+          "question_id": "decision",
+          "selected_option_ids": [
+            "allow"
+          ]
+        }
+      ]
+    },
+    "sequence": 6,
+    "timestamp_ms": 9,
+    "in_reply_to": "event-9",
+    "session_id": "session",
+    "run_id": "run-3",
+    "turn_id": "interaction-8",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.status.updated",
+    "id": "event-12",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "running",
+      "updated_at_ms": 10
+    },
+    "sequence": 7,
+    "timestamp_ms": 11,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-13",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "result": "(Bash completed with no output)"
+    },
+    "sequence": 8,
+    "timestamp_ms": 12,
+    "in_reply_to": "event-7",
+    "session_id": "session",
+    "run_id": "run-3",
+    "tool_call_id": "tool-call-5",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-14",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "final_response": {
+        "id": "message-2",
+        "role": "assistant",
+        "content": "allowed"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      },
+      "duration_ms": 130
+    },
+    "sequence": 9,
+    "timestamp_ms": 13,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-18",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-17",
+      "status": "running",
+      "model_id": "claude-sonnet-4-5",
+      "started_at_ms": 14
+    },
+    "sequence": 1,
+    "timestamp_ms": 15,
+    "session_id": "session",
+    "run_id": "run-17",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-20",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-17",
+      "tool_call_id": "tool-call-19",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "arguments_json": {
+        "command": "rm -rf /tmp/y"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 16,
+    "session_id": "session",
+    "run_id": "run-17",
+    "tool_call_id": "tool-call-19",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-21",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-17",
+      "tool_call_id": "tool-call-19",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash"
+    },
+    "sequence": 3,
+    "timestamp_ms": 17,
+    "in_reply_to": "event-20",
+    "session_id": "session",
+    "run_id": "run-17",
+    "tool_call_id": "tool-call-19",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.requested",
+    "id": "event-23",
+    "payload": {
+      "interaction_id": "interaction-22",
+      "requested_by": "claude-code.cli",
+      "responded_by": "user",
+      "session_id": "session",
+      "run_id": "run-17",
+      "title": "Use Bash",
+      "questions": [
+        {
+          "id": "decision",
+          "prompt": "Bash {\"command\":\"rm -rf /tmp/y\"}",
+          "kind": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "id": "allow",
+              "label": "Allow"
+            },
+            {
+              "id": "deny",
+              "label": "Deny"
+            }
+          ]
+        }
+      ],
+      "allow_cancel": true
+    },
+    "sequence": 4,
+    "timestamp_ms": 18,
+    "session_id": "session",
+    "run_id": "run-17",
+    "turn_id": "interaction-22",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.status.updated",
+    "id": "event-24",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-17",
+      "status": "waiting_for_input",
+      "pending_user_input_id": "interaction-22",
+      "updated_at_ms": 19
+    },
+    "sequence": 5,
+    "timestamp_ms": 20,
+    "session_id": "session",
+    "run_id": "run-17",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.resolved",
+    "id": "event-25",
+    "payload": {
+      "interaction_id": "interaction-22",
+      "requested_by": "claude-code.cli",
+      "responded_by": "user",
+      "session_id": "session",
+      "run_id": "run-17",
+      "status": "submitted",
+      "answers": [
+        {
+          "question_id": "decision",
+          "selected_option_ids": [
+            "deny"
+          ]
+        }
+      ]
+    },
+    "sequence": 6,
+    "timestamp_ms": 21,
+    "in_reply_to": "event-23",
+    "session_id": "session",
+    "run_id": "run-17",
+    "turn_id": "interaction-22",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.status.updated",
+    "id": "event-26",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-17",
+      "status": "running",
+      "updated_at_ms": 22
+    },
+    "sequence": 7,
+    "timestamp_ms": 23,
+    "session_id": "session",
+    "run_id": "run-17",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.failed",
+    "id": "event-27",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-17",
+      "tool_call_id": "tool-call-19",
+      "requested_by": "claude-code.cli",
+      "execution_owner": "claude-code",
+      "source": "claude-code-native",
+      "name": "Bash",
+      "error": {
+        "code": "claude_tool_error",
+        "message": "Denied by the operator"
+      }
+    },
+    "sequence": 8,
+    "timestamp_ms": 24,
+    "in_reply_to": "event-21",
+    "session_id": "session",
+    "run_id": "run-17",
+    "tool_call_id": "tool-call-19",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-28",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-17",
+      "final_response": {
+        "id": "message-16",
+        "role": "assistant",
+        "content": "denied"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 7,
+        "output_tokens": 5,
+        "total_tokens": 12
+      },
+      "duration_ms": 130
+    },
+    "sequence": 9,
+    "timestamp_ms": 25,
+    "session_id": "session",
+    "run_id": "run-17",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  }
+]

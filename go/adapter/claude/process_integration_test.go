@@ -26,7 +26,7 @@ const (
 
 func verifiedClaudeCLI(t *testing.T) string {
 	t.Helper()
-	binary := adaptertest.VerifiedBinary(t, "OAP_CLAUDE_BIN", "OAP_CLAUDE_SHA256", "the pinned claude binary (2.1.280)")
+	binary := adaptertest.VerifiedBinary(t, "OAP_CLAUDE_BIN", "OAP_CLAUDE_SHA256", "the pinned claude binary (2.1.282)")
 	return binary
 }
 
@@ -47,7 +47,7 @@ func newPinnedClaude(t *testing.T, config Config) *Adapter {
 
 func TestClaudeProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_CLAUDE_SMOKE") != "1" {
-		t.Skip("set OAP_CLAUDE_SMOKE=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_SMOKE=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.282 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	root := t.TempDir()
 	implementation := newPinnedClaude(t, Config{Environment: claudeEnvironment(t, root, ""), WorkingDirectory: filepath.Join(root, "work"), Tools: UnrestrictedTools()})
@@ -85,7 +85,7 @@ func TestClaudeProcessAgainstMessagesMock(t *testing.T) {
 		t.Skip("skipping opt-in Claude Code process integration in short mode")
 	}
 	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
-		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.282 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	mock := providertest.New(t, providertest.Config{AnthropicKey: claudeMockSecret})
 	mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
@@ -182,7 +182,7 @@ func TestClaudeProcessReadOnlyReviewCompletesWithoutAGate(t *testing.T) {
 		t.Skip("skipping opt-in Claude Code process integration in short mode")
 	}
 	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
-		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.282 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	root := t.TempDir()
 	work := filepath.Join(root, "work")
@@ -329,7 +329,7 @@ func TestClaudeProcessMentionReachesTheProviderOnlyWhenPromptsExpand(t *testing.
 		t.Skip("skipping opt-in Claude Code process integration in short mode")
 	}
 	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
-		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.282 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	for _, expand := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ExpandPrompts=%v", expand), func(t *testing.T) {
@@ -409,7 +409,7 @@ func TestClaudeProcessExcludedToolIsRefusedByPolicy(t *testing.T) {
 		t.Skip("skipping opt-in Claude Code process integration in short mode")
 	}
 	if os.Getenv("OAP_CLAUDE_INTEGRATION") != "1" {
-		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_INTEGRATION=1 with absolute OAP_CLAUDE_BIN (pinned claude 2.1.282 binary) to run; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	for name, posture := range map[string]ToolPosture{"pre-approved": AllowTools("Bash"), "unrestricted": UnrestrictedTools()} {
 		t.Run(name, func(t *testing.T) {
