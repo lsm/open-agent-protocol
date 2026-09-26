@@ -735,6 +735,7 @@ Decisions:
 - [0032 — go and zig are peers, and the specification decides](decisions/0032-go-and-zig-are-peers.md) (accepted)
 - [0033 — harness pins are data](decisions/0033-harness-pins-are-data.md) (proposed)
 - [0034 — an unpublished catalog is unknown](decisions/0034-an-unpublished-catalog-is-unknown.md) (accepted)
+- [0035 — a presentation layer is not evidence for its own profile](decisions/0035-a-presentation-layer-is-not-evidence-for-its-own-profile.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted. A record's own `Status:` line is authoritative; this table
