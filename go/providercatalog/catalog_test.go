@@ -46,7 +46,8 @@ func TestLoadRefusesARepeatedMember(t *testing.T) {
 }
 
 func TestCheckNamesADuplicateRow(t *testing.T) {
-	findings := Check(Catalog{Providers: []Provider{{ID: "kimi"}, {ID: "kimi"}, {Endpoints: []Endpoint{{BaseURL: "https://api.kimi.com/coding"}}}}})
+	rows := []Provider{{ID: "kimi"}, {ID: "kimi"}, {ID: "kimi", Endpoints: []Endpoint{{BaseURL: "https://api.kimi.com/coding"}}}}
+	findings := Check(Catalog{Providers: rows})
 	codes := map[string]int{}
 	for _, finding := range findings {
 		codes[finding.Code]++
@@ -57,8 +58,18 @@ func TestCheckNamesADuplicateRow(t *testing.T) {
 	if codes[CodeEndpointLone] != 1 {
 		t.Fatalf("wire findings = %d, want 1: %v", codes[CodeEndpointLone], findings)
 	}
+	if codes[CodeMissingID] != 0 {
+		t.Fatalf("missing-id findings = %d, want 0: %v", codes[CodeMissingID], findings)
+	}
 	if len(Check(Catalog{Providers: []Provider{{ID: "kimi"}}})) != 0 {
 		t.Fatal("a sound catalog produced a finding")
+	}
+}
+
+func TestCheckNamesARowWithNoID(t *testing.T) {
+	findings := Check(Catalog{Providers: []Provider{{}}})
+	if len(findings) != 1 || findings[0].Code != CodeMissingID {
+		t.Fatalf("findings = %v, want one missing id", findings)
 	}
 }
 

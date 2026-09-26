@@ -200,21 +200,21 @@ func zigLiterals(tree fs.FS, name string) []sourceLiteral {
 		trimmed := strings.TrimSpace(line)
 		if content, ok := strings.CutPrefix(trimmed, `\\`); ok {
 			if multiline == nil {
-				start = i + 1
+				start = i
 			}
 			multiline = append(multiline, content)
 			continue
 		}
 		if multiline != nil {
-			literals = append(literals, sourceLiteral{text: strings.Join(multiline, "\n"), line: start, inTest: inTest[start]})
+			literals = append(literals, sourceLiteral{text: strings.Join(multiline, "\n"), line: start + 1, inTest: inTest[start]})
 			multiline = nil
 		}
 		for _, match := range zigString.FindAllStringSubmatch(line, -1) {
-			literals = append(literals, sourceLiteral{text: match[1], line: i + 1, inTest: inTest[i+1]})
+			literals = append(literals, sourceLiteral{text: match[1], line: i + 1, inTest: inTest[i]})
 		}
 	}
 	if multiline != nil {
-		literals = append(literals, sourceLiteral{text: strings.Join(multiline, "\n"), line: start, inTest: inTest[start]})
+		literals = append(literals, sourceLiteral{text: strings.Join(multiline, "\n"), line: start + 1, inTest: inTest[start]})
 	}
 	return literals
 }
