@@ -1,3 +1,4 @@
 [
+  {"index":8,"type":"event/thinking.delta","reason":"activity spinner text from thinking_callback; presentation, not reasoning; no OAP projection"},
   {"index":9,"type":"event/message.interim","reason":"interim commentary; already-streamed scrubbed text; no OAP projection"}
 ]

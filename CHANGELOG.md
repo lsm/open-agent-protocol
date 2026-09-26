@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Its state reports the last run sequence as `transcript_cursor`. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
 - `oapx serve agent --backend claude` mints ids in `goap`'s order (turn, message, run) with the message id as `submission_id`, suffixes control request ids with four random bytes as `goap` does, and reports `claude_native_session_id` metadata and the last run sequence as `transcript_cursor` in session state. The Claude parity fixture covers a permission gate answered allow.
 
+### Fixed
+
+- The Hermes adapter no longer projects the gateway's `thinking.delta` as reasoning, in Go or Zig. The event carries the activity spinner (`"{face} {verb}..."`, or `""` to clear it), not model reasoning, so it is now observed-only; `reasoning.delta` is still projected. Recorded in [`research/hermes-thinking-delta-note.md`](research/hermes-thinking-delta-note.md).
+
 ### Changed
 
 - `oapx serve agent --backend pi` handles Pi dialogs as the Go adapter does: one raised before `agent_start` surfaces once the run starts, one outside a run is ignored, and one still open at settlement resolves `cancelled` without an `extension_ui_response`. Its `run.started` now names the model, as Go's does.
@@ -21,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The DeepSeek Harness adapter moves to `dsh-v0.1.7-rc.2` (`477b4f4`) in Go and Zig ([ledger](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md)). A `tool/result` now carries a tool-role message, so `action.call.completed.result` is the result blocks themselves instead of a wrapping `tool-result` block. Message sources are producer-declared kinds, and only a bare `{kind: "user"}` proves ownership. `developer/message` is observed-only. The corpus moves to `fixtures/adapters/deepseek-harness-dsh-v0.1.7-rc.2`, with `tool-lifecycle` and `injected-origin` re-recorded against the runtime. The capability revision becomes `deepseek-harness-dsh-v0.1.7-rc.2-oap-v1`, which the Zig backend serves too. `dsh-v0.1.6-alpha.2` is retired.
 
 - Harness pins are written once, in `harnesses/<id>.json`. The Go adapters read them from the embedded catalog and the Zig adapters from a module `build.zig` generates from it; the catalog gains `oapx_capability_revision` for the Zig served backends. `goap check` now fails when Go or Zig source spells a pin value. The Zig served backends for Pi and DeepSeek now report the catalog's endpoint version (`v0.85.1`, `0.0.1`), as the Go adapters do, instead of `0.85.1` and `47f9438`.
+- The OpenCode pin moves from `v1.18.29` to `v1.18.32` (revision `opencode-v1.18.32-oap-v2`, which both trees serve); v1.18.29 is retired. The session API, its SSE events and every corpus-cited source blob are unchanged between the tags, so the fifteen corpus cases carry forward with their native lines untouched and neither adapter changes. See [`research/opencode-v1.18.32-mapping.md`](research/opencode-v1.18.32-mapping.md).
 
 ### Removed
 
@@ -28,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `oapx serve agent --backend <acp entry>` writes its JSON-RPC frames with Go's escaping of `<`, `>`, `&` and U+2028/2029, so the bytes an ACP agent reads match `goap`'s; the parity scenario now sends a prompt carrying all of them.
 - The in-memory reference adapter, in Go and in `oapx`, refuses a resolution addressed to a queued run that has not started, which could otherwise complete it with no `run.started`.
 - `goap serve agent` honours an open's elections instead of dropping them: `tool_sources` are gated and resolved as the hub resolves them, `subscribe` is gated, and a compound `message` is refused `unsupported_feature` (`field: message`), as `oapx` refuses it. Before, all three were accepted and silently ignored.
 
