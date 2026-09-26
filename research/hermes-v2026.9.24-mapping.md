@@ -313,3 +313,32 @@ behind a `hermes` registry entry. Where it differs from the Go adapter:
 - It advertises the Go adapter's revision, with `run.resume` and `run.replay`
   `degraded` as Go does: the `oapx` endpoint keeps a bounded journal of 256
   events per session and answers the replay control from it.
+
+## Model-provider settings at this pin
+
+Hermes names its provider in `~/.hermes/config.yaml` under `model`, as a mapping
+of `provider`, `default` (the model), `base_url` and `api_mode`; a fresh install
+carries `model: ""` until `hermes setup` or `hermes model` writes the mapping. It
+also reads one environment variable per provider, and the dashboard's Models page
+writes the same file.
+
+| Setting | What it sets |
+| --- | --- |
+| `config.yaml` `model.provider` | the provider id, e.g. `openrouter`, `openai`, `glm` |
+| `model.default` | the model id |
+| `model.base_url` | an endpoint override for that provider |
+| `model.api_mode` | the wire the provider is reached with |
+| `OPENAI_API_KEY` + `OPENAI_BASE_URL` | a custom OpenAI-compatible endpoint, the documented pair for a gateway or a local server |
+| `AI_GATEWAY_API_KEY` + `AI_GATEWAY_BASE_URL` | Vercel AI Gateway (default `https://ai-gateway.vercel.sh/v1`) |
+| `OPENROUTER_API_KEY` + `OPENROUTER_BASE_URL` | OpenRouter |
+| `GLM_API_KEY` | z.ai / ZhipuAI |
+| `HERMES_CODEX_BASE_URL` | routes the `openai-codex` subscription provider through a proxy |
+
+Documented at this pin in `website/docs/user-guide/configuring-models.md` and
+`website/docs/reference/environment-variables.md`.
+
+Two shapes matter for a catalog row. A row on the OpenAI-compatible wire is
+routable through the documented `OPENAI_API_KEY` + `OPENAI_BASE_URL` pair, which
+is the pair the environment reference names for exactly that case; a row on the
+Anthropic wire is not, because the reference documents no Anthropic-compatible
+pair. `model.base_url` is a secondary override under a provider that exists.
