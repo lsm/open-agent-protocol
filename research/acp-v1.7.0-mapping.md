@@ -882,6 +882,6 @@ What differs from the Go adapter:
 | Area | oapx | Go adapter | Why |
 | --- | --- | --- | --- |
 | Request bound | `initialize` and `session/new` are awaited at most 60 s, then the open is refused `internal` | context-bound | The endpoint serves one request at a time. |
-| Session memory | The reducer's arena holds the session's frames until it closes | garbage-collected | No compaction yet. |
+| Session memory | Once a settled session has grown 256 KiB past its last compaction, its arena is rebuilt from what later runs consult: the native session id, the attached sources, each settled run’s status, the transcript cursor, and a stub per tool and permission gate so a reused tool id and a late answer are still refused | garbage-collected | Bounded process memory. |
 | Configuration | No built-in entry: `--config` must name the agent's `executable`; `working_directory` defaults to the current directory and must be absolute | `goap serve` needs the same entry | ACP names a protocol, not an agent. |
 
