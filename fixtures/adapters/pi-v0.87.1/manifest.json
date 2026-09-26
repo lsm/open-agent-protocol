@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "adapter": "pi-rpc-stdio",
+  "tag": "v0.87.1",
+  "commit": "f07218c4d4bbc12bef056a7058c3dd49dfe41abe",
+  "commit_tree": "7053e72909a45c2e400f0506c4aa98e53b26f429",
+  "sources": {
+    "rpc_types_blob": "1cbd49a898382f0fbb409a7d241ad694b2f59e0d",
+    "rpc_mode_blob": "f4857ffb2e0b3adaa56021e3a4a4e174d14eaefc",
+    "agent_session_blob": "338d0e0d01cde75f2a3a2e56f88b747072de748a",
+    "session_manager_blob": "fd87a2d886bd8a0b5c6afd2f6d97d20654eb52e3",
+    "agent_types_blob": "8da843f5619ce6bd0251375e9e21c18fa799f2e3",
+    "rpc_entry_blob": "11059a8d47f6d4f22469802f8dca0a6af6c8db88",
+    "cli_args_blob": "a358798078d74a6de2bbf272f3c1a5041f479c03"
+  },
+  "cases": [
+    {
+      "id": "completed-text",
+      "path": "completed-text",
+      "ledger_fixtures": [
+        "initialize-minimal",
+        "message-admitted",
+        "completed-text"
+      ]
+    },
+    {
+      "id": "streaming-deltas",
+      "path": "streaming-deltas",
+      "ledger_fixtures": [
+        "streaming-deltas"
+      ]
+    },
+    {
+      "id": "tool-lifecycle",
+      "path": "tool-lifecycle",
+      "ledger_fixtures": [
+        "multi-turn-tools",
+        "tool-completed",
+        "tool-failed",
+        "tool-progress",
+        "tool-parallel-order"
+      ]
+    },
+    {
+      "id": "cancel-settled",
+      "path": "cancel-settled",
+      "ledger_fixtures": [
+        "cancel-settled"
+      ]
+    },
+    {
+      "id": "retry-compaction",
+      "path": "retry-compaction",
+      "ledger_fixtures": [
+        "error-retry",
+        "compaction"
+      ]
+    },
+    {
+      "id": "extension-dialog",
+      "path": "extension-dialog",
+      "ledger_fixtures": [
+        "extension-dialog"
+      ]
+    },
+    {
+      "id": "native-controls",
+      "path": "native-controls",
+      "ledger_fixtures": [
+        "steer-queued",
+        "steer-injected",
+        "follow-up-run",
+        "reconcile-state",
+        "entries-since",
+        "switch-session",
+        "fork-tree",
+        "no-implied-replay"
+      ]
+    },
+    {
+      "id": "process-exit",
+      "path": "process-exit",
+      "ledger_fixtures": [
+        "process-exit"
+      ]
+    },
+    {
+      "id": "prompt-rejected",
+      "path": "prompt-rejected",
+      "ledger_fixtures": [
+        "message-rejected"
+      ]
+    },
+    {
+      "id": "malformed-command",
+      "path": "malformed-command",
+      "ledger_fixtures": [
+        "malformed-command"
+      ]
+    },
+    {
+      "id": "system-message",
+      "path": "system-message",
+      "ledger_fixtures": [
+        "system-message"
+      ]
+    }
+  ]
+}

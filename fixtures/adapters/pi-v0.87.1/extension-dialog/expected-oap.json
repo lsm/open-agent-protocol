@@ -1,0 +1,152 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-2",
+      "status": "running",
+      "started_at_ms": 3
+    },
+    "sequence": 1,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.87.1-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.requested",
+    "id": "event-7",
+    "payload": {
+      "interaction_id": "interaction-6",
+      "requested_by": "pi.rpc",
+      "responded_by": "user",
+      "session_id": "session",
+      "run_id": "run-2",
+      "title": "Proceed?",
+      "description": "Continue",
+      "questions": [
+        {
+          "id": "value",
+          "prompt": "Continue",
+          "kind": "single_choice",
+          "required": true,
+          "options": [
+            {
+              "id": "yes",
+              "label": "Yes"
+            },
+            {
+              "id": "no",
+              "label": "No"
+            }
+          ]
+        }
+      ],
+      "allow_cancel": true
+    },
+    "sequence": 2,
+    "timestamp_ms": 5,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.87.1-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.status.updated",
+    "id": "event-8",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-2",
+      "status": "waiting_for_input",
+      "pending_user_input_id": "interaction-6",
+      "updated_at_ms": 6
+    },
+    "sequence": 3,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.87.1-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "user.input.resolved",
+    "id": "event-9",
+    "payload": {
+      "interaction_id": "interaction-6",
+      "requested_by": "pi.rpc",
+      "responded_by": "user",
+      "session_id": "session",
+      "run_id": "run-2",
+      "status": "submitted",
+      "answers": [
+        {
+          "question_id": "value",
+          "selected_option_ids": [
+            "yes"
+          ]
+        }
+      ]
+    },
+    "sequence": 4,
+    "timestamp_ms": 8,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.87.1-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.status.updated",
+    "id": "event-10",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-2",
+      "status": "running",
+      "updated_at_ms": 9
+    },
+    "sequence": 5,
+    "timestamp_ms": 10,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.87.1-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-11",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-2",
+      "final_response": {
+        "id": "message-3",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "confirmed"
+          }
+        ]
+      },
+      "stop_reason": "stop"
+    },
+    "sequence": 6,
+    "timestamp_ms": 11,
+    "session_id": "session",
+    "run_id": "run-2",
+    "capability_revision": "pi-v0.87.1-oap-v1"
+  }
+]
