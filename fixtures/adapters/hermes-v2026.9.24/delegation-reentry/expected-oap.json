@@ -1,0 +1,156 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-c",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "status": "running",
+      "model_id": "hermes-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.requested",
+    "id": "event-e",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "tool_call_id": "tool-call-d",
+      "requested_by": "hermes.gateway",
+      "execution_owner": "hermes",
+      "name": "delegate_task",
+      "arguments_json": {
+        "context": "probe",
+        "goal": "scan"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-b",
+    "tool_call_id": "tool-call-d",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.started",
+    "id": "event-f",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "tool_call_id": "tool-call-d",
+      "requested_by": "hermes.gateway",
+      "execution_owner": "hermes",
+      "name": "delegate_task"
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "in_reply_to": "event-e",
+    "session_id": "session",
+    "run_id": "run-b",
+    "tool_call_id": "tool-call-d",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "action.call.completed",
+    "id": "event-g",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "tool_call_id": "tool-call-d",
+      "requested_by": "hermes.gateway",
+      "execution_owner": "hermes",
+      "name": "delegate_task",
+      "result": {
+        "status": "dispatched",
+        "mode": "background",
+        "count": 1,
+        "delegation_id": "deleg_25d7b394",
+        "goals": [
+          "scan"
+        ],
+        "note": "Subagent is running in the background; its full result re-enters the conversation as a new message when it finishes. Results are delivered only after you END YOUR TURN: do anything that does not depend on it, then stop with a one-line status. Do not poll its transcript or artifacts to wait for it.",
+        "subagent_ids": [
+          "sa-0-ef00ac91"
+        ],
+        "control_hint": "While a child runs you can orchestrate it live with this same tool: delegate_task(action='list') to see live children, action='steer' with subagent_id + message to redirect one, action='stop' with subagent_id to end one early.",
+        "live_transcripts": [
+          "/tmp/oap-hermes-probe/runs/run-p08w3wpq/home/.hermes/cache/delegation/live/deleg_25d7b394/task-0.log"
+        ],
+        "live_transcripts_hint": "Each subagent streams a human-readable transcript of its operations to the file listed above (append-only, one per task). Read or `tail -f` these paths at any time to watch a child work while it runs."
+      }
+    },
+    "sequence": 4,
+    "timestamp_ms": 6,
+    "in_reply_to": "event-f",
+    "session_id": "session",
+    "run_id": "run-b",
+    "tool_call_id": "tool-call-d",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-h",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "message_id": "message-a",
+      "part": {
+        "type": "text",
+        "text": "\n\nchild summary"
+      }
+    },
+    "sequence": 5,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-i",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "final_response": {
+        "id": "message-a",
+        "role": "assistant",
+        "content": "child summary"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 6,
+        "output_tokens": 10,
+        "total_tokens": 16
+      }
+    },
+    "sequence": 6,
+    "timestamp_ms": 8,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  }
+]

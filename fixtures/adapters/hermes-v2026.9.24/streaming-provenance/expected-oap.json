@@ -1,0 +1,111 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-c",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "status": "running",
+      "model_id": "hermes-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-d",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "message_id": "message-a",
+      "part": {
+        "type": "text",
+        "text": "Hel"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-e",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "message_id": "message-a",
+      "part": {
+        "type": "text",
+        "text": "lo"
+      }
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-f",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "message_id": "message-a",
+      "part": {
+        "type": "reasoning",
+        "reasoning": "think"
+      }
+    },
+    "sequence": 4,
+    "timestamp_ms": 6,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-g",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-b",
+      "final_response": {
+        "id": "message-a",
+        "role": "assistant",
+        "content": "done"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 3,
+        "output_tokens": 5,
+        "total_tokens": 8
+      }
+    },
+    "sequence": 5,
+    "timestamp_ms": 7,
+    "session_id": "session",
+    "run_id": "run-b",
+    "capability_revision": "hermes-v2026.9.24-oap-v1"
+  }
+]
