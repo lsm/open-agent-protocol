@@ -117,6 +117,10 @@
             "$ref": "#/$defs/nonEmptyString"
           }
         },
+        "alias_of": {
+          "description": "The provider whose implementation serves this id, when the reserved id names a variant of another vendor's API rather than a vendor of its own. A lookup this row cannot answer is asked of that row, which is how one default endpoint serves two registered API ids.",
+          "$ref": "#/$defs/nonEmptyString"
+        },
         "region_env": {
           "description": "Environment variable naming the region, for a provider with one endpoint per region.",
           "$ref": "#/$defs/nonEmptyString"

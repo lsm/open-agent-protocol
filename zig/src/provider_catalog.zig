@@ -47,6 +47,14 @@ pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
 }
 
 pub fn baseUrl(id: []const u8, wire: []const u8, region: ?[]const u8) ?[]const u8 {
+    if (endpointOf(id, wire, region)) |url| return url;
+    const row = provider(id) orelse return null;
+    const alias = row.alias_of orelse return null;
+    if (std.mem.eql(u8, alias, id)) return null;
+    return endpointOf(alias, wire, region);
+}
+
+fn endpointOf(id: []const u8, wire: []const u8, region: ?[]const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     for (row.endpoints) |endpoint| {
         if (!std.mem.eql(u8, endpoint.wire, wire)) continue;
@@ -110,6 +118,13 @@ test "a regional provider answers no endpoint without naming its region" {
             );
         }
     }
+}
+
+test "a reserved id naming a variant is answered by the row it stands for" {
+    const generative = baseUrl("google", "google-generative-ai", null).?;
+    try std.testing.expectEqualStrings(generative, baseUrl("google-gemini-cli", "google-gemini-cli", null).?);
+    try std.testing.expect(baseUrl("google-gemini-cli", "anthropic-messages", null) == null);
+    try std.testing.expect(baseUrl("kimi", "openai-completions", null) == null);
 }
 
 test "a base URL is answered for the wire that names it and for no other" {

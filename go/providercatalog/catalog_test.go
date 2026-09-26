@@ -62,6 +62,13 @@ func TestCheckNamesADuplicateRow(t *testing.T) {
 	}
 }
 
+func TestCheckNamesARowThatStandsForItself(t *testing.T) {
+	findings := Check(Catalog{Providers: []Provider{{ID: "kimi", AliasOf: "kimi"}}})
+	if len(findings) != 1 || findings[0].Code != CodeAliasSelf {
+		t.Fatalf("findings = %v, want one self alias", findings)
+	}
+}
+
 func TestCheckNamesARowWithNoID(t *testing.T) {
 	findings := Check(Catalog{Providers: []Provider{{}}})
 	if len(findings) != 1 || findings[0].Code != CodeMissingID {

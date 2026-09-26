@@ -68,7 +68,7 @@
       "id": "google-gemini-cli",
       "display_name": "Google Gemini CLI",
       "wires": ["google-gemini-cli"],
-      "base_url_source": "credential",
+      "alias_of": "google",
       "docs": "https://github.com/google-gemini/gemini-cli"
     },
     {
@@ -87,7 +87,7 @@
       "auth": ["none", "api_key"],
       "credential_env": ["OLLAMA_API_KEY"],
       "base_url_env": ["OLLAMA_BASE_URL"],
-      "wires": ["openai-completions"],
+      "wires": ["ollama"],
       "base_url_source": "local_default",
       "docs": "https://ollama.com/docs/api"
     },

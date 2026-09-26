@@ -34,6 +34,7 @@ type Provider struct {
 	Endpoints     []Endpoint   `json:"endpoints,omitempty"`
 	ModelsPath    string       `json:"models_endpoint,omitempty"`
 	OAuthOrigin   *OAuthOrigin `json:"oauth_origin,omitempty"`
+	AliasOf       string       `json:"alias_of,omitempty"`
 	Docs          string       `json:"docs,omitempty"`
 }
 
