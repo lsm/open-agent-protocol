@@ -118,7 +118,7 @@ All runs used the darwin-arm64 binary above, a temporary `HOME` and
 - **Zig.** `goap conformance --command "oapx serve agent --backend codex"`,
   with `codex` on `PATH` linked to the binary, passes every check but the two
   model-switch checks, as at 8d7cc24; the run settles `run.completed` and the
-  trace names `codex-appserver-0.157.0-oapx-v1` and endpoint version
+  trace names `codex-appserver-0.157.0-oap-v1` and endpoint version
   `00c972ed…`.
 
 Not re-run: approval, file-change, MCP and user-input turns against the real
