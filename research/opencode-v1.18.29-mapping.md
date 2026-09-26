@@ -602,18 +602,13 @@ which is the order Go's nested `awaitQuiescenceLocked` calls settle in.
    after every event. Only the fence's watermark can differ, and dedup by
    durable `seq` makes the fence's result the same unless the stream skipped a
    sequence.
-5. **Token counts.** Go's `uint64(float64)` is implementation-defined for
-   negative and overflowing values. Measured on darwin/arm64 it saturates
-   (negative to 0, at or above 2^64 to the maximum), while on amd64 a negative
-   count wraps. Zig saturates as arm64 does. No case or scenario carries such a
-   count, so both CI platforms agree.
-6. **Decode messages.** A malformed data payload, or a frame that fails a
+5. **Decode messages.** A malformed data payload, or a frame that fails a
    subscription, surfaces its decode error in `run.failed.error.message`. Zig
    reproduces the text for unknown fields (`json: unknown field "x"`),
    duplicate keys, `EOF`, and every message the adapter writes itself. Type
    mismatches and syntax errors carry Zig's own text. No corpus case pins one,
    and the `invalid-data` scenario, an unknown field, matches exactly.
-7. **SSE framing reuses `sse_parser.zig`.** It does the field parsing and data
+6. **SSE framing reuses `sse_parser.zig`.** It does the field parsing and data
    assembly, and the port adds the oracle's strictness: bare CR, an event
    without data, a duplicate `event` or `id`, NUL in `id`, and the per-event
    size limit, which counts comment lines too. `sse_parser` joins data lines
