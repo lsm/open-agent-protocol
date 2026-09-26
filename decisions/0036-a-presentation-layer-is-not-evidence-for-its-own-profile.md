@@ -229,12 +229,13 @@ profile does not decide.
   changes by it. The profile is not executable by this record either, which is
   why the status is `proposed` under 0003's first criterion. Its wire rules are
   a separate record, so either can be amended without reopening the other.
-- `examples/presentation-control-session.json` does not judge the schema.
-  `examples/` is illustrative by project rule — "illustrative JSON bindings for
-  the draft protocol, not conformance tests" — so when a schema and the example
-  disagree, **the draft decides** and the step-1 producer regenerates the
-  example. A schema that breaks the example is a signal to re-read the draft, not
-  evidence that the example is stale.
+- `examples/presentation-control-session.json` judges neither the schema nor the
+  draft. `examples/` is illustrative by project rule — "illustrative JSON bindings
+  for the draft protocol, not conformance tests" — and this example predates the
+  rules Decision 0037 adds: it carries no `epoch` or `intent_id`, and its submit
+  response still carries a `control_request_id` the draft now excludes. Wherever it
+  disagrees with the draft or a schema, **the draft decides**, and the step-1
+  producer regenerates the example.
 - A reader asking why `goap` has no TUI now has a record saying the omission is
   intended and the boundary is the deliverable, rather than a dash in a table.
 
