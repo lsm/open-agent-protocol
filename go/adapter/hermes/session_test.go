@@ -1627,6 +1627,22 @@ func TestAnUnmappedServerRequestIsAnsweredMethodNotFound(t *testing.T) {
 	}
 }
 
+func TestAnUnmappedServerRequestNamingNoSessionIsAnsweredMethodNotFound(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.gateFor("display.install.sudo", "", `{"profile_key":"desktop"}`)
+	answer := f.lastAnswer(t)
+	if answer.id != rpc.StringID("srq-1") || answer.code != -32601 {
+		t.Fatalf("answer = %+v, want a -32601 error for srq-1", answer)
+	}
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events %v", events)
+	}
+}
+
 func TestAServerRequestForAnotherSessionMakesTheSessionUnusable(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)

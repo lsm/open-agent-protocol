@@ -325,10 +325,6 @@ func (s *Session) applyEvent(event *native.Event) {
 }
 
 func (s *Session) applyRequest(request *rpc.IncomingRequest) {
-	if sessionID := native.RequestSessionID(request.Params); sessionID != s.nativeID {
-		s.foreignActivity(fmt.Sprintf("%s request for foreign session %q", request.Method, sessionID))
-		return
-	}
 	if _, ok := request.ID.StringValue(); !ok {
 		s.foreignActivity(fmt.Sprintf("%s request with a non-string id", request.Method))
 		return
@@ -337,6 +333,10 @@ func (s *Session) applyRequest(request *rpc.IncomingRequest) {
 	case native.RequestApproval, native.RequestClarify, native.RequestSudo, native.RequestSecret:
 	default:
 		_ = s.client.RespondError(context.Background(), request, -32601, "method not found")
+		return
+	}
+	if sessionID := native.RequestSessionID(request.Params); sessionID != s.nativeID {
+		s.foreignActivity(fmt.Sprintf("%s request for foreign session %q", request.Method, sessionID))
 		return
 	}
 	s.mu.Lock()

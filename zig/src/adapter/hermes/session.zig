@@ -282,11 +282,6 @@ pub const Reducer = struct {
 
     fn serverRequest(self: *Reducer, method: []const u8, parsed: std.json.Value) !void {
         const params: std.json.Value = if (parsed == .object) (parsed.object.get("params") orelse .null) else .null;
-        const native_id = if (params == .object) stringMember(params.object, "session_id") else "";
-        if (!std.mem.eql(u8, native_id, self.options.native_id)) {
-            try self.disown(try std.fmt.allocPrint(self.allocator(), "{s} request for foreign session {s}", .{ method, goquote.quote(self.allocator(), native_id) }));
-            return;
-        }
         const carried = if (parsed == .object) parsed.object.get("id") else null;
         if (carried == null or carried.? != .string) {
             try self.disown(try std.fmt.allocPrint(self.allocator(), "{s} request with a non-string id", .{method}));
@@ -295,6 +290,11 @@ pub const Reducer = struct {
         const request_id = carried.?.string;
         if (!gateMethod(method)) {
             try self.unanswerable.append(self.allocator(), request_id);
+            return;
+        }
+        const native_id = if (params == .object) stringMember(params.object, "session_id") else "";
+        if (!std.mem.eql(u8, native_id, self.options.native_id)) {
+            try self.disown(try std.fmt.allocPrint(self.allocator(), "{s} request for foreign session {s}", .{ method, goquote.quote(self.allocator(), native_id) }));
             return;
         }
         if (self.unusable) return;
@@ -1772,26 +1772,17 @@ test "a run-scoped event with no run reserved is someone else's, and the rest ar
     try quiet.admit();
 }
 
-test "traffic the pinned protocol never carries disowns the session" {
+test "a gate for another session and a stray notification disown the session; a reply does not" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
 
     var reverse = try openRun(&arena);
     try feed(&reverse, scratch,
-        \\{"jsonrpc":"2.0","id":"srq-7","method":"gateway.ask","params":{}}
+        \\{"jsonrpc":"2.0","id":"srq-7","method":"approval","params":{"session_id":"other001"}}
     );
     try testing.expect(reverse.unusable);
-    try testing.expectEqualStrings("gateway.ask request for foreign session \"\"", payloadAt(&reverse, 1).get("error").?.object.get("message").?.string);
-
-    var unmapped = try openRun(&arena);
-    try feed(&unmapped, scratch,
-        \\{"jsonrpc":"2.0","id":"srq-8","method":"tour","params":{"session_id":"sess0001"}}
-    );
-    try testing.expect(!unmapped.unusable);
-    try testing.expectEqual(@as(usize, 1), unmapped.envelopes.items.len);
-    try testing.expectEqual(@as(usize, 1), unmapped.unanswerable.items.len);
-    try testing.expectEqualStrings("srq-8", unmapped.unanswerable.items[0]);
+    try testing.expectEqualStrings("approval request for foreign session \"other001\"", payloadAt(&reverse, 1).get("error").?.object.get("message").?.string);
 
     var stranger = try openRun(&arena);
     try feed(&stranger, scratch,
@@ -1806,6 +1797,30 @@ test "traffic the pinned protocol never carries disowns the session" {
     );
     try testing.expect(!reply.unusable);
     try testing.expectEqual(@as(usize, 1), reply.envelopes.items.len);
+}
+
+test "a server request the adapter does not map is refused, whatever session it names" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var owned = try openRun(&arena);
+    try feed(&owned, scratch,
+        \\{"jsonrpc":"2.0","id":"srq-8","method":"tour","params":{"session_id":"sess0001"}}
+    );
+    try testing.expect(!owned.unusable);
+    try testing.expectEqual(@as(usize, 1), owned.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 1), owned.unanswerable.items.len);
+    try testing.expectEqualStrings("srq-8", owned.unanswerable.items[0]);
+
+    var unsessioned = try openRun(&arena);
+    try feed(&unsessioned, scratch,
+        \\{"jsonrpc":"2.0","id":"srq-9","method":"display.install.sudo","params":{"session_id":"","profile_key":"desktop"}}
+    );
+    try testing.expect(!unsessioned.unusable);
+    try testing.expectEqual(@as(usize, 1), unsessioned.envelopes.items.len);
+    try testing.expectEqual(@as(usize, 1), unsessioned.unanswerable.items.len);
+    try testing.expectEqualStrings("srq-9", unsessioned.unanswerable.items[0]);
 }
 
 test "a delta carrying no text projects nothing, on either channel that projects" {
