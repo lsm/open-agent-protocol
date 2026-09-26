@@ -123,14 +123,14 @@ attachment is not a way to configure the daemon:
 | A wire-supplied `command` or `args` is refused `unsupported_feature`; name an operator-configured source by id | `TestDaemonRefusesWireSuppliedProcessCredentials` |
 | A `NAME=value` literal in a wire attachment's `environment` is refused; only the bare `NAME` allowlist form is accepted | same test, and `TestCallerEnvironmentNeverNamesAVariableTwice` |
 | A wire-supplied `kind`, `display_name`, `protocol` or `endpoint` on a **configured** source is refused; the operator's value stands | `TestOpenRefusesAWireSuppliedKind`, `TestOpenRefusesAWireSuppliedDescriptorMember` |
-| An id no source is configured under is refused, whatever its `kind` | `TestOpenRefusesAnUnconfiguredIDWhateverItsKind` |
+| An id no source is configured under is refused **only when it claims `process`** — the one kind the daemon would have to supply an executable for. Any other kind passes through to the adapter, which may accept it | `TestOpenRefusesAnUnconfiguredIDWhateverItsKind` — the name reads broader than the rule, and its body pins the opposite for `local`: an unconfigured `local` attachment opens `200` |
 | A configured source is admitted by its bare id, and the daemon supplies the command the registry holds | `TestDaemonFillsTheRegistrysCommand`, `TestOpenOpMatchesHTTP` |
 | The caller's `environment` names extend the operator's list and never replace an entry | `TestCallerEnvironmentNeverNamesAVariableTwice` |
 | The attachment gate reads a *layered* disclosure, so a request may be refused a level the descriptor advertises underneath the top one | `TestOpenReadsAttachmentSupportFromALayer`, `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
 | The capability rung is answered before the open's own constraints | `TestOpenAnswersTheCapabilityRungBeforeItsOwnConstraint` |
 | An adapter's own attachment refusal is relayed, not restated | `TestOpenRelaysTheAdaptersAttachmentRefusal` |
 | A degraded attachment refused without the opt-in is relayed | `TestOpenRelaysADegradedAttachRefusal` |
-| Only what the request cites is attached, and an open citing a stale revision is refused with both revisions named | `TestAttachingOpenPinsOnlyWhatItCites` |
+| Only what the request cites is attached; a stale citation is refused with both revisions named, and an open citing none is admitted | `TestAttachingOpenPinsOnlyWhatItCites` |
 | A probe the daemon could not read is reported as one | `TestOpenReportsAProbeItCouldNotRead` |
 | Every advertising adapter admits tool sources; every unadvertising one refuses | `TestEveryAdapterRefusesUnadvertisedToolSources`, `TestAdvertisingAdaptersAdmitToolSources` |
 
@@ -381,15 +381,23 @@ because they are daemon management rather than an OAP operation.
 The three codes this gate can answer — `unsupported_media_type`,
 `request_too_large` and `request_read` — belong to the transport, not to any
 operation, so they are stated here once rather than repeated in every
-operation's list below. The stdio transport has no counterpart for any of the
-three: its framing failures are defects that stop serving rather than refusals
+operation's list below. Only two are HTTP's own: `unsupported_media_type` and
+`request_read` have no stdio counterpart, because a pipe has no `Content-Type`
+and its read failures are framing defects that stop serving rather than refusals
 the host may retry.
+
+`request_too_large` is the exception and both transports answer it, for the
+same budget. An HTTP body over 16 MiB is refused `413`; a stdio `request`
+envelope over 16 MiB is refused `request_too_large` while the line itself still
+fits the larger frame limit — which is reachable, because the frame limit admits
+2 MiB of wrapper the envelope cap does not. `TestRequestBudgetMatchesHTTP` pins
+both answers, at the budget and one byte over it.
 
 | HTTP rule | pinned by |
 | --- | --- |
 | A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` — **gap G1**: the status only; the code member and the absent-`Content-Type` case are unpinned |
 | A body that cannot be read at all is refused `400 request_read` | **none — gap G10** |
-| A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (the stdio side of the same budget) |
+| A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
 | A `GET /adapters/{name}/capabilities` response cites a daemon-minted correlation id | `TestCapabilitiesEndpoint` |
 | A descriptor carrying no capability revision is refused | `TestCapabilitiesRequiresDescriptorRevision` |
@@ -522,9 +530,10 @@ again before the refusal is sent. No partial-failure vocabulary exists because
 no partial outcome is reachable.
 
 A `subscribe` election takes the ladder every optional feature takes, under the
-`session.open.subscribe` key. A compound open exercising an optional feature
-must cite the active capability revision, or it is refused
-`stale_capabilities`.
+`session.open.subscribe` key. A compound open **citing** the active capability
+revision must cite the current one, or it is refused `stale_capabilities`. An
+open that cites none is admitted and answered with the revision it was admitted
+under — the citation is checked, never required.
 
 | rule | pinned by |
 | --- | --- |
@@ -535,7 +544,7 @@ must cite the active capability revision, or it is refused
 | An unschematic message is refused at the gate | `TestOpenCarryingAnUnschematicMessageIsRefusedAtTheGate` |
 | `subscribe` against an endpoint that never advertised it is refused | `TestOpenRefusesSubscribeAgainstAnEndpointThatNeverAdvertisedIt` |
 | A degraded `subscribe` is refused without the opt-in, and admitted with it | `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
-| An open citing a stale revision is refused `stale_capabilities`, naming both revisions | `TestAttachingOpenPinsOnlyWhatItCites` (the attaching open, end to end on HTTP); **gap G4** — the same comparison on the `subscribe` path, and the stdio op's own mapping of it, are unpinned |
+| An open citing a stale revision is refused `stale_capabilities`, naming both revisions; an open citing none is admitted under the revision it was gated with | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP); **gap G4** — the same comparison on the `subscribe` path, and the stdio op's own mapping of it, are unpinned |
 | An open response that cannot be encoded rolls the session back and says so | `TestOpenRollsBackWhenItsResponseCannotEncode`, `TestAnOpenThatCannotEncodeIsRolledBack` |
 | An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which | `TestAnOpenTheHostNamedIsKeptAndSaidSo` |
 | A submit acknowledgement that will not frame rolls its run back and names the outcome | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement` |
@@ -579,7 +588,8 @@ exceptions stated once here rather than repeated per row:
   not; a port must not produce any of them over HTTP.
 - **The HTTP body gate answers three codes no operation owns.**
   `unsupported_media_type`, `request_too_large` and `request_read`, stated once
-  in [the HTTP rules](#the-http-routes-and-sse-framing).
+  in [the HTTP rules](#the-http-routes-and-sse-framing). `request_too_large` is
+  the one of the three stdio answers too, for the same 16 MiB budget.
 
 ### `adapters`
 
