@@ -61,6 +61,54 @@ type adapterEntry struct {
 	Agent    string `json:"agent"`
 }
 
+func exactMembers(data []byte, allowed ...string) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return err
+	}
+	for name := range members {
+		known := false
+		for _, candidate := range allowed {
+			if name == candidate {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("json: unknown field %q", name)
+		}
+	}
+	return nil
+}
+
+func (file *configFile) UnmarshalJSON(data []byte) error {
+	if err := exactMembers(data, "adapters", "tool_sources"); err != nil {
+		return err
+	}
+	type plain configFile
+	return json.Unmarshal(data, (*plain)(file))
+}
+
+func (entry *adapterEntry) UnmarshalJSON(data []byte) error {
+	if err := exactMembers(data,
+		"type", "executable", "args", "environment", "working_directory", "model",
+		"journal_capacity", "allowed_tools", "unrestricted_tools", "approval_policy",
+		"sandbox", "provider", "max_tokens", "agent_config", "system_prompt", "endpoint", "agent",
+	); err != nil {
+		return err
+	}
+	type plain adapterEntry
+	return json.Unmarshal(data, (*plain)(entry))
+}
+
+func (entry *toolSourceEntry) UnmarshalJSON(data []byte) error {
+	if err := exactMembers(data, "kind", "display_name", "protocol", "endpoint", "command", "args", "environment"); err != nil {
+		return err
+	}
+	type plain toolSourceEntry
+	return json.Unmarshal(data, (*plain)(entry))
+}
+
 type Registry struct {
 	adapters    map[string]base.Adapter
 	toolSources map[string]protocol.ToolSourceAttachment

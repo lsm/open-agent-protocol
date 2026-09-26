@@ -51,6 +51,21 @@ func TestLoadRegistryMemory(t *testing.T) {
 	}
 }
 
+func TestLoadRegistryRefusesCaseVariantMembers(t *testing.T) {
+	for name, document := range map[string]string{
+		"top-level":   `{"Adapters": {}}`,
+		"adapter":     `{"adapters": {"memory": {"Type": "memory"}}}`,
+		"tool source": `{"tool_sources": {"fs": {"Kind": "native"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, document)
+			if _, err := LoadRegistry(path, os.LookupEnv); err == nil {
+				t.Fatal("a member whose case differs from the schema was accepted")
+			}
+		})
+	}
+}
+
 func TestLoadRegistryDefaultsTypeToEntryName(t *testing.T) {
 	path := writeConfig(t, `{"adapters": {"memory": {"journal_capacity": 3}}}`)
 	registry, err := LoadRegistry(path, os.LookupEnv)
