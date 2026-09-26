@@ -188,7 +188,19 @@ code paths; add a transcript row instead.
   `✓ env key` (key in the environment), or `expired · login again`. The state is read
   when the picker opens and after a login completes; when stored auth cannot be loaded
   (no `HOME`, unreadable or malformed store) the environment scan still runs, so an
-  `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` user sees `✓ env key` rather than nothing.
+  `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` or `KIMI_API_KEY` user sees `✓ env key`
+  rather than nothing.
+- The model catalog lists Kimi models whenever a credential exists (a stored `/login
+  kimi` or `KIMI_API_KEY`, the stored one first): it fetches `GET /v1/models` on the
+  region's own host — `api.kimi.com/coding` or `api.moonshot.ai`, whichever the stored
+  login or `KIMI_REGION` names — with that key, caches the body under
+  `~/.oapx/model_catalog/kimi.json` (`kimi-global.json` for the global region) on the
+  same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
+  static `kimi-k2.7-code` when both fetch and cache are unusable. Each entry takes its
+  display name, context window, reasoning flag and text/image input from the response's
+  `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
+  endpoint reports no output cap, so every entry keeps the 16 384 default. A selected
+  Kimi model resolves its key the same way at request time.
 - The model catalog lists Anthropic models whenever Anthropic credentials exist
   (OAuth in storage or `ANTHROPIC_API_KEY`): it fetches `/v1/models` with the stored
   token, caches the response under `~/.oapx/model_catalog/anthropic.json`, and falls
