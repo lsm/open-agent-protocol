@@ -87,11 +87,10 @@ graduate, so it gets the same four steps with the seams they were drawn for:
    Decision 0032 makes the two trees peers in which new runtime capability lands
    in the product binary first or in both trees within the same milestone. A Go
    projection alone would leave the product with a profile its own binary cannot
-   emit, and would make the presentation traces a Go-only artifact. The existing
-   backend parity harness, which already compares every served backend against a
-   fake child across both trees, extends to compare the presentation traces too —
-   so a shape the two projections disagree about is found here rather than by an
-   implementer.
+   emit, and would make the presentation traces a Go-only artifact. The two
+   projections are compared by `TestMemoryBackendMatchesOapx`, the test that
+   already holds the memory backend to `oapx`'s answers, so a shape they disagree
+   about is found there rather than by an implementer.
 2. **Validator rules and fixtures.** A presentation bundle compiles under the
    same strict and tolerant modes the layered draft already defines, the
    validator enforces the profile's invariants, and `fixtures/manifest.json`
@@ -206,38 +205,67 @@ be in the same process as the presentation layer that renders it, and whether
 `oapx`'s TUI eventually crosses a wire or keeps an in-process control layer
 underneath is a composition question the profile does not decide.
 
-### What the graduation has to settle first
+### An epoch names one target's revision numbering
 
-These are named here so that nothing inside this record is merely implied, which
-is Decision 0003's second acceptance criterion. They are obligations on the
-graduation, not decisions taken by it.
+Every `presentation.snapshot.response` and every `presentation.updated` carries
+`epoch`: an opaque identifier naming the revision numbering of one target.
 
-- **An epoch, or an equivalent.** A receiver's stored revision must be
-  distinguishable from a control layer's, across restart. Either a target's
-  revision space is identified by something that changes when the control layer
-  does, or a snapshot carries an identifier that invalidates a held revision
-  against it. Whichever is chosen, a receiver holding a revision from a previous
-  control layer converges, and a receiver holding one from a *gap* converges too.
-- **Which of `pending_prompts` and `affordances` a receiver renders a prompt
-  from**, and whether a control layer that emits them inconsistently is
-  conformant. If both are authoritative they must be reconciled, and the
-  reconciliation is a rule; if one projects from the other, that is said.
-- **The receiver's duty on an unknown `change.kind`.** The draft says a receiver
-  "may ignore them and request a fresh snapshot when they affect correct
-  rendering", which leaves a receiver that ignores nothing conformant and a
-  receiver that discards everything also conformant. A gateable profile needs one
-  answer, and the tolerant-compile rule the layered draft already gives is the
-  likely source of it.
+A control layer mints a new epoch whenever it cannot promise that the numbering
+continues — on start, or when it rebuilds that target's state. A control layer
+that saves its counter may keep one epoch across a restart. **Same epoch means
+same numbering**, and that is the whole promise the identifier makes.
 
-  The tolerant compile is **not** that answer, and this record corrects an earlier
-  claim of its own that it was. Tolerant makes an unknown `change.kind` *valid on
-  the wire*; it says nothing about what the receiver then *does*. Those are
-  different questions, and answering the first does not answer the second. A
-  receiver that applies the changes it recognises and advances to `revision` then
-  holds state that is not that revision's state, which is the failure the revision
-  discipline exists to prevent. The one rule the graduation should state is that
-  a receiver which cannot apply **every** change in an update does not advance at
-  all, and re-snapshots exactly as it would on a `base_revision` mismatch.
+A receiver holding a different epoch discards what it holds for that target and
+takes the snapshot. An update whose epoch differs from the held one is discarded,
+and the receiver re-snapshots the target.
+
+The revision rules key on target **and** epoch. Within one epoch revisions
+strictly increase and every update chains from its `base_revision`. They do not
+advance by exactly one: the draft says monotonic, and requiring `+1` forbids a
+control layer from coalescing several changes into one update. A new epoch may
+begin at any revision, and a lower revision in a new epoch is not a regression.
+
+This is what makes the revision discipline sound across a control-layer restart
+without making persistence mandatory. Revisions that never reset would oblige
+every control layer to persist a counter, and v0.1 carries no persistence
+obligation — [Decision 0012](0012-persistence-is-not-in-v0.1-core.md) retires
+`+persistence` for exactly that reason. The core already prefers reporting a gap
+to faking continuity, and this is that choice at the presentation boundary.
+
+### `pending_prompts` is the one source for what is being asked
+
+`pending_prompts` is authoritative for the content of an outstanding prompt.
+Each entry projects one core interaction and carries its `prompt_id`, its `kind`,
+its `run_id`, renderable content — the question and the tool call it concerns —
+and labelled choices. The core's interaction and choice shapes are reused rather
+than restated, so a choice is a labelled thing a reader can render rather than a
+bare id.
+
+`intent.permission.resolve.request` and `intent.user_input.resolve.request` join
+the minimum profile. Each names one prompt and one of its choices, or the answer
+to a `user_input` prompt. A prompt resolves once: a stale or second answer is
+refused with a typed `error.response` rather than applied.
+
+A prompt leaves `pending_prompts` when it is resolved, cancelled or expired, and
+the timeline keeps its outcome. The transition is visible in the timeline rather
+than by the entry's disappearance alone.
+
+Affordances say only whether the presentation can act now, and why not. They
+never repeat a prompt's content, and a prompt carries no `affordance_id` — which
+removes the cross-reference the first draft of this record left to be settled.
+
+### A receiver that cannot apply every change does not advance
+
+An update's changes are applied as a set or not at all. A receiver which cannot
+apply **every** change in an update discards the whole set, does not advance its
+revision, and re-snapshots the target exactly as it would on a `base_revision`
+mismatch.
+
+The tolerant compile is not this answer and does not supply it. Tolerant makes an
+unknown `change.kind` valid *on the wire*; it says nothing about what the receiver
+then *does*, and those are different questions. A receiver that applied the
+changes it recognised and advanced to `revision` would hold state that is not that
+revision's state, which is the failure the revision discipline exists to prevent.
 
 ## Consequences
 
@@ -253,16 +281,11 @@ graduation, not decisions taken by it.
 - `zig/src/tui/` is not touched by this record, and no test in either tree
   changes by it. The profile is not executable by this record either, which is
   why the status is `proposed` under 0003's first criterion.
-- The gap a step-1-and-2 change will have to close, and which a schema alone
-  cannot: the three obligations named above are settled in the draft first, and
-  a shape no producer emitted is not a shape the specification has agreed on.
-- `examples/presentation-control-session.json` does not judge the schema, and this
-  record corrects an earlier claim of its own that it did. `examples/` is
-  illustrative by project rule — "illustrative JSON bindings for the draft
-  protocol, not conformance tests" — and that file is hand-written, so it is the
-  same class of guess a fixture cannot prove. When a schema and the example
-  disagree, **the draft decides** and the example is regenerated by the step-1
-  producer. A schema that breaks the example is a signal to re-read the draft, not
+- `examples/presentation-control-session.json` does not judge the schema.
+  `examples/` is illustrative by project rule — "illustrative JSON bindings for
+  the draft protocol, not conformance tests" — so when a schema and the example
+  disagree, **the draft decides** and the step-1 producer regenerates the
+  example. A schema that breaks the example is a signal to re-read the draft, not
   evidence that the example is stale.
 - A reader asking why `goap` has no TUI now has a record saying the omission is
   intended and the boundary is the deliverable, rather than a dash in a table.
