@@ -189,10 +189,18 @@ pub const Subscription = struct {
         self.hub.detach(self);
     }
 
-    fn release(self: *Subscription, allocator: std.mem.Allocator) void {
+    fn forgetEvents(self: *Subscription, allocator: std.mem.Allocator) void {
         for (self.replay.items) |event| allocator.free(event.line);
-        self.replay.deinit(allocator);
+        self.replay.clearRetainingCapacity();
+        self.replay_at = 0;
         for (self.queue.items) |event| allocator.free(event.line);
+        self.queue.clearRetainingCapacity();
+        self.queue_at = 0;
+    }
+
+    fn release(self: *Subscription, allocator: std.mem.Allocator) void {
+        self.forgetEvents(allocator);
+        self.replay.deinit(allocator);
         self.queue.deinit(allocator);
         if (self.overflow_run.len > 0) allocator.free(self.overflow_run);
         if (self.run_id.len > 0) allocator.free(self.run_id);
@@ -490,8 +498,21 @@ pub const Hub = struct {
             }
             var refusal = contract.Refusal{};
             const listed_state = entry.session.state(arena, &refusal) catch |err| switch (err) {
-                error.SessionClosed => continue,
-                else => return err,
+                error.SessionClosed => {
+                    try listed.append(arena, .{
+                        .session_id = entry.session_id,
+                        .adapter = entry.adapter_name,
+                        .status = .closed,
+                        .active_run_id = "",
+                        .active_runs = &.{},
+                        .created_at_ms = entry.created_at_ms,
+                    });
+                    continue;
+                },
+                else => oap_types.SessionState{
+                    .session_id = entry.session_id,
+                    .status = .@"error",
+                },
             };
             try listed.append(arena, .{
                 .session_id = entry.session_id,
@@ -524,7 +545,7 @@ pub const Hub = struct {
             if (options.after == null) {
                 if (held.detached or held.ending == .expired) {
                     _ = self.dropHold(held);
-                    self.discard(held, .expired);
+                    self.release(held, .expired);
                 } else {
                     _ = self.dropHold(held);
                     held.held = false;
@@ -532,7 +553,7 @@ pub const Hub = struct {
                 }
             } else {
                 _ = self.dropHold(held);
-                self.discard(held, .expired);
+                self.release(held, .expired);
             }
         }
         if (self.max_subscriptions > 0 and entry.subscribers.items.len >= self.max_subscriptions) return error.SubscriptionFull;
@@ -573,7 +594,7 @@ pub const Hub = struct {
                 continue;
             }
             const held = self.holds.orderedRemove(index);
-            self.discard(held.subscription, .expired);
+            self.release(held.subscription, .expired);
         }
     }
 
@@ -634,23 +655,22 @@ pub const Hub = struct {
     fn discard(self: *Hub, subscription: *Subscription, ending: Ending) void {
         subscription.ending = ending;
         subscription.held = false;
-        const entry = self.findSession(subscription.session_id);
+        self.detach(subscription);
         for (self.subscriptions.items, 0..) |existing, index| {
             if (existing == subscription) {
                 _ = self.subscriptions.orderedRemove(index);
                 break;
             }
         }
-        if (entry) |found| {
-            for (found.subscribers.items, 0..) |existing, index| {
-                if (existing == subscription) {
-                    _ = found.subscribers.orderedRemove(index);
-                    break;
-                }
-            }
-        }
         subscription.release(self.allocator);
         self.allocator.destroy(subscription);
+    }
+
+    fn release(self: *Hub, subscription: *Subscription, ending: Ending) void {
+        subscription.ending = ending;
+        subscription.held = false;
+        self.detach(subscription);
+        subscription.forgetEvents(self.allocator);
     }
 
     pub fn reclaim(self: *Hub) void {
@@ -1291,8 +1311,15 @@ test "a hold nothing adopts is released when its window closes" {
     tick(100 * std.time.ns_per_ms);
     hub.expireHolds();
     try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
-    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
     try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    try testing.expectEqual(Ending.expired, held.ending);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+
+    held.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
+
     const fresh = try hub.subscribe(arena, opened.session_id, .{});
     try testing.expectEqual(Ending.open, fresh.ending);
 }
@@ -1314,8 +1341,11 @@ test "a cursor-bearing subscription does not adopt a hold, and releases it" {
     const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
     try testing.expect(held != replayed);
     try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
-    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try testing.expectEqual(Ending.expired, held.ending);
     try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
+    held.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
 }
 
 test "closing a session ends every subscription under it, and a closed one is refused" {
@@ -1416,7 +1446,7 @@ test "a cursor may name the overflow a hold reported, which the discard just fre
     try testing.expectEqual(@as(u64, 1), resumed.highest);
     const first = resumed.next().?;
     try testing.expectEqual(@as(u64, 2), first.sequence);
-    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try testing.expectEqual(Ending.expired, held.ending);
 }
 
 test "a catalog is checked before it is served, and stamped with its revision" {

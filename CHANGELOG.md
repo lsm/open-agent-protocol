@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint from accepting a compound open's `message` — the hub submits that
   itself, above the adapter, as `serve.OpenCompound` does in Go. `journal_capacity`
   from the registry document is now read rather than decoded and ignored. Thirty-five
-  unit tests over a scripted backend, and `checkAllAllocationFailures` over every
+  unit tests over a scripted backend, and `checkAllAllocationFailures`, and `checkAllAllocationFailures` over every
   function that allocates and hands off ownership — which is what found three
   places swallowing `OutOfMemory`, three use-after-frees on a closed session or a
   borrowed run id, a stream-failed session that was never destroyed, an unbounded subscriber
