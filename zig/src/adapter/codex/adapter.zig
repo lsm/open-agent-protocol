@@ -887,10 +887,9 @@ test "a thread/start the child never answers refuses the open once the request b
         \\
     );
     defer probe.deinit();
-    probe.adapter.config.request_timeout_ns = 3 * std.time.ns_per_s;
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, probe.open(&refusal));
-    try testing.expectEqualStrings("the codex app-server did not answer thread/start within 3000 ms", refusal.message);
+    try testing.expectEqualStrings("the codex app-server did not answer thread/start within 10000 ms", refusal.message);
 }
 
 test "a turn/start the child never answers is refused once the request bound passes, stopping the child and closing the session" {
