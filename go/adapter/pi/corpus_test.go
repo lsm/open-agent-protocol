@@ -26,12 +26,12 @@ var piCommitTree = pin.Source("pi").Tree
 
 const (
 	piRPCTypesBlob     = "1cbd49a898382f0fbb409a7d241ad694b2f59e0d"
-	piRPCModeBlob      = "fc8083bedc67824dd7ff1a5a154f1a08b28c4098"
-	piAgentSessionBlob = "ac2bd4b18dbe4d888e48309ad7bb63f1166179b5"
-	piSessionMgrBlob   = "d25b196a5c661d33bc0b12693eb30a0591837562"
-	piAgentTypesBlob   = "eebb5dc052205ddcbc0188320ce1c2f013c4fdae"
+	piRPCModeBlob      = "f4857ffb2e0b3adaa56021e3a4a4e174d14eaefc"
+	piAgentSessionBlob = "338d0e0d01cde75f2a3a2e56f88b747072de748a"
+	piSessionMgrBlob   = "fd87a2d886bd8a0b5c6afd2f6d97d20654eb52e3"
+	piAgentTypesBlob   = "8da843f5619ce6bd0251375e9e21c18fa799f2e3"
 	piRPCEntryBlob     = "11059a8d47f6d4f22469802f8dca0a6af6c8db88"
-	piCLIArgsBlob      = "8ad5da63e5cce1ee17476d061b3798359818fc97"
+	piCLIArgsBlob      = "a358798078d74a6de2bbf272f3c1a5041f479c03"
 )
 
 var piLedgerFixtures = map[string]bool{
@@ -43,6 +43,7 @@ var piLedgerFixtures = map[string]bool{
 	"compaction": true, "extension-dialog": true, "reconcile-state": true,
 	"entries-since": true, "switch-session": true, "process-exit": true,
 	"malformed-command": true, "fork-tree": true, "no-implied-replay": true,
+	"system-message": true,
 }
 
 type piCorpusManifest struct {

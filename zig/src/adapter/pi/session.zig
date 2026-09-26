@@ -130,6 +130,8 @@ pub const Reducer = struct {
 
 const user_members = [_][]const u8{ "role", "content", "timestamp" };
 
+const system_members = [_][]const u8{ "role", "content", "sections", "toolsAdded", "toolsRemoved", "timestamp" };
+
 const tool_result_members = [_][]const u8{
     "role",      "toolCallId", "toolName", "content",
     "usage",     "details",    "isError",  "addedToolNames",
@@ -394,7 +396,45 @@ pub fn decodeWireMessage(raw: std.json.Value) !?WireMessage {
         try validateWireContent(raw.object.get("content").?, true);
         return null;
     }
+    if (std.mem.eql(u8, role, "system")) {
+        try closedRoleMembers(raw, &system_members);
+        try typedInteger(raw, "timestamp");
+        try typedArray(raw, "toolsAdded");
+        try typedArray(raw, "toolsRemoved");
+        try typedSections(raw);
+        for (&[_][]const u8{ "content", "timestamp" }) |name| {
+            if (raw.object.get(name) == null) return Error.InvalidFrame;
+        }
+        try validateSystemContent(raw.object.get("content").?);
+        return null;
+    }
     return Error.InvalidFrame;
+}
+
+fn typedSections(raw: std.json.Value) !void {
+    var it = raw.object.iterator();
+    while (it.next()) |entry| {
+        if (!std.ascii.eqlIgnoreCase(entry.key_ptr.*, "sections")) continue;
+        const value = entry.value_ptr.*;
+        if (value == .null) continue;
+        if (value != .object) return Error.InvalidFrame;
+        for (value.object.values()) |section| {
+            if (section != .string and section != .null) return Error.InvalidFrame;
+        }
+    }
+}
+
+fn validateSystemContent(raw: std.json.Value) !void {
+    if (raw == .null or raw == .string) return;
+    if (raw != .array) return Error.InvalidFrame;
+    for (raw.array.items) |part| {
+        if (part != .object) return Error.InvalidFrame;
+        const kind = part.object.get("type") orelse return Error.InvalidFrame;
+        if (kind != .string or !std.mem.eql(u8, kind.string, "text")) return Error.InvalidFrame;
+        try closedMembers(part, &.{ "type", "text", "textSignature" });
+        try requireMembers(part, &.{"text"});
+        try typedStrings(part, &.{ "text", "textSignature" });
+    }
 }
 
 fn validateToolCallShape(part: std.json.Value) !void {
@@ -1736,6 +1776,27 @@ fn countOf(reducer: *Reducer, kind: []const u8) usize {
 
 const text_request = "{\"type\":\"extension_ui_request\",\"id\":\"ui-1\",\"method\":\"input\",\"title\":\"Name?\",\"message\":\"\"}";
 const confirm_request = "{\"type\":\"extension_ui_request\",\"id\":\"ui-2\",\"method\":\"confirm\",\"title\":\"Go?\",\"message\":\"Continue\"}";
+
+test "a system message is accepted and is not a final message" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const accepted = [_][]const u8{
+        "{\"role\":\"system\",\"content\":\"\",\"sections\":{\"preamble\":\"p\",\"gone\":null},\"toolsAdded\":[{\"name\":\"read\"}],\"toolsRemoved\":[{\"name\":\"bash\"}],\"timestamp\":1}",
+        "{\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"more\"}],\"timestamp\":2}",
+    };
+    for (accepted) |text| try std.testing.expect(try decodeWireMessage(try parse(a, text)) == null);
+    const rejected = [_][]const u8{
+        "{\"role\":\"system\",\"timestamp\":1}",
+        "{\"role\":\"system\",\"content\":\"\"}",
+        "{\"role\":\"system\",\"content\":[{\"type\":\"image\",\"data\":\"AA==\",\"mimeType\":\"image/png\"}],\"timestamp\":1}",
+        "{\"role\":\"system\",\"content\":\"\",\"sections\":{\"a\":1},\"timestamp\":1}",
+        "{\"role\":\"system\",\"content\":[{\"type\":\"text\"}],\"timestamp\":1}",
+        "{\"role\":\"system\",\"content\":\"\",\"timestamp\":1,\"api\":\"a\"}",
+    };
+    for (rejected) |text| try std.testing.expectError(Error.InvalidFrame, decodeWireMessage(try parse(a, text)));
+}
 
 test "a toolResult message carries members the assistant shape does not admit" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

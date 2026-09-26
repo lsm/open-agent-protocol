@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "id": "cancel-settled",
+  "native": "native.jsonl",
+  "expected_oap": "expected-oap.json",
+  "mapping": "mapping.json",
+  "omissions": "omissions.json",
+  "provenance": {
+    "repository": "https://github.com/earendil-works/pi",
+    "tag": "v0.87.1",
+    "commit": "f07218c4d4bbc12bef056a7058c3dd49dfe41abe",
+    "commit_tree": "7053e72909a45c2e400f0506c4aa98e53b26f429",
+    "sources": {
+      "rpc_types_blob": "1cbd49a898382f0fbb409a7d241ad694b2f59e0d",
+      "rpc_mode_blob": "f4857ffb2e0b3adaa56021e3a4a4e174d14eaefc",
+      "agent_session_blob": "338d0e0d01cde75f2a3a2e56f88b747072de748a",
+      "session_manager_blob": "fd87a2d886bd8a0b5c6afd2f6d97d20654eb52e3",
+      "agent_types_blob": "8da843f5619ce6bd0251375e9e21c18fa799f2e3",
+      "rpc_entry_blob": "11059a8d47f6d4f22469802f8dca0a6af6c8db88",
+      "cli_args_blob": "a358798078d74a6de2bbf272f3c1a5041f479c03"
+    }
+  },
+  "advertised_capabilities": {
+    "run.streaming": "native",
+    "run.replay": "degraded"
+  },
+  "identity_map": {
+    "native.sessionId": "oap.session_id_association",
+    "native.command.id": "private_request_correlation",
+    "native.toolCallId": "oap.tool_call_id"
+  },
+  "cancel": true
+}
