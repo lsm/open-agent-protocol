@@ -669,13 +669,19 @@ it defaults to (with a region where a vendor ships one per region), where a
 models listing lives, and the origins an OAuth credential may be sent to. A row
 is a vendor's *offering* rather than the vendor itself, because a coding plan is
 a different endpoint reached under the same credential: `offering` is
-`coding_plan` or `api_key`, and the list is ordered so its coding plans come
-first. Every
+`coding_plan` or `api_key`. `status` is where a row sits in the list — `current`
+for the providers it names first (OpenAI, Anthropic, OpenCode, OpenRouter,
+DeepSeek, Z.AI, Kimi), `supported` for the rest, `withheld` for a row the list
+records but does not offer — and the list is ordered so every `current` row
+precedes every other. Every
 member is optional, because an absent member records that the fact is unknown
-rather than that it is empty, and no credential is ever catalogued.
+rather than that it is empty, and no credential is ever catalogued. A row with no
+`status` is `supported`, and a `withheld` row keeps its id reserved, so a
+`providers.json` entry still cannot shadow it.
 
 Go embeds the file and `goap check` fails when a row is malformed, when one id is
-catalogued twice, when an `offering` is neither value, or when Go or Zig source
+catalogued twice, when an `offering` or `status` is not a known value, or when Go
+or Zig source
 outside test code spells a catalogued base URL as a literal. Zig does not parse it at run time: `build.zig` turns the
 same file into typed rows (`providerCatalogDataModule`), so a base URL, a
 credential variable name or an origin policy that is not in the catalog does not

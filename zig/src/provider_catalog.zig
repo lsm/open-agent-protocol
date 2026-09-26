@@ -3,6 +3,7 @@ const data = @import("data");
 
 pub const AuthKind = data.AuthKind;
 pub const Offering = data.Offering;
+pub const Status = data.Status;
 pub const Endpoint = data.Endpoint;
 pub const OAuthOrigin = data.OAuthOrigin;
 pub const Provider = data.Provider;
@@ -12,6 +13,11 @@ pub const all = data.providers;
 pub fn offering(id: []const u8) ?Offering {
     const row = provider(id) orelse return null;
     return row.offering;
+}
+
+pub fn status(id: []const u8) Status {
+    const row = provider(id) orelse return .supported;
+    return row.status orelse .supported;
 }
 
 pub fn codingPlanIds() []const []const u8 {
@@ -24,6 +30,25 @@ pub fn codingPlanIds() []const []const u8 {
         var index: usize = 0;
         for (all) |row| {
             if (row.offering != null and row.offering.? == .coding_plan) {
+                collected[index] = row.id;
+                index += 1;
+            }
+        }
+        const frozen = collected;
+        return &frozen;
+    }
+}
+
+pub fn currentIds() []const []const u8 {
+    comptime {
+        var current_rows: usize = 0;
+        for (all) |row| {
+            if (row.status != null and row.status.? == .current) current_rows += 1;
+        }
+        var collected: [current_rows][]const u8 = undefined;
+        var index: usize = 0;
+        for (all) |row| {
+            if (row.status != null and row.status.? == .current) {
                 collected[index] = row.id;
                 index += 1;
             }
@@ -72,11 +97,7 @@ pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
 }
 
 pub fn baseUrl(id: []const u8, wire: []const u8, region: ?[]const u8) ?[]const u8 {
-    if (endpointOf(id, wire, region)) |url| return url;
-    const row = provider(id) orelse return null;
-    const alias = row.alias_of orelse return null;
-    if (std.mem.eql(u8, alias, id)) return null;
-    return defaultBaseUrlOf(alias, region);
+    return endpointOf(id, wire, region);
 }
 
 pub fn defaultBaseUrl(id: []const u8) ?[]const u8 {
@@ -162,22 +183,16 @@ test "a regional provider answers no endpoint without naming its region" {
     }
 }
 
-test "a reserved id naming a variant is answered by the row it stands for" {
-    const generative = baseUrl("google", "google-generative-ai", null).?;
-    try std.testing.expectEqualStrings(generative, baseUrl("google-gemini-cli", "google-gemini-cli", null).?);
-    try std.testing.expectEqualStrings(generative, defaultBaseUrl("google").?);
-    try std.testing.expect(baseUrl("kimi", "openai-completions", null) == null);
-    try std.testing.expect(defaultBaseUrl("no-such-provider") == null);
-    try std.testing.expect(defaultBaseUrl("ollama") == null);
-}
-
-test "a provider's default answers a wire its row does not name" {
-    const generative = baseUrl("google", "google-generative-ai", null).?;
-    try std.testing.expectEqualStrings(generative, baseUrl("google", "google-gemini-cli", null) orelse defaultBaseUrl("google").?);
+test "a default base URL is answered only by a row that records one" {
+    try std.testing.expectEqualStrings(
+        "https://generativelanguage.googleapis.com",
+        defaultBaseUrl("google").?,
+    );
     try std.testing.expect(defaultBaseUrl("kimi") == null);
     try std.testing.expect(defaultBaseUrl("azure") == null);
     try std.testing.expect(defaultBaseUrl("ollama") == null);
     try std.testing.expect(defaultBaseUrl("github-copilot") == null);
+    try std.testing.expect(defaultBaseUrl("no-such-provider") == null);
 }
 
 test "a base URL is answered for the wire that names it and for no other" {
@@ -250,20 +265,40 @@ test "a models listing is recorded only where the provider answers one" {
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
 }
 
-test "the curated list leads with its coding plans" {
+test "a plan is named as a plan" {
     const plans = codingPlanIds();
     try std.testing.expect(plans.len > 0);
-    for (all, 0..) |row, index| {
+    for (all) |row| {
         const is_plan = row.offering != null and row.offering.? == .coding_plan;
-        if (index < plans.len) {
-            try std.testing.expect(is_plan);
-            try std.testing.expectEqualStrings(plans[index], row.id);
+        const named_as_plan = std.mem.endsWith(u8, row.id, "-coding-plan") or
+            std.mem.indexOf(u8, row.id, "-token-plan-") != null;
+        try std.testing.expectEqual(named_as_plan, is_plan);
+    }
+    try std.testing.expectEqualStrings("zai-coding-plan", plans[0]);
+    try std.testing.expect(offering("anthropic").? == .api_key);
+    try std.testing.expect(offering("xiaomi").? == .api_key);
+    try std.testing.expect(offering("no-such-provider") == null);
+}
+
+test "the current rows are the ones the catalog names first" {
+    const current = currentIds();
+    try std.testing.expect(current.len > 0);
+    var named_first = true;
+    var index: usize = 0;
+    for (all) |row| {
+        if (row.status != null and row.status.? == .current) {
+            try std.testing.expect(named_first);
+            try std.testing.expectEqualStrings(current[index], row.id);
+            index += 1;
+        } else {
+            named_first = false;
         }
     }
-    try std.testing.expectEqualStrings("kimi", plans[0]);
-    try std.testing.expect(offering("anthropic").? == .api_key);
-    try std.testing.expect(offering("minimax-coding-plan").? == .coding_plan);
-    try std.testing.expect(offering("no-such-provider") == null);
+    try std.testing.expectEqual(current.len, index);
+    try std.testing.expectEqualStrings("openai", current[0]);
+    try std.testing.expect(status("kimi") == .current);
+    try std.testing.expect(status("vercel") == .supported);
+    try std.testing.expect(status("no-such-provider") == .supported);
 }
 
 test "an auth kind is one the loader knows, and a provider may declare none" {

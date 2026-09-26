@@ -1,242 +1,36 @@
 {
   "providers": [
     {
-      "id": "zai-coding-plan",
-      "display_name": "Z.AI Coding Plan",
+      "id": "openai",
+      "display_name": "OpenAI",
       "auth": [
         "api_key"
       ],
-      "offering": "coding_plan",
+      "offering": "api_key",
+      "status": "current",
       "credential_env": [
-        "ZHIPU_API_KEY"
+        "OPENAI_API_KEY"
+      ],
+      "base_url_env": [
+        "OPENAI_BASE_URL"
       ],
       "wires": [
-        "openai-completions"
+        "openai-completions",
+        "openai-responses"
       ],
       "base_url_source": "static",
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://api.z.ai/api/coding/paas/v4"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://docs.z.ai/devpack/overview"
-    },
-    {
-      "id": "alibaba-coding-plan",
-      "display_name": "Alibaba Coding Plan",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "ALIBABA_CODING_PLAN_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://www.alibabacloud.com/help/en/model-studio/coding-plan"
-    },
-    {
-      "id": "minimax-coding-plan",
-      "display_name": "MiniMax Token Plan (minimax.io)",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "MINIMAX_API_KEY"
-      ],
-      "wires": [
-        "anthropic-messages"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "anthropic-messages",
-          "base_url": "https://api.minimax.io/anthropic/v1"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://platform.minimax.io/docs/token-plan/intro"
-    },
-    {
-      "id": "tencent-coding-plan",
-      "display_name": "Tencent Coding Plan (China)",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "TENCENT_CODING_PLAN_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://cloud.tencent.com/document/product/1772/128947"
-    },
-    {
-      "id": "volcengine-coding-plan",
-      "display_name": "Volcengine Ark Coding Plan",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "ARK_CODING_PLAN_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://www.volcengine.com/docs/82379/1928261"
-    },
-    {
-      "id": "kimi",
-      "display_name": "Kimi",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "KIMI_API_KEY"
-      ],
-      "region_env": "KIMI_REGION",
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://api.kimi.com/coding",
-          "region": "china"
+          "base_url": "https://api.openai.com"
         },
         {
-          "wire": "openai-completions",
-          "base_url": "https://api.moonshot.ai",
-          "region": "global"
+          "wire": "openai-responses",
+          "base_url": "https://api.openai.com"
         }
       ],
       "models_endpoint": "/v1/models",
-      "docs": "https://www.kimi.com/code/docs"
-    },
-    {
-      "id": "openai-codex",
-      "display_name": "OpenAI Codex",
-      "auth": [
-        "oauth"
-      ],
-      "offering": "coding_plan",
-      "wires": [
-        "openai-codex-responses"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-codex-responses",
-          "base_url": "https://chatgpt.com/backend-api/codex"
-        }
-      ],
-      "oauth_origin": {
-        "exact": [
-          "https://chatgpt.com/backend-api/codex"
-        ]
-      },
-      "docs": "https://platform.openai.com/docs/codex"
-    },
-    {
-      "id": "xiaomi-token-plan-cn",
-      "display_name": "Xiaomi Token Plan (China)",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "XIAOMI_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://token-plan-cn.xiaomimimo.com/v1"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://platform.xiaomimimo.com/#/docs"
-    },
-    {
-      "id": "xiaomi-token-plan-sgp",
-      "display_name": "Xiaomi Token Plan (Singapore)",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "XIAOMI_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://token-plan-sgp.xiaomimimo.com/v1"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://platform.xiaomimimo.com/#/docs"
-    },
-    {
-      "id": "xiaomi-token-plan-ams",
-      "display_name": "Xiaomi Token Plan (Europe)",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "coding_plan",
-      "credential_env": [
-        "XIAOMI_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://token-plan-ams.xiaomimimo.com/v1"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://platform.xiaomimimo.com/#/docs"
+      "docs": "https://platform.openai.com/docs"
     },
     {
       "id": "anthropic",
@@ -246,6 +40,7 @@
         "oauth"
       ],
       "offering": "api_key",
+      "status": "current",
       "credential_env": [
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_API_KEY"
@@ -272,35 +67,52 @@
       "docs": "https://docs.anthropic.com"
     },
     {
-      "id": "openai",
-      "display_name": "OpenAI",
+      "id": "opencode",
+      "display_name": "OpenCode Zen",
       "auth": [
         "api_key"
       ],
       "offering": "api_key",
+      "status": "current",
       "credential_env": [
-        "OPENAI_API_KEY"
-      ],
-      "base_url_env": [
-        "OPENAI_BASE_URL"
+        "OPENCODE_API_KEY"
       ],
       "wires": [
-        "openai-completions",
-        "openai-responses"
+        "openai-completions"
       ],
       "base_url_source": "static",
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://api.openai.com"
-        },
-        {
-          "wire": "openai-responses",
-          "base_url": "https://api.openai.com"
+          "base_url": "https://opencode.ai/zen/v1"
         }
       ],
       "models_endpoint": "/v1/models",
-      "docs": "https://platform.openai.com/docs"
+      "docs": "https://opencode.ai/docs/zen"
+    },
+    {
+      "id": "openrouter",
+      "display_name": "OpenRouter",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "api_key",
+      "status": "current",
+      "credential_env": [
+        "OPENROUTER_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://openrouter.ai/api/v1"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://openrouter.ai/models"
     },
     {
       "id": "deepseek",
@@ -309,6 +121,7 @@
         "api_key"
       ],
       "offering": "api_key",
+      "status": "current",
       "credential_env": [
         "DEEPSEEK_API_KEY"
       ],
@@ -329,12 +142,261 @@
       "docs": "https://api-docs.deepseek.com"
     },
     {
+      "id": "zai-coding-plan",
+      "display_name": "Z.AI Coding Plan",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "current",
+      "credential_env": [
+        "ZHIPU_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://api.z.ai/api/coding/paas/v4"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://docs.z.ai/devpack/overview"
+    },
+    {
+      "id": "kimi",
+      "display_name": "Kimi",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "current",
+      "credential_env": [
+        "KIMI_API_KEY"
+      ],
+      "region_env": "KIMI_REGION",
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://api.kimi.com/coding",
+          "region": "china"
+        },
+        {
+          "wire": "openai-completions",
+          "base_url": "https://api.moonshot.ai",
+          "region": "global"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://www.kimi.com/code/docs"
+    },
+    {
+      "id": "alibaba-coding-plan",
+      "display_name": "Alibaba Coding Plan",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "credential_env": [
+        "ALIBABA_CODING_PLAN_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://www.alibabacloud.com/help/en/model-studio/coding-plan"
+    },
+    {
+      "id": "minimax-coding-plan",
+      "display_name": "MiniMax Token Plan (minimax.io)",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "credential_env": [
+        "MINIMAX_API_KEY"
+      ],
+      "wires": [
+        "anthropic-messages"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "anthropic-messages",
+          "base_url": "https://api.minimax.io/anthropic/v1"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://platform.minimax.io/docs/token-plan/intro"
+    },
+    {
+      "id": "tencent-coding-plan",
+      "display_name": "Tencent Coding Plan (China)",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "credential_env": [
+        "TENCENT_CODING_PLAN_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://cloud.tencent.com/document/product/1772/128947"
+    },
+    {
+      "id": "volcengine-coding-plan",
+      "display_name": "Volcengine Ark Coding Plan",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "credential_env": [
+        "ARK_CODING_PLAN_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://www.volcengine.com/docs/82379/1928261"
+    },
+    {
+      "id": "openai-codex",
+      "display_name": "OpenAI Codex",
+      "auth": [
+        "oauth"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "wires": [
+        "openai-codex-responses"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-codex-responses",
+          "base_url": "https://chatgpt.com/backend-api/codex"
+        }
+      ],
+      "oauth_origin": {
+        "exact": [
+          "https://chatgpt.com/backend-api/codex"
+        ]
+      },
+      "docs": "https://platform.openai.com/docs/codex"
+    },
+    {
+      "id": "xiaomi-token-plan-cn",
+      "display_name": "Xiaomi Token Plan (China)",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "credential_env": [
+        "XIAOMI_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://token-plan-cn.xiaomimimo.com/v1"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://platform.xiaomimimo.com/#/docs"
+    },
+    {
+      "id": "xiaomi-token-plan-sgp",
+      "display_name": "Xiaomi Token Plan (Singapore)",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "credential_env": [
+        "XIAOMI_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://token-plan-sgp.xiaomimimo.com/v1"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://platform.xiaomimimo.com/#/docs"
+    },
+    {
+      "id": "xiaomi-token-plan-ams",
+      "display_name": "Xiaomi Token Plan (Europe)",
+      "auth": [
+        "api_key"
+      ],
+      "offering": "coding_plan",
+      "status": "supported",
+      "credential_env": [
+        "XIAOMI_API_KEY"
+      ],
+      "wires": [
+        "openai-completions"
+      ],
+      "base_url_source": "static",
+      "endpoints": [
+        {
+          "wire": "openai-completions",
+          "base_url": "https://token-plan-ams.xiaomimimo.com/v1"
+        }
+      ],
+      "models_endpoint": "/v1/models",
+      "docs": "https://platform.xiaomimimo.com/#/docs"
+    },
+    {
       "id": "deepinfra",
       "display_name": "Deep Infra",
       "auth": [
         "api_key"
       ],
       "offering": "api_key",
+      "status": "supported",
       "credential_env": [
         "DEEPINFRA_API_KEY"
       ],
@@ -358,6 +420,7 @@
         "api_key"
       ],
       "offering": "api_key",
+      "status": "supported",
       "credential_env": [
         "XIAOMI_API_KEY"
       ],
@@ -375,58 +438,13 @@
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
-      "id": "openrouter",
-      "display_name": "OpenRouter",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "api_key",
-      "credential_env": [
-        "OPENROUTER_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://openrouter.ai/api/v1"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://openrouter.ai/models"
-    },
-    {
-      "id": "opencode",
-      "display_name": "OpenCode Zen",
-      "auth": [
-        "api_key"
-      ],
-      "offering": "api_key",
-      "credential_env": [
-        "OPENCODE_API_KEY"
-      ],
-      "wires": [
-        "openai-completions"
-      ],
-      "base_url_source": "static",
-      "endpoints": [
-        {
-          "wire": "openai-completions",
-          "base_url": "https://opencode.ai/zen/v1"
-        }
-      ],
-      "models_endpoint": "/v1/models",
-      "docs": "https://opencode.ai/docs/zen"
-    },
-    {
       "id": "vercel",
       "display_name": "Vercel AI Gateway",
       "auth": [
         "api_key"
       ],
       "offering": "api_key",
+      "status": "supported",
       "credential_env": [
         "AI_GATEWAY_API_KEY"
       ],
@@ -450,6 +468,7 @@
         "api_key"
       ],
       "offering": "api_key",
+      "status": "supported",
       "credential_env": [
         "ZENMUX_API_KEY"
       ],
@@ -474,6 +493,7 @@
         "api_key"
       ],
       "offering": "api_key",
+      "status": "supported",
       "credential_env": [
         "OLLAMA_API_KEY"
       ],
@@ -493,6 +513,7 @@
         "api_key"
       ],
       "offering": "api_key",
+      "status": "supported",
       "credential_env": [
         "AZURE_OPENAI_API_KEY"
       ],
@@ -512,6 +533,7 @@
         "oauth"
       ],
       "offering": "api_key",
+      "status": "supported",
       "wires": [
         "openai-completions"
       ],
@@ -529,6 +551,7 @@
         "api_key"
       ],
       "offering": "api_key",
+      "status": "supported",
       "credential_env": [
         "GOOGLE_API_KEY"
       ],
@@ -546,16 +569,6 @@
         }
       ],
       "docs": "https://ai.google.dev/api"
-    },
-    {
-      "id": "google-gemini-cli",
-      "display_name": "Google Gemini CLI",
-      "offering": "api_key",
-      "wires": [
-        "google-gemini-cli"
-      ],
-      "alias_of": "google",
-      "docs": "https://github.com/google-gemini/gemini-cli"
     }
   ]
 }
