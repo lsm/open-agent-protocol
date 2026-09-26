@@ -359,7 +359,7 @@ func (s *Session) applyRunEvent(run *runState, event *native.Event) {
 		s.settleRun(run, &payload)
 	case native.EventMessageDelta:
 		s.emitDelta(run, event, protocol.ContentText)
-	case native.EventReasoningDelta, native.EventThinkingDelta:
+	case native.EventReasoningDelta:
 		s.emitDelta(run, event, protocol.ContentReasoning)
 	case native.EventToolStart:
 		var payload native.ToolStartPayload

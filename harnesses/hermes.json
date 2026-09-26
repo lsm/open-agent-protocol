@@ -7,7 +7,7 @@
       "status": "current",
       "endpoint_version": "v2026.8.31",
       "capability_revision": "hermes-v2026.8.31-oap-v2",
-      "ledgers": ["research/hermes-v2026.8.31-mapping.md"],
+      "ledgers": ["research/hermes-v2026.8.31-mapping.md", "research/hermes-thinking-delta-note.md"],
       "corpus": "fixtures/adapters/hermes-v2026.8.31",
       "components": [
         { "name": "hermes-agent", "version": "v2026.8.31", "repository": "https://github.com/NousResearch/hermes-agent" }
