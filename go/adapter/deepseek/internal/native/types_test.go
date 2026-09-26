@@ -113,16 +113,16 @@ func TestEventContentBoundaryStrictness(t *testing.T) {
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":"https://example.invalid/token"}],"source":{"kind":"user"}}}}`,
 		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"image","attachment":{"mediaType":"image/png"}}],"source":{"kind":"user"}}}}`,
 
-		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"user","plugin":"p"}}}}`,
-		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"plugin","plugin":"p","model":"m"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"model","provider":"p","model":"m"}}}}`,
+		`{"sessionId":"s","event":{"type":"user/message","seq":1,"time":1,"data":{"id":"m","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c","plugin":"p"}}}}`,
 
 		`{"sessionId":"s","event":{"type":"agent/inbox/spliced","seq":1,"time":1,"data":{"target":"next-turn","start":0,"inserted":[{"id":"m","role":"user","content":[{"type":"text"}],"source":{"kind":"user"}}]}}}`,
 
 		`{"sessionId":"s","event":{"type":"assistant/message","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"a","role":"assistant","content":[{"type":"text"}],"source":{"kind":"model","provider":"p","model":"m"}}}}}`,
 
-		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"user","content":[],"source":{"kind":"tool","callId":"c"}}}}}`,
-		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"}}}}}`,
-		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"other","content":[{"type":"text","text":"x"}]}],"source":{"kind":"tool","callId":"c"}}}}}`,
+		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"user","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"},"toolCallId":"c"}}}}`,
+		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"tool","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"},"toolCallId":"other"}}}}`,
+		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"message":{"id":"t","role":"tool","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}]}],"source":{"kind":"tool","callId":"c"},"toolCallId":"c"}}}}`,
 
 		`{"sessionId":"s","event":{"type":"request/header","seq":1,"time":1,"data":{"header":null,"reason":"initial"}}}`,
 		`{"sessionId":"s","event":{"type":"request/header","seq":1,"time":1,"data":{"header":{"apiKey":"secret"},"reason":"initial"}}}`,
@@ -236,22 +236,22 @@ func TestOffloadedMarkerRidesOnlyAnImageBlock(t *testing.T) {
 
 func TestToolErrorRefusesAReasonThatIsNotAString(t *testing.T) {
 	refused := []string{
-		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":null},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`,
-		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":7},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`,
+		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":null},"message":{"id":"t","role":"tool","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"},"toolCallId":"c","isError":true}}}}`,
+		`{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":7},"message":{"id":"t","role":"tool","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"},"toolCallId":"c","isError":true}}}}`,
 	}
 	for _, data := range refused {
 		if _, err := DecodeNotification(NotifySessionEvent, []byte(data)); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("accepted %q: %v", data, err)
 		}
 	}
-	accepted := `{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT"},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`
+	accepted := `{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT"},"message":{"id":"t","role":"tool","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"},"toolCallId":"c","isError":true}}}}`
 	if _, err := DecodeNotification(NotifySessionEvent, []byte(accepted)); err != nil {
 		t.Fatalf("refused an omitted reason: %v", err)
 	}
 }
 
 func TestToolErrorCarriesTheUserFacingReason(t *testing.T) {
-	data := `{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":"a.txt is not there"},"message":{"id":"t","role":"user","content":[{"type":"tool-result","toolCallId":"c","content":[{"type":"text","text":"x"}],"isError":true}],"source":{"kind":"tool","callId":"c"}}}}}`
+	data := `{"sessionId":"s","event":{"type":"tool/result","seq":1,"time":1,"data":{"turn":1,"step":1,"error":{"name":"ToolError","code":"ENOENT","reason":"a.txt is not there"},"message":{"id":"t","role":"tool","content":[{"type":"text","text":"x"}],"source":{"kind":"tool","callId":"c"},"toolCallId":"c","isError":true}}}}`
 	value, err := DecodeNotification(NotifySessionEvent, []byte(data))
 	if err != nil {
 		t.Fatalf("refused a tool error carrying a reason: %v", err)

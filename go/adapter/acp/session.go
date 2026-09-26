@@ -55,7 +55,7 @@ type toolState struct {
 	nativeID                                    string
 	id                                          protocol.ToolCallID
 	run                                         *runState
-	title, kind, status                         string
+	title, name, kind, status                   string
 	rawInput, rawOutput, jsonContent, locations json.RawMessage
 	requested, started, terminal                bool
 }
@@ -410,6 +410,7 @@ func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
 		return false
 	}
 	t.title = u.Title
+	t.name = toolName(u.Name)
 	t.kind = u.Kind
 	t.rawInput = rawClone(u.RawInput)
 	t.rawOutput = rawClone(u.RawOutput)
@@ -449,6 +450,9 @@ func (s *session) applyToolUpdate(run *runState, u native.ToolCallUpdate) {
 	}
 	if u.Title != nil && *u.Title != "" {
 		t.title = *u.Title
+	}
+	if name := toolName(u.Name); name != "" {
+		t.name = name
 	}
 	if u.Kind != nil {
 		t.kind = *u.Kind
@@ -545,8 +549,21 @@ func (s *session) applyToolStatus(t *toolState, status string) {
 	}
 	_ = s.emit(t.run, typ, payload, false)
 }
+func toolName(raw json.RawMessage) string {
+	var name string
+	if json.Unmarshal(raw, &name) != nil {
+		return ""
+	}
+	return name
+}
+func (t *toolState) displayName() string {
+	if t.name != "" {
+		return t.name
+	}
+	return t.title
+}
 func (s *session) toolPayload(t *toolState) protocol.ActionCallPayload {
-	p := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: endpointID, ExecutionOwner: "acp-agent", Name: t.title, ArgumentsJSON: rawClone(t.rawInput)}
+	p := protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: endpointID, ExecutionOwner: "acp-agent", Name: t.displayName(), ArgumentsJSON: rawClone(t.rawInput)}
 	if t.status == "failed" {
 		p.Error = &protocol.ProtocolError{Code: "tool_failed", Message: "ACP tool call failed"}
 		p.Result = rawClone(t.rawOutput)

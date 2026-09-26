@@ -400,7 +400,7 @@ func (s *Session) observeCandidate(run *runState, e native.Event) {
 	}
 }
 func directUser(source native.MessageSource) bool {
-	return source.Kind == "user" && source.Plugin == "" && source.Provider == "" && source.Model == "" && source.CallID == "" && source.Form == "" && source.Summary == "" && len(source.Sections) == 0 && len(source.ReplayState) == 0
+	return source.DirectUser()
 }
 
 func (s *Session) discardCandidate(run *runState) {
@@ -511,13 +511,21 @@ func (s *Session) evaluateAdmission(run *runState) {
 	}
 	run.signalStart(nil)
 	turnEndSeq := int64(0)
+	admittedStep := run.step
 	for _, e := range run.candidateEvents {
 		if e.Type == "turn/end" {
 			turnEndSeq = e.Seq
 		}
-		if e.Type != "turn/start" && e.Type != "step/start" && e.Type != "user/message" {
-			s.applyOwnedEvent(run, e)
+		if e.Type == "turn/start" || e.Type == "user/message" {
+			continue
 		}
+		if e.Type == "step/start" {
+			var v native.StepBoundary
+			if e.DataAs(&v) == nil && v.Step <= admittedStep {
+				continue
+			}
+		}
+		s.applyOwnedEvent(run, e)
 	}
 
 	for _, buffered := range run.pendingNotifications {

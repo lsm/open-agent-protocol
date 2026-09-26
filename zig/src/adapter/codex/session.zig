@@ -351,6 +351,63 @@ pub const Reducer = struct {
         try self.call(.{ .turn_start = index }, native.method_turn_start, params);
     }
 
+    pub fn compactInto(self: *const Reducer, arena: *std.heap.ArenaAllocator) !Reducer {
+        if (self.active != null or self.envelopes.items.len != 0 or self.writes.items.len != 0) return Error.RunActive;
+        const keep = arena.allocator();
+        var kept = Reducer.init(arena, self.options);
+        kept.ids = self.ids;
+        kept.clock = self.clock;
+        kept.next_request = self.next_request;
+        kept.opening = self.opening;
+        kept.opened = self.opened;
+        kept.closed = self.closed;
+        kept.transport_closed = self.transport_closed;
+        kept.thread_id = try keep.dupe(u8, self.thread_id);
+        kept.session_id = try keep.dupe(u8, self.session_id);
+        const status = try keep.dupe(u8, self.state.status);
+        const active_run_id = try keep.dupe(u8, self.state.active_run_id);
+        const transcript_cursor = try keep.dupe(u8, self.state.transcript_cursor);
+        const current_model_id = try keep.dupe(u8, self.state.current_model_id);
+        kept.state = .{
+            .status = status,
+            .active_run_id = active_run_id,
+            .updated_at_ms = self.state.updated_at_ms,
+            .transcript_cursor = transcript_cursor,
+            .current_model_id = current_model_id,
+        };
+        try kept.runs.ensureTotalCapacity(keep, self.runs.items.len);
+        for (self.runs.items) |run| {
+            const id = try keep.dupe(u8, run.id);
+            const turn_id = try keep.dupe(u8, run.turn_id);
+            const run_status = try keep.dupe(u8, run.status);
+            kept.runs.appendAssumeCapacity(.{
+                .id = id,
+                .message_id = "",
+                .model = "",
+                .message_ids = &.{},
+                .turn_id = turn_id,
+                .admitted = run.admitted,
+                .status = run_status,
+                .next_sequence = run.next_sequence,
+                .started = run.started,
+                .terminal = true,
+            });
+        }
+        try kept.items.ensureTotalCapacity(keep, self.items.items.len);
+        for (self.items.items) |item| {
+            const native_id = try keep.dupe(u8, item.native_id);
+            const item_run_id = try keep.dupe(u8, item.run_id);
+            kept.items.appendAssumeCapacity(.{ .native_id = native_id, .run_id = item_run_id, .tool_call_id = "", .name = "", .arguments = .{ .null = {} }, .started = item.started, .terminal = item.terminal });
+        }
+        try kept.interactions.ensureTotalCapacity(keep, self.interactions.items.len);
+        for (self.interactions.items) |interaction| {
+            const interaction_id = try keep.dupe(u8, interaction.id);
+            const interaction_run_id = try keep.dupe(u8, interaction.run_id);
+            kept.interactions.appendAssumeCapacity(.{ .id = interaction_id, .kind = interaction.kind, .run_id = interaction_run_id, .tool_call_id = "", .request = .{ .integer = 0 }, .resolved = interaction.resolved });
+        }
+        return kept;
+    }
+
     pub fn cancel(self: *Reducer, run_id: []const u8) !?CancelResult {
         const index = self.admittedRun(run_id) orelse return Error.RunNotFound;
         const run = &self.runs.items[index];
@@ -1801,4 +1858,70 @@ fn scenarioProbe(allocator: std.mem.Allocator) !void {
 
 test "a reducer run over an arena propagates every allocation failure and leaks nothing" {
     try testing.checkAllAllocationFailures(testing.allocator, scenarioProbe, .{});
+}
+
+fn settledWithAction(arena: *std.heap.ArenaAllocator) !Reducer {
+    var reducer = try running(arena);
+    try feed(&reducer, command_started);
+    try feed(&reducer, approval_frame);
+    try feed(&reducer, "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"native-thread\",\"turn\":{\"id\":\"native-turn\",\"status\":\"completed\"}}}");
+    reducer.envelopes.clearRetainingCapacity();
+    reducer.writes.clearRetainingCapacity();
+    return reducer;
+}
+
+test "a compacted reducer still ignores a reused item id, fails its completion, and answers a settled interaction as resolved" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    var reducer = try settledWithAction(&source);
+    try testing.expectEqual(@as(usize, 1), reducer.items.items.len);
+    try testing.expectEqual(@as(usize, 1), reducer.interactions.items.len);
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    var kept = try reducer.compactInto(&target);
+    const interaction_id = try target.allocator().dupe(u8, reducer.interactions.items[0].id);
+    const settled_run = try target.allocator().dupe(u8, reducer.interactions.items[0].run_id);
+    source.deinit();
+
+    try testing.expectEqual(@as(usize, 1), kept.items.items.len);
+    try testing.expectEqualStrings("native-item", kept.items.items[0].native_id);
+    try testing.expect(kept.pendingInteraction() == null);
+    const late = PermissionResolve{ .interaction_id = interaction_id, .requested_by = endpoint_id, .responded_by = "user", .session_id = "session-1", .run_id = settled_run, .choice_id = "accept", .granted = true };
+    try testing.expectError(Error.InteractionResolved, kept.resolve(.{ .run_id = settled_run, .responded_by = "user", .permission = late }));
+
+    try kept.submit(.{ .messages = &.{.{ .text = "again" }} });
+    try answerCall(&kept, "{\"turn\":{\"id\":\"second-turn\",\"status\":\"inProgress\"}}");
+    try feed(&kept, "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"native-thread\",\"turn\":{\"id\":\"second-turn\",\"status\":\"inProgress\"}}}");
+    const before_reuse = kept.envelopes.items.len;
+    try feed(&kept, "{\"method\":\"item/started\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"second-turn\",\"item\":{\"type\":\"commandExecution\",\"id\":\"native-item\",\"command\":\"true\"}}}");
+    try testing.expectEqual(before_reuse, kept.envelopes.items.len);
+    try feed(&kept, "{\"method\":\"item/completed\",\"params\":{\"threadId\":\"native-thread\",\"turnId\":\"second-turn\",\"item\":{\"type\":\"commandExecution\",\"id\":\"native-item\",\"status\":\"completed\"}}}");
+    try testing.expectEqualStrings("run.failed", lastType(&kept));
+    try testing.expectEqualStrings("invalid_native_action", errorCode(&kept));
+}
+
+fn compactProbe(allocator: std.mem.Allocator) !void {
+    var source = std.heap.ArenaAllocator.init(allocator);
+    defer source.deinit();
+    var reducer = try settledWithAction(&source);
+    reducer.envelopes.clearRetainingCapacity();
+    reducer.writes.clearRetainingCapacity();
+    var target = std.heap.ArenaAllocator.init(allocator);
+    defer target.deinit();
+    _ = try reducer.compactInto(&target);
+}
+
+test "compaction propagates every allocation failure and leaks nothing" {
+    try testing.checkAllAllocationFailures(testing.allocator, compactProbe, .{});
+}
+
+test "compaction is refused while a run is active or events are undrained" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try running(&arena);
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    try testing.expectError(Error.RunActive, reducer.compactInto(&target));
+    try feed(&reducer, "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"native-thread\",\"turn\":{\"id\":\"native-turn\",\"status\":\"completed\"}}}");
+    try testing.expect(reducer.envelopes.items.len > 0);
+    try testing.expectError(Error.RunActive, reducer.compactInto(&target));
 }
