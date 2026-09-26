@@ -38,7 +38,7 @@ of `oapx` today, whatever their users expect.
 It carries the TUI, its own agent loop, the providers and login, the harness
 backends, and the tools another implementation needs to prove itself: `validate`
 and `conformance`. `oapx conformance` does not exist yet, and `oapx validate`
-lacks extension packs, tolerant mode and the provider and presentation profiles.
+lacks extension packs, tolerant mode and the presentation profile.
 Both are now product work. That reverses 0019's view that `conformance/` "moves
 only if someone wants it in the product": every other language wants it.
 
