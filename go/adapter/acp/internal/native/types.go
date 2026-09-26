@@ -63,6 +63,7 @@ type ToolCall struct {
 	SessionUpdate string          `json:"sessionUpdate"`
 	ToolCallID    string          `json:"toolCallId"`
 	Title         string          `json:"title"`
+	Name          json.RawMessage `json:"name,omitempty"`
 	Kind          string          `json:"kind,omitempty"`
 	Status        string          `json:"status,omitempty"`
 	RawInput      json.RawMessage `json:"rawInput,omitempty"`
@@ -74,6 +75,7 @@ type ToolCallUpdate struct {
 	SessionUpdate string          `json:"sessionUpdate"`
 	ToolCallID    string          `json:"toolCallId"`
 	Title         *string         `json:"title,omitempty"`
+	Name          json.RawMessage `json:"name,omitempty"`
 	Kind          *string         `json:"kind,omitempty"`
 	Status        *string         `json:"status,omitempty"`
 	RawInput      json.RawMessage `json:"rawInput,omitempty"`

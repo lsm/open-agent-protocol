@@ -282,7 +282,7 @@ func TestAdmissionWaitsForExactDirectUserProof(t *testing.T) {
 	f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{}, Source: source("user")}}})
 	f.ev(2, "turn/start", native.TurnStart{Turn: 1})
 	f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
-	f.ev(4, "user/message", native.UserMessage{ID: "receipt", Role: "user", Content: []native.ContentBlock{}, Source: native.MessageSource{Kind: "plugin", Plugin: "x"}})
+	f.ev(4, "user/message", native.UserMessage{ID: "receipt", Role: "user", Content: []native.ContentBlock{}, Source: native.MessageSource{Kind: "runtime-context"}})
 	select {
 	case <-ch:
 		t.Fatal("synthetic message admitted")
@@ -571,7 +571,7 @@ func TestEnteredMessageMayArriveInLaterStep(t *testing.T) {
 		f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")}}})
 		f.ev(2, "turn/start", native.TurnStart{Turn: 1})
 		f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
-		f.ev(4, "user/message", native.UserMessage{ID: "other", Role: "user", Content: []native.ContentBlock{}, Source: native.MessageSource{Kind: "plugin", Plugin: "watcher"}})
+		f.ev(4, "user/message", native.UserMessage{ID: "other", Role: "user", Content: []native.ContentBlock{}, Source: native.MessageSource{Kind: "runtime-context"}})
 		f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 		f.ev(6, "step/start", native.StepBoundary{Turn: 1, Step: 2})
 		f.ev(7, "user/message", native.UserMessage{ID: receipt, Role: "user", Content: []native.ContentBlock{}, Source: source("user")})
@@ -617,6 +617,35 @@ func TestEnteredMessageMayArriveInLaterStep(t *testing.T) {
 	}
 	t.Run("retrospective proof at the reply", func(t *testing.T) { runCase(t, false) })
 	t.Run("live proof during dispatch", func(t *testing.T) { runCase(t, true) })
+}
+
+func TestRetrospectiveAdmissionReplaysLaterSteps(t *testing.T) {
+	s, f := openTest(t)
+	ch := submitAsync(s)
+	<-f.started
+	f.ev(1, "agent/inbox/spliced", native.InboxSpliced{Target: "next-turn", Start: 0, Inserted: []native.UserMessage{{ID: "receipt", Role: "user", Content: []native.ContentBlock{}, Source: source("user")}}})
+	f.ev(2, "turn/start", native.TurnStart{Turn: 1})
+	f.ev(3, "step/start", native.StepBoundary{Turn: 1, Step: 1})
+	f.ev(4, "user/message", native.UserMessage{ID: "receipt", Role: "user", Content: []native.ContentBlock{}, Source: source("user")})
+	f.ev(5, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+	f.ev(6, "step/start", native.StepBoundary{Turn: 1, Step: 2})
+	f.ev(7, "assistant/message", assistantMessage(1, 2, "a", []native.ContentBlock{{Type: "text", Text: "hi"}}, native.MessageSource{Kind: "model", Provider: "p", Model: "m"}, `[]`, nil))
+	f.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 2})
+	f.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+	f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	f.prompts <- promptReply{id: "receipt"}
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("retrospective admission rejected: %v", got.err)
+		}
+		events := drain(t, got.st)
+		if last := events[len(events)-1]; last.Type != protocol.TypeRunCompleted {
+			t.Fatalf("a step after the admitted one was not replayed: %s %s", last.Type, last.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("admission timed out")
+	}
 }
 
 func TestNativeSequenceStartsAtZero(t *testing.T) {
@@ -808,7 +837,7 @@ func TestRepeatedToolCallIsRefused(t *testing.T) {
 func TestToolFailureCarriesTheReasonRatherThanTheErrorClass(t *testing.T) {
 	events := failingTurn(t, func(f *fakeClient) {
 		f.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
-		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT", Reason: json.RawMessage(`"a.txt is not there"`)}, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
+		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT", Reason: json.RawMessage(`"a.txt is not there"`)}, Message: native.ToolResultMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
 		f.ev(7, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
 		f.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 		f.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
@@ -842,7 +871,7 @@ func TestToolFailureCarriesTheReasonRatherThanTheErrorClass(t *testing.T) {
 func TestToolFailureFallsBackToTheErrorClassWithoutAReason(t *testing.T) {
 	events := failingTurn(t, func(f *fakeClient) {
 		f.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
-		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT"}, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
+		f.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Error: &native.ToolError{Name: "ToolError", Code: "ENOENT"}, Message: native.ToolResultMessage{Source: native.MessageSource{Kind: "tool", CallID: "call-1"}}})
 		f.ev(7, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
 		f.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 		f.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
@@ -869,7 +898,7 @@ func TestToolFailureFallsBackToTheErrorClassWithoutAReason(t *testing.T) {
 
 func TestToolResultWithoutItsCallIsRefused(t *testing.T) {
 	events := failingTurn(t, func(f *fakeClient) {
-		f.ev(5, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.UserMessage{Source: native.MessageSource{Kind: "tool", CallID: "never-called"}}})
+		f.ev(5, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.ToolResultMessage{Source: native.MessageSource{Kind: "tool", CallID: "never-called"}}})
 	})
 	assertFailedWith(t, events, "deepseek_tool_lifecycle", "unmatched tool result")
 }
@@ -1025,7 +1054,7 @@ func TestArgumentsTravelVerbatimSoATraceWithDuplicateKeysIsRefused(t *testing.T)
 	admitted, stream := admission(t, session, client, "receipt")
 	const carried = `{"path":"a","mode":"r"}`
 	client.ev(5, "tool/call", toolCallEvent(carried))
-	client.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.UserMessage{ID: "m", Role: "user", Source: native.MessageSource{Kind: "tool", CallID: "call-1"}, Content: []native.ContentBlock{{Type: "tool-result", ToolCallID: "call-1", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}}}}})
+	client.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.ToolResultMessage{ID: "m", Role: "tool", Source: native.MessageSource{Kind: "tool", CallID: "call-1"}, ToolCallID: "call-1", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}}})
 	client.ev(7, "assistant/message", finalToolCallMessage(carried))
 	client.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 	client.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
@@ -1131,7 +1160,7 @@ func TestAToolThatFinishedIsNotSettledAgainAtTheTerminal(t *testing.T) {
 	session, client := openTest(t)
 	admitted, stream := admission(t, session, client, "receipt")
 	client.ev(5, "tool/call", native.ToolCall{Turn: 1, Step: 1, CallID: "call-1", Name: "read", Arguments: `{}`})
-	client.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.UserMessage{ID: "m", Role: "user", Source: native.MessageSource{Kind: "tool", CallID: "call-1"}, Content: []native.ContentBlock{{Type: "tool-result", ToolCallID: "call-1", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}}}}})
+	client.ev(6, "tool/result", native.ToolResult{Turn: 1, Step: 1, Message: native.ToolResultMessage{ID: "m", Role: "tool", Source: native.MessageSource{Kind: "tool", CallID: "call-1"}, ToolCallID: "call-1", Content: []native.ContentBlock{{Type: "text", Text: "ok"}}}})
 	client.ev(7, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
 	client.ev(8, "step/end", native.StepBoundary{Turn: 1, Step: 1})
 	client.ev(9, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})

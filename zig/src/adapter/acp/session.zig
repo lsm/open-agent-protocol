@@ -58,6 +58,7 @@ const Tool = struct {
     id: []const u8,
     run_id: []const u8,
     title: []const u8 = "",
+    name: []const u8 = "",
     kind: []const u8 = "",
     status: []const u8 = "",
     raw_input: ?std.json.Value = null,
@@ -559,6 +560,7 @@ pub const Reducer = struct {
         }
         const tool = &self.tools.items[at];
         tool.title = title;
+        tool.name = nestedName(update, parent);
         tool.kind = nestedString(update, parent, "kind");
         tool.raw_input = nestedLast(update, parent, "rawInput");
         tool.raw_output = nestedLast(update, parent, "rawOutput");
@@ -593,6 +595,9 @@ pub const Reducer = struct {
         const tool = &self.tools.items[index];
         if (presentString(update, "title")) |value| {
             if (value.len > 0) tool.title = value;
+        }
+        if (presentString(update, "name")) |value| {
+            if (value.len > 0) tool.name = value;
         }
         if (presentString(update, "kind")) |value| tool.kind = value;
         if (gojson.foldedLast(update, &.{"rawInput"})) |value| tool.raw_input = value;
@@ -657,7 +662,8 @@ pub const Reducer = struct {
         try self.put(&payload, "tool_call_id", str(tool.id));
         try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "execution_owner", str(harness_owner));
-        if (tool.title.len > 0) try self.put(&payload, "name", str(tool.title));
+        const name = if (tool.name.len > 0) tool.name else tool.title;
+        if (name.len > 0) try self.put(&payload, "name", str(name));
         if (keep.arguments) {
             if (tool.raw_input) |value| {
                 try self.put(&payload, "arguments_json", value);
@@ -737,6 +743,32 @@ pub const Reducer = struct {
         try self.put(&payload, "choices", .{ .array = choices });
         if (self.tools.items[index].raw_input) |value| try self.put(&payload, "arguments_json", value);
         gate.requested_event = try self.emit(run, "action.permission.requested", .{ .object = payload });
+    }
+
+    pub fn compactInto(self: *const Reducer, arena: *std.heap.ArenaAllocator, options: Options) !Reducer {
+        if (self.run) |run| {
+            if (!run.terminal) return Error.RunActive;
+        }
+        if (self.envelopes.items.len != 0) return Error.RunActive;
+        const keep = arena.allocator();
+        var kept = Reducer.init(arena, options);
+        kept.ids = self.ids;
+        kept.clock = self.clock;
+        kept.last_sequence = self.last_sequence;
+        try kept.tools.ensureTotalCapacity(keep, self.tools.items.len);
+        for (self.tools.items) |tool| {
+            const native_id = try keep.dupe(u8, tool.native_id);
+            const id = try keep.dupe(u8, tool.id);
+            const run_id = try keep.dupe(u8, tool.run_id);
+            kept.tools.appendAssumeCapacity(.{ .native_id = native_id, .id = id, .run_id = run_id, .terminal = true });
+        }
+        try kept.gates.ensureTotalCapacity(keep, self.gates.items.len);
+        for (self.gates.items) |gate| {
+            const id = try keep.dupe(u8, gate.id);
+            const run_id = try keep.dupe(u8, gate.run_id);
+            kept.gates.appendAssumeCapacity(.{ .id = id, .run_id = run_id, .tool = gate.tool, .choices = &.{}, .resolved = gate.resolved });
+        }
+        return kept;
     }
 
     pub fn pendingInteraction(self: *Reducer) ?[]const u8 {
@@ -824,6 +856,11 @@ fn nestedString(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) [
 fn nestedLast(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) ?std.json.Value {
     if (parent) |name| return gojson.foldedLast(map, &.{ name, key });
     return gojson.foldedLast(map, &.{key});
+}
+
+fn nestedName(map: std.json.ObjectMap, parent: ?[]const u8) []const u8 {
+    const value = nestedLast(map, parent, "name") orelse return "";
+    return if (value == .string) value.string else "";
 }
 
 fn presentString(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -1542,6 +1579,37 @@ test "a patch with no status reports progress only once the call has started" {
     try testing.expectEqualStrings("Renamed", payloadAt(&reducer, 3).get("name").?.string);
     try testing.expect(payloadAt(&reducer, 3).get("arguments_json") == null);
     try testing.expect(payloadAt(&reducer, 3).get("result") == null);
+}
+
+test "a tool name outranks the title and a wrongly typed one is ignored" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"native-tool","title":"Read file","name":"read_file","status":"pending"}
+    ));
+    try testing.expectEqualStrings("read_file", payloadAt(&reducer, 1).get("name").?.string);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","status":"in_progress","name":7}
+    ));
+    try testing.expectEqualStrings("read_file", payloadAt(&reducer, 2).get("name").?.string);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","status":"completed","name":"grep"}
+    ));
+    try testing.expectEqualStrings("action.call.completed", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("grep", payloadAt(&reducer, 3).get("name").?.string);
+}
+
+test "a null tool name falls back to the title" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"native-tool","title":"Read file","name":null}
+    ));
+    try testing.expectEqualStrings("Read file", payloadAt(&reducer, 1).get("name").?.string);
 }
 
 test "a terminal status that never started synthesizes the start it skipped" {
@@ -2312,4 +2380,68 @@ test "a null leaf clears a raw member but not the title beside it" {
     const payload = payloadAt(&reducer, last);
     try testing.expectEqualStrings("first", payload.get("title").?.string);
     try testing.expect(payload.get("arguments_json").? == .null);
+}
+
+fn settledWithTool(arena: *std.heap.ArenaAllocator) !Reducer {
+    const scratch = arena.allocator();
+    var reducer = try openRun(arena);
+    try feed(&reducer, scratch, tool_call_frame);
+    try feed(&reducer, scratch, permission_frame);
+    try reducer.settlePrompt("end_turn");
+    reducer.envelopes.clearRetainingCapacity();
+    return reducer;
+}
+
+test "a compacted reducer still refuses a tool id an earlier run used, and answers its settled gate as resolved" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    var reducer = try settledWithTool(&source);
+    const gate_id = reducer.gates.items[0].id;
+    const settled_run = reducer.run.?.id;
+    const ids_before = reducer.ids;
+
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    var kept = try reducer.compactInto(&target, reducer.options);
+    const kept_gate = try target.allocator().dupe(u8, gate_id);
+    const kept_run = try target.allocator().dupe(u8, settled_run);
+    source.deinit();
+
+    try testing.expectEqual(ids_before, kept.ids);
+    try testing.expectEqual(@as(usize, 1), kept.tools.items.len);
+    try testing.expectEqualStrings("native-tool", kept.tools.items[0].native_id);
+    try testing.expectError(Error.InteractionResolved, kept.resolve(kept_gate, kept_run, "user", "allow", true));
+
+    const scratch = target.allocator();
+    try kept.submit(1);
+    try feed(&kept, scratch, tool_call_frame);
+    var failed: ?std.json.ObjectMap = null;
+    for (kept.envelopes.items) |envelope| {
+        if (std.mem.eql(u8, envelope.object.get("type").?.string, "run.failed")) failed = envelope.object.get("payload").?.object;
+    }
+    try testing.expectEqualStrings("acp_tool_id_reuse", failed.?.get("error").?.object.get("code").?.string);
+}
+
+test "a reducer with a live run or undrained events refuses compaction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    try testing.expectError(Error.RunActive, reducer.compactInto(&target, reducer.options));
+    try reducer.settlePrompt("end_turn");
+    try testing.expect(reducer.envelopes.items.len > 0);
+    try testing.expectError(Error.RunActive, reducer.compactInto(&target, reducer.options));
+}
+
+fn compactProbe(allocator: std.mem.Allocator, reducer: *const Reducer) !void {
+    var target = std.heap.ArenaAllocator.init(allocator);
+    defer target.deinit();
+    _ = try reducer.compactInto(&target, reducer.options);
+}
+
+test "reducer compaction propagates every allocation failure and leaks nothing" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    defer source.deinit();
+    const reducer = try settledWithTool(&source);
+    try testing.checkAllAllocationFailures(testing.allocator, compactProbe, .{&reducer});
 }
