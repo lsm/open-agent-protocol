@@ -75,22 +75,23 @@ Optional, additive, and each absent by default:
 | Member | Shape | Why |
 | --- | --- | --- |
 | `cost` | `{ input, output, cache_read, cache_write }`, all optional numbers | a caller that shows a rate needs the four numbers; nothing else is carried |
-| `input_modalities` | list of `text`, `image`, `audio`, `document` | completes the media surface `capabilities` starts |
+| `input_modalities` | list of `text`, `image`, `audio`, `video`, `document` | completes the media surface `capabilities` starts |
 | `output_modalities` | same vocabulary | a model that answers in more than text cannot say so today |
 | `reasoning_levels` | list of `reasoningLevel` | the set a model accepts, with `reasoning_default` naming one of them |
 | `release_date` | string | lets a client order siblings |
 | `family` | string | groups models that differ only in size or speed |
 
-The vocabulary is `text`, `image`, `audio` and `document`. A model is offered a
-*document* rather than a PDF because a document is what a caller holds and a PDF
-is one format of it, so naming the format would make every other document format
-a second value. v0.1 adds no `video`, on the same bar a cost tier waits by: a
-value no row publishes is a claim about the schema rather than about a model.
-The [evidence ledger](../research/opencode-provider-catalog-mapping.md) names
-the candidate — the opencode catalog lists `video` and `pdf` among modalities,
-and Kimi's own listing claims it takes video — so what is missing is a provider
-the conformance corpus can show, and a Kimi model publishing video input in a
-listing read through `provider.models.list` puts `video` in.
+The vocabulary is `text`, `image`, `audio`, `video` and `document`. A model is
+offered a *document* rather than a PDF because a document is what a caller holds
+and a PDF is one format of it, so naming the format would make every other
+document format a second value. `video` is in v0.1 because a provider in the
+evidence publishes it: the
+[evidence ledger](../research/opencode-provider-catalog-mapping.md) records the
+opencode catalog carrying `video` in its modality lists and Kimi's own listing
+claiming it takes video, so a value the catalog already holds is a fact the
+entry can carry rather than a claim about the schema. A cost tier stays out on
+the other bar, no provider in the evidence being shown publishing one, so the
+two answers are not the same answer twice.
 
 `cost` is a fact, not a quotation and not a promise. No conformance unit judges
 it, it is true only of the response that carried it, and an implementation that
@@ -99,10 +100,10 @@ price. The provider schema carries no cost member today, so nothing here is a
 change to a claim already made. It is carried anyway, because a caller asked for
 a rate has nowhere else to read one and the fact already exists one layer below
 the boundary. Its shape is flat — the four numbers, and no tier. A tiered rate
-such as the `context_over_200k` the evidence records is not in v0.1: no row in
-the conformance corpus carries one, and a shape nothing fills is a claim about
-the schema rather than about a model. A tier joins when a row needs it, and the
-shape it takes is settled by that row.
+such as the `context_over_200k` the evidence records on a model's cost record
+is not in v0.1: the ledger shows no provider publishing one, and a shape nothing
+fills is a claim about the schema rather than about a model. A tier joins when a
+provider's evidence needs it, and the shape it takes is settled by that row.
 
 `capabilities` keeps its behavioural members and its three media values are
 **superseded** by the two modality lists: a caller reading the lists ignores
@@ -226,10 +227,11 @@ executable yet, and what accepting it requires has not moved.
 3. **`cost` stays flat at four numbers.** Tiers arrive when a row needs one, and
    the shape a tier takes is settled by that row rather than by a field no
    provider fills.
-4. **The modality is `document`, and v0.1 adds no `video`.** The name is what a
-   caller holds, not the format it arrives in; `video` waits for a provider the
-   corpus can show, with Kimi's own listing named in the evidence as the
-   candidate.
+4. **The modality is `document`, and `video` is in v0.1.** The name is what a
+   caller holds, not the format it arrives in, and `video` clears the bar the
+   answer sets: a provider in the evidence publishes it, with Kimi's own listing
+   claiming it takes video and the opencode catalog carrying it among its
+   modality lists.
 5. **The agent side takes no completeness member for now.** `+models` and
    `models.response` are untouched, so a partial provider listing leaves the
    two-directional binding standing, and the question returns with a provider
