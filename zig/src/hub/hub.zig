@@ -410,6 +410,10 @@ pub const Hub = struct {
     pub fn resolve(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, resolution: contract.Resolution) Failure!void {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (entry.closed) return error.SessionClosed;
+        switch (resolution) {
+            .input => |request| if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch,
+            .permission => |request| if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch,
+        }
         var refusal = contract.Refusal{};
         return entry.session.resolve(arena, resolution, &refusal);
     }
@@ -512,7 +516,9 @@ pub const Hub = struct {
         _ = arena;
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (entry.closed) return error.SessionClosed;
-        if (options.after == null and options.run_id.len > 0) return error.InvalidCursor;
+        const named_run = try self.allocator.dupe(u8, options.run_id);
+        defer self.allocator.free(named_run);
+        if (options.after == null and named_run.len > 0) return error.InvalidCursor;
         if (self.heldFor(entry)) |held| {
             if (options.after == null) {
                 if (held.detached or held.ending == .expired) {
@@ -534,7 +540,7 @@ pub const Hub = struct {
         subscription.* = .{ .hub = self, .session_id = try self.allocator.dupe(u8, session_id) };
         errdefer subscription.release(self.allocator);
         if (options.after) |after| {
-            try self.replay(entry, subscription, after, options.run_id);
+            try self.replay(entry, subscription, after, named_run);
         } else {
             const joined = self.journaled(entry, entry.run_id);
             subscription.joined = joined > 0;
@@ -548,10 +554,11 @@ pub const Hub = struct {
 
     pub fn hold(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!*Subscription {
         const subscription = try self.subscribe(arena, session_id, .{});
-        subscription.held = true;
-        subscription.expires_ns = self.clock() + self.hold_ns;
+        const expires = self.clock() + self.hold_ns;
         try self.holds.ensureUnusedCapacity(self.allocator, 1);
-        self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = subscription.expires_ns });
+        self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = expires });
+        subscription.held = true;
+        subscription.expires_ns = expires;
         return subscription;
     }
 
@@ -795,13 +802,6 @@ pub const Hub = struct {
         entry.subscribers.clearRetainingCapacity();
     }
 
-    fn retireSubscription(self: *Hub, subscription: *Subscription, ending: Ending) void {
-        subscription.ending = ending;
-        const entry = self.findSession(subscription.session_id) orelse return;
-        for (entry.subscribers.items) |existing| {
-            if (existing == subscription) existing.ending = ending;
-        }
-    }
 
     fn detach(self: *Hub, subscription: *Subscription) void {
         const entry = self.findSession(subscription.session_id) orelse return;
@@ -1245,6 +1245,71 @@ test "a session-scoped request may not address another session" {
     const elsewhere = try submitFor(arena, "elsewhere");
     try testing.expectError(error.ScopeMismatch, hub.submit(arena, opened.session_id, &elsewhere));
     try testing.expectError(error.RunNotFound, hub.cancel(arena, opened.session_id, "run-9"));
+}
+
+test "a resolution may not answer a gate opened on another session" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "gatekeeper" });
+    const foreign = oap_types.PermissionResolveRequest{
+        .interaction_id = "permission-2",
+        .requested_by = memory.endpoint_id,
+        .responded_by = "user",
+        .session_id = "somebody-else",
+        .run_id = "run-1",
+        .granted = true,
+        .choice_id = "approve",
+    };
+    try testing.expectError(error.ScopeMismatch, hub.resolve(arena, opened.session_id, .{ .permission = &foreign }));
+    const own = oap_types.PermissionResolveRequest{
+        .interaction_id = "permission-2",
+        .requested_by = memory.endpoint_id,
+        .responded_by = "user",
+        .session_id = opened.session_id,
+        .run_id = "run-1",
+        .granted = true,
+        .choice_id = "approve",
+    };
+    try testing.expectError(error.RunNotFound, hub.resolve(arena, opened.session_id, .{ .permission = &own }));
+    const foreign_input = oap_types.UserInputResolveRequest{
+        .interaction_id = "input-3",
+        .requested_by = memory.endpoint_id,
+        .responded_by = "user",
+        .session_id = "somebody-else",
+        .run_id = "run-1",
+        .answers = &.{},
+    };
+    try testing.expectError(error.ScopeMismatch, hub.resolve(arena, opened.session_id, .{ .input = &foreign_input }));
+}
+
+test "a cursor may name the overflow a hold reported, which the discard just freed" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256, .hold_ns = 50 * std.time.ns_per_ms });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "resumer" });
+    const held = try hub.hold(arena, opened.session_id);
+    const request = try submitFor(arena, "resumer");
+    _ = try hub.submit(arena, "resumer", &request);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.overflow, held.ending);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
+    try testing.expectEqualStrings("run-1", resumed.run_id);
+    try testing.expectEqual(@as(u64, 1), resumed.highest);
+    const first = resumed.next().?;
+    try testing.expectEqual(@as(u64, 2), first.sequence);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
 }
 
 test "a catalog is checked before it is served, and stamped with its revision" {
