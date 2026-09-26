@@ -424,8 +424,6 @@ corpus, one per run. Where it differs from the Go adapter:
   `user.input` once the run starts, outside a run it is ignored, and one still
   open when the run settles resolves `cancelled` with nothing written to Pi.
   `action.permissions` stays `unavailable` as in Go.
-- A submission carrying image parts is refused `invalid_submission`; Go
-  forwards inline images in the native prompt. Only text parts are served.
 - Like Go, each state request reads `get_state` again and answers the adapter
   projection; a reply naming another native session makes the session
   unusable. As in Go, a reply with no session, a negative count, an unknown
