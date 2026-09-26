@@ -2446,7 +2446,8 @@
             "run_id": "run-1",
             "message_id": "message-2",
             "part": {
-              "type": "reasoning"
+              "type": "reasoning",
+              "reasoning": ""
             }
           },
           "sequence": 2,
@@ -2469,7 +2470,8 @@
               "role": "assistant",
               "content": [
                 {
-                  "type": "reasoning"
+                  "type": "reasoning",
+                  "reasoning": ""
                 }
               ]
             },

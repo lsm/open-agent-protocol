@@ -91,6 +91,34 @@ type ContentPart struct {
 	Carry         string          `json:"carry,omitempty"`
 }
 
+func (p ContentPart) MarshalJSON() ([]byte, error) {
+	type contentPart struct {
+		Type          ContentPartType `json:"type"`
+		Text          *string         `json:"text,omitempty"`
+		Reasoning     *string         `json:"reasoning,omitempty"`
+		Image         *ImageContent   `json:"image,omitempty"`
+		ToolCallID    ToolCallID      `json:"tool_call_id,omitempty"`
+		Name          string          `json:"name,omitempty"`
+		ArgumentsJSON json.RawMessage `json:"arguments_json,omitempty"`
+		Result        json.RawMessage `json:"result,omitempty"`
+		IsError       *bool           `json:"is_error,omitempty"`
+		Carry         string          `json:"carry,omitempty"`
+	}
+	out := contentPart{
+		Type: p.Type, Image: p.Image, ToolCallID: p.ToolCallID,
+		Name: p.Name, ArgumentsJSON: p.ArgumentsJSON, Result: p.Result, IsError: p.IsError, Carry: p.Carry,
+	}
+	if p.Type == ContentText {
+		text := p.Text
+		out.Text = &text
+	}
+	if p.Type == ContentReasoning {
+		reasoning := p.Reasoning
+		out.Reasoning = &reasoning
+	}
+	return json.Marshal(out)
+}
+
 type ImageContent struct {
 	URL       string `json:"url,omitempty"`
 	Data      string `json:"data,omitempty"`

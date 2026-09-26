@@ -870,7 +870,7 @@ it walked the reducer's entry points and not the codec's, which is where the
 largest of them was. The class is specific: **any oracle branch reachable only from a frame the
 fixtures happen not to contain.** The corpus was assembled from observed
 sessions, so it holds the shapes a healthy harness produces and almost none of
-the shapes a misbehaving one does. Seven divergences, none visible to a single
+the shapes a misbehaving one does. Six divergences, none visible to a single
 case:
 
 - A repeated `tool_use` id and a `tool_result` naming no call in flight both
@@ -887,20 +887,6 @@ case:
   past its terminal, so nothing could see either half.
 - A `control_cancel_request` withdraws the matching open gate, resolving it
   `cancelled` and returning the run to `running`. No case contains one.
-- A `text_delta` carrying no `text` member still produces a content part rather
-  than nothing, because the oracle decodes into a struct whose zero value is the
-  empty string. Every fixture's delta carries its text.
-
-  **The two implementations do not agree on that part's shape, and the
-  divergence is in the port's favour**, which is why it is listed here as a
-  divergence rather than among the matched behaviours. `protocol.ContentPart`
-  tags `text` and `reasoning` `omitempty`, so the oracle emits `{"type":"text"}`
-  with no `text` member at all -- and `contentPart` in
-  `schema/v0.1/common.schema.json` carries no `required` list, so that shape is
-  schema-legal but says less than the port's `{"type":"text","text":""}`. The
-  port emits the member. Nobody should read this as parity: it is a deliberate
-  choice to emit the more explicit of two legal shapes, and if the schema ever
-  requires `text`, the oracle is the side that breaks.
 - **The codec is fail-closed on shape, and that is the largest of the six.**
   `native.DecodeObservation` and `DecodeControlRequest` enforce a required-member
   table per frame type -- a `user` frame needs `message.role` and
