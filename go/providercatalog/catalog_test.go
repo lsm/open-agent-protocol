@@ -4,9 +4,11 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/lsm/open-agent-protocol/providers"
 )
 
-func TestLoadReadsTheCheckedInCatalog(t *testing.T) {
+func TestLoadReadsARowAndItsEndpoints(t *testing.T) {
 	catalog, err := Load(fstest.MapFS{
 		SchemaFile:  {Data: []byte(`{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"catalog.schema.json","type":"object","required":["providers"],"properties":{"providers":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/provider"}}},"additionalProperties":false,"$defs":{"provider":{"type":"object","required":["id"],"properties":{"id":{"type":"string","minLength":1},"endpoints":{"type":"array","items":{"type":"object","required":["wire","base_url"],"properties":{"wire":{"type":"string","minLength":1},"base_url":{"type":"string","minLength":1},"region":{"type":"string","minLength":1}},"additionalProperties":false}}},"additionalProperties":false}}}`)},
 		CatalogFile: {Data: []byte(`{"providers":[{"id":"kimi","endpoints":[{"wire":"openai-completions","base_url":"https://api.kimi.com/coding","region":"china"}]}]}`)},
@@ -19,6 +21,19 @@ func TestLoadReadsTheCheckedInCatalog(t *testing.T) {
 	}
 	if catalog.Providers[0].Endpoints[0].BaseURL != "https://api.kimi.com/coding" {
 		t.Fatalf("base url = %q", catalog.Providers[0].Endpoints[0].BaseURL)
+	}
+}
+
+func TestLoadReadsTheCheckedInCatalog(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(catalog.Providers) == 0 {
+		t.Fatal("the checked-in catalog holds no provider")
+	}
+	if findings := Check(catalog); len(findings) != 0 {
+		t.Fatalf("findings = %v, want none", findings)
 	}
 }
 
@@ -62,10 +77,18 @@ func TestCheckNamesADuplicateRow(t *testing.T) {
 	}
 }
 
-func TestCheckNamesARowThatStandsForItself(t *testing.T) {
-	findings := Check(Catalog{Providers: []Provider{{ID: "kimi", AliasOf: "kimi"}}})
-	if len(findings) != 1 || findings[0].Code != CodeAliasSelf {
-		t.Fatalf("findings = %v, want one self alias", findings)
+func TestCheckNamesAnOfferingOrStatusItDoesNotKnow(t *testing.T) {
+	findings := Check(Catalog{Providers: []Provider{{ID: "kimi", Offering: "seat"}}})
+	if len(findings) != 1 || findings[0].Code != CodeOffering {
+		t.Fatalf("findings = %v, want one unknown offering", findings)
+	}
+	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", Status: "retired"}}})
+	if len(findings) != 1 || findings[0].Code != CodeStatus {
+		t.Fatalf("findings = %v, want one unknown status", findings)
+	}
+	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", Offering: "subscription", Status: "withheld"}}})
+	if len(findings) != 0 {
+		t.Fatalf("findings = %v, want none", findings)
 	}
 }
 
