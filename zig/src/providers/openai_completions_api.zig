@@ -964,8 +964,29 @@ fn parseChunk(
 
 const url_version_prefix = "/v1";
 
+fn isVersionSegment(segment: []const u8) bool {
+    if (segment.len < 2 or segment[0] != 'v') return false;
+    for (segment[1..]) |digit| {
+        if (digit < '0' or digit > '9') return false;
+    }
+    return true;
+}
+
+fn pathHasVersion(base_url: []const u8) bool {
+    @setEvalBranchQuota(4000);
+    const scheme = std.mem.indexOf(u8, base_url, "://") orelse return false;
+    var rest: []const u8 = base_url[scheme + 3 ..];
+    const cut = std.mem.indexOfScalar(u8, rest, '/') orelse return false;
+    rest = rest[cut + 1 ..];
+    var segments = std.mem.tokenizeScalar(u8, rest, '/');
+    while (segments.next()) |segment| {
+        if (isVersionSegment(segment)) return true;
+    }
+    return false;
+}
+
 fn effectiveUrlSuffix(trimmed_base: []const u8, suffix: []const u8) []const u8 {
-    if (!std.mem.endsWith(u8, trimmed_base, url_version_prefix)) return suffix;
+    if (!pathHasVersion(trimmed_base)) return suffix;
     if (!std.mem.startsWith(u8, suffix, url_version_prefix ++ "/")) return suffix;
     return suffix[url_version_prefix.len..];
 }
@@ -2920,6 +2941,11 @@ test "buildUrlWithSuffix never doubles the version segment" {
         .{ .base = "https://api.githubcopilot.com", .suffix = "/chat/completions", .want = "https://api.githubcopilot.com/chat/completions" },
         .{ .base = "https://gw.test/v1", .suffix = "/chat/completions", .want = "https://gw.test/v1/chat/completions" },
         .{ .base = "https://gw.test/v1/chat/completions", .suffix = "/v1/chat/completions", .want = "https://gw.test/v1/chat/completions" },
+        .{ .base = "https://api.z.ai/api/coding/paas/v4", .suffix = "/v1/chat/completions", .want = "https://api.z.ai/api/coding/paas/v4/chat/completions" },
+        .{ .base = "https://api.lkeap.cloud.tencent.com/coding/v3", .suffix = "/v1/chat/completions", .want = "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions" },
+        .{ .base = "https://api.deepinfra.com/v1/openai", .suffix = "/v1/chat/completions", .want = "https://api.deepinfra.com/v1/openai/chat/completions" },
+        .{ .base = "https://gw.test/v2", .suffix = "/v1/chat/completions", .want = "https://gw.test/v2/chat/completions" },
+        .{ .base = "https://gw.test/vercel", .suffix = "/v1/chat/completions", .want = "https://gw.test/vercel/v1/chat/completions" },
     };
     for (cases) |case| {
         const url = try buildUrlWithSuffix(std.testing.allocator, case.base, case.suffix);

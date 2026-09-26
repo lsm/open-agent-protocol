@@ -149,7 +149,7 @@ const wire_paths = [_]Wire{
     .{ .id = "openai-completions", .suffix = "/v1/chat/completions", .trim = true, .dedup_version = true, .idempotent = true, .model_scoped = false },
     .{ .id = "openai-responses", .suffix = "/v1/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
     .{ .id = "openai-codex-responses", .suffix = "/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
-    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .trim = true, .dedup_version = false, .idempotent = true, .model_scoped = false },
+    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .trim = true, .dedup_version = true, .idempotent = true, .model_scoped = false },
     .{ .id = "ollama", .suffix = "/api/chat", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
     .{ .id = "google-generative-ai", .suffix = "", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = true },
 };
@@ -161,10 +161,31 @@ fn wirePath(wire: []const u8) ?Wire {
     return null;
 }
 
+fn isVersionSegment(segment: []const u8) bool {
+    if (segment.len < 2 or segment[0] != 'v') return false;
+    for (segment[1..]) |digit| {
+        if (digit < '0' or digit > '9') return false;
+    }
+    return true;
+}
+
+fn pathHasVersion(base_url: []const u8) bool {
+    @setEvalBranchQuota(4000);
+    const scheme = std.mem.indexOf(u8, base_url, "://") orelse return false;
+    var rest: []const u8 = base_url[scheme + 3 ..];
+    const cut = std.mem.indexOfScalar(u8, rest, '/') orelse return false;
+    rest = rest[cut + 1 ..];
+    var segments = std.mem.tokenizeScalar(u8, rest, '/');
+    while (segments.next()) |segment| {
+        if (isVersionSegment(segment)) return true;
+    }
+    return false;
+}
+
 fn joinRequest(comptime base: []const u8, comptime path: Wire) []const u8 {
     const trimmed = if (path.trim) std.mem.trimEnd(u8, base, "/") else base;
     if (path.idempotent and std.mem.endsWith(u8, trimmed, path.suffix)) return trimmed;
-    const suffix = if (path.dedup_version and std.mem.endsWith(u8, trimmed, "/v1") and std.mem.startsWith(u8, path.suffix, "/v1/"))
+    const suffix = if (path.dedup_version and pathHasVersion(trimmed) and std.mem.startsWith(u8, path.suffix, "/v1/"))
         path.suffix["/v1".len..]
     else
         path.suffix;
@@ -400,17 +421,25 @@ test "a request URL is the row's base and its wire's path, joined as the wire's 
     try std.testing.expectEqualStrings("https://api.openai.com/v1/responses", requestUrl("openai", "openai-responses", null).?);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/codex/responses", requestUrl("openai-codex", "openai-codex-responses", null).?);
     try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", requestUrl("anthropic", "anthropic-messages", null).?);
-    try std.testing.expect(requestUrl("minimax-coding-plan", "anthropic-messages", null) != null);
+    try std.testing.expectEqualStrings("https://api.minimax.io/anthropic/v1/messages", requestUrl("minimax-coding-plan", "anthropic-messages", null).?);
+    try std.testing.expectEqualStrings("https://api.deepinfra.com/v1/openai/chat/completions", requestUrl("deepinfra", "openai-completions", null).?);
 }
 
-test "a base ending in /v1 gains no second version segment on the wire that dedups one" {
+test "a base ending in a version segment gains no second one on the wire that dedups it" {
     for (resolved) |entry| {
-        if (!std.mem.eql(u8, entry.wire, "openai-completions")) continue;
-        if (!std.mem.endsWith(u8, entry.base_url, "/v1")) continue;
-        try std.testing.expect(std.mem.indexOf(u8, entry.request_url.?, "/v1/v1") == null);
+        const url = entry.request_url orelse continue;
+        var versions: usize = 0;
+        var segments = std.mem.tokenizeScalar(u8, url, '/');
+        while (segments.next()) |segment| {
+            if (isVersionSegment(segment)) versions += 1;
+        }
+        try std.testing.expect(versions <= 1);
     }
     try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", requestUrl("openrouter", "openai-completions", null).?);
     try std.testing.expectEqualStrings("https://api.xiaomimimo.com/v1/chat/completions", requestUrl("xiaomi", "openai-completions", null).?);
+    try std.testing.expectEqualStrings("https://api.z.ai/api/coding/paas/v4/chat/completions", requestUrl("zai-coding-plan", "openai-completions", null).?);
+    try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions", requestUrl("tencent-coding-plan", "openai-completions", null).?);
+    try std.testing.expectEqualStrings("https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions", requestUrl("volcengine-coding-plan", "openai-completions", null).?);
 }
 
 test "a models URL is the row's own base and the path it records" {
