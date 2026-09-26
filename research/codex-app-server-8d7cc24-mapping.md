@@ -303,6 +303,19 @@ pass-through member can reach that depth, so the codex encoder walks values
 iteratively; anything that stringifies another port's envelopes with
 `std.json.Stringify` inherits the panic.
 
+Audited every Zig encoder on an envelope or native-write path for the same
+gap, against Go's 10 000-level limit:
+
+- Envelope and value paths use the iterative encoders: `json/encode.zig`
+  (`valueAlloc`, with a 10 000-deep round-trip test), `json/writer.zig` for OAP
+  envelopes, and the adapters' emitted events, which go through `json_encode`.
+- The remaining `std.json.Stringify` calls encode a bare string (a Claude
+  `goJSONString`, an MCP error message, the codex rpc number literal), a
+  shallow adapter-authored object (a Claude session metadata member, the
+  agent-control profiles' auth payloads), a CLI/validate document, or a test
+  value. None carries a pass-through member, so none can reach the fixed
+  stack.
+
 ## Served by `oapx serve agent --backend codex`
 
 `zig/src/adapter/codex/adapter.zig` implements the adapter contract in
