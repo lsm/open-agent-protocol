@@ -26,6 +26,7 @@ type Provider struct {
 	ID            string       `json:"id"`
 	DisplayName   string       `json:"display_name,omitempty"`
 	Auth          []string     `json:"auth,omitempty"`
+	Offering      string       `json:"offering,omitempty"`
 	CredentialEnv []string     `json:"credential_env,omitempty"`
 	BaseURLEnv    []string     `json:"base_url_env,omitempty"`
 	RegionEnv     string       `json:"region_env,omitempty"`

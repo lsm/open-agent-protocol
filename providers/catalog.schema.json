@@ -30,6 +30,13 @@
         "none"
       ]
     },
+    "offering": {
+      "description": "How a row's endpoint is paid for: a plan a subscription covers, or metered tokens. A curated list orders its coding plans first, and a row is a vendor's offering rather than the vendor itself, because a coding plan is a different endpoint reached under the same credential.",
+      "enum": [
+        "coding_plan",
+        "api_key"
+      ]
+    },
     "baseUrlSource": {
       "description": "Where a request's base URL comes from when no model names one. `static` means the endpoints below are the defaults; `credential` means the credential records the endpoint; `derived` means the implementation assembles it from configuration; `local_default` means a local development endpoint that an operator overrides for a hosted one.",
       "enum": [
@@ -102,6 +109,9 @@
           "items": {
             "$ref": "#/$defs/authKind"
           }
+        },
+        "offering": {
+          "$ref": "#/$defs/offering"
         },
         "credential_env": {
           "description": "Environment variables a credential is read from, in the order they are tried. The names, never the values.",

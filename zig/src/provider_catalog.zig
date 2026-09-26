@@ -2,11 +2,36 @@ const std = @import("std");
 const data = @import("data");
 
 pub const AuthKind = data.AuthKind;
+pub const Offering = data.Offering;
 pub const Endpoint = data.Endpoint;
 pub const OAuthOrigin = data.OAuthOrigin;
 pub const Provider = data.Provider;
 
 pub const all = data.providers;
+
+pub fn offering(id: []const u8) ?Offering {
+    const row = provider(id) orelse return null;
+    return row.offering;
+}
+
+pub fn codingPlanIds() []const []const u8 {
+    comptime {
+        var plan_rows: usize = 0;
+        for (all) |row| {
+            if (row.offering != null and row.offering.? == .coding_plan) plan_rows += 1;
+        }
+        var collected: [plan_rows][]const u8 = undefined;
+        var index: usize = 0;
+        for (all) |row| {
+            if (row.offering != null and row.offering.? == .coding_plan) {
+                collected[index] = row.id;
+                index += 1;
+            }
+        }
+        const frozen = collected;
+        return &frozen;
+    }
+}
 
 pub fn count() usize {
     return all.len;
@@ -223,6 +248,22 @@ test "a models listing is recorded only where the provider answers one" {
     try std.testing.expect(modelsEndpoint("openai-codex") == null);
     try std.testing.expect(modelsEndpoint("ollama") == null);
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
+}
+
+test "the curated list leads with its coding plans" {
+    const plans = codingPlanIds();
+    try std.testing.expect(plans.len > 0);
+    for (all, 0..) |row, index| {
+        const is_plan = row.offering != null and row.offering.? == .coding_plan;
+        if (index < plans.len) {
+            try std.testing.expect(is_plan);
+            try std.testing.expectEqualStrings(plans[index], row.id);
+        }
+    }
+    try std.testing.expectEqualStrings("kimi", plans[0]);
+    try std.testing.expect(offering("anthropic").? == .api_key);
+    try std.testing.expect(offering("minimax-coding-plan").? == .coding_plan);
+    try std.testing.expect(offering("no-such-provider") == null);
 }
 
 test "an auth kind is one the loader knows, and a provider may declare none" {
