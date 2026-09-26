@@ -1,0 +1,27 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.failed",
+    "id": "event-5",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-1",
+      "error": {
+        "code": "opencode_admission_ambiguous",
+        "message": "opencode native: HTTP 409 ConflictError"
+      }
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-1",
+    "capability_revision": "opencode-v1.18.32-oap-v2",
+    "extensions": {
+      "io.github.anomalyco.opencode.cost": {
+        "total_cost_usd": 0
+      }
+    }
+  }
+]

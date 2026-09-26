@@ -1,10 +1,10 @@
 {
-  "capability_revision": "opencode-v1.18.29-oap-v2",
+  "capability_revision": "opencode-v1.18.32-oap-v2",
   "capabilities": {
     "endpoint": {
       "id": "opencode.server",
       "name": "OpenCode Server Adapter",
-      "version": "v1.18.29",
+      "version": "v1.18.32",
       "adapter": "opencode-http-sse"
     },
     "protocol_versions": [
