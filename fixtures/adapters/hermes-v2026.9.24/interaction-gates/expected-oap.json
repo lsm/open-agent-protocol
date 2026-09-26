@@ -22,33 +22,12 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "content.delta",
-    "id": "event-d",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-b",
-      "message_id": "message-a",
-      "part": {
-        "type": "reasoning",
-        "reasoning": "(⌐■_■) musing..."
-      }
-    },
-    "sequence": 2,
-    "timestamp_ms": 4,
-    "session_id": "session",
-    "run_id": "run-b",
-    "capability_revision": "hermes-v2026.9.24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.requested",
-    "id": "event-f",
+    "id": "event-e",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-e",
+      "tool_call_id": "tool-call-d",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "terminal",
@@ -56,11 +35,11 @@
         "command": "rm -rf /tmp/oap-hermes-probe-absent"
       }
     },
-    "sequence": 3,
-    "timestamp_ms": 5,
+    "sequence": 2,
+    "timestamp_ms": 4,
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-e",
+    "tool_call_id": "tool-call-d",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -68,21 +47,21 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.started",
-    "id": "event-g",
+    "id": "event-f",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-e",
+      "tool_call_id": "tool-call-d",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "terminal"
     },
-    "sequence": 4,
-    "timestamp_ms": 6,
-    "in_reply_to": "event-f",
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "in_reply_to": "event-e",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-e",
+    "tool_call_id": "tool-call-d",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -90,9 +69,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.requested",
-    "id": "event-i",
+    "id": "event-h",
     "payload": {
-      "interaction_id": "interaction-h",
+      "interaction_id": "interaction-g",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -127,11 +106,11 @@
       ],
       "allow_cancel": true
     },
-    "sequence": 5,
-    "timestamp_ms": 7,
+    "sequence": 4,
+    "timestamp_ms": 6,
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-h",
+    "turn_id": "interaction-g",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -139,16 +118,16 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-j",
+    "id": "event-i",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "waiting_for_input",
-      "pending_user_input_id": "interaction-h",
-      "updated_at_ms": 8
+      "pending_user_input_id": "interaction-g",
+      "updated_at_ms": 7
     },
-    "sequence": 6,
-    "timestamp_ms": 9,
+    "sequence": 5,
+    "timestamp_ms": 8,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -158,9 +137,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.resolved",
-    "id": "event-k",
+    "id": "event-j",
     "payload": {
-      "interaction_id": "interaction-h",
+      "interaction_id": "interaction-g",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -175,12 +154,12 @@
         }
       ]
     },
-    "sequence": 7,
-    "timestamp_ms": 10,
-    "in_reply_to": "event-i",
+    "sequence": 6,
+    "timestamp_ms": 9,
+    "in_reply_to": "event-h",
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-h",
+    "turn_id": "interaction-g",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -188,15 +167,15 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-l",
+    "id": "event-k",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "running",
-      "updated_at_ms": 11
+      "updated_at_ms": 10
     },
-    "sequence": 8,
-    "timestamp_ms": 12,
+    "sequence": 7,
+    "timestamp_ms": 11,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -206,11 +185,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.completed",
-    "id": "event-m",
+    "id": "event-l",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-e",
+      "tool_call_id": "tool-call-d",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "terminal",
@@ -221,33 +200,12 @@
         "approval": "Command required approval (delete in root path) and was approved by the user."
       }
     },
-    "sequence": 9,
-    "timestamp_ms": 13,
-    "in_reply_to": "event-g",
+    "sequence": 8,
+    "timestamp_ms": 12,
+    "in_reply_to": "event-f",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-e",
-    "capability_revision": "hermes-v2026.9.24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "content.delta",
-    "id": "event-n",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-b",
-      "message_id": "message-a",
-      "part": {
-        "type": "reasoning",
-        "reasoning": "ヽ(\u003e∀\u003c☆)☆ analyzing..."
-      }
-    },
-    "sequence": 10,
-    "timestamp_ms": 14,
-    "session_id": "session",
-    "run_id": "run-b",
+    "tool_call_id": "tool-call-d",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -255,11 +213,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.requested",
-    "id": "event-p",
+    "id": "event-n",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-o",
+      "tool_call_id": "tool-call-m",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "clarify",
@@ -271,11 +229,11 @@
         "question": "which?"
       }
     },
-    "sequence": 11,
-    "timestamp_ms": 15,
+    "sequence": 9,
+    "timestamp_ms": 13,
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-o",
+    "tool_call_id": "tool-call-m",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -283,21 +241,21 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.started",
-    "id": "event-q",
+    "id": "event-o",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-o",
+      "tool_call_id": "tool-call-m",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "clarify"
     },
-    "sequence": 12,
-    "timestamp_ms": 16,
-    "in_reply_to": "event-p",
+    "sequence": 10,
+    "timestamp_ms": 14,
+    "in_reply_to": "event-n",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-o",
+    "tool_call_id": "tool-call-m",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -305,9 +263,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.requested",
-    "id": "event-s",
+    "id": "event-q",
     "payload": {
-      "interaction_id": "interaction-r",
+      "interaction_id": "interaction-p",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -333,11 +291,11 @@
       ],
       "allow_cancel": true
     },
-    "sequence": 13,
-    "timestamp_ms": 17,
+    "sequence": 11,
+    "timestamp_ms": 15,
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-r",
+    "turn_id": "interaction-p",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -345,16 +303,16 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-t",
+    "id": "event-r",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "waiting_for_input",
-      "pending_user_input_id": "interaction-r",
-      "updated_at_ms": 18
+      "pending_user_input_id": "interaction-p",
+      "updated_at_ms": 16
     },
-    "sequence": 14,
-    "timestamp_ms": 19,
+    "sequence": 12,
+    "timestamp_ms": 17,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -364,9 +322,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.resolved",
-    "id": "event-u",
+    "id": "event-s",
     "payload": {
-      "interaction_id": "interaction-r",
+      "interaction_id": "interaction-p",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -381,12 +339,12 @@
         }
       ]
     },
-    "sequence": 15,
-    "timestamp_ms": 20,
-    "in_reply_to": "event-s",
+    "sequence": 13,
+    "timestamp_ms": 18,
+    "in_reply_to": "event-q",
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-r",
+    "turn_id": "interaction-p",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -394,15 +352,15 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-v",
+    "id": "event-t",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "running",
-      "updated_at_ms": 21
+      "updated_at_ms": 19
     },
-    "sequence": 16,
-    "timestamp_ms": 22,
+    "sequence": 14,
+    "timestamp_ms": 20,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -412,11 +370,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.completed",
-    "id": "event-w",
+    "id": "event-u",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-o",
+      "tool_call_id": "tool-call-m",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "clarify",
@@ -429,33 +387,12 @@
         "user_response": "a"
       }
     },
-    "sequence": 17,
-    "timestamp_ms": 23,
-    "in_reply_to": "event-q",
+    "sequence": 15,
+    "timestamp_ms": 21,
+    "in_reply_to": "event-o",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-o",
-    "capability_revision": "hermes-v2026.9.24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "content.delta",
-    "id": "event-x",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-b",
-      "message_id": "message-a",
-      "part": {
-        "type": "reasoning",
-        "reasoning": "(｡•́︿•̀｡) ruminating..."
-      }
-    },
-    "sequence": 18,
-    "timestamp_ms": 24,
-    "session_id": "session",
-    "run_id": "run-b",
+    "tool_call_id": "tool-call-m",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -463,11 +400,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.requested",
-    "id": "event-z",
+    "id": "event-w",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-y",
+      "tool_call_id": "tool-call-v",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "terminal",
@@ -475,11 +412,11 @@
         "command": "/tmp/oap-hermes-probe/shim/sudo true"
       }
     },
-    "sequence": 19,
-    "timestamp_ms": 25,
+    "sequence": 16,
+    "timestamp_ms": 22,
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-y",
+    "tool_call_id": "tool-call-v",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -487,21 +424,21 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.started",
-    "id": "event-{",
+    "id": "event-x",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-y",
+      "tool_call_id": "tool-call-v",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "terminal"
     },
-    "sequence": 20,
-    "timestamp_ms": 26,
-    "in_reply_to": "event-z",
+    "sequence": 17,
+    "timestamp_ms": 23,
+    "in_reply_to": "event-w",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-y",
+    "tool_call_id": "tool-call-v",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -509,9 +446,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.requested",
-    "id": "event-}",
+    "id": "event-z",
     "payload": {
-      "interaction_id": "interaction-|",
+      "interaction_id": "interaction-y",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -528,11 +465,11 @@
       ],
       "allow_cancel": true
     },
-    "sequence": 21,
-    "timestamp_ms": 27,
+    "sequence": 18,
+    "timestamp_ms": 24,
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-|",
+    "turn_id": "interaction-y",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -540,16 +477,16 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-~",
+    "id": "event-{",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "waiting_for_input",
-      "pending_user_input_id": "interaction-|",
-      "updated_at_ms": 28
+      "pending_user_input_id": "interaction-y",
+      "updated_at_ms": 25
     },
-    "sequence": 22,
-    "timestamp_ms": 29,
+    "sequence": 19,
+    "timestamp_ms": 26,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -559,9 +496,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.resolved",
-    "id": "event-",
+    "id": "event-|",
     "payload": {
-      "interaction_id": "interaction-|",
+      "interaction_id": "interaction-y",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -574,12 +511,12 @@
         }
       ]
     },
-    "sequence": 23,
-    "timestamp_ms": 30,
-    "in_reply_to": "event-}",
+    "sequence": 20,
+    "timestamp_ms": 27,
+    "in_reply_to": "event-z",
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-|",
+    "turn_id": "interaction-y",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -587,15 +524,15 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-",
+    "id": "event-}",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "running",
-      "updated_at_ms": 31
+      "updated_at_ms": 28
     },
-    "sequence": 24,
-    "timestamp_ms": 32,
+    "sequence": 21,
+    "timestamp_ms": 29,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -605,11 +542,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.completed",
-    "id": "event-",
+    "id": "event-~",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-y",
+      "tool_call_id": "tool-call-v",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "terminal",
@@ -619,33 +556,12 @@
         "error": null
       }
     },
-    "sequence": 25,
-    "timestamp_ms": 33,
-    "in_reply_to": "event-{",
+    "sequence": 22,
+    "timestamp_ms": 30,
+    "in_reply_to": "event-x",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-y",
-    "capability_revision": "hermes-v2026.9.24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "content.delta",
-    "id": "event-",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-b",
-      "message_id": "message-a",
-      "part": {
-        "type": "reasoning",
-        "reasoning": "٩(๑❛ᴗ❛๑)۶ contemplating..."
-      }
-    },
-    "sequence": 26,
-    "timestamp_ms": 34,
-    "session_id": "session",
-    "run_id": "run-b",
+    "tool_call_id": "tool-call-v",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -653,11 +569,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.requested",
-    "id": "event-",
+    "id": "event-",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-",
+      "tool_call_id": "tool-call-",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "skill_view",
@@ -665,11 +581,11 @@
         "name": "probe-secret"
       }
     },
-    "sequence": 27,
-    "timestamp_ms": 35,
+    "sequence": 23,
+    "timestamp_ms": 31,
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-",
+    "tool_call_id": "tool-call-",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -677,21 +593,21 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.started",
-    "id": "event-",
+    "id": "event-",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-",
+      "tool_call_id": "tool-call-",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "skill_view"
     },
-    "sequence": 28,
-    "timestamp_ms": 36,
-    "in_reply_to": "event-",
+    "sequence": 24,
+    "timestamp_ms": 32,
+    "in_reply_to": "event-",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-",
+    "tool_call_id": "tool-call-",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -699,9 +615,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.requested",
-    "id": "event-",
+    "id": "event-",
     "payload": {
-      "interaction_id": "interaction-",
+      "interaction_id": "interaction-",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -718,11 +634,11 @@
       ],
       "allow_cancel": true
     },
-    "sequence": 29,
-    "timestamp_ms": 37,
+    "sequence": 25,
+    "timestamp_ms": 33,
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-",
+    "turn_id": "interaction-",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -730,16 +646,16 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-",
+    "id": "event-",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "waiting_for_input",
-      "pending_user_input_id": "interaction-",
-      "updated_at_ms": 38
+      "pending_user_input_id": "interaction-",
+      "updated_at_ms": 34
     },
-    "sequence": 30,
-    "timestamp_ms": 39,
+    "sequence": 26,
+    "timestamp_ms": 35,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -749,9 +665,9 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "user.input.resolved",
-    "id": "event-",
+    "id": "event-",
     "payload": {
-      "interaction_id": "interaction-",
+      "interaction_id": "interaction-",
       "requested_by": "hermes.gateway",
       "responded_by": "user",
       "session_id": "session",
@@ -764,12 +680,12 @@
         }
       ]
     },
-    "sequence": 31,
-    "timestamp_ms": 40,
-    "in_reply_to": "event-",
+    "sequence": 27,
+    "timestamp_ms": 36,
+    "in_reply_to": "event-",
     "session_id": "session",
     "run_id": "run-b",
-    "turn_id": "interaction-",
+    "turn_id": "interaction-",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -777,15 +693,15 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.status.updated",
-    "id": "event-",
+    "id": "event-",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
       "status": "running",
-      "updated_at_ms": 41
+      "updated_at_ms": 37
     },
-    "sequence": 32,
-    "timestamp_ms": 42,
+    "sequence": 28,
+    "timestamp_ms": 38,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -795,11 +711,11 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.completed",
-    "id": "event-",
+    "id": "event-",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
-      "tool_call_id": "tool-call-",
+      "tool_call_id": "tool-call-",
       "requested_by": "hermes.gateway",
       "execution_owner": "hermes",
       "name": "skill_view",
@@ -831,12 +747,12 @@
         "_source_path": "/tmp/oap-hermes-probe/runs/run-em09hmwa/home/.hermes/skills/probe-secret/SKILL.md"
       }
     },
-    "sequence": 33,
-    "timestamp_ms": 43,
-    "in_reply_to": "event-",
+    "sequence": 29,
+    "timestamp_ms": 39,
+    "in_reply_to": "event-",
     "session_id": "session",
     "run_id": "run-b",
-    "tool_call_id": "tool-call-",
+    "tool_call_id": "tool-call-",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
   },
   {
@@ -844,28 +760,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "content.delta",
-    "id": "event-",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-b",
-      "message_id": "message-a",
-      "part": {
-        "type": "reasoning",
-        "reasoning": "(⊙_⊙) ruminating..."
-      }
-    },
-    "sequence": 34,
-    "timestamp_ms": 44,
-    "session_id": "session",
-    "run_id": "run-b",
-    "capability_revision": "hermes-v2026.9.24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "content.delta",
-    "id": "event-",
+    "id": "event-",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
@@ -875,8 +770,8 @@
         "text": "\n\ndone"
       }
     },
-    "sequence": 35,
-    "timestamp_ms": 45,
+    "sequence": 30,
+    "timestamp_ms": 40,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"
@@ -886,7 +781,7 @@
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-",
+    "id": "event-",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
@@ -902,8 +797,8 @@
         "total_tokens": 40
       }
     },
-    "sequence": 36,
-    "timestamp_ms": 46,
+    "sequence": 31,
+    "timestamp_ms": 41,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"

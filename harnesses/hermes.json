@@ -7,7 +7,7 @@
       "status": "current",
       "endpoint_version": "v2026.9.24",
       "capability_revision": "hermes-v2026.9.24-oap-v1",
-      "ledgers": ["research/hermes-v2026.9.24-mapping.md"],
+      "ledgers": ["research/hermes-v2026.9.24-mapping.md", "research/hermes-thinking-delta-note.md"],
       "corpus": "fixtures/adapters/hermes-v2026.9.24",
       "components": [
         { "name": "hermes-agent", "version": "v2026.9.24", "repository": "https://github.com/NousResearch/hermes-agent" }
@@ -19,7 +19,7 @@
     {
       "label": "v2026.8.31",
       "status": "retired",
-      "ledgers": ["research/hermes-v2026.8.31-mapping.md"],
+      "ledgers": ["research/hermes-v2026.8.31-mapping.md", "research/hermes-thinking-delta-note.md"],
       "components": [
         { "name": "hermes-agent", "version": "v2026.8.31", "repository": "https://github.com/NousResearch/hermes-agent" }
       ],

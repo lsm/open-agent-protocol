@@ -8,8 +8,8 @@
   {"index":7,"type":"event/message.start","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"run.started (by construction)"},
   {"index":8,"type":"event/sessions.changed","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
   {"index":9,"type":"event/session.title","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
-  {"index":10,"type":"event/thinking.delta","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"content.delta(reasoning)"},
-  {"index":11,"type":"event/thinking.delta","direction":"gateway-to-host","classification":"mapped","fidelity":"native","oap":"content.delta(reasoning)"},
+  {"index":10,"type":"event/thinking.delta","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
+  {"index":11,"type":"event/thinking.delta","direction":"gateway-to-host","classification":"observed-only","fidelity":"native"},
   {"index":12,"type":"event/message.delta","direction":"gateway-to-host","classification":"mapped","fidelity":"normalized","oap":"content.delta(text)"},
   {"index":13,"type":"codec-error","direction":"gateway-to-host","classification":"required-unmapped","fidelity":"unsupported"},
   {"index":14,"type":"oap_control:close","direction":"harness-control","classification":"mapped","fidelity":"synthesized","oap":"session.close (stdin EOF)"}

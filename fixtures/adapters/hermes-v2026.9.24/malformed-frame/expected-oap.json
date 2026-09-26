@@ -29,8 +29,8 @@
       "run_id": "run-b",
       "message_id": "message-a",
       "part": {
-        "type": "reasoning",
-        "reasoning": "(´･_･`) mulling..."
+        "type": "text",
+        "text": "Hi"
       }
     },
     "sequence": 2,
@@ -43,29 +43,8 @@
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
-    "type": "content.delta",
-    "id": "event-e",
-    "payload": {
-      "session_id": "session",
-      "run_id": "run-b",
-      "message_id": "message-a",
-      "part": {
-        "type": "text",
-        "text": "Hi"
-      }
-    },
-    "sequence": 3,
-    "timestamp_ms": 5,
-    "session_id": "session",
-    "run_id": "run-b",
-    "capability_revision": "hermes-v2026.9.24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
     "type": "run.failed",
-    "id": "event-f",
+    "id": "event-e",
     "payload": {
       "session_id": "session",
       "run_id": "run-b",
@@ -75,8 +54,8 @@
       },
       "settled_by": "inferred"
     },
-    "sequence": 4,
-    "timestamp_ms": 6,
+    "sequence": 3,
+    "timestamp_ms": 5,
     "session_id": "session",
     "run_id": "run-b",
     "capability_revision": "hermes-v2026.9.24-oap-v1"

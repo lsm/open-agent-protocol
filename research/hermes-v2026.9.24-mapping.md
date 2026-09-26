@@ -196,15 +196,23 @@ mapped.
 
 ## Findings the recordings exposed that the move did not cause
 
-- **Empty deltas.** `thinking.delta {"text":""}` clears the spinner and
-  arrives on every turn in both tags. Both adapters projected it as a
-  `content.delta` with an empty reasoning part, which the OAP schema rejects,
-  so no real turn validated. Empty deltas now project nothing.
-- **`thinking.delta` is the spinner, not reasoning.** It carries a kaomoji and
-  a verb (`"(´･_･`) mulling..."`) from `thinking_callback`, in v2026.8.31 as in
-  v2026.9.24. Both adapters still map it to reasoning content, as the old
-  ledger specified. The wire did not change, so neither did the mapping. It is
-  flagged for a separate change.
+- **`thinking.delta` is the spinner, not reasoning**, at this tag as at
+  v2026.8.31. The recordings are what exposed it;
+  [`hermes-thinking-delta-note.md`](hermes-thinking-delta-note.md) holds the
+  evidence and the decision, and this corpus follows it: every
+  `thinking.delta` frame is observed-only, and `reasoning.delta` still
+  projects.
+- **A delta can carry no text.** The spinner is cleared with `{"text":""}`,
+  which arrived on every recorded turn and, while `thinking.delta` still
+  projected, became a `content.delta` with an empty reasoning part that the
+  OAP schema rejects — so no real turn validated. Making `thinking.delta`
+  observed-only removes that source, but neither `_fire_stream_delta` nor
+  `_fire_reasoning_delta` filters an empty string
+  (`agent/stream_delivery.py:286,319`), so a provider emitting an empty chunk
+  would put the same invalid part on a channel that does project. Both trees
+  therefore drop a delta with no text, on `message.delta` and
+  `reasoning.delta` alike, and each tree has a test that fails when the drop
+  is removed. No recording carries an empty frame on either of those channels.
 - **`subagent-frames` was never a recording.** Its progress, tool and complete
   frames omit `goal`, `task_count` and `task_index`, which both tags always
   set. The case is carried forward as-is, because those frames are

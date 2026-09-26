@@ -338,7 +338,7 @@ pub const Reducer = struct {
             try self.emitDelta(payload, "text");
             return;
         }
-        if (std.mem.eql(u8, kind, "reasoning.delta") or std.mem.eql(u8, kind, "thinking.delta")) {
+        if (std.mem.eql(u8, kind, "reasoning.delta")) {
             try self.emitDelta(payload, "reasoning");
             return;
         }
@@ -1806,6 +1806,26 @@ test "traffic the pinned protocol never carries disowns the session" {
     );
     try testing.expect(!reply.unusable);
     try testing.expectEqual(@as(usize, 1), reply.envelopes.items.len);
+}
+
+test "a delta carrying no text projects nothing, on either channel that projects" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feedEvent(&reducer, scratch, "message.delta",
+        \\{"text":""}
+    );
+    try feedEvent(&reducer, scratch, "reasoning.delta",
+        \\{"text":""}
+    );
+    try testing.expectEqual(@as(usize, 1), reducer.envelopes.items.len);
+
+    try feedEvent(&reducer, scratch, "message.delta",
+        \\{"text":"Hi"}
+    );
+    try testing.expectEqual(@as(usize, 2), reducer.envelopes.items.len);
+    try testing.expectEqualStrings("content.delta", typeAt(&reducer, 1));
 }
 
 test "a completed run always reports usage, and reports only the totals it has" {

@@ -427,7 +427,7 @@ func TestCompletedRunMapsDeltasToolsAndUsage(t *testing.T) {
 	}
 	events := drain(t, got.stream)
 	validateWithCapabilities(t, got.response, events)
-	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeContentDelta, protocol.TypeContentDelta, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeRunCompleted}
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeContentDelta, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeRunCompleted}
 	if len(events) != len(want) {
 		t.Fatalf("events %v", events)
 	}
@@ -1705,8 +1705,8 @@ func TestACancelThatOvertakesTheAnswerSettlesTheGateCancelled(t *testing.T) {
 func TestEmptyDeltasProjectNothing(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventThinkingDelta, 2, `{"text":""}`)
-	f.event(native.EventMessageDelta, 3, `{"text":""}`)
+	f.event(native.EventMessageDelta, 2, `{"text":""}`)
+	f.event(native.EventReasoningDelta, 3, `{"text":""}`)
 	f.event(native.EventMessageComplete, 4, settleFrame("complete", ""))
 	got := <-ch
 	events := drain(t, got.stream)

@@ -1615,7 +1615,12 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 			}
 			ok = textDeltas >= 2 && projected == textDeltas && normalized
 		case "reasoning-deltas":
-			reasoning := len(hmEventIndexes(decoded, native.EventReasoningDelta)) + len(hmEventIndexes(decoded, native.EventThinkingDelta))
+			reasoning := len(hmEventIndexes(decoded, native.EventReasoningDelta))
+			thinking := hmEventIndexes(decoded, native.EventThinkingDelta)
+			observed := len(thinking) > 0
+			for _, i := range thinking {
+				observed = observed && frames[i].Classification == "observed-only"
+			}
 			projected := 0
 			for _, envelope := range execution.envelopes {
 				if envelope.Type != protocol.TypeContentDelta {
@@ -1626,7 +1631,7 @@ func assertHermesLedgerEvidence(t *testing.T, labels []string, frames []hmFrame,
 					projected++
 				}
 			}
-			ok = reasoning >= 2 && projected == reasoning
+			ok = reasoning >= 1 && projected == reasoning && observed
 		case "interim":
 			interims := hmEventIndexes(decoded, native.EventMessageInterim)
 			leaked := false
