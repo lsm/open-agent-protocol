@@ -410,6 +410,11 @@ the client's hangup, or when the session closes — a stream open when the sessi
 closes receives the events already in flight and then ends. A connection made to
 an already-closed session is refused `409 session_closed` rather than parked.
 
+**The three signals above are the whole set.** A session closing under a live
+stream ends it *silently* — a socket has no end to announce — so a port must not
+emit an `oap-session-closed` event here, and the stdio transport's
+`oap-session-closed` and `oap-frame-limit` lines have no SSE counterpart to grow.
+
 | SSE rule | pinned by |
 | --- | --- |
 | An envelope arrives in emission order with its sequences | `TestSSEEnvelopeOrderAndSequences`, `TestClientRejectsFrameIDDisagreement` |
@@ -559,6 +564,12 @@ name is `internal` on both, and the HTTP body gate's own three codes are
 transport-level and listed once in
 [the HTTP rules](#the-http-routes-and-sse-framing) rather than repeated here.
 
+**Two codes are stdio's alone and no HTTP route may produce either.**
+`busy` is the admission and subscription bound, which only a pipe needs — a
+socket gives back pressure instead. `response_too_large` is the frame limit,
+which only a pipe needs for the same reason. Both are marked *(stdio only)*
+where they appear.
+
 ### `adapters`
 
 - **params:** none.
@@ -592,8 +603,10 @@ transport-level and listed once in
   (409), `stale_capabilities` (409, with `expected_revision` and
   `current_revision` in `details`), `unsupported_feature` (400, for a tool
   source it will not attach), `capability_degraded` (400, for a feature the
-  request did not opt into), `probe_failed`, `open_failed` (502), `busy`,
-  `request_cancelled`, `response_too_large`, `internal`.
+  request did not opt into), `probe_failed`, `open_failed` (502),
+  `request_cancelled`, `internal`, `response_too_large` *(stdio only)*, and
+  `busy` *(stdio only, and only when the request set `subscribe` — it is the
+  subscription bound, which an open without a subscription cannot reach)*.
 - **pinned by:** `TestOpenOpOpensASession`, `TestOpenOpRefusals`,
   `TestOpenRefusalsAreBounded`, `TestHubOpenRejections`,
   `TestHubOpenDefaultsParticipant`, `TestHubOpenClosesSessionWhenStateFails`,
@@ -662,7 +675,7 @@ transport-level and listed once in
   a payload naming another session), `run_active` (409), `invalid_submission`
   (400), `unsupported_feature` (400), `capability_degraded` (400),
   `model_not_found` (400), `session_closed` (409), `request_cancelled` (400),
-  `response_too_large`, `internal` (500).
+  `internal` (500), and `response_too_large` *(stdio only)*.
 - **pinned by:** `TestSubmitRejections`, `TestOpErrorCodesMirrorHTTP`,
   `TestQueuedSubmissionRoundTrips`, `TestQueuedSubmissionOverStdio`,
   `TestSubmitRollsBackUnframableAcknowledgement`,
@@ -728,9 +741,9 @@ transport-level and listed once in
   refused rather than parked), `invalid_cursor` (400, a cursor that is not an
   unsigned sequence, or a `run_id` with no cursor), `replay_cursor_future` (400),
   `run_not_found` (404), `no_run_to_resume` (409, a cursor on a session with no
-  run to replay), `busy`, `request_cancelled`, `internal` (500). A **replay gap
-  is not an error**: the op acknowledges `null`, then writes
-  `oap-replay-gap` and ends the subscription.
+  run to replay), `request_cancelled`, `internal` (500), and `busy` *(stdio
+  only)*. A **replay gap is not an error**: the op acknowledges `null`, then
+  writes `oap-replay-gap` and ends the subscription.
 - **pinned by:** `TestEventsOpDeliversTheRunStream`,
   `TestEventsAcknowledgementPrecedesTheStream`, `TestEventsOpRefusals`,
   `TestEventsOpReportsAReplayGap`, `TestEventsReportsWhereALateSubscriptionJoined`,
@@ -910,8 +923,11 @@ place a differential test would otherwise not see.
   `oap-frame-limit` **is** driven, by
   `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`, but
   only its `event` name is asserted, so its members are unpinned the same way.
-  Over HTTP, `oap-overflow` and `oap-session-closed` are pinned and
-  `oap-frame-limit` has no counterpart at all, because a socket does not frame.
+  Over HTTP, `oap-overflow` is pinned, and a session closing under a stream is
+  pinned too but as a **silent end** with no named signal — the SSE layer
+  defines exactly three, `oap-subscribed`, `oap-overflow` and `oap-replay-gap`.
+  `oap-session-closed` and `oap-frame-limit` have no SSE counterpart at all,
+  because a socket neither frames nor has to announce its own close.
 - **G10 — `request_read` is unpinned.** A body that cannot be read at all — a
   host that hangs up mid-body — is refused `400 request_read`, and no test
   drives a truncated body. It is the one code in the HTTP body gate with no
