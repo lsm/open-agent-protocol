@@ -289,7 +289,11 @@ The Go harness now takes the native session id from the case's own
 `prompt.submit`. It delivers server requests and checks each answer by id and
 result, and it gains a `cancel` control (drive `Cancel`, expect
 `session.interrupt`) and an `answers` list for batch resolutions. The Zig
-driver does the same at the reducer level.
+driver does the same at the reducer level. The `recovery-journal` and
+`replay-epoch` cases exercise Go's per-subscriber journal and `Resume`; the
+Zig driver skips their resume ops because an adapter needs no journal of its
+own — persistence is out of v0.1 core (Decision 0012), and the served
+endpoint's bounded journal answers `run.resume` and `run.replay`.
 
 ## Process gates
 
@@ -309,6 +313,3 @@ behind a `hermes` registry entry. Where it differs from the Go adapter:
 - It advertises the Go adapter's revision, with `run.resume` and `run.replay`
   `degraded` as Go does: the `oapx` endpoint keeps a bounded journal of 256
   events per session and answers the replay control from it.
-- A `gateway.ready` is checked for `change_events`, a 32-hex `replay_epoch` and
-  a present `skin`, as Go's `ValidateReady` does, but its payload is not
-  decoded against the pinned type.

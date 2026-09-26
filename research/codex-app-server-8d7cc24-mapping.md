@@ -283,19 +283,15 @@ pinned only by Zig unit tests against hand-written bytes.
    only `<`, `>`, `&` and U+2028/2029, while Zig writes the decoded character
    in Go's canonical form (a lone surrogate as U+FFFD). No corpus frame
    carries an escape in a pass-through member.
-3. **Order at a terminal.** Go closes open interactions and actions by ranging
-   over maps, so with two of either open the order of their `-32800` replies and
-   envelopes is unspecified; Zig uses the order they opened in. Neither the
-   corpus nor the recorded conversation has two open at once.
-4. **Case-variant duplicate members** are resolved with the shared `gojson`
+3. **Case-variant duplicate members** are resolved with the shared `gojson`
    fold helpers. A pointer member that a later null resets and a still later
    member reassigns is merged across the reset in Zig, where Go starts again.
-5. **No journal.** Like the other Zig ports the reducer keeps no journal and
+4. **No journal.** Like the other Zig ports the reducer keeps no journal and
    has no `Resume`. The descriptor the corpus pins is byte-identical to Go's,
    so it advertises `run.resume` and `run.replay` as `degraded`, and the served
    endpoint does too under the same revision: the `oapx` endpoint journals 256
    events per session and answers the replay control from them.
-6. **Endpoint checks.** Unadvertised controls, the session id, delivery,
+5. **Endpoint checks.** Unadvertised controls, the session id, delivery,
    degraded opt-in and metadata are refused before a submission reaches the
    reducer, as are tools and tool sources at open. Call failures come back as a
    structured refusal (method, remote code, message) rather than Go's composed
@@ -306,6 +302,19 @@ stack and panics past 256 levels in safe builds, while Go admits 10 000. A
 pass-through member can reach that depth, so the codex encoder walks values
 iteratively; anything that stringifies another port's envelopes with
 `std.json.Stringify` inherits the panic.
+
+Audited every Zig encoder on an envelope or native-write path for the same
+gap, against Go's 10 000-level limit:
+
+- Envelope and value paths use the iterative encoders: `json/encode.zig`
+  (`valueAlloc`, with a 10 000-deep round-trip test), `json/writer.zig` for OAP
+  envelopes, and the adapters' emitted events, which go through `json_encode`.
+- The remaining `std.json.Stringify` calls encode a bare string (a Claude
+  `goJSONString`, an MCP error message, the codex rpc number literal), a
+  shallow adapter-authored object (a Claude session metadata member, the
+  agent-control profiles' auth payloads), a CLI/validate document, or a test
+  value. None carries a pass-through member, so none can reach the fixed
+  stack.
 
 ## Served by `oapx serve agent --backend codex`
 
