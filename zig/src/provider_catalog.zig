@@ -20,43 +20,39 @@ pub fn status(id: []const u8) Status {
     return row.status orelse .supported;
 }
 
-pub fn codingPlanIds() []const []const u8 {
-    comptime {
-        var plan_rows: usize = 0;
-        for (all) |row| {
-            if (row.offering != null and row.offering.? == .coding_plan) plan_rows += 1;
-        }
-        var collected: [plan_rows][]const u8 = undefined;
-        var index: usize = 0;
-        for (all) |row| {
-            if (row.offering != null and row.offering.? == .coding_plan) {
-                collected[index] = row.id;
-                index += 1;
-            }
-        }
-        const frozen = collected;
-        return &frozen;
+pub const coding_plan_ids = blk: {
+    var plan_rows: usize = 0;
+    for (all) |row| {
+        if (row.offering != null and row.offering.? == .coding_plan) plan_rows += 1;
     }
-}
+    var collected: [plan_rows][]const u8 = undefined;
+    var index: usize = 0;
+    for (all) |row| {
+        if (row.offering != null and row.offering.? == .coding_plan) {
+            collected[index] = row.id;
+            index += 1;
+        }
+    }
+    const frozen = collected;
+    break :blk &frozen;
+};
 
-pub fn currentIds() []const []const u8 {
-    comptime {
-        var current_rows: usize = 0;
-        for (all) |row| {
-            if (row.status != null and row.status.? == .current) current_rows += 1;
-        }
-        var collected: [current_rows][]const u8 = undefined;
-        var index: usize = 0;
-        for (all) |row| {
-            if (row.status != null and row.status.? == .current) {
-                collected[index] = row.id;
-                index += 1;
-            }
-        }
-        const frozen = collected;
-        return &frozen;
+pub const current_ids = blk: {
+    var current_rows: usize = 0;
+    for (all) |row| {
+        if (row.status != null and row.status.? == .current) current_rows += 1;
     }
-}
+    var collected: [current_rows][]const u8 = undefined;
+    var index: usize = 0;
+    for (all) |row| {
+        if (row.status != null and row.status.? == .current) {
+            collected[index] = row.id;
+            index += 1;
+        }
+    }
+    const frozen = collected;
+    break :blk &frozen;
+};
 
 pub fn count() usize {
     return all.len;
@@ -266,7 +262,7 @@ test "a models listing is recorded only where the provider answers one" {
 }
 
 test "an offering is a plan or an api key, and one host serves one row" {
-    const plans = codingPlanIds();
+    const plans = coding_plan_ids;
     try std.testing.expect(plans.len > 0);
     for (plans) |id| {
         try std.testing.expect(offering(id).? == .coding_plan);
@@ -293,7 +289,7 @@ test "an offering is a plan or an api key, and one host serves one row" {
 }
 
 test "the current rows are the ones the catalog names first" {
-    const current = currentIds();
+    const current = current_ids;
     try std.testing.expect(current.len > 0);
     var named_first = true;
     var index: usize = 0;
