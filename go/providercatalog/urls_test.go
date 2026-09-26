@@ -130,3 +130,33 @@ func wireForRegion(region string) string {
 		return "openai-completions"
 	}
 }
+
+func TestResolveJoinsEachEndpointsOwnBase(t *testing.T) {
+	catalog := Catalog{Providers: []Provider{{
+		ID:         "row",
+		ModelsPath: "/models",
+		Endpoints: []Endpoint{
+			{Wire: "openai-completions", BaseURL: "https://first.example.com/v1"},
+			{Wire: "openai-responses", BaseURL: "https://second.example.com/api/v1"},
+		},
+	}}}
+	resolved := Resolve(catalog)
+	if len(resolved) != 2 {
+		t.Fatalf("resolved %d endpoints, want 2", len(resolved))
+	}
+	for _, want := range []Resolved{
+		{ID: "row", Wire: "openai-completions", BaseURL: "https://first.example.com/v1", ModelsURL: "https://first.example.com/v1/models", RequestURL: "https://first.example.com/v1/chat/completions"},
+		{ID: "row", Wire: "openai-responses", BaseURL: "https://second.example.com/api/v1", ModelsURL: "https://second.example.com/api/v1/models", RequestURL: "https://second.example.com/api/v1/v1/responses"},
+	} {
+		if resolved[0] == want {
+			continue
+		}
+		if resolved[1] == want {
+			continue
+		}
+		t.Fatalf("no resolved endpoint = %+v, want %+v", resolved, want)
+	}
+	if url := ModelsURL(catalog, "row", ""); url != "https://first.example.com/v1/models" {
+		t.Fatalf("models url for the region = %q, want the first endpoint's", url)
+	}
+}

@@ -121,13 +121,21 @@ func Resolve(catalog Catalog) []Resolved {
 	var resolved []Resolved
 	for _, provider := range catalog.Providers {
 		for _, endpoint := range provider.Endpoints {
+			models := ""
+			if provider.ModelsPath != "" {
+				models = joinModels(endpoint.BaseURL, provider.ModelsPath)
+			}
+			request := ""
+			if path, joined := wirePaths[endpoint.Wire]; joined && !path.modelScoped {
+				request = joinRequest(endpoint.BaseURL, path)
+			}
 			resolved = append(resolved, Resolved{
 				ID:         provider.ID,
 				Wire:       endpoint.Wire,
 				Region:     endpoint.Region,
 				BaseURL:    endpoint.BaseURL,
-				ModelsURL:  ModelsURL(catalog, provider.ID, endpoint.Region),
-				RequestURL: RequestURL(catalog, provider.ID, endpoint.Wire, endpoint.Region),
+				ModelsURL:  models,
+				RequestURL: request,
 			})
 		}
 	}
