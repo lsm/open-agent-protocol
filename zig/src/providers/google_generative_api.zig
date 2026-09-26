@@ -1286,7 +1286,9 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
         if (model.base_url.len > 0) break :blk try allocator.dupe(u8, model.base_url);
         const e = env(allocator, google_base_url_env);
         if (e) |v| break :blk @constCast(v);
-        const fallback = provider_catalog.baseUrl("google", model.api, null) orelse return error.MissingProviderBaseUrl;
+        const fallback = provider_catalog.baseUrl("google", model.api, null) orelse
+            provider_catalog.defaultBaseUrl("google") orelse
+            return error.MissingProviderBaseUrl;
         break :blk try allocator.dupe(u8, fallback);
     };
     errdefer allocator.free(base_url);

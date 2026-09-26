@@ -54,6 +54,10 @@ pub fn baseUrl(id: []const u8, wire: []const u8, region: ?[]const u8) ?[]const u
     return defaultBaseUrlOf(alias, region);
 }
 
+pub fn defaultBaseUrl(id: []const u8) ?[]const u8 {
+    return defaultBaseUrlOf(id, null);
+}
+
 fn defaultBaseUrlOf(id: []const u8, region: ?[]const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     if (row.base_url_source == null) return null;
@@ -136,10 +140,19 @@ test "a regional provider answers no endpoint without naming its region" {
 test "a reserved id naming a variant is answered by the row it stands for" {
     const generative = baseUrl("google", "google-generative-ai", null).?;
     try std.testing.expectEqualStrings(generative, baseUrl("google-gemini-cli", "google-gemini-cli", null).?);
-    try std.testing.expectEqualStrings(generative, defaultBaseUrlOf("google", null).?);
+    try std.testing.expectEqualStrings(generative, defaultBaseUrl("google").?);
     try std.testing.expect(baseUrl("kimi", "openai-completions", null) == null);
-    try std.testing.expect(defaultBaseUrlOf("no-such-provider", null) == null);
-    try std.testing.expect(defaultBaseUrlOf("openai-codex", "global") == null);
+    try std.testing.expect(defaultBaseUrl("no-such-provider") == null);
+    try std.testing.expect(defaultBaseUrl("ollama") == null);
+}
+
+test "a provider's default answers a wire its row does not name" {
+    const generative = baseUrl("google", "google-generative-ai", null).?;
+    try std.testing.expectEqualStrings(generative, baseUrl("google", "google-gemini-cli", null) orelse defaultBaseUrl("google").?);
+    try std.testing.expect(defaultBaseUrl("kimi") == null);
+    try std.testing.expect(defaultBaseUrl("azure") == null);
+    try std.testing.expect(defaultBaseUrl("ollama") == null);
+    try std.testing.expect(defaultBaseUrl("github-copilot") == null);
 }
 
 test "a base URL is answered for the wire that names it and for no other" {

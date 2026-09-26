@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "provider-catalog.schema.json",
   "title": "Curated model provider catalog",
-  "description": "The vendors this repository supports, as data. One row per provider id; the row is the only place an id, a wire, a base URL, an environment variable name or an OAuth origin policy is written. Every member is optional except `id`, because a curated row records what is known, and an absent member is unknown rather than empty. Credentials are never catalogued, only the names of the environment variables a provider is read from.",
+  "description": "The vendors this repository supports, as data. One row per provider id, in the order the rows were added. A base URL and an OAuth origin policy are written here and nowhere else: the Zig build turns this file into typed rows, so a value it does not hold does not compile, and `goap check` fails a non-test Go or Zig literal that spells a catalogued base URL. The names of the environment variables a credential arrives in, and the base URL overrides, are read through this file and are not yet gated. A provider id and a wire id stay literals in code; the id list is what a user-authored custom provider may not reuse. A row whose `base_url_source` is not `static` has no endpoint, because its default is credential-declared, derived, or a local default the code still owns. Every member is optional except `id`, because a curated row records what is known, and an absent member is unknown rather than empty. Credentials are never catalogued, only the names of the environment variables a provider is read from.",
   "type": "object",
   "required": [
     "providers"
