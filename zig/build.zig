@@ -3096,7 +3096,6 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
         status: []const u8,
         endpoint_version: ?[]const u8 = null,
         capability_revision: ?[]const u8 = null,
-        oapx_capability_revision: ?[]const u8 = null,
         corpus: ?[]const u8 = null,
         admits: ?[]const []const u8 = null,
         sources: []const struct { component: []const u8, tag: ?[]const u8 = null, commit: []const u8, tree: ?[]const u8 = null } = &.{},
@@ -3121,7 +3120,6 @@ fn harnessPinsModule(b: *std.Build) *std.Build.Module {
         options.addOption([]const u8, b.fmt("{s}_label", .{prefix}), pin.label);
         options.addOption([]const u8, b.fmt("{s}_endpoint_version", .{prefix}), pin.endpoint_version orelse std.debug.panic("{s}: current version has no endpoint_version", .{path}));
         options.addOption([]const u8, b.fmt("{s}_capability_revision", .{prefix}), pin.capability_revision orelse std.debug.panic("{s}: current version has no capability_revision", .{path}));
-        if (pin.oapx_capability_revision) |revision| options.addOption([]const u8, b.fmt("{s}_oapx_capability_revision", .{prefix}), revision);
         options.addOption([]const u8, b.fmt("{s}_corpus", .{prefix}), pin.corpus orelse std.debug.panic("{s}: current version has no corpus", .{path}));
         options.addOption([]const []const u8, b.fmt("{s}_admits", .{prefix}), pin.admits orelse &.{});
         for (pin.sources) |source| {

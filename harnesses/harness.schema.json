@@ -25,7 +25,6 @@
         "status": { "$ref": "#/$defs/status" },
         "endpoint_version": { "$ref": "#/$defs/nonEmptyString" },
         "capability_revision": { "$ref": "#/$defs/nonEmptyString" },
-        "oapx_capability_revision": { "$ref": "#/$defs/nonEmptyString" },
         "admits": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
         "ledgers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/repositoryPath" } },
         "corpus": { "$ref": "#/$defs/repositoryPath" },
@@ -44,13 +43,13 @@
           "if": { "properties": { "status": { "const": "floor" } } },
           "then": {
             "required": ["corpus"],
-            "not": { "anyOf": [{ "required": ["endpoint_version"] }, { "required": ["capability_revision"] }, { "required": ["oapx_capability_revision"] }, { "required": ["admits"] }] }
+            "not": { "anyOf": [{ "required": ["endpoint_version"] }, { "required": ["capability_revision"] }, { "required": ["admits"] }] }
           }
         },
         {
           "if": { "properties": { "status": { "const": "retired" } } },
           "then": {
-            "not": { "anyOf": [{ "required": ["endpoint_version"] }, { "required": ["capability_revision"] }, { "required": ["oapx_capability_revision"] }, { "required": ["admits"] }, { "required": ["corpus"] }, { "required": ["corpus_from"] }] }
+            "not": { "anyOf": [{ "required": ["endpoint_version"] }, { "required": ["capability_revision"] }, { "required": ["admits"] }, { "required": ["corpus"] }, { "required": ["corpus_from"] }] }
           }
         },
         {
