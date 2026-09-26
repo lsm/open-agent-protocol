@@ -294,6 +294,7 @@ fn assistantMessage(allocator: std.mem.Allocator, model: ai_types.Model, source:
             .text => |value| try appendTextContent(allocator, &blocks, value),
             .reasoning => |value| try appendReasoningContent(allocator, &blocks, value),
             .tool_call => |value| try appendToolCallContent(allocator, &blocks, value),
+            .image => return error.UnexpectedTerminalContent,
             .tool_result => return error.UnexpectedTerminalContent,
         },
     }

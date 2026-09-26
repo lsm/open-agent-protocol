@@ -99,6 +99,11 @@ const Reply = struct {
     message: []const u8 = "",
 };
 
+const NativeImage = struct {
+    data: []const u8,
+    mime_type: []const u8,
+};
+
 pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
@@ -124,7 +129,7 @@ pub const Session = struct {
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const self = try construct(owner, arena, request, refusal);
         errdefer self.destroy();
-        const state_data = try self.command(arena, "get_state", null, refusal);
+        const state_data = try self.command(arena, "get_state", null, &.{}, refusal);
         const native_session = memberOf(state_data, "sessionId") orelse std.json.Value.null;
         if (invalidState(state_data)) |reason| return refusal.fail(error.BackendFailed, reason);
         const streaming = memberOf(state_data, "isStreaming") orelse std.json.Value.null;
@@ -245,7 +250,7 @@ pub const Session = struct {
         return true;
     }
 
-    fn commandFrame(self: *Session, kind: []const u8, message: ?[]const u8) !struct { id: []const u8, value: std.json.Value } {
+    fn commandFrame(self: *Session, kind: []const u8, message: ?[]const u8, images: []const NativeImage) !struct { id: []const u8, value: std.json.Value } {
         self.next_request += 1;
         const id = try std.fmt.allocPrint(self.owned(), "req_{d}", .{self.next_request});
         var frame: std.json.ObjectMap = .empty;
@@ -253,13 +258,24 @@ pub const Session = struct {
         try frame.put(self.owned(), "type", .{ .string = kind });
         if (message) |text| {
             try frame.put(self.owned(), "message", .{ .string = text });
+            if (images.len > 0) {
+                var list = std.json.Array.init(self.owned());
+                for (images) |image| {
+                    var entry: std.json.ObjectMap = .empty;
+                    try entry.put(self.owned(), "type", .{ .string = "image" });
+                    try entry.put(self.owned(), "data", .{ .string = image.data });
+                    try entry.put(self.owned(), "mimeType", .{ .string = image.mime_type });
+                    try list.append(.{ .object = entry });
+                }
+                try frame.put(self.owned(), "images", .{ .array = list });
+            }
             try frame.put(self.owned(), "streamingBehavior", .{ .string = "steer" });
         }
         return .{ .id = id, .value = .{ .object = frame } };
     }
 
-    fn command(self: *Session, arena: std.mem.Allocator, kind: []const u8, message: ?[]const u8, refusal: *contract.Refusal) contract.Failure!std.json.Value {
-        const built = self.commandFrame(kind, message) catch |err| return lift(err);
+    fn command(self: *Session, arena: std.mem.Allocator, kind: []const u8, message: ?[]const u8, images: []const NativeImage, refusal: *contract.Refusal) contract.Failure!std.json.Value {
+        const built = self.commandFrame(kind, message, images) catch |err| return lift(err);
         self.awaited = built.id;
         self.reply = null;
         defer self.awaited = "";
@@ -428,7 +444,7 @@ pub const Session = struct {
     fn state(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
         const self = cast(ptr);
         if (self.ended or self.unusable) return error.SessionClosed;
-        const state_data = try self.command(arena, "get_state", null, refusal);
+        const state_data = try self.command(arena, "get_state", null, &.{}, refusal);
         const native_session = memberOf(state_data, "sessionId") orelse std.json.Value.null;
         if (invalidState(state_data)) |reason| return refusal.fail(error.BackendFailed, reason);
         if (!std.mem.eql(u8, native_session.string, self.native_session)) {
@@ -453,12 +469,19 @@ pub const Session = struct {
         const self = cast(ptr);
         if (request.session_id.len == 0 or request.messages.len == 0 or request.delivery != .auto) return error.InvalidSubmission;
         var texts = std.ArrayList([]const u8).empty;
+        var images = std.ArrayList(NativeImage).empty;
         for (request.messages) |message| {
             if (message.role != .user) return error.InvalidSubmission;
             switch (message.content) {
                 .text => |text| try texts.append(arena, text),
                 .parts => |parts| for (parts) |part| switch (part) {
                     .text => |text| try texts.append(arena, text),
+                    .image => |image| {
+                        const data = image.data orelse return error.InvalidSubmission;
+                        const media_type = image.media_type orelse return error.InvalidSubmission;
+                        if (data.len == 0 or media_type.len == 0) return error.InvalidSubmission;
+                        try images.append(arena, .{ .data = data, .mime_type = media_type });
+                    },
                     else => return error.InvalidSubmission,
                 },
             }
@@ -491,7 +514,7 @@ pub const Session = struct {
         self.settled_cursor = self.cursor();
         self.reducer = reducer;
 
-        _ = self.command(arena, "prompt", joined, refusal) catch |err| {
+        _ = self.command(arena, "prompt", joined, images.items, refusal) catch |err| {
             self.reducer = null;
             self.unusable = true;
             return err;
@@ -596,7 +619,7 @@ pub const Session = struct {
         if (!std.mem.eql(u8, reducer.run_id, run_id)) return error.RunNotFound;
         if (!reducer.cancel_intent) {
             session.cancel(reducer) catch |err| return lift(err);
-            _ = self.command(arena, "abort", null, refusal) catch |err| {
+            _ = self.command(arena, "abort", null, &.{}, refusal) catch |err| {
                 if (err == error.BackendFailed and !self.ended) {
                     session.abortFailed(reducer, refusal.message) catch |failure| return lift(failure);
                     try self.recordTerminal();
@@ -861,6 +884,27 @@ test "an open asks get_state and takes the model it reports, and the prompt reac
     try testing.expectEqualStrings(
         \\{"id":"req_1","type":"get_state"}
         \\{"id":"req_2","type":"prompt","message":"hello","streamingBehavior":"steer"}
+        \\
+    , written);
+}
+
+test "a submission carrying an inline image reaches Pi as Go's images command" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    var parts = [_]oap_types.ContentPart{
+        .{ .text = "look" },
+        .{ .image = .{ .data = "aGk=", .media_type = "image/png" } },
+    };
+    const messages = try probe.arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .parts = &parts } }});
+    var request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
+    _ = try probe.handle.?.submit(probe.arena.allocator(), &request, &refusal);
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expectEqualStrings(
+        \\{"id":"req_1","type":"get_state"}
+        \\{"id":"req_2","type":"prompt","message":"look","images":[{"type":"image","data":"aGk=","mimeType":"image/png"}],"streamingBehavior":"steer"}
         \\
     , written);
 }

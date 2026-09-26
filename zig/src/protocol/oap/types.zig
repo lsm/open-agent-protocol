@@ -145,6 +145,7 @@ pub const ReasoningPart = struct {
 pub const ContentPart = union(enum) {
     text: []const u8,
     reasoning: ReasoningPart,
+    image: ImagePart,
     tool_call: ToolCallPart,
     tool_result: ToolResultPart,
 
@@ -152,9 +153,22 @@ pub const ContentPart = union(enum) {
         switch (self.*) {
             .text => |value| allocator.free(value),
             .reasoning => |*part| part.deinit(allocator),
+            .image => |*part| part.deinit(allocator),
             .tool_call => |*part| part.deinit(allocator),
             .tool_result => |*part| part.deinit(allocator),
         }
+    }
+};
+
+pub const ImagePart = struct {
+    url: ?[]const u8 = null,
+    data: ?[]const u8 = null,
+    media_type: ?[]const u8 = null,
+
+    pub fn deinit(self: *ImagePart, allocator: std.mem.Allocator) void {
+        if (self.url) |value| allocator.free(value);
+        if (self.data) |value| allocator.free(value);
+        if (self.media_type) |value| allocator.free(value);
     }
 };
 

@@ -957,6 +957,10 @@ pub const Server = struct {
         }
 
         for (create_request.messages) |message| {
+            if (messageCarriesImage(message)) {
+                try self.emitCreateRefusal(env, .unsupported_feature, "this endpoint forwards text content only");
+                return;
+            }
             if (messageCarriesUnforwardablePart(message)) {
                 try self.emitCreateRefusal(
                     env,
@@ -1749,6 +1753,17 @@ pub fn cloneHeaders(
     return out;
 }
 
+fn messageCarriesImage(message: oap_types.Message) bool {
+    const parts = switch (message.content) {
+        .text => return false,
+        .parts => |value| value,
+    };
+    for (parts) |part| {
+        if (part == .image) return true;
+    }
+    return false;
+}
+
 fn messageCarriesUnforwardablePart(message: oap_types.Message) bool {
     return switch (message.content) {
         .text => message.role == .tool,
@@ -1758,6 +1773,7 @@ fn messageCarriesUnforwardablePart(message: oap_types.Message) bool {
                 switch (part) {
                     .text => {},
                     .reasoning, .tool_call => if (message.role != .assistant) break :blk true,
+                    .image => break :blk true,
                     .tool_result => {
                         if (message.role != .user and message.role != .tool) break :blk true;
                         carries_result = true;
@@ -1825,6 +1841,14 @@ fn clonePart(allocator: std.mem.Allocator, part: oap_types.ContentPart) !oap_typ
             errdefer allocator.free(text);
             const carry = if (value.carry) |raw| try allocator.dupe(u8, raw) else null;
             break :blk .{ .reasoning = .{ .text = text, .carry = carry } };
+        },
+        .image => |image| blk: {
+            const url = if (image.url) |raw| try allocator.dupe(u8, raw) else null;
+            errdefer if (url) |raw| allocator.free(raw);
+            const data = if (image.data) |raw| try allocator.dupe(u8, raw) else null;
+            errdefer if (data) |raw| allocator.free(raw);
+            const media_type = if (image.media_type) |raw| try allocator.dupe(u8, raw) else null;
+            break :blk .{ .image = .{ .url = url, .data = data, .media_type = media_type } };
         },
         .tool_call => |call| blk: {
             const id = try allocator.dupe(u8, call.tool_call_id);
@@ -2122,6 +2146,27 @@ test "the agent control profile is refused and the refusal names the caller's en
     defer response.deinit(allocator);
     try std.testing.expectEqual(types.ErrorCode.protocol_violation, response.payload.protocol_error.err.code);
     try std.testing.expectEqualStrings("q9", response.in_reply_to.?);
+}
+
+test "an image part is refused with the endpoint's text-only wording, not a placement rule" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{});
+    defer server.deinit();
+
+    const line = try makeRequest(
+        allocator,
+        "inference.create.request",
+        "{\"model_ref\":\"ollama-local/openai-chat-completions@gemma\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"image\":{\"data\":\"aGk=\",\"media_type\":\"image/png\"}}]}]}",
+        "q1",
+    );
+    defer allocator.free(line);
+    try server.handleLine(line);
+
+    var refusal = try decodeOnly(allocator, &server);
+    defer refusal.deinit(allocator);
+    const err = refusal.payload.inference_create_response.err.?;
+    try std.testing.expectEqual(types.ErrorCode.unsupported_feature, err.code);
+    try std.testing.expectEqualStrings("this endpoint forwards text content only", err.message);
 }
 
 test "a credential in caller headers is refused with the correct alternative named" {

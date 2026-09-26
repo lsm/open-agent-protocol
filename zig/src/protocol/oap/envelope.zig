@@ -73,6 +73,15 @@ pub fn serializeContentPart(w: *json_writer.JsonWriter, part: oap_types.ContentP
             try w.writeStringField("reasoning", value.text);
             if (value.carry) |carry| try w.writeStringField("carry", carry);
         },
+        .image => |value| {
+            try w.writeStringField("type", "image");
+            try w.writeKey("image");
+            try w.beginObject();
+            if (value.url) |url| try w.writeStringField("url", url);
+            if (value.data) |data| try w.writeStringField("data", data);
+            if (value.media_type) |media_type| try w.writeStringField("media_type", media_type);
+            try w.endObject();
+        },
         .tool_call => |value| {
             try w.writeStringField("type", "tool_call");
             try w.writeStringField("tool_call_id", value.tool_call_id);
@@ -819,6 +828,16 @@ pub fn deserializeContentPart(value: std.json.Value, allocator: std.mem.Allocato
         errdefer allocator.free(text);
         const carry = try optionalOwnedString(obj, "carry", allocator);
         return .{ .reasoning = .{ .text = text, .carry = carry } };
+    }
+    if (std.mem.eql(u8, part_type, "image")) {
+        const image = obj.get("image") orelse return DecodeError.MissingField;
+        if (image != .object) return DecodeError.InvalidField;
+        const url = try optionalOwnedString(image.object, "url", allocator);
+        errdefer if (url) |raw| allocator.free(raw);
+        const data = try optionalOwnedString(image.object, "data", allocator);
+        errdefer if (data) |raw| allocator.free(raw);
+        const media_type = try optionalOwnedString(image.object, "media_type", allocator);
+        return .{ .image = .{ .url = url, .data = data, .media_type = media_type } };
     }
     if (std.mem.eql(u8, part_type, "tool_call")) {
         const tool_call_id = try requiredOwnedString(obj, "tool_call_id", allocator);
