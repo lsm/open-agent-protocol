@@ -461,7 +461,7 @@ pub const Reducer = struct {
     fn partValue(self: *Reducer, part: Part) std.mem.Allocator.Error!std.json.Value {
         var value: std.json.ObjectMap = .empty;
         try self.put(&value, "type", str(if (part.reasoning) "reasoning" else "text"));
-        if (part.text.len > 0) try self.put(&value, if (part.reasoning) "reasoning" else "text", str(part.text));
+        try self.put(&value, if (part.reasoning) "reasoning" else "text", str(part.text));
         return .{ .object = value };
     }
 
