@@ -189,6 +189,13 @@ restart — reconciling means finding the item carrying the `intent_id` it sent,
 an item that omitted it could only be matched by comparing text, which fails the
 moment the same message is submitted twice.
 
+The minimum profile records one `intent_id` per item, and in the minimum profile
+that is sufficient: a submit produces its own message item, a resolve changes one
+prompt, and a cancel changes one run's status, so no two intents contend for the
+same item. A richer profile whose intents can land on one item — a config update
+followed by an interrupt, say — needs a list, because a single field keeps only the
+later intent and a retry of the earlier one stops being matchable.
+
 It is recorded on any item the intent **changed**, not only one it produced,
 because most intents change an item somebody else produced. A submit produces its
 own `message` item, but a resolve changes the `permission_prompt` or
@@ -394,6 +401,14 @@ changed nothing — it is an `error.response` and nothing was admitted — so re
 it is harmless and needs no record at all. Control's memory is therefore bounded by
 outstanding intents rather than growing for the life of the epoch, which matters to
 `oapx`, whose session memory is bounded by design.
+
+Answering a duplicate from the timeline assumes control still holds the item. A
+control layer that compacts or evicts old items, as a bounded-memory host may, can
+no longer recognise a retry that arrives after the eviction, and answers it as a
+fresh intent. That is a stated limit of this rule rather than a defect: the
+deduplication window is bounded at both ends, by the epoch on one side and by what
+control still holds on the other, and a presentation layer that retries after a
+compaction is asking control about state control has released.
 
 The identifier lives on the request rather than duplicating the envelope `id`,
 which addresses one envelope.
