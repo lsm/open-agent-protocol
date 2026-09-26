@@ -1,6 +1,6 @@
 # Decision 0035: A Model Entry Publishes Its Facts, and Absence Means Unknown
 
-Status: proposed
+Status: proposed (the five open questions answered by the owner 2026-09-26)
 Date: 2026-09-26
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.model-provider-core`
@@ -75,23 +75,43 @@ Optional, additive, and each absent by default:
 | Member | Shape | Why |
 | --- | --- | --- |
 | `cost` | `{ input, output, cache_read, cache_write }`, all optional numbers | a caller that shows a rate needs the four numbers; nothing else is carried |
-| `input_modalities` | list of `text`, `image`, `audio`, `video`, `document` | completes the media surface `capabilities` starts |
+| `input_modalities` | list of `text`, `image`, `audio`, `document` | completes the media surface `capabilities` starts |
 | `output_modalities` | same vocabulary | a model that answers in more than text cannot say so today |
 | `reasoning_levels` | list of `reasoningLevel` | the set a model accepts, with `reasoning_default` naming one of them |
 | `release_date` | string | lets a client order siblings |
 | `family` | string | groups models that differ only in size or speed |
 
+The vocabulary is `text`, `image`, `audio` and `document`. A model is offered a
+*document* rather than a PDF because a document is what a caller holds and a PDF
+is one format of it, so naming the format would make every other document format
+a second value. v0.1 adds no `video`, on the same bar a cost tier waits by: a
+value no row publishes is a claim about the schema rather than about a model.
+The [evidence ledger](../research/opencode-provider-catalog-mapping.md) names
+the candidate — the opencode catalog lists `video` and `pdf` among modalities,
+and Kimi's own listing claims it takes video — so what is missing is a provider
+the conformance corpus can show, and a Kimi model publishing video input in a
+listing read through `provider.models.list` puts `video` in.
+
 `cost` is a fact, not a quotation and not a promise. No conformance unit judges
 it, it is true only of the response that carried it, and an implementation that
 quotes a rate it does not honour has published a falsehood rather than a wrong
 price. The provider schema carries no cost member today, so nothing here is a
-change to a claim already made.
+change to a claim already made. It is carried anyway, because a caller asked for
+a rate has nowhere else to read one and the fact already exists one layer below
+the boundary. Its shape is flat — the four numbers, and no tier. A tiered rate
+such as the `context_over_200k` the evidence records is not in v0.1: no row in
+the conformance corpus carries one, and a shape nothing fills is a claim about
+the schema rather than about a model. A tier joins when a row needs it, and the
+shape it takes is settled by that row.
 
 `capabilities` keeps its behavioural members and its three media values are
 **superseded** by the two modality lists: a caller reading the lists ignores
-`vision`, `audio_input` and `audio_output`. Whether those three are retained as
-deprecated aliases or removed outright is left to review; retaining them is the
-smaller break, removing them is the smaller vocabulary.
+`vision`, `audio_input` and `audio_output`. All three are retained in
+`modelCapability` for v0.1, as deprecated aliases. Retaining them is the smaller
+break — a v0.1 peer that reads them keeps working, and the lists are what a
+caller reads that knows of them — while retiring them later is a decision in its
+own right, where a removed value is a changelog entry rather than a break
+between two v0.1 implementations.
 
 ### The listing publishes its own completeness and age
 
@@ -121,8 +141,10 @@ publish in its own catalog, and that decision is judged under its own unit.
 Making a partial catalog *disarm* the two-directional binding needs a member on
 `models.response` or an amendment to `+models`, and `models.response` is bound to
 `capability_revision`, so a completeness flip there would be a capability change
-rather than a per-request fact. That is a separate decision in the agent-control
-profile, and naming it here is the most this decision does about it.
+rather than a per-request fact. That is a separate decision in the
+agent-control-core profile, and the agent side takes no completeness member for
+now: the `+models` binding stands unamended, and a provider publishing a partial
+listing the corpus can show is what brings the question back.
 
 `observed_at_ms` is when the underlying catalog was read, not when the response
 was built, so a `fallback` source can be told from a fresh one.
@@ -188,18 +210,27 @@ No `models.response` member, no `+models` rule edit and no
 `go/validation/models.go` change follows from this, because `+models` never reads
 the envelope this decision touches.
 
-## Open questions for review
+## Answers from review, 2026-09-26
 
-1. Retain `vision`, `audio_input`, `audio_output` in `modelCapability` as
-   superseded aliases, or remove them in the same change?
-2. Should `cost` be carried at all, given that the unit that would judge a
-   price does not exist, or is an unjudged published fact the right trade?
-3. Is `cost`'s flat four-number shape enough, or does a tiered rate
-   (`context_over_200k` in the evidence) belong in v0.1 at all?
-4. `document` versus `pdf` for the modality name, and whether `video` is worth
-   a member before a provider in the conformance corpus needs it.
-5. Does the agent side want completeness at all, and if so on which envelope: a
-   `models.response` member, which is bound to `capability_revision` and so makes
-   a completeness flip a capability change, or an amendment to the `+models` rule
-   that has the unit judge a partial catalog on its own terms. That decision
-   belongs to `agent-control-core` and this one does not presume its answer.
+The owner answered the five questions this proposal was opened with, before any
+schema, type or validator change, and each answer is now carried in the decisions
+above rather than beside them. The proposal stays `proposed`: nothing below is
+executable yet, and what accepting it requires has not moved.
+
+1. **`vision`, `audio_input` and `audio_output` stay** in `modelCapability` for
+   v0.1 as deprecated aliases. Removing them is a later decision, in a version
+   where a removed value can be announced without breaking a v0.1 peer.
+2. **`cost` is carried**, as a published and unjudged fact. No unit judges a
+   price, and none is invented for it: the fact is true of the response that
+   carried it, which is what makes publishing it safe and judging it separate.
+3. **`cost` stays flat at four numbers.** Tiers arrive when a row needs one, and
+   the shape a tier takes is settled by that row rather than by a field no
+   provider fills.
+4. **The modality is `document`, and v0.1 adds no `video`.** The name is what a
+   caller holds, not the format it arrives in; `video` waits for a provider the
+   corpus can show, with Kimi's own listing named in the evidence as the
+   candidate.
+5. **The agent side takes no completeness member for now.** `+models` and
+   `models.response` are untouched, so a partial provider listing leaves the
+   two-directional binding standing, and the question returns with a provider
+   that publishes one.
