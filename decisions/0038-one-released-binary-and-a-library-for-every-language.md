@@ -1,6 +1,6 @@
 # Decision 0038: One Released Binary, and a Library for Every Language
 
-Status: accepted 2026-09-26 (policy decision; its work is tracked in #364, and its open question is handed to #372)
+Status: accepted 2026-09-26 (policy decision; its work is tracked in #364 and #384)
 Date: 2026-09-26
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: neither; this record governs what ships and what each language gets,
@@ -99,11 +99,14 @@ uses any SDK, and the zero-comment allowlist goes with it. A Go agent loop and p
 what remain before Go is native in the sense above. Rust follows from `sdk/rust`;
 Java waits for a user.
 
-### The hub stays a Go library
+### The hub is in both trees
 
-The hub is `go/serve` and its bindings, reached today through `goap hub`. With no
-Go binary released, a program that needs a multi-session daemon embeds
-`go/serve`, and `clients/ts`'s tests build `goap hub` from source.
+The hub is `go/serve` and its bindings, reached today through `goap hub`. It stays
+a Go library, so a Go program can drive every harness natively in its own
+process, and `oapx` gains it as `oapx hub`, so the product serves many sessions and
+reconnecting clients too. The two are held to one wire, written down in a draft
+and checked by a differential test. Until `oapx hub` lands, `clients/ts`'s tests
+build `goap hub` from source.
 
 ## Consequences
 
@@ -124,7 +127,3 @@ Go binary released, a program that needs a multi-session daemon embeds
 - Splitting the TUI out of `oapx`.
 - A native library approximating what it has not implemented.
 - A conformance kit that needs Go or Zig installed to run.
-
-## Open questions
-
-- Whether the hub becomes a product feature of `oapx`, handed to #372.
