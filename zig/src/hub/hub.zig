@@ -37,6 +37,7 @@ pub const Options = struct {
 
 pub const Ending = enum {
     open,
+    run_terminal,
     overflow,
     stream_failed,
     session_closed,
@@ -135,6 +136,8 @@ pub const Subscription = struct {
     queue_at: usize = 0,
     highest: u64 = 0,
     ending: Ending = .open,
+    terminal_run: []u8 = &.{},
+    terminal_sequence: u64 = 0,
     overflow_run: []u8 = &.{},
     overflow_sequence: u64 = 0,
     held: bool = false,
@@ -148,15 +151,25 @@ pub const Subscription = struct {
             const event = self.replay.items[0];
             self.replay_at = 1;
             self.advance(event);
-            return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
+            return self.settle(event);
         }
         if (self.queue.items.len > 0) {
             const event = self.queue.items[0];
             self.queue_at = 1;
             self.advance(event);
-            return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
+            return self.settle(event);
         }
         return null;
+    }
+
+    fn settle(self: *Subscription, event: contract.Event) Delivery {
+        if (self.ending == .open and
+            self.terminal_sequence == event.sequence and
+            std.mem.eql(u8, self.terminal_run, event.run_id))
+        {
+            self.ending = .run_terminal;
+        }
+        return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
     }
 
     fn trim(self: *Subscription, allocator: std.mem.Allocator) void {
@@ -203,6 +216,7 @@ pub const Subscription = struct {
         self.replay.deinit(allocator);
         self.queue.deinit(allocator);
         if (self.overflow_run.len > 0) allocator.free(self.overflow_run);
+        if (self.terminal_run.len > 0) allocator.free(self.terminal_run);
         if (self.run_id.len > 0) allocator.free(self.run_id);
         allocator.free(self.session_id);
         self.* = undefined;
@@ -527,9 +541,11 @@ pub const Hub = struct {
     }
 
     pub fn close(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!void {
-        _ = arena;
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
-        if (entry.closed) return error.SessionClosed;
+        if (entry.closed) return;
+        var refusal = contract.Refusal{};
+        const reported = try entry.session.state(arena, &refusal);
+        if (reported.active_run_id != null or reported.active_runs.len > 0) return error.RunActive;
         entry.session.close();
         self.closeSession(entry, .session_closed);
     }
@@ -764,6 +780,12 @@ pub const Hub = struct {
         return 0;
     }
 
+    fn terminal(line: []const u8) bool {
+        return std.mem.indexOf(u8, line, "\"type\":\"run.completed\"") != null or
+            std.mem.indexOf(u8, line, "\"type\":\"run.failed\"") != null or
+            std.mem.indexOf(u8, line, "\"type\":\"run.cancelled\"") != null;
+    }
+
     fn remember(self: *Hub, entry: *Entry, event: contract.Event) !void {
         var fresh = false;
         const index = try self.cursorFor(entry, event.run_id, &fresh);
@@ -798,6 +820,11 @@ pub const Hub = struct {
         var fresh = false;
         const cursor_index = try self.cursorFor(entry, event.run_id, &fresh);
         const owned_run = entry.cursors.items[cursor_index].run_id;
+        if (terminal(event.line)) {
+            for (entry.subscribers.items) |subscription| {
+                try self.noteTerminal(subscription, owned_run, event.sequence);
+            }
+        }
         var index: usize = 0;
         while (index < entry.subscribers.items.len) {
             const subscription = entry.subscribers.items[index];
@@ -816,6 +843,14 @@ pub const Hub = struct {
             subscription.queue.appendAssumeCapacity(.{ .line = copy, .run_id = owned_run, .sequence = event.sequence });
             index += 1;
         }
+    }
+
+    fn noteTerminal(self: *Hub, subscription: *Subscription, run_id: []const u8, sequence: u64) !void {
+        if (subscription.terminal_sequence >= sequence) return;
+        const owned = try self.allocator.dupe(u8, run_id);
+        if (subscription.terminal_run.len > 0) self.allocator.free(subscription.terminal_run);
+        subscription.terminal_run = owned;
+        subscription.terminal_sequence = sequence;
     }
 
     fn markOverflow(self: *Hub, subscription: *Subscription) !void {
@@ -1387,11 +1422,59 @@ test "closing a session ends every subscription under it, and a closed one is re
     try hub.close(arena, opened.session_id);
     try testing.expectEqual(Ending.session_closed, first.ending);
     try testing.expectEqual(Ending.session_closed, second.ending);
-    try testing.expectError(error.SessionClosed, hub.close(arena, opened.session_id));
     try testing.expectError(error.SessionClosed, hub.subscribe(arena, opened.session_id, .{}));
     const request = try submitFor(arena, "closing");
     try testing.expectError(error.SessionClosed, hub.submit(arena, "closing", &request));
     try testing.expectError(error.UnknownSession, hub.state(arena, "absent"));
+}
+
+test "a close refuses while a run is live, and a second close is ok" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "busy" });
+    const request = try submitFor(arena, "busy");
+    const admitted = try hub.submit(arena, "busy", &request);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectError(error.RunActive, hub.close(arena, opened.session_id));
+
+    _ = try hub.cancel(arena, "busy", admitted.run_id.?);
+    try hub.close(arena, "busy");
+    try testing.expectError(error.SessionClosed, hub.state(arena, "busy"));
+    try hub.close(arena, "busy");
+    try hub.close(arena, "busy");
+}
+
+test "a subscription ends after it is handed the run's terminal envelope" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "terminal" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    const request = try submitFor(arena, "terminal");
+    _ = try hub.submit(arena, "terminal", &request);
+    var queued = request;
+    queued.delivery = .queue;
+    const waiting = try hub.submit(arena, "terminal", &queued);
+    try testing.expectEqual(oap_types.Admission.queued, waiting.admission);
+    try hub.pump(testing.allocator, 0);
+
+    _ = try hub.cancel(arena, "terminal", waiting.run_id.?);
+    try hub.pump(testing.allocator, 0);
+
+    while (subscription.next()) |_| {}
+    try testing.expectEqual(Ending.run_terminal, subscription.ending);
+    try testing.expect(subscription.next() == null);
 }
 
 test "a session-scoped request may not address another session" {
