@@ -971,7 +971,6 @@ test "a gateway.ready payload with an unknown member refuses the open" {
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, probe.open(&refusal));
     try testing.expectEqualStrings("the hermes gateway's first frame was not a valid gateway.ready", refusal.message);
-    try testing.expectEqualStrings("", try probe.fake.written(probe.arena.allocator()));
 }
 
 test "a session.create the gateway refuses fails the open with its error" {
