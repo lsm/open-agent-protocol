@@ -123,3 +123,35 @@ revision strings.
 
 v1.18.29 is retired: its corpus directory is removed and this ledger's
 predecessor remains.
+
+## Model-provider settings at this pin
+
+OpenCode names a model provider in its config file (`opencode.json`, or
+`.jsonc`) under `provider.<id>`, and `model` names the model as
+`<provider>/<model>`. An `apiKey` or `baseURL` may be written as `{env:NAME}` or
+`{file:path}` so the file carries a reference rather than a secret.
+
+| Key | What it sets |
+| --- | --- |
+| `provider.<id>.options.baseURL` | the provider's base URL, for a proxy or a custom endpoint |
+| `provider.<id>.options.apiKey` | the provider's key, the generic option every provider takes |
+| `provider.<id>.npm` | the AI SDK package the provider loads through |
+| `provider.<id>.api` | the wire the provider's models speak |
+| `provider.<id>.env` | the environment variables the provider reads its credential from |
+| `provider.<id>.models` | the provider's model list, replacing the catalog's |
+| `provider.<id>.whitelist`, `.blacklist` | which model ids the picker shows |
+
+The schema is `ProviderConfig` at
+`packages/core/src/v1/config/provider.ts` at this pin, still the v1 shape that
+`packages/core/src/v1/config/migrate.ts` migrates forward; it carries `apiKey`
+and `baseURL` under `options` and a free-form rest, so a provider-specific
+option is not a closed set. Documented at
+[providers](https://opencode.ai/docs/providers) and
+[config](https://opencode.ai/docs/config), which track the current release
+rather than this pin.
+
+`env` names the same variables the shared dataset publishes per provider, and
+`/connect` stores a credential in `~/.local/share/opencode/auth.json` instead.
+So a row's key can be delivered either as the environment variable the provider
+documents or through the stored file, and the two are the same setting read from
+two places.

@@ -104,8 +104,8 @@ Java waits for a user.
 The hub is `go/serve` and its bindings, reached today through `goap hub`. It stays
 a Go library, so a Go program can drive every harness natively in its own
 process, and `oapx` gains it as `oapx hub`, so the product serves many sessions and
-reconnecting clients too. The two are held to one wire, written down in a draft
-and checked by a differential test. Until `oapx hub` lands, `clients/ts`'s tests
+reconnecting clients too. The two are held to one wire, written down in
+[`drafts/hub.md`](../drafts/hub.md) and checked by a differential test. Until `oapx hub` lands, `clients/ts`'s tests
 build `goap hub` from source.
 
 ## Consequences

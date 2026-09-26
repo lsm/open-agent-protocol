@@ -161,9 +161,10 @@
           }
         },
         "models_endpoint": {
-          "description": "Path appended to the base URL to list models, for a provider that answers one; it must name the vendor's own listing, so a base URL that already ends in a version segment takes `/models` rather than `/v1/models`. Absent when the provider publishes no listing of its own.",
+          "description": "Path appended literally to the base URL a request to this row would use \u2014 an endpoint's `base_url` including its own path, or the base a credential or a local default resolves to; never a URL join against the origin, and never relative to the host. The listing is that concatenation, so `https://api.z.ai/api/coding/paas/v4` with `/models` is `https://api.z.ai/api/coding/paas/v4/models`. One path serves the whole row, appended to every endpoint the row has, which is how `kimi` lists from two regional bases. It begins with `/` and names the vendor's own listing, so a base already ending in a version segment takes `/models` rather than `/v1/models`. Absent when the provider publishes no listing of its own.",
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^/"
         },
         "oauth_origin": {
           "$ref": "#/$defs/oauthOrigin"

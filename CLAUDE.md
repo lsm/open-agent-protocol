@@ -348,6 +348,13 @@ every session. The registry config's `environment` list is an explicit
 allowlist — a child never inherits ambient variables that were not listed. Keep
 these when touching `serve/` or `cmd/goap/serve.go`.
 
+`drafts/hub.md` is that trust model and the rest of the hub's wire written down
+as the specification both trees are judged against (Decision 0032). Every rule in
+it names the Go test pinning it, and the rules no test pins are listed as gaps —
+so read it before changing `serve/servehttp`, `serve/servestdio` or a future Zig
+hub, and update it in the same PR. Where it and either tree disagree, it wins
+and the wrong side is fixed or the divergence recorded in its own section.
+
 ## Conventions
 
 - Commit subjects are `<area>: <imperative sentence>`, area being a package or

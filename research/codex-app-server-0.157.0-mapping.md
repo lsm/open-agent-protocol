@@ -124,3 +124,37 @@ All runs used the darwin-arm64 binary above, a temporary `HOME` and
 Not re-run: approval, file-change, MCP and user-input turns against the real
 process, which need a mock that scripts tool calls. The schema shows those
 payloads unchanged.
+
+## Model-provider settings at this pin
+
+Codex names a model provider in `~/.codex/config.toml` under
+`[model_providers.<id>]`, and selects it with the top-level `model_provider`
+(default `openai`); `model` names the model. A layer is `$CODEX_HOME/<name>.config.toml`
+under `-p/--profile`, and `-c key=value` overrides any key for one run with a
+dotted path, so a child can be pointed at a provider without a config file at all.
+
+| Key | What it sets |
+| --- | --- |
+| `model_providers.<id>.base_url` | the provider's API base URL |
+| `model_providers.<id>.env_key` | the environment variable holding the API key |
+| `model_providers.<id>.name` | display name |
+| `model_providers.<id>.wire_api` | the protocol; `responses` is the only value, and the default |
+| `model_providers.<id>.query_params`, `.http_headers`, `.env_http_headers` | extra query parameters and request headers |
+| `model`, `model_provider` | the model id and which `model_providers` entry serves it |
+| `openai_base_url` | base URL override for the built-in `openai` provider only |
+
+Documented at [config reference](https://developers.openai.com/codex/config-reference);
+`docs/config.md` at this tag defers to it. The built-in ids `openai`, `ollama`
+and `lmstudio` are reserved and cannot be overridden, so a catalog row is routed
+by a new id rather than by replacing one.
+
+`wire_api` takes only `responses` at this pin, so only a row on the OpenAI
+Responses wire is routable; `experimental_bearer_token` carries a token inline
+and its own documentation discourages it in favour of `env_key`.
+`--strict-config` errors on a key this version does not recognise, which is what
+makes a config written for a later Codex fail loudly rather than route wrongly.
+
+Verified at the pin: the installed `codex-cli 0.157.0` binary carries
+`model_providers`, `base_url`, `env_key`, `wire_api`, `query_params` and
+`env_http_headers`, and `"responses"` is the only `wire_api` value among its
+strings.

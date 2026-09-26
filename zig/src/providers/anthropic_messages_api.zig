@@ -62,17 +62,39 @@ fn isOAuthToken(key: []const u8) bool {
     return std.mem.find(u8, key, "sk-ant-oat") != null;
 }
 
+fn isVersionSegment(segment: []const u8) bool {
+    if (segment.len < 2 or segment[0] != 'v') return false;
+    for (segment[1..]) |digit| {
+        if (digit < '0' or digit > '9') return false;
+    }
+    return true;
+}
+
+fn pathHasVersion(base_url: []const u8) bool {
+    @setEvalBranchQuota(4000);
+    const scheme = std.mem.indexOf(u8, base_url, "://") orelse return false;
+    var rest: []const u8 = base_url[scheme + 3 ..];
+    const cut = std.mem.indexOfScalar(u8, rest, '/') orelse return false;
+    rest = rest[cut + 1 ..];
+    var segments = std.mem.tokenizeScalar(u8, rest, '/');
+    while (segments.next()) |segment| {
+        if (isVersionSegment(segment)) return true;
+    }
+    return false;
+}
+
 fn buildUrlWithSuffix(allocator: std.mem.Allocator, base_url: []const u8, suffix: []const u8) ![]const u8 {
     const trimmed = std.mem.trimEnd(u8, base_url, "/");
     if (std.mem.endsWith(u8, trimmed, suffix)) return allocator.dupe(u8, trimmed);
+    const effective = if (pathHasVersion(trimmed) and std.mem.startsWith(u8, suffix, "/v1/")) suffix["/v1".len..] else suffix;
     var sb = StringBuilder{};
     sb.count(base_url);
-    sb.count(suffix);
+    sb.count(effective);
     try sb.allocate(allocator);
     errdefer sb.deinit(allocator);
 
     _ = sb.append(base_url);
-    _ = sb.append(suffix);
+    _ = sb.append(effective);
 
     std.debug.assert(sb.len == sb.cap);
     const out = sb.ptr.?[0..sb.cap];
@@ -1870,6 +1892,20 @@ test "buildUrlWithSuffix does not double a suffix already present" {
     const bare = try buildUrlWithSuffix(std.testing.allocator, "https://api.anthropic.com", "/v1/messages");
     defer std.testing.allocator.free(bare);
     try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", bare);
+}
+
+test "buildUrlWithSuffix never doubles the version segment" {
+    const cases = [_]struct { base: []const u8, want: []const u8 }{
+        .{ .base = "https://api.minimax.io/anthropic/v1", .want = "https://api.minimax.io/anthropic/v1/messages" },
+        .{ .base = "https://gw.test/v1", .want = "https://gw.test/v1/messages" },
+        .{ .base = "https://gw.test/v3", .want = "https://gw.test/v3/messages" },
+        .{ .base = "https://gw.test/anthropic", .want = "https://gw.test/anthropic/v1/messages" },
+    };
+    for (cases) |case| {
+        const url = try buildUrlWithSuffix(std.testing.allocator, case.base, "/v1/messages");
+        defer std.testing.allocator.free(url);
+        try std.testing.expectEqualStrings(case.want, url);
+    }
 }
 
 test "anthropicErrorDetail surfaces the API error type and message" {
