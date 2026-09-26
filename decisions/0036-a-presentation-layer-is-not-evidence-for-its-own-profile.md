@@ -214,8 +214,11 @@ Every `presentation.snapshot.response` and every `presentation.updated` carries
 
 A control layer mints a new epoch whenever it cannot promise that the numbering
 continues — on start, or when it rebuilds that target's state. A control layer
-that saves its counter may keep one epoch across a restart. **Same epoch means
-same numbering**, and that is the whole promise the identifier makes.
+that saves its counter may keep one epoch across a restart, and keeping it obliges
+carrying whatever else that epoch promises, which for a layer that accepts intents
+includes their deduplication window. A layer that cannot carry that window across a
+restart mints a new epoch instead. **Same epoch means same numbering**, and that is
+the whole promise the identifier makes.
 
 A receiver holding a different epoch discards what it holds for that target and
 takes the snapshot. An update whose epoch differs from the held one is discarded,

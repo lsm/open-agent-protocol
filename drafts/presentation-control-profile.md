@@ -145,7 +145,10 @@ Common fields:
 `epoch` is an opaque identifier naming the revision numbering of one target.
 Control mints a new epoch whenever it cannot promise that numbering continues: on
 start, or when it rebuilds that target's state. A control layer that saves its
-counter may keep one epoch across a restart. **Same epoch means same numbering**,
+counter may keep one epoch across a restart — and keeping it obliges carrying
+whatever else that epoch promises, which for a control layer that accepts intents
+includes the outstanding-intent window below. A layer that cannot carry the window
+across a restart mints a new epoch instead. **Same epoch means same numbering**,
 and that is the whole promise the identifier makes.
 
 `epoch` is what makes the revision discipline sound across a control-layer restart
@@ -379,10 +382,17 @@ either `admission: "started"` with `effective_delivery: "start"`, or
 
 **Every** intent carries an `intent_id`, not only submit, so a retried resolve or
 cancel is deduplicated the same way a retried submit is. Its single job: within one
-epoch, the same `intent_id` receives the same outcome and never causes a second
-effect — a second run, a second resolution, or a second cancellation. A
-presentation layer retrying after a lost response learns the first attempt's
-outcome instead of acting twice.
+epoch, the same `intent_id` **that control still remembers** receives the same
+outcome and never causes a second effect — a second run, a second resolution, or a
+second cancellation. A presentation layer retrying after a lost response learns the
+first attempt's outcome instead of acting twice.
+
+The guarantee is bounded by what control remembers, not by the epoch alone. An
+intent control has forgotten — because its effect reached the timeline, because
+control compacted, or because the epoch changed — is simply re-evaluated as a fresh
+request, and may now be refused where the first attempt was accepted, or accepted
+where it was refused. A retry is only a retry for as long as the first attempt is
+still on record.
 
 The promise is scoped to one epoch, because without persistence it cannot survive a
 restart. After an epoch change, control has no record of what an earlier epoch's
@@ -398,9 +408,10 @@ for control. An accepted intent only needs remembering until its effect is visib
 in the timeline, because that is when the item carrying its `intent_id` reflects it
 and a later duplicate can be answered from the timeline instead. A refused intent
 changed nothing — it is an `error.response` and nothing was admitted — so retrying
-it is harmless and needs no record at all. Control's memory is therefore bounded by
-outstanding intents rather than growing for the life of the epoch, which matters to
-`oapx`, whose session memory is bounded by design.
+it is harmless and needs no record at all, and a retry of one is re-evaluated
+against current state. Control's memory is therefore bounded by outstanding
+intents rather than growing for the life of the epoch, which matters to `oapx`,
+whose session memory is bounded by design.
 
 Answering a duplicate from the timeline assumes control still holds the item. A
 control layer that compacts or evicts old items, as a bounded-memory host may, can
@@ -469,10 +480,13 @@ The following are intentionally outside presentation-control:
 - A rejected request is answered with one correlated `error.response` carrying a
   typed error, never with a response envelope implying the refusal. A submit
   response always means accepted, as the core already requires.
-- `intent_id` is on every intent, its job is retry deduplication within one epoch,
-  and it is not a persistence key. A retry under the same `intent_id` is not a
-  second answer and receives the first outcome; two answers under different ids are
-  two answers.
+- `intent_id` is on every intent, its job is retry deduplication, and it is not a
+  persistence key. The guarantee binds every intent control still remembers and
+  nothing beyond that: a forgotten intent is re-evaluated as a fresh request. A
+  retry under the same `intent_id` is not a second answer and receives the first
+  outcome; two answers under different ids are two answers.
+- Keeping an epoch across a restart obliges carrying the outstanding-intent window
+  with it. A control layer that cannot mints a new epoch instead.
 - A timeline item an intent **changed** carries that intent's `intent_id`, so a
   presentation layer can recognise its own work in a snapshot it never received the
   response for. A resolve records on the prompt's item, a cancel on the run's status
