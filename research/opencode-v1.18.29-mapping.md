@@ -671,5 +671,3 @@ behind an `opencode` registry entry. Where it differs from the Go adapter:
 - It speaks HTTP/1.1 itself (`opencode/client.zig`), one connection per request
   with `Connection: close`, and accepts only a plain `http` endpoint. Go's
   `net/http` client also takes `https`; a TLS endpoint needs the Go adapter.
-- Native message ids draw on one counter per `oapx` process rather than one per
-  session, so two sessions on the same server never mint the same `msg_oap` id.
