@@ -27,6 +27,7 @@ pub const Failure = error{
 } || contract.Failure;
 
 pub const Options = struct {
+    max_subscriptions: usize = 0,
     stream_queue: usize = default_stream_queue,
     journal_capacity: usize = default_journal_capacity,
     hold_ns: u64 = default_hold_ns,
@@ -134,7 +135,7 @@ pub const Subscription = struct {
     queue_at: usize = 0,
     highest: u64 = 0,
     ending: Ending = .open,
-    overflow_run: []const u8 = "",
+    overflow_run: []u8 = &.{},
     overflow_sequence: u64 = 0,
     held: bool = false,
     expires_ns: u64 = 0,
@@ -193,6 +194,7 @@ pub const Subscription = struct {
         self.replay.deinit(allocator);
         for (self.queue.items) |event| allocator.free(event.line);
         self.queue.deinit(allocator);
+        if (self.overflow_run.len > 0) allocator.free(self.overflow_run);
         if (self.run_id.len > 0) allocator.free(self.run_id);
         allocator.free(self.session_id);
         self.* = undefined;
@@ -249,6 +251,7 @@ const Entry = struct {
 pub const Hub = struct {
     allocator: std.mem.Allocator,
     clock: *const fn () u64,
+    max_subscriptions: usize,
     stream_queue: usize,
     journal_capacity: usize,
     hold_ns: u64,
@@ -263,6 +266,7 @@ pub const Hub = struct {
         return .{
             .allocator = allocator,
             .clock = now,
+            .max_subscriptions = options.max_subscriptions,
             .stream_queue = options.stream_queue,
             .journal_capacity = options.journal_capacity,
             .hold_ns = options.hold_ns,
@@ -493,7 +497,7 @@ pub const Hub = struct {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (entry.closed) return error.SessionClosed;
         entry.session.close();
-        self.closeSession(entry);
+        self.closeSession(entry, .session_closed);
     }
 
     pub fn subscribe(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, options: SubscribeOptions) Failure!*Subscription {
@@ -515,7 +519,7 @@ pub const Hub = struct {
                 self.retireSubscription(held, .expired);
             }
         }
-        if (entry.subscribers.items.len >= self.stream_queue) return error.SubscriptionFull;
+        if (self.max_subscriptions > 0 and entry.subscribers.items.len >= self.max_subscriptions) return error.SubscriptionFull;
         const subscription = try self.allocator.create(Subscription);
         errdefer self.allocator.destroy(subscription);
         subscription.* = .{ .hub = self, .session_id = try self.allocator.dupe(u8, session_id) };
@@ -573,7 +577,8 @@ pub const Hub = struct {
             entry.session.drain(scratch.allocator(), &events) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
-                    self.closeSession(entry);
+                    entry.session.close();
+                    self.closeSession(entry, .stream_failed);
                     continue;
                 },
             };
@@ -592,7 +597,7 @@ pub const Hub = struct {
             var scratch = std.heap.ArenaAllocator.init(self.allocator);
             defer scratch.deinit();
             entry.session.close();
-            self.closeSession(entry);
+            self.closeSession(entry, .session_closed);
         }
     }
 
@@ -674,7 +679,7 @@ pub const Hub = struct {
                 continue;
             }
             if (subscription.queue.items.len >= self.stream_queue) {
-                markOverflow(subscription);
+                try self.markOverflow(subscription);
                 _ = entry.subscribers.orderedRemove(index);
                 continue;
             }
@@ -686,8 +691,10 @@ pub const Hub = struct {
         }
     }
 
-    fn markOverflow(subscription: *Subscription) void {
-        subscription.overflow_run = subscription.run_id;
+    fn markOverflow(self: *Hub, subscription: *Subscription) !void {
+        const owned = try self.allocator.dupe(u8, subscription.run_id);
+        if (subscription.overflow_run.len > 0) self.allocator.free(subscription.overflow_run);
+        subscription.overflow_run = owned;
         subscription.overflow_sequence = subscription.highest;
         subscription.ending = .overflow;
     }
@@ -720,10 +727,10 @@ pub const Hub = struct {
         entry.deinit(self.allocator);
     }
 
-    fn closeSession(self: *Hub, entry: *Entry) void {
+    fn closeSession(self: *Hub, entry: *Entry, ending: Ending) void {
         _ = self;
         entry.closed = true;
-        for (entry.subscribers.items) |subscription| subscription.ending = .session_closed;
+        for (entry.subscribers.items) |subscription| subscription.ending = ending;
         entry.subscribers.clearRetainingCapacity();
     }
 
@@ -1268,6 +1275,182 @@ test "hold, listing and sessions hand off under allocation failure" {
             _ = try hub.names(arena);
         }
     }.attempt, .{});
+}
+
+const Flaky = struct {
+    allocator: std.mem.Allocator,
+    session: contract.Session = undefined,
+    owned_id: []u8 = &.{},
+    closes: usize = 0,
+    fail_drain: bool = true,
+
+    fn adapter(self: *Flaky) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = flakyProbe, .open = flakyOpen } };
+    }
+};
+
+fn flakyDescriptor() contract.Descriptor {
+    return .{
+        .endpoint = .{ .id = "flaky", .name = "Flaky", .version = "0.1", .adapter = "script" },
+        .capability_revision = "flaky-v1",
+        .features = &.{},
+    };
+}
+
+fn flakyProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+    _ = ptr;
+    _ = refusal;
+    return flakyDescriptor();
+}
+
+fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    _ = arena;
+    _ = refusal;
+    const id = try self.allocator.dupe(u8, if (request.session_id.len > 0) request.session_id else "flaky");
+    self.session = .{ .ptr = self, .vtable = &.{
+        .id = flakyId,
+        .state = flakyState,
+        .submit = flakySubmit,
+        .resolve = flakyResolve,
+        .cancel = flakyCancel,
+        .pump = flakyPump,
+        .drain = flakyDrain,
+        .activity = flakyActivity,
+        .close = flakyClose,
+    } };
+    self.owned_id = id;
+    return self.session;
+}
+
+fn flakyId(ptr: *anyopaque) []const u8 {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    return self.owned_id;
+}
+
+fn flakyState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    return .{ .session_id = try arena.dupe(u8, self.owned_id), .status = .idle };
+}
+
+fn flakySubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    _ = request;
+    _ = refusal;
+    return .{ .session_id = try arena.dupe(u8, self.owned_id), .accepted = true, .submission_id = try arena.dupe(u8, "s1"), .requested_delivery = .auto, .effective_delivery = .start, .admission = .started, .run_id = try arena.dupe(u8, "run-1"), .status = .running };
+}
+
+fn flakyResolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
+    _ = ptr;
+    _ = arena;
+    _ = resolution;
+    _ = refusal;
+}
+
+fn flakyCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    return .{ .session_id = try arena.dupe(u8, self.owned_id), .run_id = try arena.dupe(u8, run_id), .accepted = true, .status = .cancelling };
+}
+
+fn flakyPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
+    _ = ptr;
+    _ = wait_ns;
+    return false;
+}
+
+fn flakyDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    _ = allocator;
+    _ = out;
+    if (self.fail_drain) return error.BackendFailed;
+}
+
+fn flakyActivity(ptr: *anyopaque) contract.Activity {
+    _ = ptr;
+    return .idle;
+}
+
+fn flakyClose(ptr: *anyopaque) void {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    self.closes += 1;
+}
+
+test "a session whose stream fails is ended, its subscribers told, and its child closed" {
+    var flaky = Flaky{ .allocator = testing.allocator };
+    defer flaky.allocator.free(flaky.owned_id);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "doomed" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.stream_failed, subscription.ending);
+    const doomed = try submitFor(arena, "doomed");
+    try testing.expectError(error.SessionClosed, hub.submit(arena, "doomed", &doomed));
+    try testing.expectEqual(@as(usize, 1), flaky.closes);
+}
+
+test "the subscriber count has its own bound, not the mailbox depth" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .max_subscriptions = 3 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "memory", .{ .session_id = "many" });
+    _ = try hub.subscribe(arena, opened.session_id, .{});
+    _ = try hub.subscribe(arena, opened.session_id, .{});
+    _ = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectError(error.SubscriptionFull, hub.subscribe(arena, opened.session_id, .{}));
+}
+
+test "a hub with no subscriber bound takes any number of them" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "memory", .{ .session_id = "unbounded" });
+    for (0..100) |_| _ = try hub.subscribe(arena, opened.session_id, .{});
+}
+
+test "an overflow cursor survives the mailbox being drained across a run boundary" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "spanning" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    const first = try submitFor(arena, "spanning");
+    _ = try hub.submit(arena, "spanning", &first);
+    try hub.pump(testing.allocator, 0);
+    const read = subscription.next().?;
+    const expected_run = try testing.allocator.dupe(u8, read.run_id);
+    defer testing.allocator.free(expected_run);
+    try testing.expectEqualStrings("run-1", expected_run);
+
+    _ = try hub.cancel(arena, "spanning", "run-1");
+    const second = try submitFor(arena, "spanning");
+    _ = try hub.submit(arena, "spanning", &second);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.overflow, subscription.ending);
+    while (subscription.next()) |_| {}
+    try testing.expectEqualStrings("run-1", expected_run);
+    try testing.expectEqualStrings("run-1", subscription.overflow_run);
+    try testing.expectEqual(read.sequence, subscription.overflow_sequence);
 }
 
 const bare_descriptor = contract.Descriptor{
