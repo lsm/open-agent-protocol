@@ -52,7 +52,7 @@ represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
 the default path; the old Makai wire is available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.282),
-`--backend codex` a Codex app-server child (pinned `8d7cc24`), `--backend pi` a
+`--backend codex` a Codex app-server child (pinned `0.157.0`), `--backend pi` a
 Pi RPC child (pinned `v0.87.1`), an `acp`
 entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v1.18.32`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
@@ -65,7 +65,7 @@ unknown members are refused and `environment` is an explicit allowlist.
 `goap`'s does: CI runs `goap conformance` against it and a parity test that
 feeds both the same traffic and requires identical output. What each cannot do through this path is
 recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
-[codex](research/codex-app-server-8d7cc24-mapping.md),
+[codex](research/codex-app-server-0.157.0-mapping.md),
 [acp](research/acp-v1.9.1-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
@@ -663,7 +663,7 @@ Research:
 
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
-- [Pinned Codex app-server mapping](research/codex-app-server-8d7cc24-mapping.md)
+- [Pinned Codex app-server mapping](research/codex-app-server-0.157.0-mapping.md)
 - [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md), moved to v1.9.1 by [its pin ledger](research/acp-v1.9.1-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.87.1-mapping.md), over the [v0.85.1 base mapping](research/pi-v0.85.1-mapping.md)
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md), over the [47f9438 base mapping](research/deepseek-harness-47f9438-mapping.md)

@@ -16,7 +16,7 @@
     "timestamp_ms": 5,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
@@ -46,7 +46,7 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
@@ -76,88 +76,14 @@
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "action.permission.requested",
-    "id": "event-10",
-    "payload": {
-      "interaction_id": "interaction-09",
-      "requested_by": "codex.app-server",
-      "responded_by": "user",
-      "session_id": "session-1",
-      "run_id": "run-02",
-      "tool_call_id": "tool-call-06",
-      "title": "Allow Codex file changes",
-      "description": "apply fixture edit",
-      "choices": [
-        {
-          "id": "accept",
-          "label": "Approve once"
-        },
-        {
-          "id": "acceptForSession",
-          "label": "Approve for session"
-        },
-        {
-          "id": "decline",
-          "label": "Deny"
-        },
-        {
-          "id": "cancel",
-          "label": "Deny and cancel run"
-        }
-      ],
-      "arguments_json": {
-        "changes": [
-          {
-            "path": "file.txt",
-            "kind": "update",
-            "diff": "+ok"
-          }
-        ]
-      }
-    },
-    "sequence": 4,
-    "timestamp_ms": 8,
-    "session_id": "session-1",
-    "run_id": "run-02",
-    "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
-  },
-  {
-    "protocol": "open-agent-protocol",
-    "version": "0.1",
-    "profile": "open-agent-protocol.agent-control-core",
-    "type": "action.permission.resolved",
-    "id": "event-11",
-    "payload": {
-      "interaction_id": "interaction-09",
-      "requested_by": "codex.app-server",
-      "responded_by": "user",
-      "session_id": "session-1",
-      "run_id": "run-02",
-      "tool_call_id": "tool-call-06",
-      "outcome": "resolved",
-      "choice_id": "accept",
-      "granted": true
-    },
-    "sequence": 5,
-    "timestamp_ms": 9,
-    "session_id": "session-1",
-    "run_id": "run-02",
-    "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "action.call.completed",
-    "id": "event-12",
+    "id": "event-09",
     "payload": {
       "session_id": "session-1",
       "run_id": "run-02",
@@ -169,19 +95,19 @@
         "changed": 1
       }
     },
-    "sequence": 6,
-    "timestamp_ms": 10,
+    "sequence": 4,
+    "timestamp_ms": 8,
     "session_id": "session-1",
     "run_id": "run-02",
     "tool_call_id": "tool-call-06",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   },
   {
     "protocol": "open-agent-protocol",
     "version": "0.1",
     "profile": "open-agent-protocol.agent-control-core",
     "type": "run.completed",
-    "id": "event-13",
+    "id": "event-10",
     "payload": {
       "session_id": "session-1",
       "run_id": "run-02",
@@ -192,10 +118,10 @@
       },
       "stop_reason": "end_turn"
     },
-    "sequence": 7,
-    "timestamp_ms": 11,
+    "sequence": 5,
+    "timestamp_ms": 9,
     "session_id": "session-1",
     "run_id": "run-02",
-    "capability_revision": "codex-appserver-8d7cc24-oap-v1"
+    "capability_revision": "codex-appserver-0.157.0-oap-v1"
   }
 ]

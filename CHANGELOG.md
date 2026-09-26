@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The ACP adapters are pinned to agent-client-protocol v1.9.1 (schema v1.23.0) and gated against docker/cagent v1.143.0. The only stable wire change is the optional tool `name`; `action.call.*` now carries it when present, falling back to the ACP `title`. The corpus moves to `fixtures/adapters/acp-v1.9.1` with its native frames unchanged.
 
+- The Codex app-server pin moves from commit `8d7cc24` to release `rust-v0.157.0` (`00c972ed`). No adapter code changes: every frame the adapters read or write has the same schema at both pins. The capability revision becomes `codex-appserver-0.157.0-oap-v1`, which `oapx` serves too, the corpus moves to `fixtures/adapters/codex-appserver-0.157.0` with its native lines carried forward, and `8d7cc24` is retired. See [`research/codex-app-server-0.157.0-mapping.md`](research/codex-app-server-0.157.0-mapping.md).
+
 ### Removed
 
 - The Claude Code 2.1.263 floor: its corpus and catalog version. Its ledger stays as the base the 2.1.280 ledger builds on.
