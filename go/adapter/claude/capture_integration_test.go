@@ -383,7 +383,7 @@ func claudeRepositoryRoot(t *testing.T) string {
 func TestClaudeProcessRecordsCorpusProbes(t *testing.T) {
 	directory := os.Getenv("OAP_CLAUDE_CAPTURE_DIR")
 	if directory == "" {
-		t.Skip("set OAP_CLAUDE_CAPTURE_DIR to an absolute directory outside the repository, with absolute OAP_CLAUDE_BIN (pinned claude 2.1.280 binary), to record the corpus probes; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
+		t.Skip("set OAP_CLAUDE_CAPTURE_DIR to an absolute directory outside the repository, with absolute OAP_CLAUDE_BIN (pinned claude 2.1.282 binary), to record the corpus probes; optionally set OAP_CLAUDE_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	if testing.Short() {
 		t.Skip("skipping opt-in Claude Code corpus capture in short mode")
