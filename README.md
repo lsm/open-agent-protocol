@@ -64,7 +64,7 @@ unknown members are refused and `environment` is an explicit allowlist.
 `--backend memory` serves the in-memory reference script and answers exactly as
 `goap`'s does: CI runs `goap conformance` against it and a parity test that
 feeds both the same traffic and requires identical output. What each cannot do through this path is
-recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.280-mapping.md),
+recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
 [codex](research/codex-app-server-8d7cc24-mapping.md),
 [acp](research/acp-v1.7.0-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
