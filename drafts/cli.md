@@ -3,6 +3,9 @@
 Status: proposed design
 Governs: the `oapx` (Zig) and `goap` (Go) command lines
 Follows: [Decision 0032](../decisions/0032-go-and-zig-are-peers.md)
+Amended by: [Decision 0038](../decisions/0038-one-released-binary-and-a-library-for-every-language.md),
+under which only `oapx` is released and `goap` is a repository tool, so a rule
+below that binds both binaries binds `oapx` alone
 
 Two binaries implement OAP: `oapx`, the product, and `goap`, its Go peer. Until
 now each grew its own verbs, and the same word meant different things: `oap
