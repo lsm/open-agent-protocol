@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The OpenCode adapter converts a native token count through an explicit saturation (`0` for a non-positive, non-finite or non-number float; `MaxUint64` at or beyond `2^64`), as `oapx` does, instead of a platform-dependent `uint64(float64)`.
 - `oapx serve agent --backend <acp entry>` writes a permission answer to the agent before recording it, as `goap` does: `action.permission.resolved` follows a successful write, and a write the agent cannot take settles the gate cancelled and fails the run `acp_permission_response_failed`, where oapx emitted the resolution first and failed the transport.
 - `oapx serve agent --backend codex` rebuilds a settled session's arena once it has grown 256 KiB past its last compaction, keeping the thread, the session state, each run's id, turn, status and sequence, and a stub per item and interaction, so a reused native item id is still ignored and its completion fails the run, and a late answer still reads as already resolved, as in `goap`. A Codex session held every frame and envelope until it closed.
 - The Hermes adapter no longer projects the gateway's `thinking.delta` as reasoning, in Go or Zig. The event carries the activity spinner (`"{face} {verb}..."`, or `""` to clear it), not model reasoning, so it is now observed-only; `reasoning.delta` is still projected. Recorded in [`research/hermes-thinking-delta-note.md`](research/hermes-thinking-delta-note.md).

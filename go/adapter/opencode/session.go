@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,16 @@ import (
 )
 
 var errTerminalWon = errors.New("opencode adapter: terminal already selected")
+
+func tokenCount(value float64) uint64 {
+	if !(value > 0) {
+		return 0
+	}
+	if value >= 18446744073709551616.0 {
+		return math.MaxUint64
+	}
+	return uint64(value)
+}
 
 const streamCapacity = 64
 
@@ -450,9 +461,9 @@ func (s *session) handleEventLocked(event native.Event) {
 		run.openSteps--
 		run.lastFinish = data.Finish
 		run.cost += data.Cost
-		run.usage.InputTokens += uint64(data.Tokens.Input)
-		run.usage.OutputTokens += uint64(data.Tokens.Output)
-		run.usage.TotalTokens += uint64(data.Tokens.Input) + uint64(data.Tokens.Output)
+		run.usage.InputTokens += tokenCount(data.Tokens.Input)
+		run.usage.OutputTokens += tokenCount(data.Tokens.Output)
+		run.usage.TotalTokens += tokenCount(data.Tokens.Input) + tokenCount(data.Tokens.Output)
 		open := run.openSteps
 		s.mu.Unlock()
 		if open <= 0 {

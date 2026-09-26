@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -206,6 +207,29 @@ func (f *fakeClient) emit(t *testing.T, seq int64, typ native.Type, payload any)
 		t.Fatal(err)
 	}
 	f.events <- native.Event{ID: native.EventID(fmt.Sprintf("evt_fake%04d", seq)), Type: typ, Durable: &native.DurablePosition{AggregateID: string(f.session), Seq: seq, Version: 1}, Data: data}
+}
+
+func TestTokenCountSaturates(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value float64
+		want  uint64
+	}{
+		{"zero", 0, 0},
+		{"fraction", 2.9, 2},
+		{"negative", -1, 0},
+		{"nan", math.NaN(), 0},
+		{"positive infinity", math.Inf(1), math.MaxUint64},
+		{"beyond uint64", 1e300, math.MaxUint64},
+		{"at the boundary", 18446744073709551616.0, math.MaxUint64},
+		{"just below the boundary", 18446744073709549568.0, 18446744073709549568},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tokenCount(tc.value); got != tc.want {
+				t.Fatalf("tokenCount(%v) = %d, want %d", tc.value, got, tc.want)
+			}
+		})
+	}
 }
 
 func TestProbeAdvertisesQueueAndRefusesSteer(t *testing.T) {
