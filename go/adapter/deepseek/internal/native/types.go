@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/lsm/open-agent-protocol/harnesses"
 	"io"
+	"slices"
 )
 
 var ServerVersion = harnesses.Current("deepseek-harness").Admits[0]
@@ -37,6 +38,7 @@ var pinnedObservedOnlyEvents = map[string]bool{
 	"compaction/start":                       true,
 	"compaction/summary":                     true,
 	"deliverables/presented":                 true,
+	"developer/message":                      true,
 	"feedback/message-delete":                true,
 	"feedback/message-put":                   true,
 	"feedback/record":                        true,
@@ -159,15 +161,66 @@ type UserMessage struct {
 }
 type MessageSource struct {
 	Kind        string          `json:"kind"`
-	Plugin      string          `json:"plugin,omitempty"`
 	Provider    string          `json:"provider,omitempty"`
 	Model       string          `json:"model,omitempty"`
 	CallID      string          `json:"callId,omitempty"`
-	Form        string          `json:"form,omitempty"`
-	Summary     string          `json:"summary,omitempty"`
-	Sections    json.RawMessage `json:"sections,omitempty"`
 	ReplayState json.RawMessage `json:"replayState,omitempty"`
+	attributed  bool
 }
+
+var closedSourceMembers = map[string][]string{
+	"model":         {"kind", "provider", "model", "replayState"},
+	"tool":          {"kind", "callId"},
+	"system-prompt": {"kind"},
+}
+
+func (v *MessageSource) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	var object map[string]json.RawMessage
+	if err := DecodeStrict(data, &object); err != nil {
+		return err
+	}
+	kind, err := rawString(object["kind"])
+	if err != nil {
+		return err
+	}
+	decoded := MessageSource{Kind: kind, attributed: len(object) > 1}
+	if allowed, closed := closedSourceMembers[kind]; closed {
+		for name := range object {
+			if !slices.Contains(allowed, name) {
+				return fmt.Errorf("json: unknown field %q", name)
+			}
+		}
+		text := func(name string, slot *string) error {
+			raw, ok := object[name]
+			if !ok {
+				return nil
+			}
+			value, err := rawString(raw)
+			*slot = value
+			return err
+		}
+		if err := text("provider", &decoded.Provider); err != nil {
+			return err
+		}
+		if err := text("model", &decoded.Model); err != nil {
+			return err
+		}
+		if err := text("callId", &decoded.CallID); err != nil {
+			return err
+		}
+		decoded.ReplayState = object["replayState"]
+	}
+	*v = decoded
+	return nil
+}
+
+func (v MessageSource) DirectUser() bool {
+	return v.Kind == "user" && !v.attributed
+}
+
 type InboxSpliced struct {
 	Target       string        `json:"target"`
 	Start        int64         `json:"start"`
@@ -282,12 +335,20 @@ type ToolCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
+type ToolResultMessage struct {
+	ID         string         `json:"id"`
+	Role       string         `json:"role"`
+	Content    []ContentBlock `json:"content"`
+	Source     MessageSource  `json:"source"`
+	ToolCallID string         `json:"toolCallId"`
+	IsError    *bool          `json:"isError,omitempty"`
+}
 type ToolResult struct {
-	Turn    int64           `json:"turn"`
-	Step    int64           `json:"step"`
-	Message UserMessage     `json:"message"`
-	Error   *ToolError      `json:"error,omitempty"`
-	Meta    json.RawMessage `json:"meta,omitempty"`
+	Turn    int64             `json:"turn"`
+	Step    int64             `json:"step"`
+	Message ToolResultMessage `json:"message"`
+	Error   *ToolError        `json:"error,omitempty"`
+	Meta    json.RawMessage   `json:"meta,omitempty"`
 }
 type ToolError struct {
 	Name   string          `json:"name"`
@@ -334,19 +395,20 @@ type RequestContext struct {
 	ContextWindow *int64 `json:"contextWindow,omitempty"`
 }
 type RequestHeader struct {
-	Header EpochHeader `json:"header"`
-	Reason string      `json:"reason"`
+	Header       EpochHeader     `json:"header"`
+	Reason       string          `json:"reason"`
+	StartsSeries json.RawMessage `json:"startsSeries,omitempty"`
 }
 
 type EpochHeader struct {
 	Config          json.RawMessage `json:"config"`
 	AdapterDefaults json.RawMessage `json:"adapterDefaults,omitempty"`
-	System          *string         `json:"system,omitempty"`
+	System          json.RawMessage `json:"system,omitempty"`
 	Tools           json.RawMessage `json:"tools,omitempty"`
 }
 
 func (header EpochHeader) valid() bool {
-	if len(header.Config) == 0 {
+	if len(header.Config) == 0 || header.System != nil {
 		return false
 	}
 	var config map[string]json.RawMessage
@@ -526,7 +588,7 @@ func (event Event) Validate() error {
 		}
 	case *UserMessage:
 		fields := object()
-		if data.ID == "" || data.Role != "user" || !validSource(data.Source) || fields == nil || !blocksOf(fields["content"]) {
+		if data.ID == "" || data.Role != "user" || !validUserSource(data.Source) || fields == nil || !blocksOf(fields["content"]) {
 			return fmt.Errorf("%w: invalid user/message", ErrInvalid)
 		}
 	case *InboxSpliced:
@@ -535,7 +597,7 @@ func (event Event) Validate() error {
 			return fmt.Errorf("%w: invalid agent/inbox/spliced", ErrInvalid)
 		}
 		for _, message := range data.Inserted {
-			if message.ID == "" || message.Role != "user" || !validSource(message.Source) {
+			if message.ID == "" || message.Role != "user" || !validUserSource(message.Source) {
 				return fmt.Errorf("%w: invalid inserted user message", ErrInvalid)
 			}
 		}
@@ -577,8 +639,8 @@ func (event Event) Validate() error {
 			}
 		}
 
-		singleMatchingBlock := len(data.Message.Content) == 1 && data.Message.Content[0].Type == "tool-result" && data.Message.Content[0].ToolCallID == data.Message.Source.CallID
-		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "user" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !singleMatchingBlock || !validToolError(data.Error) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
+		answersItsCall := data.Message.ToolCallID == data.Message.Source.CallID
+		if data.Turn <= 0 || data.Step <= 0 || data.Message.ID == "" || data.Message.Role != "tool" || data.Message.Source.Kind != "tool" || !validSource(data.Message.Source) || !validContent || !answersItsCall || !validToolError(data.Error) || (len(data.Meta) > 0 && !json.Valid(data.Meta)) {
 			return fmt.Errorf("%w: invalid tool/result", ErrInvalid)
 		}
 	case *TodoWrite:
@@ -591,7 +653,7 @@ func (event Event) Validate() error {
 			}
 		}
 	case *RequestHeader:
-		if !data.Header.valid() || (data.Reason != "initial" && data.Reason != "resume" && data.Reason != "change") {
+		if !data.Header.valid() || (data.Reason != "initial" && data.Reason != "resume" && data.Reason != "change" && data.Reason != "series") || (data.StartsSeries != nil && !bytes.Equal(bytes.TrimSpace(data.StartsSeries), []byte("true"))) {
 			return fmt.Errorf("%w: invalid request/header", ErrInvalid)
 		}
 	case *RequestContext:
@@ -608,9 +670,6 @@ func validBlocks(blocks []ContentBlock) bool {
 	}
 	for _, block := range blocks {
 		if !validBlock(block) {
-			return false
-		}
-		if block.Type == "tool-result" && !validBlocks(block.Content) {
 			return false
 		}
 	}
@@ -650,8 +709,6 @@ func validBlockRaw(element json.RawMessage) bool {
 		return blockHasKeys(object, "attachment") && validAttachment(object["attachment"])
 	case "tool-call":
 		return blockHasKeys(object, "id", "name", "arguments")
-	case "tool-result":
-		return blockHasKeys(object, "toolCallId", "content") && validBlocksRaw(object["content"])
 	default:
 		return false
 	}
@@ -673,8 +730,6 @@ func validBlock(block ContentBlock) bool {
 		return block.Text == "" && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedRidesImage(block.Offloaded)
 	case "tool-call":
 		return block.Text == "" && block.Attachment == nil && block.ToolCallID == "" && block.Content == nil && block.IsError == nil && offloadedAbsent(block.Offloaded) && block.ID != "" && block.Name != "" && carriesIntoATrace(block.Arguments)
-	case "tool-result":
-		return block.Text == "" && block.Attachment == nil && block.ID == "" && block.Name == "" && block.Arguments == "" && block.ToolCallID != "" && offloadedAbsent(block.Offloaded) && validBlocks(block.Content)
 	default:
 		return false
 	}
@@ -730,7 +785,7 @@ func validTurnEndReason(raw json.RawMessage) bool {
 		return false
 	}
 	switch reason.Kind {
-	case "completed", "blocked", "max-tokens", "interrupted":
+	case "completed", "blocked", "max-tokens", "interrupted", "forked":
 		return len(reason.Reason) == 0 && len(reason.Error) == 0
 	case "aborted":
 		return validCancelCause(reason.Reason)
@@ -846,17 +901,18 @@ func validSurfaceOp(raw json.RawMessage) bool {
 
 func validSource(v MessageSource) bool {
 	switch v.Kind {
-	case "user":
-		return v.Plugin == "" && v.Provider == "" && v.Model == "" && v.CallID == "" && v.Form == "" && v.Summary == "" && v.Sections == nil && v.ReplayState == nil
-	case "plugin":
-
-		return v.Plugin != "" && v.Provider == "" && v.Model == "" && v.CallID == "" && v.ReplayState == nil
+	case "":
+		return false
 	case "model":
-		return v.Provider != "" && v.Model != "" && v.Plugin == "" && v.CallID == "" && v.Form == "" && v.Summary == "" && v.Sections == nil
+		return v.Provider != "" && v.Model != ""
 	case "tool":
-		return v.CallID != "" && v.Plugin == "" && v.Provider == "" && v.Model == "" && v.Form == "" && v.Summary == "" && v.Sections == nil && v.ReplayState == nil
+		return v.CallID != ""
 	}
-	return false
+	return true
+}
+
+func validUserSource(v MessageSource) bool {
+	return validSource(v) && v.Kind != "model" && v.Kind != "tool" && v.Kind != "system-prompt"
 }
 func validStopReason(v string) bool {
 	switch v {

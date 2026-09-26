@@ -35,6 +35,8 @@ pub const descriptor = contract.Descriptor{
     .features = &features,
 };
 
+pub const default_compact_above: usize = 256 * 1024;
+
 pub const Config = struct {
     executable: []const u8,
     args: []const []const u8 = &.{},
@@ -93,6 +95,8 @@ pub const Session = struct {
     reducer: session.Reducer,
     ended: bool = false,
     reaped: bool = false,
+    compact_above: usize = default_compact_above,
+    retained: usize = 0,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const self = try construct(owner, arena, request, refusal);
@@ -418,8 +422,25 @@ pub const Session = struct {
         };
     }
 
+    fn compact(self: *Session) contract.Failure!bool {
+        if (self.ended or self.reducer.closed or self.reducer.transport_closed) return false;
+        if (self.reducer.active != null) return false;
+        if (self.reducer.envelopes.items.len != 0 or self.reducer.writes.items.len != 0) return false;
+        if (self.reducer_arena.queryCapacity() <= self.retained +| self.compact_above) return false;
+        var fresh = std.heap.ArenaAllocator.init(self.gpa);
+        errdefer fresh.deinit();
+        var kept = self.reducer.compactInto(&fresh) catch |err| return lift(err);
+        self.reducer_arena.deinit();
+        self.reducer_arena.* = fresh;
+        kept.arena = self.reducer_arena;
+        self.reducer = kept;
+        self.retained = self.reducer_arena.queryCapacity();
+        return true;
+    }
+
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
         const self = cast(ptr);
+        _ = try self.compact();
         var progressed = false;
         var wait = wait_ns;
         var frames: usize = 0;
@@ -866,10 +887,9 @@ test "a thread/start the child never answers refuses the open once the request b
         \\
     );
     defer probe.deinit();
-    probe.adapter.config.request_timeout_ns = 3 * std.time.ns_per_s;
     var refusal = contract.Refusal{};
     try testing.expectError(error.BackendFailed, probe.open(&refusal));
-    try testing.expectEqualStrings("the codex app-server did not answer thread/start within 3000 ms", refusal.message);
+    try testing.expectEqualStrings("the codex app-server did not answer thread/start within 10000 ms", refusal.message);
 }
 
 test "a turn/start the child never answers is refused once the request bound passes, stopping the child and closing the session" {
@@ -895,4 +915,83 @@ test "a turn/start the child never answers is refused once the request bound pas
     } else return error.ChildNeverStopped;
     try testing.expectError(error.SessionClosed, probe.handle.?.state(probe.arena.allocator(), &refusal));
     try testing.expectError(error.SessionClosed, probe.submit("after", &refusal));
+}
+
+test "a settled session's arena is compacted, keeping the thread, its state and what each settled run reported" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++
+        \\take; printf '{"id":3,"result":{"turn":{"id":"second-turn","status":"inProgress"}}}\n'
+        \\printf '{"method":"turn/started","params":{"threadId":"native-thread","turn":{"id":"second-turn","status":"inProgress"}}}\n'
+        \\printf '{"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"second-turn","status":"completed"}}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const scratch = probe.arena.allocator();
+
+    const first = try probe.submit("one", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+    const settled = try probe.handle.?.state(scratch, &refusal);
+
+    const live: *Session = @ptrCast(@alignCast(probe.handle.?.ptr));
+    live.compact_above = 0;
+    const before = live.reducer_arena.queryCapacity();
+    try testing.expect(try live.compact());
+    try testing.expect(live.reducer_arena.queryCapacity() < before);
+    try testing.expect(!try live.compact());
+
+    const kept = try probe.handle.?.state(scratch, &refusal);
+    try testing.expectEqualStrings("native-thread", live.reducer.thread_id);
+    try testing.expectEqual(settled.status, kept.status);
+    try testing.expectEqual(oap_types.SessionStatus.idle, kept.status);
+    try testing.expectEqualStrings(settled.session_id, kept.session_id);
+    try testing.expectEqualStrings(settled.transcript_cursor.?, kept.transcript_cursor.?);
+    try testing.expectEqualStrings(settled.current_model_id.?, kept.current_model_id.?);
+    const late = try probe.handle.?.cancel(scratch, first.run_id.?, &refusal);
+    try testing.expect(!late.accepted);
+    try testing.expectEqual(oap_types.RunStatus.completed, late.status);
+
+    seen.clearRetainingCapacity();
+    const second = try probe.submit("two", &refusal);
+    try testing.expect(!std.mem.eql(u8, first.run_id.?, second.run_id.?));
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    try testing.expectEqualStrings(second.run_id.?, completed.run_id);
+    try testing.expectEqual(@as(u64, 1), seen.items[0].sequence);
+}
+
+test "a session compacts only once no run is active and its events are drained" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_approval_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const scratch = probe.arena.allocator();
+    const live: *Session = @ptrCast(@alignCast(probe.handle.?.ptr));
+
+    try testing.expect(!try live.compact());
+    live.compact_above = 0;
+
+    const admitted = try probe.submit("gated", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const gate = try probe.pumpUntil("action.permission.requested", &seen);
+    var drained = std.ArrayList(contract.Event).empty;
+    try probe.handle.?.drain(scratch, &drained);
+    try testing.expect(live.reducer.active != null);
+    try testing.expect(!try live.compact());
+
+    const answer = oap_types.PermissionResolveRequest{ .interaction_id = (try probe.payloadOf(gate)).get("interaction_id").?.string, .requested_by = endpoint_id, .responded_by = "user", .session_id = "s1", .run_id = admitted.run_id.?, .granted = true, .choice_id = "accept" };
+    try probe.handle.?.resolve(scratch, .{ .permission = &answer }, &refusal);
+    var rounds: usize = 0;
+    while (rounds < 2000) : (rounds += 1) {
+        _ = try probe.handle.?.pump(5 * std.time.ns_per_ms);
+        if (live.reducer.active == null) break;
+    }
+    try testing.expect(live.reducer.active == null);
+    try testing.expect(live.reducer.envelopes.items.len > 0);
+    try testing.expect(!try live.compact());
+
+    try probe.handle.?.drain(scratch, &drained);
+    try testing.expect(try live.compact());
 }

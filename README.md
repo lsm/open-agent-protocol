@@ -54,7 +54,7 @@ the default path; the old Makai wire is available only by explicit opt-in.
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.282),
 `--backend codex` a Codex app-server child (pinned `8d7cc24`), `--backend pi` a
 Pi RPC child (pinned `v0.87.1`), an `acp`
-entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), a `deepseek` entry a DeepSeek harness (pinned `47f9438`), and an `opencode` entry an OpenCode server (pinned `v1.18.32`), behind the same stdio door instead of the built-in loop, following
+entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.8.31`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v1.18.32`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
 harness-default tool posture, so every gated tool call still reaches the host
@@ -66,7 +66,7 @@ unknown members are refused and `environment` is an explicit allowlist.
 feeds both the same traffic and requires identical output. What each cannot do through this path is
 recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
 [codex](research/codex-app-server-8d7cc24-mapping.md),
-[acp](research/acp-v1.7.0-mapping.md). Without `--config`, codex runs `codex`
+[acp](research/acp-v1.9.1-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
 
@@ -664,9 +664,9 @@ Research:
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
 - [Pinned Codex app-server mapping](research/codex-app-server-8d7cc24-mapping.md)
-- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md)
+- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md), moved to v1.9.1 by [its pin ledger](research/acp-v1.9.1-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.87.1-mapping.md), over the [v0.85.1 base mapping](research/pi-v0.85.1-mapping.md)
-- [Pinned DeepSeek Harness mapping](research/deepseek-harness-47f9438-mapping.md)
+- [Pinned DeepSeek Harness mapping](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md), over the [47f9438 base mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.8.31-mapping.md)
 - [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.282-mapping.md), over the [2.1.280 mapping](research/claude-code-agent-sdk-2.1.280-mapping.md) and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
@@ -736,15 +736,14 @@ artifact provenance is required. The gate never downloads an executable and
 passes no ambient credentials to it.
 
 DeepSeek Harness real-process checks follow the same opt-in gate. Provide an
-absolute runtime built from the pinned source commit in
-`OAP_DEEPSEEK_HARNESS_BIN` — the build emits
-`deepseek-harness-sdk-runtime-linux-x64` from the pinned release — then set
+absolute runtime built from, or launched over, the pinned source commit in
+`OAP_DEEPSEEK_HARNESS_BIN` (the release publishes no binary), then set
 `OAP_DEEPSEEK_HARNESS_SMOKE=1` for the credential-free initialize/shutdown
 check or `OAP_DEEPSEEK_HARNESS_INTEGRATION=1` for the loopback-provider path.
 The gates never download a runtime and pass no ambient credentials. The
 runtime boots the shipped `sdk` profile (`--profile sdk`) against an isolated
-`DSH_HOME`; the loopback gate redirects the stock deepseek provider with
-`DEEPSEEK_BASE_URL`. The wire `serverInfo` version and any release text are
+`DSH_HOME`; the loopback gate redirects the stock deepseek provider, which
+speaks the Messages API, with `DEEPSEEK_BASE_URL`. The wire `serverInfo` version and any release text are
 runtime-version evidence only; the pinned source commit and tree in the
 mapping ledger remain the provenance. Set `OAP_DEEPSEEK_HARNESS_SHA256` to the
 expected 64-character artifact digest when exact artifact provenance is
@@ -784,7 +783,7 @@ in both directions into that directory; it is how
 ACP real-process checks follow the same opt-in gate, driven against an
 independent open-source ACP agent rather than a Devin product. Provide an
 absolute `docker-agent` binary built from the pinned docker/cagent release
-(Apache-2.0, tag `v1.138.0`) in `OAP_ACP_BIN`, then set `OAP_ACP_SMOKE=1` for
+(Apache-2.0, tag `v1.143.0`) in `OAP_ACP_BIN`, then set `OAP_ACP_SMOKE=1` for
 the credential-free `initialize`/`session/new`/teardown check or
 `OAP_ACP_INTEGRATION=1` for one prompt through the production adapter against
 an in-process loopback chat-completions mock. The generated agent file points
