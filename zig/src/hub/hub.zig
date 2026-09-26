@@ -395,7 +395,9 @@ pub const Hub = struct {
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
         var refusal = contract.Refusal{};
         const admission = try entry.session.submit(arena, request, &refusal);
-        if (admission.run_id) |run_id| try self.promote(entry, run_id);
+        if (admission.admission == .started) {
+            if (admission.run_id) |run_id| try self.promote(entry, run_id);
+        }
         return admission;
     }
 
@@ -507,7 +509,7 @@ pub const Hub = struct {
         if (options.after == null and options.run_id.len > 0) return error.InvalidCursor;
         if (self.heldFor(entry)) |held| {
             if (options.after == null) {
-                if (held.detached or held.ending != .open) {
+                if (held.detached or held.ending == .expired) {
                     _ = self.dropHold(held);
                 } else {
                     _ = self.dropHold(held);
@@ -561,6 +563,7 @@ pub const Hub = struct {
 
     pub fn pump(self: *Hub, allocator: std.mem.Allocator, wait_ns: u64) !void {
         self.expireHolds();
+        self.reclaim();
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
         const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
@@ -599,6 +602,27 @@ pub const Hub = struct {
             entry.session.close();
             self.closeSession(entry, .session_closed);
         }
+    }
+
+    pub fn reclaim(self: *Hub) void {
+        var index: usize = 0;
+        while (index < self.subscriptions.items.len) {
+            const subscription = self.subscriptions.items[index];
+            if (!spent(subscription)) {
+                index += 1;
+                continue;
+            }
+            _ = self.subscriptions.orderedRemove(index);
+            _ = self.dropHold(subscription);
+            subscription.release(self.allocator);
+            self.allocator.destroy(subscription);
+        }
+    }
+
+    fn spent(subscription: *const Subscription) bool {
+        if (!subscription.detached) return false;
+        if (subscription.held) return false;
+        return subscription.replay.items.len == 0 and subscription.queue.items.len == 0;
     }
 
     pub fn toolSource(self: *const Hub, id: []const u8) ?contract.ConfiguredSource {
@@ -895,6 +919,73 @@ test "a subscriber that falls behind is ended with the run and position it last 
     try testing.expectEqualStrings("run-1", subscription.overflow_run);
     try testing.expectEqual(last_read, subscription.overflow_sequence);
     const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = subscription.overflow_run, .after = subscription.overflow_sequence });
+    try testing.expect(resumed.next() != null);
+}
+
+test "an overflowed hold is adopted so the adopter learns the cursor it lost" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256, .hold_ns = 50 * std.time.ns_per_ms });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "starved" });
+    const held = try hub.hold(arena, opened.session_id);
+    const request = try submitFor(arena, "starved");
+    _ = try hub.submit(arena, "starved", &request);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.overflow, held.ending);
+
+    const adopted = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectEqual(held, adopted);
+    try testing.expectEqual(Ending.overflow, adopted.ending);
+}
+
+test "a finished subscription is reclaimed, so a long-lived hub's memory is bounded" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "memory", .{ .session_id = "churn" });
+
+    const kept = try hub.subscribe(arena, opened.session_id, .{});
+    const read = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectEqual(@as(usize, 2), hub.subscriptions.items.len);
+
+    kept.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try testing.expectEqual(read, hub.subscriptions.items[0]);
+}
+
+test "a queued admission does not become the session's current run" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "queued" });
+    const request = try submitFor(arena, "queued");
+    const first = try hub.submit(arena, "queued", &request);
+    try testing.expectEqual(oap_types.Admission.started, first.admission);
+    try hub.pump(testing.allocator, 0);
+
+    var queued = request;
+    queued.delivery = .queue;
+    const second = try hub.submit(arena, "queued", &queued);
+    try testing.expectEqual(oap_types.Admission.queued, second.admission);
+    try hub.pump(testing.allocator, 0);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "", .after = 1 });
+    try testing.expectEqualStrings(first.run_id.?, resumed.run_id);
     try testing.expect(resumed.next() != null);
 }
 
