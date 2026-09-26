@@ -2574,14 +2574,12 @@ fn lineOf(items: []const TraceItem, index: usize) usize {
     return if (index < items.len) items[index].line else 0;
 }
 
-const partial_semantic_note = "semantic rules partial: this validator has not ported every rule; goap validate checks them all";
-
 fn writeHumanReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: []const u8, verdict: ValidateVerdict) !void {
     switch (verdict) {
         .unjudged => |reason| try out.print(allocator, "UNJUDGED {s}: {s}\n", .{ path, reason }),
         .judged => |findings| {
             if (findings.len == 0) {
-                try out.print(allocator, "PASS {s} ({s})\n", .{ path, partial_semantic_note });
+                try out.print(allocator, "PASS {s}\n", .{path});
                 return;
             }
             for (findings) |finding| {
@@ -2606,8 +2604,6 @@ fn writeJsonReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: 
         .unjudged => |reason| {
             try json.objectField("valid");
             try json.write(false);
-            try json.objectField("complete");
-            try json.write(false);
             try json.objectField("unjudged");
             try json.write(reason);
             try json.objectField("diagnostics");
@@ -2617,8 +2613,6 @@ fn writeJsonReport(out: *std.ArrayList(u8), allocator: std.mem.Allocator, path: 
         .judged => |findings| {
             try json.objectField("valid");
             try json.write(findings.len == 0);
-            try json.objectField("complete");
-            try json.write(false);
             try json.objectField("diagnostics");
             try json.beginArray();
             for (findings) |finding| {
@@ -10402,15 +10396,15 @@ test "validate reports malformed JSON as a decode finding" {
     try std.testing.expectEqualStrings("malformed_json", found.items[0].code);
 }
 
-test "a pass names its semantic rules as partial" {
+test "a pass names no partial note" {
     const allocator = std.testing.allocator;
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     try writeHumanReport(&out, allocator, "trace.json", .{ .judged = &.{} });
-    try std.testing.expectEqualStrings("PASS trace.json (" ++ partial_semantic_note ++ ")\n", out.items);
+    try std.testing.expectEqualStrings("PASS trace.json\n", out.items);
 }
 
-test "a JSON report names the phase of each finding and never claims completeness" {
+test "a JSON report names the phase of each finding" {
     const allocator = std.testing.allocator;
     var findings = [_]ValidateFinding{.{ .phase = .schema, .code = "schema_invalid", .index = 2 }};
     var out = std.ArrayList(u8).empty;
@@ -10421,7 +10415,7 @@ test "a JSON report names the phase of each finding and never claims completenes
     const report = parsed.value.object;
     try std.testing.expectEqualStrings("trace.json", report.get("file").?.string);
     try std.testing.expect(!report.get("valid").?.bool);
-    try std.testing.expect(!report.get("complete").?.bool);
+    try std.testing.expect(report.get("complete") == null);
     const diagnostic = report.get("diagnostics").?.array.items[0].object;
     try std.testing.expectEqualStrings("schema", diagnostic.get("phase").?.string);
     try std.testing.expectEqualStrings("schema_invalid", diagnostic.get("code").?.string);
