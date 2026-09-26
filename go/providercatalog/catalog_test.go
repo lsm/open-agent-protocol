@@ -46,7 +46,7 @@ func TestLoadRefusesARepeatedMember(t *testing.T) {
 }
 
 func TestCheckNamesADuplicateRow(t *testing.T) {
-	findings := Check(Catalog{Providers: []Provider{{ID: "kimi"}, {ID: "kimi"}, {Endpoint: []Endpoint{{BaseURL: "https://api.kimi.com/coding"}}}}})
+	findings := Check(Catalog{Providers: []Provider{{ID: "kimi"}, {ID: "kimi"}, {Endpoints: []Endpoint{{BaseURL: "https://api.kimi.com/coding"}}}}})
 	codes := map[string]int{}
 	for _, finding := range findings {
 		codes[finding.Code]++
