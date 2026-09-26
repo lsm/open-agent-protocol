@@ -670,8 +670,6 @@ pub const Session = struct {
     }
 
     fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
-        _ = arena;
-        _ = refusal;
         const self = cast(ptr);
         const request = switch (resolution) {
             .permission => |permission| permission,
@@ -686,14 +684,27 @@ pub const Session = struct {
         const interaction_id = try self.owned().dupe(u8, request.interaction_id);
         const run_id = try self.owned().dupe(u8, request.run_id);
         const responder = try self.owned().dupe(u8, request.responded_by);
-        self.reducer.resolve(interaction_id, run_id, responder, choice_id, request.granted) catch |err| return switch (err) {
+        const admitted = self.reducer.admitResolution(interaction_id, run_id, responder, choice_id, request.granted) catch |err| return switch (err) {
             error.InteractionNotFound, error.InteractionResolved => error.InteractionNotFound,
             error.WrongResponder, error.InvalidResolution => error.InvalidResolution,
             else => lift(err),
         };
         const ask = self.asks.orderedRemove(at);
         const outcome = self.permissionOutcome("selected", choice_id) catch |err| return lift(err);
-        _ = try self.send(self.resultFrame(ask.native_id, outcome) catch |err| return lift(err));
+        const frame = self.resultFrame(ask.native_id, outcome) catch |err| return lift(err);
+        const gate = admitted orelse {
+            _ = try self.send(frame);
+            return self.recordTerminals();
+        };
+        self.transport.write(frame) catch |err| {
+            const detail = @errorName(err);
+            self.reducer.answerFailed(detail) catch |failure| return lift(failure);
+            try self.fail(detail);
+            try self.recordTerminals();
+            const message = try std.fmt.allocPrint(arena, "the ACP agent did not take the permission answer: {s}", .{detail});
+            return refusal.fail(error.BackendFailed, message);
+        };
+        self.reducer.commitResolution(gate, choice_id) catch |err| return lift(err);
         try self.recordTerminals();
     }
 
@@ -1139,4 +1150,36 @@ test "an attachment ACP cannot carry is refused naming the source and why, befor
         if (case.failure == error.UnsupportedFeature) try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
         try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
     }
+}
+
+test "a permission answer the agent cannot read fails the run acp_permission_response_failed and closes the session" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\exec 0<&-
+        \\printf '{"id":"permission-1","jsonrpc":"2.0","method":"session/request_permission","params":{"options":[{"kind":"allow_once","name":"Allow once","optionId":"allow"},{"kind":"reject_once","name":"Reject","optionId":"deny"}],"sessionId":"native-session","toolCall":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\sleep 5
+        \\
+    );
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const scratch = probe.arena.allocator();
+    const admitted = try probe.submit("gated", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const gate = try probe.pumpUntil("action.permission.requested", &seen);
+    const answer = oap_types.PermissionResolveRequest{ .interaction_id = (try probe.payloadOf(gate)).get("interaction_id").?.string, .requested_by = endpoint_id, .responded_by = "user", .session_id = "s1", .run_id = admitted.run_id.?, .granted = true, .choice_id = "allow" };
+    try testing.expectError(error.BackendFailed, probe.handle.?.resolve(scratch, .{ .permission = &answer }, &refusal));
+    try testing.expect(std.mem.startsWith(u8, refusal.message, "the ACP agent did not take the permission answer: "));
+
+    var drained = std.ArrayList(contract.Event).empty;
+    try probe.handle.?.drain(scratch, &drained);
+    var failed: ?contract.Event = null;
+    for (drained.items) |event| {
+        if (std.mem.indexOf(u8, event.line, "\"type\":\"run.failed\"") != null) failed = event;
+        try testing.expect(std.mem.indexOf(u8, event.line, "\"outcome\":\"resolved\"") == null);
+    }
+    try testing.expectEqualStrings("acp_permission_response_failed", (try probe.payloadOf(failed.?)).get("error").?.object.get("code").?.string);
+    try testing.expectError(error.SessionClosed, probe.handle.?.state(scratch, &refusal));
 }

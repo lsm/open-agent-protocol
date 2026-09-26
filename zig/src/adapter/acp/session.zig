@@ -747,6 +747,11 @@ pub const Reducer = struct {
     }
 
     pub fn resolve(self: *Reducer, interaction_id: []const u8, run_id: []const u8, responder: []const u8, choice_id: []const u8, granted: bool) !void {
+        const at = try self.admitResolution(interaction_id, run_id, responder, choice_id, granted) orelse return;
+        try self.commitResolution(at, choice_id);
+    }
+
+    pub fn admitResolution(self: *Reducer, interaction_id: []const u8, run_id: []const u8, responder: []const u8, choice_id: []const u8, granted: bool) !?usize {
         var found: ?usize = null;
         for (self.gates.items, 0..) |gate, index| {
             if (std.mem.eql(u8, gate.id, interaction_id)) found = index;
@@ -756,24 +761,23 @@ pub const Reducer = struct {
         if (!std.mem.eql(u8, responder, self.options.responder)) return Error.WrongResponder;
         if (!std.mem.eql(u8, self.gates.items[at].run_id, run_id)) return Error.InvalidResolution;
         if (self.run == null) return Error.InvalidResolution;
+        const option = self.chosen(at, choice_id) orelse return Error.InvalidResolution;
+        if (allowsKind(option.kind) != granted) return Error.InvalidResolution;
+        if (self.run.?.terminal) return null;
+        return at;
+    }
+
+    pub fn commitResolution(self: *Reducer, at: usize, choice_id: []const u8) !void {
         const run = &self.run.?;
-
-        var chosen: ?Choice = null;
-        for (self.gates.items[at].choices) |choice| {
-            if (std.mem.eql(u8, choice.id, choice_id)) chosen = choice;
-        }
-        const option = chosen orelse return Error.InvalidResolution;
-        const allows = std.mem.eql(u8, option.kind, "allow_once") or std.mem.eql(u8, option.kind, "allow_always");
-        if (allows != granted) return Error.InvalidResolution;
-        if (run.terminal) return;
-
+        const option = self.chosen(at, choice_id).?;
+        const allows = allowsKind(option.kind);
         const gate = &self.gates.items[at];
         gate.resolved = true;
         const requested_event = gate.requested_event;
         const tool_id = self.tools.items[gate.tool].id;
 
         var payload = self.object();
-        try self.put(&payload, "interaction_id", str(interaction_id));
+        try self.put(&payload, "interaction_id", str(gate.id));
         try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "responded_by", str(self.options.responder));
         try self.put(&payload, "session_id", str(self.options.session_id));
@@ -784,7 +788,27 @@ pub const Reducer = struct {
         try self.put(&payload, "granted", .{ .bool = allows });
         _ = try self.emitEnvelope(run, "action.permission.resolved", .{ .object = payload }, requested_event);
     }
+
+    pub fn answerFailed(self: *Reducer, detail: []const u8) !void {
+        if (self.run == null) return;
+        const run = &self.run.?;
+        if (run.terminal) return;
+        try self.settleChildren(run, true);
+        try self.emitFailure(run, "acp_permission_response_failed", detail, "inferred");
+    }
+
+    fn chosen(self: *Reducer, at: usize, choice_id: []const u8) ?Choice {
+        var picked: ?Choice = null;
+        for (self.gates.items[at].choices) |choice| {
+            if (std.mem.eql(u8, choice.id, choice_id)) picked = choice;
+        }
+        return picked;
+    }
 };
+
+fn allowsKind(kind: []const u8) bool {
+    return std.mem.eql(u8, kind, "allow_once") or std.mem.eql(u8, kind, "allow_always");
+}
 
 fn idScalar(index: usize) u21 {
     return std.math.cast(u21, 'a' + index) orelse 0xFFFD;
@@ -2312,4 +2336,48 @@ test "a null leaf clears a raw member but not the title beside it" {
     const payload = payloadAt(&reducer, last);
     try testing.expectEqualStrings("first", payload.get("title").?.string);
     try testing.expect(payload.get("arguments_json").? == .null);
+}
+
+test "a permission answer the agent could not take fails the run as goap does, settling the gate cancelled" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, arena.allocator(), permission_frame);
+    const gate = reducer.gates.items[0].id;
+    const run_id = reducer.run.?.id;
+    const at = (try reducer.admitResolution(gate, run_id, "user", "allow", true)).?;
+    try testing.expect(!reducer.gates.items[at].resolved);
+    try reducer.answerFailed("BrokenPipe");
+
+    var resolved: ?std.json.ObjectMap = null;
+    var failed: ?std.json.ObjectMap = null;
+    for (reducer.envelopes.items) |envelope| {
+        const kind = envelope.object.get("type").?.string;
+        if (std.mem.eql(u8, kind, "action.permission.resolved")) resolved = envelope.object.get("payload").?.object;
+        if (std.mem.eql(u8, kind, "run.failed")) failed = envelope.object.get("payload").?.object;
+    }
+    try testing.expectEqualStrings("cancelled", resolved.?.get("outcome").?.string);
+    try testing.expectEqualStrings("acp_permission_response_failed", failed.?.get("error").?.object.get("code").?.string);
+    try testing.expectEqualStrings("BrokenPipe", failed.?.get("error").?.object.get("message").?.string);
+    try testing.expectEqualStrings("inferred", failed.?.get("settled_by").?.string);
+    try testing.expectError(Error.InteractionResolved, reducer.resolve(gate, run_id, "user", "allow", true));
+}
+
+test "admitting a resolution checks it without recording it, and committing records it once" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, arena.allocator(), permission_frame);
+    const gate = reducer.gates.items[0].id;
+    const run_id = reducer.run.?.id;
+    try testing.expectError(Error.InvalidResolution, reducer.admitResolution(gate, run_id, "user", "allow", false));
+    try testing.expectError(Error.InvalidResolution, reducer.admitResolution(gate, run_id, "user", "missing", true));
+    try testing.expectError(Error.WrongResponder, reducer.admitResolution(gate, run_id, "someone", "allow", true));
+    const before = reducer.envelopes.items.len;
+    const at = (try reducer.admitResolution(gate, run_id, "user", "deny", false)).?;
+    try testing.expectEqual(before, reducer.envelopes.items.len);
+    try reducer.commitResolution(at, "deny");
+    try testing.expectEqual(before + 1, reducer.envelopes.items.len);
+    try testing.expectEqualStrings("rejected", payloadAt(&reducer, before).get("outcome").?.string);
+    try testing.expectError(Error.InteractionResolved, reducer.admitResolution(gate, run_id, "user", "deny", false));
 }
