@@ -584,31 +584,27 @@ which is the order Go's nested `awaitQuiescenceLocked` calls settle in.
 
 ### Where the port and the oracle differ
 
-1. **Unfinished tools settle in start order.** Go ranges over the `s.tools`
-   map, so when one run has several unfinished tools, the order of their
-   `action.call.failed`/`cancelled` envelopes is unspecified, and so are their
-   event ids. No case or scenario has more than one.
-2. **A cancel during a pending settlement.** In Go, `Cancel` takes
+1. **A cancel during a pending settlement.** In Go, `Cancel` takes
    `transitionMu`, which dispatch holds for the whole poll loop. The cancel
    therefore waits for the settlement and is refused with the completed
    status. Zig takes the cancel at once, and the run settles `cancelled`. Both
    are valid traces.
-3. **Events during an in-flight prompt.** Go reduces such an event up to the
+2. **Events during an in-flight prompt.** Go reduces such an event up to the
    `<-run.admitted` wait. A serialized host hands it over after `submit`
    returns. The only state that differs is `promotionSeen` on a run the same
    submit moved out of the reservation slot, and nothing reads it afterwards.
-4. **When a pending settlement is dropped.** Go checks `terminal` and
+3. **When a pending settlement is dropped.** Go checks `terminal` and
    `openSteps` after each drain, which can be a batch of events. Zig checks
    after every event. Only the fence's watermark can differ, and dedup by
    durable `seq` makes the fence's result the same unless the stream skipped a
    sequence.
-5. **Decode messages.** A malformed data payload, or a frame that fails a
+4. **Decode messages.** A malformed data payload, or a frame that fails a
    subscription, surfaces its decode error in `run.failed.error.message`. Zig
    reproduces the text for unknown fields (`json: unknown field "x"`),
    duplicate keys, `EOF`, and every message the adapter writes itself. Type
    mismatches and syntax errors carry Zig's own text. No corpus case pins one,
    and the `invalid-data` scenario, an unknown field, matches exactly.
-6. **SSE framing reuses `sse_parser.zig`.** It does the field parsing and data
+5. **SSE framing reuses `sse_parser.zig`.** It does the field parsing and data
    assembly, and the port adds the oracle's strictness: bare CR, an event
    without data, a duplicate `event` or `id`, NUL in `id`, and the per-event
    size limit, which counts comment lines too. `sse_parser` joins data lines
