@@ -349,6 +349,11 @@ pub const Hub = struct {
             const last = &listed.items[listed.items.len - 1];
             var refusal = contract.Refusal{};
             if (registered.adapter.probe(&refusal)) |descriptor| {
+                if (descriptor.capability_revision.len == 0) {
+                    last.failed = true;
+                    last.message = "adapter descriptor carries no capability revision";
+                    continue;
+                }
                 registered.revision = descriptor.capability_revision;
                 last.capabilities = descriptor;
                 last.revision = descriptor.capability_revision;
@@ -371,7 +376,9 @@ pub const Hub = struct {
     pub fn probe(self: *Hub, name: []const u8) Failure!contract.Descriptor {
         const registered = self.find(name) orelse return error.UnknownAdapter;
         var refusal = contract.Refusal{};
-        return registered.adapter.probe(&refusal);
+        const descriptor = try registered.adapter.probe(&refusal);
+        if (descriptor.capability_revision.len == 0) return error.AdapterDescriptorUnbound;
+        return descriptor;
     }
 
     pub fn revision(self: *Hub, name: []const u8) Failure![]const u8 {
@@ -418,14 +425,12 @@ pub const Hub = struct {
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
         var refusal = contract.Refusal{};
         const admission = try entry.session.submit(arena, request, &refusal);
-        if (admission.admission == .started) {
-            if (admission.run_id) |run_id| {
-                self.promote(entry, run_id) catch |err| {
-                    entry.session.close();
-                    self.closeSession(entry, .stream_failed);
-                    return err;
-                };
-            }
+        if (admission.run_id) |run_id| {
+            self.noteRun(entry, run_id, admission.admission == .started) catch |err| {
+                entry.session.close();
+                self.closeSession(entry, .stream_failed);
+                return err;
+            };
         }
         return admission;
     }
@@ -755,9 +760,17 @@ pub const Hub = struct {
         return null;
     }
 
-    fn promote(self: *Hub, entry: *Entry, run_id: []const u8) !void {
+    fn ordinal(entry: *const Entry, run_id: []const u8) i64 {
+        for (entry.cursors.items, 0..) |cursor, index| {
+            if (std.mem.eql(u8, cursor.run_id, run_id)) return @intCast(index);
+        }
+        return -1;
+    }
+
+    fn noteRun(self: *Hub, entry: *Entry, run_id: []const u8, current: bool) !void {
         var fresh = false;
         _ = try self.cursorFor(entry, run_id, &fresh);
+        if (!current) return;
         const owned = try self.allocator.dupe(u8, run_id);
         self.allocator.free(entry.run_id);
         entry.run_id = owned;
@@ -789,10 +802,10 @@ pub const Hub = struct {
     fn remember(self: *Hub, entry: *Entry, event: contract.Event) !void {
         var fresh = false;
         const index = try self.cursorFor(entry, event.run_id, &fresh);
-        if (fresh and !std.mem.eql(u8, entry.run_id, event.run_id)) {
-            const owned = try self.allocator.dupe(u8, event.run_id);
-            self.allocator.free(entry.run_id);
-            entry.run_id = owned;
+        if (!std.mem.eql(u8, entry.run_id, event.run_id) and
+            ordinal(entry, event.run_id) > ordinal(entry, entry.run_id))
+        {
+            try self.noteRun(entry, event.run_id, true);
         }
         entry.cursors.items[index].latest = @max(entry.cursors.items[index].latest, event.sequence);
         if (self.journal_capacity == 0) return;
@@ -949,6 +962,7 @@ pub const Hub = struct {
             if (kept.sequence <= after) continue;
             const copy = try self.allocator.dupe(u8, kept.line);
             errdefer self.allocator.free(copy);
+            if (terminal(kept.line)) try self.noteTerminal(subscription, subscription.run_id, kept.sequence);
             try subscription.replay.append(self.allocator, .{ .line = copy, .run_id = subscription.run_id, .sequence = kept.sequence });
         }
     }
@@ -1184,6 +1198,74 @@ test "a finished subscription is reclaimed, so a long-lived hub's memory is boun
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
     try testing.expectEqual(read, hub.subscriptions.items[0]);
+}
+
+test "a resumed subscription ends at the terminal it replays" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "replayed-terminal" });
+    const request = try submitFor(arena, "replayed-terminal");
+    _ = try hub.submit(arena, "replayed-terminal", &request);
+    var queued = request;
+    queued.delivery = .queue;
+    const waiting = try hub.submit(arena, "replayed-terminal", &queued);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "replayed-terminal", waiting.run_id.?);
+    try hub.pump(testing.allocator, 0);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = waiting.run_id.?, .after = 0 });
+    try testing.expectEqual(Ending.open, resumed.ending);
+    var delivered: usize = 0;
+    while (resumed.next()) |_| delivered += 1;
+    try testing.expectEqual(@as(usize, 1), delivered);
+    try testing.expectEqual(Ending.run_terminal, resumed.ending);
+}
+
+test "a queued run's id can be named by a cursor before it has emitted" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "named-queue" });
+    const first = try submitFor(arena, "named-queue");
+    _ = try hub.submit(arena, "named-queue", &first);
+    var queued = first;
+    queued.delivery = .queue;
+    const waiting = try hub.submit(arena, "named-queue", &queued);
+    try hub.pump(testing.allocator, 0);
+
+    const joined = try hub.subscribe(arena, opened.session_id, .{ .run_id = waiting.run_id.?, .after = 0 });
+    try testing.expectEqualStrings(waiting.run_id.?, joined.run_id);
+    try testing.expect(joined.next() == null);
+    _ = try hub.cancel(arena, "named-queue", waiting.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(joined.next() != null);
+}
+
+test "a descriptor that loses its revision is listed with an error, not as healthy" {
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("fading", fadingAdapter(&fading_registered));
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const listed = try hub.listing(arena);
+    try testing.expectEqual(@as(usize, 1), listed.len);
+    try testing.expect(listed[0].failed);
+    try testing.expectEqualStrings("adapter descriptor carries no capability revision", listed[0].message);
+    try testing.expect(listed[0].capabilities == null);
+    try testing.expectError(error.AdapterDescriptorUnbound, hub.probe("fading"));
 }
 
 test "a queued admission does not become the session's current run" {
@@ -1932,6 +2014,34 @@ test "an overflow cursor survives the mailbox being drained across a run boundar
     try testing.expectEqualStrings("run-1", expected_run);
     try testing.expectEqualStrings("run-1", subscription.overflow_run);
     try testing.expectEqual(read.sequence, subscription.overflow_sequence);
+}
+
+const fading_descriptor = contract.Descriptor{
+    .endpoint = .{ .id = "fading", .name = "Fading", .version = "0.1", .adapter = "script" },
+    .capability_revision = "fading-v1",
+    .features = &.{},
+};
+
+var fading_registered: bool = false;
+
+fn fadingAdapter(state: *bool) contract.Adapter {
+    return .{ .ptr = @constCast(@ptrCast(state)), .vtable = &.{ .probe = fadingProbe, .open = fadingOpen } };
+}
+
+fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!contract.Descriptor {
+    const state: *bool = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    defer state.* = true;
+    if (state.*) return .{ .endpoint = fading_descriptor.endpoint, .capability_revision = "", .features = &.{} };
+    return fading_descriptor;
+}
+
+fn fadingOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+    _ = ptr;
+    _ = arena;
+    _ = request;
+    _ = refusal;
+    return error.Unavailable;
 }
 
 const bare_descriptor = contract.Descriptor{
