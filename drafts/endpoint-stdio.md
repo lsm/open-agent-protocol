@@ -37,6 +37,10 @@ An endpoint implements none of that. It is one agent loop, not a registry of
 them, and it carries the envelopes themselves — the payload `servestdio` puts
 *inside* its `request` and `event` fields.
 
+[Hub wire](hub.md) is the specification for that other thing, and it is what a
+hub — in either tree — is judged against. This binding is not: an endpoint and
+a hub share a vocabulary and a correlation idea, and nothing else.
+
 ## Framing
 
 - One JSON object per line, encoded as UTF-8 and terminated by `\n`.
