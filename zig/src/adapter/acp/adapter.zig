@@ -384,9 +384,7 @@ pub const Session = struct {
 
         var options = self.reducer.options;
         options.native_id = kept.native_id;
-        var reducer = session.Reducer.init(self.reducer_arena, options);
-        reducer.clock = self.reducer.clock;
-        reducer.last_sequence = self.reducer.last_sequence;
+        var reducer = self.reducer.compactInto(&fresh, options) catch |err| return lift(err);
 
         self.reducer_arena.deinit();
         self.reducer_arena.* = fresh;
@@ -1294,4 +1292,32 @@ test "the state a compaction keeps is copied without leaking when any allocation
     try statuses.put(a, "run-2", "completed");
     try statuses.put(a, "run-5", "cancelled");
     try testing.checkAllAllocationFailures(testing.allocator, keptProbe, .{ &sources, statuses });
+}
+
+test "a tool id an earlier run used is still refused after the session compacts" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"rawOutput":{"ok":true},"sessionUpdate":"tool_call_update","status":"completed","toolCallId":"native-tool"}}}\n'
+        \\printf '{"id":3,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}\n'
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\printf '{"id":4,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("one", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+
+    const live: *Session = @ptrCast(@alignCast(probe.handle.?.ptr));
+    live.compact_above = 0;
+    try testing.expect(try live.compact());
+
+    _ = try probe.submit("two", &refusal);
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    try testing.expectEqualStrings("acp_tool_id_reuse", (try probe.payloadOf(failed)).get("error").?.object.get("code").?.string);
 }

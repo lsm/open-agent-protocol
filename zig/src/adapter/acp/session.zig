@@ -739,6 +739,32 @@ pub const Reducer = struct {
         gate.requested_event = try self.emit(run, "action.permission.requested", .{ .object = payload });
     }
 
+    pub fn compactInto(self: *const Reducer, arena: *std.heap.ArenaAllocator, options: Options) !Reducer {
+        if (self.run) |run| {
+            if (!run.terminal) return Error.RunActive;
+        }
+        if (self.envelopes.items.len != 0) return Error.RunActive;
+        const keep = arena.allocator();
+        var kept = Reducer.init(arena, options);
+        kept.ids = self.ids;
+        kept.clock = self.clock;
+        kept.last_sequence = self.last_sequence;
+        try kept.tools.ensureTotalCapacity(keep, self.tools.items.len);
+        for (self.tools.items) |tool| {
+            const native_id = try keep.dupe(u8, tool.native_id);
+            const id = try keep.dupe(u8, tool.id);
+            const run_id = try keep.dupe(u8, tool.run_id);
+            kept.tools.appendAssumeCapacity(.{ .native_id = native_id, .id = id, .run_id = run_id, .terminal = true });
+        }
+        try kept.gates.ensureTotalCapacity(keep, self.gates.items.len);
+        for (self.gates.items) |gate| {
+            const id = try keep.dupe(u8, gate.id);
+            const run_id = try keep.dupe(u8, gate.run_id);
+            kept.gates.appendAssumeCapacity(.{ .id = id, .run_id = run_id, .tool = gate.tool, .choices = &.{}, .resolved = gate.resolved });
+        }
+        return kept;
+    }
+
     pub fn pendingInteraction(self: *Reducer) ?[]const u8 {
         for (self.gates.items) |gate| {
             if (!gate.resolved) return gate.id;
@@ -2312,4 +2338,68 @@ test "a null leaf clears a raw member but not the title beside it" {
     const payload = payloadAt(&reducer, last);
     try testing.expectEqualStrings("first", payload.get("title").?.string);
     try testing.expect(payload.get("arguments_json").? == .null);
+}
+
+fn settledWithTool(arena: *std.heap.ArenaAllocator) !Reducer {
+    const scratch = arena.allocator();
+    var reducer = try openRun(arena);
+    try feed(&reducer, scratch, tool_call_frame);
+    try feed(&reducer, scratch, permission_frame);
+    try reducer.settlePrompt("end_turn");
+    reducer.envelopes.clearRetainingCapacity();
+    return reducer;
+}
+
+test "a compacted reducer still refuses a tool id an earlier run used, and answers its settled gate as resolved" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    var reducer = try settledWithTool(&source);
+    const gate_id = reducer.gates.items[0].id;
+    const settled_run = reducer.run.?.id;
+    const ids_before = reducer.ids;
+
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    var kept = try reducer.compactInto(&target, reducer.options);
+    const kept_gate = try target.allocator().dupe(u8, gate_id);
+    const kept_run = try target.allocator().dupe(u8, settled_run);
+    source.deinit();
+
+    try testing.expectEqual(ids_before, kept.ids);
+    try testing.expectEqual(@as(usize, 1), kept.tools.items.len);
+    try testing.expectEqualStrings("native-tool", kept.tools.items[0].native_id);
+    try testing.expectError(Error.InteractionResolved, kept.resolve(kept_gate, kept_run, "user", "allow", true));
+
+    const scratch = target.allocator();
+    try kept.submit(1);
+    try feed(&kept, scratch, tool_call_frame);
+    var failed: ?std.json.ObjectMap = null;
+    for (kept.envelopes.items) |envelope| {
+        if (std.mem.eql(u8, envelope.object.get("type").?.string, "run.failed")) failed = envelope.object.get("payload").?.object;
+    }
+    try testing.expectEqualStrings("acp_tool_id_reuse", failed.?.get("error").?.object.get("code").?.string);
+}
+
+test "a reducer with a live run or undrained events refuses compaction" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var reducer = try openRun(&arena);
+    var target = std.heap.ArenaAllocator.init(testing.allocator);
+    defer target.deinit();
+    try testing.expectError(Error.RunActive, reducer.compactInto(&target, reducer.options));
+    try reducer.settlePrompt("end_turn");
+    try testing.expect(reducer.envelopes.items.len > 0);
+    try testing.expectError(Error.RunActive, reducer.compactInto(&target, reducer.options));
+}
+
+fn compactProbe(allocator: std.mem.Allocator, reducer: *const Reducer) !void {
+    var target = std.heap.ArenaAllocator.init(allocator);
+    defer target.deinit();
+    _ = try reducer.compactInto(&target, reducer.options);
+}
+
+test "reducer compaction propagates every allocation failure and leaks nothing" {
+    var source = std.heap.ArenaAllocator.init(testing.allocator);
+    defer source.deinit();
+    const reducer = try settledWithTool(&source);
+    try testing.checkAllAllocationFailures(testing.allocator, compactProbe, .{&reducer});
 }
