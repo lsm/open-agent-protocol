@@ -1,6 +1,6 @@
 # Decision 0038: One Released Binary, and a Library for Every Language
 
-Status: proposed
+Status: accepted 2026-09-26 (policy decision; its work is tracked in #364, and its open question is handed to #372)
 Date: 2026-09-26
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: neither; this record governs what ships and what each language gets,
@@ -94,8 +94,8 @@ so implementing OAP in a new language never needs another language's toolchain.
 `sdk/go` merges into the main Go module as a package built on the shared
 `protocol` types. It keeps its public API — `Agent`, `Provider`, `Auth`, `Models`
 — and delegates the agent loop and providers to `oapx` until Go has native ones.
-The `sdk/go` module is deprecated with a pointer to its replacement, and the
-zero-comment allowlist goes with it. A Go agent loop and provider runtime are
+The `sdk/go` module is removed outright, since nothing outside this repository
+uses any SDK, and the zero-comment allowlist goes with it. A Go agent loop and provider runtime are
 what remain before Go is native in the sense above. Rust follows from `sdk/rust`;
 Java waits for a user.
 
@@ -127,4 +127,4 @@ Go binary released, a program that needs a multi-session daemon embeds
 
 ## Open questions
 
-- Whether the hub becomes a product feature of `oapx`.
+- Whether the hub becomes a product feature of `oapx`, handed to #372.

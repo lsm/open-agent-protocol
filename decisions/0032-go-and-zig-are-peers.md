@@ -1,6 +1,7 @@
 # Decision 0032: Go and Zig Are Peers, and the Specification Decides
 
-Status: accepted
+Status: accepted (its Go binary is an internal tool, and its libraries stay first-class
+and permanent, under [Decision 0038](0038-one-released-binary-and-a-library-for-every-language.md))
 Date: 2026-09-23
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: neither; this record governs the two implementations and their
