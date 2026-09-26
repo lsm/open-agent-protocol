@@ -1,8 +1,8 @@
 const std = @import("std");
 const provider_catalog = @import("provider_catalog");
 
-const azure_credential_env = provider_catalog.credentialEnvOrCompileError("azure");
-const azure_base_url_env = provider_catalog.baseUrlEnvOrCompileError("azure");
+const azure_credential_env = provider_catalog.credentialEnv("azure")[0];
+const azure_base_url_env = provider_catalog.baseUrlEnv("azure")[0];
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");

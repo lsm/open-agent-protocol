@@ -64,18 +64,6 @@ pub fn baseUrlOrCompileError(id: []const u8, wire: []const u8, region: ?[]const 
         @compileError("providers/catalog.json records no such endpoint; add the row rather than the literal");
 }
 
-pub fn baseUrlEnvOrCompileError(id: []const u8) []const u8 {
-    const names = baseUrlEnv(id);
-    if (names.len == 0) @compileError("providers/catalog.json records no base_url_env for this provider");
-    return names[0];
-}
-
-pub fn credentialEnvOrCompileError(id: []const u8) []const u8 {
-    const names = credentialEnv(id);
-    if (names.len == 0) @compileError("providers/catalog.json records no credential_env for this provider");
-    return names[0];
-}
-
 pub fn oauthOrigin(id: []const u8) ?OAuthOrigin {
     const row = provider(id) orelse return null;
     return row.oauth_origin;
@@ -156,12 +144,19 @@ test "at most one base URL environment variable is resolved per provider" {
     }
 }
 
-test "a required environment name is the one the catalog records" {
-    try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL", baseUrlEnvOrCompileError("anthropic"));
-    try std.testing.expectEqualStrings("OPENAI_BASE_URL", baseUrlEnvOrCompileError("openai"));
-    try std.testing.expectEqualStrings("DEEPSEEK_BASE_URL", baseUrlEnvOrCompileError("deepseek"));
-    try std.testing.expectEqualStrings("OLLAMA_BASE_URL", baseUrlEnvOrCompileError("ollama"));
-    try std.testing.expectEqualStrings("GOOGLE_API_KEY", credentialEnvOrCompileError("google"));
+test "a provider with a base URL override names it, and one without names none" {
+    const with_override = [_][]const u8{ "anthropic", "openai", "deepseek", "ollama", "google", "azure" };
+    for (with_override) |id| {
+        try std.testing.expectEqual(@as(usize, 1), baseUrlEnv(id).len);
+    }
+    for (all) |row| {
+        var expected = false;
+        for (with_override) |id| {
+            if (std.mem.eql(u8, row.id, id)) expected = true;
+        }
+        if (expected) continue;
+        try std.testing.expect(baseUrlEnv(row.id).len == 0);
+    }
 }
 
 test "the origin policy is data, including a per-tenant domain" {

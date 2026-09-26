@@ -60,9 +60,9 @@ const deepseek_completions_base_url = provider_catalog.baseUrlOrCompileError("de
 const codex_responses_base_url = provider_catalog.baseUrlOrCompileError("openai-codex", "openai-codex-responses", null);
 const kimi_china_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "china");
 const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "global");
-const anthropic_base_url_env = provider_catalog.baseUrlEnvOrCompileError("anthropic");
-const openai_base_url_env = provider_catalog.baseUrlEnvOrCompileError("openai");
-const deepseek_base_url_env = provider_catalog.baseUrlEnvOrCompileError("deepseek");
+const anthropic_base_url_env = provider_catalog.baseUrlEnv("anthropic")[0];
+const openai_base_url_env = provider_catalog.baseUrlEnv("openai")[0];
+const deepseek_base_url_env = provider_catalog.baseUrlEnv("deepseek")[0];
 
 pub fn normalizeKimiRegion(value: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");

@@ -5,8 +5,8 @@ const provider_catalog = @import("provider_catalog");
 comptime {
     _ = provider_catalog.baseUrlOrCompileError("google", "google-generative-ai", null);
 }
-const google_credential_env = provider_catalog.credentialEnvOrCompileError("google");
-const google_base_url_env = provider_catalog.baseUrlEnvOrCompileError("google");
+const google_credential_env = provider_catalog.credentialEnv("google")[0];
+const google_base_url_env = provider_catalog.baseUrlEnv("google")[0];
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
 const api_registry = @import("api_registry");

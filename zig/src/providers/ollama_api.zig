@@ -1,8 +1,8 @@
 const std = @import("std");
 const provider_catalog = @import("provider_catalog");
 
-const ollama_credential_env = provider_catalog.credentialEnvOrCompileError("ollama");
-const ollama_base_url_env = provider_catalog.baseUrlEnvOrCompileError("ollama");
+const ollama_credential_env = provider_catalog.credentialEnv("ollama")[0];
+const ollama_base_url_env = provider_catalog.baseUrlEnv("ollama")[0];
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
