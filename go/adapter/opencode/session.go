@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,8 @@ type session struct {
 	active     *runState
 
 	reserved *runState
+
+	nextToolOrder uint64
 
 	settled []protocol.SettledRun
 	runs    map[protocol.RunID]*runState
@@ -123,6 +126,7 @@ type toolState struct {
 	result         json.RawMessage
 	started        bool
 	terminal       bool
+	order          uint64
 	requestedEvent protocol.EnvelopeID
 	startedEvent   protocol.EnvelopeID
 }
@@ -781,7 +785,8 @@ func (s *session) startTool(run *runState, nativeID, name string, args json.RawM
 	key := toolKey(run, nativeID)
 	tool := s.tools[key]
 	if tool == nil {
-		tool = &toolState{id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: name, args: cloneRaw(args)}
+		tool = &toolState{id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: name, args: cloneRaw(args), order: s.nextToolOrder}
+		s.nextToolOrder++
 		s.tools[key] = tool
 	}
 	if tool.run != run || tool.terminal || tool.started {
@@ -1108,6 +1113,7 @@ func (s *session) settleTools(run *runState, cancel bool) {
 		}
 	}
 	s.mu.Unlock()
+	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
 	for _, tool := range tools {
 		payload := s.toolPayload(tool)
 		payload.ArgumentsJSON = nil

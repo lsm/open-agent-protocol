@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 
@@ -33,6 +34,7 @@ type session struct {
 	turns        map[string]protocol.RunID
 	items        map[string]itemBinding
 	interactions map[protocol.InteractionID]*interactionBinding
+	nextOrder    uint64
 	journal      []protocol.Envelope
 	stop         chan struct{}
 }
@@ -66,6 +68,7 @@ type itemBinding struct {
 	arguments  json.RawMessage
 	started    bool
 	terminal   bool
+	order      uint64
 }
 
 type interactionKind uint8
@@ -86,6 +89,7 @@ type interactionBinding struct {
 	questions         []protocol.InputQuestion
 	optionLabels      map[string]map[string]string
 	permissionChoices map[string]bool
+	order             uint64
 }
 
 func (session *session) Submit(ctx context.Context, request protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
@@ -531,7 +535,8 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 			return
 		}
 		interactionID := protocol.InteractionID(session.ids.NewID("interaction"))
-		binding := &interactionBinding{kind: permissionInteraction, runID: run.id, toolCallID: item.toolCallID, requestedBy: endpointID, respondedBy: session.participant, request: request, permissionChoices: decisions}
+		binding := &interactionBinding{kind: permissionInteraction, runID: run.id, toolCallID: item.toolCallID, requestedBy: endpointID, respondedBy: session.participant, request: request, permissionChoices: decisions, order: session.nextOrder}
+		session.nextOrder++
 		session.interactions[interactionID] = binding
 		session.mu.Unlock()
 		title := "Allow Codex action"
@@ -587,7 +592,8 @@ func (session *session) handleRequest(request *rpc.IncomingRequest) {
 		}
 		session.mu.Lock()
 		interactionID := protocol.InteractionID(session.ids.NewID("interaction"))
-		binding := &interactionBinding{kind: inputInteraction, runID: run.id, toolCallID: protocol.ToolCallID(params.ItemID), requestedBy: endpointID, respondedBy: session.participant, request: request, questions: questions, optionLabels: optionLabels}
+		binding := &interactionBinding{kind: inputInteraction, runID: run.id, toolCallID: protocol.ToolCallID(params.ItemID), requestedBy: endpointID, respondedBy: session.participant, request: request, questions: questions, optionLabels: optionLabels, order: session.nextOrder}
+		session.nextOrder++
 		session.interactions[interactionID] = binding
 		run.status = protocol.RunWaitingForInput
 		session.state.Status = protocol.SessionWaitingForInput
@@ -764,7 +770,8 @@ func (session *session) onItem(method string, value native.ItemNotification) {
 			session.mu.Unlock()
 			return
 		}
-		binding = itemBinding{runID: run.id, toolCallID: protocol.ToolCallID(session.ids.NewID("tool-call")), name: name, arguments: itemArguments(value.Item), started: true}
+		binding = itemBinding{runID: run.id, toolCallID: protocol.ToolCallID(session.ids.NewID("tool-call")), name: name, arguments: itemArguments(value.Item), started: true, order: session.nextOrder}
+		session.nextOrder++
 		session.items[value.Item.ID] = binding
 		session.mu.Unlock()
 		payload := actionPayload(session.state.SessionID, run.id, binding)
@@ -891,6 +898,7 @@ func (session *session) closePendingInteractions(run *runState, status native.Tu
 		}
 	}
 	session.mu.Unlock()
+	sort.Slice(pending, func(i, j int) bool { return pending[i].binding.order < pending[j].binding.order })
 	for _, entry := range pending {
 		_ = entry.binding.request.RespondError(context.Background(), -32800, "OAP run terminated before interaction resolution", nil)
 		if entry.binding.kind == permissionInteraction {
@@ -917,6 +925,7 @@ func (session *session) closePendingActions(run *runState, status native.TurnSta
 		}
 	}
 	session.mu.Unlock()
+	sort.Slice(pending, func(i, j int) bool { return pending[i].order < pending[j].order })
 	for _, binding := range pending {
 		payload := actionTerminalPayload(session.state.SessionID, run.id, binding)
 		if status == native.TurnInterrupted {
