@@ -544,3 +544,48 @@ test "every row records how it authenticates, and an origin policy belongs to an
     }
 }
 
+
+test "every catalogued endpoint resolves the two URLs this table pins" {
+    const pinned = [_]struct { id: []const u8, wire: []const u8, region: ?[]const u8, base: []const u8, models: ?[]const u8, request: ?[]const u8 }{
+            .{ .id = "alibaba-coding-plan", .wire = "openai-completions", .region = null, .base = "https://coding-intl.dashscope.aliyuncs.com/v1", .models = "https://coding-intl.dashscope.aliyuncs.com/v1/models", .request = "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions" },
+            .{ .id = "anthropic", .wire = "anthropic-messages", .region = null, .base = "https://api.anthropic.com", .models = "https://api.anthropic.com/v1/models", .request = "https://api.anthropic.com/v1/messages" },
+            .{ .id = "deepinfra", .wire = "openai-completions", .region = null, .base = "https://api.deepinfra.com/v1/openai", .models = "https://api.deepinfra.com/v1/openai/models", .request = "https://api.deepinfra.com/v1/openai/chat/completions" },
+            .{ .id = "deepseek", .wire = "openai-completions", .region = null, .base = "https://api.deepseek.com", .models = "https://api.deepseek.com/v1/models", .request = "https://api.deepseek.com/v1/chat/completions" },
+            .{ .id = "google", .wire = "google-generative-ai", .region = null, .base = "https://generativelanguage.googleapis.com", .models = null, .request = null },
+            .{ .id = "kimi", .wire = "openai-completions", .region = "china", .base = "https://api.kimi.com/coding", .models = "https://api.kimi.com/coding/v1/models", .request = "https://api.kimi.com/coding/v1/chat/completions" },
+            .{ .id = "kimi", .wire = "openai-completions", .region = "global", .base = "https://api.moonshot.ai", .models = "https://api.moonshot.ai/v1/models", .request = "https://api.moonshot.ai/v1/chat/completions" },
+            .{ .id = "minimax-coding-plan", .wire = "anthropic-messages", .region = null, .base = "https://api.minimax.io/anthropic/v1", .models = "https://api.minimax.io/anthropic/v1/models", .request = "https://api.minimax.io/anthropic/v1/messages" },
+            .{ .id = "openai", .wire = "openai-completions", .region = null, .base = "https://api.openai.com", .models = "https://api.openai.com/v1/models", .request = "https://api.openai.com/v1/chat/completions" },
+            .{ .id = "openai", .wire = "openai-responses", .region = null, .base = "https://api.openai.com", .models = "https://api.openai.com/v1/models", .request = "https://api.openai.com/v1/responses" },
+            .{ .id = "openai-codex", .wire = "openai-codex-responses", .region = null, .base = "https://chatgpt.com/backend-api/codex", .models = null, .request = "https://chatgpt.com/backend-api/codex/responses" },
+            .{ .id = "opencode", .wire = "openai-completions", .region = null, .base = "https://opencode.ai/zen/v1", .models = "https://opencode.ai/zen/v1/models", .request = "https://opencode.ai/zen/v1/chat/completions" },
+            .{ .id = "openrouter", .wire = "openai-completions", .region = null, .base = "https://openrouter.ai/api/v1", .models = "https://openrouter.ai/api/v1/models", .request = "https://openrouter.ai/api/v1/chat/completions" },
+            .{ .id = "tencent-coding-plan", .wire = "openai-completions", .region = null, .base = "https://api.lkeap.cloud.tencent.com/coding/v3", .models = "https://api.lkeap.cloud.tencent.com/coding/v3/models", .request = "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions" },
+            .{ .id = "vercel", .wire = "openai-completions", .region = null, .base = "https://ai-gateway.vercel.sh/v1", .models = "https://ai-gateway.vercel.sh/v1/models", .request = "https://ai-gateway.vercel.sh/v1/chat/completions" },
+            .{ .id = "volcengine-coding-plan", .wire = "openai-completions", .region = null, .base = "https://ark.cn-beijing.volces.com/api/coding/v3", .models = "https://ark.cn-beijing.volces.com/api/coding/v3/models", .request = "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions" },
+            .{ .id = "xiaomi", .wire = "openai-completions", .region = null, .base = "https://api.xiaomimimo.com/v1", .models = "https://api.xiaomimimo.com/v1/models", .request = "https://api.xiaomimimo.com/v1/chat/completions" },
+            .{ .id = "xiaomi-token-plan-ams", .wire = "openai-completions", .region = null, .base = "https://token-plan-ams.xiaomimimo.com/v1", .models = "https://token-plan-ams.xiaomimimo.com/v1/models", .request = "https://token-plan-ams.xiaomimimo.com/v1/chat/completions" },
+            .{ .id = "xiaomi-token-plan-cn", .wire = "openai-completions", .region = null, .base = "https://token-plan-cn.xiaomimimo.com/v1", .models = "https://token-plan-cn.xiaomimimo.com/v1/models", .request = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions" },
+            .{ .id = "xiaomi-token-plan-sgp", .wire = "openai-completions", .region = null, .base = "https://token-plan-sgp.xiaomimimo.com/v1", .models = "https://token-plan-sgp.xiaomimimo.com/v1/models", .request = "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions" },
+            .{ .id = "zai-coding-plan", .wire = "openai-completions", .region = null, .base = "https://api.z.ai/api/coding/paas/v4", .models = "https://api.z.ai/api/coding/paas/v4/models", .request = "https://api.z.ai/api/coding/paas/v4/chat/completions" },
+            .{ .id = "zenmux", .wire = "openai-completions", .region = null, .base = "https://zenmux.ai/api/v1", .models = "https://zenmux.ai/api/v1/models", .request = "https://zenmux.ai/api/v1/chat/completions" },
+    };
+    try std.testing.expectEqual(pinned.len, resolved.len);
+    for (resolved) |entry| {
+        var pinned_here = false;
+        for (pinned) |want| {
+            if (!std.mem.eql(u8, want.id, entry.id)) continue;
+            if (!std.mem.eql(u8, want.wire, entry.wire)) continue;
+            if (want.region == null and entry.region != null) continue;
+            if (want.region != null and entry.region == null) continue;
+            if (want.region) |region| {
+                if (!std.mem.eql(u8, region, entry.region.?)) continue;
+            }
+            pinned_here = true;
+            try std.testing.expectEqualStrings(want.base, entry.base_url);
+            try std.testing.expectEqualStrings(want.models orelse "", entry.models_url orelse "");
+            try std.testing.expectEqualStrings(want.request orelse "", entry.request_url orelse "");
+        }
+        if (!pinned_here) return error.TestUnexpectedResult;
+    }
+}
