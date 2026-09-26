@@ -164,3 +164,40 @@ No case was re-recorded from scratch: the 2.1.280 corpus's own live frames
 were derived from probes, not copied whole, and the 2.1.282 probes reproduce
 them. Neither the constructed `tools-catalog-sources` case nor the hook deny
 path gained evidence at this move.
+
+## Model-provider settings at this pin
+
+Claude Code picks its model provider from environment variables, read at process
+start. No JSON settings key names a provider, and a child process given these
+variables is routed exactly as an interactive session is, which is what makes
+them the settings a spawned adapter can use.
+
+| Setting | What it sets | Documented at |
+| --- | --- | --- |
+| `ANTHROPIC_BASE_URL` | the endpoint requests go to, replacing `api.anthropic.com` | [env-vars](https://code.claude.com/docs/en/env-vars), [LLM gateway](https://code.claude.com/docs/en/llm-gateway) |
+| `ANTHROPIC_AUTH_TOKEN` | the `Authorization` header, with `Bearer ` prefixed | env-vars |
+| `ANTHROPIC_API_KEY` | the `X-Api-Key` header; also overrides a stored subscription login | env-vars |
+| `ANTHROPIC_MODEL` | the model id, reading over the `model` settings key | env-vars, [model-config](https://code.claude.com/docs/en/model-config) |
+| `ANTHROPIC_CUSTOM_HEADERS` | extra request headers, one `Name: Value` per line | env-vars |
+| `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | `1` fills the model picker from the gateway's `/v1/models` when `ANTHROPIC_BASE_URL` is set | env-vars |
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | the window Claude Code assumes for a gateway's model id | env-vars, model-config |
+
+Which credential variable a third-party endpoint wants is the vendor's, not
+Claude Code's: `ANTHROPIC_AUTH_TOKEN` sends `Authorization: Bearer` and
+`ANTHROPIC_API_KEY` sends `X-Api-Key`, and both are official settings for the
+same `ANTHROPIC_BASE_URL`. A vendor row decides which one it takes.
+
+Only the `anthropic-messages` wire is reachable this way. Bedrock, Vertex and
+Foundry have their own variable families (`CLAUDE_CODE_USE_BEDROCK`,
+`ANTHROPIC_VERTEX_BASE_URL`, `ANTHROPIC_BEDROCK_BASE_URL`), and the
+`ANTHROPIC_*` pair does not redirect them.
+
+For one session, `--model` and `--settings '{"model": …}'` set the model, and an
+`env` block in a settings file sets the same variables; `ANTHROPIC_MODEL` reads
+over the `model` key and `--model` over both.
+
+Read at 2.1.282 from the documentation site, which is unversioned, and each of
+the seven variables was found as a standalone string in the 2.1.283 binary — one
+patch above this pin. A variable the site documents that postdates the pin is not
+claimed here; `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` is the one that would
+override all of them, and a host that sets it wins.

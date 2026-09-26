@@ -432,3 +432,34 @@ corpus, one per run. Where it differs from the Go adapter:
 - A prompt Pi refuses closes the session without a `run.failed`: the run was
   never announced, so there is no one to report it to.
 - Without `--config` it runs `pi` from `PATH` with only `HOME` and `PATH`.
+
+## Model-provider settings at this pin
+
+Pi names a model provider in `models.json` under the agent directory
+(`~/.pi/agent/`), which is how an endpoint it does not already ship is added.
+Each provider entry carries `baseUrl`, `api` (the wire), `apiKey` and `models`.
+
+| Setting | What it sets |
+| --- | --- |
+| `models.json` `providers.<id>.baseUrl` | the endpoint |
+| `providers.<id>.api` | the wire, e.g. `openai-completions` |
+| `providers.<id>.apiKey` | the key: a literal, `$NAME` / `${NAME}` environment interpolation, or a leading `!command` |
+| `providers.<id>.models` | the models this provider serves, by id |
+| `providers.<id>.modelOverrides` | metadata changes to a catalog or extension model, without replacing its list |
+| `--api-key` | a credential for one run, reading over `auth.json` and `models.json` |
+| `/login` | interactive; stores a credential in `~/.pi/agent/auth.json` |
+
+Documented at this pin in `packages/coding-agent/docs/models.md` (the compatible
+endpoint), `providers.md` (per-provider API-key environment variables) and
+`environment-variables.md` (the `PI_*` process and shell variables, which name
+the selected provider and model but configure neither).
+
+Credential order at this pin is `--api-key`, then `auth.json`, then `models.json`
+`apiKey`, then the provider's own environment variables — so an environment key
+is the setting that needs no file at all. `models.json` is reloaded when `/model`
+opens, and a `!command` key runs at request time and is not cached.
+
+A provider extension (`pi.registerProvider()`) is also a way in, and it is
+deliberately not a setting: it is code loaded into the Pi process, so it is
+outside the rule this epic set, which is a harness's own official settings and
+nothing patched into it.
