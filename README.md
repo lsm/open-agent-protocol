@@ -770,6 +770,7 @@ Decisions:
 - [0035 — a model entry publishes its facts, and absence means unknown](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) (proposed)
 - [0036 — a presentation layer is not evidence for its own profile](decisions/0036-a-presentation-layer-is-not-evidence-for-its-own-profile.md) (proposed)
 - [0037 — presentation state is versioned, and every intent is idempotent](decisions/0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md) (proposed)
+- [0038 — one released binary, and a library for every language](decisions/0038-one-released-binary-and-a-library-for-every-language.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted. A record's own `Status:` line is authoritative; this table
