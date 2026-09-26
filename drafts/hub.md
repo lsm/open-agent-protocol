@@ -1027,6 +1027,16 @@ re-decision.
 
 `session.open.request` carries `metadata`, and the draft names `invalid_payload` for a value that is not JSON. `contract.OpenRequest` has no `metadata` member, so the Zig core cannot carry one to an adapter at all: it is neither validated nor forwarded, and a Zig hub silently drops what a Go hub passes to the adapter. The field is the fix, and until it exists the two trees differ on a request member the draft specifies.
 
+### D6 — the Zig shutdown sweep cannot retry a close that refuses
+
+| | |
+| --- | --- |
+| **The draft says** | `closeSessions` divides its window across the sessions it still has to close, and a close that refuses because a run is active is retried through a cancel — up to three attempts — because a harness that refuses `Close` while a run is in flight must first be asked to stop. |
+| **Zig does** | The sweep reads each session's state, cancels every run in `active_runs` and the `active_run_id` that is not already among them, then closes. It does not retry, and it does not split the window. |
+| **Why the retry is not portable** | Go's `closeForShutdown` retries because `Session.Close` can answer `ErrRunActive`. `contract.Session.close` is infallible and terminal — there is no refusal to observe — so a Zig adapter's close always succeeds, and the retry Go needs has nothing to retry. Cancelling first is therefore the whole of the rule that is portable, and the Zig sweep does it. |
+| **Why the split is not portable** | The window exists to bound *waiting*. Zig's close returns immediately once the runs are cancelled, so there is no wait to divide; the deadline is still checked per session, so a slow `state` or `cancel` cannot make the sweep run past its budget. |
+| **The fix** | `contract`'s close reports whether a run is active, as Go's does, and the sweep retries as the draft says. |
+
 ### Recorded, and not divergences
 
 Two places where the two trees will *look* different and neither is wrong. A

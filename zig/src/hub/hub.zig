@@ -647,9 +647,25 @@ pub const Hub = struct {
             if (self.clock() >= deadline) break;
             var scratch = std.heap.ArenaAllocator.init(self.allocator);
             defer scratch.deinit();
-            entry.session.close();
-            self.closeSession(entry, .session_closed);
+            self.settle(entry, scratch.allocator());
         }
+    }
+
+    fn settle(self: *Hub, entry: *Entry, arena: std.mem.Allocator) void {
+        var refusal = contract.Refusal{};
+        if (entry.session.state(arena, &refusal)) |reported| {
+            for (reported.active_runs) |active| {
+                if (active.run_id.len == 0) continue;
+                _ = entry.session.cancel(arena, active.run_id, &refusal) catch {};
+            }
+            if (reported.active_run_id) |named| {
+                if (named.len == 0) {} else if (!namedIn(reported.active_runs, named)) {
+                    _ = entry.session.cancel(arena, named, &refusal) catch {};
+                }
+            }
+        } else |_| {}
+        entry.session.close();
+        self.closeSession(entry, .session_closed);
     }
 
     fn discard(self: *Hub, subscription: *Subscription, ending: Ending) void {
@@ -699,6 +715,13 @@ pub const Hub = struct {
             if (std.mem.eql(u8, source.id, id)) return source;
         }
         return null;
+    }
+
+    fn namedIn(runs: []const oap_types.ActiveRun, run_id: []const u8) bool {
+        for (runs) |active| {
+            if (std.mem.eql(u8, active.run_id, run_id)) return true;
+        }
+        return false;
     }
 
     fn find(self: *Hub, name: []const u8) ?*Registered {
@@ -1010,7 +1033,8 @@ test "a cursor may name an admitted run whose events have not arrived yet" {
 
 test "a backend that cannot make progress ends its stream rather than retrying forever" {
     var flaky = Flaky{ .allocator = testing.allocator, .fail_pump = true };
-    defer flaky.allocator.free(flaky.owned_id);
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
     defer hub.deinit();
     try hub.register("flaky", flaky.adapter());
@@ -1472,6 +1496,28 @@ test "a catalog is checked before it is served, and stamped with its revision" {
     try testing.expectError(error.ScopeMismatch, hub.tools(arena, opened.session_id, &.{ .session_id = "elsewhere" }));
 }
 
+test "the shutdown sweep cancels a live run before it closes the session" {
+    var flaky = Flaky{ .allocator = testing.allocator, .active_run = "run-1" };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    _ = try hub.open(arena, "flaky", .{ .session_id = "settled" });
+    _ = try hub.open(arena, "flaky", .{ .session_id = "second" });
+    try testing.expectEqual(@as(usize, 0), flaky.cancels);
+
+    hub.closeSessions();
+    try testing.expectEqual(@as(usize, 2), flaky.cancels);
+    try testing.expectEqual(@as(usize, 2), flaky.closes);
+    try testing.expectError(error.SessionClosed, hub.state(arena, "settled"));
+    try testing.expectError(error.SessionClosed, hub.state(arena, "second"));
+}
+
 test "closeSessions settles every session" {
     var adapter = memory.Adapter.init(testing.allocator);
     var hub = Hub.init(testing.allocator, testClock, .{});
@@ -1616,9 +1662,12 @@ test "hold, listing and sessions hand off under allocation failure" {
 
 const Flaky = struct {
     allocator: std.mem.Allocator,
+    keep: std.heap.ArenaAllocator = undefined,
     session: contract.Session = undefined,
-    owned_id: []u8 = &.{},
+    owned_id: []const u8 = "",
     closes: usize = 0,
+    cancels: usize = 0,
+    active_run: []const u8 = "",
     fail_drain: bool = true,
     fail_pump: bool = false,
 
@@ -1645,7 +1694,7 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     _ = arena;
     _ = refusal;
-    const id = try self.allocator.dupe(u8, if (request.session_id.len > 0) request.session_id else "flaky");
+    const id = try self.keep.allocator().dupe(u8, if (request.session_id.len > 0) request.session_id else "flaky");
     self.session = .{ .ptr = self, .vtable = &.{
         .id = flakyId,
         .state = flakyState,
@@ -1669,7 +1718,16 @@ fn flakyId(ptr: *anyopaque) []const u8 {
 fn flakyState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     _ = refusal;
-    return .{ .session_id = try arena.dupe(u8, self.owned_id), .status = .idle };
+    if (self.active_run.len == 0) return .{ .session_id = try arena.dupe(u8, self.owned_id), .status = .idle };
+    const run = try arena.dupe(u8, self.active_run);
+    const runs = try arena.alloc(oap_types.ActiveRun, 1);
+    runs[0] = .{ .run_id = run, .status = .running, .relationship = "primary" };
+    return .{
+        .session_id = try arena.dupe(u8, self.owned_id),
+        .status = .running,
+        .active_run_id = run,
+        .active_runs = runs,
+    };
 }
 
 fn flakySubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
@@ -1689,6 +1747,7 @@ fn flakyResolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.
 fn flakyCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     _ = refusal;
+    self.cancels += 1;
     return .{ .session_id = try arena.dupe(u8, self.owned_id), .run_id = try arena.dupe(u8, run_id), .accepted = true, .status = .cancelling };
 }
 
@@ -1718,7 +1777,8 @@ fn flakyClose(ptr: *anyopaque) void {
 
 test "a session whose stream fails is ended, its subscribers told, and its child closed" {
     var flaky = Flaky{ .allocator = testing.allocator };
-    defer flaky.allocator.free(flaky.owned_id);
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
     defer hub.deinit();
     try hub.register("flaky", flaky.adapter());
