@@ -52,15 +52,19 @@ func TestLoadRegistryMemory(t *testing.T) {
 }
 
 func TestLoadRegistryRefusesCaseVariantMembers(t *testing.T) {
-	for name, document := range map[string]string{
-		"top-level":   `{"Adapters": {}}`,
-		"adapter":     `{"adapters": {"memory": {"Type": "memory"}}}`,
-		"tool source": `{"tool_sources": {"fs": {"Kind": "native"}}}`,
+	for name, test := range map[string]struct{ document, want string }{
+		"top-level":   {`{"Adapters": {}}`, `config: the file: unknown field "Adapters"`},
+		"adapter":     {`{"adapters": {"memory": {"Type": "memory"}}}`, `config: adapter "memory": unknown field "Type"`},
+		"tool source": {`{"tool_sources": {"fs": {"Kind": "native"}}}`, `config: tool source "fs": unknown field "Kind"`},
 	} {
 		t.Run(name, func(t *testing.T) {
-			path := writeConfig(t, document)
-			if _, err := LoadRegistry(path, os.LookupEnv); err == nil {
+			path := writeConfig(t, test.document)
+			_, err := LoadRegistry(path, os.LookupEnv)
+			if err == nil {
 				t.Fatal("a member whose case differs from the schema was accepted")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), test.want)
 			}
 		})
 	}

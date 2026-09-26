@@ -61,10 +61,10 @@ type adapterEntry struct {
 	Agent    string `json:"agent"`
 }
 
-func exactMembers(data []byte, allowed ...string) error {
+func unknownMember(data []byte, allowed []string) (string, error) {
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(data, &members); err != nil {
-		return err
+		return "", err
 	}
 	for name := range members {
 		known := false
@@ -75,38 +75,73 @@ func exactMembers(data []byte, allowed ...string) error {
 			}
 		}
 		if !known {
-			return fmt.Errorf("json: unknown field %q", name)
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+var adapterMembers = []string{
+	"type", "executable", "args", "environment", "working_directory", "model",
+	"journal_capacity", "allowed_tools", "unrestricted_tools", "approval_policy",
+	"sandbox", "provider", "max_tokens", "agent_config", "system_prompt", "endpoint", "agent",
+}
+
+var toolSourceMembers = []string{"kind", "display_name", "protocol", "endpoint", "command", "args", "environment"}
+
+func (file *configFile) UnmarshalJSON(data []byte) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return err
+	}
+	for name := range top {
+		if name != "adapters" && name != "tool_sources" {
+			return fmt.Errorf("config: the file: unknown field %q", name)
+		}
+	}
+	if raw, ok := top["adapters"]; ok {
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return err
+		}
+		file.Adapters = make(map[string]adapterEntry, len(entries))
+		for name, value := range entries {
+			unknown, err := unknownMember(value, adapterMembers)
+			if err != nil {
+				return err
+			}
+			if unknown != "" {
+				return fmt.Errorf("config: adapter %q: unknown field %q", name, unknown)
+			}
+			var entry adapterEntry
+			if err := json.Unmarshal(value, &entry); err != nil {
+				return err
+			}
+			file.Adapters[name] = entry
+		}
+	}
+	if raw, ok := top["tool_sources"]; ok {
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return err
+		}
+		file.ToolSources = make(map[string]toolSourceEntry, len(entries))
+		for name, value := range entries {
+			unknown, err := unknownMember(value, toolSourceMembers)
+			if err != nil {
+				return err
+			}
+			if unknown != "" {
+				return fmt.Errorf("config: tool source %q: unknown field %q", name, unknown)
+			}
+			var entry toolSourceEntry
+			if err := json.Unmarshal(value, &entry); err != nil {
+				return err
+			}
+			file.ToolSources[name] = entry
 		}
 	}
 	return nil
-}
-
-func (file *configFile) UnmarshalJSON(data []byte) error {
-	if err := exactMembers(data, "adapters", "tool_sources"); err != nil {
-		return err
-	}
-	type plain configFile
-	return json.Unmarshal(data, (*plain)(file))
-}
-
-func (entry *adapterEntry) UnmarshalJSON(data []byte) error {
-	if err := exactMembers(data,
-		"type", "executable", "args", "environment", "working_directory", "model",
-		"journal_capacity", "allowed_tools", "unrestricted_tools", "approval_policy",
-		"sandbox", "provider", "max_tokens", "agent_config", "system_prompt", "endpoint", "agent",
-	); err != nil {
-		return err
-	}
-	type plain adapterEntry
-	return json.Unmarshal(data, (*plain)(entry))
-}
-
-func (entry *toolSourceEntry) UnmarshalJSON(data []byte) error {
-	if err := exactMembers(data, "kind", "display_name", "protocol", "endpoint", "command", "args", "environment"); err != nil {
-		return err
-	}
-	type plain toolSourceEntry
-	return json.Unmarshal(data, (*plain)(entry))
 }
 
 type Registry struct {
