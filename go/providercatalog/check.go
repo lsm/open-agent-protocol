@@ -49,9 +49,9 @@ func Check(catalog Catalog) []Finding {
 			}
 		}
 		switch provider.Offering {
-		case "coding_plan", "api_key", "":
+		case "coding_plan", "subscription", "api_key", "":
 		default:
-			findings = append(findings, Finding{Provider: provider.ID, Code: CodeOffering, Detail: fmt.Sprintf("provider %q offers %q, which is neither a coding plan nor an api key", provider.ID, provider.Offering)})
+			findings = append(findings, Finding{Provider: provider.ID, Code: CodeOffering, Detail: fmt.Sprintf("provider %q offers %q, which is neither a coding plan, a subscription nor an api key", provider.ID, provider.Offering)})
 		}
 		switch provider.Status {
 		case "current", "supported", "withheld", "":

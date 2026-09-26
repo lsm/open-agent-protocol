@@ -78,15 +78,15 @@ func TestCheckNamesADuplicateRow(t *testing.T) {
 }
 
 func TestCheckNamesAnOfferingOrStatusItDoesNotKnow(t *testing.T) {
-	findings := Check(Catalog{Providers: []Provider{{ID: "kimi", Offering: "subscription"}}})
+	findings := Check(Catalog{Providers: []Provider{{ID: "kimi", Offering: "seat"}}})
 	if len(findings) != 1 || findings[0].Code != CodeOffering {
 		t.Fatalf("findings = %v, want one unknown offering", findings)
 	}
-	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", Status: "disabled"}}})
+	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", Status: "retired"}}})
 	if len(findings) != 1 || findings[0].Code != CodeStatus {
 		t.Fatalf("findings = %v, want one unknown status", findings)
 	}
-	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", Offering: "coding_plan", Status: "withheld"}}})
+	findings = Check(Catalog{Providers: []Provider{{ID: "kimi", Offering: "subscription", Status: "withheld"}}})
 	if len(findings) != 0 {
 		t.Fatalf("findings = %v, want none", findings)
 	}

@@ -256,26 +256,56 @@ test "the origin policy is data, including a per-tenant domain" {
 test "a models listing is recorded only where the provider answers one" {
     try std.testing.expectEqualStrings("/v1/models", modelsEndpoint("anthropic").?);
     try std.testing.expectEqualStrings("/v1/models", modelsEndpoint("deepseek").?);
+    try std.testing.expectEqualStrings("/models", modelsEndpoint("openrouter").?);
+    try std.testing.expectEqualStrings("/models", modelsEndpoint("xiaomi").?);
     try std.testing.expect(modelsEndpoint("openai-codex") == null);
+    try std.testing.expect(modelsEndpoint("github-copilot") == null);
     try std.testing.expect(modelsEndpoint("ollama") == null);
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
 }
 
-test "an offering is a plan or an api key, and one host serves one row" {
+test "a models listing is spelled once against the base it is appended to" {
+    for (all) |row| {
+        const path_text = row.models_endpoint orelse continue;
+        for (row.endpoints) |endpoint| {
+            var composed: [512]u8 = undefined;
+            const url = try std.fmt.bufPrint(&composed, "{s}{s}", .{ endpoint.base_url, path_text });
+            var versions: usize = 0;
+            var segments = std.mem.tokenizeScalar(u8, url, '/');
+            while (segments.next()) |segment| {
+                if (segment.len < 2 or segment[0] != 'v') continue;
+                for (segment[1..]) |digit| {
+                    if (digit < '0' or digit > '9') break;
+                } else {
+                    versions += 1;
+                }
+            }
+            try std.testing.expect(versions <= 1);
+        }
+    }
+}
+
+test "an offering is a plan, a subscription or an api key, and one host serves one row" {
     const plans = coding_plan_ids;
     try std.testing.expect(plans.len > 0);
     for (plans) |id| {
         try std.testing.expect(offering(id).? == .coding_plan);
     }
     var meters: usize = 0;
+    var subscriptions: usize = 0;
     for (all) |row| {
         if (row.offering != null and row.offering.? == .api_key) meters += 1;
+        const subscribes = row.offering != null and row.offering.? == .subscription;
+        if (subscribes) subscriptions += 1;
+        try std.testing.expectEqual(!subscribes, row.credential_env.len > 0);
     }
     try std.testing.expect(meters > 0);
+    try std.testing.expect(subscriptions > 0);
     try std.testing.expectEqualStrings("zai-coding-plan", plans[0]);
     try std.testing.expect(offering("kimi").? == .coding_plan);
     try std.testing.expect(offering("xiaomi").? == .api_key);
     try std.testing.expect(offering("openrouter").? == .api_key);
+    try std.testing.expect(offering("openai-codex").? == .subscription);
     try std.testing.expect(offering("no-such-provider") == null);
     for (all, 0..) |row, index| {
         for (row.endpoints) |endpoint| {

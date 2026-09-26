@@ -87,7 +87,7 @@
           "base_url": "https://opencode.ai/zen/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://opencode.ai/docs/zen"
     },
     {
@@ -111,7 +111,7 @@
           "base_url": "https://openrouter.ai/api/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://openrouter.ai/models"
     },
     {
@@ -162,7 +162,7 @@
           "base_url": "https://api.z.ai/api/coding/paas/v4"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://docs.z.ai/devpack/overview"
     },
     {
@@ -217,7 +217,7 @@
           "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://www.alibabacloud.com/help/en/model-studio/coding-plan"
     },
     {
@@ -241,7 +241,7 @@
           "base_url": "https://api.minimax.io/anthropic/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://platform.minimax.io/docs/token-plan/intro"
     },
     {
@@ -265,7 +265,7 @@
           "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://cloud.tencent.com/document/product/1772/128947"
     },
     {
@@ -289,7 +289,7 @@
           "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://www.volcengine.com/docs/82379/1928261"
     },
     {
@@ -298,7 +298,7 @@
       "auth": [
         "oauth"
       ],
-      "offering": "coding_plan",
+      "offering": "subscription",
       "status": "supported",
       "wires": [
         "openai-codex-responses"
@@ -338,7 +338,7 @@
           "base_url": "https://token-plan-cn.xiaomimimo.com/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -362,7 +362,7 @@
           "base_url": "https://token-plan-sgp.xiaomimimo.com/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -386,7 +386,7 @@
           "base_url": "https://token-plan-ams.xiaomimimo.com/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -410,7 +410,7 @@
           "base_url": "https://api.deepinfra.com/v1/openai"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://deepinfra.com/models"
     },
     {
@@ -434,7 +434,7 @@
           "base_url": "https://api.xiaomimimo.com/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://platform.xiaomimimo.com/#/docs"
     },
     {
@@ -458,7 +458,7 @@
           "base_url": "https://ai-gateway.vercel.sh/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://github.com/vercel/ai/tree/5eb85cc45a259553501f535b8ac79a77d0e79223/packages/gateway"
     },
     {
@@ -482,7 +482,7 @@
           "base_url": "https://zenmux.ai/api/v1"
         }
       ],
-      "models_endpoint": "/v1/models",
+      "models_endpoint": "/models",
       "docs": "https://docs.zenmux.ai"
     },
     {
@@ -532,7 +532,7 @@
       "auth": [
         "oauth"
       ],
-      "offering": "api_key",
+      "offering": "subscription",
       "status": "supported",
       "wires": [
         "openai-completions"

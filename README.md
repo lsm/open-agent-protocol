@@ -667,9 +667,12 @@ records a provider id, its display name, the credential kinds and the
 *environment variable names* it is read from, the wires it speaks, the base URLs
 it defaults to (with a region where a vendor ships one per region), where a
 models listing lives, and the origins an OAuth credential may be sent to. A row
-is a vendor's *offering* rather than the vendor itself, because a coding plan is
-a different endpoint reached under the same credential: `offering` is
-`coding_plan` or `api_key`. `status` is where a row sits in the list — `current`
+is a vendor's *offering* rather than the vendor itself, because a coding plan or
+a subscription is a different endpoint reached under the same credential:
+`offering` is `coding_plan` (prepaid bundle), `subscription` (a seat, reached by
+OAuth rather than a key) or `api_key` (metered tokens). A `models_endpoint` is
+the path appended to that row's base URL, so a base that already ends in a
+version segment takes `/models`, not `/v1/models`. `status` is where a row sits in the list — `current`
 for the providers it names first (OpenAI, Anthropic, OpenCode, OpenRouter,
 DeepSeek, Z.AI, Kimi), `supported` for the rest, `withheld` for a row the list
 records but does not offer — and the list is ordered so every `current` row

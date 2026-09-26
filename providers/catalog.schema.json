@@ -31,9 +31,10 @@
       ]
     },
     "offering": {
-      "description": "How a row's endpoint is paid for: a plan a subscription covers, or metered tokens. A curated list orders its coding plans first, and a row is a vendor's offering rather than the vendor itself, because a coding plan is a different endpoint reached under the same credential.",
+      "description": "How a row's endpoint is paid for: a prepaid coding plan, a seat subscription, or metered tokens against an API key. A row is a vendor's *offering* rather than the vendor itself, because a coding plan or a subscription is a different endpoint reached under the same credential.",
       "enum": [
         "coding_plan",
+        "subscription",
         "api_key"
       ]
     },
@@ -160,7 +161,7 @@
           }
         },
         "models_endpoint": {
-          "description": "Path appended to the base URL to list models, for a provider that answers one. Absent when the provider publishes no listing of its own.",
+          "description": "Path appended to the base URL to list models, for a provider that answers one; it must name the vendor's own listing, so a base URL that already ends in a version segment takes `/models` rather than `/v1/models`. Absent when the provider publishes no listing of its own.",
           "type": "string",
           "minLength": 1
         },
