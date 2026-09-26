@@ -4,7 +4,9 @@ Status: proposed design; the specification both trees are judged against
 Date: 2026-09-26
 Base protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
-Reference implementations: `goap hub` (`go/serve`) and `oapx hub` (Zig)
+Reference implementation: `goap hub` (`go/serve`), the only hub that exists
+Written for: `oapx hub` (Zig), which does not exist yet and is the reason this
+document does
 Decides: the wire the Go hub serves today by behaviour
 Governs: the transports, not the profile
 
@@ -378,7 +380,7 @@ the host may retry.
 
 | HTTP rule | pinned by |
 | --- | --- |
-| A wrong or absent `Content-Type` is refused `415 unsupported_media_type` | **none — gap G1** |
+| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` — **gap G1**: the status only; the code member and the absent-`Content-Type` case are unpinned |
 | A body that cannot be read at all is refused `400 request_read` | **none — gap G10** |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (the stdio side of the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
@@ -554,7 +556,7 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 | --- | --- |
 | A held subscription is adopted by the adopting `events` request | `TestOpenSubscriptionIsAdoptedByTheEventsRequest` |
 | A held subscription nothing adopts is released | `TestOpenSubscriptionNotAdoptedIsReleased` |
-| The hold is bounded | the 30 s constant in `hold.go`; **gap G5** — no test waits the window out |
+| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release); **gap G5** — only the default 30 s is unpinned |
 
 ## The operations
 
@@ -868,7 +870,7 @@ first be asked to stop.
 | The reservations a snapshot names are cancelled | `TestCloseCancelsReservationsTheSnapshotNames` |
 | Every run a snapshot lists is cancelled | `TestCloseCancelsEveryRunTheSnapshotLists` |
 | A run named only as the active run is still cancelled | `TestCloseFallsBackToTheNamedActiveRun` |
-| The window is 10 s for the hub, 5 s per stdio stage | the `DefaultShutdownTimeout` constants; **gap G8** |
+| The window is 10 s for the hub, 5 s per stdio stage | every shutdown test drives a short custom window (`TestShutdownBoundedWhileWorkerStuck`, `TestTeardownStopsWhenAWriteParksForever`); **gap G8** — only the defaults are unpinned |
 
 ## Known gaps
 
@@ -876,9 +878,12 @@ Rules this document specifies that **no Go test pins today**, and one gap the
 draft is asked to carry. A port must implement every one of them; each is a
 place a differential test would otherwise not see.
 
-- **G1 — the `415` on a wrong `Content-Type` is unpinned.** Every
-  body-reading route requires `application/json`, but no test asserts the
-  `415 unsupported_media_type` answer. The stdio side has no counterpart.
+- **G1 — the `415`'s code and the absent `Content-Type` are unpinned.** The
+  status is pinned: a `text/plain` open is refused `415`. What no test reaches
+  is the code member inside it — the assertion is on the status alone, so
+  `unsupported_media_type` is written nowhere — and a request carrying **no**
+  `Content-Type` at all, which takes the same branch. The stdio side has no
+  counterpart for either.
 - **G2 — SSE's hangup ending a stream is unpinned.** A client that drops its
   connection ends the stream by construction — the request context cancels the
   subscription — but no test asserts it, and the stdio side has no way to
@@ -904,17 +909,23 @@ place a differential test would otherwise not see.
   refused on the capability rung first, so the comparison is never made — and
   the **stdio `open` op's own mapping** of the same error, which no stdio test
   drives on any path.
-- **G5 — the 30 s held-subscription window is unpinned.** The hold is bounded
-  and released on expiry, but no test waits the window out and asserts the
-  release.
+- **G5 — the hold's default window is unpinned, the expiry is not.** A held
+  subscription nothing adopts **is** released on expiry, and
+  `TestOpenSubscriptionNotAdoptedIsReleased` drives that: it builds the server
+  with a 50 ms hold and polls until the held set empties, failing if it never
+  does. What no test pins is the **default** 30 s, so a port could choose any
+  window and nothing would say a host had to wait for it.
 - **G6 — the stdio `capabilities` op's `probe_failed` and `internal` paths are
   unpinned.** The HTTP route's `probe_failed` is pinned; the stdio op's own
   mapping is not.
 - **G7 — the stdio `resolve` op's `resolution_rejected` and `run_not_found`
   paths are unpinned.** Only the HTTP route's refusals are covered.
-- **G8 — the shutdown window's value is unpinned.** Both constants are correct
-  and neither has a test that measures the wall clock against them; the *split*
-  and the *bound* are pinned, the number is not.
+- **G8 — the shutdown window's default is unpinned, the bound is not.** The
+  *mechanism* is well covered: every shutdown test builds the frontend with a
+  short custom window (100 ms or 250 ms) and measures against it. What no test
+  touches is the **default** — 10 s for the hub's session sweep, 5 s per stdio
+  teardown stage — so a port could choose any default and nothing would say a
+  host had to wait that long.
 - **G9 — two subscription endings are never driven over stdio, and a third is
   driven only by its name.** `oap-overflow` and `oap-session-closed` have their
   minimal shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes
