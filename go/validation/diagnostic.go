@@ -80,6 +80,12 @@ const (
 
 	CodeAuthFlowOrder       = "auth_flow_order"
 	CodeMissingAuthTerminal = "missing_auth_terminal"
+
+	CodePresentationRevisionRegression    = "presentation_revision_regression"
+	CodePresentationUpdateWithoutSnapshot = "presentation_update_without_snapshot"
+	CodePresentationBaseRevisionMismatch  = "presentation_base_revision_mismatch"
+	CodePresentationRevisionGap           = "presentation_revision_gap"
+	CodePresentationDeliveryUnresolved    = "presentation_delivery_unresolved"
 )
 
 type Diagnostic struct {

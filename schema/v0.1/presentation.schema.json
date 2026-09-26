@@ -1,0 +1,813 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "presentation.schema.json",
+  "title": "Open Agent Protocol presentation-control targets, snapshots, updates and intents",
+  "$defs": {
+    "targetKind": {
+      "enum": [
+        "session"
+      ]
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/targetKind"
+        },
+        "session_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "session"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "session_id"
+            ]
+          }
+        }
+      ]
+    },
+    "snapshotRequest": {
+      "type": "object",
+      "required": [
+        "target"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/target"
+        }
+      },
+      "additionalProperties": false
+    },
+    "itemKind": {
+      "enum": [
+        "message",
+        "reasoning",
+        "tool_call",
+        "tool_result",
+        "permission_prompt",
+        "user_input_prompt",
+        "artifact",
+        "checkpoint",
+        "compaction",
+        "status",
+        "error"
+      ]
+    },
+    "itemStatus": {
+      "enum": [
+        "pending",
+        "active",
+        "completed",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "timelineItem": {
+      "type": "object",
+      "required": [
+        "item_id",
+        "kind",
+        "status",
+        "content",
+        "created_at_ms",
+        "source_event_ids"
+      ],
+      "properties": {
+        "item_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "kind": {
+          "$ref": "#/$defs/itemKind"
+        },
+        "session_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "run_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "status": {
+          "$ref": "#/$defs/itemStatus"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/contentPart"
+          }
+        },
+        "created_at_ms": {
+          "type": "integer"
+        },
+        "updated_at_ms": {
+          "type": "integer"
+        },
+        "source_event_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/opaqueID"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/opaqueID"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "sessionStatus": {
+      "enum": [
+        "idle",
+        "running",
+        "closed",
+        "failed"
+      ]
+    },
+    "sessionState": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "status"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/sessionStatus"
+        },
+        "active_run_id": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/opaqueID"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated_at_ms": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "deliveryRequested": {
+      "enum": [
+        "auto",
+        "queue",
+        "steer"
+      ]
+    },
+    "deliveryEffective": {
+      "enum": [
+        "start",
+        "queue",
+        "steer"
+      ]
+    },
+    "admissionShape": {
+      "enum": [
+        "started",
+        "queued",
+        "steered",
+        "rejected"
+      ]
+    },
+    "composerState": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "delivery",
+        "enabled"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "delivery": {
+          "$ref": "#/$defs/deliveryRequested"
+        },
+        "selected_model_id": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/opaqueID"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected_tools": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/opaqueID"
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "disabled_reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "affordanceKind": {
+      "enum": [
+        "send_message",
+        "cancel_run",
+        "interrupt_run",
+        "resume_run",
+        "select_model",
+        "select_delivery",
+        "toggle_tool",
+        "resolve_permission",
+        "resolve_user_input",
+        "load_more_transcript",
+        "open_artifact"
+      ]
+    },
+    "affordanceSupport": {
+      "enum": [
+        "native",
+        "emulated",
+        "degraded",
+        "unavailable"
+      ]
+    },
+    "affordance": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "visible",
+        "enabled",
+        "support"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "kind": {
+          "$ref": "#/$defs/affordanceKind"
+        },
+        "visible": {
+          "type": "boolean"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "support": {
+          "$ref": "#/$defs/affordanceSupport"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "value": {},
+        "options": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
+        }
+      ]
+    },
+    "promptKind": {
+      "enum": [
+        "permission",
+        "user_input"
+      ]
+    },
+    "pendingPrompt": {
+      "type": "object",
+      "required": [
+        "prompt_id",
+        "kind",
+        "affordance_id"
+      ],
+      "properties": {
+        "prompt_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "kind": {
+          "$ref": "#/$defs/promptKind"
+        },
+        "affordance_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "run_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/opaqueID"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "sessionSnapshotState": {
+      "type": "object",
+      "required": [
+        "session",
+        "timeline",
+        "composer",
+        "affordances",
+        "pending_prompts",
+        "diagnostics"
+      ],
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/sessionState"
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timelineItem"
+          }
+        },
+        "composer": {
+          "$ref": "#/$defs/composerState"
+        },
+        "affordances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/affordance"
+          }
+        },
+        "pending_prompts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pendingPrompt"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "target",
+        "revision",
+        "state"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "target": {
+                "properties": {
+                  "kind": {
+                    "const": "session"
+                  }
+                },
+                "required": [
+                  "kind"
+                ]
+              }
+            },
+            "required": [
+              "target"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "$ref": "#/$defs/sessionSnapshotState"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "snapshotResponse": {
+      "type": "object",
+      "required": [
+        "snapshot"
+      ],
+      "properties": {
+        "snapshot": {
+          "$ref": "#/$defs/snapshot"
+        }
+      },
+      "additionalProperties": false
+    },
+    "changeKind": {
+      "enum": [
+        "timeline.item.upsert",
+        "session.status.set",
+        "affordances.replace",
+        "pending_prompts.replace",
+        "diagnostics.replace"
+      ]
+    },
+    "change": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/changeKind"
+        },
+        "item": {
+          "$ref": "#/$defs/timelineItem"
+        },
+        "status": {
+          "$ref": "#/$defs/sessionStatus"
+        },
+        "active_run_id": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/opaqueID"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "affordances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/affordance"
+          }
+        },
+        "pending_prompts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pendingPrompt"
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "timeline.item.upsert"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "item"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "session.status.set"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "status"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "affordances.replace"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "affordances"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "pending_prompts.replace"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "pending_prompts"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "diagnostics.replace"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "diagnostics"
+            ]
+          }
+        }
+      ]
+    },
+    "updated": {
+      "type": "object",
+      "required": [
+        "target",
+        "base_revision",
+        "revision",
+        "changes"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "base_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/change"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "base_revision": {
+                "type": "integer"
+              },
+              "revision": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "base_revision",
+              "revision"
+            ]
+          },
+          "then": {
+            "anyOf": [
+              {
+                "properties": {
+                  "revision": {
+                    "const": 2
+                  }
+                },
+                "required": [
+                  "base_revision",
+                  "revision"
+                ]
+              },
+              {
+                "properties": {
+                  "base_revision": {
+                    "const": 2
+                  }
+                },
+                "required": [
+                  "base_revision"
+                ]
+              },
+              {
+                "properties": {
+                  "base_revision": {
+                    "type": "integer",
+                    "minimum": 3
+                  }
+                },
+                "required": [
+                  "base_revision"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "messageSubmit": {
+      "type": "object",
+      "required": [
+        "intent_id",
+        "session_id",
+        "message"
+      ],
+      "properties": {
+        "intent_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "session_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "message": {
+          "$ref": "common.schema.json#/$defs/message"
+        },
+        "delivery": {
+          "$ref": "#/$defs/deliveryRequested"
+        },
+        "selected_model_id": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/opaqueID"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "messageSubmitResponse": {
+      "type": "object",
+      "required": [
+        "intent_id",
+        "accepted",
+        "requested_delivery",
+        "effective_delivery",
+        "admission"
+      ],
+      "properties": {
+        "intent_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "control_request_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "requested_delivery": {
+          "$ref": "#/$defs/deliveryRequested"
+        },
+        "effective_delivery": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/deliveryEffective"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delivery_resolution": {
+          "type": "string"
+        },
+        "admission": {
+          "$ref": "#/$defs/admissionShape"
+        }
+      },
+      "additionalProperties": false
+    },
+    "runCancel": {
+      "type": "object",
+      "required": [
+        "intent_id",
+        "session_id"
+      ],
+      "properties": {
+        "intent_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "session_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        }
+      },
+      "additionalProperties": false
+    },
+    "runCancelResponse": {
+      "type": "object",
+      "required": [
+        "intent_id",
+        "accepted"
+      ],
+      "properties": {
+        "intent_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "control_request_id": {
+          "$ref": "common.schema.json#/$defs/opaqueID"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

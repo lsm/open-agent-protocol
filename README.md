@@ -94,8 +94,9 @@ Protocol artifacts:
 
 - [Illustrative protocol envelopes](examples/README.md)
 - `fixtures/`: normative executable conformance traces
+- `fixtures/presentation/`: presentation-control traces, judged with `goap validate --presentation`
 - `fixtures/packs/`: extension packs, loadable with `goap validate -pack`
-- `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles
+- `schema/v0.1/`: JSON Schema bundle for agent control, model provider and presentation control profiles
 
 Executable core (Go 1.26 or later, the `go.mod` floor; CI runs 1.27.x):
 
@@ -111,13 +112,24 @@ a durable persistence implementation.
 ### Validating a trace (`goap validate`)
 
 ```sh
-go run ./go/cmd/goap validate [--format=human|json] [-mode strict|tolerant] [-pack <dir>]... <trace.json>...
+go run ./go/cmd/goap validate [--format=human|json] [-mode strict|tolerant] [-pack <dir>]... [--provider|--presentation] <trace.json>...
 ```
 
 `-mode strict` (the default) compiles the bundle exactly as published: an
 unknown member, enum value, or envelope type fails. `-mode tolerant` compiles
 it under the layered draft's extension rules, so a later revision's additive
 field or an extension's envelope type is accepted on the common fields alone.
+
+`--provider` and `--presentation` each select a profile other than
+`agent-control-core`, and are mutually exclusive. Each compiles its own sibling
+root — `provider-envelope.schema.json` and `presentation-envelope.schema.json`
+— so a trace is only ever valid under the profile that declares it, and neither
+accepts the other's envelopes. `-pack` applies to neither: extension packs are
+an `agent-control-core` mechanism. The presentation profile's wire is
+[specified](drafts/presentation-control-profile.md) and its traces live in
+`fixtures/presentation/`, but
+[Decision 0035](decisions/0035-a-presentation-layer-is-not-evidence-for-its-own-profile.md)
+holds that no implementation serves it yet.
 
 `-pack` loads an extension pack — a directory holding a `pack.json` descriptor
 and the schemas it contributes — and is repeatable. With the pack loaded its
@@ -735,6 +747,7 @@ Decisions:
 - [0032 — go and zig are peers, and the specification decides](decisions/0032-go-and-zig-are-peers.md) (accepted)
 - [0033 — harness pins are data](decisions/0033-harness-pins-are-data.md) (proposed)
 - [0034 — an unpublished catalog is unknown](decisions/0034-an-unpublished-catalog-is-unknown.md) (accepted)
+- [0035 — a presentation layer is not evidence for its own profile](decisions/0035-a-presentation-layer-is-not-evidence-for-its-own-profile.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted. A record's own `Status:` line is authoritative; this table

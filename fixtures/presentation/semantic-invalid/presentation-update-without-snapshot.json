@@ -1,0 +1,27 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.updated",
+    "id": "pc-updated-orphan",
+    "sequence": 1,
+    "timestamp_ms": 1726170000300,
+    "session_id": "pc-session-orphan",
+    "payload": {
+      "target": {
+        "kind": "session",
+        "session_id": "pc-session-orphan"
+      },
+      "base_revision": 1,
+      "revision": 2,
+      "changes": [
+        {
+          "kind": "session.status.set",
+          "status": "running",
+          "active_run_id": "pc-run-orphan"
+        }
+      ]
+    }
+  }
+]

@@ -9,6 +9,8 @@ pub const inference = @embedFile("schema_inference");
 pub const interaction = @embedFile("schema_interaction");
 pub const manifest = @embedFile("schema_manifest");
 pub const pack = @embedFile("schema_pack");
+pub const presentation_envelope = @embedFile("schema_presentation_envelope");
+pub const presentation = @embedFile("schema_presentation");
 pub const provider_envelope = @embedFile("schema_provider_envelope");
 pub const provider = @embedFile("schema_provider");
 pub const run = @embedFile("schema_run");
@@ -29,6 +31,8 @@ pub const all = [_]Entry{
     .{ .name = "interaction.schema.json", .bytes = interaction },
     .{ .name = "manifest.schema.json", .bytes = manifest },
     .{ .name = "pack.schema.json", .bytes = pack },
+    .{ .name = "presentation-envelope.schema.json", .bytes = presentation_envelope },
+    .{ .name = "presentation.schema.json", .bytes = presentation },
     .{ .name = "provider-envelope.schema.json", .bytes = provider_envelope },
     .{ .name = "provider.schema.json", .bytes = provider },
     .{ .name = "run.schema.json", .bytes = run },
@@ -36,7 +40,7 @@ pub const all = [_]Entry{
 };
 
 test "every bundled schema is embedded, non-empty and parses" {
-    try std.testing.expectEqual(@as(usize, 13), all.len);
+    try std.testing.expectEqual(@as(usize, 15), all.len);
     for (all) |entry| {
         try std.testing.expect(entry.bytes.len > 0);
         var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, entry.bytes, .{});

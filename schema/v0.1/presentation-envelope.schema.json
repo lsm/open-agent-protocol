@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "presentation-envelope.schema.json",
+  "title": "Open Agent Protocol presentation-control envelope",
+  "type": "object",
+  "required": [
+    "protocol",
+    "version",
+    "profile",
+    "type",
+    "id",
+    "payload"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "open-agent-protocol"
+    },
+    "version": {
+      "const": "0.1"
+    },
+    "profile": {
+      "const": "open-agent-protocol.presentation-control"
+    },
+    "type": {
+      "type": "string"
+    },
+    "id": {
+      "$ref": "common.schema.json#/$defs/opaqueID"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "session_id": {
+      "$ref": "common.schema.json#/$defs/opaqueID"
+    },
+    "run_id": {
+      "$ref": "common.schema.json#/$defs/opaqueID"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp_ms": {
+      "type": "integer"
+    },
+    "in_reply_to": {
+      "$ref": "common.schema.json#/$defs/opaqueID"
+    },
+    "extensions": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "$ref": "#/$defs/snapshotRequestEnvelope"
+    },
+    {
+      "$ref": "#/$defs/snapshotResponseEnvelope"
+    },
+    {
+      "$ref": "#/$defs/updatedEnvelope"
+    },
+    {
+      "$ref": "#/$defs/messageSubmitEnvelope"
+    },
+    {
+      "$ref": "#/$defs/messageSubmitResponseEnvelope"
+    },
+    {
+      "$ref": "#/$defs/runCancelEnvelope"
+    },
+    {
+      "$ref": "#/$defs/runCancelResponseEnvelope"
+    }
+  ],
+  "$defs": {
+    "response": {
+      "required": [
+        "in_reply_to"
+      ]
+    },
+    "event": {
+      "required": [
+        "sequence"
+      ]
+    },
+    "snapshotRequestEnvelope": {
+      "properties": {
+        "type": {
+          "const": "presentation.snapshot.request"
+        },
+        "payload": {
+          "$ref": "presentation.schema.json#/$defs/snapshotRequest"
+        }
+      }
+    },
+    "snapshotResponseEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "presentation.snapshot.response"
+        },
+        "payload": {
+          "$ref": "presentation.schema.json#/$defs/snapshotResponse"
+        }
+      }
+    },
+    "updatedEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/event"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "presentation.updated"
+        },
+        "payload": {
+          "$ref": "presentation.schema.json#/$defs/updated"
+        }
+      }
+    },
+    "messageSubmitEnvelope": {
+      "properties": {
+        "type": {
+          "const": "intent.message.submit.request"
+        },
+        "payload": {
+          "$ref": "presentation.schema.json#/$defs/messageSubmit"
+        }
+      }
+    },
+    "messageSubmitResponseEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "intent.message.submit.response"
+        },
+        "payload": {
+          "$ref": "presentation.schema.json#/$defs/messageSubmitResponse"
+        }
+      }
+    },
+    "runCancelEnvelope": {
+      "properties": {
+        "type": {
+          "const": "intent.run.cancel.request"
+        },
+        "payload": {
+          "$ref": "presentation.schema.json#/$defs/runCancel"
+        }
+      }
+    },
+    "runCancelResponseEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/response"
+        }
+      ],
+      "properties": {
+        "type": {
+          "const": "intent.run.cancel.response"
+        },
+        "payload": {
+          "$ref": "presentation.schema.json#/$defs/runCancelResponse"
+        }
+      }
+    }
+  }
+}

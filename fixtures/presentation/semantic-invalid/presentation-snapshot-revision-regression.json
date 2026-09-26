@@ -1,0 +1,69 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.snapshot.response",
+    "id": "pc-snapshot-res-1",
+    "timestamp_ms": 1726170000000,
+    "in_reply_to": "pc-snapshot-req-1",
+    "payload": {
+      "snapshot": {
+        "target": {
+          "kind": "session",
+          "session_id": "pc-session-1"
+        },
+        "revision": 7,
+        "state": {
+          "session": {
+            "session_id": "pc-session-1",
+            "status": "running"
+          },
+          "timeline": [],
+          "composer": {
+            "session_id": "pc-session-1",
+            "delivery": "auto",
+            "enabled": false,
+            "disabled_reason": "A run is active."
+          },
+          "affordances": [],
+          "pending_prompts": [],
+          "diagnostics": []
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.snapshot.response",
+    "id": "pc-snapshot-res-2",
+    "timestamp_ms": 1726170000500,
+    "in_reply_to": "pc-snapshot-req-2",
+    "payload": {
+      "snapshot": {
+        "target": {
+          "kind": "session",
+          "session_id": "pc-session-1"
+        },
+        "revision": 3,
+        "state": {
+          "session": {
+            "session_id": "pc-session-1",
+            "status": "idle"
+          },
+          "timeline": [],
+          "composer": {
+            "session_id": "pc-session-1",
+            "delivery": "auto",
+            "enabled": true
+          },
+          "affordances": [],
+          "pending_prompts": [],
+          "diagnostics": []
+        }
+      }
+    }
+  }
+]

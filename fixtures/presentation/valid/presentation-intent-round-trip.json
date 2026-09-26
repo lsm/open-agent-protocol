@@ -1,0 +1,175 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.snapshot.request",
+    "id": "pc-snapshot-req-1",
+    "timestamp_ms": 1726170000000,
+    "payload": {
+      "target": {
+        "kind": "session",
+        "session_id": "pc-session-1"
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.snapshot.response",
+    "id": "pc-snapshot-res-1",
+    "timestamp_ms": 1726170000000,
+    "in_reply_to": "pc-snapshot-req-1",
+    "payload": {
+      "snapshot": {
+        "target": {
+          "kind": "session",
+          "session_id": "pc-session-1"
+        },
+        "revision": 1,
+        "state": {
+          "session": {
+            "session_id": "pc-session-1",
+            "status": "running"
+          },
+          "timeline": [],
+          "composer": {
+            "session_id": "pc-session-1",
+            "delivery": "auto",
+            "enabled": false,
+            "disabled_reason": "A run is active."
+          },
+          "affordances": [
+            {
+              "id": "send",
+              "kind": "send_message",
+              "visible": true,
+              "enabled": false,
+              "support": "native",
+              "reason": "A run is active."
+            },
+            {
+              "id": "cancel",
+              "kind": "cancel_run",
+              "visible": true,
+              "enabled": true,
+              "support": "native"
+            }
+          ],
+          "pending_prompts": [
+            {
+              "prompt_id": "pc-prompt-1",
+              "kind": "permission",
+              "affordance_id": "resolve-permission",
+              "run_id": "pc-run-1",
+              "options": [
+                "pc-option-allow",
+                "pc-option-deny"
+              ]
+            }
+          ],
+          "diagnostics": []
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "intent.run.cancel.request",
+    "id": "pc-cancel-req-1",
+    "timestamp_ms": 1726170000400,
+    "session_id": "pc-session-1",
+    "run_id": "pc-run-1",
+    "payload": {
+      "intent_id": "pc-intent-cancel",
+      "session_id": "pc-session-1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "intent.run.cancel.response",
+    "id": "pc-cancel-res-1",
+    "timestamp_ms": 1726170000400,
+    "in_reply_to": "pc-cancel-req-1",
+    "session_id": "pc-session-1",
+    "run_id": "pc-run-1",
+    "payload": {
+      "intent_id": "pc-intent-cancel",
+      "accepted": true,
+      "control_request_id": "pc-control-cancel-1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "intent.message.submit.request",
+    "id": "pc-submit-req-1",
+    "timestamp_ms": 1726170000500,
+    "session_id": "pc-session-1",
+    "payload": {
+      "intent_id": "pc-intent-submit",
+      "session_id": "pc-session-1",
+      "message": {
+        "role": "user",
+        "content": "What does the README say?"
+      },
+      "delivery": "queue",
+      "selected_model_id": "pc-model-1"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "intent.message.submit.response",
+    "id": "pc-submit-res-1",
+    "timestamp_ms": 1726170000500,
+    "in_reply_to": "pc-submit-req-1",
+    "session_id": "pc-session-1",
+    "payload": {
+      "intent_id": "pc-intent-submit",
+      "accepted": true,
+      "control_request_id": "pc-control-submit-1",
+      "requested_delivery": "queue",
+      "effective_delivery": "queue",
+      "delivery_resolution": "requested_queue",
+      "admission": "queued"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.updated",
+    "id": "pc-updated-1",
+    "sequence": 1,
+    "timestamp_ms": 1726170000600,
+    "session_id": "pc-session-1",
+    "run_id": "pc-run-1",
+    "payload": {
+      "target": {
+        "kind": "session",
+        "session_id": "pc-session-1"
+      },
+      "base_revision": 1,
+      "revision": 2,
+      "changes": [
+        {
+          "kind": "pending_prompts.replace",
+          "pending_prompts": []
+        },
+        {
+          "kind": "session.status.set",
+          "status": "idle",
+          "active_run_id": null
+        }
+      ]
+    }
+  }
+]

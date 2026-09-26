@@ -63,6 +63,32 @@ A profile defines a coherent implementation target. The agent-control core
 profile is the smallest control-layer/agent-loop boundary expected to
 interoperate on its own.
 
+### Presentation Control
+
+The presentation-control profile is the human-interface boundary above the agent
+control core. It carries renderable state upward and typed user intent downward,
+and it is judged by the `presentation-envelope.schema.json` sibling root against
+the traces under `fixtures/presentation/`.
+
+Its minimum profile is four envelopes: `presentation.snapshot.request` and its
+correlated response, `intent.message.submit.request` and its correlated response,
+plus `presentation.updated` as the event. `intent.run.cancel.request` and its
+response complete the current set. A conforming endpoint answers a rejected
+request with one correlated `error.response`; a renderable update never replaces
+a correlated response.
+
+The unit is `presentation-core`, and it is claimed as
+`open-agent-protocol.presentation-control+presentation-core`. What it proves is
+narrow and worth stating exactly, because
+[Decision 0035](../decisions/0035-a-presentation-layer-is-not-evidence-for-its-own-profile.md)
+makes the profile's evidence a consumer this project does not control, and no
+such consumer exists yet. The claim covers the wire: the envelope vocabulary, the
+snapshot and update shapes, the intent payloads, and the revision discipline a
+consumer depends on to apply an update or know it must re-snapshot. It does not
+claim that any control layer serves the profile, and it does not claim the
+profile is graduated. A claim of `presentation-core` says the shapes are
+executable and checkable, nothing about an implementation of them.
+
 A conformance unit defines one independently testable optional behavior within a
 profile. Units can be implemented and tested independently when their
 dependencies are satisfied. This keeps optional capabilities visible without

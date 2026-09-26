@@ -9432,8 +9432,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ]
     },
     {
       "id": "auth-login-cancelled",
@@ -9442,8 +9447,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ]
     },
     {
       "id": "auth-answer-on-wire",
@@ -9451,9 +9461,16 @@
       "kind": "schema-invalid",
       "valid": false,
       "phase": "schema",
-      "codes": ["schema_invalid"],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ]
     },
     {
       "id": "auth-event-before-start",
@@ -9461,9 +9478,16 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["auth_flow_order"],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "codes": [
+        "auth_flow_order"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ]
     },
     {
       "id": "auth-missing-terminal",
@@ -9471,9 +9495,16 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["missing_auth_terminal"],
-      "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "codes": [
+        "missing_auth_terminal"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "decisions/0029-authentication-over-agent-control.md"
+      ]
     },
     {
       "id": "auth-revision-not-repeated",
@@ -9481,9 +9512,17 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["stale_capability_revision"],
-      "units": ["core", "auth"],
-      "provenance": ["drafts/conformance.md", "decisions/0029-authentication-over-agent-control.md"]
+      "codes": [
+        "stale_capability_revision"
+      ],
+      "units": [
+        "core",
+        "auth"
+      ],
+      "provenance": [
+        "drafts/conformance.md",
+        "decisions/0029-authentication-over-agent-control.md"
+      ]
     },
     {
       "id": "model-switch-live",
@@ -9492,8 +9531,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-core-no-capabilities",
@@ -9502,8 +9546,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-degraded-no-optin",
@@ -9511,9 +9560,16 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["degraded_without_optin"],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "codes": [
+        "degraded_without_optin"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-unrelated-refusal",
@@ -9522,8 +9578,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "model-switch-unlisted",
@@ -9531,9 +9592,16 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["model_not_in_catalog"],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "codes": [
+        "model_not_in_catalog"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "provider-attach-live",
@@ -9542,8 +9610,13 @@
       "valid": true,
       "phase": "",
       "codes": [],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
     },
     {
       "id": "provider-attach-conflicting-alias",
@@ -9551,9 +9624,134 @@
       "kind": "semantic-invalid",
       "valid": false,
       "phase": "semantic",
-      "codes": ["duplicate_provider"],
-      "units": ["core", "models"],
-      "provenance": ["decisions/0028-live-model-and-provider-control.md"]
+      "codes": [
+        "duplicate_provider"
+      ],
+      "units": [
+        "core",
+        "models"
+      ],
+      "provenance": [
+        "decisions/0028-live-model-and-provider-control.md"
+      ]
+    },
+    {
+      "id": "presentation-snapshot-and-update",
+      "path": "presentation/valid/presentation-snapshot-and-update.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [
+        "examples/presentation-control-session.json"
+      ],
+      "profile": "presentation-control"
+    },
+    {
+      "id": "presentation-intent-round-trip",
+      "path": "presentation/valid/presentation-intent-round-trip.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [],
+      "profile": "presentation-control"
+    },
+    {
+      "id": "presentation-affordance-disabled-without-reason",
+      "path": "presentation/schema-invalid/presentation-affordance-disabled-without-reason.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [],
+      "profile": "presentation-control"
+    },
+    {
+      "id": "presentation-update-without-sequence",
+      "path": "presentation/schema-invalid/presentation-update-without-sequence.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": [
+        "schema_invalid"
+      ],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [],
+      "profile": "presentation-control"
+    },
+    {
+      "id": "presentation-update-without-snapshot",
+      "path": "presentation/semantic-invalid/presentation-update-without-snapshot.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "presentation_update_without_snapshot"
+      ],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [],
+      "profile": "presentation-control"
+    },
+    {
+      "id": "presentation-base-revision-mismatch",
+      "path": "presentation/semantic-invalid/presentation-base-revision-mismatch.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "presentation_base_revision_mismatch"
+      ],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [],
+      "profile": "presentation-control"
+    },
+    {
+      "id": "presentation-snapshot-revision-regression",
+      "path": "presentation/semantic-invalid/presentation-snapshot-revision-regression.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "presentation_revision_regression"
+      ],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [],
+      "profile": "presentation-control"
+    },
+    {
+      "id": "presentation-accepted-submit-without-effective-delivery",
+      "path": "presentation/semantic-invalid/presentation-accepted-submit-without-effective-delivery.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "presentation_delivery_unresolved"
+      ],
+      "units": [
+        "presentation-core"
+      ],
+      "provenance": [],
+      "profile": "presentation-control"
     }
   ]
 }

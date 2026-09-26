@@ -121,6 +121,7 @@ A strict stack; lower layers never import higher ones.
 | `schema` (repo root, `schema/embed.go`) | Embeds `schema/v0.1/*.json` (JSON Schema 2020-12) |
 | `harnesses` (repo root), `harness` | Embeds the harness catalog; `harness` loads it strictly and runs `goap check`'s drift rules |
 | `validation` | Decode (duplicate keys), schema, semantic state machine (`state.go`), typed diagnostic codes |
+| `validation/{provider,presentation}.go` | The two non-core profiles' validators, each over its own sibling root; neither adds a layer below `validation` |
 | `adapter` | `Adapter`/`Session`/`EventStream`, error sentinels, `ValidateInputAnswer`, and `Memory` |
 | `adapter/adaptertest` | `Next`/`Drain`, `AssertProtocolValid*` |
 | `adapter/{acp,claude,codex/appserver,deepseek,hermes,opencode,pi}` | One per pinned upstream harness |
@@ -136,6 +137,13 @@ different layer from `hub --stdio`. `hub --stdio` exposes the **hub** — twelve
 dimension, cursor replay, multiplexed subscriptions — each line wrapping an
 envelope in a transport object. `serve agent` exposes **one agent loop** carrying
 raw OAP envelopes, one per line, per `drafts/endpoint-stdio.md`.
+
+The `presentation-control` profile has a validator and a fixture corpus but no
+endpoint. `goap validate --presentation` judges a trace against
+`schema/v0.1/presentation-envelope.schema.json`; nothing serves that profile, and
+Decision 0035 requires an implementation this project does not control before
+the profile graduates. `zig/src/tui/` is not that implementation: it embeds the
+layers below the presentation boundary in-process and never speaks the profile.
 
 ## Architecture — Zig
 

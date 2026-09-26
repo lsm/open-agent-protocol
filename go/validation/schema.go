@@ -61,10 +61,22 @@ func CompileSchemasWith(opts CompileOptions) (*jsonschema.Schema, error) {
 	return bundle.root, nil
 }
 
+func CompilePresentationSchema() (*jsonschema.Schema, error) {
+	bundle, err := compileBundle(CompileOptions{Mode: ModeStrict})
+	if err != nil {
+		return nil, err
+	}
+	if bundle.presentation == nil {
+		return nil, fmt.Errorf("compile schema bundle: presentation envelope schema not found")
+	}
+	return bundle.presentation, nil
+}
+
 type compiledBundle struct {
-	root     *jsonschema.Schema
-	provider *jsonschema.Schema
-	members  map[string]map[string]*jsonschema.Schema
+	root         *jsonschema.Schema
+	provider     *jsonschema.Schema
+	presentation *jsonschema.Schema
+	members      map[string]map[string]*jsonschema.Schema
 }
 
 type refusingLoader struct{ attempted []string }
@@ -142,7 +154,7 @@ func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 			}
 		}
 	}
-	var root, provider *jsonschema.Schema
+	var root, provider, presentation *jsonschema.Schema
 	for _, entry := range entries {
 		if entry.IsDir() || path.Ext(entry.Name()) != ".json" {
 			continue
@@ -157,11 +169,14 @@ func compileBundle(opts CompileOptions) (*compiledBundle, error) {
 		if entry.Name() == "provider-envelope.schema.json" {
 			provider = compiled
 		}
+		if entry.Name() == "presentation-envelope.schema.json" {
+			presentation = compiled
+		}
 	}
 	if root == nil {
 		return nil, fmt.Errorf("compile schema bundle: envelope schema not found")
 	}
-	bundle := &compiledBundle{root: root, provider: provider, members: map[string]map[string]*jsonschema.Schema{}}
+	bundle := &compiledBundle{root: root, provider: provider, presentation: presentation, members: map[string]map[string]*jsonschema.Schema{}}
 	for payloadType, members := range memberURIs {
 		bundle.members[payloadType] = map[string]*jsonschema.Schema{}
 		for name, uri := range members {

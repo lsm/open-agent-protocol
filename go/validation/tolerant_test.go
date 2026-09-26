@@ -673,7 +673,15 @@ func TestTolerantAcceptsEveryPositiveFixture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		validator := tolerant
+		var sweep interface {
+			ValidateBytes([]byte, string) Result
+		} = tolerant
+		if entry.Profile == ProfilePresentationControl {
+			sweep, err = NewPresentationValidatorWith(ModeTolerant)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		if len(entry.Packs) > 0 {
 
 			dirs := make([]string, 0, len(entry.Packs))
@@ -684,12 +692,12 @@ func TestTolerantAcceptsEveryPositiveFixture(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			validator, err = NewWith(Options{Mode: ModeTolerant, Packs: packs})
+			sweep, err = NewWith(Options{Mode: ModeTolerant, Packs: packs})
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
-		if result := validator.ValidateBytes(data, entry.Path); !result.Valid() {
+		if result := sweep.ValidateBytes(data, entry.Path); !result.Valid() {
 			t.Errorf("tolerant rejected positive fixture %s: %v", entry.ID, result.Diagnostics)
 		}
 		checked++

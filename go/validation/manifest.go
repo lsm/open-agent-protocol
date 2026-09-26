@@ -51,6 +51,8 @@ const (
 
 const ProfileModelProvider = "model-provider-core"
 
+const ProfilePresentationControl = "presentation-control"
+
 const (
 	ScopeFrame = "frame"
 	ScopeTrace = "trace"
@@ -77,6 +79,24 @@ func scopeOf(e FixtureEntry) string {
 }
 
 var providerUnits = map[string]bool{"provider-core": true, "credentials": true, "carry": true}
+
+var presentationUnits = map[string]bool{"presentation-core": true}
+
+func presentationDiagnosticCodes() map[string]bool {
+	return map[string]bool{
+		CodeMalformedJSON:                     true,
+		CodeDuplicateKey:                      true,
+		CodePayloadDecode:                     true,
+		CodeSchemaInvalid:                     true,
+		CodeSequenceGap:                       true,
+		CodeSequenceRegression:                true,
+		CodePresentationRevisionRegression:    true,
+		CodePresentationUpdateWithoutSnapshot: true,
+		CodePresentationBaseRevisionMismatch:  true,
+		CodePresentationRevisionGap:           true,
+		CodePresentationDeliveryUnresolved:    true,
+	}
+}
 
 func providerDiagnosticCodes() map[string]bool {
 	return map[string]bool{
@@ -251,8 +271,62 @@ func LoadManifestWith(filename string, opts ManifestOptions) (FixtureManifest, e
 		if e.Scope != "" && e.Profile != ProfileModelProvider {
 			return FixtureManifest{}, fmt.Errorf("fixture %q declares a scope outside the provider profile", e.ID)
 		}
-		if e.Profile != "" && e.Profile != ProfileModelProvider {
-			return FixtureManifest{}, fmt.Errorf("fixture entry %d has unknown profile %q", i, e.Profile)
+		if e.Profile != ProfileModelProvider && e.Profile != ProfilePresentationControl {
+			if e.Profile != "" {
+				return FixtureManifest{}, fmt.Errorf("fixture entry %d has unknown profile %q", i, e.Profile)
+			}
+		}
+		if e.Profile == ProfilePresentationControl {
+			if e.Kind == KindLoadInvalid || e.Mode != "" || len(e.Packs) > 0 || len(e.Covers) > 0 || e.Scope != "" {
+				return FixtureManifest{}, fmt.Errorf("fixture %q is a presentation fixture and cannot carry packs, modes, capability coverage or a scope", e.ID)
+			}
+			if len(e.Units) == 0 {
+				return FixtureManifest{}, fmt.Errorf("fixture %q has no conformance units", e.ID)
+			}
+			for _, unit := range e.Units {
+				if !presentationUnits[unit] {
+					return FixtureManifest{}, fmt.Errorf("fixture %q has unknown presentation conformance unit %q", e.ID, unit)
+				}
+			}
+			if ids[e.ID] {
+				return FixtureManifest{}, fmt.Errorf("duplicate fixture id %q", e.ID)
+			}
+			if e.Valid {
+				if e.Kind != KindPositive || e.Phase != "" || len(e.Codes) > 0 {
+					return FixtureManifest{}, fmt.Errorf("valid fixture %q carries a non-positive kind, a phase or diagnostic codes", e.ID)
+				}
+			}
+			if !e.Valid {
+				if e.Kind == KindPositive {
+					return FixtureManifest{}, fmt.Errorf("invalid fixture %q is marked positive", e.ID)
+				}
+				if e.Phase != PhaseDecode && e.Phase != PhaseSchema && e.Phase != PhaseSemantic {
+					return FixtureManifest{}, fmt.Errorf("invalid fixture %q lacks a valid phase", e.ID)
+				}
+				if len(e.Codes) == 0 {
+					return FixtureManifest{}, fmt.Errorf("invalid fixture %q lacks diagnostic codes", e.ID)
+				}
+				known := presentationDiagnosticCodes()
+				for _, code := range e.Codes {
+					if !known[code] {
+						return FixtureManifest{}, fmt.Errorf("invalid fixture %q has a diagnostic code the presentation validator cannot emit: %q", e.ID, code)
+					}
+				}
+			}
+			if ids[e.ID] {
+				return FixtureManifest{}, fmt.Errorf("duplicate fixture id %q", e.ID)
+			}
+			ids[e.ID] = true
+			if paths[filepath.Clean(e.Path)] {
+				return FixtureManifest{}, fmt.Errorf("duplicate fixture path %q", e.Path)
+			}
+			paths[filepath.Clean(e.Path)] = true
+			for _, provenance := range e.Provenance {
+				if strings.TrimSpace(provenance) == "" {
+					return FixtureManifest{}, fmt.Errorf("fixture %q has empty provenance", e.ID)
+				}
+			}
+			continue
 		}
 		if e.Profile == ProfileModelProvider {
 			switch e.Scope {
@@ -493,6 +567,7 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 	out := make([]FixtureOutcome, 0, len(m.Fixtures))
 	validators := map[string]*Validator{}
 	var providerValidator *ProviderValidator
+	var presentationValidator *PresentationValidator
 	loaded := map[string][]*Pack{}
 	for _, entry := range m.Fixtures {
 		listed[filepath.Clean(entry.Path)] = true
@@ -512,6 +587,20 @@ func (v *Validator) validateManifest(filename string, opts ManifestOptions, corp
 				}
 			}
 			outcome, err := runTraceFixture(providerValidator, root, ownerRoot(opts.Owner), entry)
+			out = append(out, outcome)
+			if err != nil {
+				return out, err
+			}
+			continue
+		}
+		if entry.Profile == ProfilePresentationControl {
+			if presentationValidator == nil {
+				presentationValidator, err = NewPresentationValidator()
+				if err != nil {
+					return out, fmt.Errorf("fixture %s: %w", entry.ID, err)
+				}
+			}
+			outcome, err := runTraceFixture(presentationValidator, root, ownerRoot(opts.Owner), entry)
 			out = append(out, outcome)
 			if err != nil {
 				return out, err

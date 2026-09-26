@@ -18,7 +18,7 @@ means the same thing in both.
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
 | `hub [--config F] [--addr ADDR \| --stdio]` | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire | — | yes (today `goap serve`) |
-| `validate [--format human\|json] [--mode strict\|tolerant] [--pack DIR]... [--provider] TRACE...` | judge traces: decode, schema, semantic | yes (packs, modes and some semantic rules still porting) | yes |
+| `validate [--format human\|json] [--mode strict\|tolerant] [--pack DIR]... [--provider\|--presentation] TRACE...` | judge traces: decode, schema, semantic | yes (packs, modes and some semantic rules still porting) | yes |
 | `conformance [--command CMD] [--format text\|json]` | drive an endpoint and judge what crossed the pipe | not yet | yes |
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
@@ -43,6 +43,10 @@ mean one thing.
   `code` and `index`, and `line` when the input had lines. `oapx` adds
   `"complete": false` while its semantic port is partial, and drops it once it
   is not. A differential job compares the two outputs field by field.
+- **`--provider` and `--presentation` each select a profile, and are mutually
+  exclusive.** Passing both is a usage error rather than a silent preference, and
+  `-pack` applies to neither: extension packs are an `agent-control-core`
+  mechanism. A core-only binary answers `--presentation` `unavailable`.
 
 ## Migration
 

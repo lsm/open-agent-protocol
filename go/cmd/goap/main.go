@@ -78,13 +78,21 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 
 	provider := fs.Bool("provider", false, "validate against the model-provider-core profile instead of agent-control-core")
 
+	presentation := fs.Bool("presentation", false, "validate against the presentation-control profile instead of agent-control-core")
+
 	var packs repeatedFlag
 	fs.Var(&packs, "pack", "load an extension pack from a directory containing pack.json; repeatable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *provider && *presentation {
+		return errors.New("--provider and --presentation select different profiles; pass at most one")
+	}
 	if *provider && len(packs) > 0 {
 		return errors.New("extension packs are an agent-control-core mechanism and do not apply to the provider profile")
+	}
+	if *presentation && len(packs) > 0 {
+		return errors.New("extension packs are an agent-control-core mechanism and do not apply to the presentation profile")
 	}
 	if *format != "human" && *format != "json" {
 		return fmt.Errorf("unsupported output format %q", *format)
@@ -104,9 +112,12 @@ func runValidate(args []string, stdout, stderr io.Writer) error {
 		Validate(io.Reader, string) validation.Result
 	}
 	var validator traceValidator
-	if *provider {
+	switch {
+	case *provider:
 		validator, err = validation.NewProviderValidatorWith(mode)
-	} else {
+	case *presentation:
+		validator, err = validation.NewPresentationValidatorWith(mode)
+	default:
 		validator, err = validation.NewWith(validation.Options{Mode: mode, Packs: loaded})
 	}
 	if err != nil {

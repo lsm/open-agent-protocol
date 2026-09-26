@@ -53,6 +53,12 @@ pub fn build(b: *std.Build) void {
     schema_bytes_mod.addAnonymousImport("schema_pack", .{
         .root_source_file = b.path("../schema/v0.1/pack.schema.json"),
     });
+    schema_bytes_mod.addAnonymousImport("schema_presentation_envelope", .{
+        .root_source_file = b.path("../schema/v0.1/presentation-envelope.schema.json"),
+    });
+    schema_bytes_mod.addAnonymousImport("schema_presentation", .{
+        .root_source_file = b.path("../schema/v0.1/presentation.schema.json"),
+    });
     schema_bytes_mod.addAnonymousImport("schema_provider_envelope", .{
         .root_source_file = b.path("../schema/v0.1/provider-envelope.schema.json"),
     });

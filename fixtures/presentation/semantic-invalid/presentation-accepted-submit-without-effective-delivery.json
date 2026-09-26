@@ -1,0 +1,37 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "intent.message.submit.request",
+    "id": "pc-submit-req-1",
+    "timestamp_ms": 1726170000200,
+    "session_id": "pc-session-1",
+    "payload": {
+      "intent_id": "pc-intent-1",
+      "session_id": "pc-session-1",
+      "message": {
+        "role": "user",
+        "content": "What does the README say?"
+      },
+      "delivery": "auto"
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "intent.message.submit.response",
+    "id": "pc-submit-res-1",
+    "timestamp_ms": 1726170000200,
+    "in_reply_to": "pc-submit-req-1",
+    "session_id": "pc-session-1",
+    "payload": {
+      "intent_id": "pc-intent-1",
+      "accepted": true,
+      "requested_delivery": "auto",
+      "effective_delivery": null,
+      "admission": "started"
+    }
+  }
+]

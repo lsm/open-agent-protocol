@@ -32,6 +32,7 @@ fn readAll(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
 fn documentFor(profile: []const u8) []const u8 {
     if (std.mem.eql(u8, profile, "model-provider-core")) return "provider-envelope.schema.json";
+    if (std.mem.eql(u8, profile, "presentation-control")) return "presentation-envelope.schema.json";
     return "envelope.schema.json";
 }
 

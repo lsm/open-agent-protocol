@@ -1,0 +1,59 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.snapshot.response",
+    "id": "pc-snapshot-res-1",
+    "timestamp_ms": 1726170000000,
+    "in_reply_to": "pc-snapshot-req-1",
+    "payload": {
+      "snapshot": {
+        "target": {
+          "kind": "session",
+          "session_id": "pc-session-1"
+        },
+        "revision": 4,
+        "state": {
+          "session": {
+            "session_id": "pc-session-1",
+            "status": "idle"
+          },
+          "timeline": [],
+          "composer": {
+            "session_id": "pc-session-1",
+            "delivery": "auto",
+            "enabled": true
+          },
+          "affordances": [],
+          "pending_prompts": [],
+          "diagnostics": []
+        }
+      }
+    }
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.presentation-control",
+    "type": "presentation.updated",
+    "id": "pc-updated-1",
+    "sequence": 1,
+    "timestamp_ms": 1726170000300,
+    "session_id": "pc-session-1",
+    "payload": {
+      "target": {
+        "kind": "session",
+        "session_id": "pc-session-1"
+      },
+      "base_revision": 2,
+      "revision": 5,
+      "changes": [
+        {
+          "kind": "session.status.set",
+          "status": "running"
+        }
+      ]
+    }
+  }
+]
