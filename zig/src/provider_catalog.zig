@@ -265,19 +265,31 @@ test "a models listing is recorded only where the provider answers one" {
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
 }
 
-test "a plan is named as a plan" {
+test "an offering is a plan or an api key, and one host serves one row" {
     const plans = codingPlanIds();
     try std.testing.expect(plans.len > 0);
-    for (all) |row| {
-        const is_plan = row.offering != null and row.offering.? == .coding_plan;
-        const named_as_plan = std.mem.endsWith(u8, row.id, "-coding-plan") or
-            std.mem.indexOf(u8, row.id, "-token-plan-") != null;
-        try std.testing.expectEqual(named_as_plan, is_plan);
+    for (plans) |id| {
+        try std.testing.expect(offering(id).? == .coding_plan);
     }
+    var meters: usize = 0;
+    for (all) |row| {
+        if (row.offering != null and row.offering.? == .api_key) meters += 1;
+    }
+    try std.testing.expect(meters > 0);
     try std.testing.expectEqualStrings("zai-coding-plan", plans[0]);
-    try std.testing.expect(offering("anthropic").? == .api_key);
+    try std.testing.expect(offering("kimi").? == .coding_plan);
     try std.testing.expect(offering("xiaomi").? == .api_key);
+    try std.testing.expect(offering("openrouter").? == .api_key);
     try std.testing.expect(offering("no-such-provider") == null);
+    for (all, 0..) |row, index| {
+        for (row.endpoints) |endpoint| {
+            for (all[index + 1 ..]) |other| {
+                for (other.endpoints) |served| {
+                    try std.testing.expect(!std.mem.eql(u8, endpoint.base_url, served.base_url));
+                }
+            }
+        }
+    }
 }
 
 test "the current rows are the ones the catalog names first" {
@@ -301,15 +313,17 @@ test "the current rows are the ones the catalog names first" {
     try std.testing.expect(status("no-such-provider") == .supported);
 }
 
-test "an auth kind is one the loader knows, and a provider may declare none" {
-    var without_auth = false;
+test "every row records how it authenticates, and an origin policy belongs to an oauth row" {
     for (all) |row| {
-        if (row.auth.len == 0) without_auth = true;
+        try std.testing.expect(row.auth.len > 0);
+        var speaks_oauth = false;
         for (row.auth) |kind| {
             switch (kind) {
-                .api_key, .oauth, .none => {},
+                .api_key => {},
+                .oauth => speaks_oauth = true,
+                .none => {},
             }
         }
+        try std.testing.expectEqual(speaks_oauth, row.oauth_origin != null);
     }
-    try std.testing.expect(without_auth);
 }
