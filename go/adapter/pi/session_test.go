@@ -840,6 +840,31 @@ func TestPinnedMessageRolesAcceptFullOptionalShape(t *testing.T) {
 	}
 }
 
+func TestSystemWireMessageIsAcceptedAndNotAFinalMessage(t *testing.T) {
+	accepted := []string{
+		`{"role":"system","content":"","sections":{"preamble":"p","gone":null},"toolsAdded":[{"name":"read"}],"toolsRemoved":[{"name":"bash"}],"timestamp":1}`,
+		`{"role":"system","content":[{"type":"text","text":"more"}],"timestamp":2}`,
+	}
+	for _, raw := range accepted {
+		if message, err := decodeWireMessage(json.RawMessage(raw)); err != nil || message != nil {
+			t.Fatalf("%s: message=%+v err=%v", raw, message, err)
+		}
+	}
+	rejected := []string{
+		`{"role":"system","timestamp":1}`,
+		`{"role":"system","content":""}`,
+		`{"role":"system","content":[{"type":"image","data":"AA==","mimeType":"image/png"}],"timestamp":1}`,
+		`{"role":"system","content":"","sections":{"a":1},"timestamp":1}`,
+		`{"role":"system","content":[{"type":"text"}],"timestamp":1}`,
+		`{"role":"system","content":"","timestamp":1,"api":"a"}`,
+	}
+	for _, raw := range rejected {
+		if _, err := decodeWireMessage(json.RawMessage(raw)); err == nil {
+			t.Fatalf("%s accepted", raw)
+		}
+	}
+}
+
 func TestProviderEventsRejectMissingAndNegativeFields(t *testing.T) {
 	invalid := []string{
 		`{"type":"text_delta","contentIndex":0}`,

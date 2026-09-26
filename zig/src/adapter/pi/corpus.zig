@@ -144,6 +144,7 @@ test "every pi corpus case replays to the recorded envelopes" {
         .{ .id = "prompt-rejected", .path = "prompt-rejected", .prompt_failure = true },
         .{ .id = "retry-compaction", .path = "retry-compaction" },
         .{ .id = "streaming-deltas", .path = "streaming-deltas" },
+        .{ .id = "system-message", .path = "system-message" },
         .{ .id = "tool-lifecycle", .path = "tool-lifecycle" },
     });
 }
