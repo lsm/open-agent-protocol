@@ -555,6 +555,7 @@ pub const Hub = struct {
 
     pub fn hold(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!*Subscription {
         const subscription = try self.subscribe(arena, session_id, .{});
+        errdefer self.discard(subscription, .expired);
         const expires = self.clock() + self.hold_ns;
         try self.holds.ensureUnusedCapacity(self.allocator, 1);
         self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = expires });
@@ -586,7 +587,10 @@ pub const Hub = struct {
             if (entry.closed) continue;
             _ = entry.session.pump(share) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
-                else => continue,
+                else => {
+                    entry.session.close();
+                    self.closeSession(entry, .stream_failed);
+                },
             };
         }
         for (self.entries.items) |*entry| {
@@ -693,6 +697,8 @@ pub const Hub = struct {
     }
 
     fn promote(self: *Hub, entry: *Entry, run_id: []const u8) !void {
+        var fresh = false;
+        _ = try self.cursorFor(entry, run_id, &fresh);
         const owned = try self.allocator.dupe(u8, run_id);
         self.allocator.free(entry.run_id);
         entry.run_id = owned;
@@ -958,6 +964,46 @@ test "an adapter-assigned session id that is already taken is refused, not adopt
     try testing.expectEqual(@as(usize, 1), listed.len);
     try testing.expectEqualStrings(minted.session_id, listed[0].session_id);
     try testing.expectEqualStrings(minted.session_id, (try hub.state(arena, minted.session_id)).session_id);
+}
+
+test "a cursor may name an admitted run whose events have not arrived yet" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "undrained" });
+    const request = try submitFor(arena, "undrained");
+    const admitted = try hub.submit(arena, "undrained", &request);
+    try testing.expectEqual(oap_types.Admission.started, admitted.admission);
+
+    const joined = try hub.subscribe(arena, opened.session_id, .{ .run_id = admitted.run_id.?, .after = 0 });
+    try testing.expectEqualStrings(admitted.run_id.?, joined.run_id);
+    try testing.expectEqual(Ending.open, joined.ending);
+    try testing.expect(joined.next() == null);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(joined.next() != null);
+}
+
+test "a backend that cannot make progress ends its stream rather than retrying forever" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_pump = true };
+    defer flaky.allocator.free(flaky.owned_id);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "deadchild" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.stream_failed, subscription.ending);
+    try testing.expectError(error.SessionClosed, hub.state(arena, "deadchild"));
+    try testing.expectEqual(@as(usize, 1), flaky.closes);
 }
 
 test "the current run follows the events, so an unqualified cursor reaches a promoted run" {
@@ -1544,6 +1590,7 @@ const Flaky = struct {
     owned_id: []u8 = &.{},
     closes: usize = 0,
     fail_drain: bool = true,
+    fail_pump: bool = false,
 
     fn adapter(self: *Flaky) contract.Adapter {
         return .{ .ptr = self, .vtable = &.{ .probe = flakyProbe, .open = flakyOpen } };
@@ -1616,8 +1663,9 @@ fn flakyCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, re
 }
 
 fn flakyPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
-    _ = ptr;
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
     _ = wait_ns;
+    if (self.fail_pump) return error.BackendFailed;
     return false;
 }
 
@@ -1652,8 +1700,7 @@ test "a session whose stream fails is ended, its subscribers told, and its child
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.stream_failed, subscription.ending);
-    const doomed = try submitFor(arena, "doomed");
-    try testing.expectError(error.SessionClosed, hub.submit(arena, "doomed", &doomed));
+    try testing.expectError(error.SessionClosed, hub.state(arena, "doomed"));
     try testing.expectEqual(@as(usize, 1), flaky.closes);
 }
 
