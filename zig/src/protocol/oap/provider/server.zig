@@ -957,6 +957,10 @@ pub const Server = struct {
         }
 
         for (create_request.messages) |message| {
+            if (messageCarriesImage(message)) {
+                try self.emitCreateRefusal(env, .unsupported_feature, "this endpoint forwards text content only");
+                return;
+            }
             if (messageCarriesUnforwardablePart(message)) {
                 try self.emitCreateRefusal(
                     env,
@@ -1749,6 +1753,17 @@ pub fn cloneHeaders(
     return out;
 }
 
+fn messageCarriesImage(message: oap_types.Message) bool {
+    const parts = switch (message.content) {
+        .text => return false,
+        .parts => |value| value,
+    };
+    for (parts) |part| {
+        if (part == .image) return true;
+    }
+    return false;
+}
+
 fn messageCarriesUnforwardablePart(message: oap_types.Message) bool {
     return switch (message.content) {
         .text => message.role == .tool,
@@ -2131,6 +2146,27 @@ test "the agent control profile is refused and the refusal names the caller's en
     defer response.deinit(allocator);
     try std.testing.expectEqual(types.ErrorCode.protocol_violation, response.payload.protocol_error.err.code);
     try std.testing.expectEqualStrings("q9", response.in_reply_to.?);
+}
+
+test "an image part is refused with the endpoint's text-only wording, not a placement rule" {
+    const allocator = std.testing.allocator;
+    var server = try testServer(allocator, .{});
+    defer server.deinit();
+
+    const line = try makeRequest(
+        allocator,
+        "inference.create.request",
+        "{\"model_ref\":\"ollama-local/openai-chat-completions@gemma\",\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"image\":{\"data\":\"aGk=\",\"media_type\":\"image/png\"}}]}]}",
+        "q1",
+    );
+    defer allocator.free(line);
+    try server.handleLine(line);
+
+    var refusal = try decodeOnly(allocator, &server);
+    defer refusal.deinit(allocator);
+    const err = refusal.payload.inference_create_response.err.?;
+    try std.testing.expectEqual(types.ErrorCode.unsupported_feature, err.code);
+    try std.testing.expectEqualStrings("this endpoint forwards text content only", err.message);
 }
 
 test "a credential in caller headers is refused with the correct alternative named" {
