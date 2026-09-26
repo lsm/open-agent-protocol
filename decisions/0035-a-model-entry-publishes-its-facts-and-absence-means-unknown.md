@@ -31,11 +31,13 @@ no set to choose from. `release_date` and `family` are absent, leaving a client
 no way to prefer a newer sibling except through `lifecycle`.
 
 Two further gaps belong to the response rather than the model, and neither needs
-a catalog to motivate them. A list response cannot say it is a subset, so a
-provider whose own listing paginates makes the `model_not_in_catalog` refusal of
-the `+model-listing` unit unsound with no way for an implementation to deny it.
-And nothing states how old a listing is, so a `fallback` source is as
-indistinguishable from yesterday's as from a year ago.
+a catalog to motivate them. A list response cannot say it is a subset.
+[`+models`](../drafts/conformance.md) binds an implementation in both
+directions — every id it lists is selectable, and every id it omits is not — so a
+provider whose own listing paginates feeds that binding a catalog it cannot
+vouch for, and the unit's `model_not_in_catalog` diagnostic would state as a fact
+something no one ever learned. Nothing states how old a listing is either, so a
+`fallback` source is as indistinguishable from yesterday's as from a year ago.
 
 The empirical shape of what a catalog knows is recorded in the evidence ledger:
 at one dated reading, 223 providers and 8179 models, with cost on 7755 of them,
@@ -94,14 +96,17 @@ smaller break, removing them is the smaller vocabulary.
 catalog?: { observed_at_ms?: integer, complete: boolean }
 ```
 
-`complete: false` publishes a partial listing, and a caller must then refuse an
-absent `model_ref` with a code that makes no claim about the model rather than
-`model_not_in_catalog`. An absent `catalog` keeps today's meaning: the listing is
-the whole of what this implementation knows, which is the presumption the
-`+model-listing` unit already makes. The asymmetry with the rule above is
-intentional — an absent per-model fact is unknown, while the listing's
-completeness is presumed and must be denied explicitly, because the existing
-refusal already assumes it.
+`complete: false` publishes a partial listing: an absent `model_ref` then says
+the implementation never heard of it, not that the model does not exist, and the
+two-directional `+models` binding stands down for that response — so
+`model_not_in_catalog` is the wrong answer for an id no one learned about. A
+provider that has never heard of an id is not thereby unable to serve it, and the
+refusal the profile already defines for a model it does not serve,
+`model_not_found`, is unchanged. An absent `catalog` keeps today's meaning: the
+listing is the whole of what this implementation knows, which is the binding
+`+models` already assumes. The asymmetry with the rule above is intentional — an
+absent per-model fact is unknown, while the listing's completeness is presumed and
+must be denied explicitly, because the existing unit already assumes it.
 
 `observed_at_ms` is when the underlying catalog was read, not when the response
 was built, so a `fallback` source can be told from a fresh one.
@@ -123,11 +128,12 @@ was built, so a `fallback` source can be told from a fresh one.
   differ. A request member whose whole meaning is cache policy would also be the
   first one on this boundary that describes the implementation's internals
   rather than the caller's choice.
-- **Any new envelope type, operation or error code.** `model_not_in_catalog`
-  stays; a partial listing is answered with a code that makes no claim.
-- **Pricing as a conformance claim.** The `+model-listing` unit is unchanged,
-  and this keeps the line in `drafts/conformance.md` that keeps pricing outside
-  it.
+- **Any new envelope type, operation or error code.** `model_not_found` stays the
+  provider profile's refusal for a model it does not serve, and
+  `model_not_in_catalog` stays the `+models` diagnostic; a partial listing is
+  answered with a code that makes no claim about the model.
+- **Pricing as a conformance claim.** The `+models` unit is unchanged, and this
+  keeps the line in `drafts/conformance.md` that keeps pricing outside it.
 
 ## Consequences
 

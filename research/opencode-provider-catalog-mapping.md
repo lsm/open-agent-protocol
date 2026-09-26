@@ -158,9 +158,12 @@ The gaps, each with what the catalog shows a caller actually wants:
    pick from.
 4. **Age and family.** `release_date` and `family` are absent, so a client
    cannot prefer a newer sibling over a retired one except through `lifecycle`.
-5. **Listing completeness.** The list response cannot say it is a subset. A
-   provider whose own listing paginates makes `model_not_in_catalog` unsound,
-   and nothing in the profile lets an implementation deny that.
+5. **Listing completeness.** The list response cannot say it is a subset, while
+   [`+models`](../drafts/conformance.md) binds an implementation in both
+   directions — every id it lists is selectable, every id it omits is not. A
+   provider whose own listing paginates makes that binding false and the unit's
+   `model_not_in_catalog` diagnostic unsound, and nothing in the provider profile
+   lets an implementation deny it.
 6. **Provenance of the facts.** `source` (`discovered` / `fallback`) says
    whether the implementation read a catalog or fell back, but not how old it is.
 
