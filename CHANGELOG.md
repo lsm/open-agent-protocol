@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `oapx serve agent --backend codex` rebuilds a settled session's arena once it has grown 256 KiB past its last compaction, keeping the thread, the session state and each run's id, turn, status and sequence. A Codex session held every frame and envelope until it closed.
 - The Hermes adapter no longer projects the gateway's `thinking.delta` as reasoning, in Go or Zig. The event carries the activity spinner (`"{face} {verb}..."`, or `""` to clear it), not model reasoning, so it is now observed-only; `reasoning.delta` is still projected. Recorded in [`research/hermes-thinking-delta-note.md`](research/hermes-thinking-delta-note.md).
 
 ### Changed
