@@ -86,12 +86,14 @@ an unknown `change.kind` valid *on the wire* and says nothing about what the
 receiver then *does*. A receiver that applied the changes it recognised and
 advanced would hold state that is not that revision's state.
 
-**Every piece of minimum session state has a change that carries it whole.** The
+**Every piece of minimum session state can change without a snapshot.** The
 minimum change kinds are `session.replace`, `composer.replace`,
 `affordances.replace`, `pending_prompts.replace`, `diagnostics.replace`,
 `timeline.item.upsert` and `timeline.item.remove`, with `session.status.set` as the
-narrower form of `session.replace`. A draft whose composer could change only by
-snapshot would leave every receiver's composer stale from the first run onward.
+narrower form of `session.replace`. The five replace kinds carry their state
+whole, and the timeline's upsert and remove together express any change to it. A
+draft whose composer could change only by snapshot would leave every receiver's
+composer stale from the first run onward.
 
 **A snapshot carries every timeline item control still holds, and control that
 drops an item says so.** A bounded-memory control layer may evict old items; it
@@ -117,11 +119,13 @@ the minimum profile.
 
 ### A receiver names the change kinds it applies
 
-A `presentation.snapshot.request` carries `change_kinds`, the change kinds the
-receiver can apply; absent, it means the minimum change kinds. Control sends that
-connection only kinds it named. A change a narrower named kind cannot express goes
-through the whole-state change for the same state, which every piece of minimum
-session state has. State that no named kind covers is outside what that receiver
+Every receiver applies all the minimum change kinds. A
+`presentation.snapshot.request` carries `change_kinds`, the kinds the receiver
+applies beyond them; absent, it names none. Control sends that connection only
+minimum kinds and kinds it named, so a change no named kind can express goes out in
+minimum kinds: the whole-state replace for the session, composer, affordances,
+prompts and diagnostics, and item upserts and removals for the timeline. State
+that neither the minimum nor a named kind covers is outside what that receiver
 holds, and control sends it no changes for it.
 
 Without this, the all-or-nothing rule turns every new change kind into a snapshot
@@ -196,7 +200,7 @@ waits for it.
   0036's gate, and 0036 without reopening these rules.
 - The step-1 projection implements every rule here in both memory backends. The
   step-2 validator checks the ones a trace can show: epoch and revision chaining,
-  removal of held items only, only named change kinds on a connection, updates only
+  removal of held items only, only minimum and named change kinds on a connection, updates only
   for a target the connection asked for, one resolution per prompt, one effect per
   remembered `intent_id`, and a degraded affordance exercised only with its opt-in.
 - `presentation.snapshot.request` gains `change_kinds`, every intent gains
@@ -207,7 +211,7 @@ waits for it.
 
 - Applying part of an update.
 - Updates for a target the connection never asked for.
-- A change kind the receiver did not name.
+- A change kind beyond the minimum that the receiver did not name.
 - Control opting into a degraded feature for the user.
 - Per-presentation roles before presentation identity exists.
 - Paging as a minimum-profile requirement.

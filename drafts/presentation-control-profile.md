@@ -332,18 +332,20 @@ uses these changes:
 - `timeline.item.upsert`
 - `timeline.item.remove`
 
-Every piece of minimum session state has a change that carries it whole, so a
-receiver's state never waits on a snapshot to catch up. `session.status.set` is the
-narrower form of `session.replace`.
+Every piece of minimum session state can change without a snapshot: the five
+replace kinds carry their state whole, and the timeline's upsert and remove
+together express any change to it. `session.status.set` is the narrower form of
+`session.replace`.
 
 Changes address domain objects by stable IDs such as `item_id`; they must not
 address JSON array indexes or expose an implementation's object paths.
 
-A `presentation.snapshot.request` carries `change_kinds`, the change kinds the
-receiver can apply; absent, it means the minimum change kinds. Control sends that
-connection only kinds it named. A change a narrower named kind cannot express goes
-through the whole-state change for the same state, and state no named kind covers
-is outside what that receiver holds, so control sends it no changes for it. This
+Every receiver applies all the minimum change kinds. A
+`presentation.snapshot.request` carries `change_kinds`, the kinds the receiver
+applies beyond them; absent, it names none. Control sends that connection only
+minimum kinds and kinds it named, so a change no named kind can express goes out in
+minimum kinds, and state that neither the minimum nor a named kind covers is
+outside what that receiver holds, so control sends it no changes for it. This
 is what lets a control layer add a change kind without every older receiver
 re-snapshotting on each update that carries it.
 
@@ -569,9 +571,9 @@ The following are intentionally outside presentation-control:
 - A snapshot request subscribes its connection to that target's updates, in order
   after the response; a connection that never asked for a target hears nothing
   about it.
-- A snapshot request names the change kinds the receiver applies, and control
-  sends it no others. Every piece of minimum session state has a change that
-  carries it whole.
+- Every receiver applies the minimum change kinds, a snapshot request names any it
+  applies beyond them, and control sends it no others. Every piece of minimum
+  session state can change without a snapshot.
 - A snapshot carries every timeline item control still holds, and control that
   drops an item sends `timeline.item.remove`.
 - An intent exercising a degraded affordance carries the user's `allow_degraded`
