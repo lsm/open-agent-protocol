@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `oapx serve agent --backend <acp entry>` writes its JSON-RPC frames with Go's escaping of `<`, `>`, `&` and U+2028/2029, so the bytes an ACP agent reads match `goap`'s; the parity scenario now sends a prompt carrying all of them.
 - The in-memory reference adapter, in Go and in `oapx`, refuses a resolution addressed to a queued run that has not started, which could otherwise complete it with no `run.started`.
 - `goap serve agent` honours an open's elections instead of dropping them: `tool_sources` are gated and resolved as the hub resolves them, `subscribe` is gated, and a compound `message` is refused `unsupported_feature` (`field: message`), as `oapx` refuses it. Before, all three were accepted and silently ignored.
 
