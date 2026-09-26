@@ -173,7 +173,7 @@ pub const Subscription = struct {
     fn advance(self: *Subscription, event: contract.Event) void {
         if (!std.mem.eql(u8, self.run_id, event.run_id)) {
             const owned = self.hub.allocator.dupe(u8, event.run_id) catch {
-                self.highest = 0;
+                self.ending = .stream_failed;
                 return;
             };
             if (self.run_id.len > 0) self.hub.allocator.free(self.run_id);
@@ -396,7 +396,13 @@ pub const Hub = struct {
         var refusal = contract.Refusal{};
         const admission = try entry.session.submit(arena, request, &refusal);
         if (admission.admission == .started) {
-            if (admission.run_id) |run_id| try self.promote(entry, run_id);
+            if (admission.run_id) |run_id| {
+                self.promote(entry, run_id) catch |err| {
+                    entry.session.close();
+                    self.closeSession(entry, .stream_failed);
+                    return err;
+                };
+            }
         }
         return admission;
     }
@@ -511,6 +517,7 @@ pub const Hub = struct {
             if (options.after == null) {
                 if (held.detached or held.ending == .expired) {
                     _ = self.dropHold(held);
+                    self.discard(held, .expired);
                 } else {
                     _ = self.dropHold(held);
                     held.held = false;
@@ -518,7 +525,7 @@ pub const Hub = struct {
                 }
             } else {
                 _ = self.dropHold(held);
-                self.retireSubscription(held, .expired);
+                self.discard(held, .expired);
             }
         }
         if (self.max_subscriptions > 0 and entry.subscribers.items.len >= self.max_subscriptions) return error.SubscriptionFull;
@@ -557,7 +564,7 @@ pub const Hub = struct {
                 continue;
             }
             const held = self.holds.orderedRemove(index);
-            self.retireSubscription(held.subscription, .expired);
+            self.discard(held.subscription, .expired);
         }
     }
 
@@ -586,8 +593,16 @@ pub const Hub = struct {
                 },
             };
             for (events.items) |event| {
-                try self.remember(entry, event);
-                try self.fanOut(entry, event);
+                self.remember(entry, event) catch |err| {
+                    entry.session.close();
+                    self.closeSession(entry, .stream_failed);
+                    return err;
+                };
+                self.fanOut(entry, event) catch |err| {
+                    entry.session.close();
+                    self.closeSession(entry, .stream_failed);
+                    return err;
+                };
             }
         }
     }
@@ -602,6 +617,28 @@ pub const Hub = struct {
             entry.session.close();
             self.closeSession(entry, .session_closed);
         }
+    }
+
+    fn discard(self: *Hub, subscription: *Subscription, ending: Ending) void {
+        subscription.ending = ending;
+        subscription.held = false;
+        const entry = self.findSession(subscription.session_id);
+        for (self.subscriptions.items, 0..) |existing, index| {
+            if (existing == subscription) {
+                _ = self.subscriptions.orderedRemove(index);
+                break;
+            }
+        }
+        if (entry) |found| {
+            for (found.subscribers.items, 0..) |existing, index| {
+                if (existing == subscription) {
+                    _ = found.subscribers.orderedRemove(index);
+                    break;
+                }
+            }
+        }
+        subscription.release(self.allocator);
+        self.allocator.destroy(subscription);
     }
 
     pub fn reclaim(self: *Hub) void {
@@ -1141,11 +1178,16 @@ test "a hold nothing adopts is released when its window closes" {
     const opened = try hub.open(arena, "memory", .{ .session_id = "abandoned" });
     const held = try hub.hold(arena, opened.session_id);
     try testing.expect(held.held);
+    try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
     hub.expireHolds();
-    try testing.expectEqual(Ending.open, held.ending);
+    try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
     tick(100 * std.time.ns_per_ms);
     hub.expireHolds();
-    try testing.expectEqual(Ending.expired, held.ending);
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
+    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    const fresh = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectEqual(Ending.open, fresh.ending);
 }
 
 test "a cursor-bearing subscription does not adopt a hold, and releases it" {
@@ -1164,7 +1206,9 @@ test "a cursor-bearing subscription does not adopt a hold, and releases it" {
     try hub.pump(testing.allocator, 0);
     const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
     try testing.expect(held != replayed);
-    try testing.expectEqual(Ending.expired, held.ending);
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
 }
 
 test "closing a session ends every subscription under it, and a closed one is refused" {
