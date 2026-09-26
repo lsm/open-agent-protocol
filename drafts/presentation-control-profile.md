@@ -108,10 +108,16 @@ profile.
 | query | `presentation.snapshot.request` | `presentation.snapshot.response` | Return current presentation-ready state for a domain target. |
 | command | `intent.message.submit.request` | `intent.message.submit.response` | Submit user-authored message intent to the control layer. |
 | command | `intent.run.cancel.request` | `intent.run.cancel.response`, or `error.response` if unavailable | Request cancellation through control-layer policy. |
+| command | `intent.permission.resolve.request` | `intent.permission.resolve.response`, or `error.response` if unavailable | Answer one permission prompt. |
+| command | `intent.user_input.resolve.request` | `intent.user_input.resolve.response`, or `error.response` if unavailable | Answer one user-input prompt. |
 | event | `presentation.updated` | not a response | Send presentation-ready updates for a target after accepted intent or agent-control events. |
 
 As with agent-control, requests have semantic request/response correlation.
-Renderable update events do not replace correlated responses.
+Renderable update events do not replace correlated responses, and a rejected
+request is answered with exactly one correlated `error.response` carrying a typed
+error, never with a response envelope whose fields merely imply the refusal. A
+refusal that carries no code and no message leaves a presentation layer unable to
+say why, which is the one thing a refusal exists to do.
 
 ## Target Shape
 
@@ -132,8 +138,21 @@ universal state object for every target.
 Common fields:
 
 - `target`
+- `epoch`
 - `revision`
 - `state`
+
+`epoch` is an opaque identifier naming the revision numbering of one target.
+Control mints a new epoch whenever it cannot promise that numbering continues: on
+start, or when it rebuilds that target's state. A control layer that saves its
+counter may keep one epoch across a restart. **Same epoch means same numbering**,
+and that is the whole promise the identifier makes.
+
+`epoch` is what makes the revision discipline sound across a control-layer restart
+without making persistence mandatory. Revisions that never reset would oblige
+every control layer to persist a counter, and v0.1 carries no persistence
+obligation — the same reason the agent control core reports a replay gap rather
+than faking continuity. This is that choice at the presentation boundary.
 
 The minimum `session` target state contains:
 
@@ -161,7 +180,15 @@ Common fields:
 - `created_at_ms`
 - `updated_at_ms`
 - `source_event_ids`
+- `intent_id`, on any item an intent produced
 - `actions`
+
+`intent_id` is how a presentation layer recognises its own work in a snapshot it
+did not receive the response for. After an epoch change — or a reconnect, or a
+restart — reconciling means finding the item carrying the `intent_id` it sent, and
+an item that omitted it could only be matched by comparing text, which fails the
+moment the same message is submitted twice. An item the agent loop produced rather
+than an intent carries no `intent_id`.
 
 Common item kinds:
 
@@ -227,13 +254,20 @@ Common affordance kinds:
 It must include:
 
 - `target`
+- `epoch`
 - `base_revision`
 - `revision`
 - `changes`
 
-Revisions are monotonically increasing integers scoped to one target. They
-describe presentation state consistency and are independent from envelope
-`sequence`, which orders messages within a binding-defined stream scope.
+Revisions are monotonically increasing integers scoped to one target **and one
+epoch**. They describe presentation state consistency and are independent from
+envelope `sequence`, which orders messages within a binding-defined stream scope
+and is not required for this profile: the revision already orders updates.
+
+Revisions do not advance by exactly one. A control layer may coalesce several
+changes into a single update, and an update chains from its `base_revision` rather
+than from the previous revision plus one. A new epoch may begin at any revision,
+and a lower revision in a new epoch is not a regression.
 
 Each change has a `kind` and kind-specific fields. The minimum session target
 uses changes such as:
@@ -248,32 +282,113 @@ Changes address domain objects by stable IDs such as `item_id`; they must not
 address JSON array indexes or expose an implementation's object paths.
 
 The receiver applies an update only when its local revision equals
-`base_revision`. If the revisions do not match, it must discard the incremental
-changes and request `presentation.snapshot` for the target. Unknown change
-kinds must not corrupt known state; a receiver may ignore them and request a
-fresh snapshot when they affect correct rendering.
+`base_revision` **and** its held epoch equals the update's `epoch`. If the
+revisions or the epochs do not match, it must discard the incremental changes and
+request `presentation.snapshot` for the target. A snapshot whose `epoch` differs
+from the one the receiver holds replaces what it holds for that target.
+
+An update's changes are applied as a set or not at all. A receiver which cannot
+apply **every** change in an update discards the whole set, does not advance its
+revision, and re-snapshots the target exactly as on a `base_revision` mismatch.
+Applying the changes it recognises and advancing anyway leaves the receiver
+holding state that is not that revision's state, which is the failure the revision
+discipline exists to prevent.
+
+A receiver tolerating unknown change kinds on the wire — under the layered
+draft's extension rules — has still not applied them, so the rule above applies
+unchanged. Tolerating an unknown kind says the envelope was well formed; it does
+not say the receiver understood it.
 
 ## Intent Events
 
 Presentation intent should be typed and semantic.
 
-Common minimum and near-core intents:
+Common minimum intents:
 
 | Intent | Meaning |
 | --- | --- |
 | `intent.message.submit.request` | User wants to submit composer content. |
-| `intent.run.cancel.request` | User wants to cancel a visible run. |
-| `intent.config.update.request` | User changed selected model, delivery mode, tool policy, or displayable run options. |
+| `intent.run.cancel.request` | User wants to cancel a visible run. Names its `run_id`; with queue delivery a session may hold more than one nonterminal run, and control must not be able to cancel a run the user never saw. |
 | `intent.permission.resolve.request` | User chose an explicit permission option. |
 | `intent.user_input.resolve.request` | User answered an agent-requested input prompt. |
+
+Near-core intents, not part of the minimum profile:
+
+| Intent | Meaning |
+| --- | --- |
+| `intent.config.update.request` | User changed selected model, delivery mode, tool policy, or displayable run options. |
 | `intent.transcript.load_more.request` | User wants more historical transcript rows. |
 | `intent.artifact.open.request` | User wants to open or retrieve an artifact. |
 
-Intent responses acknowledge whether the control layer accepted the intent. They
-do not mean the underlying agent loop completed the requested work. An accepted
+### Resolving A Prompt
+
+`pending_prompts` is the one source for what is being asked. Each entry projects
+one core interaction and carries its `prompt_id`, its `kind`, its `run_id`,
+renderable content — the question, and the tool call it concerns — and labelled
+choices. The core's interaction and choice shapes are reused rather than restated,
+so a choice is a labelled thing a reader can render rather than a bare id.
+
+The two resolve intents name one prompt and one of its choices, or the answer to a
+`user_input` prompt. A prompt resolves **once**: a stale or second answer is
+refused with a typed `error.response` rather than applied, and the refusal names
+the prompt.
+
+A prompt leaves `pending_prompts` when it is resolved, cancelled or expired, and
+the timeline keeps its outcome, so the transition is visible in the timeline
+rather than by the entry's disappearance alone.
+
+Affordances say only whether the presentation can act now, and why not. They never
+repeat a prompt's content, and a prompt carries no `affordance_id`.
+
+Intent responses acknowledge that the control layer accepted the intent. They do
+not mean the underlying agent loop completed the requested work. An accepted
 message-submit response reports `requested_delivery`, concrete
 `effective_delivery`, and `admission` so Presentation can reconcile automatic
 delivery without inferring it from local run state.
+
+A submit response therefore always means accepted; a refused submit is a correlated
+`error.response`, never a submit response reporting `admission: "rejected"`. The
+agent control core already refuses the latter, so this profile inherits the rule
+rather than restating a second way to say it.
+
+The admission pair is one the core admits, and there are two of them.
+`effective_delivery` is never null on an accepted submit, and under
+[Decision 0002](../decisions/0002-admission-before-start.md) `auto` resolves to
+either `admission: "started"` with `effective_delivery: "start"`, or
+`admission: "queued"` with `effective_delivery: "queue"` and a reserved `run_id`.
+`queue` resolves to the queued shape. `steer` is not one of the two:
+[Decision 0013](../decisions/0013-steer.md) is proposed, and the core refuses
+`steered` in this subset, so this profile cannot offer it either.
+
+### `intent_id` Is Retry Deduplication Within One Epoch
+
+**Every** intent carries an `intent_id`, not only submit, so a retried resolve or
+cancel is deduplicated the same way a retried submit is. Its single job: within one
+epoch, the same `intent_id` receives the same outcome and never starts a second
+run, resolves a prompt twice, or cancels a run that is already cancelled. A
+presentation layer retrying after a lost response learns the first attempt's
+outcome instead of acting twice.
+
+The promise is scoped to one epoch, because without persistence it cannot survive a
+restart. After an epoch change, control has no record of what an earlier epoch's
+`intent_id` did, so the deduplication window is gone. A presentation layer
+reconciles by finding the timeline item carrying the `intent_id` it sent, which is
+why a timeline item an intent produced carries one. It does not assume a carried
+`intent_id` is still known. This is the same reason the epoch exists at all: v0.1
+carries no persistence obligation, and a dedup window that silently expired would
+be worse than one with a stated boundary.
+
+The window is also bounded on the other side, and that is what keeps it affordable
+for control. An accepted intent only needs remembering until its outcome is visible
+in the timeline, because that is when the item carrying its `intent_id` appears and
+a later duplicate can be answered from the timeline instead. A refused intent
+changed nothing — it is an `error.response` and no run was admitted — so retrying
+it is harmless and needs no record at all. Control's memory is therefore bounded by
+outstanding intents rather than growing for the life of the epoch, which matters to
+`oapx`, whose session memory is bounded by design.
+
+The identifier lives on the request rather than duplicating the envelope `id`,
+which addresses one envelope.
 
 ## Control Responsibilities
 
@@ -307,7 +422,9 @@ The following are intentionally outside presentation-control:
 - raw DOM, component, or terminal drawing APIs;
 - CSS, themes, layout metrics, and visual design tokens;
 - raw provider SDK events;
-- raw agent-control request correlation;
+- raw agent-control request correlation. An intent response does not carry the
+  agent control request it became, because that is the control layer's own
+  correlation and a presentation layer has no use for it;
 - tool execution;
 - model provider requests;
 - storage engine internals;
@@ -317,6 +434,25 @@ The following are intentionally outside presentation-control:
 
 - Updates use typed changes and revision-based recovery, not JSON Patch or
   unconditional whole-snapshot replacement.
+- `epoch` names one target's revision numbering, and the revision rules key on
+  target and epoch. Revisions are monotonic within an epoch and do not advance by
+  exactly one, so a control layer may coalesce changes.
+- An update's changes apply as a set; a receiver that cannot apply every one of
+  them re-snapshots rather than advancing.
+- `pending_prompts` is authoritative for prompt content, and affordances never
+  repeat it. A prompt carries no `affordance_id`.
+- The two resolve intents are minimum profile, and a prompt resolves once.
+- `intent.run.cancel.request` names its `run_id`.
+- A rejected request is answered with one correlated `error.response` carrying a
+  typed error, never with a response envelope implying the refusal. A submit
+  response always means accepted, as the core already requires.
+- `intent_id` is on every intent, its job is retry deduplication within one epoch,
+  and it is not a persistence key. A timeline item an intent produced carries the
+  same `intent_id`, so a presentation layer can recognise its own work in a
+  snapshot it never received the response for.
+- Control's deduplication memory is bounded by outstanding intents: an accepted one
+  is remembered until its outcome is visible in the timeline, and a refused one
+  changed nothing.
 - Draft composer synchronization is outside the minimum profile.
 - Toasts and other transient notification presentation are UI implementation
   details. Control reports semantic diagnostics and state instead.
