@@ -136,6 +136,101 @@ pub fn oauthOrigin(id: []const u8) ?OAuthOrigin {
     return row.oauth_origin;
 }
 
+const Wire = struct {
+    id: []const u8,
+    suffix: []const u8,
+    trim: bool,
+    dedup_version: bool,
+    idempotent: bool,
+    model_scoped: bool,
+};
+
+const wire_paths = [_]Wire{
+    .{ .id = "openai-completions", .suffix = "/v1/chat/completions", .trim = true, .dedup_version = true, .idempotent = true, .model_scoped = false },
+    .{ .id = "openai-responses", .suffix = "/v1/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
+    .{ .id = "openai-codex-responses", .suffix = "/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
+    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .trim = true, .dedup_version = false, .idempotent = true, .model_scoped = false },
+    .{ .id = "ollama", .suffix = "/api/chat", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
+    .{ .id = "google-generative-ai", .suffix = "", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = true },
+};
+
+fn wirePath(wire: []const u8) ?Wire {
+    for (wire_paths) |path| {
+        if (std.mem.eql(u8, path.id, wire)) return path;
+    }
+    return null;
+}
+
+fn joinRequest(comptime base: []const u8, comptime path: Wire) []const u8 {
+    const trimmed = if (path.trim) std.mem.trimEnd(u8, base, "/") else base;
+    if (path.idempotent and std.mem.endsWith(u8, trimmed, path.suffix)) return trimmed;
+    const suffix = if (path.dedup_version and std.mem.endsWith(u8, trimmed, "/v1") and std.mem.startsWith(u8, path.suffix, "/v1/"))
+        path.suffix["/v1".len..]
+    else
+        path.suffix;
+    return trimmed ++ suffix;
+}
+
+fn joinModels(comptime base: []const u8, comptime path: []const u8) []const u8 {
+    return base ++ path;
+}
+
+pub const Resolved = struct {
+    id: []const u8,
+    wire: []const u8,
+    region: ?[]const u8,
+    base_url: []const u8,
+    models_url: ?[]const u8,
+    request_url: ?[]const u8,
+};
+
+pub const resolved = blk: {
+    var endpoints: usize = 0;
+    for (all) |row| endpoints += row.endpoints.len;
+    var collected: [endpoints]Resolved = undefined;
+    var index: usize = 0;
+    for (all) |row| {
+        for (row.endpoints) |endpoint| {
+            const path = wirePath(endpoint.wire);
+            collected[index] = .{
+                .id = row.id,
+                .wire = endpoint.wire,
+                .region = endpoint.region,
+                .base_url = endpoint.base_url,
+                .models_url = if (row.models_endpoint) |models_path| joinModels(endpoint.base_url, models_path) else null,
+                .request_url = if (path) |known| if (known.model_scoped) null else joinRequest(endpoint.base_url, known) else null,
+            };
+            index += 1;
+        }
+    }
+    const frozen = collected;
+    break :blk &frozen;
+};
+
+fn serves(entry: Resolved, id: []const u8, region: ?[]const u8) bool {
+    if (!std.mem.eql(u8, entry.id, id)) return false;
+    if (region) |wanted| {
+        const served_region = entry.region orelse return false;
+        return std.mem.eql(u8, served_region, wanted);
+    }
+    return entry.region == null;
+}
+
+pub fn modelsUrl(id: []const u8, region: ?[]const u8) ?[]const u8 {
+    for (resolved) |entry| {
+        if (serves(entry, id, region)) return entry.models_url;
+    }
+    return null;
+}
+
+pub fn requestUrl(id: []const u8, wire: []const u8, region: ?[]const u8) ?[]const u8 {
+    for (resolved) |entry| {
+        if (!std.mem.eql(u8, entry.wire, wire)) continue;
+        if (serves(entry, id, region)) return entry.request_url;
+    }
+    return null;
+}
+
 test "every row names a unique id" {
     try std.testing.expect(all.len > 0);
     try std.testing.expectEqual(all.len, count());
@@ -287,6 +382,67 @@ test "a models listing is an absolute path appended to a base that does not end 
     }
 }
 
+test "every wire a row names is a wire this file joins, or is model-scoped" {
+    for (all) |row| {
+        for (row.wires) |wire| {
+            const path = wirePath(wire) orelse continue;
+            if (path.model_scoped) continue;
+            for (row.endpoints) |endpoint| {
+                if (!std.mem.eql(u8, endpoint.wire, wire)) continue;
+                try std.testing.expect(requestUrl(row.id, wire, endpoint.region) != null);
+            }
+        }
+    }
+}
+
+test "a request URL is the row's base and its wire's path, joined as the wire's module joins it" {
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/chat/completions", requestUrl("openai", "openai-completions", null).?);
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/responses", requestUrl("openai", "openai-responses", null).?);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/codex/responses", requestUrl("openai-codex", "openai-codex-responses", null).?);
+    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/messages", requestUrl("anthropic", "anthropic-messages", null).?);
+    try std.testing.expect(requestUrl("minimax-coding-plan", "anthropic-messages", null) != null);
+}
+
+test "a base ending in /v1 gains no second version segment on the wire that dedups one" {
+    for (resolved) |entry| {
+        if (!std.mem.eql(u8, entry.wire, "openai-completions")) continue;
+        if (!std.mem.endsWith(u8, entry.base_url, "/v1")) continue;
+        try std.testing.expect(std.mem.indexOf(u8, entry.request_url.?, "/v1/v1") == null);
+    }
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", requestUrl("openrouter", "openai-completions", null).?);
+    try std.testing.expectEqualStrings("https://api.xiaomimimo.com/v1/chat/completions", requestUrl("xiaomi", "openai-completions", null).?);
+}
+
+test "a models URL is the row's own base and the path it records" {
+    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/models", modelsUrl("anthropic", null).?);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/models", modelsUrl("openrouter", null).?);
+    try std.testing.expectEqualStrings("https://api.z.ai/api/coding/paas/v4/models", modelsUrl("zai-coding-plan", null).?);
+    try std.testing.expectEqualStrings("https://api.minimax.io/anthropic/v1/models", modelsUrl("minimax-coding-plan", null).?);
+}
+
+test "a region picks the endpoint that serves it, and names no default without one" {
+    try std.testing.expectEqualStrings("https://api.kimi.com/coding/v1/chat/completions", requestUrl("kimi", "openai-completions", "china").?);
+    try std.testing.expectEqualStrings("https://api.moonshot.ai/v1/chat/completions", requestUrl("kimi", "openai-completions", "global").?);
+    try std.testing.expectEqualStrings("https://api.kimi.com/coding/v1/models", modelsUrl("kimi", "china").?);
+    try std.testing.expectEqualStrings("https://api.moonshot.ai/v1/models", modelsUrl("kimi", "global").?);
+    try std.testing.expect(requestUrl("kimi", "openai-completions", null) == null);
+    try std.testing.expect(modelsUrl("kimi", null) == null);
+    try std.testing.expect(requestUrl("kimi", "openai-completions", "mars") == null);
+    try std.testing.expect(modelsUrl("kimi", "mars") == null);
+}
+
+test "a row with no static endpoint resolves no URL, and a model-scoped wire resolves no request URL" {
+    try std.testing.expect(requestUrl("ollama", "ollama", null) == null);
+    try std.testing.expect(modelsUrl("ollama", null) == null);
+    try std.testing.expect(requestUrl("github-copilot", "openai-completions", null) == null);
+    try std.testing.expect(requestUrl("azure", "openai-responses", null) == null);
+    try std.testing.expect(requestUrl("google", "google-generative-ai", null) == null);
+    try std.testing.expect(modelsUrl("google", null) == null);
+    try std.testing.expect(requestUrl("no-such-provider", "openai-completions", null) == null);
+    try std.testing.expect(requestUrl("openai", "no-such-wire", null) == null);
+    try std.testing.expect(modelsUrl("no-such-provider", null) == null);
+}
+
 test "an offering is a plan, a subscription or an api key, and one host serves one row" {
     const plans = coding_plan_ids;
     try std.testing.expect(plans.len > 0);
@@ -355,3 +511,4 @@ test "every row records how it authenticates, and an origin policy belongs to an
         try std.testing.expectEqual(speaks_oauth, row.oauth_origin != null);
     }
 }
+
