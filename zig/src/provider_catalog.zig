@@ -149,7 +149,7 @@ const wire_paths = [_]Wire{
     .{ .id = "openai-completions", .suffix = "/v1/chat/completions", .trim = true, .dedup_version = true, .idempotent = true, .model_scoped = false },
     .{ .id = "openai-responses", .suffix = "/v1/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
     .{ .id = "openai-codex-responses", .suffix = "/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
-    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .trim = true, .dedup_version = true, .idempotent = true, .model_scoped = false },
+    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .trim = false, .dedup_version = true, .idempotent = true, .model_scoped = false },
     .{ .id = "ollama", .suffix = "/api/chat", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
     .{ .id = "google-generative-ai", .suffix = "", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = true },
 };
@@ -406,11 +406,14 @@ test "a models listing is an absolute path appended to a base that does not end 
 test "every wire a row names is a wire this file joins, or is model-scoped" {
     for (all) |row| {
         for (row.wires) |wire| {
-            const path = wirePath(wire) orelse continue;
-            if (path.model_scoped) continue;
+            const path = wirePath(wire) orelse return error.TestUnexpectedResult;
             for (row.endpoints) |endpoint| {
                 if (!std.mem.eql(u8, endpoint.wire, wire)) continue;
-                try std.testing.expect(requestUrl(row.id, wire, endpoint.region) != null);
+                if (path.model_scoped) {
+                    try std.testing.expect(requestUrl(row.id, wire, endpoint.region) == null);
+                } else {
+                    try std.testing.expect(requestUrl(row.id, wire, endpoint.region) != null);
+                }
             }
         }
     }
