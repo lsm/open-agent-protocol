@@ -1,6 +1,12 @@
 const std = @import("std");
 const compat = @import("compat");
 const provider_catalog = @import("provider_catalog");
+
+comptime {
+    _ = provider_catalog.baseUrlOrCompileError("google", "google-generative-ai", null);
+}
+const google_credential_env = provider_catalog.credentialEnvOrCompileError("google");
+const google_base_url_env = provider_catalog.baseUrlEnvOrCompileError("google");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
 const api_registry = @import("api_registry");
@@ -1270,7 +1276,7 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
     const api_key: []u8 = blk: {
         if (o.getApiKey()) |k| break :blk try allocator.dupe(u8, k);
         if (!std.mem.eql(u8, model.provider, "google")) return error.MissingApiKey;
-        const e = env(allocator, "GOOGLE_API_KEY");
+        const e = env(allocator, google_credential_env);
         if (e) |k| break :blk @constCast(k);
         return error.MissingApiKey;
     };
@@ -1278,9 +1284,9 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
 
     const base_url: []u8 = blk: {
         if (model.base_url.len > 0) break :blk try allocator.dupe(u8, model.base_url);
-        const e = env(allocator, "GOOGLE_BASE_URL");
+        const e = env(allocator, google_base_url_env);
         if (e) |v| break :blk @constCast(v);
-        const fallback = provider_catalog.baseUrl("google", model.api, null) orelse return error.MissingApiKey;
+        const fallback = provider_catalog.baseUrl("google", model.api, null) orelse return error.MissingProviderBaseUrl;
         break :blk try allocator.dupe(u8, fallback);
     };
     errdefer allocator.free(base_url);

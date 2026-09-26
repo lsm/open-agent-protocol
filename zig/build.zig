@@ -810,6 +810,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_error_detail", .module = provider_error_detail_mod },
             .{ .name = "sse_parser", .module = sse_parser_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "compat", .module = compat_mod },
         },
     });
@@ -845,6 +846,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "sanitize", .module = sanitize_mod },
             .{ .name = "compat", .module = compat_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "retry", .module = retry_mod },
             .{ .name = "pre_transform", .module = pre_transform_mod },
             .{ .name = "string_builder", .module = string_builder_mod },

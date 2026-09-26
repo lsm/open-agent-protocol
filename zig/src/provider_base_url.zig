@@ -16,11 +16,11 @@ pub fn defaultBaseUrlForRefWithRegion(
 ) ![]const u8 {
     const global = try envOwnedOrNull(allocator, "OAPX_BASE_URL");
     defer if (global) |g| allocator.free(g);
-    const anthropic = try envOwnedOrNull(allocator, "ANTHROPIC_BASE_URL");
+    const anthropic = try envOwnedOrNull(allocator, anthropic_base_url_env);
     defer if (anthropic) |v| allocator.free(v);
-    const openai = try envOwnedOrNull(allocator, "OPENAI_BASE_URL");
+    const openai = try envOwnedOrNull(allocator, openai_base_url_env);
     defer if (openai) |v| allocator.free(v);
-    const deepseek = try envOwnedOrNull(allocator, "DEEPSEEK_BASE_URL");
+    const deepseek = try envOwnedOrNull(allocator, deepseek_base_url_env);
     defer if (deepseek) |v| allocator.free(v);
 
     const kimi_region: []const u8 = blk: {
@@ -53,6 +53,16 @@ pub const BaseUrlOverrides = struct {
 
 const kimi_region_env = provider_catalog.regionEnv("kimi") orelse
     @compileError("providers/catalog.json records no region_env for kimi");
+const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
+const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
+const openai_completions_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-completions", null);
+const deepseek_completions_base_url = provider_catalog.baseUrlOrCompileError("deepseek", "openai-completions", null);
+const codex_responses_base_url = provider_catalog.baseUrlOrCompileError("openai-codex", "openai-codex-responses", null);
+const kimi_china_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "china");
+const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "global");
+const anthropic_base_url_env = provider_catalog.baseUrlEnvOrCompileError("anthropic");
+const openai_base_url_env = provider_catalog.baseUrlEnvOrCompileError("openai");
+const deepseek_base_url_env = provider_catalog.baseUrlEnvOrCompileError("deepseek");
 
 pub fn normalizeKimiRegion(value: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
@@ -86,15 +96,15 @@ pub fn baseUrlWithOverrides(allocator: std.mem.Allocator, provider_id: []const u
     }
 
     const by_provider: ?[]const u8 = if (std.mem.eql(u8, provider_id, "anthropic") and std.mem.eql(u8, api, "anthropic-messages"))
-        if (ov.anthropic.len > 0) normalizeVersionedBaseUrl(ov.anthropic) else provider_catalog.baseUrl("anthropic", api, null) orelse ""
+        if (ov.anthropic.len > 0) normalizeVersionedBaseUrl(ov.anthropic) else anthropic_messages_base_url
     else if (std.mem.eql(u8, provider_id, "openai") and (std.mem.eql(u8, api, "openai-completions") or std.mem.eql(u8, api, "openai-responses")))
-        if (ov.openai.len > 0) normalizeVersionedBaseUrl(ov.openai) else provider_catalog.baseUrl("openai", api, null) orelse ""
+        if (ov.openai.len > 0) normalizeVersionedBaseUrl(ov.openai) else if (std.mem.eql(u8, api, "openai-responses")) openai_responses_base_url else openai_completions_base_url
     else if (std.mem.eql(u8, provider_id, "deepseek") and std.mem.eql(u8, api, "openai-completions"))
-        if (ov.deepseek.len > 0) normalizeVersionedBaseUrl(ov.deepseek) else provider_catalog.baseUrl("deepseek", api, null) orelse ""
+        if (ov.deepseek.len > 0) normalizeVersionedBaseUrl(ov.deepseek) else deepseek_completions_base_url
     else if (std.mem.eql(u8, provider_id, "openai-codex") and std.mem.eql(u8, api, "openai-codex-responses"))
-        provider_catalog.baseUrl("openai-codex", api, null) orelse ""
+        codex_responses_base_url
     else if (std.mem.eql(u8, provider_id, "kimi") and std.mem.eql(u8, api, "openai-completions"))
-        provider_catalog.baseUrl("kimi", api, ov.kimi_region) orelse ""
+        if (std.mem.eql(u8, ov.kimi_region, "global")) kimi_global_base_url else kimi_china_base_url
     else
         null;
     if (by_provider) |url| return try allocator.dupe(u8, url);
