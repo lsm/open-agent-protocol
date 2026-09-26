@@ -51,22 +51,24 @@ Two holes in the draft are already load-bearing for that crossing, and both are
 visible by reading the one implementation in this repository against the draft
 that describes it.
 
-**There is no epoch.** Revisions are monotonic integers scoped to one target
-(lines 230-254), and a receiver that does not hold `base_revision` must discard
-the changes and request a fresh snapshot. Nothing distinguishes a receiver that
-is ahead because it persisted across a control-layer restart from a control layer
-whose revision regressed, so a presentation client that stores state cannot
-converge after a restart — it re-snapshots, and the next update mismatches again.
-`tui/session_store.zig` is 1,642 lines of exactly that persistence, and it
-answers the question internally because the wire has nowhere to put the answer.
+**There is no epoch.** Revisions are monotonic integers scoped to one target (the
+draft's *Presentation Updates* section), and a receiver that does not hold
+`base_revision` must discard the changes and request a fresh snapshot. Nothing
+distinguishes a receiver that is ahead because it persisted across a control-layer
+restart from a control layer whose revision regressed, so a presentation client
+that stores state cannot converge after a restart — it re-snapshots, and the next
+update mismatches again. `tui/session_store.zig` is 1,642 lines of exactly that
+persistence, and it answers the question internally because the wire has nowhere to
+put the answer.
 
 **`pending_prompts` and `affordances` are both control-owned and never
 reconciled.** `resolve_permission` and `resolve_user_input` are affordance kinds
-(lines 219-220) and `pending_prompts` is its own snapshot field (line 144).
-Nothing says which is authoritative when a prompt exists and its affordance is
-absent, disabled, or disagrees with it, and the draft does not say they must
-agree. `AppState` splits the same state the same way — `approval` against
-`tools` and `permission_mode` — so this ambiguity is live, not hypothetical.
+(the draft's *Affordance* section) and `pending_prompts` is its own field in the
+minimum session target state (*Snapshot Shape*). Nothing says which is
+authoritative when a prompt exists and its affordance is absent, disabled, or
+disagrees with it, and the draft does not say they must agree. `AppState` splits
+the same state the same way — `approval` against `tools` and `permission_mode` —
+so this ambiguity is live, not hypothetical.
 
 ## Decisions
 

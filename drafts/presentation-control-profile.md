@@ -180,15 +180,21 @@ Common fields:
 - `created_at_ms`
 - `updated_at_ms`
 - `source_event_ids`
-- `intent_id`, on any item an intent produced
+- `intent_id`, on any item an intent changed
 - `actions`
 
 `intent_id` is how a presentation layer recognises its own work in a snapshot it
 did not receive the response for. After an epoch change — or a reconnect, or a
 restart — reconciling means finding the item carrying the `intent_id` it sent, and
 an item that omitted it could only be matched by comparing text, which fails the
-moment the same message is submitted twice. An item the agent loop produced rather
-than an intent carries no `intent_id`.
+moment the same message is submitted twice.
+
+It is recorded on any item the intent **changed**, not only one it produced,
+because most intents change an item somebody else produced. A submit produces its
+own `message` item, but a resolve changes the `permission_prompt` or
+`user_input_prompt` item the agent loop raised, and a cancel changes the run's
+status item. An item no intent touched carries no `intent_id`, which is how a
+reader tells an intent's work from the loop's.
 
 Common item kinds:
 
@@ -331,7 +337,9 @@ so a choice is a labelled thing a reader can render rather than a bare id.
 The two resolve intents name one prompt and one of its choices, or the answer to a
 `user_input` prompt. A prompt resolves **once**: a stale or second answer is
 refused with a typed `error.response` rather than applied, and the refusal names
-the prompt.
+the prompt. A retry carrying the same `intent_id` is not a second answer — it is the
+same answer arriving twice, and it receives the first one's outcome. Two answers
+under different `intent_id`s are two answers, and the second is refused.
 
 A prompt leaves `pending_prompts` when it is resolved, cancelled or expired, and
 the timeline keeps its outcome, so the transition is visible in the timeline
@@ -364,8 +372,8 @@ either `admission: "started"` with `effective_delivery: "start"`, or
 
 **Every** intent carries an `intent_id`, not only submit, so a retried resolve or
 cancel is deduplicated the same way a retried submit is. Its single job: within one
-epoch, the same `intent_id` receives the same outcome and never starts a second
-run, resolves a prompt twice, or cancels a run that is already cancelled. A
+epoch, the same `intent_id` receives the same outcome and never causes a second
+effect — a second run, a second resolution, or a second cancellation. A
 presentation layer retrying after a lost response learns the first attempt's
 outcome instead of acting twice.
 
@@ -373,16 +381,16 @@ The promise is scoped to one epoch, because without persistence it cannot surviv
 restart. After an epoch change, control has no record of what an earlier epoch's
 `intent_id` did, so the deduplication window is gone. A presentation layer
 reconciles by finding the timeline item carrying the `intent_id` it sent, which is
-why a timeline item an intent produced carries one. It does not assume a carried
-`intent_id` is still known. This is the same reason the epoch exists at all: v0.1
-carries no persistence obligation, and a dedup window that silently expired would
-be worse than one with a stated boundary.
+why an item an intent changed carries one. It does not assume a carried `intent_id`
+is still known. This is the same reason the epoch exists at all: v0.1 carries no
+persistence obligation, and a dedup window that silently expired would be worse
+than one with a stated boundary.
 
 The window is also bounded on the other side, and that is what keeps it affordable
-for control. An accepted intent only needs remembering until its outcome is visible
-in the timeline, because that is when the item carrying its `intent_id` appears and
-a later duplicate can be answered from the timeline instead. A refused intent
-changed nothing — it is an `error.response` and no run was admitted — so retrying
+for control. An accepted intent only needs remembering until its effect is visible
+in the timeline, because that is when the item carrying its `intent_id` reflects it
+and a later duplicate can be answered from the timeline instead. A refused intent
+changed nothing — it is an `error.response` and nothing was admitted — so retrying
 it is harmless and needs no record at all. Control's memory is therefore bounded by
 outstanding intents rather than growing for the life of the epoch, which matters to
 `oapx`, whose session memory is bounded by design.
@@ -447,11 +455,15 @@ The following are intentionally outside presentation-control:
   typed error, never with a response envelope implying the refusal. A submit
   response always means accepted, as the core already requires.
 - `intent_id` is on every intent, its job is retry deduplication within one epoch,
-  and it is not a persistence key. A timeline item an intent produced carries the
-  same `intent_id`, so a presentation layer can recognise its own work in a
-  snapshot it never received the response for.
+  and it is not a persistence key. A retry under the same `intent_id` is not a
+  second answer and receives the first outcome; two answers under different ids are
+  two answers.
+- A timeline item an intent **changed** carries that intent's `intent_id`, so a
+  presentation layer can recognise its own work in a snapshot it never received the
+  response for. A resolve records on the prompt's item, a cancel on the run's status
+  item, a submit on the message it produced.
 - Control's deduplication memory is bounded by outstanding intents: an accepted one
-  is remembered until its outcome is visible in the timeline, and a refused one
+  is remembered until its effect is visible in the timeline, and a refused one
   changed nothing.
 - Draft composer synchronization is outside the minimum profile.
 - Toasts and other transient notification presentation are UI implementation
