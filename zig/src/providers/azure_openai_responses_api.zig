@@ -1,4 +1,8 @@
 const std = @import("std");
+const provider_catalog = @import("provider_catalog");
+
+const azure_credential_env = provider_catalog.credentialEnv("azure")[0];
+const azure_base_url_env = provider_catalog.baseUrlEnv("azure")[0];
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
@@ -389,7 +393,7 @@ pub fn streamAzureOpenAIResponses(model: ai_types.Model, context: ai_types.Conte
     const api_key: []u8 = blk: {
         if (o.getApiKey()) |k| break :blk try allocator.dupe(u8, k);
         if (!std.mem.eql(u8, model.provider, "azure")) return error.MissingApiKey;
-        const e = env(allocator, "AZURE_OPENAI_API_KEY");
+        const e = env(allocator, azure_credential_env);
         if (e) |k| break :blk @constCast(k);
         return error.MissingApiKey;
     };
@@ -397,7 +401,7 @@ pub fn streamAzureOpenAIResponses(model: ai_types.Model, context: ai_types.Conte
 
     const base_url: []u8 = blk: {
         if (model.base_url.len > 0) break :blk try allocator.dupe(u8, model.base_url);
-        const e = env(allocator, "AZURE_OPENAI_BASE_URL");
+        const e = env(allocator, azure_base_url_env);
         if (e) |v| break :blk @constCast(v);
         const resource = env(allocator, "AZURE_RESOURCE_NAME") orelse return error.MissingApiKey;
         defer allocator.free(resource);

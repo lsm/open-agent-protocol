@@ -2,6 +2,7 @@ const std = @import("std");
 const ai_types = @import("ai_types");
 const compat_mod = @import("compat");
 const provider_base_url = @import("provider_base_url");
+const provider_catalog = @import("provider_catalog");
 
 pub const config_file_name = "providers.json";
 pub const max_config_bytes = 2 * 1024 * 1024;
@@ -12,18 +13,7 @@ pub const supported_apis = [_][]const u8{
     "anthropic-messages",
 };
 
-pub const reserved_ids = [_][]const u8{
-    "anthropic",
-    "openai",
-    "openai-codex",
-    "github-copilot",
-    "google",
-    "google-gemini-cli",
-    "azure",
-    "ollama",
-    "kimi",
-    "deepseek",
-};
+pub const reserved_ids = provider_catalog.ids;
 
 pub const ConfigError = error{
     InvalidConfig,
@@ -394,7 +384,7 @@ fn validateId(id: []const u8) ConfigError!void {
         const ok = std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.';
         if (!ok) return ConfigError.InvalidProviderId;
     }
-    for (reserved_ids) |reserved| {
+    for (provider_catalog.ids) |reserved| {
         if (std.mem.eql(u8, id, reserved)) return ConfigError.ReservedProviderId;
     }
 }

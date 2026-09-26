@@ -1,4 +1,8 @@
 const std = @import("std");
+const provider_catalog = @import("provider_catalog");
+
+const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
+const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
 const types = @import("oap_provider_types");
 
 pub const OAPX_API_NAMES = [_][]const u8{
@@ -131,7 +135,7 @@ pub const BUILT_IN_PROVIDERS = [_]BuiltInProvider{
     .{
         .id = "anthropic",
         .api = "anthropic-messages",
-        .endpoint = "https://api.anthropic.com",
+        .endpoint = anthropic_messages_base_url,
         .allows_anonymous = false,
         .model_id = "claude-sonnet-4-5",
         .display_name = "Claude Sonnet 4.5",
@@ -143,7 +147,7 @@ pub const BUILT_IN_PROVIDERS = [_]BuiltInProvider{
     .{
         .id = "openai",
         .api = "openai-responses",
-        .endpoint = "https://api.openai.com",
+        .endpoint = openai_responses_base_url,
         .allows_anonymous = false,
         .model_id = "gpt-4o",
         .display_name = "GPT-4o",

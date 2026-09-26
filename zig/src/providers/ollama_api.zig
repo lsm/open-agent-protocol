@@ -1,4 +1,8 @@
 const std = @import("std");
+const provider_catalog = @import("provider_catalog");
+
+const ollama_credential_env = provider_catalog.credentialEnv("ollama")[0];
+const ollama_base_url_env = provider_catalog.baseUrlEnv("ollama")[0];
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
@@ -1091,14 +1095,14 @@ pub fn streamOllama(
     const api_key: ?[]u8 = blk: {
         if (o.getApiKey()) |k| break :blk try allocator.dupe(u8, k);
         if (!std.mem.eql(u8, model.provider, "ollama")) break :blk null;
-        if (env(allocator, "OLLAMA_API_KEY")) |k| break :blk @constCast(k);
+        if (env(allocator, ollama_credential_env)) |k| break :blk @constCast(k);
         break :blk null;
     };
     errdefer if (api_key) |k| allocator.free(k);
 
     const base_url = blk: {
         if (model.base_url.len > 0) break :blk try allocator.dupe(u8, model.base_url);
-        if (env(allocator, "OLLAMA_BASE_URL")) |v| break :blk @constCast(v);
+        if (env(allocator, ollama_base_url_env)) |v| break :blk @constCast(v);
         if (api_key != null) break :blk try allocator.dupe(u8, "https://ollama.com");
         break :blk try allocator.dupe(u8, "http://127.0.0.1:11434");
     };

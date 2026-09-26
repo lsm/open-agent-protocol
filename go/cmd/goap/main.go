@@ -231,6 +231,9 @@ func runCheck(ctx context.Context, args []string, stdout io.Writer) error {
 	if err := checkHarnesses(stdout); err != nil {
 		return fmt.Errorf("harnesses: %w", err)
 	}
+	if err := checkProviders(stdout); err != nil {
+		return fmt.Errorf("providers: %w", err)
+	}
 	if err := runFixtures(nil, stdout); err != nil {
 		return fmt.Errorf("fixtures: %w", err)
 	}
