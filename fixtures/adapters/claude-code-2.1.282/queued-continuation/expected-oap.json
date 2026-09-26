@@ -1,0 +1,75 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.started",
+    "id": "event-4",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "status": "running",
+      "model_id": "claude-test",
+      "started_at_ms": 2
+    },
+    "sequence": 1,
+    "timestamp_ms": 3,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "content.delta",
+    "id": "event-5",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "message_id": "message-2",
+      "part": {
+        "type": "text",
+        "text": "first"
+      }
+    },
+    "sequence": 2,
+    "timestamp_ms": 4,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.282-oap-v1"
+  },
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.agent-control-core",
+    "type": "run.completed",
+    "id": "event-6",
+    "payload": {
+      "session_id": "session",
+      "run_id": "run-3",
+      "final_response": {
+        "id": "message-2",
+        "role": "assistant",
+        "content": "closing"
+      },
+      "stop_reason": "completed",
+      "usage": {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "total_tokens": 18
+      },
+      "duration_ms": 200
+    },
+    "sequence": 3,
+    "timestamp_ms": 5,
+    "session_id": "session",
+    "run_id": "run-3",
+    "capability_revision": "claude-code-2.1.282-oap-v1",
+    "extensions": {
+      "com.anthropic.claude-code.cost": {
+        "total_cost_usd": 0.0002
+      }
+    }
+  }
+]

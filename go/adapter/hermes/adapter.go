@@ -32,6 +32,8 @@ var ErrNativeProtocol = errors.New("hermes adapter: invalid native protocol obse
 
 type Client interface {
 	Call(context.Context, string, any, any) error
+	Respond(context.Context, *rpc.IncomingRequest, any) error
+	RespondError(context.Context, *rpc.IncomingRequest, int64, string) error
 	Inbound() <-chan rpc.InboundMessage
 	Done() <-chan struct{}
 
@@ -230,7 +232,7 @@ func (a *Adapter) Probe(ctx context.Context) (base.Descriptor, error) {
 		"action.tools":                   {Level: protocol.SupportDegraded, Reason: "tool.start/complete only; started synthesized; failures ride in result without a pinned discriminator"},
 		"action.tools.execute":           {Level: protocol.SupportUnavailable, Reason: "the gateway executes tools internally"},
 		"action.permissions":             {Level: protocol.SupportDegraded, Reason: "approval gates surface as input interactions"},
-		"user_input":                     {Level: protocol.SupportNative, Reason: "approval/clarify/sudo/secret gates with expire siblings"},
+		"user_input":                     {Level: protocol.SupportNative, Reason: "approval/clarify/sudo/secret server requests, withdrawn by request.cancel"},
 	}
 	return base.Descriptor{Capabilities: protocol.CapabilityDescriptor{Endpoint: protocol.EndpointDescriptor{ID: endpointID, Name: "Hermes Gateway Adapter", Version: PinnedVersion, Adapter: "hermes-tui-gateway"}, ProtocolVersions: []string{protocol.Version}, Profiles: []string{protocol.Profile}, Features: features}, CapabilityRevision: CapabilityRevision, Journal: base.JournalDescriptor{Scope: "session", Persistence: "process_memory", Replay: protocol.SupportDegraded, Capacity: a.config.JournalCapacity}, MaxActiveRunsPerSession: 1, InteractiveGates: true, CancellationTarget: "session", CancellationImplementation: "session.interrupt"}, nil
 }

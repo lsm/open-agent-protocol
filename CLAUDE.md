@@ -286,8 +286,10 @@ ledgers, a corpus expects another revision, or a Go adapter's
 `CapabilityRevision` or `CorpusDirectory` differs from the current version.
 Neither tree spells a pin: Go reads `harnesses.Current("<id>")`, Zig reads the
 `harness_pins` module `build.zig` generates from the catalog, and `goap check`
-fails on any Go or Zig string literal equal to a catalog value (a Zig served backend
-whose descriptor still differs from Go's uses `oapx_capability_revision`). Move a pin by adding a version and a new corpus directory, never by editing one
+fails on any Go or Zig string literal equal to a catalog value. Both trees serve
+one revision per version, the catalog's `capability_revision`: a served Zig
+backend answers `capabilities.request` exactly as the Go adapter does, which
+`TestBackendsMatchOapx` checks in CI. Move a pin by adding a version and a new corpus directory, never by editing one
 in place.
 
 The layout repeats across `adapter/<harness>/`, so copy a neighbour. What the

@@ -197,6 +197,14 @@ type wireUserMessage struct {
 	Content   json.RawMessage `json:"content"`
 	Timestamp int64           `json:"timestamp"`
 }
+type wireSystemMessage struct {
+	Role         string                     `json:"role"`
+	Content      json.RawMessage            `json:"content"`
+	Sections     map[string]json.RawMessage `json:"sections,omitempty"`
+	ToolsAdded   []json.RawMessage          `json:"toolsAdded,omitempty"`
+	ToolsRemoved []json.RawMessage          `json:"toolsRemoved,omitempty"`
+	Timestamp    int64                      `json:"timestamp"`
+}
 type wireToolResultMessage struct {
 	Role           string          `json:"role"`
 	ToolCallID     string          `json:"toolCallId"`
@@ -840,9 +848,55 @@ func decodeWireMessage(raw json.RawMessage) (*wireMessage, error) {
 			return nil, err
 		}
 		return nil, nil
+	case "system":
+		if err := require("content", "timestamp"); err != nil {
+			return nil, err
+		}
+		var message wireSystemMessage
+		if err := native.DecodeStrict(raw, &message); err != nil {
+			return nil, err
+		}
+		if err := validateSystemContent(message.Content); err != nil {
+			return nil, err
+		}
+		for name, section := range message.Sections {
+			var text *string
+			if err := json.Unmarshal(section, &text); err != nil {
+				return nil, fmt.Errorf("system section %q: %w", name, err)
+			}
+		}
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown message role %q", role)
 	}
+}
+
+func validateSystemContent(raw json.RawMessage) error {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return nil
+	}
+	var parts []json.RawMessage
+	if err := native.DecodeStrict(raw, &parts); err != nil {
+		return err
+	}
+	for _, part := range parts {
+		var p wireTextContent
+		if err := native.DecodeStrict(part, &p); err != nil {
+			return err
+		}
+		if p.Type != "text" {
+			return fmt.Errorf("system content block %q is not text", p.Type)
+		}
+		var object map[string]json.RawMessage
+		if err := native.DecodeStrict(part, &object); err != nil {
+			return err
+		}
+		if _, ok := object["text"]; !ok {
+			return errors.New("text block requires text")
+		}
+	}
+	return nil
 }
 
 func validateWireContent(raw json.RawMessage, allowImage bool) error {

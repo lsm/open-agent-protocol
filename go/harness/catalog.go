@@ -36,18 +36,17 @@ type Harness struct {
 }
 
 type Version struct {
-	Label                  string      `json:"label"`
-	Status                 Status      `json:"status"`
-	EndpointVersion        string      `json:"endpoint_version,omitempty"`
-	CapabilityRevision     string      `json:"capability_revision,omitempty"`
-	OapxCapabilityRevision string      `json:"oapx_capability_revision,omitempty"`
-	Admits                 []string    `json:"admits,omitempty"`
-	Ledgers                []string    `json:"ledgers"`
-	Corpus                 string      `json:"corpus,omitempty"`
-	CorpusFrom             string      `json:"corpus_from,omitempty"`
-	Components             []Component `json:"components,omitempty"`
-	Artifacts              []Artifact  `json:"artifacts,omitempty"`
-	Sources                []Source    `json:"sources,omitempty"`
+	Label              string      `json:"label"`
+	Status             Status      `json:"status"`
+	EndpointVersion    string      `json:"endpoint_version,omitempty"`
+	CapabilityRevision string      `json:"capability_revision,omitempty"`
+	Admits             []string    `json:"admits,omitempty"`
+	Ledgers            []string    `json:"ledgers"`
+	Corpus             string      `json:"corpus,omitempty"`
+	CorpusFrom         string      `json:"corpus_from,omitempty"`
+	Components         []Component `json:"components,omitempty"`
+	Artifacts          []Artifact  `json:"artifacts,omitempty"`
+	Sources            []Source    `json:"sources,omitempty"`
 }
 
 type Component struct {

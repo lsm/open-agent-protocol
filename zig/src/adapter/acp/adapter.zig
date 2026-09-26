@@ -8,6 +8,7 @@ const session = @import("session");
 const rpc = @import("rpc");
 const compat = @import("compat");
 const json_encode = @import("json_encode");
+const gomarshal = @import("gomarshal");
 
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.acp_capability_revision;
@@ -39,6 +40,8 @@ pub const descriptor = contract.Descriptor{
     .capability_revision = capability_revision,
     .features = &features,
 };
+
+pub const default_compact_above: usize = 256 * 1024;
 
 pub const Config = struct {
     executable: []const u8,
@@ -84,6 +87,33 @@ pub const Adapter = struct {
         return opened.handle();
     }
 };
+
+const Kept = struct {
+    native_id: []const u8,
+    sources: []oap_types.ToolSourceDescriptor,
+    statuses: std.StringHashMapUnmanaged([]const u8),
+
+    fn copy(keep: std.mem.Allocator, native_id: []const u8, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8)) !Kept {
+        const kept_native_id = try keep.dupe(u8, native_id);
+        const kept_sources = try keep.alloc(oap_types.ToolSourceDescriptor, sources.len);
+        for (sources, kept_sources) |source, *slot| slot.* = try ownedSource(keep, source);
+        var kept_statuses: std.StringHashMapUnmanaged([]const u8) = .empty;
+        try kept_statuses.ensureTotalCapacity(keep, statuses.count());
+        var recorded = statuses.iterator();
+        while (recorded.next()) |entry| {
+            const run_id = try keep.dupe(u8, entry.key_ptr.*);
+            const status = try keep.dupe(u8, entry.value_ptr.*);
+            kept_statuses.putAssumeCapacity(run_id, status);
+        }
+        return .{ .native_id = kept_native_id, .sources = kept_sources, .statuses = kept_statuses };
+    }
+};
+
+fn keptProbe(allocator: std.mem.Allocator, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8)) !void {
+    var fresh = std.heap.ArenaAllocator.init(allocator);
+    defer fresh.deinit();
+    _ = try Kept.copy(fresh.allocator(), "native-session", sources, statuses);
+}
 
 const Attached = struct {
     servers: []const std.json.Value = &.{},
@@ -228,6 +258,8 @@ pub const Session = struct {
     ended: bool = false,
     reaped: bool = false,
     sources: []oap_types.ToolSourceDescriptor = &.{},
+    compact_above: usize = default_compact_above,
+    retained: usize = 0,
 
     fn open(owner: *Adapter, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!*Session {
         const attached = try attach(owner, arena, request.tool_sources_json, refusal);
@@ -338,6 +370,35 @@ pub const Session = struct {
         gpa.destroy(self);
     }
 
+    fn compact(self: *Session) contract.Failure!bool {
+        if (self.ended or !self.opened()) return false;
+        if (self.reducer.run) |run| {
+            if (!run.terminal) return false;
+        }
+        if (self.reducer.envelopes.items.len != 0) return false;
+        if (self.reducer_arena.queryCapacity() <= self.retained +| self.compact_above) return false;
+
+        var fresh = std.heap.ArenaAllocator.init(self.gpa);
+        errdefer fresh.deinit();
+        const kept = try Kept.copy(fresh.allocator(), self.native_id, self.sources, self.statuses);
+
+        var options = self.reducer.options;
+        options.native_id = kept.native_id;
+        var reducer = self.reducer.compactInto(&fresh, options) catch |err| return lift(err);
+
+        self.reducer_arena.deinit();
+        self.reducer_arena.* = fresh;
+        reducer.arena = self.reducer_arena;
+        self.reducer = reducer;
+        self.native_id = kept.native_id;
+        self.sources = kept.sources;
+        self.statuses = kept.statuses;
+        self.asks = .empty;
+        self.scanned = 0;
+        self.retained = self.reducer_arena.queryCapacity();
+        return true;
+    }
+
     fn reap(self: *Session) void {
         if (self.reaped) return;
         self.reaped = true;
@@ -380,11 +441,14 @@ pub const Session = struct {
         return .{ .object = params };
     }
 
-    fn encode(self: *Session, frame: std.json.ObjectMap) ![]u8 {
-        return json_encode.valueAlloc(self.owned(), .{ .object = frame });
+    fn encode(self: *Session, frame: std.json.ObjectMap) ![]const u8 {
+        return gomarshal.marshal(self.owned(), .{ .object = frame }) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedValue => error.InvalidSubmission,
+        };
     }
 
-    fn requestFrame(self: *Session, id: i64, method: []const u8, params: std.json.Value) ![]u8 {
+    fn requestFrame(self: *Session, id: i64, method: []const u8, params: std.json.Value) ![]const u8 {
         var frame = self.object();
         try self.put(&frame, "id", .{ .integer = id });
         try self.put(&frame, "jsonrpc", .{ .string = "2.0" });
@@ -393,7 +457,7 @@ pub const Session = struct {
         return self.encode(frame);
     }
 
-    fn notificationFrame(self: *Session, method: []const u8, params: std.json.Value) ![]u8 {
+    fn notificationFrame(self: *Session, method: []const u8, params: std.json.Value) ![]const u8 {
         var frame = self.object();
         try self.put(&frame, "jsonrpc", .{ .string = "2.0" });
         try self.put(&frame, "method", .{ .string = method });
@@ -401,7 +465,7 @@ pub const Session = struct {
         return self.encode(frame);
     }
 
-    fn resultFrame(self: *Session, id: std.json.Value, result: std.json.Value) ![]u8 {
+    fn resultFrame(self: *Session, id: std.json.Value, result: std.json.Value) ![]const u8 {
         var frame = self.object();
         try self.put(&frame, "id", id);
         try self.put(&frame, "jsonrpc", .{ .string = "2.0" });
@@ -409,7 +473,7 @@ pub const Session = struct {
         return self.encode(frame);
     }
 
-    fn errorFrame(self: *Session, id: std.json.Value, code: i64, message: []const u8) ![]u8 {
+    fn errorFrame(self: *Session, id: std.json.Value, code: i64, message: []const u8) ![]const u8 {
         var failure = self.object();
         try self.put(&failure, "code", .{ .integer = code });
         try self.put(&failure, "message", .{ .string = message });
@@ -666,8 +730,6 @@ pub const Session = struct {
     }
 
     fn resolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contract.Resolution, refusal: *contract.Refusal) contract.Failure!void {
-        _ = arena;
-        _ = refusal;
         const self = cast(ptr);
         const request = switch (resolution) {
             .permission => |permission| permission,
@@ -682,14 +744,27 @@ pub const Session = struct {
         const interaction_id = try self.owned().dupe(u8, request.interaction_id);
         const run_id = try self.owned().dupe(u8, request.run_id);
         const responder = try self.owned().dupe(u8, request.responded_by);
-        self.reducer.resolve(interaction_id, run_id, responder, choice_id, request.granted) catch |err| return switch (err) {
+        const admitted = self.reducer.admitResolution(interaction_id, run_id, responder, choice_id, request.granted) catch |err| return switch (err) {
             error.InteractionNotFound, error.InteractionResolved => error.InteractionNotFound,
             error.WrongResponder, error.InvalidResolution => error.InvalidResolution,
             else => lift(err),
         };
         const ask = self.asks.orderedRemove(at);
         const outcome = self.permissionOutcome("selected", choice_id) catch |err| return lift(err);
-        _ = try self.send(self.resultFrame(ask.native_id, outcome) catch |err| return lift(err));
+        const frame = self.resultFrame(ask.native_id, outcome) catch |err| return lift(err);
+        const gate = admitted orelse {
+            _ = try self.send(frame);
+            return self.recordTerminals();
+        };
+        self.transport.write(frame) catch |err| {
+            const detail = @errorName(err);
+            self.reducer.answerFailed(detail) catch |failure| return lift(failure);
+            try self.fail(detail);
+            try self.recordTerminals();
+            const message = try std.fmt.allocPrint(arena, "the ACP agent did not take the permission answer: {s}", .{detail});
+            return refusal.fail(error.BackendFailed, message);
+        };
+        self.reducer.commitResolution(gate, choice_id) catch |err| return lift(err);
         try self.recordTerminals();
     }
 
@@ -722,6 +797,7 @@ pub const Session = struct {
 
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
         const self = cast(ptr);
+        _ = try self.compact();
         var progressed = false;
         var wait = wait_ns;
         var frames: usize = 0;
@@ -1135,4 +1211,156 @@ test "an attachment ACP cannot carry is refused naming the source and why, befor
         if (case.failure == error.UnsupportedFeature) try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.feature);
         try testing.expectError(error.FileNotFound, probe.fake.written(probe.arena.allocator()));
     }
+}
+
+test "a settled session's arena is compacted, keeping the native session, its sources and what each settled run reported" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_text_turn ++
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"content":{"text":"second","type":"text"},"messageId":"native-2","sessionUpdate":"agent_message_chunk"}}}\n'
+        \\printf '{"id":4,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.openAttaching("[{\"id\":\"fs\",\"kind\":\"process\",\"display_name\":\"Files\",\"command\":\"/bin/fs\"}]", &refusal);
+    const scratch = probe.arena.allocator();
+
+    const first = try probe.submit("one", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+
+    const live: *Session = @ptrCast(@alignCast(probe.handle.?.ptr));
+    live.compact_above = 0;
+    seen.clearRetainingCapacity();
+    const cursor_before = (try probe.handle.?.state(probe.arena.allocator(), &refusal)).transcript_cursor.?;
+    const before = live.reducer_arena.queryCapacity();
+    try testing.expect(try live.compact());
+    try testing.expect(live.reducer_arena.queryCapacity() < before);
+    try testing.expect(!try live.compact());
+
+    try testing.expectEqualStrings("native-session", live.native_id);
+    const state_now = try probe.handle.?.state(scratch, &refusal);
+    try testing.expectEqual(@as(usize, 1), state_now.sources.len);
+    try testing.expectEqualStrings("fs", state_now.sources[0].id);
+    try testing.expectEqualStrings("Files", state_now.sources[0].display_name.?);
+    try testing.expectEqualStrings(cursor_before, state_now.transcript_cursor.?);
+    try testing.expectError(error.RunTerminal, probe.handle.?.cancel(scratch, first.run_id.?, &refusal));
+
+    const second = try probe.submit("two", &refusal);
+    try testing.expect(!std.mem.eql(u8, first.run_id.?, second.run_id.?));
+    const completed = try probe.pumpUntil("run.completed", &seen);
+    try testing.expectEqualStrings(second.run_id.?, completed.run_id);
+    try testing.expectEqual(@as(u64, 1), seen.items[0].sequence);
+}
+
+test "a session compacts only once it is idle and has grown past its threshold" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_permission_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const live: *Session = @ptrCast(@alignCast(probe.handle.?.ptr));
+    const scratch = probe.arena.allocator();
+
+    try testing.expect(!try live.compact());
+    live.compact_above = 0;
+
+    const admitted = try probe.submit("gated", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const gate = try probe.pumpUntil("action.permission.requested", &seen);
+    var drained = std.ArrayList(contract.Event).empty;
+    try probe.handle.?.drain(scratch, &drained);
+    try testing.expectEqual(@as(usize, 0), live.reducer.envelopes.items.len);
+    try testing.expect(!try live.compact());
+
+    const answer = oap_types.PermissionResolveRequest{ .interaction_id = (try probe.payloadOf(gate)).get("interaction_id").?.string, .requested_by = endpoint_id, .responded_by = "user", .session_id = "s1", .run_id = admitted.run_id.?, .granted = true, .choice_id = "allow" };
+    try probe.handle.?.resolve(scratch, .{ .permission = &answer }, &refusal);
+    var rounds: usize = 0;
+    while (rounds < 2000) : (rounds += 1) {
+        _ = try probe.handle.?.pump(5 * std.time.ns_per_ms);
+        if (live.reducer.run) |settled| {
+            if (settled.terminal) break;
+        }
+    }
+    try testing.expect(live.reducer.run.?.terminal);
+    try testing.expect(live.reducer.envelopes.items.len > 0);
+    try testing.expect(!try live.compact());
+
+    try probe.handle.?.drain(scratch, &drained);
+    try testing.expect(try live.compact());
+}
+
+test "the state a compaction keeps is copied without leaking when any allocation fails" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sources = [_]oap_types.ToolSourceDescriptor{
+        .{ .id = "fs", .kind = "process", .display_name = "Files", .protocol = "mcp", .endpoint = "stdio:fs" },
+        .{ .id = "notes", .kind = "process" },
+    };
+    var statuses: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try statuses.put(a, "run-2", "completed");
+    try statuses.put(a, "run-5", "cancelled");
+    try testing.checkAllAllocationFailures(testing.allocator, keptProbe, .{ &sources, statuses });
+}
+
+test "a tool id an earlier run used is still refused after the session compacts" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"rawOutput":{"ok":true},"sessionUpdate":"tool_call_update","status":"completed","toolCallId":"native-tool"}}}\n'
+        \\printf '{"id":3,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}\n'
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\printf '{"id":4,"jsonrpc":"2.0","result":{"stopReason":"end_turn"}}\n'
+        \\
+    ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("one", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+
+    const live: *Session = @ptrCast(@alignCast(probe.handle.?.ptr));
+    live.compact_above = 0;
+    try testing.expect(try live.compact());
+
+    _ = try probe.submit("two", &refusal);
+    const failed = try probe.pumpUntil("run.failed", &seen);
+    try testing.expectEqualStrings("acp_tool_id_reuse", (try probe.payloadOf(failed)).get("error").?.object.get("code").?.string);
+}
+
+test "a permission answer the agent cannot read fails the run acp_permission_response_failed and closes the session" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++
+        \\take
+        \\printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session","update":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\exec 0<&-
+        \\printf '{"id":"permission-1","jsonrpc":"2.0","method":"session/request_permission","params":{"options":[{"kind":"allow_once","name":"Allow once","optionId":"allow"},{"kind":"reject_once","name":"Reject","optionId":"deny"}],"sessionId":"native-session","toolCall":{"kind":"read","rawInput":{"path":"fixture.txt"},"sessionUpdate":"tool_call","status":"pending","title":"Read file","toolCallId":"native-tool"}}}\n'
+        \\sleep 5
+        \\
+    );
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const scratch = probe.arena.allocator();
+    const admitted = try probe.submit("gated", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    const gate = try probe.pumpUntil("action.permission.requested", &seen);
+    const answer = oap_types.PermissionResolveRequest{ .interaction_id = (try probe.payloadOf(gate)).get("interaction_id").?.string, .requested_by = endpoint_id, .responded_by = "user", .session_id = "s1", .run_id = admitted.run_id.?, .granted = true, .choice_id = "allow" };
+    try testing.expectError(error.BackendFailed, probe.handle.?.resolve(scratch, .{ .permission = &answer }, &refusal));
+    try testing.expect(std.mem.startsWith(u8, refusal.message, "the ACP agent did not take the permission answer: "));
+
+    var drained = std.ArrayList(contract.Event).empty;
+    try probe.handle.?.drain(scratch, &drained);
+    var failed: ?contract.Event = null;
+    for (drained.items) |event| {
+        if (std.mem.indexOf(u8, event.line, "\"type\":\"run.failed\"") != null) failed = event;
+        try testing.expect(std.mem.indexOf(u8, event.line, "\"outcome\":\"resolved\"") == null);
+    }
+    try testing.expectEqualStrings("acp_permission_response_failed", (try probe.payloadOf(failed.?)).get("error").?.object.get("code").?.string);
+    try testing.expectError(error.SessionClosed, probe.handle.?.state(scratch, &refusal));
 }

@@ -98,6 +98,7 @@ const Driver = struct {
         }
         if (std.mem.eql(u8, action, "submit")) {
             if (refusal(scratch, wire) != null) return error.ProductionCodecRefusedCorpusFrame;
+            try adoptNativeSession(reducer, scratch, wire);
             try reducer.submit();
             return .handled;
         }
@@ -115,12 +116,26 @@ const Driver = struct {
     }
 };
 
+fn adoptNativeSession(reducer: *session.Reducer, scratch: std.mem.Allocator, wire: []const u8) !void {
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, scratch, wire, .{});
+    if (parsed != .object) return;
+    const params = parsed.object.get("params") orelse return;
+    if (params != .object) return;
+    const native_id = corpus.stringMember(params.object, "session_id") orelse return;
+    reducer.options.native_id = try reducer.arena.allocator().dupe(u8, native_id);
+}
+
+const interrupt_statuses = [_][]const u8{ "interrupted", "not_interrupted" };
+
 fn admissionAnswer(parsed: std.json.Value) ?bool {
     if (parsed != .object) return null;
     if (parsed.object.get("error") != null) return false;
     const result = parsed.object.get("result") orelse return null;
     if (result != .object) return null;
     const status = corpus.stringMember(result.object, "status") orelse return null;
+    for (interrupt_statuses) |settled| {
+        if (std.mem.eql(u8, status, settled)) return null;
+    }
     return std.mem.eql(u8, status, "streaming");
 }
 
@@ -128,7 +143,7 @@ fn control(reducer: *session.Reducer, scratch: std.mem.Allocator, raw: std.json.
     if (raw != .object) return error.ControlIsNotAnObject;
     const op = corpus.stringMember(raw.object, "op") orelse return error.ControlWithoutOperation;
 
-    if (std.mem.eql(u8, op, "close")) return;
+    if (std.mem.eql(u8, op, "close") or std.mem.eql(u8, op, "cancel")) return;
 
     if (std.mem.eql(u8, op, "assert-state")) {
         const want = corpus.stringMember(raw.object, "status") orelse return error.ControlWithoutStatus;
@@ -146,14 +161,27 @@ fn control(reducer: *session.Reducer, scratch: std.mem.Allocator, raw: std.json.
 
     if (std.mem.eql(u8, op, "resolve")) {
         const kind = corpus.stringMember(raw.object, "kind") orelse return error.ControlWithoutKind;
-        const answer = corpus.stringMember(raw.object, "answer") orelse return error.ControlWithoutAnswer;
         const binding = reducer.pendingInteraction(kind) orelse return error.NoInteractionOfThatKind;
-        const question = binding.questions[0];
-        const built: session.Answer = if (std.mem.eql(u8, question.kind, "text"))
-            .{ .question_id = question.id, .text = answer }
-        else
-            .{ .question_id = question.id, .selected_option_ids = try scratch.dupe([]const u8, &.{answer}) };
-        try reducer.resolve(binding.id, try scratch.dupe(session.Answer, &.{built}));
+        var values = std.ArrayList([]const u8).empty;
+        if (corpus.stringMember(raw.object, "answer")) |single| {
+            try values.append(scratch, single);
+        } else if (raw.object.get("answers")) |listed| {
+            if (listed != .array) return error.ControlWithoutAnswer;
+            for (listed.array.items) |entry| {
+                if (entry != .string) return error.ControlWithoutAnswer;
+                try values.append(scratch, entry.string);
+            }
+        }
+        if (values.items.len == 0 or values.items.len > binding.questions.len) return error.ControlWithoutAnswer;
+        const built = try scratch.alloc(session.Answer, values.items.len);
+        for (values.items, built, 0..) |value, *slot, index| {
+            const question = binding.questions[index];
+            slot.* = if (std.mem.eql(u8, question.kind, "text"))
+                .{ .question_id = question.id, .text = value }
+            else
+                .{ .question_id = question.id, .selected_option_ids = try scratch.dupe([]const u8, &.{value}) };
+        }
+        try reducer.resolve(binding.id, built);
         return;
     }
 
@@ -191,6 +219,8 @@ const Declared = struct { id: []const u8, skipped_resumes: usize = 0 };
 const cases = [_]Declared{
     .{ .id = "admission-busy" },
     .{ .id = "admission-orders" },
+    .{ .id = "clarify-batch" },
+    .{ .id = "delegation-reentry" },
     .{ .id = "hygiene-globals" },
     .{ .id = "interaction-expire" },
     .{ .id = "interaction-gates" },
@@ -215,7 +245,7 @@ test "the Hermes case list is exactly the corpus manifest's" {
     try Harness.expectInventory(std.testing.allocator, &listed);
 }
 
-test "the Zig reducer reproduces every Hermes expectation, all eighteen of them" {
+test "the Zig reducer reproduces every Hermes expectation, all twenty of them" {
     const allocator = std.testing.allocator;
     const root = try Harness.root(allocator);
     defer allocator.free(root);

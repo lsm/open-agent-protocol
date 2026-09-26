@@ -1,0 +1,41 @@
+{
+  "advertised_capabilities": {
+    "run.streaming": "native"
+  },
+  "expected_oap": "expected-oap.json",
+  "id": "streaming-provenance",
+  "identity_map": {
+    "_block request_id (8 hex)": "interaction identity (expire siblings share it)",
+    "approval registry entry": "interaction identity (no wire request_id)",
+    "event seq (per-session, epoch-guarded)": "ordering evidence; never an OAP identity",
+    "message.start…message.complete span": "run_id adapter-allocated",
+    "prompt.submit receipt (status-only)": "submission_id adapter-minted by construction",
+    "replay epoch (uuid4 hex)": "process identity; guards all seq association",
+    "runtime session_id (uuid4 hex[:8])": "oap session association",
+    "stored_session_id (session_key)": "adapter-side evidence only",
+    "task_id (btw_*/bg_*)": "side-channel correlation, not projected in v1",
+    "tool_id": "tool_call_id correlation"
+  },
+  "mapping": "mapping.json",
+  "native": "native.jsonl",
+  "omissions": "omissions.json",
+  "provenance": {
+    "commit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+    "commit_tree": "5849eacde63aaea608ca418821cc84771fce3bec",
+    "repository": "https://github.com/NousResearch/hermes-agent",
+    "sources": {
+      "contracts_tree": "1eceb85deeeb499c3f00231c6fdedd91a1631753",
+      "entry_py_blob": "aebfbeb8026b4471d00e34072b8efb51cfd58c67",
+      "event_replay_py_blob": "b603a67120bd1f9f9b9c66f50331d4467bf47bd4",
+      "methods_prompt_py_blob": "aefcf692321dc828672cd30ea336a97fd69eb69e",
+      "methods_session_py_blob": "a41aeff7b731f99a69dfc8556b5ade04d30a83f7",
+      "server_py_blob": "475d106c4a9bcf7606921d951ee3d4e08ef63642",
+      "server_requests_py_blob": "5aaa044fe2257e8e818008047308b0d95bbac360",
+      "stdin_recovery_py_blob": "add5e841df4bead308a96bd8b0f0e3c5475bd167",
+      "transport_py_blob": "5051d6da51ff0f1323e466f049f09323056cfe03",
+      "ws_py_blob": "b90253e0c0a319ffcb1ed2d689fc759d56458509"
+    },
+    "tag": "v2026.9.24"
+  },
+  "version": 1
+}

@@ -66,7 +66,7 @@ func TestDeepSeekProcessSmoke(t *testing.T) {
 	closed = true
 }
 
-func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
+func TestDeepSeekProcessAgainstMessagesMock(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping opt-in DeepSeek Harness process integration in short mode")
 	}
@@ -74,11 +74,11 @@ func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 		t.Skip("set OAP_DEEPSEEK_HARNESS_INTEGRATION=1 and absolute OAP_DEEPSEEK_HARNESS_BIN pointing to the pinned dsh-jsonrpc-agent runtime to run; optionally set OAP_DEEPSEEK_HARNESS_SHA256 (64 hex characters) for exact-artifact evidence")
 	}
 	binary := verifiedDeepSeekBinary(t)
-	mock := providertest.New(t, providertest.Config{OpenAIKey: deepseekMockSecret})
-	mock.Enqueue(providertest.OpenAIChatCompletion, providertest.Success)
+	mock := providertest.New(t, providertest.Config{AnthropicKey: deepseekMockSecret})
+	mock.Enqueue(providertest.AnthropicMessages, providertest.Success)
 
 	root := t.TempDir()
-	implementation := newPinnedDeepSeek(t, binary, root, deepseekEnvironment(t, root, mock.OpenAIBaseURL()), deepseekProfileArgs(), deepseekRoute, deepseekModel)
+	implementation := newPinnedDeepSeek(t, binary, root, deepseekEnvironment(t, root, mock.AnthropicBaseURL()), deepseekProfileArgs(), deepseekRoute, deepseekModel)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -140,11 +140,11 @@ func TestDeepSeekProcessAgainstResponsesMock(t *testing.T) {
 	if streamed.String() != providertest.FixtureText {
 		t.Fatalf("streamed response=%q", streamed.String())
 	}
-	requests := mock.RequestsFor(providertest.OpenAIChatCompletion)
-	if len(requests) != 1 || requests[0].Path != providertest.ChatCompletionPath || requests[0].Model != deepseekModel {
-		t.Fatalf("chat-completions requests=%d: %+v", len(requests), requests)
+	requests := mock.RequestsFor(providertest.AnthropicMessages)
+	if len(requests) != 1 || requests[0].Path != providertest.MessagesPath || requests[0].Model != deepseekModel {
+		t.Fatalf("messages requests=%d: %+v", len(requests), requests)
 	}
-	if requests[0].Header.Get("Authorization") != "Bearer "+deepseekMockSecret {
+	if requests[0].Header.Get("x-api-key") != deepseekMockSecret {
 		t.Fatal("unexpected mock authorization")
 	}
 	var body struct {

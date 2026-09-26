@@ -22,12 +22,12 @@ var (
 	PinnedVersion      = pin.EndpointVersion
 	CapabilityRevision = pin.CapabilityRevision
 	CorpusDirectory    = pin.Corpus
+	SchemaVersion      = strings.TrimPrefix(pin.Component("agent-client-protocol-schema").Version, "schema-v")
 )
 
 const (
 	endpointID             = "acp.v1"
 	ACPVersion             = 1
-	SchemaVersion          = "1.21.0"
 	defaultJournalCapacity = 256
 )
 

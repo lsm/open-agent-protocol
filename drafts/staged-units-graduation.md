@@ -99,7 +99,7 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 5 | T4 steer | pi `steer` with `queue_update` and injection at a turn boundary; OpenCode `delivery:"steer"` while busy; Hermes `session.steer` and busy `steered` | pi | OpenCode, Hermes; Codex only after a new ledger pin covers `turn/steer` (the pinned Codex ledger defers it; the expected-turn-id detail comes from unpinned research) |
 | 6 | T5b auth state | Claude `auth_status` frames; OpenCode `provider.list` | staged | — |
 
-Ledgers: [Codex](../research/codex-app-server-8d7cc24-mapping.md) ·
+Ledgers: [Codex](../research/codex-app-server-0.157.0-mapping.md) ·
 [Claude Code](../research/claude-code-agent-sdk-2.1.263-mapping.md) ·
 [OpenCode](../research/opencode-v1.18.29-mapping.md) ·
 [pi](../research/pi-v0.85.1-mapping.md) ·

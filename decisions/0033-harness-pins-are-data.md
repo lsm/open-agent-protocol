@@ -144,9 +144,9 @@ entirely before or after a port, as Decision 0019 requires.
   land under these rules.
 - Both trees read their pins from the catalog. Go embeds it
   (`harnesses.Current`); `zig/build.zig` reads it into a generated
-  `harness_pins` module. A Zig served backend whose descriptor still differs
-  from Go's carries its own revision, the version's optional
-  `oapx_capability_revision`; one that matches uses `capability_revision`. `goap check` fails when a Go or Zig
+  `harness_pins` module. Each version has one revision, which both trees
+  serve: a served Zig backend answers with the Go adapter's descriptor, and
+  `TestBackendsMatchOapx` compares the two in CI. `goap check` fails when a Go or Zig
   string literal equals any value a non-retired version records, so moving a
   pin edits the catalog, the corpus and the ledger, and no source file.
 
