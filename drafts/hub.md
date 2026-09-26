@@ -128,7 +128,7 @@ attachment is not a way to configure the daemon:
 | The capability rung is answered before the open's own constraints | `TestOpenAnswersTheCapabilityRungBeforeItsOwnConstraint` |
 | An adapter's own attachment refusal is relayed, not restated | `TestOpenRelaysTheAdaptersAttachmentRefusal` |
 | A degraded attachment refused without the opt-in is relayed | `TestOpenRelaysADegradedAttachRefusal` |
-| Only what the request cites is attached | `TestAttachingOpenPinsOnlyWhatItCites` |
+| Only what the request cites is attached, and an open citing a stale revision is refused with both revisions named | `TestAttachingOpenPinsOnlyWhatItCites` |
 | A probe the daemon could not read is reported as one | `TestOpenReportsAProbeItCouldNotRead` |
 | Every advertising adapter admits tool sources; every unadvertising one refuses | `TestEveryAdapterRefusesUnadvertisedToolSources`, `TestAdvertisingAdaptersAdmitToolSources` |
 
@@ -261,7 +261,7 @@ host observes directly.
 | The acknowledgement is `result: null`, matching the SSE route's bodyless response | `TestEventsOpDeliversTheRunStream`, `TestSubscribedSignalMatchesHTTP` |
 | `oap-subscribed` is written first, and only when the run had already emitted | `TestEventsReportsWhereALateSubscriptionJoined`, `TestSubscribedSignalMatchesHTTP` |
 | A subscription that begins at the start of its run gets no join signal | `TestEventsReportsNoJoinPointWhenNothingPrecededTheSubscription`, `TestSubscribingBetweenRunsReportsNoJoinPoint` |
-| The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription` |
+| The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription` — **gap G9**: this test also drives the `oap-frame-limit` ending, but asserts only its `event` name |
 | Overflow is signalled with the cursor to resume from | the line's shape by `TestEveryEndingFitsTheFrameLimitFloor`; the end-to-end path at the core by `TestHubSubscriptionQueueOverflow`; **gap G9** — no stdio test drives an overflow and reads the line |
 | A failed run stream ends the subscription out loud | `TestAFailedRunStreamEndsTheSubscriptionOutLoud` |
 | An unencodable envelope ends the subscription out loud | `TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud` |
@@ -513,7 +513,7 @@ must cite the active capability revision, or it is refused
 | An unschematic message is refused at the gate | `TestOpenCarryingAnUnschematicMessageIsRefusedAtTheGate` |
 | `subscribe` against an endpoint that never advertised it is refused | `TestOpenRefusesSubscribeAgainstAnEndpointThatNeverAdvertisedIt` |
 | A degraded `subscribe` is refused without the opt-in, and admitted with it | `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
-| An open citing a stale revision is refused `stale_capabilities`, naming both revisions | **gap G4** — the refusal is structural in `AttachmentGate` and `SubscribeGate`; no test drives the stale path on either transport |
+| An open citing a stale revision is refused `stale_capabilities`, naming both revisions | `TestAttachingOpenPinsOnlyWhatItCites` (the attaching open, end to end on HTTP); **gap G4** — the same comparison on the `subscribe` path, and the stdio op's own mapping of it, are unpinned |
 | An open response that cannot be encoded rolls the session back and says so | `TestOpenRollsBackWhenItsResponseCannotEncode`, `TestAnOpenThatCannotEncodeIsRolledBack` |
 | An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which | `TestAnOpenTheHostNamedIsKeptAndSaidSo` |
 | A submit acknowledgement that will not frame rolls its run back and names the outcome | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement` |
@@ -872,11 +872,15 @@ place a differential test would otherwise not see.
   three options; the `close` op and its `POST /sessions/{id}/close` counterpart
   are the only wire verbs that end a stream today, and they end the whole
   session with it.
-- **G4 — the `stale_capabilities` refusal is unpinned.** The gate compares a
-  request's cited revision against the probed one on both the attachment and the
-  subscribe path, and both transports map it to `stale_capabilities` with
-  `expected_revision` and `current_revision` in `details`; no test drives a
-  stale citation on either transport.
+- **G4 — the `stale_capabilities` refusal is only half pinned.** The gate
+  compares a request's cited revision against the probed one on both the
+  attachment and the subscribe path. The **attachment** path is pinned end to
+  end on HTTP: a stale citation is refused `409` with both
+  `expected_revision` and `current_revision` in `details`. What no test reaches
+  is the **subscribe** path — a `subscribe` open citing a stale revision is
+  refused on the capability rung first, so the comparison is never made — and
+  the **stdio `open` op's own mapping** of the same error, which no stdio test
+  drives on any path.
 - **G5 — the 30 s held-subscription window is unpinned.** The hold is bounded
   and released on expiry, but no test waits the window out and asserts the
   release.
@@ -888,16 +892,16 @@ place a differential test would otherwise not see.
 - **G8 — the shutdown window's value is unpinned.** Both constants are correct
   and neither has a test that measures the wall clock against them; the *split*
   and the *bound* are pinned, the number is not.
-- **G9 — three of the five subscription endings are never driven over stdio.**
-  `oap-overflow`, `oap-session-closed` and `oap-frame-limit` have their minimal
-  shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes each
-  real line, but no stdio test produces the ending and reads it off the wire —
-  only `envelope` and `oap-replay-gap` are driven end to end, plus
-  `oap-stream-failed` by `TestAFailedRunStreamEndsTheSubscriptionOutLoud`. So
-  the members each line carries when it is written in anger, rather than when it
-  is measured, are unpinned. Over HTTP, `oap-overflow` and `oap-session-closed`
-  are pinned and `oap-frame-limit` has no counterpart at all, because a socket
-  does not frame.
+- **G9 — two subscription endings are never driven over stdio, and a third is
+  driven only by its name.** `oap-overflow` and `oap-session-closed` have their
+  minimal shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes
+  each real line, but no stdio test produces either ending and reads it off the
+  wire — so the members they carry when written in anger are unpinned.
+  `oap-frame-limit` **is** driven, by
+  `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`, but
+  only its `event` name is asserted, so its members are unpinned the same way.
+  Over HTTP, `oap-overflow` and `oap-session-closed` are pinned and
+  `oap-frame-limit` has no counterpart at all, because a socket does not frame.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
