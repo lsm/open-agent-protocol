@@ -12,5 +12,6 @@ printf '{"type":"control_request","request_id":"ask-1","request":{"subtype":"can
 take; behavior=$(field behavior)
 printf '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"%s","is_error":false}]},"parent_tool_use_id":null,"session_id":"native-1","uuid":"u1"}\n' "$behavior"
 printf '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}},"session_id":"native-1","parent_tool_use_id":null,"uuid":"e2"}\n'
+printf '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta"}},"session_id":"native-1","parent_tool_use_id":null,"uuid":"e3"}\n'
 printf '{"type":"result","subtype":"success","duration_ms":12,"is_error":false,"num_turns":1,"session_id":"native-1","stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":5},"terminal_reason":"completed","result":"answered %s","user_message_uuid":"%s","queued_turn_count":0,"uuid":"r1"}\n' "$behavior" "$uuid"
 while take; do :; done

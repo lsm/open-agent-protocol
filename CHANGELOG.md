@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `goap` always emits the `text` member of a text content part, even when it is empty, matching `schema/v0.1/common.schema.json` (which requires it) and `oapx`. `protocol.ContentPart` had tagged `text` `omitempty`, so an empty `text_delta` produced `{"type":"text"}` with no member.
 - The OpenCode adapter converts a native token count through an explicit saturation (`0` for a non-positive, non-finite or non-number float; `MaxUint64` at or beyond `2^64`), as `oapx` does, instead of a platform-dependent `uint64(float64)`.
 - `goap` refuses a `--config` member whose name differs from `oap-serve.json` only by case, as `oapx` does, naming the container the way `oapx` does (`config: adapter "memory": unknown field "Type"`); `encoding/json` had matched members case-insensitively, so `"Type"` loaded where the Zig reader refuses it. It also refuses a duplicated member (`config: not one JSON object: DuplicateField`) and names the first unknown member in sorted order, so the refusal no longer depends on map iteration.
 - `oapx serve agent --backend <acp entry>` writes a permission answer to the agent before recording it, as `goap` does: `action.permission.resolved` follows a successful write, and a write the agent cannot take settles the gate cancelled and fails the run `acp_permission_response_failed`, where oapx emitted the resolution first and failed the transport.
