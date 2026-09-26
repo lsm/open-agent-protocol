@@ -7,18 +7,19 @@ const codex_oauth = @import("oauth/openai_codex");
 const anthropic_oauth = @import("oauth/anthropic");
 const custom_providers = @import("custom_providers");
 const github_copilot = @import("oauth/github_copilot");
+const provider_catalog = @import("provider_catalog");
 
 const openai_codex_provider_id = "openai-codex";
 const openai_codex_api_id = "openai-codex-responses";
-const openai_codex_base_url = "https://chatgpt.com/backend-api/codex";
+const openai_codex_base_url = provider_catalog.baseUrlOrCompileError("openai-codex", openai_codex_api_id, null);
 const kimi_provider_id = "kimi";
 const kimi_api_id = "openai-completions";
 const kimi_model_id = "kimi-k2.7-code";
 const github_copilot_provider_id = "github-copilot";
 const github_copilot_api_name = "openai-completions";
-const kimi_base_url = "https://api.kimi.com/coding";
-const kimi_global_base_url = "https://api.moonshot.ai";
-const kimi_env_key = "KIMI_API_KEY";
+const kimi_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, kimi_api_id, "china");
+const kimi_global_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, kimi_api_id, "global");
+const kimi_env_key = provider_catalog.credentialEnv(kimi_provider_id)[0];
 const kimi_china_catalog_name = "kimi.json";
 const kimi_global_catalog_name = "kimi-global.json";
 const kimi_context_window: u32 = 262_144;
@@ -29,9 +30,8 @@ const makai_codex_catalog_name = "openai-codex.json";
 const makai_anthropic_catalog_name = "anthropic.json";
 const anthropic_provider_id = "anthropic";
 const anthropic_api_name = "anthropic-messages";
-const anthropic_base_url = "https://api.anthropic.com";
-const anthropic_models_url = "https://api.anthropic.com/v1/models?limit=100";
-const anthropic_env_keys = [_][]const u8{ "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY" };
+const anthropic_base_url = provider_catalog.baseUrlOrCompileError(anthropic_provider_id, anthropic_api_name, null);
+const anthropic_env_keys = provider_catalog.credentialEnv(anthropic_provider_id);
 const max_catalog_bytes = 2 * 1024 * 1024;
 pub const catalog_fetch_timeout_ms: u64 = 20_000;
 
@@ -747,7 +747,9 @@ fn fetchAnthropicModelsCatalog(allocator: std.mem.Allocator, token: []const u8) 
         try headers.append(allocator, .{ .name = "x-api-key", .value = token });
     }
 
-    var fetched = compat.http.fetch(allocator, anthropic_models_url, .{
+    const models_url = try std.fmt.allocPrint(allocator, "{s}/v1/models?limit=100", .{anthropic_base_url});
+    defer allocator.free(models_url);
+    var fetched = compat.http.fetch(allocator, models_url, .{
         .method = .GET,
         .extra_headers = headers.items,
         .accept_encoding = "identity",

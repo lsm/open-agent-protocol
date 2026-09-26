@@ -2,6 +2,7 @@
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
+const provider_catalog = @import("provider_catalog");
 
 pub fn defaultBaseUrlForRef(allocator: std.mem.Allocator, provider_id: []const u8, api: []const u8) ![]const u8 {
     return defaultBaseUrlForRefWithRegion(allocator, provider_id, api, null);
@@ -23,7 +24,7 @@ pub fn defaultBaseUrlForRefWithRegion(
     defer if (deepseek) |v| allocator.free(v);
 
     const kimi_region: []const u8 = blk: {
-        if (try envOwnedOrNull(allocator, "KIMI_REGION")) |env_region| {
+        if (try envOwnedOrNull(allocator, kimi_region_env)) |env_region| {
             defer allocator.free(env_region);
             if (normalizeKimiRegion(env_region)) |region| break :blk region;
         }
@@ -50,9 +51,8 @@ pub const BaseUrlOverrides = struct {
     kimi_region: []const u8 = "china",
 };
 
-const OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
-const KIMI_CHINA_BASE_URL = "https://api.kimi.com/coding";
-const KIMI_GLOBAL_BASE_URL = "https://api.moonshot.ai";
+const kimi_region_env = provider_catalog.regionEnv("kimi") orelse
+    @compileError("providers/catalog.json records no region_env for kimi");
 
 pub fn normalizeKimiRegion(value: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, value, " \t\r\n");
@@ -86,15 +86,15 @@ pub fn baseUrlWithOverrides(allocator: std.mem.Allocator, provider_id: []const u
     }
 
     const by_provider: ?[]const u8 = if (std.mem.eql(u8, provider_id, "anthropic") and std.mem.eql(u8, api, "anthropic-messages"))
-        if (ov.anthropic.len > 0) normalizeVersionedBaseUrl(ov.anthropic) else "https://api.anthropic.com"
+        if (ov.anthropic.len > 0) normalizeVersionedBaseUrl(ov.anthropic) else provider_catalog.baseUrl("anthropic", api, null) orelse ""
     else if (std.mem.eql(u8, provider_id, "openai") and (std.mem.eql(u8, api, "openai-completions") or std.mem.eql(u8, api, "openai-responses")))
-        if (ov.openai.len > 0) normalizeVersionedBaseUrl(ov.openai) else "https://api.openai.com"
+        if (ov.openai.len > 0) normalizeVersionedBaseUrl(ov.openai) else provider_catalog.baseUrl("openai", api, null) orelse ""
     else if (std.mem.eql(u8, provider_id, "deepseek") and std.mem.eql(u8, api, "openai-completions"))
-        if (ov.deepseek.len > 0) normalizeVersionedBaseUrl(ov.deepseek) else "https://api.deepseek.com"
+        if (ov.deepseek.len > 0) normalizeVersionedBaseUrl(ov.deepseek) else provider_catalog.baseUrl("deepseek", api, null) orelse ""
     else if (std.mem.eql(u8, provider_id, "openai-codex") and std.mem.eql(u8, api, "openai-codex-responses"))
-        OPENAI_CODEX_BASE_URL
+        provider_catalog.baseUrl("openai-codex", api, null) orelse ""
     else if (std.mem.eql(u8, provider_id, "kimi") and std.mem.eql(u8, api, "openai-completions"))
-        if (std.mem.eql(u8, ov.kimi_region, "global")) KIMI_GLOBAL_BASE_URL else KIMI_CHINA_BASE_URL
+        provider_catalog.baseUrl("kimi", api, ov.kimi_region) orelse ""
     else
         null;
     if (by_provider) |url| return try allocator.dupe(u8, url);
@@ -116,15 +116,6 @@ pub const OAuthOriginSources = struct {
     provider: []const u8 = "",
     credential: []const u8 = "",
     credential_is_api_key: bool = false,
-};
-
-const ANTHROPIC_OAUTH_ORIGIN = "https://api.anthropic.com";
-const GITHUB_COPILOT_OAUTH_DOMAIN = "githubcopilot.com";
-
-const OAuthOriginPolicy = struct {
-    exact: []const []const u8 = &.{},
-    domain: ?[]const u8 = null,
-    credential_declares_origin: bool = false,
 };
 
 const Origin = struct {
@@ -183,17 +174,8 @@ fn hostUnderDomain(host: []const u8, domain: []const u8) bool {
     return std.ascii.eqlIgnoreCase(host[suffix_start..], domain);
 }
 
-fn oauthOriginPolicyFor(provider_id: []const u8) ?OAuthOriginPolicy {
-    if (std.mem.eql(u8, provider_id, "anthropic")) {
-        return .{ .exact = &.{ANTHROPIC_OAUTH_ORIGIN} };
-    }
-    if (std.mem.eql(u8, provider_id, "openai-codex")) {
-        return .{ .exact = &.{OPENAI_CODEX_BASE_URL} };
-    }
-    if (std.mem.eql(u8, provider_id, "github-copilot")) {
-        return .{ .domain = GITHUB_COPILOT_OAUTH_DOMAIN, .credential_declares_origin = true };
-    }
-    return null;
+fn oauthOriginPolicyFor(provider_id: []const u8) ?provider_catalog.OAuthOrigin {
+    return provider_catalog.oauthOrigin(provider_id);
 }
 
 pub fn oauthOriginAllowedWithSources(
@@ -228,10 +210,9 @@ pub fn oauthOriginAllowedWithSources(
 }
 
 fn providerBaseUrlEnvName(provider_id: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, provider_id, "anthropic")) return "ANTHROPIC_BASE_URL";
-    if (std.mem.eql(u8, provider_id, "openai")) return "OPENAI_BASE_URL";
-    if (std.mem.eql(u8, provider_id, "deepseek")) return "DEEPSEEK_BASE_URL";
-    return null;
+    const names = provider_catalog.baseUrlEnv(provider_id);
+    if (names.len == 0) return null;
+    return names[0];
 }
 
 pub fn credentialDeclaredBaseUrl(allocator: std.mem.Allocator, provider_data: []const u8) ?[]u8 {
@@ -485,17 +466,17 @@ test "baseUrlWithOverrides resolves production catalog pairs" {
 
     const codex = try baseUrlWithOverrides(allocator, "openai-codex", "openai-codex-responses", .{});
     defer allocator.free(codex);
-    try std.testing.expectEqualStrings(OPENAI_CODEX_BASE_URL, codex);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("openai-codex", "openai-codex-responses", null).?, codex);
 
     const kimi_china = try baseUrlWithOverrides(allocator, "kimi", "openai-completions", .{});
     defer allocator.free(kimi_china);
-    try std.testing.expectEqualStrings(KIMI_CHINA_BASE_URL, kimi_china);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("kimi", "openai-completions", "china").?, kimi_china);
 
     const kimi_global = try baseUrlWithOverrides(allocator, "kimi", "openai-completions", .{
         .kimi_region = "global",
     });
     defer allocator.free(kimi_global);
-    try std.testing.expectEqualStrings(KIMI_GLOBAL_BASE_URL, kimi_global);
+    try std.testing.expectEqualStrings(provider_catalog.baseUrl("kimi", "openai-completions", "global").?, kimi_global);
 
     const kimi_overridden = try baseUrlWithOverrides(allocator, "kimi", "openai-completions", .{
         .global = "https://everywhere.example.com",

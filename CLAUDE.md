@@ -194,6 +194,14 @@ Rules the source will not tell you:
   CI job. A module with no `addTest` is invisible to this rule.
 - A relative `@import` does not mean a file has no module. Decide from
   `build.zig` and the importers, never from the import syntax.
+- **A provider's base URL, OAuth origin, credential variable name, wire or
+  reserved id is written in `providers/catalog.json` and nowhere else.** `build.zig`
+  turns that file into typed rows (`providerCatalogDataModule`), so a Zig call
+  site reads `provider_catalog.baseUrl` and cannot name a value the catalog does
+  not hold; `goap check` fails a non-test Go or Zig literal that spells a
+  catalogued base URL, and a test may still spell one because that is the
+  assertion. Add the row first, and a value the catalog lacks is a `compileError`
+  rather than a fallback.
 - `EventStream.owns_events` is an **ownership** flag, not a cloning switch:
   `push` deep-copies only when `clone_event_fn` is also set, and setting
   `owns_events` without cloning before push is a use-after-free. A stream ends

@@ -26,6 +26,10 @@ const stdio = @import("stdio");
 const tui_app = @import("tui_app");
 const model_catalog = @import("model_catalog");
 const provider_base_url = @import("provider_base_url");
+const provider_catalog = @import("provider_catalog");
+
+const kimi_china_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "china");
+const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "global");
 const oap_server = @import("oap_server");
 const oap_auth_adapter = @import("oap_auth_adapter");
 const agent_oap_provider_bridge = @import("agent_oap_provider_bridge");
@@ -2896,10 +2900,7 @@ fn runPrintMode(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     const region = resolvePrintKimiRegion(allocator, use_storage_auth);
     const is_global_kimi = std.mem.eql(u8, region, "global");
-    const base_url = if (is_global_kimi)
-        "https://api.moonshot.ai"
-    else
-        "https://api.kimi.com/coding";
+    const base_url = if (is_global_kimi) kimi_global_base_url else kimi_china_base_url;
 
     const model = ai_types.Model{
         .id = model_id,
@@ -3089,7 +3090,7 @@ fn runPrintTuiRuntime(allocator: std.mem.Allocator, prompt: []const u8) !void {
         .name = "Kimi K2.7 Code",
         .api = "openai-completions",
         .provider = "kimi",
-        .base_url = "https://api.kimi.com/coding",
+        .base_url = kimi_china_base_url,
         .reasoning = false,
         .input = &[_][]const u8{"text"},
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },

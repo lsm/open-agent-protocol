@@ -2,6 +2,9 @@ const std = @import("std");
 const compat = @import("compat");
 const zz = @import("zigzag");
 const ai_types = @import("ai_types");
+const provider_catalog = @import("provider_catalog");
+
+const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
 const api_registry = @import("api_registry");
 const register_builtins = @import("register_builtins");
 const agent = @import("agent");
@@ -674,7 +677,12 @@ pub const App = struct {
     }
 
     const login_providers = [_][]const u8{ "anthropic", "github-copilot", "openai-codex", "kimi" };
-    const login_env_keys = [_][]const []const u8{ &.{ "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY" }, &.{}, &.{}, &.{"KIMI_API_KEY"} };
+    const login_env_keys = [_][]const []const u8{
+        provider_catalog.credentialEnv("anthropic"),
+        provider_catalog.credentialEnv("github-copilot"),
+        provider_catalog.credentialEnv("openai-codex"),
+        provider_catalog.credentialEnv("kimi"),
+    };
 
     pub const LoginStatus = enum { none, api_key, env_key, oauth, expired };
 
@@ -2419,7 +2427,7 @@ fn defaultModel() ai_types.Model {
         .name = "Claude Sonnet 4.5",
         .api = "anthropic-messages",
         .provider = "anthropic",
-        .base_url = "https://api.anthropic.com",
+        .base_url = anthropic_messages_base_url,
         .reasoning = true,
         .input = &.{"text"},
         .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.30, .cache_write = 3.75 },

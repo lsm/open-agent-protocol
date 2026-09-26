@@ -1,5 +1,6 @@
 const std = @import("std");
 const compat = @import("compat");
+const provider_catalog = @import("provider_catalog");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
 const api_registry = @import("api_registry");
@@ -1279,7 +1280,8 @@ pub fn streamGoogleGenerativeAI(model: ai_types.Model, context: ai_types.Context
         if (model.base_url.len > 0) break :blk try allocator.dupe(u8, model.base_url);
         const e = env(allocator, "GOOGLE_BASE_URL");
         if (e) |v| break :blk @constCast(v);
-        break :blk try allocator.dupe(u8, "https://generativelanguage.googleapis.com");
+        const fallback = provider_catalog.baseUrl("google", model.api, null) orelse return error.MissingApiKey;
+        break :blk try allocator.dupe(u8, fallback);
     };
     errdefer allocator.free(base_url);
 

@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "provider-catalog.schema.json",
+  "title": "Curated model provider catalog",
+  "description": "The vendors this repository supports, as data. One row per provider id; the row is the only place an id, a wire, a base URL, an environment variable name or an OAuth origin policy is written. Every member is optional except `id`, because a curated row records what is known, and an absent member is unknown rather than empty. Credentials are never catalogued, only the names of the environment variables a provider is read from.",
+  "type": "object",
+  "required": [
+    "providers"
+  ],
+  "properties": {
+    "providers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/provider"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authKind": {
+      "description": "How a credential for this provider reaches it. An empty list means this repository records no credential path for the vendor, which is not the same as the vendor needing none.",
+      "enum": [
+        "api_key",
+        "oauth",
+        "none"
+      ]
+    },
+    "baseUrlSource": {
+      "description": "Where a request's base URL comes from when no model names one. `static` means the endpoints below are the defaults; `credential` means the credential records the endpoint; `derived` means the implementation assembles it from configuration; `local_default` means a local development endpoint that an operator overrides for a hosted one.",
+      "enum": [
+        "static",
+        "credential",
+        "derived",
+        "local_default"
+      ]
+    },
+    "endpoint": {
+      "type": "object",
+      "required": [
+        "wire",
+        "base_url"
+      ],
+      "properties": {
+        "wire": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "base_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "region": {
+          "description": "The region this endpoint serves, for a provider that ships one endpoint per region. An endpoint with no region is the provider's only one.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "oauthOrigin": {
+      "description": "The origins an OAuth credential may be sent to. A provider with no policy here is one whose credential is not origin-bound, and the implementation answers that itself.",
+      "type": "object",
+      "properties": {
+        "exact": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "domain": {
+          "description": "Any host under this domain, which covers an enterprise tenant of a per-tenant provider.",
+          "type": "string",
+          "minLength": 1
+        },
+        "credential_declares_origin": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "description": "The provider id this repository reserves, which a user-authored custom provider may not reuse.",
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "auth": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/authKind"
+          }
+        },
+        "credential_env": {
+          "description": "Environment variables a credential is read from, in the order they are tried. The names, never the values.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "base_url_env": {
+          "description": "Environment variables that override the base URL for this provider.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "region_env": {
+          "description": "Environment variable naming the region, for a provider with one endpoint per region.",
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "wires": {
+          "description": "The API or wire identifiers this provider is reached with.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "base_url_source": {
+          "$ref": "#/$defs/baseUrlSource"
+        },
+        "endpoints": {
+          "description": "The static default endpoints. Absent for a provider whose base URL is credential-declared, derived, or a local default.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/endpoint"
+          }
+        },
+        "models_endpoint": {
+          "description": "Path appended to the base URL to list models, for a provider that answers one. Absent when the provider publishes no listing of its own.",
+          "type": "string",
+          "minLength": 1
+        },
+        "oauth_origin": {
+          "$ref": "#/$defs/oauthOrigin"
+        },
+        "docs": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,181 @@
+const std = @import("std");
+const data = @import("data");
+
+pub const AuthKind = data.AuthKind;
+pub const Endpoint = data.Endpoint;
+pub const OAuthOrigin = data.OAuthOrigin;
+pub const Provider = data.Provider;
+
+pub const all = data.providers;
+
+pub fn count() usize {
+    return all.len;
+}
+
+pub fn provider(id: []const u8) ?Provider {
+    for (all) |row| {
+        if (std.mem.eql(u8, row.id, id)) return row;
+    }
+    return null;
+}
+
+pub const ids = blk: {
+    var collected: [all.len][]const u8 = undefined;
+    for (all, 0..) |row, index| collected[index] = row.id;
+    const frozen = collected;
+    break :blk &frozen;
+};
+
+pub fn credentialEnv(id: []const u8) []const []const u8 {
+    const row = provider(id) orelse return &.{};
+    return row.credential_env;
+}
+
+pub fn baseUrlEnv(id: []const u8) []const []const u8 {
+    const row = provider(id) orelse return &.{};
+    return row.base_url_env;
+}
+
+pub fn regionEnv(id: []const u8) ?[]const u8 {
+    const row = provider(id) orelse return null;
+    return row.region_env;
+}
+
+pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
+    const row = provider(id) orelse return null;
+    return row.models_endpoint;
+}
+
+pub fn baseUrl(id: []const u8, wire: []const u8, region: ?[]const u8) ?[]const u8 {
+    const row = provider(id) orelse return null;
+    for (row.endpoints) |endpoint| {
+        if (!std.mem.eql(u8, endpoint.wire, wire)) continue;
+        if (region) |wanted| {
+            const served = endpoint.region orelse continue;
+            if (!std.mem.eql(u8, served, wanted)) continue;
+        } else if (endpoint.region != null) continue;
+        return endpoint.base_url;
+    }
+    return null;
+}
+
+pub fn baseUrlOrCompileError(id: []const u8, wire: []const u8, region: ?[]const u8) []const u8 {
+    return baseUrl(id, wire, region) orelse
+        @compileError("providers/catalog.json records no such endpoint; add the row rather than the literal");
+}
+
+pub fn oauthOrigin(id: []const u8) ?OAuthOrigin {
+    const row = provider(id) orelse return null;
+    return row.oauth_origin;
+}
+
+test "every row names a unique id" {
+    try std.testing.expect(all.len > 0);
+    try std.testing.expectEqual(all.len, count());
+    try std.testing.expectEqual(all.len, ids.len);
+    for (all, 0..) |row, index| {
+        try std.testing.expect(row.id.len > 0);
+        for (ids[index + 1 ..]) |other| {
+            try std.testing.expect(!std.mem.eql(u8, row.id, other));
+        }
+    }
+}
+
+test "every static row answers a base URL for each wire it declares" {
+    for (all) |row| {
+        if (row.base_url_source == null or !std.mem.eql(u8, row.base_url_source.?, "static")) continue;
+        try std.testing.expect(row.endpoints.len > 0);
+        for (row.wires) |wire| {
+            var served = false;
+            for (row.endpoints) |endpoint| {
+                if (std.mem.eql(u8, endpoint.wire, wire)) served = true;
+            }
+            try std.testing.expect(served);
+        }
+    }
+}
+
+test "a regional provider answers no endpoint without naming its region" {
+    for (all) |row| {
+        var regional = false;
+        for (row.endpoints) |endpoint| {
+            if (endpoint.region != null) regional = true;
+        }
+        if (!regional) continue;
+        for (row.endpoints) |endpoint| {
+            try std.testing.expect(baseUrl(row.id, endpoint.wire, null) == null);
+            try std.testing.expectEqualStrings(
+                endpoint.base_url,
+                baseUrl(row.id, endpoint.wire, endpoint.region.?).?,
+            );
+        }
+    }
+}
+
+test "a base URL is answered for the wire that names it and for no other" {
+    try std.testing.expectEqualStrings(
+        "https://api.anthropic.com",
+        baseUrl("anthropic", "anthropic-messages", null).?,
+    );
+    try std.testing.expect(baseUrl("anthropic", "openai-completions", null) == null);
+    try std.testing.expectEqualStrings(
+        "https://api.openai.com",
+        baseUrl("openai", "openai-responses", null).?,
+    );
+    try std.testing.expect(baseUrl("no-such-provider", "openai-completions", null) == null);
+    try std.testing.expect(baseUrl("kimi", "openai-completions", "atlantis") == null);
+}
+
+test "credential and base URL environment names are recorded as names" {
+    try std.testing.expectEqual(@as(usize, 2), credentialEnv("anthropic").len);
+    try std.testing.expectEqualStrings("ANTHROPIC_AUTH_TOKEN", credentialEnv("anthropic")[0]);
+    try std.testing.expectEqualStrings("KIMI_API_KEY", credentialEnv("kimi")[0]);
+    try std.testing.expect(credentialEnv("openai-codex").len == 0);
+    try std.testing.expectEqualStrings("ANTHROPIC_BASE_URL", baseUrlEnv("anthropic")[0]);
+    try std.testing.expect(baseUrlEnv("kimi").len == 0);
+    try std.testing.expectEqualStrings("KIMI_REGION", regionEnv("kimi").?);
+    try std.testing.expect(regionEnv("anthropic") == null);
+}
+
+test "at most one base URL environment variable is resolved per provider" {
+    for (all) |row| {
+        try std.testing.expect(row.base_url_env.len <= 1);
+        try std.testing.expect(row.credential_env.len <= 2);
+    }
+}
+
+test "the origin policy is data, including a per-tenant domain" {
+    const anthropic_policy = oauthOrigin("anthropic").?;
+    try std.testing.expectEqual(@as(usize, 1), anthropic_policy.exact.len);
+    try std.testing.expect(anthropic_policy.domain == null);
+    try std.testing.expect(!anthropic_policy.credential_declares_origin);
+
+    const copilot_policy = oauthOrigin("github-copilot").?;
+    try std.testing.expectEqualStrings("githubcopilot.com", copilot_policy.domain.?);
+    try std.testing.expect(copilot_policy.credential_declares_origin);
+    try std.testing.expect(copilot_policy.exact.len == 0);
+
+    try std.testing.expect(oauthOrigin("kimi") == null);
+    try std.testing.expect(oauthOrigin("no-such-provider") == null);
+}
+
+test "a models listing is recorded only where the provider answers one" {
+    try std.testing.expectEqualStrings("/v1/models", modelsEndpoint("anthropic").?);
+    try std.testing.expectEqualStrings("/v1/models", modelsEndpoint("deepseek").?);
+    try std.testing.expect(modelsEndpoint("openai-codex") == null);
+    try std.testing.expect(modelsEndpoint("ollama") == null);
+    try std.testing.expect(modelsEndpoint("no-such-provider") == null);
+}
+
+test "an auth kind is one the loader knows, and a provider may declare none" {
+    var without_auth = false;
+    for (all) |row| {
+        if (row.auth.len == 0) without_auth = true;
+        for (row.auth) |kind| {
+            switch (kind) {
+                .api_key, .oauth, .none => {},
+            }
+        }
+    }
+    try std.testing.expect(without_auth);
+}
