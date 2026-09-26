@@ -716,7 +716,13 @@ pub const Hub = struct {
     }
 
     fn remember(self: *Hub, entry: *Entry, event: contract.Event) !void {
-        const index = try self.cursorFor(entry, event.run_id);
+        var fresh = false;
+        const index = try self.cursorFor(entry, event.run_id, &fresh);
+        if (fresh and !std.mem.eql(u8, entry.run_id, event.run_id)) {
+            const owned = try self.allocator.dupe(u8, event.run_id);
+            self.allocator.free(entry.run_id);
+            entry.run_id = owned;
+        }
         entry.cursors.items[index].latest = @max(entry.cursors.items[index].latest, event.sequence);
         if (self.journal_capacity == 0) return;
         const line = try self.allocator.dupe(u8, event.line);
@@ -726,7 +732,8 @@ pub const Hub = struct {
         entry.journal.appendAssumeCapacity(.{ .line = line, .run_id = entry.cursors.items[index].run_id, .sequence = event.sequence });
     }
 
-    fn cursorFor(self: *Hub, entry: *Entry, run_id: []const u8) !usize {
+    fn cursorFor(self: *Hub, entry: *Entry, run_id: []const u8, fresh: *bool) !usize {
+        fresh.* = false;
         for (entry.cursors.items, 0..) |cursor, index| {
             if (std.mem.eql(u8, cursor.run_id, run_id)) return index;
         }
@@ -734,11 +741,13 @@ pub const Hub = struct {
         errdefer self.allocator.free(owned);
         try entry.cursors.ensureUnusedCapacity(self.allocator, 1);
         entry.cursors.appendAssumeCapacity(.{ .run_id = owned });
+        fresh.* = true;
         return entry.cursors.items.len - 1;
     }
 
     fn fanOut(self: *Hub, entry: *Entry, event: contract.Event) !void {
-        const cursor_index = try self.cursorFor(entry, event.run_id);
+        var fresh = false;
+        const cursor_index = try self.cursorFor(entry, event.run_id, &fresh);
         const owned_run = entry.cursors.items[cursor_index].run_id;
         var index: usize = 0;
         while (index < entry.subscribers.items.len) {
@@ -949,6 +958,37 @@ test "an adapter-assigned session id that is already taken is refused, not adopt
     try testing.expectEqual(@as(usize, 1), listed.len);
     try testing.expectEqualStrings(minted.session_id, listed[0].session_id);
     try testing.expectEqualStrings(minted.session_id, (try hub.state(arena, minted.session_id)).session_id);
+}
+
+test "the current run follows the events, so an unqualified cursor reaches a promoted run" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "promoted" });
+    const first = try submitFor(arena, "promoted");
+    const started = try hub.submit(arena, "promoted", &first);
+    try hub.pump(testing.allocator, 0);
+
+    var queued = first;
+    queued.delivery = .queue;
+    const waiting = try hub.submit(arena, "promoted", &queued);
+    try testing.expectEqual(oap_types.Admission.queued, waiting.admission);
+    try hub.pump(testing.allocator, 0);
+
+    _ = try hub.cancel(arena, "promoted", started.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqualStrings(waiting.run_id.?, hub.entries.items[0].run_id);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "", .after = 0 });
+    try testing.expectEqualStrings(waiting.run_id.?, resumed.run_id);
+    const first_event = resumed.next().?;
+    try testing.expectEqualStrings(waiting.run_id.?, first_event.run_id);
+    try testing.expectEqual(@as(u64, 1), first_event.sequence);
 }
 
 test "a subscriber that falls behind is ended with the run and position it last read" {
