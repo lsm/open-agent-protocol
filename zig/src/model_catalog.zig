@@ -21,6 +21,8 @@ const kimi_global_base_url = "https://api.moonshot.ai";
 const kimi_env_key = "KIMI_API_KEY";
 const kimi_china_catalog_name = "kimi.json";
 const kimi_global_catalog_name = "kimi-global.json";
+const kimi_context_window: u32 = 262_144;
+const kimi_max_output_tokens: u32 = 16_384;
 const codex_models_cache_name = "models_cache.json";
 const makai_catalog_dir_name = "model_catalog";
 const makai_codex_catalog_name = "openai-codex.json";
@@ -825,13 +827,33 @@ fn kimiRegionFromEnv(allocator: std.mem.Allocator) ?[]const u8 {
 }
 
 fn kimiModel(allocator: std.mem.Allocator, region: []const u8) !ai_types.Model {
-    return kimiModelForId(allocator, region, kimi_model_id, "Kimi K2.7 Code");
+    return kimiModelForId(allocator, region, kimi_model_id, .{ .name = "Kimi K2.7 Code" });
 }
 
-fn kimiModelForId(allocator: std.mem.Allocator, region: []const u8, id_text: []const u8, name_text: []const u8) !ai_types.Model {
+const KimiModelSpec = struct {
+    name: []const u8,
+    context_window: u32 = kimi_context_window,
+    reasoning: bool = false,
+    image_input: bool = false,
+};
+
+fn kimiSpecFromObject(obj: *const std.json.ObjectMap, id: []const u8) KimiModelSpec {
+    var spec: KimiModelSpec = .{ .name = id };
+    if (objectString(obj, "display_name")) |name| {
+        if (name.len > 0) spec.name = name;
+    }
+    if (objectU32(obj, "context_length")) |context_window| {
+        if (context_window > 0) spec.context_window = context_window;
+    }
+    if (objectBool(obj, "supports_reasoning")) |reasoning| spec.reasoning = reasoning;
+    if (objectBool(obj, "supports_image_in")) |image_input| spec.image_input = image_input;
+    return spec;
+}
+
+fn kimiModelForId(allocator: std.mem.Allocator, region: []const u8, id_text: []const u8, spec: KimiModelSpec) !ai_types.Model {
     const id = try allocator.dupe(u8, id_text);
     errdefer allocator.free(id);
-    const name = try allocator.dupe(u8, name_text);
+    const name = try allocator.dupe(u8, spec.name);
     errdefer allocator.free(name);
     const api = try allocator.dupe(u8, kimi_api_id);
     errdefer allocator.free(api);
@@ -841,10 +863,14 @@ fn kimiModelForId(allocator: std.mem.Allocator, region: []const u8, id_text: []c
     const base_url = try allocator.dupe(u8, kimiBaseUrl(region));
     errdefer allocator.free(base_url);
 
-    const input = try allocator.alloc([]const u8, 1);
+    const input = try allocator.alloc([]const u8, if (spec.image_input) 2 else 1);
     errdefer allocator.free(input);
     input[0] = try allocator.dupe(u8, "text");
     errdefer allocator.free(input[0]);
+    if (spec.image_input) {
+        input[1] = try allocator.dupe(u8, "image");
+        errdefer allocator.free(input[1]);
+    }
 
     return .{
         .id = id,
@@ -852,11 +878,11 @@ fn kimiModelForId(allocator: std.mem.Allocator, region: []const u8, id_text: []c
         .api = api,
         .provider = provider,
         .base_url = base_url,
-        .reasoning = false,
+        .reasoning = spec.reasoning,
         .input = input,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = 262_144,
-        .max_tokens = 16_384,
+        .context_window = spec.context_window,
+        .max_tokens = kimi_max_output_tokens,
         .is_owned = true,
     };
 }
@@ -876,19 +902,26 @@ fn kimiModelsUrl(allocator: std.mem.Allocator, region: []const u8) ![]u8 {
 }
 
 fn parseKimiModels(allocator: std.mem.Allocator, data: []const u8, region: []const u8) ![]ai_types.Model {
-    const ids = try parseModelIds(allocator, data);
-    defer freeModelIds(allocator, ids);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidModelCatalog;
+    const list = parsed.value.object.get("data") orelse return error.InvalidModelCatalog;
+    if (list != .array) return error.InvalidModelCatalog;
 
     var models = std.ArrayList(ai_types.Model).empty;
     errdefer {
         for (models.items) |*model| model.deinit(allocator);
         models.deinit(allocator);
     }
-    for (ids) |id| {
-        var model = try kimiModelForId(allocator, region, id, id);
+    for (list.array.items) |item| {
+        if (item != .object) continue;
+        const id = objectString(&item.object, "id") orelse continue;
+        if (id.len == 0) continue;
+        var model = try kimiModelForId(allocator, region, id, kimiSpecFromObject(&item.object, id));
         errdefer model.deinit(allocator);
         try models.append(allocator, model);
     }
+    if (models.items.len == 0) return error.InvalidModelCatalog;
     return models.toOwnedSlice(allocator);
 }
 
@@ -1776,22 +1809,33 @@ test "Kimi stored provider_data region normalizes to stable static values" {
 
 test "parseKimiModels maps the models response into owned Kimi models" {
     const data =
-        \\{"object":"list","data":[{"id":"kimi-k2.7-code","object":"model","owned_by":"kimi"},{"id":"kimi-k2.5","object":"model"}]}
+        \\{"object":"list","has_more":false,"data":[
+        \\{"id":"kimi-for-coding","object":"model","display_name":"K2.8 Preview","context_length":1048576,"supports_reasoning":true,"supports_image_in":true},
+        \\{"id":"kimi-k2.7-code","object":"model","context_length":262144,"supports_reasoning":false},
+        \\"not-a-model"]}
     ;
 
     const models = try parseKimiModels(std.testing.allocator, data, "china");
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("kimi-k2.7-code", models[0].id);
-    try std.testing.expectEqualStrings("kimi-k2.7-code", models[0].name);
+    try std.testing.expectEqualStrings("kimi-for-coding", models[0].id);
+    try std.testing.expectEqualStrings("K2.8 Preview", models[0].name);
     try std.testing.expectEqualStrings(kimi_provider_id, models[0].provider);
     try std.testing.expectEqualStrings(kimi_api_id, models[0].api);
     try std.testing.expectEqualStrings(kimi_base_url, models[0].base_url);
-    try std.testing.expectEqual(@as(usize, 1), models[0].input.len);
-    try std.testing.expectEqual(@as(u32, 262_144), models[0].context_window);
-    try std.testing.expectEqual(@as(u32, 16_384), models[0].max_tokens);
-    try std.testing.expectEqualStrings("kimi-k2.5", models[1].id);
+    try std.testing.expectEqual(@as(u32, 1_048_576), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, kimi_max_output_tokens), models[0].max_tokens);
+    try std.testing.expect(models[0].reasoning);
+    try std.testing.expectEqual(@as(usize, 2), models[0].input.len);
+    try std.testing.expectEqualStrings("text", models[0].input[0]);
+    try std.testing.expectEqualStrings("image", models[0].input[1]);
+
+    try std.testing.expectEqualStrings("kimi-k2.7-code", models[1].id);
+    try std.testing.expectEqualStrings("kimi-k2.7-code", models[1].name);
+    try std.testing.expectEqual(@as(u32, 262_144), models[1].context_window);
+    try std.testing.expect(!models[1].reasoning);
+    try std.testing.expectEqual(@as(usize, 1), models[1].input.len);
 
     const global = try parseKimiModels(std.testing.allocator, data, "global");
     defer deinitModels(std.testing.allocator, global);
@@ -1800,13 +1844,11 @@ test "parseKimiModels maps the models response into owned Kimi models" {
     try std.testing.expectEqualStrings(kimi_global_base_url, global[0].base_url);
 }
 
-test "parseKimiModels rejects a body without a models list" {
+test "parseKimiModels rejects a body without a usable model list" {
     try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "{}", "china"));
     try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "[]", "china"));
-
-    const empty = try parseKimiModels(std.testing.allocator, "{\"data\":[]}", "china");
-    defer deinitModels(std.testing.allocator, empty);
-    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "{\"data\":[]}", "china"));
+    try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "{\"data\":[\"not-an-object\"]}", "china"));
 }
 
 test "Kimi models endpoint names the region's own host" {

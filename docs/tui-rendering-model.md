@@ -196,8 +196,11 @@ code paths; add a transcript row instead.
   login or `KIMI_REGION` names — with that key, caches the body under
   `~/.oapx/model_catalog/kimi.json` (`kimi-global.json` for the global region) on the
   same 24-hour window and stale-copy fallback as Anthropic's, and falls back to the
-  static `kimi-k2.7-code` when both fetch and cache are unusable. A selected Kimi model
-  resolves its key the same way at request time.
+  static `kimi-k2.7-code` when both fetch and cache are unusable. Each entry takes its
+  display name, context window, reasoning flag and text/image input from the response's
+  `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
+  endpoint reports no output cap, so every entry keeps the 16 384 default. A selected
+  Kimi model resolves its key the same way at request time.
 - The model catalog lists Anthropic models whenever Anthropic credentials exist
   (OAuth in storage or `ANTHROPIC_API_KEY`): it fetches `/v1/models` with the stored
   token, caches the response under `~/.oapx/model_catalog/anthropic.json`, and falls
