@@ -104,3 +104,22 @@ only.
   `TestACPProcessAgainstChatCompletionsMock`).
 - The Zig adapter was not driven against the live agent; its evidence is the
   corpus replay and reducer tests.
+
+## Model-provider settings at this pin
+
+ACP has none, and the absence is a recorded fact rather than a gap in the
+reading. The protocol configures nothing about a model provider: a client spawns
+an agent process and speaks to it, and the agent's own CLI or config decides
+which vendor, base URL and key it uses. Nothing in `schema/v1/schema.json` at
+this pin carries a model provider, a base URL or a credential.
+
+The schema's one `model` is a session mode category — the enum a client offers as
+a selector (`mode`, `model`, `model_config`, `thought_level`, or a free-form
+custom name) — which presents a choice the agent already supports. It configures
+no provider, and it is explicitly advisory: `schema/v1/schema.json` says such a
+category is for UX and must not be required for correctness.
+
+So an ACP entry cannot be translated into a provider setting by the adapter, and
+a row's key reaches such an agent only through the settings that agent's own
+project documents. A backend built on ACP inherits the answer from the agent
+behind it rather than from this protocol.

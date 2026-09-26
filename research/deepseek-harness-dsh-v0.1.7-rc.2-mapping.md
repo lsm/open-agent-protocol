@@ -253,3 +253,36 @@ validate event payloads (#143), so the `tool/result`, source and
 section already records. One divergence stays unported and unexercised: Go maps
 `error.reason` to the failure message, and the Zig reducer still reports `name`.
 No live frame carried a `reason`.
+
+## Model-provider settings at this pin
+
+The DeepSeek Harness configures a model provider in the active profile's
+`cordis.patch.yml`, under the `dsh-llm-pi-ai` plugin's `providers`, keyed by
+provider id. The Settings → Models page writes the same document, and the
+harness home is `$DSH_HOME` (`profiles/web/cordis.patch.yml` under `dsh web`).
+
+| Key | What it sets |
+| --- | --- |
+| `providers.<id>.baseURL` | the endpoint; omitted means the installed catalog's own |
+| `providers.<id>.api` | the wire: `openai-completions`, `openai-responses` or `anthropic-messages` |
+| `providers.<id>.apiKeyEnv` | the *name* of the environment variable the key is read from |
+| `providers.<id>.displayName` | the name shown in configuration surfaces |
+| `providers.<id>.models` | this route's model list, replacing the installed catalog's |
+| `providers.<id>.modelOverrides` | per-model changes that leave the rest of the catalog serving |
+
+Shape taken from `docs/config-catalog.md` at this pin, which is generated from
+`packages/llm/llm-pi-ai/src/config.ts:222`; the guide is
+`docs/user/guide/providers.md`.
+
+This is the only harness in the set whose config names a credential by
+*reference* rather than by value: `apiKeyEnv` names an environment variable, and
+the value lives in the credential store at `$DSH_HOME/.credentials.yaml`
+(`dsh-credentials-local`). A row's key therefore cannot be passed as a lone
+environment variable to a config that names a reference — the store has to hold
+it, which is a different act from writing a variable into a child's environment.
+
+The three `api` values are the same three wires the catalog names, so a row is
+routable when its wire is one of them. A built-in provider id is always answered
+from the installed catalog even when its base URL points at a gateway, so
+routing through a gateway needs a *custom* provider entry rather than an
+override of a shipped one.
