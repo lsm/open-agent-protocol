@@ -49,15 +49,91 @@ type reply struct {
 }
 
 type fakeClient struct {
-	in      chan rpc.InboundMessage
-	done    chan struct{}
-	started chan string
-	mu      sync.Mutex
-	closed  bool
-	dead    bool
-	replies map[string][]reply
-	calls   []recordedCall
-	callsMu sync.Mutex
+	in            chan rpc.InboundMessage
+	done          chan struct{}
+	started       chan string
+	mu            sync.Mutex
+	closed        bool
+	dead          bool
+	replies       map[string][]reply
+	calls         []recordedCall
+	callsMu       sync.Mutex
+	answers       []recordedAnswer
+	gates         int
+	respondErr    error
+	respondBefore func()
+}
+
+type recordedAnswer struct {
+	id     rpc.RequestID
+	result json.RawMessage
+	code   int64
+}
+
+func (f *fakeClient) Respond(_ context.Context, request *rpc.IncomingRequest, result any) error {
+	f.mu.Lock()
+	before, failure := f.respondBefore, f.respondErr
+	f.respondBefore = nil
+	f.mu.Unlock()
+	if before != nil {
+		before()
+	}
+	if failure != nil {
+		return failure
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	f.callsMu.Lock()
+	f.answers = append(f.answers, recordedAnswer{id: request.ID, result: data})
+	f.callsMu.Unlock()
+	return nil
+}
+
+func (f *fakeClient) RespondError(_ context.Context, request *rpc.IncomingRequest, code int64, _ string) error {
+	f.callsMu.Lock()
+	f.answers = append(f.answers, recordedAnswer{id: request.ID, code: code})
+	f.callsMu.Unlock()
+	return nil
+}
+
+func (f *fakeClient) answerCount() int {
+	f.callsMu.Lock()
+	defer f.callsMu.Unlock()
+	return len(f.answers)
+}
+
+func (f *fakeClient) lastAnswer(t *testing.T) recordedAnswer {
+	t.Helper()
+	f.callsMu.Lock()
+	defer f.callsMu.Unlock()
+	if len(f.answers) == 0 {
+		t.Fatal("no server request was answered")
+	}
+	return f.answers[len(f.answers)-1]
+}
+
+func (f *fakeClient) gate(method, payload string) {
+	f.gateFor(method, "sess0001", payload)
+}
+
+func (f *fakeClient) gateFor(method, sessionID, payload string) {
+	var params map[string]any
+	if err := json.Unmarshal([]byte(payload), &params); err != nil {
+		panic(err)
+	}
+	params["session_id"] = sessionID
+	if _, ok := params["request_id"]; method == native.RequestApproval && !ok {
+		params["request_id"] = "0123456789abcdef0123456789abcdef"
+	}
+	data, _ := json.Marshal(params)
+	f.mu.Lock()
+	f.gates++
+	id := rpc.StringID("srq-" + strconv.Itoa(f.gates))
+	f.mu.Unlock()
+	f.in <- rpc.InboundMessage{Request: &rpc.IncomingRequest{ID: id, Method: method, Params: data}}
+	f.barrier()
 }
 
 type recordedCall struct {
@@ -484,12 +560,11 @@ func TestUnsolicitedTurnFailsClosed(t *testing.T) {
 func TestApprovalGateRoundTrip(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
-	f.queue(native.MethodApprovalRespond, reply{result: native.ApprovalRespondResult{Resolved: true}})
+	f.gate(native.RequestApproval, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: lastInteraction(t, s), SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"once"}}}}}); err != nil {
 		t.Fatal(err)
 	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	got := <-ch
 	events := drain(t, got.stream)
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeUserInputRequested, protocol.TypeRunStatusUpdated, protocol.TypeUserInputResolved, protocol.TypeRunStatusUpdated, protocol.TypeRunCompleted}
@@ -501,7 +576,7 @@ func TestApprovalGateRoundTrip(t *testing.T) {
 			t.Fatalf("event %d = %s, want %s", i, events[i].Type, want[i])
 		}
 	}
-	if f.callCount(native.MethodApprovalRespond) != 1 {
+	if f.answerCount() != 1 {
 		t.Fatal("approval.respond not written")
 	}
 	validateWithCapabilities(t, got.response, events)
@@ -510,7 +585,7 @@ func TestApprovalGateRoundTrip(t *testing.T) {
 func TestResolveRejectsForeignOwnership(t *testing.T) {
 	s, f := openTest(t)
 	_ = admit(t, s, f, true)
-	f.event(native.EventApprovalRequest, 2, `{"command":"rm","choices":["once","deny"]}`)
+	f.gate(native.RequestApproval, `{"command":"rm","choices":["once","deny"]}`)
 	id := lastInteraction(t, s)
 	if id == "" {
 		t.Fatal("approval gate was not registered")
@@ -529,7 +604,7 @@ func TestResolveRejectsForeignOwnership(t *testing.T) {
 			}
 		})
 	}
-	if f.callCount(native.MethodApprovalRespond) != 0 {
+	if f.answerCount() != 0 {
 		t.Fatal("a rejected resolution must not reach the native gate")
 	}
 }
@@ -550,9 +625,9 @@ func lastInteraction(t *testing.T, s base.Session) protocol.InteractionID {
 func TestExpireSiblingResolvesCancelled(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"abcd1234","question":"which?","choices":["a","b"]}`)
-	f.event(native.EventClarifyExpire, 3, `{"request_id":"abcd1234"}`)
-	f.event(native.EventMessageComplete, 4, settleFrame("complete", ""))
+	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.event(native.EventRequestCancel, 2, `{"id":"srq-1","method":"clarify","reason":"timeout"}`)
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
 	got := <-ch
 	events := drain(t, got.stream)
 	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeUserInputRequested, protocol.TypeRunStatusUpdated, protocol.TypeUserInputResolved, protocol.TypeRunStatusUpdated, protocol.TypeRunCompleted}
@@ -711,7 +786,7 @@ func TestResolveValidatesAnswerShapes(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
+	f.gate(native.RequestApproval, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
 	binding := lastInteraction(t, s)
 	textForm := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", Text: "once"}}}})
 	if !errors.Is(textForm, base.ErrInvalidResolution) {
@@ -722,47 +797,37 @@ func TestResolveValidatesAnswerShapes(t *testing.T) {
 		t.Fatalf("empty answers err = %v", noAnswers)
 	}
 
-	f.queue(native.MethodApprovalRespond, reply{result: native.ApprovalRespondResult{Resolved: true}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
 		t.Fatal(err)
 	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	drain(t, (<-ch).stream)
 }
 
 func TestBatchClarifyResolvesEveryQuestion(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"first?","choices":["a","b"]},{"qid":"q2","question":"second?","choices":["c","d"]}]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q1","question":"first?","choices":["a","b"]},{"qid":"q2","question":"second?","choices":["c","d"]}]}`)
 	binding := lastInteraction(t, s)
 
 	partial := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q1", SelectedOptionIDs: []string{"a"}}}}})
 	if !errors.Is(partial, base.ErrInvalidResolution) {
 		t.Fatalf("partial batch err = %v", partial)
 	}
-	if f.callCount(native.MethodClarifyRespond) != 0 {
-		t.Fatal("rejected batch wrote a native respond")
+	if f.answerCount() != 0 {
+		t.Fatal("rejected batch answered the server request")
 	}
-	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
-	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "q1", SelectedOptionIDs: []string{"a"}}, {QuestionID: "q2", SelectedOptionIDs: []string{"d"}}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.callCount(native.MethodClarifyRespond); got != 2 {
-		t.Fatalf("clarify.respond calls = %d", got)
+	if got := f.answerCount(); got != 1 {
+		t.Fatalf("answers = %d, want one response carrying the whole batch", got)
 	}
-	f.callsMu.Lock()
-	first, second := f.calls[1], f.calls[2]
-	f.callsMu.Unlock()
-	respondOne, ok := first.params.(native.RespondParams)
-	if !ok || respondOne.QuestionID != "q1" || respondOne.Answer != "a" {
-		t.Fatalf("first respond = %+v", first)
+	answer := f.lastAnswer(t)
+	if answer.id != rpc.StringID("srq-1") || string(answer.result) != `{"answers":{"q1":"a","q2":"d"}}` {
+		t.Fatalf("batch answer = %s %s", answer.id, answer.result)
 	}
-	respondTwo, ok := second.params.(native.RespondParams)
-	if !ok || respondTwo.QuestionID != "q2" || respondTwo.Answer != "d" {
-		t.Fatalf("second respond = %+v", second)
-	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	got := <-ch
 	events := drain(t, got.stream)
 	validateWithCapabilities(t, got.response, events)
@@ -772,7 +837,7 @@ func TestResolveRejectsUnofferedApprovalAnswer(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
+	f.gate(native.RequestApproval, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
 	binding := lastInteraction(t, s)
 	for name, answer := range map[string]protocol.InputAnswer{
 		"unknown question": {QuestionID: "other", SelectedOptionIDs: []string{"once"}},
@@ -783,15 +848,14 @@ func TestResolveRejectsUnofferedApprovalAnswer(t *testing.T) {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
-	if f.callCount(native.MethodApprovalRespond) != 0 {
+	if f.answerCount() != 0 {
 		t.Fatal("rejected answer reached approval.respond")
 	}
 
-	f.queue(native.MethodApprovalRespond, reply{result: native.ApprovalRespondResult{Resolved: true}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
 		t.Fatal(err)
 	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	drain(t, (<-ch).stream)
 }
 
@@ -799,12 +863,9 @@ func TestResolveParksSettlementUntilGateResolved(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventApprovalRequest, 2, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
+	f.gate(native.RequestApproval, `{"command":"rm -rf /tmp/x","choices":["once","deny"]}`)
 	binding := lastInteraction(t, s)
-	f.queue(native.MethodApprovalRespond, reply{
-		result: native.ApprovalRespondResult{Resolved: true},
-		before: func() { f.event(native.EventMessageComplete, 3, settleFrame("complete", "")) },
-	})
+	f.respondBefore = func() { f.event(native.EventMessageComplete, 2, settleFrame("complete", "")) }
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"once"}}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -836,7 +897,7 @@ func TestSudoSecretAnswersMustNameTheSurfacedQuestion(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventSecretRequest, 2, `{"request_id":"aaaa1111","prompt":"token?","env_var":"TOKEN"}`)
+	f.gate(native.RequestSecret, `{"prompt":"token?","env_var":"TOKEN"}`)
 	binding := lastInteraction(t, s)
 	for name, answer := range map[string]protocol.InputAnswer{
 		"foreign question": {QuestionID: "other", Text: "hunter2"},
@@ -846,14 +907,13 @@ func TestSudoSecretAnswersMustNameTheSurfacedQuestion(t *testing.T) {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
-	if f.callCount(native.MethodSecretRespond) != 0 {
+	if f.answerCount() != 0 {
 		t.Fatal("rejected answer reached secret.respond")
 	}
-	f.queue(native.MethodSecretRespond, reply{result: native.RespondResult{Status: "ok"}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "value", Text: "hunter2"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	drain(t, (<-ch).stream)
 }
 
@@ -861,24 +921,15 @@ func TestChoiceLessClarifySurfacesAsText(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"why?","choices":[]}`)
+	f.gate(native.RequestClarify, `{"question":"why?","choices":[]}`)
 	binding := lastInteraction(t, s)
-	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", Text: "because"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	var respond native.RespondParams
-	f.callsMu.Lock()
-	for _, call := range f.calls {
-		if call.method == native.MethodClarifyRespond {
-			respond, _ = call.params.(native.RespondParams)
-		}
+	if answer := f.lastAnswer(t); string(answer.result) != `{"answer":"because"}` {
+		t.Fatalf("native answer = %s", answer.result)
 	}
-	f.callsMu.Unlock()
-	if respond.Answer != "because" {
-		t.Fatalf("native answer = %q", respond.Answer)
-	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	got := <-ch
 	events := drain(t, got.stream)
 	var kind protocol.InputQuestionKind
@@ -904,7 +955,7 @@ func TestClarifyRejectsUnofferedSelection(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"pick","choices":["a","b"]},{"qid":"q2","question":"many","choices":["x","y"],"multi_select":true}]}`)
+	f.gate(native.RequestClarify, `{"questions":[{"qid":"q1","question":"pick","choices":["a","b"]},{"qid":"q2","question":"many","choices":["x","y"],"multi_select":true}]}`)
 	binding := lastInteraction(t, s)
 	single := func(id string) protocol.InputAnswer {
 		return protocol.InputAnswer{QuestionID: "q1", SelectedOptionIDs: []string{id}}
@@ -925,15 +976,13 @@ func TestClarifyRejectsUnofferedSelection(t *testing.T) {
 			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
-	if f.callCount(native.MethodClarifyRespond) != 0 {
+	if f.answerCount() != 0 {
 		t.Fatal("rejected selection reached clarify.respond")
 	}
-	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
-	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{single("b"), multi("x", "y")}}}); err != nil {
 		t.Fatal(err)
 	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	drain(t, (<-ch).stream)
 }
 
@@ -941,28 +990,18 @@ func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
 
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"which?","choices":["a","b","c"],"multi_select":true}`)
+	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b","c"],"multi_select":true}`)
 	binding := lastInteraction(t, s)
-	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "ok"}})
 	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a", "c"}}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.callCount(native.MethodClarifyRespond); got != 1 {
-		t.Fatalf("clarify.respond calls = %d", got)
+	if got := f.answerCount(); got != 1 {
+		t.Fatalf("answers = %d", got)
 	}
-	var respond native.RespondParams
-	found := false
-	f.callsMu.Lock()
-	for _, call := range f.calls {
-		if call.method == native.MethodClarifyRespond {
-			respond, found = call.params.(native.RespondParams)
-		}
+	if answer := f.lastAnswer(t); string(answer.result) != `{"answer":"[\"a\",\"c\"]"}` {
+		t.Fatalf("multi-select answer = %s", answer.result)
 	}
-	f.callsMu.Unlock()
-	if !found || respond.Answer != `["a","c"]` {
-		t.Fatalf("multi-select respond = %+v (found=%v)", respond, found)
-	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	got := <-ch
 	events := drain(t, got.stream)
 	var kind protocol.InputQuestionKind
@@ -987,14 +1026,14 @@ func TestMultiSelectClarifyPreservesEverySelection(t *testing.T) {
 func TestRespondFailureDoesNotProjectSubmitted(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
 	binding := lastInteraction(t, s)
-	f.queue(native.MethodClarifyRespond, reply{result: native.RespondResult{Status: "expired"}})
+	f.respondErr = errors.New("hermes rpc: client closed")
 	err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a"}}}}})
 	if err == nil {
-		t.Fatal("expired respond projected as submitted")
+		t.Fatal("a failed answer write projected as submitted")
 	}
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
 	for _, envelope := range events {
@@ -1102,8 +1141,8 @@ func TestRunSettlesItsOpenChildrenBeforeItsTerminal(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventToolStart, 2, `{"tool_id":"t1","name":"read","context":"read"}`)
-	f.event(native.EventClarifyRequest, 3, `{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}`)
-	f.event(native.EventMessageComplete, 4, settleFrame("complete", ""))
+	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
 
@@ -1139,8 +1178,8 @@ func TestFailedRunSettlesItsOpenChildrenToo(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
 	f.event(native.EventToolStart, 2, `{"tool_id":"t1","name":"read","context":"read"}`)
-	f.event(native.EventClarifyRequest, 3, `{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}`)
-	f.event(native.EventMessageComplete, 4, settleFrame("", ""))
+	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	f.event(native.EventMessageComplete, 3, settleFrame("", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
 
@@ -1174,9 +1213,8 @@ func TestAGateNobodyCanAnswerIsRefused(t *testing.T) {
 		name  string
 		event string
 	}{
-		{"no prompt", `{"request_id":"aaaa1111","question":"","choices":["a","b"]}`},
-		{"an empty choice", `{"request_id":"aaaa1111","question":"which?","choices":[""]}`},
-		{"an empty choice in a batch", `{"request_id":"aaaa1111","questions":[{"qid":"q1","question":"pick","choices":[""]}]}`},
+		{"an empty choice", `{"question":"which?","choices":[""]}`},
+		{"an empty choice in a batch", `{"questions":[{"qid":"q1","question":"pick","choices":[""]}]}`},
 	} {
 		t.Run(frame.name, func(t *testing.T) { assertGateRefused(t, frame.event) })
 	}
@@ -1186,7 +1224,7 @@ func assertGateRefused(t *testing.T, frame string) {
 	t.Helper()
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, frame)
+	f.gate(native.RequestClarify, frame)
 	got := <-ch
 	events := drain(t, got.stream)
 	for _, envelope := range events {
@@ -1213,8 +1251,8 @@ func assertGateRefused(t *testing.T, frame string) {
 func TestAClarifyWithNoChoicesIsFreeTextRatherThanUnanswerable(t *testing.T) {
 	s, f := openTest(t)
 	ch := admit(t, s, f, true)
-	f.event(native.EventClarifyRequest, 2, `{"request_id":"aaaa1111","question":"which?","choices":[]}`)
-	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	f.gate(native.RequestClarify, `{"question":"which?","choices":[]}`)
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
 	for _, envelope := range events {
@@ -1568,4 +1606,130 @@ func TestAPermissionResolutionNamesNoInteraction(t *testing.T) {
 		t.Fatalf("permission resolution = %v", err)
 	}
 	_ = f
+}
+
+func TestAnUnmappedServerRequestIsAnsweredMethodNotFound(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.gate("tour", `{"steps":[]}`)
+	answer := f.lastAnswer(t)
+	if answer.id != rpc.StringID("srq-1") || answer.code != -32601 {
+		t.Fatalf("answer = %+v, want a -32601 error for srq-1", answer)
+	}
+	if lastInteraction(t, s) != "" {
+		t.Fatal("an unmapped server request opened an interaction")
+	}
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events %v", events)
+	}
+}
+
+func TestAnUnmappedServerRequestNamingNoSessionIsAnsweredMethodNotFound(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.gateFor("display.install.sudo", "", `{"profile_key":"desktop"}`)
+	answer := f.lastAnswer(t)
+	if answer.id != rpc.StringID("srq-1") || answer.code != -32601 {
+		t.Fatalf("answer = %+v, want a -32601 error for srq-1", answer)
+	}
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	if events[len(events)-1].Type != protocol.TypeRunCompleted {
+		t.Fatalf("events %v", events)
+	}
+}
+
+func TestAServerRequestForAnotherSessionMakesTheSessionUnusable(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.gateFor(native.RequestClarify, "other001", `{"question":"which?","choices":["a","b"]}`)
+	got := <-ch
+	events := drain(t, got.stream)
+	var failed protocol.RunFailedPayload
+	if events[len(events)-1].Type != protocol.TypeRunFailed || events[len(events)-1].DecodePayload(&failed) != nil || failed.Error.Code != "hermes_external_activity" {
+		t.Fatalf("events %v", events)
+	}
+	if f.answerCount() != 0 {
+		t.Fatal("a foreign server request was answered")
+	}
+}
+
+func TestAGateArrivingBeforeTheTurnOpensIsHeldUntilItDoes(t *testing.T) {
+	s, f := openTest(t)
+	release := make(chan struct{})
+	f.queue(native.MethodPromptSubmit, reply{result: native.PromptSubmitResult{Status: native.SubmitStreaming}, before: func() { <-release }})
+	ch := submitAsync(s)
+	f.awaitCall(t, native.MethodPromptSubmit)
+	f.gate(native.RequestSudo, `{"command":"sudo true"}`)
+	f.event(native.EventMessageStart, 1, "")
+	close(release)
+	got := <-ch
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	waitStarted(t, s)
+	binding := lastInteraction(t, s)
+	if binding == "" {
+		t.Fatal("the held gate was never opened")
+	}
+	if err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "password", Text: "hunter2"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if answer := f.lastAnswer(t); answer.id != rpc.StringID("srq-1") || string(answer.result) != `{"value":"hunter2"}` {
+		t.Fatalf("answer = %s %s", answer.id, answer.result)
+	}
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
+	events := drain(t, got.stream)
+	validateWithCapabilities(t, got.response, events)
+}
+
+func TestACancelThatOvertakesTheAnswerSettlesTheGateCancelled(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.gate(native.RequestClarify, `{"question":"which?","choices":["a","b"]}`)
+	binding := lastInteraction(t, s)
+	f.respondBefore = func() {
+		f.event(native.EventRequestCancel, 2, `{"id":"srq-1","method":"clarify","reason":"timeout"}`)
+	}
+	err := s.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: binding, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "answer", SelectedOptionIDs: []string{"a"}}}}})
+	if !errors.Is(err, base.ErrInteractionNotFound) {
+		t.Fatalf("resolve = %v, want ErrInteractionNotFound for a withdrawn request", err)
+	}
+	f.event(native.EventMessageComplete, 3, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	cancelled := false
+	for _, envelope := range events {
+		var resolved protocol.UserInputResolvedPayload
+		if envelope.Type == protocol.TypeUserInputResolved && envelope.DecodePayload(&resolved) == nil {
+			if resolved.Status != protocol.InputCancelled {
+				t.Fatalf("a withdrawn request resolved %q", resolved.Status)
+			}
+			cancelled = true
+		}
+	}
+	if !cancelled {
+		t.Fatal("the withdrawn gate was never settled")
+	}
+	validateWithCapabilities(t, got.response, events)
+}
+
+func TestEmptyDeltasProjectNothing(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.event(native.EventMessageDelta, 2, `{"text":""}`)
+	f.event(native.EventReasoningDelta, 3, `{"text":""}`)
+	f.event(native.EventMessageComplete, 4, settleFrame("complete", ""))
+	got := <-ch
+	events := drain(t, got.stream)
+	for _, envelope := range events {
+		if envelope.Type == protocol.TypeContentDelta {
+			t.Fatalf("an empty delta was projected: %s", envelope.Payload)
+		}
+	}
+	validateWithCapabilities(t, got.response, events)
 }

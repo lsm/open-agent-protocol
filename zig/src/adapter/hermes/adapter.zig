@@ -30,7 +30,7 @@ const features = [_]contract.Feature{
     .{ .key = "session.message.submit", .level = .degraded, .reason = "status-only result; ownership by construction via message.start" },
     .{ .key = "session.open", .level = .native, .reason = "session.create mints the runtime session id" },
     .{ .key = "session.state", .level = .degraded, .reason = "reducer-owned live projection corroborated by session.info" },
-    .{ .key = "user_input", .level = .native, .reason = "approval/clarify/sudo/secret gates with expire siblings" },
+    .{ .key = "user_input", .level = .native, .reason = "approval/clarify/sudo/secret server requests, withdrawn by request.cancel" },
 };
 
 pub const descriptor = contract.Descriptor{
@@ -86,11 +86,6 @@ pub const Adapter = struct {
     }
 };
 
-const Held = struct {
-    message: rpc.Message,
-    document: std.json.Value,
-};
-
 pub const Session = struct {
     owner: *Adapter,
     gpa: std.mem.Allocator,
@@ -100,8 +95,6 @@ pub const Session = struct {
     transport: *process.Transport,
     reducer: ?session.Reducer = null,
     calls: i64 = 0,
-    holding: bool = false,
-    held: std.ArrayList(Held) = .empty,
     ended: bool = false,
     reaped: bool = false,
 
@@ -219,23 +212,30 @@ pub const Session = struct {
         if (self.ended) return;
         self.ended = true;
         self.reap();
-        try self.release();
         if (self.reducer) |*reducer| reducer.transportFailed(detail) catch |err| return lift(err);
-    }
-
-    fn release(self: *Session) contract.Failure!void {
-        self.holding = false;
-        var index: usize = 0;
-        while (index < self.held.items.len) : (index += 1) {
-            const entry = self.held.items[index];
-            try self.apply(entry.message, entry.document);
-        }
-        self.held.clearRetainingCapacity();
     }
 
     fn apply(self: *Session, message: rpc.Message, document: std.json.Value) contract.Failure!void {
         const reducer = if (self.reducer) |*present| present else return;
         reducer.observe(message, document) catch |err| return lift(err);
+        if (reducer.unanswerable.items.len == 0) return;
+        const unanswered = reducer.unanswerable.items;
+        reducer.unanswerable = .empty;
+        for (unanswered) |request_id| {
+            var failure: std.json.ObjectMap = .empty;
+            try failure.put(self.owned(), "code", .{ .integer = -32601 });
+            try failure.put(self.owned(), "message", .{ .string = "method not found" });
+            var frame: std.json.ObjectMap = .empty;
+            try frame.put(self.owned(), "id", .{ .string = request_id });
+            try frame.put(self.owned(), "jsonrpc", .{ .string = "2.0" });
+            try frame.put(self.owned(), "error", .{ .object = failure });
+            const encoded = json_encode.valueAlloc(self.owned(), .{ .object = frame }) catch |err| return lift(err);
+            var refusal = contract.Refusal{};
+            self.write(self.owned(), encoded, "a server request's refusal", &refusal) catch |err| switch (err) {
+                error.BackendFailed => return,
+                else => |other| return other,
+            };
+        }
     }
 
     fn write(self: *Session, arena: std.mem.Allocator, frame: []const u8, what: []const u8, refusal: *contract.Refusal) contract.Failure!void {
@@ -295,10 +295,6 @@ pub const Session = struct {
     }
 
     fn observe(self: *Session, received: Received) contract.Failure!void {
-        if (self.holding) {
-            try self.held.append(self.owned(), .{ .message = received.message, .document = received.document });
-            return;
-        }
         try self.apply(received.message, received.document);
     }
 
@@ -487,56 +483,47 @@ pub const Session = struct {
             else => error.InvalidResolution,
         };
         if (request.run_id.len > 0 and !std.mem.eql(u8, request.run_id, binding.run_id)) return error.InvalidResolution;
-        self.holding = true;
-        defer self.holding = false;
-        errdefer self.release() catch {};
         try self.respond(arena, binding, answers, refusal);
         reducer.resolve(request.interaction_id, answers) catch |err| switch (err) {
             error.InteractionNotFound, error.SessionUnusable => {},
             else => return lift(err),
         };
-        try self.release();
     }
 
     fn respond(self: *Session, arena: std.mem.Allocator, binding: session.Interaction, answers: []const session.Answer, refusal: *contract.Refusal) contract.Failure!void {
         const own = self.owned();
+        var result: std.json.ObjectMap = .empty;
         if (std.mem.eql(u8, binding.kind, "approval")) {
-            var params: std.json.ObjectMap = .empty;
-            try params.put(own, "session_id", .{ .string = self.reducer.?.options.native_id });
-            try params.put(own, "choice", .{ .string = answers[0].selected_option_ids[0] });
-            const result = try self.call(arena, "approval.respond", .{ .object = params }, refusal);
-            const resolved = if (result == .object) result.object.get("resolved") else null;
-            if (resolved == null or resolved.? != .bool or !resolved.?.bool) return refusal.fail(error.BackendFailed, "approval.respond did not resolve the gate");
-            return;
-        }
-        const method = try std.fmt.allocPrint(own, "{s}.respond", .{binding.kind});
-        for (binding.questions) |question| {
-            const answer = for (answers) |candidate| {
-                if (std.mem.eql(u8, candidate.question_id, question.id)) break candidate;
-            } else return error.InvalidResolution;
-            var params: std.json.ObjectMap = .empty;
-            try params.put(own, "request_id", .{ .string = binding.request_id });
-            if (std.mem.eql(u8, binding.kind, "sudo")) {
-                try params.put(own, "password", .{ .string = answer.text });
-            } else if (std.mem.eql(u8, binding.kind, "secret")) {
-                try params.put(own, "value", .{ .string = answer.text });
-            } else {
-                if (binding.questions.len > 1) try params.put(own, "question_id", .{ .string = question.id });
+            try result.put(own, "choice", .{ .string = answers[0].selected_option_ids[0] });
+        } else if (std.mem.eql(u8, binding.kind, "sudo") or std.mem.eql(u8, binding.kind, "secret")) {
+            try result.put(own, "value", .{ .string = answers[0].text });
+        } else {
+            var values: std.json.ObjectMap = .empty;
+            for (binding.questions) |question| {
+                const answer = for (answers) |candidate| {
+                    if (std.mem.eql(u8, candidate.question_id, question.id)) break candidate;
+                } else return error.InvalidResolution;
                 const value: []const u8 = if (std.mem.eql(u8, question.kind, "text"))
                     answer.text
                 else if (std.mem.eql(u8, question.kind, "multi_choice"))
                     try encodeStrings(own, answer.selected_option_ids)
                 else
                     answer.selected_option_ids[0];
-                if (value.len > 0) try params.put(own, "answer", .{ .string = value });
+                try values.put(own, question.id, .{ .string = value });
             }
-            const result = try self.call(arena, method, .{ .object = params }, refusal);
-            const status = member(result, "status");
-            if (!std.mem.eql(u8, status, "ok")) {
-                const detail = try std.fmt.allocPrint(arena, "{s} returned status \"{s}\"", .{ method, status });
-                return refusal.fail(error.BackendFailed, detail);
+            if (binding.batch) {
+                try result.put(own, "answers", .{ .object = values });
+            } else {
+                try result.put(own, "answer", values.get("answer").?);
             }
         }
+        var frame: std.json.ObjectMap = .empty;
+        try frame.put(own, "id", .{ .string = binding.request_id });
+        try frame.put(own, "jsonrpc", .{ .string = "2.0" });
+        try frame.put(own, "result", .{ .object = result });
+        const encoded = json_encode.valueAlloc(own, .{ .object = frame }) catch |err| return lift(err);
+        const what = try std.fmt.allocPrint(arena, "the answer to {s} {s}", .{ binding.kind, binding.request_id });
+        try self.write(arena, encoded, what, refusal);
     }
 
     fn cancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
@@ -714,17 +701,23 @@ pub const fake_text_turn = fake_turn_admitted ++
 ;
 
 pub const fake_approval_turn = fake_turn_admitted ++
-    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"approval.request","session_id":"sess0001","seq":2,"payload":{"command":"rm -rf /tmp/x","choices":["once","session","always","deny"]}}}\n'
+    \\printf '{"jsonrpc":"2.0","id":"srq-a0cfbc77739c","method":"approval","params":{"session_id":"sess0001","command":"rm -rf /tmp/x","request_id":"4057b948aca048909e7b0850c5190fa3","choices":["once","session","always","deny"]}}\n'
     \\take
-    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":3,"payload":{"text":"done","status":"complete","usage":{}}}}\n'
-    \\printf '{"id":3,"jsonrpc":"2.0","result":{"resolved":true}}\n'
+    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":2,"payload":{"text":"done","status":"complete","usage":{}}}}\n'
     \\
 ;
 
 pub const fake_clarify_turn = fake_turn_admitted ++
-    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"clarify.request","session_id":"sess0001","seq":2,"payload":{"request_id":"aaaa1111","question":"which?","choices":["a","b"]}}}\n'
-    \\take; printf '{"id":3,"jsonrpc":"2.0","result":{"status":"ok"}}\n'
-    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":3,"payload":{"text":"done","status":"complete","usage":{}}}}\n'
+    \\printf '{"jsonrpc":"2.0","id":"srq-d66621969511","method":"clarify","params":{"session_id":"sess0001","question":"which?","choices":["a (Recommended)","b"]}}\n'
+    \\take
+    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":2,"payload":{"text":"done","status":"complete","usage":{}}}}\n'
+    \\
+;
+
+pub const fake_unmapped_turn = fake_turn_admitted ++
+    \\printf '{"jsonrpc":"2.0","id":"srq-0123456789ab","method":"tour","params":{"session_id":"sess0001","steps":[]}}\n'
+    \\take
+    \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"message.complete","session_id":"sess0001","seq":2,"payload":{"text":"done","status":"complete","usage":{}}}}\n'
     \\
 ;
 
@@ -854,7 +847,7 @@ test "an open writes session.create, and a turn is admitted on message.start and
     , try probe.fake.written(probe.arena.allocator()));
 }
 
-test "an approval answer reaches the gateway before a settlement that raced it is applied" {
+test "an approval answer is written as the response to its server request" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_approval_turn ++ fake_idle);
     defer probe.deinit();
@@ -875,10 +868,10 @@ test "an approval answer reaches the gateway before a settlement that raced it i
     }
     try testing.expect(std.mem.indexOf(u8, resolved.?, "\"status\":\"submitted\"") != null);
     const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":3,\"jsonrpc\":\"2.0\",\"method\":\"approval.respond\",\"params\":{\"session_id\":\"sess0001\",\"choice\":\"once\"}}\n"));
+    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":\"srq-a0cfbc77739c\",\"jsonrpc\":\"2.0\",\"result\":{\"choice\":\"once\"}}\n"));
 }
 
-test "a clarify answer is written with its request id and the chosen option" {
+test "a clarify answer carries the offered choice back under its server request id" {
     var probe: Probe = undefined;
     try probe.init(fake_prelude ++ fake_clarify_turn ++ fake_idle);
     defer probe.deinit();
@@ -888,11 +881,26 @@ test "a clarify answer is written with its request id and the chosen option" {
 
     var seen = std.ArrayList(contract.Event).empty;
     const asked = try probe.pumpUntil("user.input.requested", &seen);
-    try testing.expectError(error.InvalidResolution, probe.answer(asked, "answer", "c", &refusal));
-    try probe.answer(asked, "answer", "a", &refusal);
+    try testing.expectError(error.InvalidResolution, probe.answer(asked, "answer", "a", &refusal));
+    try probe.answer(asked, "answer", "a (Recommended)", &refusal);
     _ = try probe.pumpUntil("run.completed", &seen);
     const written = try probe.fake.written(probe.arena.allocator());
-    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":3,\"jsonrpc\":\"2.0\",\"method\":\"clarify.respond\",\"params\":{\"request_id\":\"aaaa1111\",\"answer\":\"a\"}}\n"));
+    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":\"srq-d66621969511\",\"jsonrpc\":\"2.0\",\"result\":{\"answer\":\"a (Recommended)\"}}\n"));
+}
+
+test "a server request the adapter does not map is refused with method not found" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_unmapped_turn ++ fake_idle);
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    _ = try probe.submit("tour me", &refusal);
+
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.completed", &seen);
+    for (try kinds(probe.arena.allocator(), seen.items)) |name| try testing.expect(!std.mem.eql(u8, name, "user.input.requested"));
+    const written = try probe.fake.written(probe.arena.allocator());
+    try testing.expect(std.mem.endsWith(u8, written, "{\"id\":\"srq-0123456789ab\",\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32601,\"message\":\"method not found\"}}\n"));
 }
 
 test "a cancel sends session.interrupt for the native session and answers cancelling" {

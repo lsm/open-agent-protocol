@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "adapter": "codex-appserver-stdio",
+  "codex_commit": "00c972ed5d6ff6499317fd41b7f23605b8e6850d",
+  "schema_tree_sha256": "8ab8212ea05ccb2326439bffebde7ece2f64eab0534c5de531e449e31a8bef5d",
+  "cases": [
+    {"id":"completed-text","path":"cases/completed-text","ledger_fixtures":["completed-text"]},
+    {"id":"failed-turn","path":"cases/failed-turn","ledger_fixtures":["failed-turn"]},
+    {"id":"interrupted-turn","path":"cases/interrupted-turn","ledger_fixtures":["interrupted-turn"]},
+    {"id":"command-completed","path":"cases/command-completed","ledger_fixtures":["command-completed"]},
+    {"id":"file-change-completed","path":"cases/file-change-completed","ledger_fixtures":["file-change-completed"]},
+    {"id":"mcp-completed","path":"cases/mcp-completed","ledger_fixtures":["mcp-completed"]},
+    {"id":"command-approval","path":"cases/command-approval","ledger_fixtures":["command-approval"]},
+    {"id":"file-approval","path":"cases/file-approval","ledger_fixtures":["file-approval"]},
+    {"id":"user-input","path":"cases/user-input","ledger_fixtures":["user-input"]},
+    {"id":"permissions-approval-unsupported","path":"cases/permissions-approval-unsupported","ledger_fixtures":["permissions-approval"]},
+    {"id":"duplicate-terminal","path":"cases/duplicate-terminal","ledger_fixtures":["duplicate-terminal"]},
+    {"id":"process-exit","path":"cases/process-exit","ledger_fixtures":["process-exit"]},
+    {"id":"model-per-turn","path":"cases/model-per-turn","ledger_fixtures":["model-per-turn"]}
+  ]
+}

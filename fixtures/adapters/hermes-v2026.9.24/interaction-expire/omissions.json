@@ -1,0 +1,12 @@
+[
+  {"index":3,"type":"event/session.info","reason":"session metadata snapshot; reconciliation evidence only"},
+  {"index":6,"type":"event/sessions.changed","reason":"global session-list signal; unsequenced, not session-scoped"},
+  {"index":7,"type":"event/session.title","reason":"title generation; not projected in v1"},
+  {"index":8,"type":"event/thinking.delta","reason":"activity spinner text from thinking_callback; presentation, not reasoning; no OAP projection"},
+  {"index":9,"type":"event/thinking.delta","reason":"activity spinner text from thinking_callback; presentation, not reasoning; no OAP projection"},
+  {"index":10,"type":"event/tool.generating","reason":"tool-call argument streaming hint; the call is projected at tool.start"},
+  {"index":11,"type":"event/thinking.delta","reason":"activity spinner text from thinking_callback; presentation, not reasoning; no OAP projection"},
+  {"index":20,"type":"event/session.info","reason":"session metadata snapshot; reconciliation evidence only"},
+  {"index":21,"type":"event/status.update","reason":"status line text; not projected in v1"},
+  {"index":22,"type":"event/sessions.changed","reason":"global session-list signal; unsequenced, not session-scoped"}
+]

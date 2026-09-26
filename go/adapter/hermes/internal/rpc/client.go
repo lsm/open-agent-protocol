@@ -279,6 +279,20 @@ func (client *Client) callID(ctx context.Context, id RequestID, method string, p
 
 }
 
+func (client *Client) Respond(ctx context.Context, request *IncomingRequest, result any) error {
+	if request == nil || request.client != client {
+		return ErrResponseNotFound
+	}
+	return request.Respond(ctx, result)
+}
+
+func (client *Client) RespondError(ctx context.Context, request *IncomingRequest, code int64, message string) error {
+	if request == nil || request.client != client {
+		return ErrResponseNotFound
+	}
+	return request.RespondError(ctx, code, message, nil)
+}
+
 func (client *Client) Notify(ctx context.Context, method string, params any) error {
 	if method == "" {
 		return ErrInvalidMessage

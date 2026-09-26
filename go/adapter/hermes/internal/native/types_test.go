@@ -106,33 +106,73 @@ func TestDeltaVariantExclusivity(t *testing.T) {
 	}
 }
 
-func TestInteractionRequests(t *testing.T) {
-	if _, err := decodeEvent(t, `{"type":"approval.request","session_id":"s","seq":2,"payload":{"command":"rm -rf /tmp/x","choices":["once","session","always","deny"]}}`); err != nil {
+func TestServerRequestsDecode(t *testing.T) {
+	approval := `{"session_id":"s","command":"rm -rf /tmp/x","pattern_key":"delete in root path","pattern_keys":["delete in root path"],"description":"delete in root path","allow_permanent":true,"allow_session":true,"request_id":"4057b948aca048909e7b0850c5190fa3","choices":["once","session","always","deny"]}`
+	value, err := DecodeServerRequest(RequestApproval, []byte(approval))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeEvent(t, `{"type":"approval.request","session_id":"s","seq":2,"payload":{"command":"x","choices":["maybe"]}}`); err == nil {
-		t.Fatal("unknown choice accepted")
+	if request := value.(*ApprovalRequestParams); request.Command != "rm -rf /tmp/x" || len(request.Choices) != 4 || request.AllowSession == nil || !*request.AllowSession {
+		t.Fatalf("approval = %+v", request)
 	}
-	if _, err := decodeEvent(t, `{"type":"approval.request","session_id":"s","seq":2,"payload":{"command":"x","request_id":"abcd1234"}}`); err == nil {
-		t.Fatal("approval.request with request_id accepted")
+	if _, err := DecodeServerRequest(RequestApproval, []byte(strings.Replace(approval, `"deny"]`, `"maybe"]`, 1))); err == nil {
+		t.Fatal("unknown approval choice accepted")
 	}
-	if _, err := decodeEvent(t, `{"type":"clarify.request","session_id":"s","seq":2,"payload":{"request_id":"abcd1234","question":"which?","choices":["a","b"]}}`); err != nil {
+	if _, err := DecodeServerRequest(RequestApproval, []byte(strings.Replace(approval, `"request_id":"4057b948aca048909e7b0850c5190fa3",`, ``, 1))); err == nil {
+		t.Fatal("approval without its queue request_id accepted")
+	}
+	if _, err := DecodeServerRequest(RequestClarify, []byte(`{"session_id":"s","question":"which?","choices":["a (Recommended)","b"]}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeEvent(t, `{"type":"clarify.request","session_id":"s","seq":2,"payload":{"request_id":"abcd1234","questions":[{"qid":"1","question":"q","choices":["a"]},{"qid":"2","question":"r","choices":["b"]}],"question":"both"}}`); err == nil {
+	if _, err := DecodeServerRequest(RequestClarify, []byte(`{"session_id":"s","questions":[{"qid":"q0","question":"first?","choices":["a (Recommended)","b"],"multi_select":false}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeServerRequest(RequestClarify, []byte(`{"session_id":"s","question":"both","questions":[{"qid":"q0","question":"q","choices":["a"]}]}`)); err == nil {
 		t.Fatal("both clarify forms accepted")
 	}
-	if _, err := decodeEvent(t, `{"type":"sudo.request","session_id":"s","seq":2,"payload":{"request_id":"abcd1234"}}`); err != nil {
+	if _, err := DecodeServerRequest(RequestClarify, []byte(`{"session_id":"s","question":"which?","request_id":"abcd1234"}`)); err == nil {
+		t.Fatal("clarify carrying the retired request_id accepted")
+	}
+	if _, err := DecodeServerRequest(RequestSudo, []byte(`{"session_id":"s","command":"sudo true"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeEvent(t, `{"type":"secret.request","session_id":"s","seq":2,"payload":{"request_id":"abcd1234","prompt":"key?","env_var":"TOKEN"}}`); err != nil {
+	if _, err := DecodeServerRequest(RequestSecret, []byte(`{"session_id":"s","prompt":"CI token","env_var":"CI_TOKEN","metadata":{"skill_name":"probe-secret"}}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeEvent(t, `{"type":"secret.expire","session_id":"s","seq":2,"payload":{"request_id":"abcd1234"}}`); err != nil {
+	if _, err := DecodeServerRequest(RequestSecret, []byte(`{"session_id":"s","prompt":"CI token"}`)); err == nil {
+		t.Fatal("secret without env_var accepted")
+	}
+	if value, err := DecodeServerRequest("tour", []byte(`{"session_id":"s"}`)); value != nil || err != nil {
+		t.Fatalf("unmapped server request = %v, %v", value, err)
+	}
+}
+
+func TestRequestCancelIsValidated(t *testing.T) {
+	if _, err := decodeEvent(t, `{"type":"request.cancel","session_id":"s","seq":10,"payload":{"id":"srq-d899e57c7e38","method":"clarify","reason":"interrupted"}}`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := decodeEvent(t, `{"type":"secret.expire","session_id":"s","seq":2,"payload":{}}`); err == nil {
-		t.Fatal("expire without request_id accepted")
+	if _, err := decodeEvent(t, `{"type":"request.cancel","session_id":"s","seq":10,"payload":{"method":"clarify","reason":"timeout"}}`); err == nil {
+		t.Fatal("request.cancel without id accepted")
+	}
+	for _, retired := range []string{"approval.request", "clarify.request", "clarify.expire", "sudo.request", "secret.expire"} {
+		if _, err := decodeEvent(t, `{"type":"`+retired+`","session_id":"s","seq":2,"payload":{}}`); err == nil {
+			t.Fatalf("retired event %s accepted", retired)
+		}
+	}
+}
+
+func TestInterruptedSettlementCarriesNullTextAndPersistedTurn(t *testing.T) {
+	frame := `{"type":"message.complete","session_id":"s","seq":4,"payload":{"text":null,"usage":{"model":"m","input":0,"output":0,"reasoning":0,"prompt":0,"completion":0,"total":0,"calls":0,"compressions":0,"active_subagents":0},"status":"interrupted","persisted_turn":{"row_ids":[1,2],"complete":false,"user_row_id":1}}}`
+	event, err := decodeEvent(t, frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload MessageCompletePayload
+	if err := DecodeStrict(event.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Text != "" || payload.Status != "interrupted" || len(payload.PersistedTurn) == 0 {
+		t.Fatalf("payload = %+v", payload)
 	}
 }
 
@@ -187,8 +227,9 @@ func TestResultShapesDecode(t *testing.T) {
 	if err := DecodeStrict([]byte(`{"events":[],"latest_seq":0,"truncated":false,"count":0,"epoch":"`+testEpoch+`"}`), &since); err != nil {
 		t.Fatal(err)
 	}
-	if err := DecodeStrict([]byte(`{"status":"ok","remaining":["q2"]}`), &RespondResult{}); err != nil {
-		t.Fatal(err)
+	withOpen := `{"events":[],"latest_seq":0,"truncated":false,"count":0,"epoch":"` + testEpoch + `","open_requests":[{"id":"srq-0123456789ab","method":"clarify","params":{"session_id":"s","question":"q"}}]}`
+	if err := DecodeStrict([]byte(withOpen), &since); err != nil || len(since.OpenRequests) != 1 {
+		t.Fatalf("open_requests = %+v err=%v", since, err)
 	}
 
 	var steer SteerResult

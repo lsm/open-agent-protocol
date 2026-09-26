@@ -55,7 +55,7 @@ type runState struct {
 	accepted      bool
 	openSeen      bool
 	submitting    bool
-	buffered      []native.Event
+	buffered      []observation
 	submittedText string
 	messageID     protocol.MessageID
 	final         *native.MessageCompletePayload
@@ -64,6 +64,11 @@ type runState struct {
 	deferred    *native.MessageCompletePayload
 	startResult chan error
 	startOnce   sync.Once
+}
+
+type observation struct {
+	event   *native.Event
+	request *rpc.IncomingRequest
 }
 
 type toolState struct {
@@ -81,11 +86,14 @@ type inputState struct {
 	id        protocol.InteractionID
 	kind      string
 	requestID string
+	request   *rpc.IncomingRequest
 	run       *runState
 	questions []protocol.InputQuestion
+	batch     bool
 	resolved  bool
 
-	settling bool
+	settling  bool
+	withdrawn bool
 
 	answers   map[string]string
 	requested protocol.EnvelopeID
@@ -256,7 +264,7 @@ func (s *Session) reduce(in rpc.InboundMessage) {
 		return
 	}
 	if in.Request != nil {
-		s.foreignActivity("reverse request")
+		s.applyRequest(in.Request)
 		return
 	}
 	if in.Notification != nil {
@@ -316,6 +324,43 @@ func (s *Session) applyEvent(event *native.Event) {
 	s.applyRunEvent(run, event)
 }
 
+func (s *Session) applyRequest(request *rpc.IncomingRequest) {
+	if _, ok := request.ID.StringValue(); !ok {
+		s.foreignActivity(fmt.Sprintf("%s request with a non-string id", request.Method))
+		return
+	}
+	switch request.Method {
+	case native.RequestApproval, native.RequestClarify, native.RequestSudo, native.RequestSecret:
+	default:
+		_ = s.client.RespondError(context.Background(), request, -32601, "method not found")
+		return
+	}
+	if sessionID := native.RequestSessionID(request.Params); sessionID != s.nativeID {
+		s.foreignActivity(fmt.Sprintf("%s request for foreign session %q", request.Method, sessionID))
+		return
+	}
+	s.mu.Lock()
+	run := s.pending
+	if run == nil {
+		run = s.active
+	}
+	unusable := s.unusable
+	terminal := run != nil && run.terminal
+	s.mu.Unlock()
+	if unusable {
+		return
+	}
+	if run == nil || terminal {
+		s.foreignActivity(fmt.Sprintf("%s request without an owned run", request.Method))
+		return
+	}
+	if !run.started {
+		run.buffered = append(run.buffered, observation{request: request})
+		return
+	}
+	s.openInteraction(run, request)
+}
+
 func (s *Session) reserveObservation(run *runState, event *native.Event) {
 	if event.Type == native.EventMessageStart {
 		s.mu.Lock()
@@ -332,7 +377,7 @@ func (s *Session) reserveObservation(run *runState, event *native.Event) {
 		}
 		return
 	}
-	run.buffered = append(run.buffered, *event)
+	run.buffered = append(run.buffered, observation{event: event})
 }
 
 func (s *Session) applyRunEvent(run *runState, event *native.Event) {
@@ -375,12 +420,10 @@ func (s *Session) applyRunEvent(run *runState, event *native.Event) {
 			return
 		}
 		s.endTool(run, &payload)
-	case native.EventApprovalRequest, native.EventClarifyRequest, native.EventSudoRequest, native.EventSecretRequest:
-		s.openInteraction(run, event)
-	case native.EventSecretExpire, native.EventSudoExpire, native.EventClarifyExpire:
-		var payload native.ExpirePayload
+	case native.EventRequestCancel:
+		var payload native.RequestCancelPayload
 		if err := native.DecodeStrict(event.Payload, &payload); err != nil {
-			s.failRun(run, "hermes_invalid_event", "invalid expire")
+			s.failRun(run, "hermes_invalid_event", "invalid request cancel")
 			return
 		}
 		s.expireInteraction(run, &payload)
@@ -414,11 +457,15 @@ func (s *Session) startRun(run *runState) {
 	}
 	run.signalStart(nil)
 
-	for _, event := range replay {
+	for _, observed := range replay {
 		if run.terminal {
 			return
 		}
-		s.applyRunEvent(run, &event)
+		if observed.request != nil {
+			s.openInteraction(run, observed.request)
+			continue
+		}
+		s.applyRunEvent(run, observed.event)
 	}
 }
 
@@ -429,6 +476,9 @@ func (s *Session) emitDelta(run *runState, event *native.Event, kind protocol.Co
 	var payload native.DeltaPayload
 	if err := native.DecodeStrict(event.Payload, &payload); err != nil {
 		s.failRun(run, "hermes_invalid_event", "invalid delta")
+		return
+	}
+	if payload.Text == "" {
 		return
 	}
 	part := protocol.ContentPart{Type: kind}
@@ -482,92 +532,50 @@ func (s *Session) toolPayload(t *toolState) protocol.ActionCallPayload {
 	return protocol.ActionCallPayload{SessionID: s.state.SessionID, RunID: t.run.id, ToolCallID: t.id, RequestedBy: endpointID, ExecutionOwner: "hermes", Name: t.name, ArgumentsJSON: cloneRaw(t.args)}
 }
 
-func (s *Session) openInteraction(run *runState, event *native.Event) {
+func (s *Session) openInteraction(run *runState, request *rpc.IncomingRequest) {
 	if !run.started || run.terminal {
 		s.failRun(run, "hermes_interaction", "gate outside the owned run")
 		return
 	}
+	decoded, err := native.DecodeServerRequest(request.Method, request.Params)
+	if err != nil || decoded == nil {
+		s.failRun(run, "hermes_invalid_event", "invalid "+request.Method+" gate")
+		return
+	}
+	requestID, _ := request.ID.StringValue()
 	id := protocol.InteractionID(s.ids.NewID("interaction"))
-	binding := &inputState{id: id, run: run, answers: map[string]string{}}
+	binding := &inputState{id: id, kind: request.Method, requestID: requestID, request: request, run: run, answers: map[string]string{}}
 	var title, description string
-	switch event.Type {
-	case native.EventApprovalRequest:
-		var payload native.ApprovalRequestPayload
-		if err := native.DecodeStrict(event.Payload, &payload); err != nil {
-			s.failRun(run, "hermes_invalid_event", "invalid approval gate")
-			return
-		}
-		binding.kind = "approval"
+	switch payload := decoded.(type) {
+	case *native.ApprovalRequestParams:
 		title = "Command approval"
 		description = payload.Command
+		if description == "" {
+			description = payload.Description
+		}
 		options := make([]protocol.InputOption, len(payload.Choices))
 		for i, choice := range payload.Choices {
 			options[i] = protocol.InputOption{ID: choice, Label: choice}
 		}
-		binding.questions = []protocol.InputQuestion{{ID: "choice", Prompt: payload.Command, Kind: protocol.InputSingleChoice, Required: true, Options: options}}
-	case native.EventClarifyRequest:
-		var payload native.ClarifyRequestPayload
-		if err := native.DecodeStrict(event.Payload, &payload); err != nil {
-			s.failRun(run, "hermes_invalid_event", "invalid clarify gate")
-			return
-		}
-		binding.kind = "clarify"
-		binding.requestID = payload.RequestID
+		binding.questions = []protocol.InputQuestion{{ID: "choice", Prompt: description, Kind: protocol.InputSingleChoice, Required: true, Options: options}}
+	case *native.ClarifyRequestParams:
 		title = "Clarification"
 		if len(payload.Questions) > 0 {
+			binding.batch = true
 			for _, question := range payload.Questions {
-				kind := protocol.InputSingleChoice
-				if question.MultiSelect {
-					kind = protocol.InputMultiChoice
-				}
-				var options []protocol.InputOption
-				if len(question.Choices) == 0 {
-
-					kind = protocol.InputText
-				} else {
-					options = make([]protocol.InputOption, len(question.Choices))
-					for i, choice := range question.Choices {
-						options[i] = protocol.InputOption{ID: choice, Label: choice}
-					}
-				}
-				binding.questions = append(binding.questions, protocol.InputQuestion{ID: question.Qid, Prompt: question.Question, Kind: kind, Required: true, Options: options})
+				binding.questions = append(binding.questions, protocol.InputQuestion{ID: question.Qid, Prompt: question.Question, Kind: choiceKind(question.MultiSelect, question.Choices), Required: true, Options: choiceOptions(question.Choices)})
 			}
 		} else {
-			kind := protocol.InputSingleChoice
-			if payload.MultiSelect {
-				kind = protocol.InputMultiChoice
-			}
-			var options []protocol.InputOption
-			if len(payload.Choices) == 0 {
-				kind = protocol.InputText
-			} else {
-				options = make([]protocol.InputOption, len(payload.Choices))
-				for i, choice := range payload.Choices {
-					options[i] = protocol.InputOption{ID: choice, Label: choice}
-				}
-			}
-			binding.questions = []protocol.InputQuestion{{ID: "answer", Prompt: payload.Question, Kind: kind, Required: true, Options: options}}
+			binding.questions = []protocol.InputQuestion{{ID: "answer", Prompt: payload.Question, Kind: choiceKind(payload.MultiSelect, payload.Choices), Required: true, Options: choiceOptions(payload.Choices)}}
 		}
-	case native.EventSudoRequest:
-		binding.kind = "sudo"
-		binding.requestID = decodeRequestID(event.Payload)
+	case *native.SudoRequestParams:
 		title = "Password required"
+		description = payload.Command
 		binding.questions = []protocol.InputQuestion{{ID: "password", Prompt: "Enter the sudo password", Kind: protocol.InputText, Required: true}}
-	case native.EventSecretRequest:
-		var payload native.SecretRequestPayload
-		if err := native.DecodeStrict(event.Payload, &payload); err != nil {
-			s.failRun(run, "hermes_invalid_event", "invalid secret gate")
-			return
-		}
-		binding.kind = "secret"
-		binding.requestID = payload.RequestID
+	case *native.SecretRequestParams:
 		title = "Secret required"
 		description = payload.EnvVar
 		binding.questions = []protocol.InputQuestion{{ID: "value", Prompt: payload.Prompt, Kind: protocol.InputText, Required: true}}
-	}
-	if binding.requestID == "" && binding.kind != "approval" {
-		s.failRun(run, "hermes_invalid_event", "gate without request_id")
-		return
 	}
 	if !everyQuestionAnswerable(binding.questions) {
 		s.failRun(run, "hermes_invalid_event", "gate with a question nobody can answer")
@@ -580,6 +588,27 @@ func (s *Session) openInteraction(run *runState, event *native.Event) {
 	}
 	binding.requested = requestedEnvelope.ID
 	_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunWaitingForInput, PendingUserInputID: id, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+}
+
+func choiceKind(multi bool, choices []string) protocol.InputQuestionKind {
+	switch {
+	case len(choices) == 0:
+		return protocol.InputText
+	case multi:
+		return protocol.InputMultiChoice
+	}
+	return protocol.InputSingleChoice
+}
+
+func choiceOptions(choices []string) []protocol.InputOption {
+	if len(choices) == 0 {
+		return nil
+	}
+	options := make([]protocol.InputOption, len(choices))
+	for i, choice := range choices {
+		options[i] = protocol.InputOption{ID: choice, Label: choice}
+	}
+	return options
 }
 
 func everyQuestionAnswerable(questions []protocol.InputQuestion) bool {
@@ -602,18 +631,14 @@ func everyQuestionAnswerable(questions []protocol.InputQuestion) bool {
 	return true
 }
 
-func decodeRequestID(payload json.RawMessage) string {
-	var probe struct {
-		RequestID string `json:"request_id"`
-	}
-	_ = json.Unmarshal(payload, &probe)
-	return probe.RequestID
-}
-
-func (s *Session) expireInteraction(run *runState, payload *native.ExpirePayload) {
+func (s *Session) expireInteraction(run *runState, payload *native.RequestCancelPayload) {
 	for _, binding := range s.interactions {
-		if binding.run != run || binding.resolved || binding.settling || binding.requestID != payload.RequestID {
+		if binding.run != run || binding.resolved || binding.requestID != payload.ID {
 			continue
+		}
+		if binding.settling {
+			binding.withdrawn = true
+			return
 		}
 		binding.resolved = true
 		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
@@ -667,17 +692,15 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 		return base.ErrInvalidResolution
 	}
 	answers := resolution.Input.Answers
-	var approval *native.ApprovalRespondParams
-	var calls []native.RespondParams
+	var result any
 	switch binding.kind {
-	case "approval":
+	case native.RequestApproval:
 		if len(answers) != 1 || len(binding.questions) != 1 || base.ValidateInputAnswer(binding.questions[0], answers[0]) != nil {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
-		approval = &native.ApprovalRespondParams{SessionID: s.nativeID, Choice: answers[0].SelectedOptionIDs[0]}
-	case "clarify":
-
+		result = native.ApprovalResult{Choice: answers[0].SelectedOptionIDs[0]}
+	case native.RequestClarify:
 		if len(answers) != len(binding.questions) {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
@@ -687,42 +710,34 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
+		values := make(map[string]string, len(binding.questions))
 		for _, question := range binding.questions {
 			answer := indexed[question.ID]
-			var value string
 			switch question.Kind {
 			case protocol.InputText:
-				value = answer.Text
+				values[string(question.ID)] = answer.Text
 			case protocol.InputMultiChoice:
-
 				encoded, err := json.Marshal(answer.SelectedOptionIDs)
 				if err != nil {
 					s.reduceMu.Unlock()
 					return base.ErrInvalidResolution
 				}
-				value = string(encoded)
+				values[string(question.ID)] = string(encoded)
 			default:
-				value = answer.SelectedOptionIDs[0]
+				values[string(question.ID)] = answer.SelectedOptionIDs[0]
 			}
-			respond := native.RespondParams{RequestID: binding.requestID, Answer: value}
-			if len(binding.questions) > 1 {
-				respond.QuestionID = string(question.ID)
-			}
-			calls = append(calls, respond)
 		}
-	case "sudo", "secret":
-
+		if binding.batch {
+			result = native.ClarifyAnswersResult{Answers: values}
+		} else {
+			result = native.ClarifyAnswerResult{Answer: values["answer"]}
+		}
+	case native.RequestSudo, native.RequestSecret:
 		if len(answers) != 1 || len(binding.questions) != 1 || base.ValidateInputAnswer(binding.questions[0], answers[0]) != nil {
 			s.reduceMu.Unlock()
 			return base.ErrInvalidResolution
 		}
-		respond := native.RespondParams{RequestID: binding.requestID}
-		if binding.kind == "sudo" {
-			respond.Password = answers[0].Text
-		} else {
-			respond.Value = answers[0].Text
-		}
-		calls = []native.RespondParams{respond}
+		result = native.ValueResult{Value: answers[0].Text}
 	default:
 		s.reduceMu.Unlock()
 		return errUnavailable
@@ -731,56 +746,40 @@ func (s *Session) Resolve(ctx context.Context, resolution base.InteractionResolu
 	binding.settling = true
 	s.reduceMu.Unlock()
 
-	unresolve := func() {
+	if err := s.client.Respond(ctx, binding.request, result); err != nil {
 		s.reduceMu.Lock()
 		binding.settling = false
-		binding.resolved = false
+		binding.withdrawn = false
 		if run.deferred != nil && !run.terminal {
-
 			binding.resolved = true
 			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
 		}
 		s.flushDeferred(run)
 		s.reduceMu.Unlock()
-	}
-	if approval != nil {
-		var result native.ApprovalRespondResult
-		remoteErr := s.client.Call(ctx, native.MethodApprovalRespond, *approval, &result)
-		if remoteErr == nil && !result.Resolved {
-			remoteErr = fmt.Errorf("%w: approval.respond did not resolve the gate", ErrNativeProtocol)
-		}
-		if remoteErr != nil {
-			unresolve()
-			return remoteErr
-		}
-	} else {
-		for _, call := range calls {
-			var result native.RespondResult
-			remoteErr := s.client.Call(ctx, respondMethod(binding.kind), call, &result)
-			if remoteErr == nil && result.Status != "ok" {
-				remoteErr = fmt.Errorf("%w: %s returned status %q", ErrNativeProtocol, respondMethod(binding.kind), result.Status)
-			}
-			if remoteErr != nil {
-
-				unresolve()
-				return remoteErr
-			}
-		}
+		return err
 	}
 	s.reduceMu.Lock()
 	binding.settling = false
+	withdrawn := binding.withdrawn
 	respondedBy := resolution.RespondedBy
 	if respondedBy == "" {
 		respondedBy = s.participant
 	}
 	if !run.terminal {
 		binding.resolved = true
-		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, binding.requested)
+		if withdrawn {
+			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
+		} else {
+			_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputSubmitted, Answers: resolution.Input.Answers}, false, binding.requested)
+		}
 		_ = s.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: run.id, Status: protocol.RunRunning, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
 	}
 
 	s.flushDeferred(run)
 	s.reduceMu.Unlock()
+	if withdrawn {
+		return base.ErrInteractionNotFound
+	}
 	return nil
 }
 
@@ -800,20 +799,6 @@ func (s *Session) flushDeferred(run *runState) {
 	payload := run.deferred
 	run.deferred = nil
 	s.settleRun(run, payload)
-}
-
-func respondMethod(kind string) string {
-	switch kind {
-	case "approval":
-		return native.MethodApprovalRespond
-	case "clarify":
-		return native.MethodClarifyRespond
-	case "sudo":
-		return native.MethodSudoRespond
-	case "secret":
-		return native.MethodSecretRespond
-	}
-	return ""
 }
 
 func (s *Session) settleChildren(run *runState) {
