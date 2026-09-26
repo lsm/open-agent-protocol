@@ -56,6 +56,13 @@ The control layer may then talk to one or more agent loops through
 presentation and control in one process, but the boundary remains useful for
 testing, plugin integration, remote UIs, and swapping presentation surfaces.
 
+The minimum profile assumes every presentation attached to a control layer acts
+for one trusted user, the trust model `goap hub` already has on a loopback bind.
+Any attached presentation may answer a prompt, and the first answer wins because a
+prompt resolves once. A presentation that may watch but not approve needs
+presentation identity (*Surface*, in the idea pool below), and a control layer
+serving the profile beyond one user waits for it.
+
 ## Core Concepts
 
 `Target`
@@ -112,7 +119,7 @@ profile.
 
 | Kind | Envelope type | Correlated response | Requirement |
 | --- | --- | --- | --- |
-| query | `presentation.snapshot.request` | `presentation.snapshot.response` | Return current presentation-ready state for a domain target. |
+| query | `presentation.snapshot.request` | `presentation.snapshot.response` | Return current presentation-ready state for a domain target, and subscribe the connection to its updates. |
 | command | `intent.message.submit.request` | `intent.message.submit.response` | Submit user-authored message intent to the control layer. |
 | command | `intent.run.cancel.request` | `intent.run.cancel.response`, or `error.response` if unavailable | Request cancellation through control-layer policy. |
 | command | `intent.permission.resolve.request` | `intent.permission.resolve.response`, or `error.response` if unavailable | Answer one permission prompt. |
@@ -125,6 +132,13 @@ request is answered with exactly one correlated `error.response` carrying a type
 error, never with a response envelope whose fields merely imply the refusal. A
 refusal that carries no code and no message leaves a presentation layer unable to
 say why, which is the one thing a refusal exists to do.
+
+A `presentation.snapshot.request` subscribes the connection it arrived on to that
+target's updates until the connection closes. The response and every later update
+for the target travel in order on that connection, so the first update a receiver
+sees chains from the snapshot it just took; a binding that carries responses and
+events on separate channels preserves that order across them. A connection that
+never asked for a target receives nothing about it.
 
 ## Target Shape
 
@@ -172,6 +186,13 @@ The minimum `session` target state contains:
 - `affordances`
 - `pending_prompts`
 - `diagnostics`
+
+A snapshot's `timeline` carries every item control still holds. A control layer
+that drops an item, as a bounded-memory host may, says so with a
+`timeline.item.remove` in the update that drops it, so a receiver that built its
+state from updates holds what a fresh snapshot at the same revision carries.
+History a host keeps elsewhere is reached through
+`intent.transcript.load_more.request`, which stays near-core.
 
 ### Timeline Item
 
@@ -300,16 +321,31 @@ than from the previous revision plus one. A new epoch may begin at any revision,
 and a lower revision in a new epoch is not a regression.
 
 Each change has a `kind` and kind-specific fields. The minimum session target
-uses changes such as:
+uses these changes:
 
-- `timeline.item.upsert`
+- `session.replace`
 - `session.status.set`
+- `composer.replace`
 - `affordances.replace`
 - `pending_prompts.replace`
 - `diagnostics.replace`
+- `timeline.item.upsert`
+- `timeline.item.remove`
+
+Every piece of minimum session state has a change that carries it whole, so a
+receiver's state never waits on a snapshot to catch up. `session.status.set` is the
+narrower form of `session.replace`.
 
 Changes address domain objects by stable IDs such as `item_id`; they must not
 address JSON array indexes or expose an implementation's object paths.
+
+A `presentation.snapshot.request` carries `change_kinds`, the change kinds the
+receiver can apply; absent, it means the minimum change kinds. Control sends that
+connection only kinds it named. A change a narrower named kind cannot express goes
+through the whole-state change for the same state, and state no named kind covers
+is outside what that receiver holds, so control sends it no changes for it. This
+is what lets a control layer add a change kind without every older receiver
+re-snapshotting on each update that carries it.
 
 The receiver applies an update only when its local revision equals
 `base_revision` **and** its held epoch equals the update's `epoch`. If the
@@ -396,6 +432,17 @@ either `admission: "started"` with `effective_delivery: "start"`, or
 [Decision 0013](../decisions/0013-steer.md) is proposed, and the core refuses
 `steered` in this subset, so this profile cannot offer it either.
 
+### Accepting A Degraded Feature
+
+An affordance may report `support: degraded`. The agent control core admits a
+degraded control only on the caller's opt-in, and refuses it otherwise with
+`capability_degraded` ([Decision 0005](../decisions/0005-run-controls.md)). At this
+boundary the caller is the user, so the opt-in travels on the intent: an intent
+that exercises a degraded affordance carries `allow_degraded`, the ids of the
+degraded affordances the user accepted. Control forwards it as the core's
+`allow_degraded_features` for the capabilities behind them, and refuses an intent
+without it with `capability_degraded`. Control never opts in on the user's behalf.
+
 ### `intent_id` Is Retry Deduplication Within One Epoch
 
 **Every** intent carries an `intent_id`, not only submit, so a retried resolve or
@@ -433,9 +480,9 @@ intents rather than growing for the life of the epoch, which matters to `oapx`,
 whose session memory is bounded by design.
 
 Answering a duplicate from the timeline assumes control still holds the item. A
-control layer that compacts or evicts old items, as a bounded-memory host may, can
-no longer recognise a retry that arrives after the eviction, and answers it as a
-fresh intent. That is a stated limit of this rule rather than a defect: the
+control layer that evicts old items, as a bounded-memory host may, announces each
+with `timeline.item.remove`, and can no longer recognise a retry that arrives after
+the eviction; it answers that retry as a fresh intent. That is a stated limit of this rule rather than a defect: the
 deduplication window is bounded at both ends, by the epoch on one side and by what
 control still holds on the other, and a presentation layer that retries after a
 compaction is asking control about state control has released.
@@ -519,6 +566,17 @@ The following are intentionally outside presentation-control:
   `error.response`.
 - Domain identities cross the boundary unchanged and are unique within their
   target; request correlation does not cross.
+- A snapshot request subscribes its connection to that target's updates, in order
+  after the response; a connection that never asked for a target hears nothing
+  about it.
+- A snapshot request names the change kinds the receiver applies, and control
+  sends it no others. Every piece of minimum session state has a change that
+  carries it whole.
+- A snapshot carries every timeline item control still holds, and control that
+  drops an item sends `timeline.item.remove`.
+- An intent exercising a degraded affordance carries the user's `allow_degraded`
+  opt-in; control never opts in for the user.
+- The minimum profile assumes one trusted user behind every attached presentation.
 - Draft composer synchronization is outside the minimum profile.
 - Toasts and other transient notification presentation are UI implementation
   details. Control reports semantic diagnostics and state instead.
@@ -533,15 +591,18 @@ identity could help with multi-window coordination, focus state, per-surface
 preferences, or remote UI attachment.
 
 Surface identity is intentionally outside the minimum profile for now. A simple
-implementation can treat one connection as one presentation instance.
+implementation can treat one connection as one presentation instance. It is what a
+read-only viewer would need, since the minimum profile lets any attached
+presentation answer a prompt.
 
 `Observation`
 
 A live binding may need an opaque `observation_id` or `subscription_id` to
 resume an update stream, scope sequence numbers, or release server-side
-resources. This identifies an observation of a target, not a UI view. Snapshot
-queries do not require one, so observation identity is intentionally outside
-the minimum profile.
+resources. This identifies an observation of a target, not a UI view. The
+minimum profile subscribes a connection by its snapshot request and ends the
+subscription with the connection, so observation identity, and an explicit
+subscribe or unsubscribe, is intentionally outside it.
 
 `Projection`
 

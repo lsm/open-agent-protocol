@@ -9,6 +9,8 @@ staged units inside a profile and does not reach a profile of its own
 Gated by: [Decision 0032](0032-go-and-zig-are-peers.md), for the parity rule
 below, and [Decision 0015](0015-evidence-from-implementations-we-do-not-control.md),
 for what step 3 asks of the profile
+Related: [Decision 0037](0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md),
+which settles the wire rules this gate makes executable
 Design: [Presentation Control Profile](../drafts/presentation-control-profile.md)
 
 ## Context
@@ -47,28 +49,12 @@ below the presentation one in one process is legal, and it stays legal. The gap
 is narrower and worth stating exactly: the boundary this repository crosses most
 in production is the one it has specified least.
 
-Two holes in the draft are already load-bearing for that crossing, and both are
-visible by reading the one implementation in this repository against the draft
-that describes it.
-
-**There is no epoch.** Revisions are monotonic integers scoped to one target (the
-draft's *Presentation Updates* section), and a receiver that does not hold
-`base_revision` must discard the changes and request a fresh snapshot. Nothing
-distinguishes a receiver that is ahead because it persisted across a control-layer
-restart from a control layer whose revision regressed, so a presentation client
-that stores state cannot converge after a restart — it re-snapshots, and the next
-update mismatches again. `tui/session_store.zig` is 1,642 lines of exactly that
-persistence, and it answers the question internally because the wire has nowhere to
-put the answer.
-
-**`pending_prompts` and `affordances` are both control-owned and never
-reconciled.** `resolve_permission` and `resolve_user_input` are affordance kinds
-(the draft's *Affordance* section) and `pending_prompts` is its own field in the
-minimum session target state (*Snapshot Shape*). Nothing says which is
-authoritative when a prompt exists and its affordance is absent, disabled, or
-disagrees with it, and the draft does not say they must agree. `AppState` splits
-the same state the same way — `approval` against `tools` and `permission_mode` —
-so this ambiguity is live, not hypothetical.
+Reading the one implementation in this repository against the draft also shows
+holes that are already load-bearing for that crossing: no epoch, and two
+control-owned sources for one prompt. They are wire rules rather than a gate, so
+[Decision 0037](0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md)
+settles them with the rest of their class, and this record decides only how the
+profile earns them.
 
 ## Decisions
 
@@ -137,7 +123,8 @@ evidence at all, which is a different and more tractable statement.
 
 Unlike the harnesses 0003's step 3 draws on, which existed before their adapters,
 no such consumer exists yet, and none is in view. The profile may stay a draft for a
-long time, and nothing waits on step 3: the TUI refactor below is gated on step 2.
+long time, and nothing waits on step 3: the TUI's move onto this profile is gated on
+step 2, and its move onto the agent control core waits on neither.
 
 ### What "executable" means here, and where it stops
 
@@ -201,91 +188,31 @@ bytes. Learnability is a different claim, and only step 3 can make it. The TUI
 shares its authors' assumptions however many control layers it runs against, so it
 cannot show the boundary is learnable from the specification alone.
 
-### The TUI is not refactored onto the profile until the profile is executable
+### The TUI moves onto the agent control core first, and onto this profile later
 
 This is the sequencing decision, and it is the one with real cost, so it is
 stated as a constraint rather than left to judgement.
 
-Refactoring twenty thousand lines of state machine onto draft prose moves the
-implementation and the specification in the same change. Neither can then be
-reviewed against the other: a diff in `tui/state.zig` and a diff in the profile
-draft are indistinguishable from a single refactor that happens to be wrong.
-Every other boundary in this repository was cut executable first — 0001 froze the
-subset and then the adapters followed it, and 0003 required reference execution
-to land with the schema.
+The TUI embeds its control layer. That control layer moves onto OAP at the agent
+control boundary first — the boundary the SDKs already speak
+([Decision 0029](0029-authentication-over-agent-control.md)) — and that move waits
+for nothing in this profile. The TUI's presentation half crosses this profile's
+boundary only after steps 1 and 2 land, as its own change.
 
-So the profile lands first, executable, and the TUI is refactored onto it
-afterwards as its own change, gated on the profile having step 2 evidence. The
-in-process embed is legal in the meantime and stays legal: a control layer may
-be in the same process as the presentation layer that renders it, and whether
-`oapx`'s TUI eventually crosses a wire or keeps an in-process control layer
-underneath is a composition question the profile does not decide.
+The order follows from what each move can be reviewed against. The agent control
+core is executable, so a TUI moved onto it is checked by the same validator and
+corpora as every adapter. Refactoring twenty thousand lines of state machine onto
+draft prose would move the implementation and the specification in the same
+change, and neither could then be reviewed against the other: a diff in
+`tui/state.zig` and a diff in the profile draft are indistinguishable from a
+single refactor that happens to be wrong. Every other boundary in this repository
+was cut executable first — 0001 froze the subset and then the adapters followed
+it, and 0003 required reference execution to land with the schema.
 
-### An epoch names one target's revision numbering
-
-Every `presentation.snapshot.response` and every `presentation.updated` carries
-`epoch`: an opaque identifier naming the revision numbering of one target.
-
-A control layer mints a new epoch whenever it cannot promise that the numbering
-continues — on start, or when it rebuilds that target's state. A control layer
-that saves its counter may keep one epoch across a restart, and keeping it obliges
-carrying whatever else that epoch promises, which for a layer that accepts intents
-includes their deduplication window. A layer that cannot carry that window across a
-restart mints a new epoch instead. **Same epoch means same numbering**, and that is
-the whole promise the identifier makes.
-
-A receiver holding a different epoch discards what it holds for that target and
-takes the snapshot. An update whose epoch differs from the held one is discarded,
-and the receiver re-snapshots the target.
-
-The revision rules key on target **and** epoch. Within one epoch revisions
-strictly increase and every update chains from its `base_revision`. They do not
-advance by exactly one: the draft says monotonic, and requiring `+1` forbids a
-control layer from coalescing several changes into one update. A new epoch may
-begin at any revision, and a lower revision in a new epoch is not a regression.
-
-This is what makes the revision discipline sound across a control-layer restart
-without making persistence mandatory. Revisions that never reset would oblige
-every control layer to persist a counter, and v0.1 carries no persistence
-obligation — [Decision 0012](0012-persistence-is-not-in-v0.1-core.md) retires
-`+persistence` for exactly that reason. The core already prefers reporting a gap
-to faking continuity, and this is that choice at the presentation boundary.
-
-### `pending_prompts` is the one source for what is being asked
-
-`pending_prompts` is authoritative for the content of an outstanding prompt.
-Each entry projects one core interaction and carries its `interaction_id`, its
-`kind`, its `run_id`, renderable content — the question and the tool call it
-concerns — and labelled choices. The core's interaction and option shapes are
-reused rather than restated, so a choice is a labelled thing a reader can render
-rather than a bare id, and the entry carries the same `interaction_id` the core
-used. The presentation layer renames nothing, so a resolve intent names the object
-the loop below it named.
-
-`intent.permission.resolve.request` and `intent.user_input.resolve.request` join
-the minimum profile. Each names one prompt and one of its choices, or the answer
-to a `user_input` prompt. A prompt resolves once: a stale or second answer is
-refused with a typed `error.response` rather than applied.
-
-A prompt leaves `pending_prompts` when it is resolved, cancelled or expired, and
-the timeline keeps its outcome. The transition is visible in the timeline rather
-than by the entry's disappearance alone.
-
-Affordances say only whether the presentation can act now, and why not. They never
-repeat a prompt's content, and a prompt carries no `affordance_id`.
-
-### A receiver that cannot apply every change does not advance
-
-An update's changes are applied as a set or not at all. A receiver which cannot
-apply **every** change in an update discards the whole set, does not advance its
-revision, and re-snapshots the target exactly as it would on a `base_revision`
-mismatch.
-
-The tolerant compile is not this answer and does not supply it. Tolerant makes an
-unknown `change.kind` valid *on the wire*; it says nothing about what the receiver
-then *does*, and those are different questions. A receiver that applied the
-changes it recognised and advanced to `revision` would hold state that is not that
-revision's state, which is the failure the revision discipline exists to prevent.
+A control layer in the TUI's own process stays legal throughout: a control layer
+may be in the same process as the presentation layer that renders it, and whether
+`oapx`'s TUI eventually crosses a wire to one is a composition question this
+profile does not decide.
 
 ## Consequences
 
@@ -295,12 +222,13 @@ revision's state, which is the failure the revision discipline exists to prevent
 - Both memory backends grow a presentation projection, Zig first, which makes them
   the first things in the tree that can exercise the profile end to end and gives
   the conformance runner a second claim to drive.
-- The four SDKs gain a profile they can target. That is the cheapest answer to
-  the gap `drafts/cli.md` records, and it only becomes true once the profile is
-  executable — until then a thin client has nothing to be thin against.
+- The SDKs keep converging on the agent control core, as Decision 0029 has them
+  do. This profile is not on their path, and retiring the Makai v1 wire does not
+  wait for it.
 - `zig/src/tui/` is not touched by this record, and no test in either tree
   changes by it. The profile is not executable by this record either, which is
-  why the status is `proposed` under 0003's first criterion.
+  why the status is `proposed` under 0003's first criterion. Its wire rules are
+  a separate record, so either can be amended without reopening the other.
 - `examples/presentation-control-session.json` does not judge the schema.
   `examples/` is illustrative by project rule — "illustrative JSON bindings for
   the draft protocol, not conformance tests" — so when a schema and the example
