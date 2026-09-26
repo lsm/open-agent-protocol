@@ -52,9 +52,9 @@ represented by this `oapx` OAP endpoint, so SDKs refuse them explicitly on
 the default path; the old Makai wire is available only by explicit opt-in.
 
 `oapx serve agent --backend claude` serves a Claude Code child (pinned 2.1.282),
-`--backend codex` a Codex app-server child (pinned `0.157.0`), `--backend pi` a
+`--backend codex` a Codex app-server child (pinned `rust-v0.157.0`), `--backend pi` a
 Pi RPC child (pinned `v0.87.1`), an `acp`
-entry an ACP v1 agent, a `hermes` entry a Hermes gateway (pinned `v2026.9.24`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v1.18.32`), behind the same stdio door instead of the built-in loop, following
+entry an ACP v1 agent (pinned `v1.9.1`), a `hermes` entry a Hermes gateway (pinned `v2026.9.24`), a `deepseek` entry a DeepSeek harness (pinned `dsh-v0.1.7-rc.2`), and an `opencode` entry an OpenCode server (pinned `v1.18.32`), behind the same stdio door instead of the built-in loop, following
 [the endpoint binding](drafts/endpoint-stdio.md). Without `--config` it runs
 `claude` from `PATH` with only `HOME` and `PATH` in its environment and the
 harness-default tool posture, so every gated tool call still reaches the host
@@ -97,7 +97,7 @@ Protocol artifacts:
 - `fixtures/packs/`: extension packs, loadable with `goap validate -pack`
 - `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles
 
-Executable core (Go 1.27 or later):
+Executable core (Go 1.26 or later, the `go.mod` floor; CI runs 1.27.x):
 
 ```sh
 go run ./go/cmd/goap check
@@ -664,7 +664,8 @@ Research:
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
 - [Pinned Codex app-server mapping](research/codex-app-server-0.157.0-mapping.md)
-- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md), moved to v1.9.1 by [its pin ledger](research/acp-v1.9.1-mapping.md)
+- [Pinned OpenCode server mapping](research/opencode-v1.18.32-mapping.md), over the [v1.18.29 base mapping](research/opencode-v1.18.29-mapping.md)
+- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.9.1-mapping.md), over the [v1.7.0 base mapping](research/acp-v1.7.0-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.87.1-mapping.md), over the [v0.85.1 base mapping](research/pi-v0.85.1-mapping.md)
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md), over the [47f9438 base mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.9.24-mapping.md), over the [v2026.8.31 base mapping](research/hermes-v2026.8.31-mapping.md)
@@ -710,10 +711,35 @@ Decisions:
 - [0008 — tool sources](decisions/0008-tool-sources.md) (accepted)
 - [0009 — compound open](decisions/0009-compound-open.md) (accepted)
 - [0010 — terminal provenance](decisions/0010-terminal-provenance.md) (accepted)
-- [0011 — control-layer-provided tools](decisions/0011-control-layer-provided-tools.md) (proposed — awaiting adapter evidence)
+- [0011 — control-layer-provided tools](decisions/0011-control-layer-provided-tools.md) (accepted)
+- [0012 — retire `+persistence`, stage transcript load](decisions/0012-persistence-is-not-in-v0.1-core.md) (proposed)
+- [0013 — steer](decisions/0013-steer.md) (proposed)
+- [0014 — provider descriptors](decisions/0014-provider-descriptors.md) (proposed)
+- [0015 — evidence from implementations we do not control](decisions/0015-evidence-from-implementations-we-do-not-control.md) (proposed)
+- [0016 — the model provider profile](decisions/0016-model-provider-profile.md) (proposed)
+- [0017 — provider provisioning](decisions/0017-provider-provisioning.md) (superseded before graduation by 0028)
+- [0018 — makai becomes first-party](decisions/0018-makai-becomes-first-party.md) (proposed)
+- [0019 — one binary, and the rewrite that gets there](decisions/0019-one-binary.md) (proposed; its oracle and retirement clauses are superseded by [0032](decisions/0032-go-and-zig-are-peers.md))
+- [0020 — error codes are declared, not enumerated](decisions/0020-error-codes-are-declared.md) (proposed)
+- [0021 — a tool policy says whether it outlives its run](decisions/0021-a-tool-policy-says-whether-it-outlives-its-run.md) (proposed)
+- [0022 — `tool_choice` is a filter here and a mode there](decisions/0022-tool-choice-is-a-filter-here-and-a-mode-there.md) (proposed)
+- [0023 — a denylist does not assert the catalog](decisions/0023-a-denylist-does-not-assert-the-catalog.md) (proposed)
+- [0024 — the filter judges the session catalog](decisions/0024-the-filter-judges-the-session-catalog.md) (proposed)
+- [0025 — authentication is an obligation, not a credential channel](decisions/0025-authentication-is-an-obligation-not-a-credential-channel.md) (superseded by [0029](decisions/0029-authentication-over-agent-control.md) before acceptance)
+- [0026 — a resume cursor may name its run](decisions/0026-a-resume-cursor-may-name-its-run.md) (proposed)
+- [0027 — compose profiles on one stdio connection](decisions/0027-composed-stdio-profiles.md) (proposed)
+- [0028 — live session model and provider control](decisions/0028-live-model-and-provider-control.md) (proposed)
+- [0029 — authentication over agent control](decisions/0029-authentication-over-agent-control.md) (proposed)
+- [0030 — remote model providers over HTTP](decisions/0030-remote-provider-http-binding.md) (proposed)
+- [0031 — a policy refusal is a settlement](decisions/0031-a-policy-refusal-is-a-settlement.md) (accepted)
+- [0032 — go and zig are peers, and the specification decides](decisions/0032-go-and-zig-are-peers.md) (accepted)
+- [0033 — harness pins are data](decisions/0033-harness-pins-are-data.md) (proposed)
+- [0034 — an unpublished catalog is unknown](decisions/0034-an-unpublished-catalog-is-unknown.md) (accepted)
 
 Decision 0003 defines what `accepted` means and what moves a record from
-proposed to accepted.
+proposed to accepted. A record's own `Status:` line is authoritative; this table
+summarizes it. `superseded` records keep their wording and are listed so the
+chain stays readable, not because their clauses are in force.
 
 Provider compatibility is tested independently from harness conformance. Inspect
 the credential-free China Coding Plan presets with:

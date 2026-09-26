@@ -100,13 +100,13 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 6 | T5b auth state | Claude `auth_status` frames; OpenCode `provider.list` | staged | — |
 
 Ledgers: [Codex](../research/codex-app-server-0.157.0-mapping.md) ·
-[Claude Code](../research/claude-code-agent-sdk-2.1.263-mapping.md) ·
-[OpenCode](../research/opencode-v1.18.29-mapping.md) ·
-[pi](../research/pi-v0.85.1-mapping.md) ·
-[Hermes](../research/hermes-v2026.8.31-mapping.md) ·
-[ACP](../research/acp-v1.7.0-mapping.md) ·
+[Claude Code](../research/claude-code-agent-sdk-2.1.282-mapping.md) ·
+[OpenCode](../research/opencode-v1.18.32-mapping.md) ·
+[pi](../research/pi-v0.87.1-mapping.md) ·
+[Hermes](../research/hermes-v2026.9.24-mapping.md) ·
+[ACP](../research/acp-v1.9.1-mapping.md) ·
 [Makai](../research/makai-agent-67ad514-mapping.md) ·
-[DeepSeek](../research/deepseek-harness-47f9438-mapping.md). DeepSeek
+[DeepSeek](../research/deepseek-harness-dsh-v0.1.7-rc.2-mapping.md). DeepSeek
 contributes no native evidence to any unit at its pin and advertises each
 `unavailable`.
 
