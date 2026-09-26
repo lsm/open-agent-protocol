@@ -129,8 +129,10 @@ Worked from `lsm/open-agent-protocol` @ `main`:
   shapes and pre-start settlement.
 - `decisions/0005-run-controls.md` — the fail-closed run-control gate.
 - `schema/v0.1/*.json` — the normative envelope and payload schemas.
-- `cmd/oap validate` — the executable validator used as the conformance oracle
-  below.
+- the executable validator, then `cmd/oap validate`, now
+  `goap validate` — the validator the conformance evidence below was gathered
+  with. Decision 0032 renamed the binary and ended the oracle framing, so the
+  "oracle" this section once claimed is now a peer validator on both sides.
 
 ### Claim
 
@@ -180,7 +182,8 @@ ULIDs; the native envelope `message_id` is never exposed as an OAP identity.
 ### Conformance evidence
 
 Three traces produced by the real binary were validated with the OAP repository's
-own validator (`go run ./go/cmd/oap validate`), all `PASS`:
+own validator (`go run ./go/cmd/goap validate`; the command was
+`go run ./go/cmd/oap validate` when this was recorded), all `PASS`:
 
 1. a completed run (initialize, capabilities, session open, session state,
    submit, `run.started`, two `content.delta`, `run.completed`) against a local
@@ -195,14 +198,18 @@ in `zig/src/protocol/oap/bridge.zig` (`zig build test-unit-protocol`), so a
 regression that would break external validation fails a unit test first.
 
 The endpoint also passes the OAP repository's own conformance harness end to
-end — `go run ./go/cmd/oap conformance --command "makai --oap --model <ref>"`,
-which spawns the binary, drives a scripted session over
+end — `go run ./go/cmd/goap conformance --command "oapx serve agent --stdio"`
+(the recorded command was `go run ./go/cmd/oap conformance --command "makai --oap
+--model <ref>"`, before Decision 0018 made makai first-party and Decision 0032
+renamed the validator; `--model <ref>` is no longer needed because `oapx`
+advertises a model), which spawns the binary, drives a scripted session over
 `drafts/endpoint-stdio.md`, and hands the assembled trace to the validator the
-adapters are held to. Cursor replay is recorded as a skip: makai implements no
-transport control, answers `unsupported_control`, and the binding permits
-exactly that. The harness needs `--model` because makai advertises no
+adapters are held to. Cursor replay was recorded as a skip: makai implemented no
+transport control, answered `unsupported_control`, and the binding permits
+exactly that. The harness needed `--model` because makai advertised no
 `models.list` catalog over OAP; `+models` is an optional unit and its absence
-is not a conformance gap.
+was not a conformance gap. `+models` is implemented today, so that reason no
+longer applies.
 
 ### Conflicts raised, not compensated
 

@@ -2,6 +2,16 @@
 
 Status: approved for implementation
 
+Naming: the TypeScript identifiers in §3 (`MakaiAuthApi`, `MakaiClient`,
+`createMakaiClient`, `MakaiStreamError`, and the rest) are the **shipped public
+API** and keep the `Makai` prefix; renaming them is a breaking change to every
+consumer and is not proposed here. What did change is the binary they drive and
+the commands they must not shell out to: Decision 0018 made Makai first-party and
+it ships as `oapx`, so the CLI commands this spec names as `makai auth ...` are
+`oapx auth ...`. Both spellings appear below; the `oapx` form is the current one.
+References to Makai issues (#3, #198, #199, #201, #202) name the upstream
+project and are left as they are.
+
 ## 1. Scope
 
 This spec defines:
@@ -15,7 +25,8 @@ This spec does not define transport framing changes.
 
 ## 2. End-User Flow (Normative)
 
-1. User creates a single client and connects to `makai`.
+1. User creates a single client and connects to the Makai process, which ships as
+   the `oapx` binary.
 2. User calls `client.auth.listProviders()`.
 3. User calls `client.auth.login(providerId)` if needed.
 4. User calls `client.models.list()`.
@@ -43,9 +54,9 @@ Normative rule: end users do not manage provider-specific headers, token files, 
 - `client.auth.*` is a protocol client surface at the same level as `client.agent.*` and `client.provider.*`.
 - Auth is a dedicated protocol surface, not a sub-mode of provider protocol.
 - SDK auth operations must use the same configured transport stack (stdio now, HTTP/WS later) as other APIs.
-- SDK implementations must not spawn `makai auth ...` subprocesses as the primary auth path.
+- SDK implementations must not spawn `oapx auth ...` subprocesses as the primary auth path.
 - OAuth credentials and refresh tokens remain binary-managed and are never returned to SDK callers.
-- CLI commands (`makai auth providers`, `makai auth login`) must be thin wrappers over the same auth protocol runtime.
+- CLI commands (`oapx auth providers`, `oapx auth login`) must be thin wrappers over the same auth protocol runtime.
 - SDKs should support client-level auth defaults (retry policy + interactive handlers) so apps configure auth UX once and reuse it across requests.
 
 ### 2.3 Model Data Source and Caching (Normative)
@@ -586,8 +597,8 @@ Server behavior:
 
 Client behavior:
 1. SDK auth APIs must use this protocol over the active transport (stdio/HTTP/WS).
-2. SDK auth APIs must not shell out to `makai auth ...`.
-3. CLI auth commands (`makai auth providers/login`) must call the same auth protocol runtime (wrapper mode), not duplicate OAuth logic.
+2. SDK auth APIs must not shell out to `oapx auth ...`.
+3. CLI auth commands (`oapx auth providers/login`) must call the same auth protocol runtime (wrapper mode), not duplicate OAuth logic.
 4. SDK event adapters must flatten auth event wire shape for TS API consumers.
 
 Wire format note:
@@ -854,7 +865,7 @@ Auth refresh semantics:
 
 1. Phase A: ship auth protocol (`auth_providers_request`, `auth_login_start`, auth event loop) first.
 2. Phase B: ship TS `client.auth.*` over protocol transport (remove CLI-subprocess primary path).
-3. Phase C: migrate `makai auth providers/login` CLI commands to wrapper mode over auth protocol runtime.
+3. Phase C: migrate `oapx auth providers/login` CLI commands to wrapper mode over auth protocol runtime.
 4. Phase D: ship provider `models_request/models_response` and TS `client.models.*`.
 5. Phase E: ship agent passthrough `models_request/models_response`.
 6. Phase F: switch demo to spec interfaces only.
@@ -885,7 +896,7 @@ Capability negotiation:
 2. Model list output shape is identical whether called via provider endpoint or agent passthrough.
 3. Agent and provider execution accept the same `model_ref` format.
 4. SDK auth APIs run over protocol transport without shelling out to CLI commands.
-5. `makai auth providers/login` remains functional as wrapper commands over auth protocol runtime.
+5. `oapx auth providers/login` remains functional as wrapper commands over auth protocol runtime.
 6. Existing stream/complete flows remain functional.
 
 ## 11. Model List Scope and Cancellation (V1)
