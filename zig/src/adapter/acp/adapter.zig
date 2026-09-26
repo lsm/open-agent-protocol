@@ -88,6 +88,33 @@ pub const Adapter = struct {
     }
 };
 
+const Kept = struct {
+    native_id: []const u8,
+    sources: []oap_types.ToolSourceDescriptor,
+    statuses: std.StringHashMapUnmanaged([]const u8),
+
+    fn copy(keep: std.mem.Allocator, native_id: []const u8, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8)) !Kept {
+        const kept_native_id = try keep.dupe(u8, native_id);
+        const kept_sources = try keep.alloc(oap_types.ToolSourceDescriptor, sources.len);
+        for (sources, kept_sources) |source, *slot| slot.* = try ownedSource(keep, source);
+        var kept_statuses: std.StringHashMapUnmanaged([]const u8) = .empty;
+        try kept_statuses.ensureTotalCapacity(keep, statuses.count());
+        var recorded = statuses.iterator();
+        while (recorded.next()) |entry| {
+            const run_id = try keep.dupe(u8, entry.key_ptr.*);
+            const status = try keep.dupe(u8, entry.value_ptr.*);
+            kept_statuses.putAssumeCapacity(run_id, status);
+        }
+        return .{ .native_id = kept_native_id, .sources = kept_sources, .statuses = kept_statuses };
+    }
+};
+
+fn keptProbe(allocator: std.mem.Allocator, sources: []const oap_types.ToolSourceDescriptor, statuses: std.StringHashMapUnmanaged([]const u8)) !void {
+    var fresh = std.heap.ArenaAllocator.init(allocator);
+    defer fresh.deinit();
+    _ = try Kept.copy(fresh.allocator(), "native-session", sources, statuses);
+}
+
 const Attached = struct {
     servers: []const std.json.Value = &.{},
     sources: []const oap_types.ToolSourceDescriptor = &.{},
@@ -353,30 +380,21 @@ pub const Session = struct {
 
         var fresh = std.heap.ArenaAllocator.init(self.gpa);
         errdefer fresh.deinit();
-        const keep = fresh.allocator();
-        const native_id = try keep.dupe(u8, self.native_id);
-        const sources = try keep.alloc(oap_types.ToolSourceDescriptor, self.sources.len);
-        for (self.sources, sources) |source, *slot| slot.* = try ownedSource(keep, source);
-        var statuses: std.StringHashMapUnmanaged([]const u8) = .empty;
-        try statuses.ensureTotalCapacity(keep, self.statuses.count());
-        var recorded = self.statuses.iterator();
-        while (recorded.next()) |entry| {
-            statuses.putAssumeCapacity(try keep.dupe(u8, entry.key_ptr.*), try keep.dupe(u8, entry.value_ptr.*));
-        }
+        const kept = try Kept.copy(fresh.allocator(), self.native_id, self.sources, self.statuses);
 
         var options = self.reducer.options;
-        options.native_id = native_id;
-        var kept = session.Reducer.init(self.reducer_arena, options);
-        kept.clock = self.reducer.clock;
-        kept.last_sequence = self.reducer.last_sequence;
+        options.native_id = kept.native_id;
+        var reducer = session.Reducer.init(self.reducer_arena, options);
+        reducer.clock = self.reducer.clock;
+        reducer.last_sequence = self.reducer.last_sequence;
 
         self.reducer_arena.deinit();
         self.reducer_arena.* = fresh;
-        kept.arena = self.reducer_arena;
-        self.reducer = kept;
-        self.native_id = native_id;
-        self.sources = sources;
-        self.statuses = statuses;
+        reducer.arena = self.reducer_arena;
+        self.reducer = reducer;
+        self.native_id = kept.native_id;
+        self.sources = kept.sources;
+        self.statuses = kept.statuses;
         self.asks = .empty;
         self.scanned = 0;
         self.retained = self.reducer_arena.queryCapacity();
@@ -1262,4 +1280,18 @@ test "a session compacts only once it is idle and has grown past its threshold" 
 
     try probe.handle.?.drain(scratch, &drained);
     try testing.expect(try live.compact());
+}
+
+test "the state a compaction keeps is copied without leaking when any allocation fails" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const sources = [_]oap_types.ToolSourceDescriptor{
+        .{ .id = "fs", .kind = "process", .display_name = "Files", .protocol = "mcp", .endpoint = "stdio:fs" },
+        .{ .id = "notes", .kind = "process" },
+    };
+    var statuses: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try statuses.put(a, "run-2", "completed");
+    try statuses.put(a, "run-5", "cancelled");
+    try testing.checkAllAllocationFailures(testing.allocator, keptProbe, .{ &sources, statuses });
 }
