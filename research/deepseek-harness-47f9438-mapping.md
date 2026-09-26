@@ -840,7 +840,10 @@ the two `journal-replay` resume steps. Its corpus harness skips them explicitly
 (`skipResume`), only in the two shapes the Go harness executes, and refuses to
 skip once the port declares `resume`. The case's recorded envelopes are the
 delivered run, which the port does reproduce. Only its capability revision
-follows this change; a Zig journal and `Resume` are separate, later work.
+follows this change. No adapter journal is needed: persistence is out of v0.1
+core (Decision 0012), and the served endpoint's bounded journal answers
+`run.resume` and `run.replay` under `degraded`, so the corpus skip is the
+intended shape.
 
 ## Served by `oapx serve agent --backend <name>`
 
