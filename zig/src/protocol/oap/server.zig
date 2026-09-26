@@ -1058,6 +1058,7 @@ pub const Server = struct {
                 const key = switch (part) {
                     .text => continue,
                     .reasoning => "session.message.content.reasoning",
+                    .image => "session.message.content.image",
                     .tool_call => "session.message.content.tool_call",
                     .tool_result => "session.message.content.tool_result",
                 };
@@ -1800,6 +1801,14 @@ pub fn clonePart(allocator: std.mem.Allocator, part: oap_types.ContentPart) !oap
             errdefer allocator.free(text);
             const carry = if (value.carry) |raw| try allocator.dupe(u8, raw) else null;
             return .{ .reasoning = .{ .text = text, .carry = carry } };
+        },
+        .image => |value| {
+            const url = if (value.url) |raw| try allocator.dupe(u8, raw) else null;
+            errdefer if (url) |raw| allocator.free(raw);
+            const data = if (value.data) |raw| try allocator.dupe(u8, raw) else null;
+            errdefer if (data) |raw| allocator.free(raw);
+            const media_type = if (value.media_type) |raw| try allocator.dupe(u8, raw) else null;
+            return .{ .image = .{ .url = url, .data = data, .media_type = media_type } };
         },
         .tool_call => |value| {
             const tool_call_id = try allocator.dupe(u8, value.tool_call_id);

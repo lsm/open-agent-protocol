@@ -1758,6 +1758,7 @@ fn messageCarriesUnforwardablePart(message: oap_types.Message) bool {
                 switch (part) {
                     .text => {},
                     .reasoning, .tool_call => if (message.role != .assistant) break :blk true,
+                    .image => break :blk true,
                     .tool_result => {
                         if (message.role != .user and message.role != .tool) break :blk true;
                         carries_result = true;
@@ -1825,6 +1826,14 @@ fn clonePart(allocator: std.mem.Allocator, part: oap_types.ContentPart) !oap_typ
             errdefer allocator.free(text);
             const carry = if (value.carry) |raw| try allocator.dupe(u8, raw) else null;
             break :blk .{ .reasoning = .{ .text = text, .carry = carry } };
+        },
+        .image => |image| blk: {
+            const url = if (image.url) |raw| try allocator.dupe(u8, raw) else null;
+            errdefer if (url) |raw| allocator.free(raw);
+            const data = if (image.data) |raw| try allocator.dupe(u8, raw) else null;
+            errdefer if (data) |raw| allocator.free(raw);
+            const media_type = if (image.media_type) |raw| try allocator.dupe(u8, raw) else null;
+            break :blk .{ .image = .{ .url = url, .data = data, .media_type = media_type } };
         },
         .tool_call => |call| blk: {
             const id = try allocator.dupe(u8, call.tool_call_id);
