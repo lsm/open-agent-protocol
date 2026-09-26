@@ -332,22 +332,45 @@ rather than by the entry's disappearance alone.
 Affordances say only whether the presentation can act now, and why not. They never
 repeat a prompt's content, and a prompt carries no `affordance_id`.
 
-Intent responses acknowledge whether the control layer accepted the intent. They
-do not mean the underlying agent loop completed the requested work. An accepted
+Intent responses acknowledge that the control layer accepted the intent. They do
+not mean the underlying agent loop completed the requested work. An accepted
 message-submit response reports `requested_delivery`, concrete
 `effective_delivery`, and `admission` so Presentation can reconcile automatic
-delivery without inferring it from local run state. An `accepted` submit always
-carries a non-null `effective_delivery`, and the pair is one the agent control
-core admits: `auto` resolves to `start` or to a resolution reason, `queue` to
-`queue`, `steer` to `steer`. A refused submit carries `admission: "rejected"` and
-no effective delivery.
+delivery without inferring it from local run state.
 
-A submit intent carries an `intent_id` whose job is retry deduplication: the same
-`intent_id` receives the same outcome and never starts a second run. A
-presentation layer that retries after a lost response therefore learns the first
-attempt's outcome instead of submitting twice. This is the only reason the profile
-carries an intent identifier, and it is why the identifier belongs to the request
-rather than being redundant with the envelope `id`.
+A submit response therefore always means accepted; a refused submit is a correlated
+`error.response`, never a submit response reporting `admission: "rejected"`. The
+agent control core already refuses the latter, so this profile inherits the rule
+rather than restating a second way to say it.
+
+The admission pair is one the core admits, and there are two of them.
+`effective_delivery` is never null on an accepted submit, and under
+[Decision 0002](../decisions/0002-admission-before-start.md) `auto` resolves to
+either `admission: "started"` with `effective_delivery: "start"`, or
+`admission: "queued"` with `effective_delivery: "queue"` and a reserved `run_id`.
+`queue` resolves to the queued shape. `steer` is not one of the two:
+[Decision 0013](../decisions/0013-steer.md) is proposed, and the core refuses
+`steered` in this subset, so this profile cannot offer it either.
+
+### `intent_id` Is Retry Deduplication Within One Epoch
+
+**Every** intent carries an `intent_id`, not only submit, so a retried resolve or
+cancel is deduplicated the same way a retried submit is. Its single job: within one
+epoch, the same `intent_id` receives the same outcome and never starts a second
+run, resolves a prompt twice, or cancels a run that is already cancelled. A
+presentation layer retrying after a lost response learns the first attempt's
+outcome instead of acting twice.
+
+The promise is scoped to one epoch, because without persistence it cannot survive a
+restart. After an epoch change, control has no record of what an earlier epoch's
+`intent_id` did, so the deduplication window is gone. A presentation layer
+reconciles against the new snapshot's timeline before retrying anything, and does
+not assume a carried `intent_id` is still known. This is the same reason the epoch
+exists at all: v0.1 carries no persistence obligation, and a dedup window that
+silently expired would be worse than one with a stated boundary.
+
+The identifier lives on the request rather than duplicating the envelope `id`,
+which addresses one envelope.
 
 ## Control Responsibilities
 
@@ -403,8 +426,10 @@ The following are intentionally outside presentation-control:
 - The two resolve intents are minimum profile, and a prompt resolves once.
 - `intent.run.cancel.request` names its `run_id`.
 - A rejected request is answered with one correlated `error.response` carrying a
-  typed error, never with a response envelope implying the refusal.
-- `intent_id` exists for retry deduplication and for nothing else.
+  typed error, never with a response envelope implying the refusal. A submit
+  response always means accepted, as the core already requires.
+- `intent_id` is on every intent, its job is retry deduplication within one epoch,
+  and it is not a persistence key.
 - Draft composer synchronization is outside the minimum profile.
 - Toasts and other transient notification presentation are UI implementation
   details. Control reports semantic diagnostics and state instead.

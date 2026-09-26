@@ -250,9 +250,8 @@ A prompt leaves `pending_prompts` when it is resolved, cancelled or expired, and
 the timeline keeps its outcome. The transition is visible in the timeline rather
 than by the entry's disappearance alone.
 
-Affordances say only whether the presentation can act now, and why not. They
-never repeat a prompt's content, and a prompt carries no `affordance_id` — which
-removes the cross-reference the first draft of this record left to be settled.
+Affordances say only whether the presentation can act now, and why not. They never
+repeat a prompt's content, and a prompt carries no `affordance_id`.
 
 ### A receiver that cannot apply every change does not advance
 
