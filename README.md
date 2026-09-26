@@ -671,6 +671,7 @@ Research:
 - [Pinned Hermes agent mapping](research/hermes-v2026.9.24-mapping.md), over the [v2026.8.31 base mapping](research/hermes-v2026.8.31-mapping.md)
 - [Pinned Claude Code CLI and Agent SDK mapping](research/claude-code-agent-sdk-2.1.282-mapping.md), over the [2.1.280 mapping](research/claude-code-agent-sdk-2.1.280-mapping.md) and the [2.1.263 base mapping](research/claude-code-agent-sdk-2.1.263-mapping.md)
 - [Z.ai China Coding Plan evidence matrix](research/zai-china-coding-plan-evidence.md)
+- [OpenCode provider breadth and its model catalog](research/opencode-provider-catalog-mapping.md), with [Decision 0035](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) proposed on it
 - [Protocol feedback from eight adapter tranches](research/protocol-feedback-2026-09.md)
 
 ### Implementing OAP natively
@@ -735,6 +736,7 @@ Decisions:
 - [0032 — go and zig are peers, and the specification decides](decisions/0032-go-and-zig-are-peers.md) (accepted)
 - [0033 — harness pins are data](decisions/0033-harness-pins-are-data.md) (proposed)
 - [0034 — an unpublished catalog is unknown](decisions/0034-an-unpublished-catalog-is-unknown.md) (accepted)
+- [0035 — a model entry publishes its facts, and absence means unknown](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
 proposed to accepted. A record's own `Status:` line is authoritative; this table
