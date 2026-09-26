@@ -92,7 +92,7 @@ func (v *Validator) Validate(r io.Reader, fixture string) Result {
 			continue
 		}
 
-		if key, duplicate := duplicateKey(item.raw); duplicate {
+		if key, duplicate := DuplicateKey(item.raw); duplicate {
 			message := fmt.Sprintf("duplicate object key %q", key)
 			if sensitive {
 				message = "duplicate key in auth reply (sensitive answer redacted)"
@@ -238,7 +238,7 @@ func (v *Validator) project(value any) (any, []memberInstance) {
 	return out, members
 }
 
-func duplicateKey(data []byte) (string, bool) {
+func DuplicateKey(data []byte) (string, bool) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	var walk func() (string, bool)
 	walk = func() (string, bool) {

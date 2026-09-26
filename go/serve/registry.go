@@ -18,6 +18,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
 	"github.com/lsm/open-agent-protocol/go/adapter/pi"
 	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/open-agent-protocol/go/validation"
 )
 
 type configFile struct {
@@ -59,6 +60,94 @@ type adapterEntry struct {
 
 	Endpoint string `json:"endpoint"`
 	Agent    string `json:"agent"`
+}
+
+func unknownMember(data []byte, allowed []string) (string, error) {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return "", err
+	}
+	for _, name := range sortedKeys(members) {
+		known := false
+		for _, candidate := range allowed {
+			if name == candidate {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return name, nil
+		}
+	}
+	return "", nil
+}
+
+var adapterMembers = []string{
+	"type", "executable", "args", "environment", "working_directory", "model",
+	"journal_capacity", "allowed_tools", "unrestricted_tools", "approval_policy",
+	"sandbox", "provider", "max_tokens", "agent_config", "system_prompt", "endpoint", "agent",
+}
+
+var toolSourceMembers = []string{"kind", "display_name", "protocol", "endpoint", "command", "args", "environment"}
+
+func (file *configFile) UnmarshalJSON(data []byte) error {
+	if _, duplicate := validation.DuplicateKey(data); duplicate {
+		return errors.New("config: not one JSON object: DuplicateField")
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return err
+	}
+	for _, name := range sortedKeys(top) {
+		if name != "adapters" && name != "tool_sources" {
+			return fmt.Errorf("config: the file: unknown field %q", name)
+		}
+	}
+	if raw, ok := top["adapters"]; ok {
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return err
+		}
+		file.Adapters = make(map[string]adapterEntry, len(entries))
+		for _, name := range sortedKeys(entries) {
+			value := entries[name]
+			unknown, err := unknownMember(value, adapterMembers)
+			if err != nil {
+				return err
+			}
+			if unknown != "" {
+				return fmt.Errorf("config: adapter %q: unknown field %q", name, unknown)
+			}
+			var entry adapterEntry
+			if err := json.Unmarshal(value, &entry); err != nil {
+				return err
+			}
+			file.Adapters[name] = entry
+		}
+	}
+	if raw, ok := top["tool_sources"]; ok {
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &entries); err != nil {
+			return err
+		}
+		file.ToolSources = make(map[string]toolSourceEntry, len(entries))
+		for _, name := range sortedKeys(entries) {
+			value := entries[name]
+			unknown, err := unknownMember(value, toolSourceMembers)
+			if err != nil {
+				return err
+			}
+			if unknown != "" {
+				return fmt.Errorf("config: tool source %q: unknown field %q", name, unknown)
+			}
+			var entry toolSourceEntry
+			if err := json.Unmarshal(value, &entry); err != nil {
+				return err
+			}
+			file.ToolSources[name] = entry
+		}
+	}
+	return nil
 }
 
 type Registry struct {

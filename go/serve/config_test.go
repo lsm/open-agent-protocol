@@ -51,6 +51,49 @@ func TestLoadRegistryMemory(t *testing.T) {
 	}
 }
 
+func TestLoadRegistryRefusesCaseVariantMembers(t *testing.T) {
+	for name, test := range map[string]struct{ document, want string }{
+		"top-level":   {`{"Adapters": {}}`, `config: the file: unknown field "Adapters"`},
+		"adapter":     {`{"adapters": {"memory": {"Type": "memory"}}}`, `config: adapter "memory": unknown field "Type"`},
+		"tool source": {`{"tool_sources": {"fs": {"Kind": "native"}}}`, `config: tool source "fs": unknown field "Kind"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, test.document)
+			_, err := LoadRegistry(path, os.LookupEnv)
+			if err == nil {
+				t.Fatal("a member whose case differs from the schema was accepted")
+			}
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error %q does not contain %q", err.Error(), test.want)
+			}
+		})
+	}
+}
+
+func TestLoadRegistryRefusesDuplicateMembers(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory", "type": "memory"}}}`)
+	_, err := LoadRegistry(path, os.LookupEnv)
+	if err == nil {
+		t.Fatal("a duplicated member was accepted")
+	}
+	if !strings.Contains(err.Error(), "config: not one JSON object: DuplicateField") {
+		t.Fatalf("error %q does not report the duplicate as oapx does", err.Error())
+	}
+}
+
+func TestLoadRegistryNamesOneUnknownMemberDeterministically(t *testing.T) {
+	for i := 0; i < 8; i++ {
+		path := writeConfig(t, `{"adapters": {"memory": {"Zz": 1, "Aa": 2}}}`)
+		_, err := LoadRegistry(path, os.LookupEnv)
+		if err == nil {
+			t.Fatal("unknown members were accepted")
+		}
+		if !strings.Contains(err.Error(), `config: adapter "memory": unknown field "Aa"`) {
+			t.Fatalf("run %d named %q, want the first member in sorted order", i, err.Error())
+		}
+	}
+}
+
 func TestLoadRegistryDefaultsTypeToEntryName(t *testing.T) {
 	path := writeConfig(t, `{"adapters": {"memory": {"journal_capacity": 3}}}`)
 	registry, err := LoadRegistry(path, os.LookupEnv)
