@@ -17,7 +17,8 @@ const (
 	CodeMissingID    = "provider_missing_id"
 	CodeEndpointLone = "provider_endpoint_without_wire"
 	CodeBaseURLText  = "provider_base_url_literal"
-	CodeAliasSelf    = "provider_alias_self"
+	CodeOffering     = "provider_offering_unknown"
+	CodeStatus       = "provider_status_unknown"
 )
 
 var LiteralRoots = []string{"go", "zig/src", "zig/build.zig"}
@@ -47,8 +48,15 @@ func Check(catalog Catalog) []Finding {
 				findings = append(findings, Finding{Provider: provider.ID, Code: CodeEndpointLone, Detail: fmt.Sprintf("provider %q has an endpoint naming no wire", provider.ID)})
 			}
 		}
-		if provider.AliasOf == provider.ID && provider.ID != "" {
-			findings = append(findings, Finding{Provider: provider.ID, Code: CodeAliasSelf, Detail: fmt.Sprintf("provider %q names itself as the row it stands for", provider.ID)})
+		switch provider.Offering {
+		case "coding_plan", "subscription", "api_key", "":
+		default:
+			findings = append(findings, Finding{Provider: provider.ID, Code: CodeOffering, Detail: fmt.Sprintf("provider %q offers %q, which is neither a coding plan, a subscription nor an api key", provider.ID, provider.Offering)})
+		}
+		switch provider.Status {
+		case "current", "supported", "withheld", "":
+		default:
+			findings = append(findings, Finding{Provider: provider.ID, Code: CodeStatus, Detail: fmt.Sprintf("provider %q carries status %q, which is neither current, supported nor withheld", provider.ID, provider.Status)})
 		}
 	}
 	sort.SliceStable(findings, func(i, j int) bool { return findings[i].Detail < findings[j].Detail })

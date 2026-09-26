@@ -26,6 +26,8 @@ type Provider struct {
 	ID            string       `json:"id"`
 	DisplayName   string       `json:"display_name,omitempty"`
 	Auth          []string     `json:"auth,omitempty"`
+	Offering      string       `json:"offering,omitempty"`
+	Status        string       `json:"status,omitempty"`
 	CredentialEnv []string     `json:"credential_env,omitempty"`
 	BaseURLEnv    []string     `json:"base_url_env,omitempty"`
 	RegionEnv     string       `json:"region_env,omitempty"`
@@ -34,7 +36,6 @@ type Provider struct {
 	Endpoints     []Endpoint   `json:"endpoints,omitempty"`
 	ModelsPath    string       `json:"models_endpoint,omitempty"`
 	OAuthOrigin   *OAuthOrigin `json:"oauth_origin,omitempty"`
-	AliasOf       string       `json:"alias_of,omitempty"`
 	Docs          string       `json:"docs,omitempty"`
 }
 
