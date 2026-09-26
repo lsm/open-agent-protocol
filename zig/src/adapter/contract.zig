@@ -275,7 +275,7 @@ fn deliveryFeature(delivery: oap_types.RequestedDelivery) ?[]const u8 {
     };
 }
 
-pub fn refuseUnadvertisedOpen(descriptor: Descriptor, request: *const oap_types.SessionOpenRequest, refusal: *Refusal) Failure!void {
+pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const oap_types.SessionOpenRequest, refusal: *Refusal) Failure!void {
     const elections = [_]struct { key: []const u8, present: bool }{
         .{ .key = feature_open_subscribe, .present = request.subscribe },
         .{ .key = feature_tool_sources_attach, .present = request.tool_sources_json != null },
@@ -289,6 +289,10 @@ pub fn refuseUnadvertisedOpen(descriptor: Descriptor, request: *const oap_types.
             .native, .emulated => {},
         }
     }
+}
+
+pub fn refuseUnadvertisedOpen(descriptor: Descriptor, request: *const oap_types.SessionOpenRequest, refusal: *Refusal) Failure!void {
+    try refuseUnadvertisedOpenElections(descriptor, request, refusal);
     if (request.message_json != null) return refusal.unsupportedField(feature_submit, reason_unsatisfiable, "message");
 }
 

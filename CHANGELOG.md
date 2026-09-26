@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `zig/src/hub/hub.zig`: the multi-session hub core in Zig, the layer
+  [`drafts/hub.md`](drafts/hub.md) specifies and the piece `oapx hub` will serve
+  from. It is a registry of adapters built from a `--config` document, many
+  sessions per process each with its own bounded journal, fan-out from a run's
+  stream to any number of subscribers with a bounded mailbox per subscriber, cursor
+  replay with `ReplayGap` rather than fake continuity, compound open with a
+  subscribing registration that cannot lose the race with its own message, and the
+  held subscription a transport whose response carries no stream adopts on the
+  next request. A subscriber that falls behind is detached and told the run and
+  sequence to resume from rather than waited on, and a session closes at most
+  once. No transport yet: the operations are in-process methods, and #387 and #388
+  add the stdio and HTTP wires over them. `contract.refuseUnadvertisedOpen` is split
+  so a hub can judge an open's own elections without the refusal that stops an
+  endpoint from accepting a compound open's `message` — the hub submits that
+  itself, above the adapter, as `serve.OpenCompound` does in Go. `journal_capacity`
+  from the registry document is now read rather than decoded and ignored. Twenty-one
+  unit tests over a scripted backend, and `checkAllAllocationFailures` over every
+  function that allocates and hands off ownership — which is what found three
+  places swallowing `OutOfMemory` and two use-after-frees on a closed session.
+
 - [`drafts/hub.md`](drafts/hub.md) writes the multi-session hub's wire down as prose, so a Zig `oapx hub` has something to be built against that is not Go source. Under [Decision 0032](decisions/0032-go-and-zig-are-peers.md) the specification decides between the trees, and until this document the hub's HTTP routes, SSE framing, stdio transport objects, cursor rules, fan-out bounds and trust model were defined only by `go/serve` code, the README's daemon sections and `clients/ts`. Every rule names the Go test that pins it today, and the nine no test pins are listed as gaps rather than left for a port to discover. The draft carries [#53](https://github.com/lsm/open-agent-protocol/issues/53) — stdio has no host-initiated way to end one subscription — as a gap in both trees, and records one divergence for the Go side to fix: the `Host` allowlist refusal answers a bare `{"error": …}` with no error code, where every other refusal on both transports is a typed `error.response`. No wire, code or test changes.
 
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md) (proposed) makes `oapx` the only released binary, carrying the TUI, its agent loop, providers and login, the harness backends, and the `validate` and `conformance` tools another implementation needs; `goap` stays in the repository as an internal tool CI runs, never released. Parity between the trees becomes protocol behaviour rather than the command line. Each language gets a library in one of two shapes: TypeScript and Python stay thin SDKs over `oapx`, while Go, Rust and, when someone needs it, Java become native libraries that delegate to `oapx` only what they have not implemented yet and prove themselves against the shared schemas, fixtures, corpora and conformance runner. Go goes first: `sdk/go` merges into the main Go module on the shared `protocol` types. No code changes with the record.
