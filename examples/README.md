@@ -18,9 +18,9 @@ model-IO boundary rather than the core `content.delta` stream.
   permission approval.
 - `presentation-control-session.json`: revisioned session-target snapshot, user
   intent, typed presentation changes, and affordance changes. It predates
-  Decisions 0036 and 0037 — no `epoch` or `intent_id`, and a `control_request_id`
-  the draft now excludes — so the draft governs where they differ, until the
-  reference producer regenerates it.
+  Decisions 0036 and 0037 — no `epoch`, no `intent_id` on its timeline items, and
+  a `control_request_id` the draft now excludes — so the draft governs where they
+  differ, until the reference producer regenerates it.
 - `agent-capabilities.json`: direct agent-control capability response.
 - `degraded-adapter-capabilities.json`: adapter capability response that reports
   feature loss as degradation.

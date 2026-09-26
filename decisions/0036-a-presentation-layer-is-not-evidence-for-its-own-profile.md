@@ -232,8 +232,9 @@ profile does not decide.
 - `examples/presentation-control-session.json` judges neither the schema nor the
   draft. `examples/` is illustrative by project rule — "illustrative JSON bindings
   for the draft protocol, not conformance tests" — and this example predates the
-  rules Decision 0037 adds: it carries no `epoch` or `intent_id`, and its submit
-  response still carries a `control_request_id` the draft now excludes. Wherever it
+  rules Decision 0037 adds: its snapshot and updates carry no `epoch`, its timeline
+  items no `intent_id`, and its submit response still carries a
+  `control_request_id` the draft now excludes. Wherever it
   disagrees with the draft or a schema, **the draft decides**, and the step-1
   producer regenerates the example.
 - A reader asking why `goap` has no TUI now has a record saying the omission is
