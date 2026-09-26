@@ -3163,32 +3163,17 @@ test "App saves Kimi login credentials as api key" {
     }
 }
 
-test "App login status shows an env key for kimi when KIMI_API_KEY is exported" {
-    var home = try TempHome.init("home-kimi-env");
-    defer home.deinit();
+test "App login status scans KIMI_API_KEY for the kimi provider" {
+    const kimi_slot = App.loginProviderIndex("kimi").?;
 
-    const previous_key = std.process.Environ.getAlloc(std.testing.environ, std.testing.allocator, "KIMI_API_KEY") catch null;
-    defer {
-        if (previous_key) |value| {
-            const value_z = std.testing.allocator.dupeZ(u8, value) catch null;
-            if (value_z) |key_z| {
-                defer std.testing.allocator.free(key_z);
-                _ = setenv("KIMI_API_KEY", key_z.ptr, 1);
-            }
-            std.testing.allocator.free(value);
-        } else {
-            _ = unsetenv("KIMI_API_KEY");
-        }
+    var exported = false;
+    for (App.login_env_keys[kimi_slot]) |name| {
+        if (std.mem.eql(u8, name, "KIMI_API_KEY")) exported = true;
     }
-    const key_z = try std.testing.allocator.dupeZ(u8, "kimi-env-test-key");
-    defer std.testing.allocator.free(key_z);
-    _ = setenv("KIMI_API_KEY", key_z.ptr, 1);
+    try std.testing.expect(exported);
 
-    var app = App.initWithoutRuntime(std.testing.allocator);
-    defer app.deinit();
-    app.refreshLoginStatus();
-
-    try std.testing.expectEqual(App.LoginStatus.env_key, app.login_status[3]);
+    try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(null, "kimi", true));
+    try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(null, "kimi", false));
 }
 
 test "multi-line /help output renders all lines into transcript view" {

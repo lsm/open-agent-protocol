@@ -1834,14 +1834,19 @@ test "Kimi credential prefers a stored login and falls back to the environment k
     defer secureFree(allocator, stored.?);
     try std.testing.expectEqualStrings("stored-kimi-key", stored.?);
 
-    _ = storage.providers.remove(kimi_provider_id);
-    const from_env = kimiCredential(allocator, &storage, "env-kimi-key");
+    var empty = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer empty.deinit();
+
+    const from_env = kimiCredential(allocator, &empty, "env-kimi-key");
     try std.testing.expect(from_env != null);
     defer secureFree(allocator, from_env.?);
     try std.testing.expectEqualStrings("env-kimi-key", from_env.?);
 
-    try std.testing.expect(kimiCredential(allocator, &storage, null) == null);
-    try std.testing.expect(kimiCredential(allocator, &storage, "") == null);
+    try std.testing.expect(kimiCredential(allocator, &empty, null) == null);
+    try std.testing.expect(kimiCredential(allocator, &empty, "") == null);
 }
 
 test "refreshProductionModels keeps Kimi when Codex refresh fails" {
