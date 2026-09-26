@@ -369,9 +369,17 @@ carrying the request's `in_reply_to`, `session_id` and `run_id` so a client can
 correlate it. The two listings answer plain JSON rather than an envelope,
 because they are daemon management rather than an OAP operation.
 
+The three codes this gate can answer — `unsupported_media_type`,
+`request_too_large` and `request_read` — belong to the transport, not to any
+operation, so they are stated here once rather than repeated in every
+operation's list below. The stdio transport has no counterpart for any of the
+three: its framing failures are defects that stop serving rather than refusals
+the host may retry.
+
 | HTTP rule | pinned by |
 | --- | --- |
 | A wrong or absent `Content-Type` is refused `415 unsupported_media_type` | **none — gap G1** |
+| A body that cannot be read at all is refused `400 request_read` | **none — gap G10** |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (the stdio side of the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
 | A `GET /adapters/{name}/capabilities` response cites a daemon-minted correlation id | `TestCapabilitiesEndpoint` |
@@ -547,7 +555,9 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 
 Twelve ops. Each row gives the request line's parameters, the answer, and the
 errors; the two transports differ only where noted. A refusal the row does not
-name is `internal` on both.
+name is `internal` on both, and the HTTP body gate's own three codes are
+transport-level and listed once in
+[the HTTP rules](#the-http-routes-and-sse-framing) rather than repeated here.
 
 ### `adapters`
 
@@ -902,6 +912,11 @@ place a differential test would otherwise not see.
   only its `event` name is asserted, so its members are unpinned the same way.
   Over HTTP, `oap-overflow` and `oap-session-closed` are pinned and
   `oap-frame-limit` has no counterpart at all, because a socket does not frame.
+- **G10 — `request_read` is unpinned.** A body that cannot be read at all — a
+  host that hangs up mid-body — is refused `400 request_read`, and no test
+  drives a truncated body. It is the one code in the HTTP body gate with no
+  coverage at all, so a port could spell it differently and nothing would say
+  so; the differential job for #388 should carry a truncated-request case.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
