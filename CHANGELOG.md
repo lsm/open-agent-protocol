@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pi is pinned to `v0.87.1` (capability revision `pi-v0.87.1-oap-v1`, which the Zig port serves too); `v0.85.1` is retired with its corpus. Pi now emits `system` role messages carrying the system prompt and tool declarations, which both adapters refused as an unknown role, failing the first run of every session. The Go adapter and the Zig port accept them and project nothing from them. The advertised surface is unchanged. The new corpus carries ten cases forward and adds a `system-message` case recorded from the released binary; the wire differences are in [`research/pi-v0.87.1-mapping.md`](research/pi-v0.87.1-mapping.md).
 - The OpenCode pin moves from `v1.18.29` to `v1.18.32` (revision `opencode-v1.18.32-oap-v2`, which both trees serve); v1.18.29 is retired. The session API, its SSE events and every corpus-cited source blob are unchanged between the tags, so the fifteen corpus cases carry forward with their native lines untouched and neither adapter changes. See [`research/opencode-v1.18.32-mapping.md`](research/opencode-v1.18.32-mapping.md).
 
+- The ACP adapters are pinned to agent-client-protocol v1.9.1 (schema v1.23.0) and gated against docker/cagent v1.143.0. The only stable wire change is the optional tool `name`; `action.call.*` now carries it when present, falling back to the ACP `title`. The corpus moves to `fixtures/adapters/acp-v1.9.1` with its native frames unchanged.
+
 ### Removed
 
 - The Claude Code 2.1.263 floor: its corpus and catalog version. Its ledger stays as the base the 2.1.280 ledger builds on.

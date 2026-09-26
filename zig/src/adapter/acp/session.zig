@@ -58,6 +58,7 @@ const Tool = struct {
     id: []const u8,
     run_id: []const u8,
     title: []const u8 = "",
+    name: []const u8 = "",
     kind: []const u8 = "",
     status: []const u8 = "",
     raw_input: ?std.json.Value = null,
@@ -559,6 +560,7 @@ pub const Reducer = struct {
         }
         const tool = &self.tools.items[at];
         tool.title = title;
+        tool.name = nestedName(update, parent);
         tool.kind = nestedString(update, parent, "kind");
         tool.raw_input = nestedLast(update, parent, "rawInput");
         tool.raw_output = nestedLast(update, parent, "rawOutput");
@@ -593,6 +595,9 @@ pub const Reducer = struct {
         const tool = &self.tools.items[index];
         if (presentString(update, "title")) |value| {
             if (value.len > 0) tool.title = value;
+        }
+        if (presentString(update, "name")) |value| {
+            if (value.len > 0) tool.name = value;
         }
         if (presentString(update, "kind")) |value| tool.kind = value;
         if (gojson.foldedLast(update, &.{"rawInput"})) |value| tool.raw_input = value;
@@ -657,7 +662,8 @@ pub const Reducer = struct {
         try self.put(&payload, "tool_call_id", str(tool.id));
         try self.put(&payload, "requested_by", str(self.options.endpoint));
         try self.put(&payload, "execution_owner", str(harness_owner));
-        if (tool.title.len > 0) try self.put(&payload, "name", str(tool.title));
+        const name = if (tool.name.len > 0) tool.name else tool.title;
+        if (name.len > 0) try self.put(&payload, "name", str(name));
         if (keep.arguments) {
             if (tool.raw_input) |value| {
                 try self.put(&payload, "arguments_json", value);
@@ -850,6 +856,11 @@ fn nestedString(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) [
 fn nestedLast(map: std.json.ObjectMap, parent: ?[]const u8, key: []const u8) ?std.json.Value {
     if (parent) |name| return gojson.foldedLast(map, &.{ name, key });
     return gojson.foldedLast(map, &.{key});
+}
+
+fn nestedName(map: std.json.ObjectMap, parent: ?[]const u8) []const u8 {
+    const value = nestedLast(map, parent, "name") orelse return "";
+    return if (value == .string) value.string else "";
 }
 
 fn presentString(map: std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -1568,6 +1579,37 @@ test "a patch with no status reports progress only once the call has started" {
     try testing.expectEqualStrings("Renamed", payloadAt(&reducer, 3).get("name").?.string);
     try testing.expect(payloadAt(&reducer, 3).get("arguments_json") == null);
     try testing.expect(payloadAt(&reducer, 3).get("result") == null);
+}
+
+test "a tool name outranks the title and a wrongly typed one is ignored" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"native-tool","title":"Read file","name":"read_file","status":"pending"}
+    ));
+    try testing.expectEqualStrings("read_file", payloadAt(&reducer, 1).get("name").?.string);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","status":"in_progress","name":7}
+    ));
+    try testing.expectEqualStrings("read_file", payloadAt(&reducer, 2).get("name").?.string);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call_update","toolCallId":"native-tool","status":"completed","name":"grep"}
+    ));
+    try testing.expectEqualStrings("action.call.completed", typeAt(&reducer, 3));
+    try testing.expectEqualStrings("grep", payloadAt(&reducer, 3).get("name").?.string);
+}
+
+test "a null tool name falls back to the title" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+    var reducer = try openRun(&arena);
+    try feed(&reducer, scratch, wrap(
+        \\{"sessionUpdate":"tool_call","toolCallId":"native-tool","title":"Read file","name":null}
+    ));
+    try testing.expectEqualStrings("Read file", payloadAt(&reducer, 1).get("name").?.string);
 }
 
 test "a terminal status that never started synthesizes the start it skipped" {

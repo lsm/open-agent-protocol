@@ -66,7 +66,7 @@ unknown members are refused and `environment` is an explicit allowlist.
 feeds both the same traffic and requires identical output. What each cannot do through this path is
 recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
 [codex](research/codex-app-server-8d7cc24-mapping.md),
-[acp](research/acp-v1.7.0-mapping.md). Without `--config`, codex runs `codex`
+[acp](research/acp-v1.9.1-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
 a `--config` entry naming its `executable`.
 
@@ -664,7 +664,7 @@ Research:
 - [Harness interoperability study](research/harness-interoperability.md)
 - [P0 protocol gaps from harness interoperability](research/p0-protocol-gaps.md)
 - [Pinned Codex app-server mapping](research/codex-app-server-8d7cc24-mapping.md)
-- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md)
+- [Pinned ACP v1 and Devin Desktop mapping](research/acp-v1.7.0-mapping.md), moved to v1.9.1 by [its pin ledger](research/acp-v1.9.1-mapping.md)
 - [Pinned Pi coding-agent mapping](research/pi-v0.87.1-mapping.md), over the [v0.85.1 base mapping](research/pi-v0.85.1-mapping.md)
 - [Pinned DeepSeek Harness mapping](research/deepseek-harness-47f9438-mapping.md)
 - [Pinned Hermes agent mapping](research/hermes-v2026.8.31-mapping.md)
@@ -784,7 +784,7 @@ in both directions into that directory; it is how
 ACP real-process checks follow the same opt-in gate, driven against an
 independent open-source ACP agent rather than a Devin product. Provide an
 absolute `docker-agent` binary built from the pinned docker/cagent release
-(Apache-2.0, tag `v1.138.0`) in `OAP_ACP_BIN`, then set `OAP_ACP_SMOKE=1` for
+(Apache-2.0, tag `v1.143.0`) in `OAP_ACP_BIN`, then set `OAP_ACP_SMOKE=1` for
 the credential-free `initialize`/`session/new`/teardown check or
 `OAP_ACP_INTEGRATION=1` for one prompt through the production adapter against
 an in-process loopback chat-completions mock. The generated agent file points
