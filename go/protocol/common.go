@@ -95,7 +95,7 @@ func (p ContentPart) MarshalJSON() ([]byte, error) {
 	type contentPart struct {
 		Type          ContentPartType `json:"type"`
 		Text          *string         `json:"text,omitempty"`
-		Reasoning     string          `json:"reasoning,omitempty"`
+		Reasoning     *string         `json:"reasoning,omitempty"`
 		Image         *ImageContent   `json:"image,omitempty"`
 		ToolCallID    ToolCallID      `json:"tool_call_id,omitempty"`
 		Name          string          `json:"name,omitempty"`
@@ -105,12 +105,16 @@ func (p ContentPart) MarshalJSON() ([]byte, error) {
 		Carry         string          `json:"carry,omitempty"`
 	}
 	out := contentPart{
-		Type: p.Type, Reasoning: p.Reasoning, Image: p.Image, ToolCallID: p.ToolCallID,
+		Type: p.Type, Image: p.Image, ToolCallID: p.ToolCallID,
 		Name: p.Name, ArgumentsJSON: p.ArgumentsJSON, Result: p.Result, IsError: p.IsError, Carry: p.Carry,
 	}
 	if p.Type == ContentText {
 		text := p.Text
 		out.Text = &text
+	}
+	if p.Type == ContentReasoning {
+		reasoning := p.Reasoning
+		out.Reasoning = &reasoning
 	}
 	return json.Marshal(out)
 }
