@@ -125,11 +125,19 @@ disagree with it. The pairing is what makes step 2 worth landing, because the
 reference projection is what shows a shape is missing before an implementer
 finds it.
 
+The producer's traces are the positive fixtures. A negative fixture is one of them
+broken in exactly one place, so each fails for the one rule it names and none is
+written from nothing.
+
 A profile stalled at step 3 stays draft, exactly as a unit stalled at step 3
 stays staged. Steps 1 and 2 landing is not that: the wire is then executable and
 checked, and step 3 is what the profile still lacks. Nothing in this record
 claims the profile is close to graduated; it claims the profile currently has no
 evidence at all, which is a different and more tractable statement.
+
+Unlike the harnesses 0003's step 3 draws on, which existed before their adapters,
+no such consumer exists yet, and none is in view. The profile may stay a draft for a
+long time, and nothing waits on step 3: the TUI refactor below is gated on step 2.
 
 ### What "executable" means here, and where it stops
 
@@ -186,11 +194,12 @@ to serve Go users the protocol natively — `go/adapter`, `go/validation`,
 `goap check`, `goap validate` and `goap conformance` are the evidence they
 produce. A TUI in Go would exercise none of them.
 
-Parity at the presentation boundary is one client against two control layers, not
-two clients. When `goap` serves the profile, the existing TUI binary is the proof
-that the boundary is learnable from the specification rather than from one
-implementation's source. That is a stronger claim than a second client, and it
-is the only one the wire can carry.
+Parity at the presentation boundary is between the two control layers, not two
+clients: both memory backends project the same agent-control state into the same
+presentation traces, and `TestMemoryBackendMatchesOapx` holds them to the same
+bytes. Learnability is a different claim, and only step 3 can make it. The TUI
+shares its authors' assumptions however many control layers it runs against, so it
+cannot show the boundary is learnable from the specification alone.
 
 ### The TUI is not refactored onto the profile until the profile is executable
 
@@ -283,9 +292,9 @@ revision's state, which is the failure the revision discipline exists to prevent
 - `drafts/presentation-control-profile.md` keeps its `Status: draft`. This record
   defines the gate for graduating the profile; it does not graduate it, and a
   reader who takes the title as a graduation has misread it.
-- The memory reference adapter grows a presentation projection, which makes it
-  the first thing in the tree that can exercise the profile end to end and gives
-  `goap conformance` a second claim to drive.
+- Both memory backends grow a presentation projection, Zig first, which makes them
+  the first things in the tree that can exercise the profile end to end and gives
+  the conformance runner a second claim to drive.
 - The four SDKs gain a profile they can target. That is the cheapest answer to
   the gap `drafts/cli.md` records, and it only becomes true once the profile is
   executable — until then a thin client has nothing to be thin against.

@@ -28,6 +28,13 @@ state, or framework-specific component events. It should receive semantic
 intent such as "submit this message", "cancel this run", "select this model",
 "toggle this tool", or "approve this permission request".
 
+Identities of domain objects cross the boundary unchanged. A session, a run, an
+interaction and the agent-control events a timeline item cites keep the ids the
+agent loop gave them, so the presentation layer and the loop beneath it name the
+same object. Identities that only correlate a control-layer request with its
+response do not cross. Every id a snapshot carries is unique within its target,
+which a control layer fronting more than one agent loop has to ensure.
+
 Principles:
 
 - Presentation renders; control interprets.
@@ -264,6 +271,13 @@ Common affordance kinds:
 - `load_more_transcript`
 - `open_artifact`
 
+An affordance is advice about the revision it arrived with, and it can be stale by
+the time the user acts. Control checks again when an intent arrives: an intent sent
+through an affordance that has since become available is accepted, and one that is
+not available now is refused with a typed `error.response` saying why. A disabled
+affordance is not a promise that an intent would fail, and an enabled one is not a
+promise that it will succeed.
+
 ## Presentation Updates
 
 `presentation.updated` carries typed changes against a known snapshot revision.
@@ -392,11 +406,12 @@ second cancellation. A presentation layer retrying after a lost response learns 
 first attempt's outcome instead of acting twice.
 
 The guarantee is bounded by what control remembers, not by the epoch alone. An
-intent control has forgotten — because its effect reached the timeline, because
-control compacted, or because the epoch changed — is simply re-evaluated as a fresh
-request, and may now be refused where the first attempt was accepted, or accepted
-where it was refused. A retry is only a retry for as long as the first attempt is
-still on record.
+intent's effect reaching the timeline is not forgetting it: from then on the item
+carrying its `intent_id` is the record, and a duplicate is answered from that item.
+An intent control has forgotten — because it evicted the item that recorded it, or
+because the epoch changed — is simply re-evaluated as a fresh request, and may now
+be refused where the first attempt was accepted, or accepted where it was refused.
+A retry is only a retry for as long as the first attempt is still on record.
 
 The promise is scoped to one epoch, because without persistence it cannot survive a
 restart. After an epoch change, control has no record of what an earlier epoch's
@@ -485,8 +500,9 @@ The following are intentionally outside presentation-control:
   typed error, never with a response envelope implying the refusal. A submit
   response always means accepted, as the core already requires.
 - `intent_id` is on every intent, its job is retry deduplication, and it is not a
-  persistence key. The guarantee binds every intent control still remembers and
-  nothing beyond that: a forgotten intent is re-evaluated as a fresh request. A
+  persistence key. The guarantee binds every intent control still remembers,
+  including one whose effect is recorded on a timeline item control still holds,
+  and nothing beyond that: a forgotten intent is re-evaluated as a fresh request. A
   retry under the same `intent_id` is not a second answer and receives the first
   outcome; two answers under different ids are two answers.
 - Keeping an epoch across a restart obliges carrying the outstanding-intent window
@@ -496,8 +512,13 @@ The following are intentionally outside presentation-control:
   response for. A resolve records on the prompt's item, a cancel on the run's status
   item, a submit on the message it produced.
 - Control's deduplication memory is bounded by outstanding intents: an accepted one
-  is remembered until its effect is visible in the timeline, and a refused one
-  changed nothing.
+  is held on its own until its effect is visible in the timeline and by that
+  timeline item afterwards, and a refused one changed nothing.
+- An affordance is advice about the revision it arrived with. Control checks again
+  when an intent arrives, and refuses one that is not available now with a typed
+  `error.response`.
+- Domain identities cross the boundary unchanged and are unique within their
+  target; request correlation does not cross.
 - Draft composer synchronization is outside the minimum profile.
 - Toasts and other transient notification presentation are UI implementation
   details. Control reports semantic diagnostics and state instead.
