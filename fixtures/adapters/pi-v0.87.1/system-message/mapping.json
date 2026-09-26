@@ -1,0 +1,99 @@
+[
+  {
+    "index": 1,
+    "type": "turn_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 2,
+    "type": "message_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 3,
+    "type": "message_end",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 4,
+    "type": "message_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 5,
+    "type": "message_end",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 6,
+    "type": "message_start",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 7,
+    "type": "message_update",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 8,
+    "type": "message_update",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 9,
+    "type": "message_update",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 10,
+    "type": "message_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 11,
+    "type": "turn_end",
+    "direction": "pi-to-host",
+    "classification": "observed-only",
+    "fidelity": "native"
+  },
+  {
+    "index": 12,
+    "type": "agent_end",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  },
+  {
+    "index": 13,
+    "type": "agent_settled",
+    "direction": "pi-to-host",
+    "classification": "mapped",
+    "fidelity": "normalized",
+    "oap": "adapter reducer projection"
+  }
+]

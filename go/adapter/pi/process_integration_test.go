@@ -21,7 +21,7 @@ const piMockSecret = "fixture-pi-key"
 
 func TestPiProcessSmoke(t *testing.T) {
 	if os.Getenv("OAP_PI_SMOKE") != "1" {
-		t.Skip("set OAP_PI_SMOKE=1 and absolute OAP_PI_BIN pointing to Pi v0.85.1 to run; optionally set OAP_PI_SHA256 for exact-artifact evidence")
+		t.Skipf("set OAP_PI_SMOKE=1 and absolute OAP_PI_BIN pointing to Pi %s to run; optionally set OAP_PI_SHA256 for exact-artifact evidence", PinnedVersion)
 	}
 	binary := verifiedPiBinary(t)
 	root := t.TempDir()
@@ -60,7 +60,7 @@ func TestPiProcessAgainstResponsesMock(t *testing.T) {
 		t.Skip("skipping opt-in Pi process integration in short mode")
 	}
 	if os.Getenv("OAP_PI_INTEGRATION") != "1" {
-		t.Skip("set OAP_PI_INTEGRATION=1 and absolute OAP_PI_BIN pointing to Pi v0.85.1 to run; optionally set OAP_PI_SHA256 for exact-artifact evidence")
+		t.Skipf("set OAP_PI_INTEGRATION=1 and absolute OAP_PI_BIN pointing to Pi %s to run; optionally set OAP_PI_SHA256 for exact-artifact evidence", PinnedVersion)
 	}
 	binary := verifiedPiBinary(t)
 	mock := providertest.New(t, providertest.Config{OpenAIKey: piMockSecret})
@@ -135,7 +135,7 @@ func TestPiProcessAgainstResponsesMock(t *testing.T) {
 
 func verifiedPiBinary(t *testing.T) string {
 	t.Helper()
-	binary := adaptertest.VerifiedBinary(t, "OAP_PI_BIN", "OAP_PI_SHA256", "a Pi v0.85.1 executable")
+	binary := adaptertest.VerifiedBinary(t, "OAP_PI_BIN", "OAP_PI_SHA256", "a Pi "+PinnedVersion+" executable")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, "--version")
