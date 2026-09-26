@@ -5,7 +5,7 @@ Governs: the `oapx` (Zig) and `goap` (Go) command lines
 Follows: [Decision 0032](../decisions/0032-go-and-zig-are-peers.md)
 Amended by: [Decision 0038](../decisions/0038-one-released-binary-and-a-library-for-every-language.md),
 under which only `oapx` is released and `goap` is a repository tool, so a rule
-below that binds both binaries binds `oapx` alone
+below that binds both binaries binds `oapx` alone, and `oapx` gains `hub` too
 
 Two binaries implement OAP: `oapx`, the product, and `goap`, its Go peer. Until
 now each grew its own verbs, and the same word meant different things: `oap
@@ -20,13 +20,14 @@ means the same thing in both.
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
-| `hub [--config F] [--addr ADDR \| --stdio]` | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire | — | yes (today `goap serve`) |
+| `hub [--config F] [--addr ADDR \| --stdio]` | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | not yet | yes |
 | `validate [--format human\|json] [--mode strict\|tolerant] [--pack DIR]... [--provider] TRACE...` | judge traces: decode, schema, semantic | yes (packs, modes and some semantic rules still porting) | yes |
 | `conformance [--command CMD] [--format text\|json]` | drive an endpoint and judge what crossed the pipe | not yet | yes |
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
-The hub keeps its name only in Go. It is a layer above an endpoint, not a
+The hub is its own verb in both binaries: `goap hub` today, and `oapx hub` once
+the port Decision 0038 records lands. It is a layer above an endpoint, not a
 different spelling of one, and giving it its own verb is what lets `serve agent`
 mean one thing.
 

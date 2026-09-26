@@ -7,7 +7,10 @@ Profiles: neither; this record governs what ships and what each language gets,
 not the wire
 Amends: [Decision 0032](0032-go-and-zig-are-peers.md), whose Go tree stays
 first-class and permanent as libraries while its command becomes an internal
-tool, and [the CLI draft](../drafts/cli.md), whose second binary is not released
+tool; [Decision 0019](0019-one-binary.md), whose `conformance/` becomes product
+work and whose open question on whether `serve/` survives is answered; and
+[the CLI draft](../drafts/cli.md), whose second binary is not released and
+whose hub becomes an `oapx` verb too
 Follows: [Decision 0019](0019-one-binary.md)'s "One binary ships, and it is
 `oapx`", which 0032 left standing
 
@@ -106,7 +109,8 @@ a Go library, so a Go program can drive every harness natively in its own
 process, and `oapx` gains it as `oapx hub`, so the product serves many sessions and
 reconnecting clients too. The two are held to one wire, written down in
 [`drafts/hub.md`](../drafts/hub.md) and checked by a differential test. Until
-`oapx hub` lands, `clients/ts`'s tests build `goap hub` from source.
+`oapx hub` lands, `clients/ts`'s tests build `goap hub` from source. That answers
+0019's open question on whether `serve/` survives: it does, and it ports.
 
 ## Consequences
 
