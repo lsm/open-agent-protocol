@@ -31,13 +31,18 @@ no set to choose from. `release_date` and `family` are absent, leaving a client
 no way to prefer a newer sibling except through `lifecycle`.
 
 Two further gaps belong to the response rather than the model, and neither needs
-a catalog to motivate them. A list response cannot say it is a subset.
+a catalog to motivate them. A list response cannot say it is a subset, and
 [`+models`](../drafts/conformance.md) binds an implementation in both
 directions — every id it lists is selectable, and every id it omits is not — so a
-provider whose own listing paginates feeds that binding a catalog it cannot
-vouch for, and the unit's `model_not_in_catalog` diagnostic would state as a fact
-something no one ever learned. Nothing states how old a listing is either, so a
-`fallback` source is as indistinguishable from yesterday's as from a year ago.
+provider whose own listing paginates hands the session catalog built from it a
+claim of completeness nobody can make. The two catalogs are different envelopes
+in different profiles, and the binding is judged on the agent side:
+`+models` reads `models.response`, and the validator that emits
+`model_not_in_catalog` never sees `provider.models.list.response`. So the
+provider profile can publish the fact and cannot repair the consequence, and
+this decision stops at publishing it. Nothing states how old a listing is
+either, so a `fallback` source is as indistinguishable from yesterday's as from a
+year ago.
 
 The empirical shape of what a catalog knows is recorded in the evidence ledger:
 at one dated reading, 223 providers and 8179 models, with cost on 7755 of them,
@@ -96,17 +101,28 @@ smaller break, removing them is the smaller vocabulary.
 catalog?: { observed_at_ms?: integer, complete: boolean }
 ```
 
-`complete: false` publishes a partial listing: an absent `model_ref` then says
-the implementation never heard of it, not that the model does not exist, and the
-two-directional `+models` binding stands down for that response — so
-`model_not_in_catalog` is the wrong answer for an id no one learned about. A
-provider that has never heard of an id is not thereby unable to serve it, and the
-refusal the profile already defines for a model it does not serve,
-`model_not_found`, is unchanged. An absent `catalog` keeps today's meaning: the
-listing is the whole of what this implementation knows, which is the binding
-`+models` already assumes. The asymmetry with the rule above is intentional — an
-absent per-model fact is unknown, while the listing's completeness is presumed and
-must be denied explicitly, because the existing unit already assumes it.
+`complete: false` publishes a partial listing, and that is all it does here. A
+caller told the listing is a subset must read an absent `model_ref` as an id
+nobody has heard of rather than as a model that does not exist, and a provider
+that has never heard of an id is not thereby unable to serve it: the refusal this
+profile already defines for an id it does not serve, `model_not_found`, is
+unchanged. An absent `catalog` keeps today's meaning, the listing being the whole
+of what this implementation knows. The asymmetry with the rule above is
+intentional — an absent per-model fact is unknown, while the listing's
+completeness is presumed and must be denied explicitly, because the consumer of
+that presumption assumes it.
+
+**What this does not repair.** `+models` judges the agent-control session
+catalog on `models.response`, a closed payload the validator reads without ever
+seeing the provider's list, so a `complete: false` here does not stand that
+binding down and the unit's `model_not_in_catalog` diagnostic is unchanged. A
+caller that receives a partial provider listing decides for itself what to
+publish in its own catalog, and that decision is judged under its own unit.
+Making a partial catalog *disarm* the two-directional binding needs a member on
+`models.response` or an amendment to `+models`, and `models.response` is bound to
+`capability_revision`, so a completeness flip there would be a capability change
+rather than a per-request fact. That is a separate decision in the agent-control
+profile, and naming it here is the most this decision does about it.
 
 `observed_at_ms` is when the underlying catalog was read, not when the response
 was built, so a `fallback` source can be told from a fresh one.
@@ -131,7 +147,9 @@ was built, so a `fallback` source can be told from a fresh one.
 - **Any new envelope type, operation or error code.** `model_not_found` stays the
   provider profile's refusal for a model it does not serve, and
   `model_not_in_catalog` stays the `+models` diagnostic; a partial listing is
-  answered with a code that makes no claim about the model.
+  still answered with whichever of those the caller's own unit asks for.
+- **Any change to `models.response` or to the `+models` rule.** Judged on the
+  session catalog, in the other profile, and out of scope here.
 - **Pricing as a conformance claim.** The `+models` unit is unchanged, and this
   keeps the line in `drafts/conformance.md` that keeps pricing outside it.
 
@@ -163,9 +181,12 @@ Not part of this proposal, and the reason it is a proposal: edits to
 fixture per new judgement, and `clients/ts/src/protocol.ts` — the standing
 requirement for a schema change. The same model entry is also written down for
 the SDK in `docs/v1-sdk-agent-provider-spec.md`, which carries the Zig model's
-`capabilities` and `context_window` beside the wire list. A `catalog.complete:
-false` fixture and a "price is published but not judged" statement in
-`drafts/conformance.md` are the two new judgements.
+`capabilities` and `context_window` beside the wire list. A
+`catalog.complete: false` fixture on the provider side, and a "price is published
+but not judged" statement in `drafts/conformance.md`, are the two new judgements.
+No `models.response` member, no `+models` rule edit and no
+`go/validation/models.go` change follows from this, because `+models` never reads
+the envelope this decision touches.
 
 ## Open questions for review
 
@@ -177,3 +198,8 @@ false` fixture and a "price is published but not judged" statement in
    (`context_over_200k` in the evidence) belong in v0.1 at all?
 4. `document` versus `pdf` for the modality name, and whether `video` is worth
    a member before a provider in the conformance corpus needs it.
+5. Does the agent side want completeness at all, and if so on which envelope: a
+   `models.response` member, which is bound to `capability_revision` and so makes
+   a completeness flip a capability change, or an amendment to the `+models` rule
+   that has the unit judge a partial catalog on its own terms. That decision
+   belongs to `agent-control-core` and this one does not presume its answer.
