@@ -123,8 +123,8 @@ pub const Builder = struct {
 
 pub const Subscription = struct {
     hub: *Hub,
-    session_id: []const u8,
-    run_id: []const u8 = "",
+    session_id: []u8,
+    run_id: []u8 = &.{},
     joined_after: u64 = 0,
     joined: bool = false,
     gap: ?contract.Gap = null,
@@ -171,7 +171,12 @@ pub const Subscription = struct {
 
     fn advance(self: *Subscription, event: contract.Event) void {
         if (!std.mem.eql(u8, self.run_id, event.run_id)) {
-            self.run_id = event.run_id;
+            const owned = self.hub.allocator.dupe(u8, event.run_id) catch {
+                self.highest = 0;
+                return;
+            };
+            if (self.run_id.len > 0) self.hub.allocator.free(self.run_id);
+            self.run_id = owned;
             self.highest = 0;
         }
         if (event.sequence > self.highest) self.highest = event.sequence;
@@ -188,7 +193,8 @@ pub const Subscription = struct {
         self.replay.deinit(allocator);
         for (self.queue.items) |event| allocator.free(event.line);
         self.queue.deinit(allocator);
-        if (self.overflow_run.len > 0) allocator.free(self.overflow_run);
+        if (self.run_id.len > 0) allocator.free(self.run_id);
+        allocator.free(self.session_id);
         self.* = undefined;
     }
 };
@@ -294,10 +300,12 @@ pub const Hub = struct {
     }
 
     pub fn load(self: *Hub, arena: std.mem.Allocator, file: config.File, builder: Builder) !void {
+        var taken = self.journal_capacity != default_journal_capacity;
         for (file.adapters) |entry| {
             if (entry.journal_capacity) |capacity| {
-                if (capacity > 0 and self.journal_capacity == default_journal_capacity) {
+                if (!taken and capacity > 0) {
                     self.journal_capacity = @intCast(capacity);
+                    taken = true;
                 }
             }
             const adapter = try builder.make(builder.context, arena, entry);
@@ -344,6 +352,10 @@ pub const Hub = struct {
         const registered = self.find(name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
         return registered.revision;
+    }
+
+    fn bySessionId(_: void, left: Status, right: Status) bool {
+        return std.mem.lessThan(u8, left.session_id, right.session_id);
     }
 
     pub fn sessionCount(self: *const Hub) usize {
@@ -438,7 +450,6 @@ pub const Hub = struct {
         if (catalog.session_id) |named| {
             if (!std.mem.eql(u8, named, session_id)) return error.CatalogMisScoped;
         }
-        if (catalog.tools.len == 0) return .{ .tools = catalog, .revision = "" };
         const stamped = try self.revision(entry.adapter_name);
         if (stamped.len == 0) return error.CatalogUnlabelled;
         return .{ .tools = catalog, .revision = stamped };
@@ -447,6 +458,7 @@ pub const Hub = struct {
     pub fn sessions(self: *Hub, arena: std.mem.Allocator) ![]Status {
         var listed = std.ArrayList(Status).empty;
         errdefer listed.deinit(arena);
+        defer std.mem.sort(Status, listed.items, {}, bySessionId);
         for (self.entries.items) |*entry| {
             if (entry.closed) {
                 try listed.append(arena, .{
@@ -491,16 +503,22 @@ pub const Hub = struct {
         if (options.after == null and options.run_id.len > 0) return error.InvalidCursor;
         if (self.heldFor(entry)) |held| {
             if (options.after == null) {
+                if (held.detached or held.ending != .open) {
+                    _ = self.dropHold(held);
+                } else {
+                    _ = self.dropHold(held);
+                    held.held = false;
+                    return held;
+                }
+            } else {
                 _ = self.dropHold(held);
-                held.held = false;
-                return held;
+                self.retireSubscription(held, .expired);
             }
-            self.retireSubscription(held, .expired);
         }
         if (entry.subscribers.items.len >= self.stream_queue) return error.SubscriptionFull;
         const subscription = try self.allocator.create(Subscription);
         errdefer self.allocator.destroy(subscription);
-        subscription.* = .{ .hub = self, .session_id = session_id };
+        subscription.* = .{ .hub = self, .session_id = try self.allocator.dupe(u8, session_id) };
         errdefer subscription.release(self.allocator);
         if (options.after) |after| {
             try self.replay(entry, subscription, after, options.run_id);
@@ -509,8 +527,9 @@ pub const Hub = struct {
             subscription.joined = joined > 0;
             subscription.joined_after = joined;
         }
-        try entry.subscribers.append(self.allocator, subscription);
         try self.subscriptions.append(self.allocator, subscription);
+        errdefer _ = self.subscriptions.pop();
+        try entry.subscribers.append(self.allocator, subscription);
         return subscription;
     }
 
@@ -536,10 +555,18 @@ pub const Hub = struct {
         }
     }
 
-    pub fn pump(self: *Hub, allocator: std.mem.Allocator) !void {
+    pub fn pump(self: *Hub, allocator: std.mem.Allocator, wait_ns: u64) !void {
         self.expireHolds();
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
+        const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
+        for (self.entries.items) |*entry| {
+            if (entry.closed) continue;
+            _ = entry.session.pump(share) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+        }
         for (self.entries.items) |*entry| {
             if (entry.closed) continue;
             var events = std.ArrayList(contract.Event).empty;
@@ -647,7 +674,7 @@ pub const Hub = struct {
                 continue;
             }
             if (subscription.queue.items.len >= self.stream_queue) {
-                try self.markOverflow(subscription, owned_run);
+                markOverflow(subscription);
                 _ = entry.subscribers.orderedRemove(index);
                 continue;
             }
@@ -659,10 +686,8 @@ pub const Hub = struct {
         }
     }
 
-    fn markOverflow(self: *Hub, subscription: *Subscription, run_id: []const u8) !void {
-        const owned = try self.allocator.dupe(u8, run_id);
-        if (subscription.overflow_run.len > 0) self.allocator.free(subscription.overflow_run);
-        subscription.overflow_run = owned;
+    fn markOverflow(subscription: *Subscription) void {
+        subscription.overflow_run = subscription.run_id;
         subscription.overflow_sequence = subscription.highest;
         subscription.ending = .overflow;
     }
@@ -753,14 +778,16 @@ pub const Hub = struct {
             subscription.ending = .expired;
             return;
         }
-        subscription.run_id = named;
+        const owned = try self.allocator.dupe(u8, named);
+        if (subscription.run_id.len > 0) self.allocator.free(subscription.run_id);
+        subscription.run_id = owned;
         subscription.highest = after;
         for (entry.journal.items) |kept| {
             if (!std.mem.eql(u8, kept.run_id, named)) continue;
             if (kept.sequence <= after) continue;
             const copy = try self.allocator.dupe(u8, kept.line);
             errdefer self.allocator.free(copy);
-            try subscription.replay.append(self.allocator, .{ .line = copy, .run_id = named, .sequence = kept.sequence });
+            try subscription.replay.append(self.allocator, .{ .line = copy, .run_id = subscription.run_id, .sequence = kept.sequence });
         }
     }
 };
@@ -825,7 +852,7 @@ test "a hub opens many sessions, each with its own journal" {
 
     const request = try submitFor(arena, "alpha");
     _ = try hub.submit(arena, "alpha", &request);
-    try hub.pump(testing.allocator);
+    try hub.pump(testing.allocator, 0);
     const replayed = try hub.subscribe(arena, "alpha", .{ .run_id = "run-1", .after = 1 });
     var drained: usize = 0;
     while (replayed.next()) |_| drained += 1;
@@ -835,9 +862,9 @@ test "a hub opens many sessions, each with its own journal" {
     try testing.expectEqualStrings("beta", beta_state.session_id);
 }
 
-test "a subscriber that falls behind is ended with the cursor to resume from" {
+test "a subscriber that falls behind is ended with the run and position it last read" {
     var adapter = memory.Adapter.init(testing.allocator);
-    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256 });
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
     defer hub.deinit();
     try hub.register("memory", adapter.adapter());
     var scratch = std.heap.ArenaAllocator.init(testing.allocator);
@@ -846,11 +873,40 @@ test "a subscriber that falls behind is ended with the cursor to resume from" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "slow" });
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
-    const request = try submitFor(arena, "slow");
-    _ = try hub.submit(arena, "slow", &request);
-    try hub.pump(testing.allocator);
+    const first = try submitFor(arena, "slow");
+    _ = try hub.submit(arena, "slow", &first);
+    try hub.pump(testing.allocator, 0);
+    const read = subscription.next().?;
+    const last_read = read.sequence;
+    try testing.expectEqualStrings("run-1", subscription.run_id);
+
+    _ = try hub.cancel(arena, "slow", "run-1");
+    const second = try submitFor(arena, "slow");
+    _ = try hub.submit(arena, "slow", &second);
+    try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.overflow, subscription.ending);
     try testing.expectEqualStrings("run-1", subscription.overflow_run);
+    try testing.expectEqual(last_read, subscription.overflow_sequence);
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = subscription.overflow_run, .after = subscription.overflow_sequence });
+    try testing.expect(resumed.next() != null);
+}
+
+test "a subscriber that read nothing is ended with no cursor at all" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "silent" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    const request = try submitFor(arena, "silent");
+    _ = try hub.submit(arena, "silent", &request);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.overflow, subscription.ending);
+    try testing.expectEqualStrings("", subscription.overflow_run);
     try testing.expectEqual(@as(u64, 0), subscription.overflow_sequence);
 }
 
@@ -867,7 +923,7 @@ test "a subscriber inside its bound receives every envelope" {
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     const request = try submitFor(arena, "kept");
     _ = try hub.submit(arena, "kept", &request);
-    try hub.pump(testing.allocator);
+    try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.open, subscription.ending);
     var drained: usize = 0;
     while (subscription.next()) |_| drained += 1;
@@ -887,9 +943,9 @@ test "a cursor older than the journal is a gap, never fake continuity" {
     for (0..4) |_| {
         const request = try submitFor(arena, "gap");
         const admitted = try hub.submit(arena, "gap", &request);
-        try hub.pump(testing.allocator);
+        try hub.pump(testing.allocator, 0);
         _ = try hub.cancel(arena, "gap", admitted.run_id.?);
-        try hub.pump(testing.allocator);
+        try hub.pump(testing.allocator, 0);
     }
     const gapped = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
     try testing.expect(gapped.gap != null);
@@ -910,7 +966,7 @@ test "a cursor within the journal replays the suffix, and an unrunnable one is r
     const opened = try hub.open(arena, "memory", .{ .session_id = "cursor" });
     const request = try submitFor(arena, "cursor");
     _ = try hub.submit(arena, "cursor", &request);
-    try hub.pump(testing.allocator);
+    try hub.pump(testing.allocator, 0);
 
     const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 2 });
     const first = replayed.next().?;
@@ -947,7 +1003,7 @@ test "a subscribing open registers before its message runs, so it misses nothing
     const subscription = opened.subscription.?;
     const request = try submitFor(arena, "compound");
     _ = try hub.submit(arena, "compound", &request);
-    try hub.pump(testing.allocator);
+    try hub.pump(testing.allocator, 0);
     const first = subscription.next().?;
     try testing.expectEqual(@as(u64, 1), first.sequence);
     try testing.expect(std.mem.indexOf(u8, first.line, "run.started") != null);
@@ -967,7 +1023,7 @@ test "a held subscription is adopted by the request that follows" {
     const held = try hub.hold(arena, opened.session_id);
     const request = try submitFor(arena, "held");
     _ = try hub.submit(arena, "held", &request);
-    try hub.pump(testing.allocator);
+    try hub.pump(testing.allocator, 0);
     const adopted = try hub.subscribe(arena, opened.session_id, .{});
     try testing.expectEqual(held, adopted);
     try testing.expect(!adopted.held);
@@ -1007,7 +1063,7 @@ test "a cursor-bearing subscription does not adopt a hold, and releases it" {
     const held = try hub.hold(arena, opened.session_id);
     const request = try submitFor(arena, "cursored");
     _ = try hub.submit(arena, "cursored", &request);
-    try hub.pump(testing.allocator);
+    try hub.pump(testing.allocator, 0);
     const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
     try testing.expect(held != replayed);
     try testing.expectEqual(Ending.expired, held.ending);
@@ -1173,7 +1229,7 @@ test "subscribe, replay and pump hand off their queues under allocation failure"
             _ = try hub.subscribe(arena, opened.session_id, .{});
             const request = try submitFor(arena, "fanout");
             _ = try hub.submit(arena, "fanout", &request);
-            try hub.pump(gpa);
+            try hub.pump(gpa, 0);
         }
     }.attempt, .{});
     try testing.checkAllAllocationFailures(testing.allocator, struct {
@@ -1188,7 +1244,7 @@ test "subscribe, replay and pump hand off their queues under allocation failure"
             const opened = try hub.open(arena, "memory", .{ .session_id = "replayed" });
             const request = try submitFor(arena, "replayed");
             _ = try hub.submit(arena, "replayed", &request);
-            try hub.pump(gpa);
+            try hub.pump(gpa, 0);
             _ = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 0 });
         }
     }.attempt, .{});
