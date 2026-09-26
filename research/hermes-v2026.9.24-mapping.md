@@ -309,6 +309,3 @@ behind a `hermes` registry entry. Where it differs from the Go adapter:
 - It advertises the Go adapter's revision, with `run.resume` and `run.replay`
   `degraded` as Go does: the `oapx` endpoint keeps a bounded journal of 256
   events per session and answers the replay control from it.
-- A `gateway.ready` is checked for `change_events`, a 32-hex `replay_epoch` and
-  a present `skin`, as Go's `ValidateReady` does, but its payload is not
-  decoded against the pinned type.
