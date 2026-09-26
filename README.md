@@ -755,6 +755,8 @@ Decisions:
 - [0033 — harness pins are data](decisions/0033-harness-pins-are-data.md) (proposed)
 - [0034 — an unpublished catalog is unknown](decisions/0034-an-unpublished-catalog-is-unknown.md) (accepted)
 - [0035 — a model entry publishes its facts, and absence means unknown](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md) (proposed)
+- [0036 — a presentation layer is not evidence for its own profile](decisions/0036-a-presentation-layer-is-not-evidence-for-its-own-profile.md) (proposed)
+- [0037 — presentation state is versioned, and every intent is idempotent](decisions/0037-presentation-state-is-versioned-and-every-intent-is-idempotent.md) (proposed)
 - [0038 — one released binary, and a library for every language](decisions/0038-one-released-binary-and-a-library-for-every-language.md) (proposed)
 
 Decision 0003 defines what `accepted` means and what moves a record from
