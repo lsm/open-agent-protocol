@@ -224,7 +224,7 @@ supplied.
 | A response that will not fit is reduced, then reduced again, then `response_too_large` | `TestOversizedOutputRefused` |
 | An idle pipe is interruptible | `TestContextEndInterruptsIdleInput` |
 | A failed write ends serving | `TestWriterFailureEndsServing` |
-| An unknown `op` is a correlated request error, not a framing defect | `TestUnknownOpIsARequestError`, `TestOpErrorCodesMirrorHTTP` |
+| An unknown `op` is refused `unknown_op` — a correlated request error, not a framing defect, so the frontend keeps serving | `TestUnknownOpIsARequestError`, `TestOpErrorCodesMirrorHTTP` |
 | Exactly one writer emits every line, so no line is broken by interleaving | structural: a single writer goroutine; `TestWriterDrainsQueuedLinesOnStop`, `TestWriterNeverClosesTheLineChannel` |
 | A read failure that is not a framing defect is reported as itself | `TestReadFailureIsNotAMalformedLine`, `TestPartialReadFailurePassesThrough` |
 
@@ -281,6 +281,12 @@ stall, because waiting is what would stop the daemon reading the host's end at
 all. The message ends with `send this request again`, and that is the whole
 recovery: the request was never served, so resending it is safe.
 
+**The in-flight bounds apply to every op, not to a few.** Admission is decided
+as each line is decoded, before the op is even looked at, so any op past the
+16-op or 16-MiB ceiling is refused `busy` — `adapters`, `sessions` and
+`capabilities` included. The subscription ceiling is the one bound only `events`
+and a subscribing `open` can reach.
+
 | bound | value | pinned by |
 | --- | --- | --- |
 | Concurrent ops in flight | 16 | `TestInFlightOpsAreBounded` |
@@ -296,6 +302,7 @@ recovery: the request was never served, so resending it is safe.
 | Subscriptions are not charged against the in-flight op bound, because a subscription is not an op that finishes | `TestSubscriptionsAreNotChargedAgainstTheInFlightBound` |
 | A refusal names the bound that refused it | `TestRefusalNamesTheBoundThatRefused`, `TestRefusedRequestNamesItself` |
 | A host that pipelines past the bound is answered, not stalled | `TestSlowWorkersBehindTheBoundAreAnswered` |
+| The in-flight bounds refuse **any** op, since admission is decided before the op is read | `TestRefusedRequestNamesItself` — it parks a `capabilities` op at the ceiling and asserts the `adapters` line behind it is refused `busy`; the bound's mechanism by `TestInFlightOpsAreBounded` |
 | A refusal that cannot be written is reported as dropped, not swallowed | `TestQueuedRefusalWithdrawnUnwrittenIsReported`, `TestMalformedLineSurvivesASaturatedBound` |
 | A saturated bound does not hide a framing defect behind it | `TestBufferedDefectIsJudgedBehindASaturatedBound` |
 | Admission closes at teardown, and a request arriving after it is dropped unserved | `TestAdmissionClosesAtTeardown`, `TestDisconnectIsObservedWhileAdmissionIsFull` |
@@ -561,16 +568,18 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 ## The operations
 
 Twelve ops. Each row gives the request line's parameters, the answer, and the
-errors; the two transports differ only where noted. A refusal the row does not
-name is `internal` on both, and the HTTP body gate's own three codes are
-transport-level and listed once in
-[the HTTP rules](#the-http-routes-and-sse-framing) rather than repeated here.
+errors. A refusal the row does not name is `internal` on both, with two
+exceptions stated once here rather than repeated per row:
 
-**Two codes are stdio's alone and no HTTP route may produce either.**
-`busy` is the admission and subscription bound, which only a pipe needs — a
-socket gives back pressure instead. `response_too_large` is the frame limit,
-which only a pipe needs for the same reason. Both are marked *(stdio only)*
-where they appear.
+- **The stdio transport answers four codes no HTTP route can.** `unknown_op` for
+  an op it does not serve, `invalid_request` for a parameter an op does not
+  define, `busy` for the admission and subscription bounds, and
+  `response_too_large` for a result its frame limit cannot carry. All four
+  exist because a pipe gives no back pressure and has one shape a socket does
+  not; a port must not produce any of them over HTTP.
+- **The HTTP body gate answers three codes no operation owns.**
+  `unsupported_media_type`, `request_too_large` and `request_read`, stated once
+  in [the HTTP rules](#the-http-routes-and-sse-framing).
 
 ### `adapters`
 
@@ -606,9 +615,8 @@ where they appear.
   `current_revision` in `details`), `unsupported_feature` (400, for a tool
   source it will not attach), `capability_degraded` (400, for a feature the
   request did not opt into), `probe_failed`, `open_failed` (502),
-  `request_cancelled`, `internal`, `response_too_large` *(stdio only)*, and
-  `busy` *(stdio only, and only when the request set `subscribe` — it is the
-  subscription bound, which an open without a subscription cannot reach)*.
+  `request_cancelled`, `internal` — and, when the request set `subscribe`, the
+  subscription bound can refuse this op specifically.
 - **pinned by:** `TestOpenOpOpensASession`, `TestOpenOpRefusals`,
   `TestOpenRefusalsAreBounded`, `TestHubOpenRejections`,
   `TestHubOpenDefaultsParticipant`, `TestHubOpenClosesSessionWhenStateFails`,
@@ -677,7 +685,7 @@ where they appear.
   a payload naming another session), `run_active` (409), `invalid_submission`
   (400), `unsupported_feature` (400), `capability_degraded` (400),
   `model_not_found` (400), `session_closed` (409), `request_cancelled` (400),
-  `internal` (500), and `response_too_large` *(stdio only)*.
+  `internal` (500).
 - **pinned by:** `TestSubmitRejections`, `TestOpErrorCodesMirrorHTTP`,
   `TestQueuedSubmissionRoundTrips`, `TestQueuedSubmissionOverStdio`,
   `TestSubmitRollsBackUnframableAcknowledgement`,
@@ -743,9 +751,9 @@ where they appear.
   refused rather than parked), `invalid_cursor` (400, a cursor that is not an
   unsigned sequence, or a `run_id` with no cursor), `replay_cursor_future` (400),
   `run_not_found` (404), `no_run_to_resume` (409, a cursor on a session with no
-  run to replay), `request_cancelled`, `internal` (500), and `busy` *(stdio
-  only)*. A **replay gap is not an error**: the op acknowledges `null`, then
-  writes `oap-replay-gap` and ends the subscription.
+  run to replay), `request_cancelled`, `internal` (500). A **replay gap is not
+  an error**: the op acknowledges `null`, then writes `oap-replay-gap` and ends
+  the subscription.
 - **pinned by:** `TestEventsOpDeliversTheRunStream`,
   `TestEventsAcknowledgementPrecedesTheStream`, `TestEventsOpRefusals`,
   `TestEventsOpReportsAReplayGap`, `TestEventsReportsWhereALateSubscriptionJoined`,
