@@ -280,7 +280,10 @@ have.
 
 The Zig port has no per-subscriber stream or journal, so it has no `Resume`.
 Its corpus harness skips `resume` ops, and only its capability revision
-follows this change.
+follows this change. That is the intended shape, not a pending gap: persistence
+is out of v0.1 core (Decision 0012), and the served endpoint's bounded journal
+answers `run.resume` and `run.replay` under the descriptor's `degraded` level,
+so an adapter reducer needs no journal of its own.
 
 ## Issue #122: `run.tool_selection` is enforced per call
 
