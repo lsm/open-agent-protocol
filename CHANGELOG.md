@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `goap serve agent --backend codex` holds its operation lock across the `turn/interrupt` call, so a `turn/completed` that follows the interrupt answer is reduced after the cancel response and its `run.status.updated`: the cancel now answers `cancelling` deterministically, as `oapx` does, instead of racing its reader goroutine. The Codex parity fixture no longer delays the completion to hide the race.
 - The Zig JSON writer escapes `<`, `>`, `&`, U+2028 and U+2029 as `encoding/json` does (`\u003c`, `\u003e`, `\u0026`, `\u2028`, `\u2029`), so OAP envelopes written through `zig/src/json/writer.zig` match Go's default HTML-safe escaping. No ledger recorded the gap.
 - `goap` always emits the required member of a `text` or `reasoning` content part, even when it is empty, matching `schema/v0.1/common.schema.json` (which requires `text` and `reasoning` respectively) and `oapx`. `protocol.ContentPart` had tagged both `omitempty`, so an empty `text_delta` or `thinking_delta` produced `{"type":"text"}` or `{"type":"reasoning"}` with no member.
 - The OpenCode adapter converts a native token count through an explicit saturation (`0` for a non-positive, non-finite or non-number float; `MaxUint64` at or beyond `2^64`), as `oapx` does, instead of a platform-dependent `uint64(float64)`.

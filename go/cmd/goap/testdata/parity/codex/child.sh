@@ -30,7 +30,6 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"native-thread","
 take; printf '{"id":%s,"result":{"turn":{"id":"turn-4","status":"inProgress"}}}\n' "$(id)"
 printf '%s\n' '{"method":"turn/started","params":{"threadId":"native-thread","turn":{"id":"turn-4","status":"inProgress"}}}'
 take; printf '{"id":%s,"result":{}}\n' "$(id)"
-sleep 1
 printf '%s\n' '{"method":"turn/completed","params":{"threadId":"native-thread","turn":{"id":"turn-4","status":"interrupted"}}}'
 
 while take; do :; done

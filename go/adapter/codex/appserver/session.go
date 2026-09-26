@@ -38,18 +38,17 @@ type session struct {
 }
 
 type runState struct {
-	id             protocol.RunID
-	turnID         string
-	status         protocol.RunStatus
-	nextSequence   uint64
-	started        bool
-	terminal       bool
-	cancelPending  bool
-	cancelInFlight chan struct{}
-	messageID      protocol.MessageID
-	model          string
-	text           string
-	subscribers    []*subscriber
+	id            protocol.RunID
+	turnID        string
+	status        protocol.RunStatus
+	nextSequence  uint64
+	started       bool
+	terminal      bool
+	cancelPending bool
+	messageID     protocol.MessageID
+	model         string
+	text          string
+	subscribers   []*subscriber
 }
 
 const liveStreamCapacity = 32
@@ -346,72 +345,51 @@ func (session *session) Cancel(ctx context.Context, runID protocol.RunID) (proto
 	if err := ctx.Err(); err != nil {
 		return protocol.RunCancelResponse{}, err
 	}
-	for {
-		session.opMu.Lock()
-		session.mu.Lock()
-		run := session.runs[runID]
-		if run == nil {
-			session.mu.Unlock()
-			session.opMu.Unlock()
-			return protocol.RunCancelResponse{}, adapter.ErrRunNotFound
-		}
-		if run.terminal {
-			status := run.status
-			session.mu.Unlock()
-			session.opMu.Unlock()
-			if status == protocol.RunCancelled {
-				return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: status}, nil
-			}
-			return protocol.RunCancelResponse{}, &adapter.RunTerminalError{RunID: runID, Status: status}
-		}
-		if run.cancelPending {
-			session.mu.Unlock()
-			session.opMu.Unlock()
-			return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
-		}
-		if inFlight := run.cancelInFlight; inFlight != nil {
-			session.mu.Unlock()
-			session.opMu.Unlock()
-			select {
-			case <-inFlight:
-				continue
-			case <-ctx.Done():
-				return protocol.RunCancelResponse{}, ctx.Err()
-			}
-		}
-		run.cancelInFlight = make(chan struct{})
-		inFlight := run.cancelInFlight
-		turnID := run.turnID
+	session.opMu.Lock()
+	defer session.opMu.Unlock()
+	session.mu.Lock()
+	run := session.runs[runID]
+	if run == nil {
 		session.mu.Unlock()
-		session.opMu.Unlock()
-
-		err := session.client.Call(ctx, native.MethodTurnInterrupt, native.TurnInterruptParams{ThreadID: session.threadID, TurnID: turnID}, &native.TurnInterruptResponse{})
-
-		session.opMu.Lock()
-		session.mu.Lock()
-		close(inFlight)
-		run.cancelInFlight = nil
-		terminal, status := run.terminal, run.status
-		if err == nil && !terminal {
-			run.cancelPending = true
-			run.status = protocol.RunCancelling
-		}
+		return protocol.RunCancelResponse{}, adapter.ErrRunNotFound
+	}
+	if run.terminal {
+		status := run.status
 		session.mu.Unlock()
-		if err == nil && !terminal {
-			_ = session.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: session.state.SessionID, RunID: run.id, Status: protocol.RunCancelling, UpdatedAtMS: session.clock.Now().UnixMilli()}, false)
+		if status == protocol.RunCancelled {
+			return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: status}, nil
 		}
-		session.opMu.Unlock()
-		if err != nil {
-			return protocol.RunCancelResponse{}, fmt.Errorf("interrupt Codex turn: %w", err)
-		}
-		if terminal {
-			if status == protocol.RunCancelled {
-				return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: status}, nil
-			}
-			return protocol.RunCancelResponse{}, &adapter.RunTerminalError{RunID: runID, Status: status}
-		}
+		return protocol.RunCancelResponse{}, &adapter.RunTerminalError{RunID: runID, Status: status}
+	}
+	if run.cancelPending {
+		session.mu.Unlock()
 		return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 	}
+	turnID := run.turnID
+	session.mu.Unlock()
+
+	err := session.client.Call(ctx, native.MethodTurnInterrupt, native.TurnInterruptParams{ThreadID: session.threadID, TurnID: turnID}, &native.TurnInterruptResponse{})
+
+	session.mu.Lock()
+	terminal, status := run.terminal, run.status
+	if err == nil && !terminal {
+		run.cancelPending = true
+		run.status = protocol.RunCancelling
+	}
+	session.mu.Unlock()
+	if err == nil && !terminal {
+		_ = session.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: session.state.SessionID, RunID: run.id, Status: protocol.RunCancelling, UpdatedAtMS: session.clock.Now().UnixMilli()}, false)
+	}
+	if err != nil {
+		return protocol.RunCancelResponse{}, fmt.Errorf("interrupt Codex turn: %w", err)
+	}
+	if terminal {
+		if status == protocol.RunCancelled {
+			return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: status}, nil
+		}
+		return protocol.RunCancelResponse{}, &adapter.RunTerminalError{RunID: runID, Status: status}
+	}
+	return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 
 func (session *session) Resume(ctx context.Context, request adapter.ResumeRequest) (adapter.Recovery, adapter.EventStream, error) {
