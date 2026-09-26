@@ -264,10 +264,12 @@ test "a models listing is recorded only where the provider answers one" {
     try std.testing.expect(modelsEndpoint("no-such-provider") == null);
 }
 
-test "a models listing is spelled once against the base it is appended to" {
+test "a models listing is an absolute path appended to a base that does not end in a slash" {
     for (all) |row| {
         const path_text = row.models_endpoint orelse continue;
+        try std.testing.expect(std.mem.startsWith(u8, path_text, "/"));
         for (row.endpoints) |endpoint| {
+            try std.testing.expect(!std.mem.endsWith(u8, endpoint.base_url, "/"));
             var composed: [512]u8 = undefined;
             const url = try std.fmt.bufPrint(&composed, "{s}{s}", .{ endpoint.base_url, path_text });
             var versions: usize = 0;
