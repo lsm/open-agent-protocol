@@ -46,15 +46,18 @@ func TestLoadRefusesARepeatedMember(t *testing.T) {
 }
 
 func TestCheckNamesADuplicateRow(t *testing.T) {
-	duplicates := Check(Catalog{Providers: []Provider{{ID: "kimi"}, {ID: "kimi"}}})
-	if len(duplicates) != 1 || duplicates[0].Code != CodeDuplicateID {
-		t.Fatalf("findings = %v, want one duplicate", duplicates)
+	duplicated := []Provider{{ID: "kimi"}, {ID: "kimi"}}
+	findings := Check(Catalog{Providers: duplicated})
+	if len(findings) != 1 || findings[0].Code != CodeDuplicateID {
+		t.Fatalf("findings = %v, want one duplicate", findings)
 	}
-	wireless := Check(Catalog{Providers: []Provider{{ID: "kimi", Endpoints: []Endpoint{{BaseURL: "https://api.kimi.com/coding"}}}}})
-	if len(wireless) != 1 || wireless[0].Code != CodeEndpointLone {
-		t.Fatalf("findings = %v, want one endpoint naming no wire", wireless)
+	wireless := []Provider{{ID: "kimi", Endpoints: []Endpoint{{BaseURL: "https://api.kimi.com/coding"}}}}
+	findings = Check(Catalog{Providers: wireless})
+	if len(findings) != 1 || findings[0].Code != CodeEndpointLone {
+		t.Fatalf("findings = %v, want one endpoint naming no wire", findings)
 	}
-	if len(Check(Catalog{Providers: []Provider{{ID: "kimi"}})) != 0 {
+	sound := []Provider{{ID: "kimi"}}
+	if len(Check(Catalog{Providers: sound})) != 0 {
 		t.Fatal("a sound catalog produced a finding")
 	}
 }
