@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a hub can judge an open's own elections without the refusal that stops an
   endpoint from accepting a compound open's `message` — the hub submits that
   itself, above the adapter, as `serve.OpenCompound` does in Go. `journal_capacity`
-  from the registry document is now read rather than decoded and ignored. Thirty-one
+  from the registry document is now read rather than decoded and ignored. Thirty-two
   unit tests over a scripted backend, and `checkAllAllocationFailures` over every
   function that allocates and hands off ownership — which is what found three
   places swallowing `OutOfMemory`, three use-after-frees on a closed session or a

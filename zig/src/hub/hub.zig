@@ -376,6 +376,7 @@ pub const Hub = struct {
         var session = try registered.adapter.open(arena, request.contractRequest(), &refusal);
         var adopted = false;
         errdefer if (!adopted) session.close();
+        if (self.findSession(session.id()) != null) return error.SessionExists;
         const opened_state = try session.state(arena, &refusal);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
         adopted = true;
@@ -928,6 +929,26 @@ test "a hub opens many sessions, each with its own journal" {
 
     const beta_state = try hub.state(arena, "beta");
     try testing.expectEqualStrings("beta", beta_state.session_id);
+}
+
+test "an adapter-assigned session id that is already taken is refused, not adopted twice" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const minted = try hub.open(arena, "memory", .{});
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
+    try testing.expectError(error.SessionExists, hub.open(arena, "memory", .{ .session_id = minted.session_id }));
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
+
+    const listed = try hub.sessions(arena);
+    try testing.expectEqual(@as(usize, 1), listed.len);
+    try testing.expectEqualStrings(minted.session_id, listed[0].session_id);
+    try testing.expectEqualStrings(minted.session_id, (try hub.state(arena, minted.session_id)).session_id);
 }
 
 test "a subscriber that falls behind is ended with the run and position it last read" {
