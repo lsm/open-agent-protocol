@@ -95,6 +95,9 @@ fn envApiKeyForProvider(allocator: std.mem.Allocator, provider_id: []const u8) ?
     if (std.mem.eql(u8, provider_id, "openai")) {
         return compat_mod.getEnvVarOwned(allocator, "OPENAI_API_KEY") catch null;
     }
+    if (std.mem.eql(u8, provider_id, "kimi")) {
+        return compat_mod.getEnvVarOwned(allocator, "KIMI_API_KEY") catch null;
+    }
     return null;
 }
 

@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The TUI showed no Kimi model when `KIMI_API_KEY` was exported and no `/login kimi` had run: the catalog required a stored credential, `openai-completions` resolved no key from the environment for kimi, and `/login` scanned no environment variable for it, so the picker stayed empty although `makai -p` already honoured the key. The catalog now accepts the exported key (a stored login still wins), fetches `GET {region base}/v1/models` with it, caches the body under `~/.oapx/model_catalog/kimi.json` or `kimi-global.json` for the 24-hour window Anthropic's catalog uses, and falls back to the stale copy and then the static `kimi-k2.7-code`; a kimi request resolves the key when no credential is stored, and `/login` reports `✓ env key` for kimi.
 - The in-memory reference adapter, in Go and in `oapx`, refuses a resolution addressed to a queued run that has not started, which could otherwise complete it with no `run.started`.
 - `goap serve agent` honours an open's elections instead of dropping them: `tool_sources` are gated and resolved as the hub resolves them, `subscribe` is gated, and a compound `message` is refused `unsupported_feature` (`field: message`), as `oapx` refuses it. Before, all three were accepted and silently ignored.
 

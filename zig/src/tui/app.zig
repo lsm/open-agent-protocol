@@ -674,7 +674,7 @@ pub const App = struct {
     }
 
     const login_providers = [_][]const u8{ "anthropic", "github-copilot", "openai-codex", "kimi" };
-    const login_env_keys = [_][]const []const u8{ &.{ "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY" }, &.{}, &.{}, &.{} };
+    const login_env_keys = [_][]const []const u8{ &.{ "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY" }, &.{}, &.{}, &.{"KIMI_API_KEY"} };
 
     pub const LoginStatus = enum { none, api_key, env_key, oauth, expired };
 
@@ -3161,6 +3161,34 @@ test "App saves Kimi login credentials as api key" {
         .api_key => |key| try std.testing.expectEqualStrings("moonshot-test-key", key),
         .oauth => return error.ExpectedApiKeyAuth,
     }
+}
+
+test "App login status shows an env key for kimi when KIMI_API_KEY is exported" {
+    var home = try TempHome.init("home-kimi-env");
+    defer home.deinit();
+
+    const previous_key = std.process.Environ.getAlloc(std.testing.environ, std.testing.allocator, "KIMI_API_KEY") catch null;
+    defer {
+        if (previous_key) |value| {
+            const value_z = std.testing.allocator.dupeZ(u8, value) catch null;
+            if (value_z) |key_z| {
+                defer std.testing.allocator.free(key_z);
+                _ = setenv("KIMI_API_KEY", key_z.ptr, 1);
+            }
+            std.testing.allocator.free(value);
+        } else {
+            _ = unsetenv("KIMI_API_KEY");
+        }
+    }
+    const key_z = try std.testing.allocator.dupeZ(u8, "kimi-env-test-key");
+    defer std.testing.allocator.free(key_z);
+    _ = setenv("KIMI_API_KEY", key_z.ptr, 1);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.refreshLoginStatus();
+
+    try std.testing.expectEqual(App.LoginStatus.env_key, app.login_status[3]);
 }
 
 test "multi-line /help output renders all lines into transcript view" {
