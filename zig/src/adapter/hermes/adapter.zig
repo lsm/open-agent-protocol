@@ -581,6 +581,9 @@ fn ready(received: Session.Received) bool {
     if (params.object.get("session_id") != null) return false;
     const payload = params.object.get("payload") orelse return false;
     if (payload != .object) return false;
+    for (payload.object.keys()) |key| {
+        if (!std.mem.eql(u8, key, "skin") and !std.mem.eql(u8, key, "change_events") and !std.mem.eql(u8, key, "replay_epoch")) return false;
+    }
     const skin = payload.object.get("skin") orelse return false;
     if (skin == .null) return false;
     const changes = payload.object.get("change_events") orelse return false;
@@ -954,6 +957,20 @@ test "a gateway whose first frame is not gateway.ready refuses the open before s
     try testing.expectError(error.BackendFailed, probe.open(&refusal));
     try testing.expectEqualStrings("the hermes gateway's first frame was not a valid gateway.ready", refusal.message);
     try testing.expectEqualStrings("", try probe.fake.written(probe.arena.allocator()));
+}
+
+test "a gateway.ready payload with an unknown member refuses the open" {
+    var probe: Probe = undefined;
+    try probe.init(
+        \\#!/bin/sh
+        \\printf '{"jsonrpc":"2.0","method":"event","params":{"type":"gateway.ready","payload":{"skin":{},"change_events":true,"replay_epoch":"e3b0c44298fc1c149afbf4c8996fb924","extra":1}}}\n'
+        \\while IFS= read -r line; do printf '%s\n' "$line" >&3; done
+        \\
+    );
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    try testing.expectError(error.BackendFailed, probe.open(&refusal));
+    try testing.expectEqualStrings("the hermes gateway's first frame was not a valid gateway.ready", refusal.message);
 }
 
 test "a session.create the gateway refuses fails the open with its error" {

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `goap serve agent --backend codex` closes open interactions and actions in the order they opened, and `goap serve agent --backend opencode` settles unfinished tools in start order, as `oapx` does, instead of Go map iteration order. Neither parity fixture opens two at once, so the corpus cannot see it; the same unordered-map pattern still exists in the other Go adapters' settlement sweeps.
+- `oapx serve agent --backend hermes` decodes `gateway.ready`'s payload against the pinned type, as `goap` does: a member outside `skin`/`change_events`/`replay_epoch` now refuses the open instead of being ignored. The `skin`, `change_events` and 32-hex `replay_epoch` checks were already enforced.
 
 - The Zig JSON writer escapes `<`, `>`, `&`, U+2028 and U+2029 as `encoding/json` does (`\u003c`, `\u003e`, `\u0026`, `\u2028`, `\u2029`), so OAP envelopes written through `zig/src/json/writer.zig` match Go's default HTML-safe escaping. No ledger recorded the gap.
 - `goap` always emits the required member of a `text` or `reasoning` content part, even when it is empty, matching `schema/v0.1/common.schema.json` (which requires `text` and `reasoning` respectively) and `oapx`. `protocol.ContentPart` had tagged both `omitempty`, so an empty `text_delta` or `thinking_delta` produced `{"type":"text"}` or `{"type":"reasoning"}` with no member.
