@@ -281,8 +281,11 @@ the value lives in the credential store at `$DSH_HOME/.credentials.yaml`
 environment variable to a config that names a reference — the store has to hold
 it, which is a different act from writing a variable into a child's environment.
 
-The three `api` values are the same three wires the catalog names, so a row is
-routable when its wire is one of them. A built-in provider id is always answered
+The three `api` values cover three of the five wire values the catalog names:
+`openai-completions`, `openai-responses` and `anthropic-messages`. The other two
+have no `api` value to translate into — `google-generative-ai`, whose request
+path is model-scoped, and `openai-codex-responses` — so a row on either is
+refused by name rather than routed on a protocol it does not speak. A built-in provider id is always answered
 from the installed catalog even when its base URL points at a gateway, so
 routing through a gateway needs a *custom* provider entry rather than an
 override of a shipped one.
