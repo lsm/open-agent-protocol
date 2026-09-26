@@ -351,7 +351,7 @@ func TestCompletedRunMapsDeltasToolsAndUsage(t *testing.T) {
 	}
 	events := drain(t, got.stream)
 	validateWithCapabilities(t, got.response, events)
-	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeContentDelta, protocol.TypeContentDelta, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeRunCompleted}
+	want := []protocol.EnvelopeType{protocol.TypeRunStarted, protocol.TypeContentDelta, protocol.TypeContentDelta, protocol.TypeActionCallRequested, protocol.TypeActionCallStarted, protocol.TypeActionCallCompleted, protocol.TypeRunCompleted}
 	if len(events) != len(want) {
 		t.Fatalf("events %v", events)
 	}

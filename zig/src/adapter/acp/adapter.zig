@@ -8,6 +8,7 @@ const session = @import("session");
 const rpc = @import("rpc");
 const compat = @import("compat");
 const json_encode = @import("json_encode");
+const gomarshal = @import("gomarshal");
 
 pub const endpoint_id = session.endpoint_id;
 pub const capability_revision = harness_pins.acp_capability_revision;
@@ -424,11 +425,14 @@ pub const Session = struct {
         return .{ .object = params };
     }
 
-    fn encode(self: *Session, frame: std.json.ObjectMap) ![]u8 {
-        return json_encode.valueAlloc(self.owned(), .{ .object = frame });
+    fn encode(self: *Session, frame: std.json.ObjectMap) ![]const u8 {
+        return gomarshal.marshal(self.owned(), .{ .object = frame }) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            error.UnsupportedValue => error.InvalidSubmission,
+        };
     }
 
-    fn requestFrame(self: *Session, id: i64, method: []const u8, params: std.json.Value) ![]u8 {
+    fn requestFrame(self: *Session, id: i64, method: []const u8, params: std.json.Value) ![]const u8 {
         var frame = self.object();
         try self.put(&frame, "id", .{ .integer = id });
         try self.put(&frame, "jsonrpc", .{ .string = "2.0" });
@@ -437,7 +441,7 @@ pub const Session = struct {
         return self.encode(frame);
     }
 
-    fn notificationFrame(self: *Session, method: []const u8, params: std.json.Value) ![]u8 {
+    fn notificationFrame(self: *Session, method: []const u8, params: std.json.Value) ![]const u8 {
         var frame = self.object();
         try self.put(&frame, "jsonrpc", .{ .string = "2.0" });
         try self.put(&frame, "method", .{ .string = method });
@@ -445,7 +449,7 @@ pub const Session = struct {
         return self.encode(frame);
     }
 
-    fn resultFrame(self: *Session, id: std.json.Value, result: std.json.Value) ![]u8 {
+    fn resultFrame(self: *Session, id: std.json.Value, result: std.json.Value) ![]const u8 {
         var frame = self.object();
         try self.put(&frame, "id", id);
         try self.put(&frame, "jsonrpc", .{ .string = "2.0" });
@@ -453,7 +457,7 @@ pub const Session = struct {
         return self.encode(frame);
     }
 
-    fn errorFrame(self: *Session, id: std.json.Value, code: i64, message: []const u8) ![]u8 {
+    fn errorFrame(self: *Session, id: std.json.Value, code: i64, message: []const u8) ![]const u8 {
         var failure = self.object();
         try self.put(&failure, "code", .{ .integer = code });
         try self.put(&failure, "message", .{ .string = message });

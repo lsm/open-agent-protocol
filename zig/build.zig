@@ -1222,6 +1222,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "rpc", .module = acp_rpc_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "gomarshal", .module = adapter_gomarshal_mod },
         },
     });
 
