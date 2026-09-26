@@ -94,10 +94,15 @@ graduate, so it gets the same four steps with the seams they were drawn for:
    already holds the memory backend to `oapx`'s answers, so a shape they disagree
    about is found there rather than by an implementer.
 2. **Validator rules and fixtures.** A presentation bundle compiles under the
-   same strict and tolerant modes the layered draft already defines, the
-   validator enforces the profile's invariants, and `fixtures/manifest.json`
-   lists positive and negative traces under the profile's own conformance name.
-   Every existing fixture still validates unchanged.
+   same strict and tolerant modes the core bundle takes — `-mode strict` compiles
+   it as published, `-mode tolerant` compiles it under the extension rules that
+   accept an unknown member, enum value or envelope type on the common fields alone
+   — which the
+   [staged units graduation plan](../drafts/staged-units-graduation.md) specifies
+   and [Decision 0004](0004-extension-packs.md) carries in one compile variant. The
+   validator enforces the profile's invariants and `fixtures/manifest.json` lists
+   positive and negative traces under the profile's own conformance name. Every
+   existing fixture still validates unchanged.
 3. **A consumer this project does not control.** An implementation outside this
    repository renders from the profile and submits intent through it.
    [Decision 0015](0015-evidence-from-implementations-we-do-not-control.md)
@@ -240,11 +245,13 @@ to faking continuity, and this is that choice at the presentation boundary.
 ### `pending_prompts` is the one source for what is being asked
 
 `pending_prompts` is authoritative for the content of an outstanding prompt.
-Each entry projects one core interaction and carries its `prompt_id`, its `kind`,
-its `run_id`, renderable content — the question and the tool call it concerns —
-and labelled choices. The core's interaction and choice shapes are reused rather
-than restated, so a choice is a labelled thing a reader can render rather than a
-bare id.
+Each entry projects one core interaction and carries its `interaction_id`, its
+`kind`, its `run_id`, renderable content — the question and the tool call it
+concerns — and labelled choices. The core's interaction and option shapes are
+reused rather than restated, so a choice is a labelled thing a reader can render
+rather than a bare id, and the entry carries the same `interaction_id` the core
+used. The presentation layer renames nothing, so a resolve intent names the object
+the loop below it named.
 
 `intent.permission.resolve.request` and `intent.user_input.resolve.request` join
 the minimum profile. Each names one prompt and one of its choices, or the answer

@@ -310,10 +310,10 @@ Applying the changes it recognises and advancing anyway leaves the receiver
 holding state that is not that revision's state, which is the failure the revision
 discipline exists to prevent.
 
-A receiver tolerating unknown change kinds on the wire — under the layered
-draft's extension rules — has still not applied them, so the rule above applies
-unchanged. Tolerating an unknown kind says the envelope was well formed; it does
-not say the receiver understood it.
+A receiver tolerating unknown change kinds on the wire — under the extension
+rules the agent control core's tolerant compile applies — has still not applied
+them, so the rule above applies unchanged. Tolerating an unknown kind says the
+envelope was well formed; it does not say the receiver understood it.
 
 ## Intent Events
 
@@ -339,10 +339,14 @@ Near-core intents, not part of the minimum profile:
 ### Resolving A Prompt
 
 `pending_prompts` is the one source for what is being asked. Each entry projects
-one core interaction and carries its `prompt_id`, its `kind`, its `run_id`,
+one core interaction and carries its `interaction_id`, its `kind`, its `run_id`,
 renderable content — the question, and the tool call it concerns — and labelled
-choices. The core's interaction and choice shapes are reused rather than restated,
-so a choice is a labelled thing a reader can render rather than a bare id.
+choices. The core's interaction and option shapes are reused rather than restated,
+so a choice is a labelled thing a reader can render rather than a bare id, and an
+entry is identified by the same `interaction_id` the agent control core uses. The
+presentation layer renames nothing: a resolve intent names the `interaction_id` the
+core named, so the interface and the loop beneath it are talking about one object
+rather than two projections of it.
 
 The two resolve intents name one prompt and one of its choices, or the answer to a
 `user_input` prompt. A prompt resolves **once**: a stale or second answer is
