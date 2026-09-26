@@ -82,7 +82,7 @@ func (v *ProviderValidator) Validate(r io.Reader, fixture string) Result {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeMalformedJSON, Index: i, Line: entry.line, Message: err.Error()})
 			continue
 		}
-		if key, duplicate := duplicateKey(entry.raw); duplicate {
+		if key, duplicate := DuplicateKey(entry.raw); duplicate {
 			result.Diagnostics = append(result.Diagnostics, Diagnostic{Fixture: fixture, Phase: PhaseDecode, Code: CodeDuplicateKey, Index: i, Line: entry.line, Message: fmt.Sprintf("duplicate object key %q", key)})
 			continue
 		}

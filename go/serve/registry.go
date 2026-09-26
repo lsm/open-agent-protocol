@@ -18,6 +18,7 @@ import (
 	"github.com/lsm/open-agent-protocol/go/adapter/opencode"
 	"github.com/lsm/open-agent-protocol/go/adapter/pi"
 	"github.com/lsm/open-agent-protocol/go/protocol"
+	"github.com/lsm/open-agent-protocol/go/validation"
 )
 
 type configFile struct {
@@ -66,7 +67,7 @@ func unknownMember(data []byte, allowed []string) (string, error) {
 	if err := json.Unmarshal(data, &members); err != nil {
 		return "", err
 	}
-	for name := range members {
+	for _, name := range sortedKeys(members) {
 		known := false
 		for _, candidate := range allowed {
 			if name == candidate {
@@ -90,11 +91,14 @@ var adapterMembers = []string{
 var toolSourceMembers = []string{"kind", "display_name", "protocol", "endpoint", "command", "args", "environment"}
 
 func (file *configFile) UnmarshalJSON(data []byte) error {
+	if _, duplicate := validation.DuplicateKey(data); duplicate {
+		return errors.New("config: not one JSON object: DuplicateField")
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(data, &top); err != nil {
 		return err
 	}
-	for name := range top {
+	for _, name := range sortedKeys(top) {
 		if name != "adapters" && name != "tool_sources" {
 			return fmt.Errorf("config: the file: unknown field %q", name)
 		}
@@ -105,7 +109,8 @@ func (file *configFile) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		file.Adapters = make(map[string]adapterEntry, len(entries))
-		for name, value := range entries {
+		for _, name := range sortedKeys(entries) {
+			value := entries[name]
 			unknown, err := unknownMember(value, adapterMembers)
 			if err != nil {
 				return err
@@ -126,7 +131,8 @@ func (file *configFile) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		file.ToolSources = make(map[string]toolSourceEntry, len(entries))
-		for name, value := range entries {
+		for _, name := range sortedKeys(entries) {
+			value := entries[name]
 			unknown, err := unknownMember(value, toolSourceMembers)
 			if err != nil {
 				return err
