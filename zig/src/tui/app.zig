@@ -674,7 +674,7 @@ pub const App = struct {
     }
 
     const login_providers = [_][]const u8{ "anthropic", "github-copilot", "openai-codex", "kimi" };
-    const login_env_keys = [_][]const []const u8{ &.{ "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY" }, &.{}, &.{}, &.{} };
+    const login_env_keys = [_][]const []const u8{ &.{ "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY" }, &.{}, &.{}, &.{"KIMI_API_KEY"} };
 
     pub const LoginStatus = enum { none, api_key, env_key, oauth, expired };
 
@@ -3161,6 +3161,19 @@ test "App saves Kimi login credentials as api key" {
         .api_key => |key| try std.testing.expectEqualStrings("moonshot-test-key", key),
         .oauth => return error.ExpectedApiKeyAuth,
     }
+}
+
+test "App login status scans KIMI_API_KEY for the kimi provider" {
+    const kimi_slot = App.loginProviderIndex("kimi").?;
+
+    var exported = false;
+    for (App.login_env_keys[kimi_slot]) |name| {
+        if (std.mem.eql(u8, name, "KIMI_API_KEY")) exported = true;
+    }
+    try std.testing.expect(exported);
+
+    try std.testing.expectEqual(App.LoginStatus.env_key, App.loginStatusFor(null, "kimi", true));
+    try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(null, "kimi", false));
 }
 
 test "multi-line /help output renders all lines into transcript view" {
