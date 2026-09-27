@@ -350,6 +350,9 @@ func TestRunToTerminalStopsWaitingForAnOverflowedStreamThatNeverCloses(t *testin
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want the cancelled context rather than a wait on a stream that never closes", err)
 	}
+	if session.cancelled != "run-1" {
+		t.Fatalf("cancelled %q, want the run left live by the abandoned recovery", session.cancelled)
+	}
 }
 
 func TestRunToTerminalCancelsTheQueuedRunTheAdmissionNamed(t *testing.T) {

@@ -273,6 +273,9 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 		if outcome.RunID == "" {
 			outcome.RunID = runID
 		}
+		if err != nil && ctx.Err() != nil && runID != "" {
+			_, _ = session.Cancel(context.WithoutCancel(ctx), runID)
+		}
 	}()
 
 	var (
@@ -319,9 +322,6 @@ drain:
 		}
 		select {
 		case <-ctx.Done():
-			if runID != "" {
-				_, _ = session.Cancel(context.WithoutCancel(ctx), runID)
-			}
 			return outcome, ctx.Err()
 		case gateErr := <-resolveErr:
 			return outcome, gateErr
@@ -371,11 +371,15 @@ drain:
 			case replay == nil:
 				return outcome, ErrResumeUnsupported
 			}
+			recovered := time.NewTimer(stall)
 			select {
 			case <-readerDone:
 			case <-ctx.Done():
+				recovered.Stop()
 				return outcome, ctx.Err()
+			case <-recovered.C:
 			}
+			recovered.Stop()
 			queue = make(chan Result, runEventQueue)
 			readerDone = make(chan struct{})
 			go pumpTo(replay, queue, done, readerDone)
