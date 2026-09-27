@@ -15,12 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subscription at once and has no per-stream hangup, and the honest HTTP form of
   "drop the connection" is not expressible there — so an `unsubscribe` op would be
   the one verb the parity job could never check, which is the thing the stdio
-  transport exists to prevent. The ceiling of 64 bounds concurrency rather than
-  accumulation, because a subscription ends at its run's terminal envelope: a host
-  that subscribes per run, which is the shape that fills a ceiling, has each
-  subscription end on its own without touching the session. `close`, with its
-  `POST /sessions/{id}/close` counterpart, stays the one verb that ends a
-  session's subscriptions, and a port may not add an `unsubscribe` op alone.
+  transport exists to prevent. A subscription ends at its run's terminal envelope,
+  so a host that subscribes per run, which is the shape that fills a ceiling, has
+  each subscription end on its own and without asking the hub for anything. Go also
+  stops counting it the moment its run's reader exits; the Zig core still counts an
+  ended subscription until a later event fans out to it or its consumer closes it,
+  which is queued in [#399](https://github.com/lsm/open-agent-protocol/issues/399).
+  `close`, with its `POST /sessions/{id}/close` counterpart, stays the one verb that
+  ends a session's subscriptions, and a port may not add an `unsubscribe` op alone.
 - `zig/src/provider_credential.zig` answers one catalog row's credential without loading anything. The row's `credential_env` variables are tried in the order the row records them, then a key in `AuthStorage`, then an OAuth access token, and a row that declares only `api_key` is never answered with an OAuth credential or the other way round. An environment variable wins over a stored key, an empty variable counts as unset, and `needsNoCredential` answers for a row whose `auth` accepts none, which is Ollama today. The environment is passed in as values rather than read here, so the function is pure and its tests touch no process state, no network and no credential.
 - `providers/resolved_urls.json` is the table both trees check their URL resolvers against: every endpoint's base, its models listing and its request URL, in catalog order, with an absent member recording that the catalog resolves no URL there. `zig/build.zig` reads it at build time and `go/providercatalog` from the embedded file, so a tree that resolves a row differently fails on that row rather than on a user's machine, and `goap check` fails when the file no longer matches the catalog. `go run ./go/cmd/goap providers catalog-urls --format=json > providers/resolved_urls.json` rewrites it. The two trees each pinned the same twenty-two rows in a literal before this; one file replaces both.
 - `go/providercatalog` resolves a row's URLs the way the Zig tree does. `ModelsURL(catalog, id, region)` appends the row's recorded `models_endpoint` to the endpoint serving that region, `RequestURL(catalog, id, wire, region)` appends each wire's path — dropping a version the base's path already spells, and treating a base that is already the full path as done — and `Resolve` returns every endpoint's base beside both URLs. Each answers `(url, found)`, so a caller can branch on the catalog not holding the row instead of comparing a URL with `""`. What the catalog does not hold: a row with no static endpoint, a wire this package does not join, a model-scoped wire, or a region no endpoint serves. A table over all twenty-two endpoints pins both URLs in this tree as the Zig table does, and the two agree value for value.
