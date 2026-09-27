@@ -78,6 +78,7 @@
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-3",
+      "tool_call_id": "tool-call-5",
       "title": "Use Bash",
       "description": "touch /tmp/x",
       "questions": [
@@ -105,6 +106,7 @@
     "session_id": "session",
     "run_id": "run-3",
     "turn_id": "interaction-8",
+    "tool_call_id": "tool-call-5",
     "capability_revision": "claude-code-2.1.282-oap-v1"
   },
   {
@@ -305,6 +307,7 @@
       "responded_by": "user",
       "session_id": "session",
       "run_id": "run-17",
+      "tool_call_id": "tool-call-19",
       "title": "Use Bash",
       "questions": [
         {
@@ -331,6 +334,7 @@
     "session_id": "session",
     "run_id": "run-17",
     "turn_id": "interaction-22",
+    "tool_call_id": "tool-call-19",
     "capability_revision": "claude-code-2.1.282-oap-v1"
   },
   {
