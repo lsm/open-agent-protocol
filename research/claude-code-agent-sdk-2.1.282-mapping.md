@@ -208,6 +208,9 @@ Decision 0039's close detaches and reattaches by the harness's own session
 handle, so what a reload restores, where the store is and what a moved home
 does are facts about this pin, not about the pin that introduced them.
 
+Decision 0039's evidence table cites the 2.1.263 ledger for this row; this
+section is the record at the pin the catalog names.
+
 **The surface is the same as 2.1.280's.** The `sdk.d.ts` delta above
 (0.3.280 → 0.3.282) names no resume member, and
 `src/claude_agent_sdk/_internal/session_resume.py` is unchanged from the
@@ -251,15 +254,21 @@ ledger's claim is that the behaviour is unchanged, not that it was re-derived.
 **When the store is gone, the CLI has nothing to resume** — no conversation for
 that id under that project — and the SDK's resume materialization has nothing
 to seed from, which is why it copies (redacted) credentials into a temp
-directory only when there is a transcript to materialize. OAP has one answer
-for that shape of event: the session does not exist, so under Decision 0039 a
-reattach that finds no store is `unknown_session`, and a refusal the CLI
-raises first (an unknown uuid, a store under a different project) is the same
-answer to the host.
+directory only when there is a transcript to materialize. Decision 0039 has
+that answer and it is not the one for a session the host never had: a reopen
+naming a session the host has no binding for is `unknown_session`, while a
+reopen whose **harness cannot load** the session is `unsupported_feature`, and
+the capabilities say so. A moved home or a moved project is the second case,
+not the first: the host had the binding and the harness cannot honour it. The
+`unsupported_feature` refusal is the stable one to program against, because a
+store that is gone and a store under a different project are the same event
+from the harness's side.
 
 **None of this is OAP replay.** There is no native cursor, no redelivery
-contract and no gap semantics, so `run.resume` stays `degraded` and
-`run.replay` stays `unavailable` (2.1.263, point 1; 2.1.280's #238 section).
+contract and no gap semantics, so both `run.resume` and `run.replay` answer
+`degraded` (2.1.280's #238 section, which moved both from `unavailable`; the
+2.1.263 ledger predates that move), and reattach is resume, not replay — a
+cursor from before the close is answered with a replay gap (0039).
 
 **What is not verified at this pin.** None of the seventeen 2.1.282 probes
 resumes a session, so the runtime answers above — a moved home, a moved
