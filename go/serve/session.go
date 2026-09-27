@@ -38,10 +38,12 @@ func (r *sessionRegistry) add(entry *Session) error {
 	return nil
 }
 
-func (r *sessionRegistry) remove(id protocol.SessionID) {
+func (r *sessionRegistry) remove(id protocol.SessionID, entry *Session) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.sessions, id)
+	if r.sessions[id] == entry {
+		delete(r.sessions, id)
+	}
 }
 
 func (r *sessionRegistry) list() []*Session {

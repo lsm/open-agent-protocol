@@ -73,7 +73,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		return nil, protocol.SessionState{}, err
 	}
 
-	entry := newSession(state.SessionID, adapterName, session, func() { h.sessions.remove(state.SessionID) })
+	entry := newSession(state.SessionID, adapterName, session, nil)
 	if err != nil || state.Status == protocol.SessionClosed {
 		entry.markClosed()
 	}
@@ -85,6 +85,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
+	entry.release = func() { h.sessions.remove(entry.id, entry) }
 	return entry, state, nil
 }
 

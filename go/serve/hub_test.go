@@ -1084,6 +1084,36 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 	}
 }
 
+func TestAnAlreadyClosedOpenLeavesTheLiveSessionOfThatIDAlone(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", base.NewMemory(base.Config{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("manual", manualClosedAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	live, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "shared"}); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("the already-closed open error %v, want the session-closed refusal", err)
+	}
+	if live.IsClosed() {
+		t.Fatal("the already-closed open closed the live session of the same id")
+	}
+	if _, err := hub.Session("shared"); err != nil {
+		t.Fatalf("the live session is gone from the table: %v", err)
+	}
+	if _, err := live.State(ctx); err != nil {
+		t.Fatalf("the live session no longer answers: %v", err)
+	}
+}
+
 func TestTheHubReleasesASessionTheAdapterReportsClosed(t *testing.T) {
 	manual := &manualAdapter{}
 	registry := serve.NewRegistry()
