@@ -147,6 +147,8 @@ pub fn build(b: *std.Build) void {
     const deepseek_session_test = b.addTest(.{ .root_module = deepseek_session_mod });
 
     const test_unit_adapter_step = b.step("test-unit-adapter", "Run the shared adapter corpus harness tests");
+    const test_unit_hub_step = b.step("test-unit-hub", "Run the multi-session hub core unit tests");
+
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_session_test).step);
@@ -1354,6 +1356,19 @@ pub fn build(b: *std.Build) void {
         },
     });
     const memory_adapter_test = b.addTest(.{ .root_module = memory_adapter_mod });
+
+    const hub_mod = b.createModule(.{
+        .root_source_file = b.path("src/hub/hub.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "config", .module = adapter_config_mod },
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "memory", .module = memory_adapter_mod },
+        },
+    });
+    const hub_test = b.addTest(.{ .root_module = hub_mod });
 
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
@@ -2643,6 +2658,8 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_contract_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
+    test_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
@@ -3154,6 +3171,17 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     const File = struct {
         providers: []const Row,
     };
+    const PinnedRow = struct {
+        id: []const u8,
+        wire: []const u8,
+        region: ?[]const u8 = null,
+        base_url: []const u8,
+        models_url: ?[]const u8 = null,
+        request_url: ?[]const u8 = null,
+    };
+    const PinnedFile = struct {
+        endpoints: []const PinnedRow,
+    };
 
     const source = b.fmt("../providers/catalog.json", .{});
     const bytes = b.build_root.handle.readFileAlloc(b.graph.io, source, b.allocator, .limited(1 << 20)) catch |err|
@@ -3161,6 +3189,13 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     const catalog = std.json.parseFromSliceLeaky(File, b.allocator, bytes, .{ .ignore_unknown_fields = false }) catch |err|
         std.debug.panic("parsing providers/catalog.json: {t}", .{err});
     if (catalog.providers.len == 0) std.debug.panic("providers/catalog.json catalogues no provider", .{});
+
+    const pinned_source = b.fmt("../providers/resolved_urls.json", .{});
+    const pinned_bytes = b.build_root.handle.readFileAlloc(b.graph.io, pinned_source, b.allocator, .limited(1 << 20)) catch |err|
+        std.debug.panic("reading providers/resolved_urls.json: {t}", .{err});
+    const pinned = std.json.parseFromSliceLeaky(PinnedFile, b.allocator, pinned_bytes, .{ .ignore_unknown_fields = false }) catch |err|
+        std.debug.panic("parsing providers/resolved_urls.json: {t}", .{err});
+    if (pinned.endpoints.len == 0) std.debug.panic("providers/resolved_urls.json pins no endpoint", .{});
 
     const gpa = b.allocator;
     var out = std.ArrayList(u8).empty;
@@ -3238,6 +3273,26 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
             out.print(gpa, "        .docs = \"{f}\",\n", .{std.zig.fmtString(docs)}) catch @panic("out of memory");
         }
         out.appendSlice(gpa, "    },\n") catch @panic("out of memory");
+    }
+    out.appendSlice(gpa, "};\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Pinned = struct {\n    id: []const u8,\n    wire: []const u8,\n    region: ?[]const u8 = null,\n    base_url: []const u8,\n    models_url: ?[]const u8 = null,\n    request_url: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const pinned: []const Pinned = &.{\n") catch @panic("out of memory");
+    for (pinned.endpoints) |endpoint| {
+        out.print(gpa, "    .{{ .id = \"{f}\", .wire = \"{f}\", .base_url = \"{f}\"", .{
+            std.zig.fmtString(endpoint.id),
+            std.zig.fmtString(endpoint.wire),
+            std.zig.fmtString(endpoint.base_url),
+        }) catch @panic("out of memory");
+        if (endpoint.region) |region| {
+            out.print(gpa, ", .region = \"{f}\"", .{std.zig.fmtString(region)}) catch @panic("out of memory");
+        }
+        if (endpoint.models_url) |models_url| {
+            out.print(gpa, ", .models_url = \"{f}\"", .{std.zig.fmtString(models_url)}) catch @panic("out of memory");
+        }
+        if (endpoint.request_url) |request_url| {
+            out.print(gpa, ", .request_url = \"{f}\"", .{std.zig.fmtString(request_url)}) catch @panic("out of memory");
+        }
+        out.appendSlice(gpa, " },\n") catch @panic("out of memory");
     }
     out.appendSlice(gpa, "};\n") catch @panic("out of memory");
 
