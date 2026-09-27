@@ -25,6 +25,7 @@ var (
 	ErrNoTerminal        = errors.New("adapter: the stream ended without a terminal run event")
 	ErrResumeUnsupported = errors.New("adapter: the session offers no stream to resume")
 	ErrGateUnanswered    = errors.New("adapter: a gate was not answered")
+	ErrNoCallResolver    = errors.New("adapter: the session does not resolve a tool call it asked the caller to provide")
 )
 
 type StalledError struct {
@@ -65,10 +66,12 @@ type Gate struct {
 	InteractionID protocol.InteractionID
 	UserInput     *protocol.UserInputRequestedPayload
 	Permission    *protocol.PermissionRequestedPayload
+	Call          *protocol.ActionCallPayload
 	ToolName      string
 	ToolArguments json.RawMessage
 
-	answer GateAnswer
+	answer    GateAnswer
+	requestID protocol.EnvelopeID
 }
 
 type GateAnswer struct {
@@ -76,6 +79,13 @@ type GateAnswer struct {
 	ChoiceID string
 	Granted  bool
 	Reason   string
+	Call     *CallAnswer
+}
+
+type CallAnswer struct {
+	Started bool
+	Result  json.RawMessage
+	Error   *protocol.ProtocolError
 }
 
 type GatePolicy func(context.Context, Gate) (GateAnswer, error)
@@ -153,6 +163,27 @@ func inputQuestion(questions []protocol.InputQuestion, id string) (protocol.Inpu
 }
 
 func resolveGate(ctx context.Context, session Session, gate Gate) error {
+	if gate.Call != nil {
+		payload := gate.Call
+		answer := gate.answer.Call
+		request := protocol.ActionCallResolveRequest{
+			InteractionID: payload.InteractionID, SessionID: payload.SessionID, RunID: payload.RunID,
+			ToolCallID: payload.ToolCallID, RequestedBy: payload.RequestedBy, RespondedBy: payload.RespondedBy,
+			Result: answer.Result, Error: answer.Error,
+		}
+		if answer.Started {
+			request.Started = &protocol.ResolveArmStarted{}
+		}
+		if request.Arm() == "" {
+			return fmt.Errorf("adapter: the policy answered %s with no result, no error and no acknowledgement: %w", gate.InteractionID, ErrGateUnanswered)
+		}
+		resolver, ok := session.(CallResolver)
+		if !ok {
+			return fmt.Errorf("adapter: %s asks for a provided call and this session cannot resolve one: %w", gate.InteractionID, ErrNoCallResolver)
+		}
+		_, err := resolver.ResolveCall(ctx, CallResolution{RequestID: gate.requestID, Request: request})
+		return err
+	}
 	if gate.UserInput != nil {
 		payload := gate.UserInput
 		for _, answer := range gate.answer.Answers {
@@ -407,6 +438,23 @@ drain:
 				return outcome, err
 			}
 			calls[call.ToolCallID] = announcedCall{name: call.Name, arguments: call.ArgumentsJSON}
+			if call.InteractionID == "" {
+				break
+			}
+			if options.Policy == nil {
+				return outcome, ErrGateUnanswered
+			}
+			gate := Gate{RunID: runID, InteractionID: call.InteractionID, Call: &call, ToolName: call.Name, ToolArguments: call.ArgumentsJSON, requestID: envelope.ID}
+			answer, err := options.Policy(ctx, gate)
+			resetStall(stallTimer, stall)
+			if err != nil {
+				return outcome, err
+			}
+			if answer.Call == nil {
+				return outcome, ErrGateUnanswered
+			}
+			gate.answer = answer
+			answerGate(gate)
 		case protocol.TypeActionCallStarted:
 			outcome.ToolCalls++
 		case protocol.TypeUserInputRequested:

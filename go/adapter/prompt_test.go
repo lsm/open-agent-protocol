@@ -407,6 +407,111 @@ func TestRunToTerminalDoesNotChargeASlowPolicyToTheStallWindow(t *testing.T) {
 	}
 }
 
+func providedCall(sequence int) protocol.Envelope {
+	return envelope(protocol.TypeActionCallRequested, sequence, protocol.ActionCallPayload{
+		InteractionID: "interaction-1", SessionID: "session-1", RunID: "run-1",
+		ToolCallID: "tool-call-1", Name: "read", ArgumentsJSON: json.RawMessage(`{"path":"a"}`),
+		RequestedBy: "harness", ExecutionOwner: "user", Source: "user",
+	})
+}
+
+func TestRunToTerminalAnswersAProvidedToolCall(t *testing.T) {
+	completion := protocol.RunCompletedPayload{
+		SessionID: "session-1", RunID: "run-1",
+		FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+	}
+	session := &resolvingSession{scriptedSession: &scriptedSession{results: []adapter.Result{
+		{Envelope: providedCall(1)},
+		{Envelope: envelope(protocol.TypeRunCompleted, 2, completion)},
+	}}}
+	outcome, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(_ context.Context, gate adapter.Gate) (adapter.GateAnswer, error) {
+			if gate.Call == nil || gate.ToolName != "read" {
+				return adapter.GateAnswer{}, errors.New("the policy did not get the call it was asked about")
+			}
+			if string(gate.ToolArguments) != `{"path":"a"}` {
+				return adapter.GateAnswer{}, errors.New("the policy did not get the call's arguments")
+			}
+			return adapter.GateAnswer{Call: &adapter.CallAnswer{Result: json.RawMessage(`{"ok":true}`)}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Text != "done" {
+		t.Fatalf("text = %q", outcome.Text)
+	}
+	if session.resolvedCall == nil {
+		t.Fatal("the provided call was never resolved")
+	}
+	if session.resolvedCall.Request.Arm() != protocol.ResolveArmResult {
+		t.Fatalf("armed %q, want the result arm", session.resolvedCall.Request.Arm())
+	}
+	if string(session.resolvedCall.Request.Result) != `{"ok":true}` {
+		t.Fatalf("result = %s", session.resolvedCall.Request.Result)
+	}
+	if session.resolvedCall.Request.ToolCallID != "tool-call-1" {
+		t.Fatalf("tool call id = %q", session.resolvedCall.Request.ToolCallID)
+	}
+}
+
+func TestRunToTerminalRefusesAProvidedCallItCannotResolve(t *testing.T) {
+	session := &scriptedSession{results: []adapter.Result{{Envelope: providedCall(1)}}}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Call: &adapter.CallAnswer{Started: true}}, nil
+		},
+	})
+	if !errors.Is(err, adapter.ErrNoCallResolver) {
+		t.Fatalf("err = %v, want the session that cannot resolve a provided call", err)
+	}
+}
+
+func TestRunToTerminalRefusesACallAnswerWithNoArm(t *testing.T) {
+	session := &resolvingSession{scriptedSession: &scriptedSession{results: []adapter.Result{{Envelope: providedCall(1)}}}}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Call: &adapter.CallAnswer{}}, nil
+		},
+	})
+	if !errors.Is(err, adapter.ErrGateUnanswered) {
+		t.Fatalf("err = %v, want the unanswered call", err)
+	}
+	if session.resolvedCall != nil {
+		t.Fatal("an unarmed answer reached the session")
+	}
+}
+
+func TestRunToTerminalLeavesAHarnessOwnedCallAlone(t *testing.T) {
+	call := envelope(protocol.TypeActionCallRequested, 1, protocol.ActionCallPayload{
+		SessionID: "session-1", RunID: "run-1", ToolCallID: "tool-call-1",
+		Name: "Bash", RequestedBy: "harness", ExecutionOwner: "claude-code",
+	})
+	session := &resolvingSession{scriptedSession: &scriptedSession{results: []adapter.Result{
+		{Envelope: call},
+		{Envelope: envelope(protocol.TypeRunCompleted, 2, protocol.RunCompletedPayload{
+			SessionID: "session-1", RunID: "run-1",
+			FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+		})},
+	}}}
+	called := false
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			called = true
+			return adapter.GateAnswer{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("the policy was asked about a call the harness owns")
+	}
+	if session.resolvedCall != nil {
+		t.Fatal("a harness-owned call was resolved by the caller")
+	}
+}
+
 func envelope(typ protocol.EnvelopeType, sequence int, payload any) protocol.Envelope {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -441,6 +546,7 @@ type scriptedSession struct {
 	resolved      []adapter.InteractionResolution
 	resolveDelay  time.Duration
 	resolveError  error
+	resolvedCall  *adapter.CallResolution
 }
 
 func (s *scriptedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
@@ -507,6 +613,17 @@ func (s *scriptedSession) Resume(_ context.Context, request adapter.ResumeReques
 	}
 	close(stream)
 	return adapter.Recovery{RunID: request.RunID, RequestedAfter: request.AfterSequence, ReplayGap: gap}, stream, nil
+}
+
+type resolvingSession struct {
+	*scriptedSession
+}
+
+func (s *resolvingSession) ResolveCall(_ context.Context, resolution adapter.CallResolution) (protocol.ActionCallResolveResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolvedCall = &resolution
+	return protocol.ActionCallResolveResponse{InteractionID: resolution.Request.InteractionID, Accepted: true}, nil
 }
 
 func (s *scriptedSession) Close(context.Context) error { return nil }
