@@ -720,7 +720,7 @@ exceptions stated once here rather than repeated per row:
   resolved, answered by the wrong responder, or refused as invalid),
   `unsupported_feature` (400, a session with no `CallResolver`), `session_closed`
   (409), `request_cancelled` (400), `internal` (500).
-- **pinned by:** `TestResolveRejections`, `TestUnadvertisedControlRefusalKeepsItsWireShape`
+- **pinned by:** `TestResolveRejections`, `TestUnadvertisedControlRefusalKeepsItsWireShape`,
   `TestResolveOpReportsAnUnknownRun`, `TestResolveOpReportsARefusedResolution`
   — the last two drive the stdio `resolve` op's own `run_not_found` and
   `resolution_rejected` mappings, which until now only the HTTP route
