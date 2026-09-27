@@ -63,6 +63,32 @@ ModelsURL: removed
 	}
 }
 
+func TestProseAndASubpackageDoNotRecordABreak(t *testing.T) {
+	report := `# github.com/lsm/open-agent-protocol/schema
+## incompatible changes
+Pack: removed
+
+# github.com/lsm/open-agent-protocol/go/serve
+## incompatible changes
+Hub.Subscribe: signature changed
+`
+	for _, section := range []string{
+		"### Fixed\n\n- the table in `providers/catalog.schema.json` moves",
+		"### Fixed\n\n- `schema/v0.1/envelope.schema.json` is unchanged",
+		"### Fixed\n\n- `harnesses/claude-code.json` carries the pin",
+		"### Fixed\n\n- `go/serve/servehttp` refuses a bad charset",
+		"### Fixed\n\n- the go/serve daemon and go/serve/serveendpoint both",
+	} {
+		got := unrecorded(report, module, section)
+		if len(got) != 2 {
+			t.Fatalf("unrecorded %v for %q, want both packages: a word in prose or a longer path is not a record", got, section)
+		}
+	}
+	if got := unrecorded(report, module, "### Fixed\n\n- `schema` and `go/serve` both changed"); len(got) != 0 {
+		t.Fatalf("unrecorded %v, want none: both are named in backticks", got)
+	}
+}
+
 func TestOnlyTheUnreleasedSectionCounts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "CHANGELOG.md")
 	changelog := "## Unreleased\n\n### Fixed\n\n- nothing here\n\n## [0.2.0] - 2026-09-23\n\n### Fixed\n\n- `go/providercatalog` changed its signature\n"

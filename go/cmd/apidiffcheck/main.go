@@ -57,7 +57,7 @@ func check(root, base, changelogPath string, stdout io.Writer) error {
 	}
 	missing := unrecorded(report, module, unreleased)
 	if len(missing) > 0 {
-		return fmt.Errorf("these packages changed incompatibly against %s without the Unreleased section naming them: %s. Record each one, or say why the break is intended", base, strings.Join(missing, ", "))
+		return fmt.Errorf("these packages changed incompatibly against %s without the Unreleased section naming them in backticks: %s. Record each one, or say why the break is intended", base, strings.Join(missing, ", "))
 	}
 	fmt.Fprintf(stdout, "PASS compatibility: no unrecorded incompatible change against %s\n", base)
 	return nil
@@ -126,10 +126,14 @@ func incompatiblePackages(report, module string) []string {
 	return packages
 }
 
+func names(section, name string) bool {
+	return strings.Contains(section, "`"+name+"`")
+}
+
 func unrecorded(report, module, unreleased string) []string {
 	var missing []string
 	for _, name := range incompatiblePackages(report, module) {
-		if !strings.Contains(unreleased, name) {
+		if !names(unreleased, name) {
 			missing = append(missing, name)
 		}
 	}
