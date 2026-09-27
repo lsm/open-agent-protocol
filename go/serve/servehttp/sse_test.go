@@ -344,14 +344,14 @@ func TestSSEOnClosedSession(t *testing.T) {
 	}
 	closed, _ := io.ReadAll(events.Body)
 	events.Body.Close()
-	if events.StatusCode != http.StatusConflict {
+	if events.StatusCode != http.StatusNotFound {
 		t.Fatalf("closed live stream status %d: %s", events.StatusCode, closed)
 	}
 	envelope, err := protocol.ParseEnvelope(closed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireErrorResponse(t, events.StatusCode, http.StatusConflict, envelope, "session_closed")
+	requireErrorResponse(t, events.StatusCode, http.StatusNotFound, envelope, "unknown_session")
 
 	cursor, err := server.Client().Get(server.URL + "/sessions/sse-closed/events?after=0")
 	if err != nil {
@@ -359,14 +359,14 @@ func TestSSEOnClosedSession(t *testing.T) {
 	}
 	cursorData, _ := io.ReadAll(cursor.Body)
 	cursor.Body.Close()
-	if cursor.StatusCode != http.StatusConflict {
+	if cursor.StatusCode != http.StatusNotFound {
 		t.Fatalf("closed cursor stream status %d: %s", cursor.StatusCode, cursorData)
 	}
 	cursorEnvelope, err := protocol.ParseEnvelope(cursorData)
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireErrorResponse(t, cursor.StatusCode, http.StatusConflict, cursorEnvelope, "session_closed")
+	requireErrorResponse(t, cursor.StatusCode, http.StatusNotFound, cursorEnvelope, "unknown_session")
 }
 
 func getSSE(t *testing.T, server *httptest.Server, path string) (*http.Response, []byte) {

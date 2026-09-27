@@ -38,10 +38,12 @@ func (r *sessionRegistry) add(entry *Session) error {
 	return nil
 }
 
-func (r *sessionRegistry) remove(id protocol.SessionID) {
+func (r *sessionRegistry) remove(id protocol.SessionID, entry *Session) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.sessions, id)
+	if r.sessions[id] == entry {
+		delete(r.sessions, id)
+	}
 }
 
 func (r *sessionRegistry) list() []*Session {
@@ -63,7 +65,8 @@ type Session struct {
 
 	runID protocol.RunID
 
-	closed bool
+	closed  bool
+	release func(*Session)
 
 	readers      int
 	reservations int
@@ -78,9 +81,9 @@ type Session struct {
 	finished map[protocol.RunID]bool
 }
 
-func newSession(id protocol.SessionID, adapterName string, session base.Session) *Session {
+func newSession(id protocol.SessionID, adapterName string, session base.Session, release func(*Session)) *Session {
 	return &Session{
-		id: id, adapterName: adapterName, session: session,
+		id: id, adapterName: adapterName, session: session, release: release,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
 		sequences: make(map[protocol.RunID]uint64),
 		finished:  make(map[protocol.RunID]bool),
@@ -710,6 +713,7 @@ func (s *Session) detachSubsLocked() []*subscriber {
 
 func (s *Session) markClosed() {
 	s.mu.Lock()
+	releasing := !s.closed && s.release != nil
 	s.closed = true
 	var errored []*subscriber
 	var failed *terminalState
@@ -742,6 +746,9 @@ func (s *Session) markClosed() {
 		s.finishSubs(nil)
 	}
 	s.deliverDeferredError(errored, failed)
+	if releasing {
+		s.release(s)
+	}
 }
 
 func (s *Session) closeForShutdown(ctx context.Context) error {
