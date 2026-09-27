@@ -1082,9 +1082,11 @@ the body, so [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) no longer fail a
 byte-for-byte comparison on their first request.
 
-**D2 is both trees against the draft.** [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) made close
-release a session, and neither hub does yet; the releases are
-[#443](https://github.com/lsm/open-agent-protocol/issues/443) (Go) and [#444](https://github.com/lsm/open-agent-protocol/issues/444) (Zig).
+**D2 is Go against the draft.** [Decision
+0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) makes close
+release a session. The Zig core does, in
+[#444](https://github.com/lsm/open-agent-protocol/issues/444); `go/serve` does not
+yet, and that is [#443](https://github.com/lsm/open-agent-protocol/issues/443).
 
 **D3 to D7 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
@@ -1098,7 +1100,7 @@ same kind of gap. D4 is different in one respect: its negative-capacity half is 
 Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
-### D2 — both hubs keep a closed session
+### D2 — go/serve keeps a closed session
 
 | | |
 | --- | --- |
