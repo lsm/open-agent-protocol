@@ -330,7 +330,7 @@ pub const Hub = struct {
         var taken = self.journal_capacity != default_journal_capacity;
         for (file.adapters) |entry| {
             if (entry.journal_capacity) |capacity| {
-                if (!taken and capacity > 0) {
+                if (!taken) {
                     self.journal_capacity = @intCast(capacity);
                     taken = true;
                 }
@@ -343,6 +343,7 @@ pub const Hub = struct {
     pub fn listing(self: *Hub, arena: std.mem.Allocator) ![]Listed {
         var listed = std.ArrayList(Listed).empty;
         errdefer listed.deinit(arena);
+        defer std.mem.sort(Listed, listed.items, {}, byName);
         for (self.adapters.items) |*registered| {
             const owned = try arena.dupe(u8, registered.name);
             errdefer arena.free(owned);
@@ -370,6 +371,7 @@ pub const Hub = struct {
     pub fn names(self: *Hub, arena: std.mem.Allocator) ![]const []const u8 {
         var listed = std.ArrayList([]const u8).empty;
         errdefer listed.deinit(arena);
+        defer std.mem.sort([]const u8, listed.items, {}, byText);
         for (self.adapters.items) |*registered| try listed.append(arena, registered.name);
         return listed.items;
     }
@@ -386,6 +388,14 @@ pub const Hub = struct {
         const registered = self.find(name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
         return registered.revision;
+    }
+
+    fn byName(_: void, left: Listed, right: Listed) bool {
+        return std.mem.lessThan(u8, left.name, right.name);
+    }
+
+    fn byText(_: void, left: []const u8, right: []const u8) bool {
+        return std.mem.lessThan(u8, left, right);
     }
 
     fn bySessionId(_: void, left: Status, right: Status) bool {
@@ -648,12 +658,18 @@ pub const Hub = struct {
                 },
             };
             for (events.items) |event| {
-                self.remember(entry, event) catch |err| {
+                const settled = terminal(self.allocator, event.line) catch |err| {
+                    if (err != error.OutOfMemory) return err;
                     entry.session.close();
                     self.closeSession(entry, .stream_failed);
                     return err;
                 };
-                self.fanOut(entry, event) catch |err| {
+                self.remember(entry, event, settled) catch |err| {
+                    entry.session.close();
+                    self.closeSession(entry, .stream_failed);
+                    return err;
+                };
+                self.fanOut(entry, event, settled) catch |err| {
                     entry.session.close();
                     self.closeSession(entry, .stream_failed);
                     return err;
@@ -802,22 +818,31 @@ pub const Hub = struct {
         return 0;
     }
 
-    fn terminal(line: []const u8) bool {
-        return std.mem.indexOf(u8, line, "\"type\":\"run.completed\"") != null or
-            std.mem.indexOf(u8, line, "\"type\":\"run.failed\"") != null or
-            std.mem.indexOf(u8, line, "\"type\":\"run.cancelled\"") != null;
+    fn terminal(allocator: std.mem.Allocator, line: []const u8) !bool {
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) return false;
+        const kind = parsed.value.object.get("type") orelse return false;
+        if (kind != .string) return false;
+        return std.mem.eql(u8, kind.string, "run.completed") or
+            std.mem.eql(u8, kind.string, "run.failed") or
+            std.mem.eql(u8, kind.string, "run.cancelled");
     }
 
-    fn remember(self: *Hub, entry: *Entry, event: contract.Event) !void {
+    fn remember(self: *Hub, entry: *Entry, event: contract.Event, settled: bool) !void {
         var fresh = false;
         const index = try self.cursorFor(entry, event.run_id, &fresh);
-        if (!std.mem.eql(u8, entry.run_id, event.run_id) and
+        if (!settled and
+            !std.mem.eql(u8, entry.run_id, event.run_id) and
             ordinal(entry, event.run_id) > ordinal(entry, entry.run_id))
         {
             try self.noteRun(entry, event.run_id, true);
         }
         entry.cursors.items[index].latest = @max(entry.cursors.items[index].latest, event.sequence);
-        if (terminal(event.line)) entry.cursors.items[index].terminal = event.sequence;
+        if (settled) entry.cursors.items[index].terminal = event.sequence;
         if (self.journal_capacity == 0) return;
         const line = try self.allocator.dupe(u8, event.line);
         errdefer self.allocator.free(line);
@@ -839,11 +864,11 @@ pub const Hub = struct {
         return entry.cursors.items.len - 1;
     }
 
-    fn fanOut(self: *Hub, entry: *Entry, event: contract.Event) !void {
+    fn fanOut(self: *Hub, entry: *Entry, event: contract.Event, settled: bool) !void {
         var fresh = false;
         const cursor_index = try self.cursorFor(entry, event.run_id, &fresh);
         const owned_run = entry.cursors.items[cursor_index].run_id;
-        if (terminal(event.line)) {
+        if (settled) {
             for (entry.subscribers.items) |subscription| {
                 try self.noteTerminal(subscription, owned_run, event.sequence);
             }
@@ -856,7 +881,7 @@ pub const Hub = struct {
                 continue;
             }
             if (subscription.queue.items.len >= self.stream_queue) {
-                try self.markOverflow(subscription);
+                try self.markOverflow(subscription, subscription.highest);
                 _ = entry.subscribers.orderedRemove(index);
                 continue;
             }
@@ -876,11 +901,11 @@ pub const Hub = struct {
         subscription.terminal_sequence = sequence;
     }
 
-    fn markOverflow(self: *Hub, subscription: *Subscription) !void {
+    fn markOverflow(self: *Hub, subscription: *Subscription, sequence: u64) !void {
         const owned = try self.allocator.dupe(u8, subscription.run_id);
         if (subscription.overflow_run.len > 0) self.allocator.free(subscription.overflow_run);
         subscription.overflow_run = owned;
-        subscription.overflow_sequence = subscription.highest;
+        subscription.overflow_sequence = sequence;
         subscription.ending = .overflow;
     }
 
@@ -970,9 +995,17 @@ pub const Hub = struct {
         for (entry.journal.items) |kept| {
             if (!std.mem.eql(u8, kept.run_id, named)) continue;
             if (kept.sequence <= after) continue;
+            if (subscription.replay.items.len >= self.stream_queue) {
+                const reached = if (subscription.replay.items.len > 0)
+                    subscription.replay.items[subscription.replay.items.len - 1].sequence
+                else
+                    after;
+                try self.markOverflow(subscription, reached);
+                break;
+            }
             const copy = try self.allocator.dupe(u8, kept.line);
             errdefer self.allocator.free(copy);
-            if (terminal(kept.line)) try self.noteTerminal(subscription, subscription.run_id, kept.sequence);
+            if (try terminal(self.allocator, kept.line)) try self.noteTerminal(subscription, subscription.run_id, kept.sequence);
             try subscription.replay.append(self.allocator, .{ .line = copy, .run_id = subscription.run_id, .sequence = kept.sequence });
         }
         const settled = self.settledAt(entry, named);
@@ -1237,6 +1270,132 @@ test "a resumed subscription ends at the terminal it replays" {
     while (resumed.next()) |_| delivered += 1;
     try testing.expectEqual(@as(usize, 1), delivered);
     try testing.expectEqual(Ending.run_terminal, resumed.ending);
+}
+
+test "a nested type member in a tool result is not mistaken for an envelope type" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "nested" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    flaky.emit_line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"action.call.completed\",\"id\":\"e1\",\"payload\":{\"result\":{\"type\":\"run.cancelled\"}}}";
+    try hub.pump(testing.allocator, 0);
+    const nested = subscription.next().?;
+    try testing.expect(std.mem.indexOf(u8, nested.line, "action.call.completed") != null);
+    try testing.expectEqual(Ending.open, subscription.ending);
+    try testing.expect(subscription.next() == null);
+
+    flaky.emit_line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"run.completed\",\"id\":\"e2\"}";
+    try hub.pump(testing.allocator, 0);
+    _ = subscription.next().?;
+    try testing.expectEqual(Ending.run_terminal, subscription.ending);
+}
+
+test "a run's terminal envelope never becomes the session's current run" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 64, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    _ = try hub.open(arena, "memory", .{ .session_id = "terminal-run" });
+    const first = try submitFor(arena, "terminal-run");
+    const started = try hub.submit(arena, "terminal-run", &first);
+    var queued = first;
+    queued.delivery = .queue;
+    const waiting = try hub.submit(arena, "terminal-run", &queued);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "terminal-run", waiting.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqualStrings(started.run_id.?, hub.entries.items[0].run_id);
+}
+
+test "the registry lists and names its adapters in sorted order" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("zulu", adapter.adapter());
+    try hub.register("alpha", adapter.adapter());
+    try hub.register("mike", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const named = try hub.names(arena);
+    try testing.expectEqual(@as(usize, 3), named.len);
+    try testing.expectEqualStrings("alpha", named[0]);
+    try testing.expectEqualStrings("mike", named[1]);
+    try testing.expectEqualStrings("zulu", named[2]);
+
+    const listed = try hub.listing(arena);
+    try testing.expectEqual(@as(usize, 3), listed.len);
+    try testing.expectEqualStrings("alpha", listed[0].name);
+    try testing.expectEqualStrings("mike", listed[1].name);
+    try testing.expectEqualStrings("zulu", listed[2].name);
+}
+
+test "a replay larger than the mailbox seeds a cursor instead of growing without bound" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 3, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "wide-replay" });
+    const request = try submitFor(arena, "wide-replay");
+    _ = try hub.submit(arena, "wide-replay", &request);
+    try hub.pump(testing.allocator, 0);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 0 });
+    try testing.expectEqual(Ending.overflow, resumed.ending);
+    try testing.expectEqualStrings("run-1", resumed.overflow_run);
+    try testing.expectEqual(@as(usize, 3), resumed.replay.items.len);
+    try testing.expectEqual(@as(u64, 3), resumed.overflow_sequence);
+    var seen: usize = 0;
+    while (resumed.next()) |_| seen += 1;
+    try testing.expectEqual(@as(usize, 3), seen);
+
+    const again = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = resumed.overflow_sequence });
+    try testing.expect(again.next() != null);
+    try testing.expectEqual(Ending.open, again.ending);
+}
+
+test "a registry document's zero journal capacity means no retention" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const file = config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} };
+    try hub.load(arena, file, .{ .context = &adapter, .make = scripted });
+    try testing.expectEqual(@as(usize, 0), hub.journal_capacity);
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "unremembered" });
+    const request = try submitFor(arena, "unremembered");
+    _ = try hub.submit(arena, "unremembered", &request);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].journal.items.len);
+    const live = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectEqual(Ending.open, live.ending);
+}
+
+fn scripted(context: *anyopaque, arena: std.mem.Allocator, entry: config.AdapterEntry) contract.Failure!contract.Adapter {
+    _ = arena;
+    _ = entry;
+    const adapter: *memory.Adapter = @ptrCast(@alignCast(context));
+    return adapter.adapter();
 }
 
 test "a cursor sitting on a settled run's terminal ends at once and hears nothing later" {
@@ -1874,6 +2033,7 @@ const Flaky = struct {
     owned_id: []const u8 = "",
     closes: usize = 0,
     cancels: usize = 0,
+    emit_line: ?[]const u8 = null,
     active_run: []const u8 = "",
     fail_drain: bool = true,
     fail_pump: bool = false,
@@ -1967,9 +2127,12 @@ fn flakyPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
 
 fn flakyDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
     const self: *Flaky = @ptrCast(@alignCast(ptr));
-    _ = allocator;
-    _ = out;
     if (self.fail_drain) return error.BackendFailed;
+    const line = self.emit_line orelse return;
+    self.emit_line = null;
+    const copied = try allocator.dupe(u8, line);
+    const run = try allocator.dupe(u8, "run-1");
+    try out.append(allocator, .{ .line = copied, .run_id = run, .sequence = 1 });
 }
 
 fn flakyActivity(ptr: *anyopaque) contract.Activity {

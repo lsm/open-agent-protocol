@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [`drafts/hub.md`](drafts/hub.md) specifies and the piece `oapx hub` will serve
   from. It is a registry of adapters built from a `--config` document, many
   sessions per process each with its own bounded journal, fan-out from a run's
-  stream to any number of subscribers with a bounded mailbox per subscriber and no
-  subscriber ceiling unless a transport sets one, cursor replay with `ReplayGap`
+  stream to any number of subscribers with a bounded mailbox per subscriber — which bounds a
+  resumed replay as well as a live stream — and no subscriber ceiling unless a transport
+  sets one, cursor replay with `ReplayGap`
   rather than fake continuity, compound open with a subscribing registration that
   cannot lose the race with its own message, and the held subscription a transport
   whose response carries no stream adopts on the next request. A subscriber that
@@ -30,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `serve.OpenCompound` does in Go — and `journal_capacity` from the registry
   document is now read rather than decoded and ignored. Six places where the Zig
   adapter contract cannot carry what the draft specifies are recorded as D2 to D6 in
-  the draft, beside D1, which is Go's to fix. Forty-two unit tests over a scripted
+  the draft, beside D1, which is Go's to fix. Forty-seven unit tests over a scripted
   backend, and `checkAllAllocationFailures` over every function that allocates and
   hands off ownership — which is what found three places swallowing `OutOfMemory`,
   three use-after-frees on a closed session or a borrowed run id, a stream-failed
