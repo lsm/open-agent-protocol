@@ -45,6 +45,13 @@ pub const Ending = enum {
     expired,
 };
 
+const Pending = struct {
+    line: []u8,
+    run_id: []const u8,
+    sequence: u64,
+    terminal: bool,
+};
+
 pub const Delivery = struct {
     line: []const u8,
     run_id: []const u8,
@@ -131,14 +138,12 @@ pub const Subscription = struct {
     joined_after: u64 = 0,
     joined: bool = false,
     gap: ?contract.Gap = null,
-    replay: std.ArrayList(contract.Event) = .empty,
+    replay: std.ArrayList(Pending) = .empty,
     replay_at: usize = 0,
-    queue: std.ArrayList(contract.Event) = .empty,
+    queue: std.ArrayList(Pending) = .empty,
     queue_at: usize = 0,
     highest: u64 = 0,
     ending: Ending = .open,
-    terminal_run: []u8 = &.{},
-    terminal_sequence: u64 = 0,
     overflow_run: []u8 = &.{},
     overflow_sequence: u64 = 0,
     held: bool = false,
@@ -148,6 +153,7 @@ pub const Subscription = struct {
     pub fn next(self: *Subscription) ?Delivery {
         const allocator = self.hub.allocator;
         self.trim(allocator);
+        if (self.ending != .open and self.ending != .overflow) return null;
         if (self.replay.items.len > 0) {
             const event = self.replay.items[0];
             self.replay_at = 1;
@@ -163,13 +169,8 @@ pub const Subscription = struct {
         return null;
     }
 
-    fn settle(self: *Subscription, event: contract.Event) Delivery {
-        if (self.ending == .open and
-            self.terminal_sequence == event.sequence and
-            std.mem.eql(u8, self.terminal_run, event.run_id))
-        {
-            self.ending = .run_terminal;
-        }
+    fn settle(self: *Subscription, event: Pending) Delivery {
+        if (self.ending == .open and event.terminal) self.ending = .run_terminal;
         return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
     }
 
@@ -184,7 +185,7 @@ pub const Subscription = struct {
         }
     }
 
-    fn advance(self: *Subscription, event: contract.Event) void {
+    fn advance(self: *Subscription, event: Pending) void {
         if (!std.mem.eql(u8, self.run_id, event.run_id)) {
             const owned = self.hub.allocator.dupe(u8, event.run_id) catch {
                 self.ending = .stream_failed;
@@ -217,7 +218,6 @@ pub const Subscription = struct {
         self.replay.deinit(allocator);
         self.queue.deinit(allocator);
         if (self.overflow_run.len > 0) allocator.free(self.overflow_run);
-        if (self.terminal_run.len > 0) allocator.free(self.terminal_run);
         if (self.run_id.len > 0) allocator.free(self.run_id);
         allocator.free(self.session_id);
         self.* = undefined;
@@ -870,11 +870,6 @@ pub const Hub = struct {
         var fresh = false;
         const cursor_index = try self.cursorFor(entry, event.run_id, &fresh);
         const owned_run = entry.cursors.items[cursor_index].run_id;
-        if (settled) {
-            for (entry.subscribers.items) |subscription| {
-                try self.noteTerminal(subscription, owned_run, event.sequence);
-            }
-        }
         var index: usize = 0;
         while (index < entry.subscribers.items.len) {
             const subscription = entry.subscribers.items[index];
@@ -890,18 +885,11 @@ pub const Hub = struct {
             const copy = try self.allocator.dupe(u8, event.line);
             errdefer self.allocator.free(copy);
             try subscription.queue.ensureUnusedCapacity(self.allocator, 1);
-            subscription.queue.appendAssumeCapacity(.{ .line = copy, .run_id = owned_run, .sequence = event.sequence });
+            subscription.queue.appendAssumeCapacity(.{ .line = copy, .run_id = owned_run, .sequence = event.sequence, .terminal = settled });
             index += 1;
         }
     }
 
-    fn noteTerminal(self: *Hub, subscription: *Subscription, run_id: []const u8, sequence: u64) !void {
-        if (subscription.terminal_sequence >= sequence) return;
-        const owned = try self.allocator.dupe(u8, run_id);
-        if (subscription.terminal_run.len > 0) self.allocator.free(subscription.terminal_run);
-        subscription.terminal_run = owned;
-        subscription.terminal_sequence = sequence;
-    }
 
     fn markOverflow(self: *Hub, subscription: *Subscription, sequence: u64) !void {
         const owned = try self.allocator.dupe(u8, subscription.run_id);
@@ -1007,8 +995,12 @@ pub const Hub = struct {
             }
             const copy = try self.allocator.dupe(u8, kept.line);
             errdefer self.allocator.free(copy);
-            if (try terminal(self.allocator, kept.line)) try self.noteTerminal(subscription, subscription.run_id, kept.sequence);
-            try subscription.replay.append(self.allocator, .{ .line = copy, .run_id = subscription.run_id, .sequence = kept.sequence });
+            try subscription.replay.append(self.allocator, .{
+                .line = copy,
+                .run_id = subscription.run_id,
+                .sequence = kept.sequence,
+                .terminal = try terminal(self.allocator, kept.line),
+            });
         }
         const settled = self.settledAt(entry, named);
         if (settled > 0 and after >= settled) subscription.ending = .run_terminal;
@@ -1298,6 +1290,31 @@ test "a nested type member in a tool result is not mistaken for an envelope type
     try hub.pump(testing.allocator, 0);
     _ = subscription.next().?;
     try testing.expectEqual(Ending.run_terminal, subscription.ending);
+}
+
+test "a run's terminal ends the stream even when a later run numbers higher" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 32, .journal_capacity = 32 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "spanning-runs" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    flaky.script[0] = .{ .run = "run-a", .sequence = 2, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"run.completed\",\"id\":\"a2\"}" };
+    flaky.script[1] = .{ .run = "run-b", .sequence = 9, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"run.cancelled\",\"id\":\"b9\"}" };
+    flaky.script_len = 2;
+    try hub.pump(testing.allocator, 0);
+
+    const first = subscription.next().?;
+    try testing.expectEqualStrings("run-a", first.run_id);
+    try testing.expectEqual(Ending.run_terminal, subscription.ending);
+    while (subscription.next()) |_| {}
+    try testing.expectEqualStrings("run-a", subscription.run_id);
 }
 
 test "a run's terminal envelope never becomes the session's current run" {
@@ -2046,6 +2063,12 @@ test "hold, listing and sessions hand off under allocation failure" {
     }.attempt, .{});
 }
 
+const Scripted = struct {
+    run: []const u8,
+    sequence: u64,
+    line: []const u8,
+};
+
 const Flaky = struct {
     allocator: std.mem.Allocator,
     keep: std.heap.ArenaAllocator = undefined,
@@ -2054,6 +2077,8 @@ const Flaky = struct {
     closes: usize = 0,
     cancels: usize = 0,
     emit_line: ?[]const u8 = null,
+    script: [4]?Scripted = .{ null, null, null, null },
+    script_len: usize = 0,
     active_run: []const u8 = "",
     fail_drain: bool = true,
     fail_pump: bool = false,
@@ -2148,6 +2173,16 @@ fn flakyPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
 fn flakyDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     if (self.fail_drain) return error.BackendFailed;
+    if (self.script_len > 0) {
+        for (self.script[0..self.script_len]) |entry_point| {
+            const item = entry_point.?;
+            const copied = try allocator.dupe(u8, item.line);
+            const run = try allocator.dupe(u8, item.run);
+            try out.append(allocator, .{ .line = copied, .run_id = run, .sequence = item.sequence });
+        }
+        self.script_len = 0;
+        return;
+    }
     const line = self.emit_line orelse return;
     self.emit_line = null;
     const copied = try allocator.dupe(u8, line);
