@@ -1462,18 +1462,18 @@ func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
 	response, stream := submitTest(t, s)
-	_ = adaptertest.Next(t, stream, time.Second)
+	trace := []protocol.Envelope{adaptertest.Next(t, stream, time.Second)}
 	for i, id := range []string{"ui-1", "ui-2"} {
 		client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: id, Method: native.ExtensionInput, Title: "Name " + id})
 		requested := adaptertest.Next(t, stream, time.Second)
 		if requested.Type != protocol.TypeUserInputRequested {
 			t.Fatalf("envelope %d = %s, want the prompt", i, requested.Type)
 		}
-		_ = adaptertest.Next(t, stream, time.Second)
+		trace = append(trace, requested, adaptertest.Next(t, stream, time.Second))
 	}
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
 	client.emit(t, map[string]any{"type": "agent_settled"})
-	events := adaptertest.Drain(t, stream, time.Second)
+	events := append(trace, adaptertest.Drain(t, stream, time.Second)...)
 	assertValidTrace(t, response, events)
 
 	var asked, settled []protocol.InteractionID
