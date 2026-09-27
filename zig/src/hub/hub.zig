@@ -937,6 +937,14 @@ pub const Hub = struct {
     }
 
 
+    fn seedOverflow(self: *Hub, subscription: *Subscription, run_id: []const u8, sequence: u64) !void {
+        const owned = try self.allocator.dupe(u8, run_id);
+        if (subscription.overflow_run.len > 0) self.allocator.free(subscription.overflow_run);
+        subscription.overflow_run = owned;
+        subscription.overflow_sequence = sequence;
+        subscription.ending = .overflow;
+    }
+
     fn markOverflow(
         self: *Hub,
         entry: *const Entry,
@@ -945,11 +953,8 @@ pub const Hub = struct {
         current_sequence: u64,
     ) !void {
         const lost = self.lossRun(entry, subscription, dropped);
-        const owned = try self.allocator.dupe(u8, lost);
-        if (subscription.overflow_run.len > 0) self.allocator.free(subscription.overflow_run);
-        subscription.overflow_run = owned;
-        subscription.overflow_sequence = if (std.mem.eql(u8, lost, subscription.run_id)) current_sequence else 0;
-        subscription.ending = .overflow;
+        const sequence = if (std.mem.eql(u8, lost, subscription.run_id)) current_sequence else 0;
+        return self.seedOverflow(subscription, lost, sequence);
     }
 
     fn adopt(self: *Hub, adapter_name: []const u8, session: contract.Session, created_at_ms: i64) !*Entry {
@@ -1043,7 +1048,7 @@ pub const Hub = struct {
                     subscription.replay.items[subscription.replay.items.len - 1].sequence
                 else
                     after;
-                try self.markOverflow(entry, subscription, named, reached);
+                try self.seedOverflow(subscription, named, reached);
                 break;
             }
             const copy = try self.allocator.dupe(u8, kept.line);
@@ -1250,6 +1255,39 @@ test "a subscriber that falls behind is ended with a cursor on the run that over
     try testing.expect(last_read > 0);
     const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = subscription.overflow_run, .after = subscription.overflow_sequence });
     try testing.expect(resumed.next() != null);
+}
+
+test "a replay that outgrows the mailbox names the replayed run, not the session's current one" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "replayed" });
+    const first = try submitFor(arena, "replayed");
+    const settled = try hub.submit(arena, "replayed", &first);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "replayed", settled.run_id.?);
+    try hub.pump(testing.allocator, 0);
+
+    const second = try submitFor(arena, "replayed");
+    const current = try hub.submit(arena, "replayed", &second);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqualStrings(current.run_id.?, hub.entries.items[0].run_id);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = settled.run_id.?, .after = 0 });
+    try testing.expectEqual(Ending.overflow, resumed.ending);
+    try testing.expectEqualStrings(settled.run_id.?, resumed.overflow_run);
+    try testing.expectEqual(@as(u64, 2), resumed.overflow_sequence);
+
+    const again = try hub.subscribe(arena, opened.session_id, .{ .run_id = resumed.overflow_run, .after = resumed.overflow_sequence });
+    try testing.expectEqualStrings(settled.run_id.?, again.overflow_run);
+    const first_again = again.next().?;
+    try testing.expectEqualStrings(settled.run_id.?, first_again.run_id);
+    try testing.expectEqual(@as(u64, 3), first_again.sequence);
 }
 
 test "the overflow cursor is where the client stopped after draining, not where the queue filled" {
