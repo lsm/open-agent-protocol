@@ -973,11 +973,16 @@ stdio peer is not an in-process embedding of the core.
 
 Recorded rather than fixed here, per Decision 0032: the draft decides, the wrong
 side is fixed, and where it cannot be fixed yet the divergence is written down.
-One entry today, and **it must be fixed in Go before
+
+**D1 is the one that blocks a differential job.** It must be fixed in Go before
 [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) grow a
-byte-for-byte differential job**, because a port that obeys the draft and a Go
-that does not would fail that job on its first request.
+byte-for-byte comparison, because a port that obeys the draft and a Go that does
+not would fail that job on its first request. The rest are recorded by the Zig
+core, found while building it, and none of them changes a byte on the wire
+today: each says where a field or a rule the draft specifies is missing from
+`zig/src/adapter/contract.zig`, so they are one fix each rather than a
+re-decision.
 
 ### D1 — the `Host` allowlist refusal is not a typed error
 
@@ -988,6 +993,51 @@ that does not would fail that job on its first request.
 | **Why Go is the wrong side** | A client cannot branch on a refusal carrying no code, and [Decision 0020](../decisions/0020-error-codes-are-declared.md) exists because the codes are what a host acts on. The status and the prose are right; only the body is wrong. |
 | **The fix** | Answer `error.response` with code `unrecognized_host`, keeping the 403 and the wording. One envelope shape, one code to match on. |
 | **Pinned today** | `TestHostAllowlist` asserts the 403 and nothing about the body, which is why the shape drifted unpinned. |
+
+### D2 — the Zig adapter contract destroys a session on close
+
+| | |
+| --- | --- |
+| **The draft says** | A closed session **stays listed with its final state**, and `state` on it answers the state document. Both are Go's behaviour: `Session.Close` leaves the object readable, and `Hub.Sessions` calls `State` on a closed entry and keeps what it reports. |
+| **Zig does** | `contract.Session`'s `close` is infallible and terminal — it destroys the session. A hub cannot read a closed session at all, so the Zig core reports `status: "closed"` with no active runs in the listing, and every operation on a closed session is refused `session_closed` without touching it. |
+| **Why Zig is the wrong side** | The draft's rule is the better one, and the Zig shape makes a class of host code impossible: a client that lists sessions and then asks a closed one for its state gets a refusal where Go answers a document. |
+| **The fix** | Either `contract` grows a non-terminal `close` that leaves `state` readable, or the Zig core caches the last state it saw and serves that. The first is the smaller change and matches Go; the second is what a hub can do today. |
+| **Pinned today** | The Zig side: `zig/src/hub/hub.zig` refuses `session_closed` before touching a closed session and lists it as closed. The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`. |
+
+### D3 — a served catalog's revision comes from the descriptor, not the lister
+
+| | |
+| --- | --- |
+| **The draft says** | A catalog is stamped with "the revision the lister served it under", and the hub **refuses** one that carries no revision. |
+| **Go does** | `base.Catalog` pairs the response with a `Revision` the adapter itself supplies, so a lister that served a catalog under a different revision than it probes is visible. |
+| **Zig does** | `contract`'s `models` and `tools` return the response and nothing else, so the Zig core stamps the **adapter descriptor's** revision — the same revision, unless an adapter ever serves a catalog under a revision other than the one it probes. |
+| **Why it matters** | Not wrong today, and the check the draft asks for still runs (a descriptor with no revision is refused `AdapterDescriptorUnbound` before any catalog is served). But the two trees would diverge the day an adapter served a catalog under a revision it did not probe with. |
+| **The fix** | `contract`'s two slots return a revision beside the catalog, as `base.Catalog` does. |
+
+### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
+
+| | |
+| --- | --- |
+| **The draft says** | `examples/oap-serve.json` carries `journal_capacity` per adapter entry, and a cursor older than a session's journal is `oap-replay-gap`. |
+| **Go does** | The registry passes each entry's `journal_capacity` to that adapter, so two adapters can retain different depths. |
+| **Zig does** | One hub owns every session's journal, so the core takes a single `journal_capacity`; `load` adopts the first entry that names one, which is deterministic because the loader sorts entries by name. |
+| **Why it matters** | A client resuming against session A and session B can be told the same bound where Go would tell it two. The recovery rule is unaffected — a gap names `oldest_available` either way — but a port and Go would disagree about *which* cursors expire. |
+| **The two zeros are not the same zero** | A **document's** `journal_capacity: 0` keeps the default in both trees, because every Go constructor treats `<= 0` as "unspecified" (`go/adapter/memory.go:123`) and the Zig `load` does the same. The Zig **core's** own `Options.journal_capacity = 0` means *retain nothing*, and no config document can reach it — a host that wants no journal sets the option, and a host that writes `0` gets the default. Go has no equivalent: a `0` reaching an adapter always becomes that adapter's own capacity. So the two trees agree on every document, and differ only on a value only a Zig host can set. |
+| **A negative is refused, not defaulted** | Go's `<= 0` catches a negative along with the zero. The Zig `load` refuses a negative with `ConfigRefused` instead, because a negative capacity is a malformed document and defaulting it would report success for something the operator did not write. Go's leniency here is the wrong side, and it is a one-line change in `go/adapter/memory.go` and the other constructors. |
+
+### D5 — `session.open.request`'s `metadata` never reaches an adapter
+
+`session.open.request` carries `metadata`, and the draft names `invalid_payload` for a value that is not JSON. `contract.OpenRequest` has no `metadata` member, so the Zig core cannot carry one to an adapter at all: it is neither validated nor forwarded, and a Zig hub silently drops what a Go hub passes to the adapter. The field is the fix, and until it exists the two trees differ on a request member the draft specifies.
+
+### D6 — the Zig shutdown sweep cannot retry a close that refuses
+
+| | |
+| --- | --- |
+| **The draft says** | `closeSessions` divides its window across the sessions it still has to close, and a close that refuses because a run is active is retried through a cancel — up to three attempts — because a harness that refuses `Close` while a run is in flight must first be asked to stop. |
+| **Zig does** | The sweep reads each session's state, cancels every run in `active_runs` and the `active_run_id` that is not already among them, then closes. It does not retry, and it does not split the window. |
+| **Why the retry is not portable** | Go's `closeForShutdown` retries because `Session.Close` can answer `ErrRunActive`. `contract.Session.close` is infallible and terminal — there is no refusal to observe — so a Zig adapter's close always succeeds, and the retry Go needs has nothing to retry. Cancelling first is therefore the whole of the rule that is portable, and the Zig sweep does it. |
+| **Why the split is not portable** | The window exists to bound *waiting*. Zig's close returns immediately once the runs are cancelled, so there is no wait to divide; the deadline is still checked per session, so a slow `state` or `cancel` cannot make the sweep run past its budget. |
+| **The fix** | `contract`'s close reports whether a run is active, as Go's does, and the sweep retries as the draft says. |
 
 ### Recorded, and not divergences
 

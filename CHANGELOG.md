@@ -11,6 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `providers/resolved_urls.json` is the table both trees check their URL resolvers against: every endpoint's base, its models listing and its request URL, in catalog order, with an absent member recording that the catalog resolves no URL there. `zig/build.zig` reads it at build time and `go/providercatalog` from the embedded file, so a tree that resolves a row differently fails on that row rather than on a user's machine, and `goap check` fails when the file no longer matches the catalog. `go run ./go/cmd/goap providers catalog-urls --format=json > providers/resolved_urls.json` rewrites it. The two trees each pinned the same twenty-two rows in a literal before this; one file replaces both.
 - `go/providercatalog` resolves a row's URLs the way the Zig tree does. `ModelsURL(catalog, id, region)` appends the row's recorded `models_endpoint` to the endpoint serving that region, `RequestURL(catalog, id, wire, region)` appends each wire's path — dropping a version the base's path already spells, and treating a base that is already the full path as done — and `Resolve` returns every endpoint's base beside both URLs. An empty string is the answer the catalog does not hold: a row with no static endpoint, a wire this package does not join, a model-scoped wire, or a region no endpoint serves. A table over all twenty-two endpoints pins both URLs in this tree as the Zig table does, and the two agree value for value.
+- `zig/src/hub/hub.zig`: the multi-session hub core in Zig, the layer
+  [`drafts/hub.md`](drafts/hub.md) specifies and the piece `oapx hub` will serve
+  from. It is a registry of adapters built from a `--config` document, many
+  sessions per process each with its own bounded journal, fan-out from a run's
+  stream to any number of subscribers with a bounded mailbox per subscriber — which bounds a
+  resumed replay as well as a live stream — and no subscriber ceiling unless a transport
+  sets one, cursor replay with `ReplayGap`
+  rather than fake continuity, compound open with a subscribing registration that
+  cannot lose the race with its own message, and the held subscription a transport
+  whose response carries no stream adopts on the next request. A subscriber that
+  falls behind is detached and told the run and position it last read rather than
+  waited on; a subscription ends once it has been handed a run's terminal envelope, live or replayed, or once its cursor already sits at one;
+  and the shutdown sweep cancels each session's live runs before closing it, so a
+  child agent process is never left running. No transport yet: the operations are
+  in-process methods, and #387 and #388 add the stdio and HTTP wires over them.
+  `contract.refuseUnadvertisedOpen` is split so a hub can judge an open's own
+  elections without the refusal that stops an endpoint from accepting a compound
+  open's `message` — the hub submits that itself, above the adapter, as
+  `serve.OpenCompound` does in Go — and `journal_capacity` from the registry
+  document is now read rather than decoded and ignored. Six places where the Zig
+  adapter contract cannot carry what the draft specifies are recorded as D2 to D6 in
+  the draft, beside D1, which is Go's to fix. Forty-nine unit tests over a scripted
+  backend, and `checkAllAllocationFailures` over every function that allocates and
+  hands off ownership — which is what found three places swallowing `OutOfMemory`,
+  three use-after-frees on a closed session or a borrowed run id, a stream-failed
+  session that was never destroyed, an unbounded subscriber list, and a `pump` that
+  gave adapters no wait, so no non-memory backend could make progress.
+
 - [`drafts/hub.md`](drafts/hub.md) writes the multi-session hub's wire down as prose, so a Zig `oapx hub` has something to be built against that is not Go source. Under [Decision 0032](decisions/0032-go-and-zig-are-peers.md) the specification decides between the trees, and until this document the hub's HTTP routes, SSE framing, stdio transport objects, cursor rules, fan-out bounds and trust model were defined only by `go/serve` code, the README's daemon sections and `clients/ts`. Every rule names the Go test that pins it today, and the nine no test pins are listed as gaps rather than left for a port to discover. The draft carries [#53](https://github.com/lsm/open-agent-protocol/issues/53) — stdio has no host-initiated way to end one subscription — as a gap in both trees, and records one divergence for the Go side to fix: the `Host` allowlist refusal answers a bare `{"error": …}` with no error code, where every other refusal on both transports is a typed `error.response`. No wire, code or test changes.
 
 - `zig/src/provider_catalog.zig` resolves a row's URLs from the catalog instead of leaving each one spelled where it is used. `modelsUrl(id, region)` appends the row's recorded `models_endpoint` to the endpoint serving that region, and `requestUrl(id, wire, region)` appends each wire's path the way its module in `zig/src/providers/` joins it — trimming a trailing slash, dropping a version the base's path already spells, and treating a base that is already the full path as done, each only where that module does. Both read comptime tables, so a request path is not spelled twice, and a row with no static endpoint resolves no URL at all. Google's wire is model-scoped (`{base}/v1beta/models/{model}:streamGenerateContent?alt=sse`), so it resolves no fixed request URL. A test pins all twenty-two resolved endpoints in a table, so a catalog edit that moves a base, a path or a region lands as a diff in review rather than as a failure on a user's machine.

@@ -147,6 +147,8 @@ pub fn build(b: *std.Build) void {
     const deepseek_session_test = b.addTest(.{ .root_module = deepseek_session_mod });
 
     const test_unit_adapter_step = b.step("test-unit-adapter", "Run the shared adapter corpus harness tests");
+    const test_unit_hub_step = b.step("test-unit-hub", "Run the multi-session hub core unit tests");
+
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(deepseek_session_test).step);
@@ -1343,6 +1345,19 @@ pub fn build(b: *std.Build) void {
         },
     });
     const memory_adapter_test = b.addTest(.{ .root_module = memory_adapter_mod });
+
+    const hub_mod = b.createModule(.{
+        .root_source_file = b.path("src/hub/hub.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "config", .module = adapter_config_mod },
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "memory", .module = memory_adapter_mod },
+        },
+    });
+    const hub_test = b.addTest(.{ .root_module = hub_mod });
 
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
@@ -2632,6 +2647,8 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_contract_test).step);
     test_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
+    test_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
