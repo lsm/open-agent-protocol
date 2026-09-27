@@ -459,7 +459,7 @@ func TestRunToTerminalRefusesAProvidedCallItCannotResolve(t *testing.T) {
 	session := &scriptedSession{results: []adapter.Result{{Envelope: providedCall(1)}}}
 	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
 		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
-			return adapter.GateAnswer{Call: &adapter.CallAnswer{Started: true}}, nil
+			return adapter.GateAnswer{Call: &adapter.CallAnswer{Result: json.RawMessage(`{"ok":true}`)}}, nil
 		},
 	})
 	if !errors.Is(err, adapter.ErrNoCallResolver) {
