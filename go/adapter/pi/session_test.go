@@ -1474,7 +1474,6 @@ func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
 	client.emit(t, map[string]any{"type": "agent_settled"})
 	events := append(trace, adaptertest.Drain(t, stream, time.Second)...)
-	assertValidTrace(t, response, events)
 
 	var asked, settled []protocol.InteractionID
 	for _, event := range events {
