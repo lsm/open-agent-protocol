@@ -1,6 +1,12 @@
 package providercatalog
 
-import "strings"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"strings"
+)
 
 type wirePath struct {
 	suffix       string
@@ -140,4 +146,86 @@ func Resolve(catalog Catalog) []Resolved {
 		}
 	}
 	return resolved
+}
+
+const PinnedFile = "resolved_urls.json"
+
+type Pinned struct {
+	ID         string `json:"id"`
+	Wire       string `json:"wire"`
+	Region     string `json:"region,omitempty"`
+	BaseURL    string `json:"base_url"`
+	ModelsURL  string `json:"models_url,omitempty"`
+	RequestURL string `json:"request_url,omitempty"`
+}
+
+type PinnedCatalog struct {
+	Endpoints []Pinned `json:"endpoints"`
+}
+
+func PinnedFrom(catalog Catalog) PinnedCatalog {
+	resolved := Resolve(catalog)
+	pinned := PinnedCatalog{Endpoints: make([]Pinned, 0, len(resolved))}
+	for _, row := range resolved {
+		pinned.Endpoints = append(pinned.Endpoints, Pinned{
+			ID:         row.ID,
+			Wire:       row.Wire,
+			Region:     row.Region,
+			BaseURL:    row.BaseURL,
+			ModelsURL:  row.ModelsURL,
+			RequestURL: row.RequestURL,
+		})
+	}
+	return pinned
+}
+
+func LoadPinned(files fs.FS) (PinnedCatalog, error) {
+	data, err := fs.ReadFile(files, PinnedFile)
+	if err != nil {
+		return PinnedCatalog{}, fmt.Errorf("read %s: %w", PinnedFile, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var pinned PinnedCatalog
+	if err := decoder.Decode(&pinned); err != nil {
+		return PinnedCatalog{}, fmt.Errorf("%s: %w", PinnedFile, err)
+	}
+	if len(pinned.Endpoints) == 0 {
+		return PinnedCatalog{}, fmt.Errorf("%s pins no endpoint", PinnedFile)
+	}
+	return pinned, nil
+}
+
+func EncodePinned(catalog Catalog) ([]byte, error) {
+	return json.MarshalIndent(PinnedFrom(catalog), "", "  ")
+}
+
+func CheckPinned(catalog Catalog, pinned PinnedCatalog) []Finding {
+	resolved := PinnedFrom(catalog)
+	if len(pinned.Endpoints) != len(resolved.Endpoints) {
+		return []Finding{{
+			Code: CodeStaleURLs,
+			Detail: fmt.Sprintf("%s pins %d endpoints, the catalog resolves %d; run goap providers catalog-urls --format=json > providers/%s",
+				PinnedFile, len(pinned.Endpoints), len(resolved.Endpoints), PinnedFile),
+		}}
+	}
+	for index, want := range resolved.Endpoints {
+		if pinned.Endpoints[index] == want {
+			continue
+		}
+		return []Finding{{
+			Provider: want.ID,
+			Code:     CodeStaleURLs,
+			Detail: fmt.Sprintf("%s pins %s on %s in %s as %+v, the catalog resolves %+v; run goap providers catalog-urls --format=json > providers/%s",
+				PinnedFile, want.ID, want.Wire, regionOrDefault(want.Region), pinned.Endpoints[index], want, PinnedFile),
+		}}
+	}
+	return nil
+}
+
+func regionOrDefault(region string) string {
+	if region == "" {
+		return "the default region"
+	}
+	return region
 }

@@ -181,9 +181,12 @@ func runFixtures(args []string, stdout io.Writer) error {
 }
 
 func runProviders(args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 || args[0] != "zai-cn" {
-		fmt.Fprintln(stderr, "usage: goap providers zai-cn [--format=human|json]")
+	if len(args) == 0 || (args[0] != "zai-cn" && args[0] != "catalog-urls") {
+		fmt.Fprintln(stderr, "usage: goap providers <zai-cn|catalog-urls> [--format=human|json]")
 		return errors.New("invalid providers command")
+	}
+	if args[0] == "catalog-urls" {
+		return runCatalogURLs(args[1:], stdout, stderr)
 	}
 	fs := flag.NewFlagSet("providers zai-cn", flag.ContinueOnError)
 	fs.SetOutput(stderr)

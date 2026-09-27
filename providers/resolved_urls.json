@@ -1,0 +1,157 @@
+{
+  "endpoints": [
+    {
+      "id": "openai",
+      "wire": "openai-completions",
+      "base_url": "https://api.openai.com",
+      "models_url": "https://api.openai.com/v1/models",
+      "request_url": "https://api.openai.com/v1/chat/completions"
+    },
+    {
+      "id": "openai",
+      "wire": "openai-responses",
+      "base_url": "https://api.openai.com",
+      "models_url": "https://api.openai.com/v1/models",
+      "request_url": "https://api.openai.com/v1/responses"
+    },
+    {
+      "id": "anthropic",
+      "wire": "anthropic-messages",
+      "base_url": "https://api.anthropic.com",
+      "models_url": "https://api.anthropic.com/v1/models",
+      "request_url": "https://api.anthropic.com/v1/messages"
+    },
+    {
+      "id": "opencode",
+      "wire": "openai-completions",
+      "base_url": "https://opencode.ai/zen/v1",
+      "models_url": "https://opencode.ai/zen/v1/models",
+      "request_url": "https://opencode.ai/zen/v1/chat/completions"
+    },
+    {
+      "id": "openrouter",
+      "wire": "openai-completions",
+      "base_url": "https://openrouter.ai/api/v1",
+      "models_url": "https://openrouter.ai/api/v1/models",
+      "request_url": "https://openrouter.ai/api/v1/chat/completions"
+    },
+    {
+      "id": "deepseek",
+      "wire": "openai-completions",
+      "base_url": "https://api.deepseek.com",
+      "models_url": "https://api.deepseek.com/v1/models",
+      "request_url": "https://api.deepseek.com/v1/chat/completions"
+    },
+    {
+      "id": "zai-coding-plan",
+      "wire": "openai-completions",
+      "base_url": "https://api.z.ai/api/coding/paas/v4",
+      "models_url": "https://api.z.ai/api/coding/paas/v4/models",
+      "request_url": "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    },
+    {
+      "id": "kimi",
+      "wire": "openai-completions",
+      "region": "china",
+      "base_url": "https://api.kimi.com/coding",
+      "models_url": "https://api.kimi.com/coding/v1/models",
+      "request_url": "https://api.kimi.com/coding/v1/chat/completions"
+    },
+    {
+      "id": "kimi",
+      "wire": "openai-completions",
+      "region": "global",
+      "base_url": "https://api.moonshot.ai",
+      "models_url": "https://api.moonshot.ai/v1/models",
+      "request_url": "https://api.moonshot.ai/v1/chat/completions"
+    },
+    {
+      "id": "alibaba-coding-plan",
+      "wire": "openai-completions",
+      "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+      "models_url": "https://coding-intl.dashscope.aliyuncs.com/v1/models",
+      "request_url": "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions"
+    },
+    {
+      "id": "minimax-coding-plan",
+      "wire": "anthropic-messages",
+      "base_url": "https://api.minimax.io/anthropic/v1",
+      "models_url": "https://api.minimax.io/anthropic/v1/models",
+      "request_url": "https://api.minimax.io/anthropic/v1/messages"
+    },
+    {
+      "id": "tencent-coding-plan",
+      "wire": "openai-completions",
+      "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3",
+      "models_url": "https://api.lkeap.cloud.tencent.com/coding/v3/models",
+      "request_url": "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions"
+    },
+    {
+      "id": "volcengine-coding-plan",
+      "wire": "openai-completions",
+      "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "models_url": "https://ark.cn-beijing.volces.com/api/coding/v3/models",
+      "request_url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+    },
+    {
+      "id": "openai-codex",
+      "wire": "openai-codex-responses",
+      "base_url": "https://chatgpt.com/backend-api/codex",
+      "request_url": "https://chatgpt.com/backend-api/codex/responses"
+    },
+    {
+      "id": "xiaomi-token-plan-cn",
+      "wire": "openai-completions",
+      "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "models_url": "https://token-plan-cn.xiaomimimo.com/v1/models",
+      "request_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions"
+    },
+    {
+      "id": "xiaomi-token-plan-sgp",
+      "wire": "openai-completions",
+      "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+      "models_url": "https://token-plan-sgp.xiaomimimo.com/v1/models",
+      "request_url": "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions"
+    },
+    {
+      "id": "xiaomi-token-plan-ams",
+      "wire": "openai-completions",
+      "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+      "models_url": "https://token-plan-ams.xiaomimimo.com/v1/models",
+      "request_url": "https://token-plan-ams.xiaomimimo.com/v1/chat/completions"
+    },
+    {
+      "id": "deepinfra",
+      "wire": "openai-completions",
+      "base_url": "https://api.deepinfra.com/v1/openai",
+      "models_url": "https://api.deepinfra.com/v1/openai/models",
+      "request_url": "https://api.deepinfra.com/v1/openai/chat/completions"
+    },
+    {
+      "id": "xiaomi",
+      "wire": "openai-completions",
+      "base_url": "https://api.xiaomimimo.com/v1",
+      "models_url": "https://api.xiaomimimo.com/v1/models",
+      "request_url": "https://api.xiaomimimo.com/v1/chat/completions"
+    },
+    {
+      "id": "vercel",
+      "wire": "openai-completions",
+      "base_url": "https://ai-gateway.vercel.sh/v1",
+      "models_url": "https://ai-gateway.vercel.sh/v1/models",
+      "request_url": "https://ai-gateway.vercel.sh/v1/chat/completions"
+    },
+    {
+      "id": "zenmux",
+      "wire": "openai-completions",
+      "base_url": "https://zenmux.ai/api/v1",
+      "models_url": "https://zenmux.ai/api/v1/models",
+      "request_url": "https://zenmux.ai/api/v1/chat/completions"
+    },
+    {
+      "id": "google",
+      "wire": "google-generative-ai",
+      "base_url": "https://generativelanguage.googleapis.com"
+    }
+  ]
+}
