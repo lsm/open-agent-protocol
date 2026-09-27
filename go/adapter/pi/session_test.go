@@ -1423,3 +1423,37 @@ func isUnadvertised(err error, key string) bool {
 	var refused *base.UnsupportedControlError
 	return errors.As(err, &refused) && refused.Feature == key && refused.Reason == base.ControlUnadvertised
 }
+
+func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	response, stream := submitTest(t, s)
+	for _, id := range []string{"a", "b", "c"} {
+		client.emit(t, map[string]any{"type": "tool_execution_start", "toolCallId": id, "toolName": "read", "args": map[string]any{"path": id}})
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := adaptertest.Drain(t, stream, time.Second)
+	assertValidTrace(t, response, events)
+
+	var started, settled []protocol.ToolCallID
+	for _, event := range events {
+		if event.ToolCallID == "" {
+			continue
+		}
+		switch event.Type {
+		case protocol.TypeActionCallRequested:
+			started = append(started, event.ToolCallID)
+		case protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
+			settled = append(settled, event.ToolCallID)
+		}
+	}
+	if len(started) != 3 || len(settled) != 3 {
+		t.Fatalf("started %v and settled %v, want three of each", started, settled)
+	}
+	for i := range started {
+		if settled[i] != started[i] {
+			t.Fatalf("settled %v, want the start order %v", settled, started)
+		}
+	}
+}
