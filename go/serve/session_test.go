@@ -1800,8 +1800,8 @@ func (s *idleClosedSession) Close(context.Context) error { return base.ErrSessio
 var _ base.Session = (*idleClosedSession)(nil)
 
 func TestStateReportingClosedClosesEntry(t *testing.T) {
-	released := make(chan protocol.SessionID, 2)
-	entry := newSession("idle-death", "stub", &idleClosedSession{id: "idle-death"}, func() { released <- "idle-death" })
+	onto := make(chan protocol.SessionID, 2)
+	entry := newSession("idle-death", "stub", &idleClosedSession{id: "idle-death"}, func(released *Session) { onto <- released.id })
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1820,7 +1820,7 @@ func TestStateReportingClosedClosesEntry(t *testing.T) {
 		t.Fatalf("terminal %v, want the clean end of a closed session", err)
 	}
 	select {
-	case id := <-released:
+	case id := <-onto:
 		if id != "idle-death" {
 			t.Fatalf("released %q, want the entry's own id", id)
 		}
@@ -1831,7 +1831,7 @@ func TestStateReportingClosedClosesEntry(t *testing.T) {
 		t.Fatalf("second state error %v, want the adapter's own closed refusal", err)
 	}
 	select {
-	case id := <-released:
+	case id := <-onto:
 		t.Fatalf("released %q a second time", id)
 	default:
 	}

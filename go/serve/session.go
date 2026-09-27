@@ -66,7 +66,7 @@ type Session struct {
 	runID protocol.RunID
 
 	closed  bool
-	release func()
+	release func(*Session)
 
 	readers      int
 	reservations int
@@ -81,7 +81,7 @@ type Session struct {
 	finished map[protocol.RunID]bool
 }
 
-func newSession(id protocol.SessionID, adapterName string, session base.Session, release func()) *Session {
+func newSession(id protocol.SessionID, adapterName string, session base.Session, release func(*Session)) *Session {
 	return &Session{
 		id: id, adapterName: adapterName, session: session, release: release,
 		created: time.Now(), subs: make(map[*subscriber]struct{}), serials: make(map[protocol.RunID]uint64),
@@ -747,7 +747,7 @@ func (s *Session) markClosed() {
 	}
 	s.deliverDeferredError(errored, failed)
 	if releasing {
-		s.release()
+		s.release(s)
 	}
 }
 
