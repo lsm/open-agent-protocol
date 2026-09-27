@@ -454,7 +454,13 @@ pub const Hub = struct {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
         var refusal = contract.Refusal{};
-        const admission = try entry.session.submit(arena, request, &refusal);
+        const admission = entry.session.submit(arena, request, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
         if (admission.run_id) |run_id| {
             self.noteRun(entry, run_id, admission.admission == .started) catch |err| {
                 self.endSubscriptions(entry, .stream_failed);
@@ -471,7 +477,13 @@ pub const Hub = struct {
             .permission => |request| if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch,
         }
         var refusal = contract.Refusal{};
-        return entry.session.resolve(arena, resolution, &refusal);
+        entry.session.resolve(arena, resolution, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
     }
 
     pub fn resolveCall(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, request_id: []const u8, request: *const oap_types.CallResolveRequest) Failure!oap_types.CallResolveResponse {
@@ -479,13 +491,25 @@ pub const Hub = struct {
         if (!std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
         const resolver = entry.session.vtable.resolve_call orelse return error.UnsupportedFeature;
         var refusal = contract.Refusal{};
-        return resolver(entry.session.ptr, arena, request_id, request, &refusal);
+        return resolver(entry.session.ptr, arena, request_id, request, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
     }
 
     pub fn cancel(self: *Hub, arena: std.mem.Allocator, session_id: []const u8, run_id: []const u8) Failure!oap_types.RunCancelResponse {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         var refusal = contract.Refusal{};
-        return entry.session.cancel(arena, run_id, &refusal);
+        return entry.session.cancel(arena, run_id, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
     }
 
     pub fn state(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!oap_types.SessionState {
@@ -574,7 +598,13 @@ pub const Hub = struct {
     pub fn close(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!void {
         const entry = self.findSession(session_id) orelse return error.UnknownSession;
         var refusal = contract.Refusal{};
-        const reported = try entry.session.state(arena, &refusal);
+        const reported = entry.session.state(arena, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
         if (reported.active_run_id != null or reported.active_runs.len > 0) return error.RunActive;
         self.releaseSession(entry);
     }
@@ -994,6 +1024,16 @@ pub const Hub = struct {
 
     fn releaseSession(self: *Hub, entry: *Entry) void {
         self.endSubscriptions(entry, .session_closed);
+        var index: usize = 0;
+        while (index < self.holds.items.len) {
+            const held = self.holds.items[index];
+            if (!std.mem.eql(u8, held.subscription.session_id, entry.session_id)) {
+                index += 1;
+                continue;
+            }
+            _ = self.holds.orderedRemove(index);
+            held.subscription.held = false;
+        }
         self.removeSession(entry);
     }
 
@@ -2038,6 +2078,34 @@ test "a released session's id is free again, and its memory is gone" {
     subscription.close();
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
+}
+
+test "a released session's hold does not follow its id into the next session" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64, .hold_ns = 10 * std.time.ns_per_s });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "twice" });
+    const held = try hub.hold(arena, opened.session_id);
+    try testing.expect(!held.expired(testClock()));
+    try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
+    const kept = hub.holds.items[0].subscription;
+    try testing.expect(kept.held);
+
+    try hub.close(arena, opened.session_id);
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
+    try testing.expectEqual(Ending.session_closed, kept.ending);
+    try testing.expect(!kept.held);
+
+    const again = try hub.open(arena, "memory", .{ .session_id = "twice" });
+    const fresh = try hub.subscribe(arena, again.session_id, .{});
+    try testing.expectEqual(Ending.open, fresh.ending);
+    try testing.expect(!fresh.held);
+    try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
 }
 
 test "close hands its entry over under allocation failure" {
