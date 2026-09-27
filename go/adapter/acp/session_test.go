@@ -1437,7 +1437,7 @@ func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	<-f.promptStarted
 	for i, id := range []string{"call-1", "call-2", "call-3"} {
 		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: id, Title: "Act " + id, Status: "pending"})
-		waitCursor(t, s, strconv.Itoa(2*(i+1)))
+		waitCursor(t, s, strconv.Itoa(i+2))
 	}
 	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
 	events := collect(t, stream)
