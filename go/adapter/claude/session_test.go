@@ -2325,3 +2325,36 @@ func TestPermissionAskNamesNoToolCallWhenTheRunAnnouncedNone(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingToolsAreSweptInTheOrderTheyStarted(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	content := `{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}},` +
+		`{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"pwd"}},` +
+		`{"type":"tool_use","id":"toolu_3","name":"Bash","input":{"command":"id"}}`
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[` + content + `],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-three","user_message_uuid":"` + uuid + `"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
+
+	var started, swept []protocol.ToolCallID
+	for _, event := range events {
+		if event.ToolCallID == "" {
+			continue
+		}
+		switch event.Type {
+		case protocol.TypeActionCallRequested:
+			started = append(started, event.ToolCallID)
+		case protocol.TypeActionCallCancelled, protocol.TypeActionCallFailed:
+			swept = append(swept, event.ToolCallID)
+		}
+	}
+	if len(started) != 3 || len(swept) != 3 {
+		t.Fatalf("started %v and swept %v, want three of each", started, swept)
+	}
+	for i := range started {
+		if swept[i] != started[i] {
+			t.Fatalf("swept %v, want the start order %v", swept, started)
+		}
+	}
+}

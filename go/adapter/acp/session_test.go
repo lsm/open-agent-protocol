@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1426,6 +1427,40 @@ func TestSettlingChildrenOfATerminalRunClaimsNothing(t *testing.T) {
 		}
 		if gate.resolved {
 			t.Fatal("a gate was marked resolved by a settlement nothing emitted")
+		}
+	}
+}
+
+func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	for i, id := range []string{"call-1", "call-2", "call-3"} {
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: id, Title: "Act " + id, Status: "pending"})
+		waitCursor(t, s, strconv.Itoa(2*(i+1)))
+	}
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	assertValidTrace(t, admission, events)
+
+	var started, settled []protocol.ToolCallID
+	for _, event := range events {
+		if event.ToolCallID == "" {
+			continue
+		}
+		switch event.Type {
+		case protocol.TypeActionCallRequested:
+			started = append(started, event.ToolCallID)
+		case protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
+			settled = append(settled, event.ToolCallID)
+		}
+	}
+	if len(started) != 3 || len(settled) != 3 {
+		t.Fatalf("started %v and settled %v, want three of each", started, settled)
+	}
+	for i := range started {
+		if settled[i] != started[i] {
+			t.Fatalf("settled %v, want the start order %v", settled, started)
 		}
 	}
 }
