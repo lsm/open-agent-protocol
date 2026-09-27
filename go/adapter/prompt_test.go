@@ -320,6 +320,42 @@ func TestRunToTerminalCancelsTheQueuedRunTheAdmissionNamed(t *testing.T) {
 	}
 }
 
+func TestRunToTerminalDoesNotChargeASlowPolicyToTheStallWindow(t *testing.T) {
+	ask := protocol.UserInputRequestedPayload{
+		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Continue?",
+		Questions: []protocol.InputQuestion{{
+			ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+			Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+		}},
+	}
+	release := make(chan struct{})
+	session := &scriptedSession{release: release, results: []adapter.Result{
+		{Envelope: envelope(protocol.TypeUserInputRequested, 1, ask)},
+		{Envelope: envelope(protocol.TypeRunCompleted, 2, protocol.RunCompletedPayload{
+			SessionID: "session-1", RunID: "run-1",
+			FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+		})},
+	}}
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		close(release)
+	}()
+	outcome, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		StallWindow: 200 * time.Millisecond,
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			time.Sleep(600 * time.Millisecond)
+			return adapter.GateAnswer{Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want the run to finish: a policy slower than the window is not a silent stream", err)
+	}
+	if outcome.Text != "done" {
+		t.Fatalf("text = %q", outcome.Text)
+	}
+}
+
 func envelope(typ protocol.EnvelopeType, sequence int, payload any) protocol.Envelope {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -343,6 +379,7 @@ type scriptedSession struct {
 	mu            sync.Mutex
 	results       []adapter.Result
 	hold          bool
+	release       chan struct{}
 	resume        *scriptedSession
 	resumeError   error
 	recoveryGap   *adapter.ReplayGap
@@ -355,6 +392,17 @@ type scriptedSession struct {
 
 func (s *scriptedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
 	stream := make(chan adapter.Result, len(s.results)+1)
+	if s.release != nil {
+		stream <- s.results[0]
+		go func() {
+			<-s.release
+			for _, result := range s.results[1:] {
+				stream <- result
+			}
+			close(stream)
+		}()
+		return protocol.MessageSubmitResponse{SessionID: "session-1", Accepted: true, Admission: protocol.AdmissionStarted, RunID: s.admissionRun}, stream, nil
+	}
 	for _, result := range s.results {
 		stream <- result
 	}

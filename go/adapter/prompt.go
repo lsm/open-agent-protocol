@@ -197,6 +197,16 @@ func resolveGate(ctx context.Context, session Session, gate Gate) error {
 	})
 }
 
+func resetStall(timer *time.Timer, window time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(window)
+}
+
 func awaitResolves(ctx context.Context, resolving *sync.WaitGroup) error {
 	settled := make(chan struct{})
 	go func() {
@@ -294,6 +304,14 @@ drain:
 	for {
 		var result Result
 		var ok bool
+		takeQueued := func() bool {
+			select {
+			case result, ok = <-queue:
+				return true
+			default:
+				return false
+			}
+		}
 		select {
 		case <-ctx.Done():
 			if runID != "" {
@@ -303,26 +321,22 @@ drain:
 		case gateErr := <-resolveErr:
 			return outcome, gateErr
 		case <-stallTimer.C:
-			select {
-			case result, ok = <-queue:
-			default:
-				if err := awaitResolves(ctx, &resolving); err != nil {
-					return outcome, err
-				}
-				return outcome, &StalledError{Wait: stall}
+			if takeQueued() {
+				break
 			}
+			if err := awaitResolves(ctx, &resolving); err != nil {
+				return outcome, err
+			}
+			if takeQueued() {
+				break
+			}
+			return outcome, &StalledError{Wait: stall}
 		case result, ok = <-queue:
 		}
 		if !ok {
 			break drain
 		}
-		if !stallTimer.Stop() {
-			select {
-			case <-stallTimer.C:
-			default:
-			}
-		}
-		stallTimer.Reset(stall)
+		resetStall(stallTimer, stall)
 		if result.Error != nil {
 			if !errors.Is(result.Error, ErrEventStreamOverflow) {
 				return outcome, result.Error
@@ -335,6 +349,7 @@ drain:
 			}
 			resumes++
 			recovery, replay, resumeErr := session.Resume(ctx, ResumeRequest{RunID: runID, AfterSequence: lastSeq})
+			resetStall(stallTimer, stall)
 			var gap *ReplayGap
 			switch {
 			case errors.As(resumeErr, &gap):
@@ -360,6 +375,7 @@ drain:
 		envelope := result.Envelope
 		if options.Observe != nil {
 			options.Observe(envelope)
+			resetStall(stallTimer, stall)
 		}
 		if envelope.RunID != "" {
 			runID = envelope.RunID
@@ -388,6 +404,7 @@ drain:
 				return outcome, ErrGateUnanswered
 			}
 			answer, err := options.Policy(ctx, gate)
+			resetStall(stallTimer, stall)
 			if err != nil {
 				return outcome, err
 			}
@@ -402,6 +419,7 @@ drain:
 				return outcome, ErrGateUnanswered
 			}
 			answer, err := options.Policy(ctx, gate)
+			resetStall(stallTimer, stall)
 			if err != nil {
 				return outcome, err
 			}
