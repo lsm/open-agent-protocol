@@ -1,8 +1,6 @@
 # Decision 0012: Retire `+persistence`, and Stage Transcript Load
 
-Status: proposed; [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) stages
-`session-reattach` and `session-list` beside `transcript-load`, and constrains
-`transcript-load`'s entries and cursor to OAP's vocabulary
+Status: proposed
 Date: 2026-09-17
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`

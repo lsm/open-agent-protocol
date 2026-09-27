@@ -1,6 +1,8 @@
 # Decision 0039: A Session Is OAP's, and a Harness Is Where It Runs
 
-Status: accepted 2026-09-27 (its work is tracked in #442)
+Status: proposed (the owner agreed its direction on 2026-09-27; it is accepted
+under [Decision 0003](0003-staged-unit-graduation.md) once #443 and #444 make
+its close executable on `main`. Its work is tracked in #442)
 Date: 2026-09-27
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
