@@ -376,7 +376,10 @@ Every route that reads a body requires `Content-Type: application/json` with
 no `charset` or a UTF-8 one — any other charset is refused `415
 unsupported_media_type` naming it, because an OAP envelope is UTF-8 JSON and
 the body gate is the only place that knows what the transport received. The
-comparison is case-insensitive, and no `charset` means UTF-8. A pipe has no
+comparison is case-insensitive, and admits both the registered name
+`utf-8` and its registered alias `utf8`, because a conformant sender may
+use either and refusing the alias would refuse UTF-8 by another name. No
+`charset` at all means UTF-8. A pipe has no
 `Content-Type` at all, so the stdio transport has no counterpart to any of
 this. The daemon also caps
 the body at 16 MiB, and answers a refusal as an `error.response` envelope
@@ -402,7 +405,7 @@ both answers, at the budget and one byte over it.
 | HTTP rule | pinned by |
 | --- | --- |
 | A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, the absent `Content-Type`, and a `charset` that is not UTF-8) |
-| A UTF-8 `charset` is admitted, case-insensitively, and no `charset` means UTF-8 | `TestASupportedCharsetIsAdmitted` |
+| A UTF-8 `charset` is admitted — `utf-8` or its alias `utf8`, case-insensitively — and no `charset` means UTF-8 | `TestASupportedCharsetIsAdmitted` |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
