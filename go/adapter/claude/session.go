@@ -803,6 +803,14 @@ func (s *Session) attributionFor(name string) string {
 	return (*published)[name]
 }
 
+func (s *Session) toolCallForAsk(run *runState, ask *native.CanUseToolRequest) protocol.ToolCallID {
+	tool := s.tools[ask.ToolUseID]
+	if tool == nil || tool.run != run {
+		return ""
+	}
+	return tool.id
+}
+
 func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolRequest) {
 	run := s.currentRun()
 	if run == nil || !run.started || run.terminal {
@@ -838,7 +846,7 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 	gate := &gateState{id: id, control: control, ask: ask, run: run, questions: questions, order: s.nextOrder}
 	s.nextOrder++
 	s.interactions[id] = gate
-	requested, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: questions, AllowCancel: true}, false, "")
+	requested, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, ToolCallID: s.toolCallForAsk(run, ask), Title: title, Description: description, Questions: questions, AllowCancel: true}, false, "")
 	if emitErr != nil {
 		_ = control.RespondError(context.Background(), "claude adapter: gate could not be surfaced")
 		delete(s.interactions, id)
@@ -1306,7 +1314,7 @@ func (s *Session) emitWith(run *runState, t protocol.EnvelopeType, p any, termin
 		_ = json.Unmarshal(e.Payload, &payload)
 		e.TurnID = payload.InteractionID
 	}
-	if strings.HasPrefix(string(t), "action.call.") {
+	if strings.HasPrefix(string(t), "action.call.") || t == protocol.TypeUserInputRequested || t == protocol.TypeActionPermissionRequested {
 		var payload struct {
 			ToolCallID protocol.ToolCallID `json:"tool_call_id"`
 		}

@@ -2262,3 +2262,66 @@ func TestOpenRegistersTheToolSelectionHook(t *testing.T) {
 		t.Fatalf("initialize = %s, want %s", encoded, want)
 	}
 }
+
+func TestPermissionAskNamesTheToolCallTheRunAnnounced(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"assistant","message":{"id":"msg_1","model":"claude-test","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"ls"}}],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a1"}`)
+	peer.send(`{"type":"control_request","request_id":"ask-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_01"}}`)
+	gate := openGate(t, session, uuid)
+	if err := session.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "decision", SelectedOptionIDs: []string{"allow"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	peer.send(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01","type":"tool_result","content":"done","is_error":false}]},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"u1"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	var call, ask protocol.ToolCallID
+	for _, event := range events {
+		switch event.Type {
+		case protocol.TypeActionCallRequested:
+			call = event.ToolCallID
+		case protocol.TypeUserInputRequested:
+			ask = event.ToolCallID
+			var payload protocol.UserInputRequestedPayload
+			if err := event.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.ToolCallID != event.ToolCallID {
+				t.Fatalf("ask envelope names %q, payload names %q", event.ToolCallID, payload.ToolCallID)
+			}
+		}
+	}
+	if call == "" {
+		t.Fatal("the run announced no tool call")
+	}
+	if ask != call {
+		t.Fatalf("ask names tool call %q, the run announced %q", ask, call)
+	}
+}
+
+func TestPermissionAskNamesNoToolCallWhenTheRunAnnouncedNone(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	peer.send(`{"type":"control_request","request_id":"ask-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_01"}}`)
+	gate := openGate(t, session, uuid)
+	if err := session.Resolve(context.Background(), base.InteractionResolution{Input: &protocol.UserInputResolveRequest{InteractionID: gate.id, SessionID: "session", Answers: []protocol.InputAnswer{{QuestionID: "decision", SelectedOptionIDs: []string{"deny"}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	peer.send(resultFrame(uuid, "success", false, "completed", "denied", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	for _, event := range events {
+		if event.Type != protocol.TypeUserInputRequested {
+			continue
+		}
+		if event.ToolCallID != "" {
+			t.Fatalf("ask names tool call %q, the run announced none", event.ToolCallID)
+		}
+		var payload protocol.UserInputRequestedPayload
+		if err := event.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.ToolCallID != "" {
+			t.Fatalf("ask payload names tool call %q, the run announced none", payload.ToolCallID)
+		}
+	}
+}
