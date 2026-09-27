@@ -30,7 +30,7 @@ keeps the conversation after its process ends, and most can load it again:
 | Harness | What it keeps, and how it loads it again | Recorded in |
 | --- | --- | --- |
 | Claude Code | `persistSession` writes `~/.claude/projects/<dir>/<sessionId>.jsonl`; `--resume=<uuid>` makes a new process load the conversation | [2.1.263 ledger](../research/claude-code-agent-sdk-2.1.263-mapping.md), "Session state and recovery" |
-| Codex app-server | `thread/resume` restores the native conversation; the Go adapter already selects it through `Config.ResumeThreadID` | [codex ledger](../research/codex-app-server-8d7cc24-mapping.md) |
+| Codex app-server | `thread/resume` restores the native conversation; the Go adapter already selects it through `Config.ResumeThreadID` | [8d7cc24 ledger](../research/codex-app-server-8d7cc24-mapping.md) |
 | ACP agents | `session/load`, gated by `loadSession`, restores a session and replays its conversation through `session/update`; `session/resume` restores without replay; list, close and delete are separately optional | [v1.7.0 ledger](../research/acp-v1.7.0-mapping.md) |
 | Pi | a durable session file backs `sessionId`; `switch_session` loads another; `get_entries` with `since` reads the persisted tree | [v0.87.1 ledger](../research/pi-v0.87.1-mapping.md) |
 | Hermes | a native `session.resume` exists, and the adapter refuses a native session id rather than writing it | [v2026.8.31 ledger](../research/hermes-v2026.8.31-mapping.md), "Corpus" |
@@ -180,6 +180,9 @@ transcript entry is OAP's vocabulary.
 - **Each adapter accepts a binding at open.** Codex's `ResumeThreadID` is the
   pattern: an adapter told a native session loads it instead of creating one.
   An adapter that cannot declines as above.
+- **The graduation plan records the staging.** `drafts/staged-units-graduation.md`
+  gains T7 `session-reattach` and T8 `session-list`, and T6 `transcript-load`
+  gains the vocabulary constraint.
 - **Decision 0001's sentence gains one exception.** A session may be
   reattached across processes; replay stays bounded to one process's journal,
   and no durable admission is claimed.
