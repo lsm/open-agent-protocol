@@ -4,6 +4,7 @@ const oap_types = @import("oap_types");
 const config = @import("config");
 const contract = @import("contract");
 const memory = @import("memory");
+const compat = @import("compat");
 
 pub const default_stream_queue = 64;
 pub const default_journal_capacity = 256;
@@ -2652,9 +2653,9 @@ test "a session that reports a handle is waited on, and handed no wait of its ow
     var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer flaky.keep.deinit();
-    const ends = try std.Io.Threaded.pipe2(.{});
-    flaky.read_end = ends[0];
-    flaky.write_end = ends[1];
+    const ends = try compat.stdio.pipe();
+    flaky.read_end = ends[0].handle;
+    flaky.write_end = ends[1].handle;
 
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
     defer hub.deinit();
@@ -2664,7 +2665,7 @@ test "a session that reports a handle is waited on, and handed no wait of its ow
     const arena = scratch.allocator();
 
     const opened = try hub.open(arena, "flaky", .{ .session_id = "readable" });
-    try testing.expectEqual(@as(?std.Io.File.Handle, ends[0]), Hub.handleOf(&hub.entries.items[0]));
+    try testing.expectEqual(@as(?std.Io.File.Handle, ends[0].handle), Hub.handleOf(&hub.entries.items[0]));
     try testing.expectEqualStrings("readable", opened.session_id);
 
     try hub.pump(testing.allocator, 250 * std.time.ns_per_ms);
@@ -2672,14 +2673,89 @@ test "a session that reports a handle is waited on, and handed no wait of its ow
     try testing.expectEqual(@as(u64, 0), flaky.waits[0]);
 }
 
+test "idle sessions add no per-session delay, however many there are" {
+    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    var idle: [6]Flaky = undefined;
+    const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    defer compat.stdio.close(ends[1]);
+    for (0..idle.len) |index| {
+        idle[index] = .{ .allocator = testing.allocator, .fail_drain = false, .read_end = ends[0].handle, .write_end = ends[1].handle };
+        idle[index].keep = std.heap.ArenaAllocator.init(testing.allocator);
+    }
+    defer for (0..idle.len) |index| idle[index].keep.deinit();
+
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
+    defer hub.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    for (0..idle.len) |index| {
+        const one = &idle[index];
+        var name_buf: [8]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "idle-{d}", .{index});
+        try hub.register(name, one.adapter());
+        _ = try hub.open(arena, name, .{ .session_id = name });
+    }
+    try testing.expectEqual(@as(usize, 6), hub.sessionCount());
+
+    try hub.pump(testing.allocator, 40 * std.time.ns_per_ms);
+    for (0..idle.len) |index| {
+        const one = &idle[index];
+        try testing.expectEqual(@as(usize, 1), one.wait_len);
+        try testing.expectEqual(@as(u64, 0), one.waits[0]);
+    }
+}
+
+test "one silent child does not hold back another session's events" {
+    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    const quiet_ends = try compat.stdio.pipe();
+    defer compat.stdio.close(quiet_ends[0]);
+    defer compat.stdio.close(quiet_ends[1]);
+    var quiet = Flaky{ .allocator = testing.allocator, .fail_drain = false, .read_end = quiet_ends[0].handle, .write_end = quiet_ends[1].handle };
+    quiet.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer quiet.keep.deinit();
+
+    const busy_ends = try compat.stdio.pipe();
+    defer compat.stdio.close(busy_ends[0]);
+    defer compat.stdio.close(busy_ends[1]);
+    var busy = Flaky{ .allocator = testing.allocator, .fail_drain = false, .read_end = busy_ends[0].handle, .write_end = busy_ends[1].handle };
+    busy.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer busy.keep.deinit();
+
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("quiet", quiet.adapter());
+    try hub.register("busy", busy.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    _ = try hub.open(arena, "quiet", .{ .session_id = "waiting" });
+    const opened = try hub.open(arena, "busy", .{ .session_id = "talking" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    busy.script[0] = .{ .run = "run-1", .sequence = 1, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"a1\"}" };
+    busy.script_len = 1;
+    try compat.stdio.writeAll(busy_ends[1], "x");
+
+    try hub.pump(testing.allocator, 40 * std.time.ns_per_ms);
+    const first = subscription.next().?;
+    try testing.expectEqual(@as(u64, 1), first.sequence);
+    for ([_]*Flaky{ &quiet, &busy }) |one| {
+        try testing.expect(one.wait_len >= 1);
+        for (one.waits[0..one.wait_len]) |wait| try testing.expectEqual(@as(u64, 0), wait);
+    }
+}
+
 test "a handle-less session keeps the timed pump beside one that reports a handle" {
     if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
     var waiting = Flaky{ .allocator = testing.allocator, .fail_drain = false };
     waiting.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer waiting.keep.deinit();
-    const ends = try std.Io.Threaded.pipe2(.{});
-    waiting.read_end = ends[0];
-    waiting.write_end = ends[1];
+    const ends = try compat.stdio.pipe();
+    waiting.read_end = ends[0].handle;
+    waiting.write_end = ends[1].handle;
 
     var silent = Flaky{ .allocator = testing.allocator, .fail_drain = false, .reported = false };
     silent.keep = std.heap.ArenaAllocator.init(testing.allocator);
