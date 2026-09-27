@@ -272,7 +272,6 @@ const Entry = struct {
     session: contract.Session,
     created_at_ms: i64,
     run_id: []u8,
-    child_closed: bool = false,
     journal: std.ArrayList(Journaled) = .empty,
     cursors: std.ArrayList(Cursor) = .empty,
     subscribers: std.ArrayList(*Subscription) = .empty,
@@ -283,7 +282,7 @@ const Entry = struct {
         for (self.journal.items) |kept| allocator.free(kept.line);
         self.journal.deinit(allocator);
         self.subscribers.deinit(allocator);
-        if (!self.child_closed) self.session.close();
+        self.session.close();
         allocator.free(self.adapter_name);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
@@ -458,7 +457,6 @@ pub const Hub = struct {
         const admission = try entry.session.submit(arena, request, &refusal);
         if (admission.run_id) |run_id| {
             self.noteRun(entry, run_id, admission.admission == .started) catch |err| {
-                self.endChild(entry);
                 self.endSubscriptions(entry, .stream_failed);
                 return err;
             };
@@ -657,7 +655,6 @@ pub const Hub = struct {
             _ = entry.session.pump(share) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
-                    self.endChild(entry);
                     self.endSubscriptions(entry, .stream_failed);
                 },
             };
@@ -667,7 +664,6 @@ pub const Hub = struct {
             entry.session.drain(scratch.allocator(), &events) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
-                    self.endChild(entry);
                     self.endSubscriptions(entry, .stream_failed);
                     continue;
                 },
@@ -675,17 +671,14 @@ pub const Hub = struct {
             for (events.items) |event| {
                 const settled = terminal(self.allocator, event.line) catch |err| {
                     if (err != error.OutOfMemory) return err;
-                    self.endChild(entry);
                     self.endSubscriptions(entry, .stream_failed);
                     return err;
                 };
                 self.remember(entry, event, settled) catch |err| {
-                    self.endChild(entry);
                     self.endSubscriptions(entry, .stream_failed);
                     return err;
                 };
                 self.fanOut(entry, event, settled) catch |err| {
-                    self.endChild(entry);
                     self.endSubscriptions(entry, .stream_failed);
                     return err;
                 };
@@ -993,12 +986,6 @@ pub const Hub = struct {
         entry.deinit(self.allocator);
     }
 
-    fn endChild(_: *Hub, entry: *Entry) void {
-        if (entry.child_closed) return;
-        entry.child_closed = true;
-        entry.session.close();
-    }
-
     fn endSubscriptions(self: *Hub, entry: *Entry, ending: Ending) void {
         _ = self;
         for (entry.subscribers.items) |subscription| subscription.ending = ending;
@@ -1214,10 +1201,14 @@ test "a backend that cannot make progress ends its stream, and the session stays
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.stream_failed, subscription.ending);
-    try testing.expectEqual(@as(usize, 1), flaky.closes);
+    try testing.expectEqual(@as(usize, 0), flaky.closes);
     try testing.expectEqual(@as(usize, 1), hub.sessionCount());
     const still = try hub.state(arena, "deadchild");
     try testing.expectEqualStrings("deadchild", still.session_id);
+
+    try hub.close(arena, "deadchild");
+    try testing.expectEqual(@as(usize, 1), flaky.closes);
+    try testing.expectError(error.UnknownSession, hub.state(arena, "deadchild"));
 }
 
 test "the current run follows the events, so an unqualified cursor reaches a promoted run" {
@@ -2522,7 +2513,7 @@ fn flakyClose(ptr: *anyopaque) void {
     self.closes += 1;
 }
 
-test "a session whose stream fails is ended, its subscribers told, and its child closed" {
+test "a session whose stream fails is ended, its subscribers told, and its child kept" {
     var flaky = Flaky{ .allocator = testing.allocator };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer flaky.keep.deinit();
@@ -2537,10 +2528,12 @@ test "a session whose stream fails is ended, its subscribers told, and its child
     const subscription = try hub.subscribe(arena, opened.session_id, .{});
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.stream_failed, subscription.ending);
-    try testing.expectEqual(@as(usize, 1), flaky.closes);
+    try testing.expectEqual(@as(usize, 0), flaky.closes);
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
     const still = try hub.state(arena, "doomed");
     try testing.expectEqualStrings("doomed", still.session_id);
-    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
+    try hub.close(arena, "doomed");
+    try testing.expectEqual(@as(usize, 1), flaky.closes);
 }
 
 test "the subscriber count has its own bound, not the mailbox depth" {

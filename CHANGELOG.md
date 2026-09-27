@@ -83,10 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   journal, cursors, holds and state. `close` releases, so the id is free again, and
   `sessions` lists live sessions only. A session whose adapter reports itself closed
   is released the same way when it is next observed.
-  A run's stream failing is not a close and no longer acts like one: the hub still
-  ends the subscriptions and closes the dead child, but the session itself stays open
-  and answerable, which is where scoping a stream failure to its own readers is
-  still outstanding.
+  A run's stream failing is not a close and no longer acts like one. The hub ends
+  the subscriptions and nothing else: it does not close the child, because
+  `contract.Session.close` destroys the session, so a hub that closed the child of a
+  session it meant to keep would answer the next request from freed memory. The
+  session stays open and answerable until it is closed or released, and the close
+  lands on that release. Scoping a stream failure to its own readers rather than the
+  whole session is still outstanding, and that is D7.
 - The Zig hub's subscriber ceiling no longer counts subscriptions that have
   already ended. `max_subscriptions` bounds a session's subscriber list, and an
   ended subscription stayed on that list until the next event happened to fan out
