@@ -271,8 +271,8 @@ pub const Reducer = struct {
         return self.emitEnvelope(run, kind, payload, .{ .tool_call_id = tool_call_id, .in_reply_to = in_reply_to });
     }
 
-    fn emitTurn(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, turn_id: []const u8, in_reply_to: []const u8) ![]const u8 {
-        return self.emitEnvelope(run, kind, payload, .{ .turn_id = turn_id, .in_reply_to = in_reply_to });
+    fn emitTurn(self: *Reducer, run: *Run, kind: []const u8, payload: std.json.Value, turn_id: []const u8, in_reply_to: []const u8, tool_call_id: []const u8) ![]const u8 {
+        return self.emitEnvelope(run, kind, payload, .{ .turn_id = turn_id, .in_reply_to = in_reply_to, .tool_call_id = tool_call_id });
     }
 
     const Correlation = struct {
@@ -314,8 +314,8 @@ pub const Reducer = struct {
         if (in_reply_to.len > 0) try self.put(&envelope, "in_reply_to", str(in_reply_to));
         try self.put(&envelope, "session_id", str(self.options.session_id));
         try self.put(&envelope, "run_id", str(run.id));
-        if (tool_call_id.len > 0) try self.put(&envelope, "tool_call_id", str(tool_call_id));
         if (correlation.turn_id.len > 0) try self.put(&envelope, "turn_id", str(correlation.turn_id));
+        if (tool_call_id.len > 0) try self.put(&envelope, "tool_call_id", str(tool_call_id));
         try self.put(&envelope, "capability_revision", str(self.options.revision));
         if (correlation.extensions) |carried| try self.put(&envelope, "extensions", carried);
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
@@ -451,10 +451,17 @@ pub const Reducer = struct {
             try self.put(&payload, "session_id", str(self.options.session_id));
             try self.put(&payload, "run_id", str(run.id));
             try self.put(&payload, "status", str("cancelled"));
-            _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event);
+            _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event, "");
             _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "running", ""));
             return;
         }
+    }
+
+    fn toolCallForAsk(self: *Reducer, run: *Run, native_id: []const u8) []const u8 {
+        if (native_id.len == 0) return "";
+        const tool = self.findTool(native_id) orelse return "";
+        if (!std.mem.eql(u8, tool.run_id, run.id)) return "";
+        return tool.id;
     }
 
     fn openGate(self: *Reducer, message: rpc.Message) !void {
@@ -467,6 +474,7 @@ pub const Reducer = struct {
         if (request != .object) return;
         const ask = request.object;
         const tool_name = stringMember(ask, "tool_name") orelse "";
+        const tool_call_id = self.toolCallForAsk(run, stringMember(ask, "tool_use_id") orelse "");
 
         const id = try self.nextID("interaction");
         const title = stringMember(ask, "title") orelse
@@ -488,12 +496,13 @@ pub const Reducer = struct {
         try self.put(&payload, "responded_by", str(self.options.responder));
         try self.put(&payload, "session_id", str(self.options.session_id));
         try self.put(&payload, "run_id", str(run.id));
+        if (tool_call_id.len > 0) try self.put(&payload, "tool_call_id", str(tool_call_id));
         try self.put(&payload, "title", str(title));
         if (description.len > 0) try self.put(&payload, "description", str(description));
         try self.put(&payload, "questions", try self.decisionQuestions(prompt));
         try self.put(&payload, "allow_cancel", .{ .bool = true });
 
-        const requested = try self.emitTurn(run, "user.input.requested", .{ .object = payload }, id, "");
+        const requested = try self.emitTurn(run, "user.input.requested", .{ .object = payload }, id, "", tool_call_id);
         try self.gates.append(self.allocator(), .{ .id = id, .run_id = run.id, .request_id = message.request_id, .requested_event = requested });
         _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "waiting_for_input", id));
     }
@@ -545,7 +554,7 @@ pub const Reducer = struct {
         try self.put(&payload, "status", str("submitted"));
         try self.put(&payload, "answers", .{ .array = answers });
 
-        _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event);
+        _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event, "");
         _ = try self.emit(run, "run.status.updated", try self.statusPayload(run, "running", ""));
     }
 
@@ -810,7 +819,7 @@ pub const Reducer = struct {
             try self.put(&payload, "session_id", str(self.options.session_id));
             try self.put(&payload, "run_id", str(run.id));
             try self.put(&payload, "status", str("cancelled"));
-            _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event);
+            _ = try self.emitTurn(run, "user.input.resolved", .{ .object = payload }, gate.id, gate.requested_event, "");
         }
         self.gates = kept_gates;
 
@@ -1428,6 +1437,39 @@ test "the harness names the gate when it can, and the reducer names it when it c
     const bare_payload = firstPayload(&bare, "user.input.requested").?;
     try testing.expectEqualStrings("Use Bash", bare_payload.get("title").?.string);
     try testing.expectEqual(@as(?std.json.Value, null), bare_payload.get("description"));
+}
+
+test "the permission ask names the tool call the run announced" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var named = Reducer.init(&arena, .{});
+    named.open();
+    try startedRun(&named, scratch, "turn-1");
+    try observeText(&named, scratch,
+        \\{"type":"assistant","session_id":"s","message":{"model":"model-a","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]},"uuid":"a1"}
+    );
+    const requested = firstPayload(&named, "action.call.requested").?;
+    const call = requested.get("tool_call_id").?.string;
+    try gateRequest(&named, scratch, "");
+    const ask = firstPayload(&named, "user.input.requested").?;
+    try testing.expectEqualStrings(call, ask.get("tool_call_id").?.string);
+    for (named.envelopes.items) |envelope| {
+        if (!std.mem.eql(u8, envelope.object.get("type").?.string, "user.input.requested")) continue;
+        try testing.expectEqualStrings(call, envelope.object.get("tool_call_id").?.string);
+    }
+
+    var unannounced = Reducer.init(&arena, .{});
+    unannounced.open();
+    try startedRun(&unannounced, scratch, "turn-1");
+    try gateRequest(&unannounced, scratch, "");
+    const bare = firstPayload(&unannounced, "user.input.requested").?;
+    try testing.expectEqual(@as(?std.json.Value, null), bare.get("tool_call_id"));
+    for (unannounced.envelopes.items) |envelope| {
+        if (!std.mem.eql(u8, envelope.object.get("type").?.string, "user.input.requested")) continue;
+        try testing.expectEqual(@as(?std.json.Value, null), envelope.object.get("tool_call_id"));
+    }
 }
 
 test "a gate is resolved once, whatever the second answer says" {
