@@ -240,10 +240,10 @@ subscriptions on one session stay attributable.
 | --- | --- |
 | `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence of that run it missed |
 | `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
-| `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
+| `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes, and `run_id` and `session_id` say which — `TestEventsSignalAnOverflowWithItsRunAndCursor` |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available` and `latest_available` bound what is |
-| `"event":"oap-session-closed"` | the session closed under the subscription |
-| `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it |
+| `"event":"oap-session-closed"` | the session closed under the subscription, named by `session_id` — `TestEventsSignalAClosedSessionByName` |
+| `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
 
 `envelope` and `oap-subscribed` are the only two that do not end the
@@ -1016,14 +1016,19 @@ place a differential test would otherwise not see.
   touches is the **default** — 10 s for the hub's session sweep, 5 s per stdio
   teardown stage — so a port could choose any default and nothing would say a
   host had to wait that long.
-- **G9 — two subscription endings are never driven over stdio, and a third is
-  driven only by its name.** `oap-overflow` and `oap-session-closed` have their
-  minimal shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes
-  each real line, but no stdio test produces either ending and reads it off the
-  wire — so the members they carry when written in anger are unpinned.
-  `oap-frame-limit` **is** driven, by
-  `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`, but
-  only its `event` name is asserted, so its members are unpinned the same way.
+- **G9 — closed.** `oap-overflow` and `oap-session-closed` had their minimal
+  shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes each
+  real line, but no stdio test produced either ending and read it off the wire.
+  `TestEventsSignalAnOverflowWithItsRunAndCursor` now floods a session behind a
+  one-deep write queue and pins the overflow's `session_id`, `run_id`,
+  `last_sequence` and `message`;
+  `TestEventsSignalAClosedSessionByName` closes a session under a live stream
+  and pins the closing signal's `session_id` and `message`. The third,
+  `oap-frame-limit`, **was** driven by
+  `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription` but
+  only its `event` name was asserted;
+  `TestTheFrameLimitSignalCarriesItsRunAndSequence` now pins its `run_id`,
+  `sequence` and `message` against the run and cursor the stream stopped at.
   Over HTTP, `oap-overflow` is pinned, and a session closing under a stream is
   pinned too but as a **silent end** with no named signal — the SSE layer
   defines exactly three, `oap-subscribed`, `oap-overflow` and `oap-replay-gap`.
