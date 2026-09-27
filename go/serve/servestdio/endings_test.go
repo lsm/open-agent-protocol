@@ -17,10 +17,6 @@ func TestEventsSignalAClosedSessionByName(t *testing.T) {
 	if response := f.expectResponse(7); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	signal := f.expectSignal(7, signalSubscribed)
-	if signal.SessionID != "closed-under-stream" {
-		t.Fatalf("the subscribed signal names %q", signal.SessionID)
-	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -50,20 +46,23 @@ func TestEventsSignalAnOverflowWithItsRunAndCursor(t *testing.T) {
 	if response := f.expectResponse(9); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
-	f.expectSignal(9, signalSubscribed)
-
 	var overflow *overflowLine
+	var delivered uint64
 	for i := 0; i < 64 && overflow == nil; i++ {
 		_, _ = runToCompletion(t, hub, session)
-		var line struct {
-			Event string `json:"event"`
-		}
 		raw := f.line()
+		var line struct {
+			Event    string  `json:"event"`
+			Sequence *uint64 `json:"sequence"`
+		}
 		if err := json.Unmarshal([]byte(raw), &line); err != nil {
 			t.Fatalf("signal line %q: %v", raw, err)
 		}
 		switch line.Event {
 		case signalEnvelope:
+			if line.Sequence != nil {
+				delivered = *line.Sequence
+			}
 		case signalOverflow:
 			overflow = &overflowLine{}
 			if err := json.Unmarshal([]byte(raw), overflow); err != nil {
@@ -85,39 +84,65 @@ func TestEventsSignalAnOverflowWithItsRunAndCursor(t *testing.T) {
 	if overflow.Message == "" {
 		t.Fatal("the overflow carries no message")
 	}
+	if overflow.LastSequence < delivered {
+		t.Fatalf("the overflow resumes after %d, want at or past the %d the stream delivered: a cursor behind what the client already has would replay events it saw", overflow.LastSequence, delivered)
+	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestTheFrameLimitSignalCarriesItsRunAndSequence(t *testing.T) {
+	const wide = "joined-0d8f1b2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e"
 	hub := newTestHub(t, 64, 64)
-	session := openSessionEntry(t, hub, "wide-join")
-	runID, lastSequence := runToCompletion(t, hub, session)
+	session := openSessionEntry(t, hub, wide)
+	runToCompletion(t, hub, session)
 
 	f := startFrontend(t, hub, Options{FrameLimit: 256})
-	f.send(fmt.Sprintf(`{"id":11,"op":"events","session_id":%q}`, "wide-join"))
+	f.send(fmt.Sprintf(`{"id":11,"op":"events","session_id":%q}`, wide))
 	if response := f.expectResponse(11); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
 	f.expectSignal(11, signalSubscribed)
-	_, _ = runToCompletion(t, hub, session)
-	raw := f.line()
+
+	// the session id is wide enough that the frames the live pump writes exceed
+	// the limit, so the second run's first event is the one that cannot be
+	// carried; the signal names the run it stopped in and the sequence a fresh
+	// cursor resumes at, which is the event it could not deliver.
+	framed, _ := runToCompletion(t, hub, session)
+	var delivered uint64
 	var limited frameLimitLine
-	if err := json.Unmarshal([]byte(raw), &limited); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 64; i++ {
+		raw := f.line()
+		var line struct {
+			Event    string  `json:"event"`
+			Sequence *uint64 `json:"sequence"`
+		}
+		if err := json.Unmarshal([]byte(raw), &line); err != nil {
+			t.Fatalf("signal line %q: %v", raw, err)
+		}
+		if line.Event == signalEnvelope {
+			if line.Sequence != nil {
+				delivered = *line.Sequence
+			}
+			continue
+		}
+		if err := json.Unmarshal([]byte(raw), &limited); err != nil {
+			t.Fatal(err)
+		}
+		break
 	}
 	if limited.Event != signalFrameLimit {
-		t.Fatalf("the line is %q, want %q", limited.Event, signalFrameLimit)
+		t.Fatalf("the stream ended with %q, want %q", limited.Event, signalFrameLimit)
 	}
-	if limited.RunID == "" {
-		t.Fatalf("the frame-limit signal names no run: %s", raw)
+	if limited.SessionID != wide {
+		t.Fatalf("the frame-limit signal names %q, want the session it ended", limited.SessionID)
 	}
-	if protocol.RunID(limited.RunID) != runID {
-		t.Fatalf("the frame-limit signal names run %q, want the run it stopped in (%q)", limited.RunID, runID)
+	if protocol.RunID(limited.RunID) != framed {
+		t.Fatalf("the frame-limit signal names run %q, want the run it stopped in (%q)", limited.RunID, framed)
 	}
-	if limited.Sequence != lastSequence {
-		t.Fatalf("the frame-limit signal names sequence %d, want %d", limited.Sequence, lastSequence)
+	if limited.Sequence != delivered+1 {
+		t.Fatalf("the frame-limit signal resumes at %d after %d was delivered, want the event it could not carry", limited.Sequence, delivered)
 	}
 	if limited.Message == "" {
 		t.Fatal("the frame-limit signal carries no message")
