@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const oap_types = @import("oap_types");
 const config = @import("config");
 const contract = @import("contract");
@@ -130,6 +131,8 @@ pub const Builder = struct {
     context: *anyopaque,
     make: *const fn (context: *anyopaque, arena: std.mem.Allocator, entry: config.AdapterEntry) contract.Failure!contract.Adapter,
 };
+
+const pollable = builtin.os.tag != .windows;
 
 pub fn expiredAt(expires_ns: u64, at_ns: u64) bool {
     return expires_ns <= at_ns;
@@ -680,11 +683,11 @@ pub const Hub = struct {
         defer scratch.deinit();
         const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
         var watched = std.ArrayList(std.posix.pollfd).empty;
-        for (self.entries.items) |*entry| {
+        if (pollable) for (self.entries.items) |*entry| {
             if (entry.closed) continue;
             const handle = handleOf(entry) orelse continue;
             try watched.append(scratch.allocator(), .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
-        }
+        };
         try self.drive(share);
         if (watched.items.len > 0) {
             const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
