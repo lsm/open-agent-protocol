@@ -91,7 +91,6 @@ func TestOpenOpRefusesAStaleRevisionOnTheSubscribePath(t *testing.T) {
 	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"memory","request":%s}`, request))
 	response := f.expectResponse(1)
 	requireCode(t, response, "stale_capabilities")
-	cited := "a-revision-from-another-release"
 	if response.Error.Details["current_revision"] != cited {
 		t.Fatalf("current_revision = %v, want the revision the request cited (%q)", response.Error.Details["current_revision"], cited)
 	}
