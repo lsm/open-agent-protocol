@@ -1457,3 +1457,47 @@ func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	client := newFakeClient()
+	s := openTest(t, client, 32)
+	_, stream := submitTest(t, s)
+	trace := []protocol.Envelope{adaptertest.Next(t, stream, time.Second)}
+	for i, id := range []string{"ui-1", "ui-2"} {
+		client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: id, Method: native.ExtensionInput, Title: "Name " + id})
+		requested := adaptertest.Next(t, stream, time.Second)
+		if requested.Type != protocol.TypeUserInputRequested {
+			t.Fatalf("envelope %d = %s, want the prompt", i, requested.Type)
+		}
+		trace = append(trace, requested, adaptertest.Next(t, stream, time.Second))
+	}
+	client.emit(t, map[string]any{"type": "agent_end", "messages": []any{assistant("done", "stop")}, "willRetry": false})
+	client.emit(t, map[string]any{"type": "agent_settled"})
+	events := append(trace, adaptertest.Drain(t, stream, time.Second)...)
+
+	var asked, settled []protocol.InteractionID
+	for _, event := range events {
+		if event.Type != protocol.TypeUserInputRequested && event.Type != protocol.TypeUserInputResolved {
+			continue
+		}
+		var payload struct {
+			InteractionID protocol.InteractionID `json:"interaction_id"`
+		}
+		if err := event.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == protocol.TypeUserInputRequested {
+			asked = append(asked, payload.InteractionID)
+		} else {
+			settled = append(settled, payload.InteractionID)
+		}
+	}
+	if len(asked) != 2 || len(settled) != 2 {
+		t.Fatalf("asked %v and settled %v, want two of each", asked, settled)
+	}
+	for i := range asked {
+		if settled[i] != asked[i] {
+			t.Fatalf("settled %v, want the order they were asked in %v", settled, asked)
+		}
+	}
+}

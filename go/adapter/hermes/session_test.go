@@ -1766,3 +1766,40 @@ func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	}
 	validateWithCapabilities(t, admitted.response, events)
 }
+
+func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.gate(native.RequestClarify, `{"question":"first?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"question":"second?","choices":["c","d"]}`)
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
+	admitted := <-ch
+	events := drain(t, admitted.stream)
+
+	var asked, resolved []protocol.InteractionID
+	for _, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeUserInputRequested:
+			var payload protocol.UserInputRequestedPayload
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			asked = append(asked, payload.InteractionID)
+		case protocol.TypeUserInputResolved:
+			var payload protocol.UserInputResolvedPayload
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			resolved = append(resolved, payload.InteractionID)
+		}
+	}
+	if len(asked) != 2 || len(resolved) != 2 {
+		t.Fatalf("asked %v and resolved %v, want two of each", asked, resolved)
+	}
+	for i := range asked {
+		if resolved[i] != asked[i] {
+			t.Fatalf("resolved %v, want the order they were asked in %v", resolved, asked)
+		}
+	}
+	validateWithCapabilities(t, admitted.response, events)
+}
