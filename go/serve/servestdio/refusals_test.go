@@ -105,6 +105,8 @@ func TestResolveOpReportsAnUnknownRun(t *testing.T) {
 		SessionID:     protocol.SessionID("resolve-unknown"),
 		RunID:         protocol.RunID("run-does-not-exist"),
 		RequestedBy:   protocol.ParticipantID("user"),
+		RespondedBy:   protocol.ParticipantID("user"),
+		ChoiceID:      "approve",
 		Granted:       true,
 	}, "resolve-unknown", "run-does-not-exist")
 	f.send(fmt.Sprintf(`{"id":2,"op":"resolve","session_id":%q,"request":%s}`, "resolve-unknown", resolve))
@@ -123,6 +125,7 @@ func TestResolveOpReportsARefusedResolution(t *testing.T) {
 		RunID:         protocol.RunID("run-01"),
 		RequestedBy:   protocol.ParticipantID("user"),
 		RespondedBy:   protocol.ParticipantID("someone-else"),
+		ChoiceID:      "approve",
 		Granted:       true,
 	}, "resolve-refused", "run-01")
 	f.send(fmt.Sprintf(`{"id":3,"op":"resolve","session_id":%q,"request":%s}`, "resolve-refused", resolve))
