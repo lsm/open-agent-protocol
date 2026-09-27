@@ -59,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An expired hub hold is now freed by the hub. `hold()` returned the live
+  `*Subscription`, and `release` never marked it detached, so `reclaim()` skipped it
+  forever: the only thing that could finish an abandoned hold was the holder calling
+  `close()` on a pointer it was still expected to own, and reading that pointer
+  after the hub freed it was a use-after-free. `hold()` now returns a small `Hold`
+  value that names only when it lapses — nothing to dangle on, and nothing for the
+  holder to do — and releasing a subscription marks it detached, which is what makes
+  it reclaimable. An expired hold with events queued now leaves the hub's hold list,
+  its subscriber list and its subscription list all empty, asserted on those counters
+  rather than on the allocator. Adoption is unchanged: the request that follows still
+  receives the live subscription with the events that arrived while it was held.
 - A config document naming a negative `journal_capacity` for an adapter is refused instead of loaded with the default. Every Go constructor treats `<= 0` as "unspecified", so a value no operator would write reported success and silently retained a different depth; the Zig loader already refused one with `ConfigRefused`. A document naming `0` still keeps the default in both trees, because that is a request for the default rather than a malformed value.
 - The `Host` allowlist refusal on the HTTP transport is an `error.response` carrying the code `unrecognized_host`, keeping the 403 and its wording, where it answered a bare `{"error": …}` with no code — a shape a client cannot branch on, and the one divergence that failed a differential comparison on its first request. `TestHostAllowlist` asserts the body, which is why the shape had drifted unpinned.
 - A Claude Code permission ask now names the tool call it is for. When `can_use_tool` arrives for a `tool_use_id` the run already announced, both trees put `tool_call_id` on the ask's envelope and in its payload; an ask for a call the run never announced leaves both empty, as before. A client that decides by tool could otherwise only learn which tool an ask was for by parsing the question's prompt text. The envelope's `tool_call_id` follows `turn_id` where the schema orders them, so the two trees serialise an ask that names a tool call identically.

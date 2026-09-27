@@ -131,6 +131,18 @@ pub const Builder = struct {
     make: *const fn (context: *anyopaque, arena: std.mem.Allocator, entry: config.AdapterEntry) contract.Failure!contract.Adapter,
 };
 
+pub fn expiredAt(expires_ns: u64, at_ns: u64) bool {
+    return expires_ns <= at_ns;
+}
+
+pub const Hold = struct {
+    expires_ns: u64,
+
+    pub fn expired(self: Hold, at_ns: u64) bool {
+        return expiredAt(self.expires_ns, at_ns);
+    }
+};
+
 pub const Subscription = struct {
     hub: *Hub,
     session_id: []u8,
@@ -612,7 +624,7 @@ pub const Hub = struct {
         return subscription;
     }
 
-    pub fn hold(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!*Subscription {
+    pub fn hold(self: *Hub, arena: std.mem.Allocator, session_id: []const u8) Failure!Hold {
         const subscription = try self.subscribe(arena, session_id, .{});
         errdefer self.discard(subscription, .expired);
         const expires = self.clock() + self.hold_ns;
@@ -620,14 +632,14 @@ pub const Hub = struct {
         self.holds.appendAssumeCapacity(.{ .subscription = subscription, .expires_ns = expires });
         subscription.held = true;
         subscription.expires_ns = expires;
-        return subscription;
+        return .{ .expires_ns = expires };
     }
 
     pub fn expireHolds(self: *Hub) void {
         const now = self.clock();
         var index: usize = 0;
         while (index < self.holds.items.len) {
-            if (self.holds.items[index].expires_ns > now) {
+            if (!expiredAt(self.holds.items[index].expires_ns, now)) {
                 index += 1;
                 continue;
             }
@@ -729,6 +741,7 @@ pub const Hub = struct {
     fn release(self: *Hub, subscription: *Subscription, ending: Ending) void {
         subscription.ending = ending;
         subscription.held = false;
+        subscription.detached = true;
         self.detach(subscription);
         subscription.forgetEvents(self.allocator);
     }
@@ -1405,14 +1418,14 @@ test "an overflowed hold is adopted so the adopter learns the cursor it lost" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "starved" });
     const held = try hub.hold(arena, opened.session_id);
+    try testing.expect(!held.expired(testClock()));
     const request = try submitFor(arena, "starved");
     _ = try hub.submit(arena, "starved", &request);
     try hub.pump(testing.allocator, 0);
-    try testing.expectEqual(Ending.overflow, held.ending);
 
     const adopted = try hub.subscribe(arena, opened.session_id, .{});
-    try testing.expectEqual(held, adopted);
     try testing.expectEqual(Ending.overflow, adopted.ending);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
 }
 
 test "a finished subscription is reclaimed, so a long-lived hub's memory is bounded" {
@@ -1881,12 +1894,14 @@ test "a held subscription is adopted by the request that follows" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "held" });
     const held = try hub.hold(arena, opened.session_id);
+    try testing.expect(!held.expired(testClock()));
     const request = try submitFor(arena, "held");
     _ = try hub.submit(arena, "held", &request);
     try hub.pump(testing.allocator, 0);
     const adopted = try hub.subscribe(arena, opened.session_id, .{});
-    try testing.expectEqual(held, adopted);
     try testing.expect(!adopted.held);
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
     const first = adopted.next().?;
     try testing.expectEqual(@as(u64, 1), first.sequence);
 }
@@ -1902,24 +1917,46 @@ test "a hold nothing adopts is released when its window closes" {
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "abandoned" });
     const held = try hub.hold(arena, opened.session_id);
-    try testing.expect(held.held);
+    try testing.expect(!held.expired(testClock()));
     try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
     hub.expireHolds();
     try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
     tick(100 * std.time.ns_per_ms);
+    try testing.expect(held.expired(testClock()));
     hub.expireHolds();
     try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
     try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
-    try testing.expectEqual(Ending.expired, held.ending);
-    try hub.pump(testing.allocator, 0);
-    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
-
-    held.close();
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
 
     const fresh = try hub.subscribe(arena, opened.session_id, .{});
     try testing.expectEqual(Ending.open, fresh.ending);
+}
+
+test "an expired hold with events queued leaves the hub with nothing outstanding" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .hold_ns = 50 * std.time.ns_per_ms });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "queued" });
+    const held = try hub.hold(arena, opened.session_id);
+    const request = try submitFor(arena, "queued");
+    _ = try hub.submit(arena, "queued", &request);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
+    try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+
+    tick(100 * std.time.ns_per_ms);
+    try testing.expect(held.expired(testClock()));
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
 }
 
 test "a cursor-bearing subscription does not adopt a hold, and releases it" {
@@ -1932,18 +1969,16 @@ test "a cursor-bearing subscription does not adopt a hold, and releases it" {
     const arena = scratch.allocator();
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "cursored" });
-    const held = try hub.hold(arena, opened.session_id);
+    _ = try hub.hold(arena, opened.session_id);
     const request = try submitFor(arena, "cursored");
     _ = try hub.submit(arena, "cursored", &request);
     try hub.pump(testing.allocator, 0);
     const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
-    try testing.expect(held != replayed);
     try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
-    try testing.expectEqual(Ending.expired, held.ending);
     try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
-    held.close();
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try testing.expectEqual(Ending.open, replayed.ending);
 }
 
 test "closing a session ends every subscription under it, and a closed one is refused" {
@@ -2081,18 +2116,20 @@ test "a cursor may name the overflow a hold reported, which the discard just fre
     const arena = scratch.allocator();
 
     const opened = try hub.open(arena, "memory", .{ .session_id = "resumer" });
-    const held = try hub.hold(arena, opened.session_id);
+    _ = try hub.hold(arena, opened.session_id);
     const request = try submitFor(arena, "resumer");
     _ = try hub.submit(arena, "resumer", &request);
     try hub.pump(testing.allocator, 0);
-    try testing.expectEqual(Ending.overflow, held.ending);
 
+    try testing.expectEqual(@as(usize, 1), hub.holds.items.len);
     const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = "run-1", .after = 1 });
+    try testing.expectEqual(@as(usize, 0), hub.holds.items.len);
     try testing.expectEqualStrings("run-1", resumed.run_id);
     try testing.expectEqual(@as(u64, 1), resumed.highest);
     const first = resumed.next().?;
     try testing.expectEqual(@as(u64, 2), first.sequence);
-    try testing.expectEqual(Ending.expired, held.ending);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
 }
 
 test "a catalog is checked before it is served, and stamped with its revision" {
