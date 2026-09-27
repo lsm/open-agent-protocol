@@ -267,6 +267,56 @@ one-at-a-time vs all drain behavior.
 - Corrupt/oversized session files are skipped during discovery without
   failing the scan (defensive persistence).
 
+### The store, read at this pin
+
+Everything above is at this pin already; what follows is the same subject read
+in the source at `f07218c4d4bbc12bef056a7058c3dd49dfe41abe`, for the reattach
+Decision 0039 stages.
+
+**The store lives under the agent directory, keyed by the working directory.**
+`getDefaultSessionDirPath` in `packages/coding-agent/src/core/session-manager.ts`
+resolves the cwd, strips its leading separator, replaces every remaining `/`,
+`\` and `:` with `-`, and joins the result as `--<encoded>--` under
+`<agentDir>/sessions/`. The default agent directory is `~/.pi/agent`, so a
+session's directory name *is* its cwd. The header carries `cwd` as well, and
+`sessionCwdMatches` compares it against the resolved cwd when discovery
+filters by it (`findMostRecentSession(sessionDir, cwd?)` returns the most
+recent match, or `null`). So a moved project is a different store under the
+same home, exactly as for Claude Code — the cwd is in the key twice, once in
+the directory name and once in the header.
+
+**A load restores the transcript tree and the context derived from it.**
+`_setSessionFile` reads the file with `loadEntriesFromFile` and hands the
+entries to `_loadEntries`, which rebuilds the id and parent indexes; the model
+context comes from `buildContextEntries(this.getEntries(), this.leafId,
+this.byId)`. What a load does *not* restore is the live stream: the
+`entry_appended` event is not a comprehensive feed of those writes (above), so
+the tree is a reconstruction of the transcript and not a replay of the run that
+wrote it.
+
+**What it answers when the store is not there: two different answers, and
+neither is a not-found.** Opening a path that does not exist creates it; a
+zero-length file is initialised with a valid header; a file that exists, is
+non-empty and parses to zero entries throws `Session file is not a valid pi
+session: <path>`. Discovery, which is what a reattach would use to find a
+session by id, has no error at all — `findMostRecentSession` returns `null`.
+Session ids are `uuidv7` and `assertValidSessionId` admits only
+`[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?`, so an id that could never have
+been written is rejected before any file is touched. A harness that cannot
+find what it was given therefore refuses with a *parse* failure or with null
+rather than with a named absence, which is the same place 0039's
+`unsupported_feature` has to be manufactured as for ACP.
+
+**What the Go adapter does with all of it: it knows the names and sends none
+of them.** `go/adapter/pi/internal/native/types.go` types `switch_session`,
+`get_entries`, `get_tree`, `fork`, `clone` and `get_fork_messages` as
+commands, and `go/adapter/pi` sends `new_session`, `abort`, `get_state` and the
+rest — but never a `switch_session` or a `get_entries`. So pi has no reattach
+today either, and the two operations 0039's evidence table names for it are
+reachable and unused. The adapter advertises `run.resume` and `run.replay` as
+`degraded` over its own bounded journal, which is a different capability from
+reattaching to the harness's store and should not be read as one.
+
 ## P0 mismatches and implemented policy
 
 1. **No capability negotiation:** the descriptor is synthesized; `get_state`,
