@@ -245,6 +245,81 @@ func TestRunToTerminalCancelsTheRunWhenItsContextEnds(t *testing.T) {
 	}
 }
 
+func TestRunToTerminalPrefersAQueuedEventOverAFiredStall(t *testing.T) {
+	ask := protocol.UserInputRequestedPayload{
+		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Continue?",
+		Questions: []protocol.InputQuestion{{
+			ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+			Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+		}},
+	}
+	results := []adapter.Result{{Envelope: envelope(protocol.TypeUserInputRequested, 1, ask)}}
+	for sequence := 2; sequence <= 12; sequence++ {
+		results = append(results, adapter.Result{Envelope: envelope(protocol.TypeContentDelta, sequence, protocol.ContentDeltaPayload{
+			SessionID: "session-1", RunID: "run-1", MessageID: "message-1",
+			Part: protocol.ContentPart{Type: protocol.ContentText, Text: "working"},
+		})})
+	}
+	results = append(results, adapter.Result{Envelope: envelope(protocol.TypeRunCompleted, 13, protocol.RunCompletedPayload{
+		SessionID: "session-1", RunID: "run-1",
+		FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+	})})
+	session := &scriptedSession{results: results}
+	outcome, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		StallWindow: 5 * time.Millisecond,
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			time.Sleep(20 * time.Millisecond)
+			return adapter.GateAnswer{Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want the run to finish rather than stall behind its own policy", err)
+	}
+	if outcome.Text != "done" {
+		t.Fatalf("text = %q", outcome.Text)
+	}
+}
+
+func TestRunToTerminalStopsWaitingForAnOverflowedStreamThatNeverCloses(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	session := &scriptedSession{
+		results: []adapter.Result{
+			{Envelope: envelope(protocol.TypeContentDelta, 1, protocol.ContentDeltaPayload{SessionID: "session-1", RunID: "run-1", MessageID: "message-1", Part: protocol.ContentPart{Type: protocol.ContentText, Text: "hi"}})},
+			{Error: adapter.ErrEventStreamOverflow},
+		},
+		hold: true,
+	}
+	session.resume = &scriptedSession{results: []adapter.Result{
+		{Envelope: envelope(protocol.TypeRunCompleted, 2, protocol.RunCompletedPayload{SessionID: "session-1", RunID: "run-1", FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")}})},
+	}}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_, err := adapter.RunToTerminal(ctx, session, plainSubmit, adapter.RunOptions{StallWindow: time.Second})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the cancelled context rather than a wait on a stream that never closes", err)
+	}
+}
+
+func TestRunToTerminalCancelsTheQueuedRunTheAdmissionNamed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &scriptedSession{admissionRun: "run-9", hold: true}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	_, err := adapter.RunToTerminal(ctx, session, plainSubmit, adapter.RunOptions{StallWindow: time.Second})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the cancelled context", err)
+	}
+	if session.cancelled != "run-9" {
+		t.Fatalf("cancelled %q, want the run the admission named", session.cancelled)
+	}
+}
+
 func envelope(typ protocol.EnvelopeType, sequence int, payload any) protocol.Envelope {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -271,6 +346,7 @@ type scriptedSession struct {
 	resume        *scriptedSession
 	resumeError   error
 	recoveryGap   *adapter.ReplayGap
+	admissionRun  protocol.RunID
 	resumes       int
 	resumeRequest adapter.ResumeRequest
 	cancelled     protocol.RunID
@@ -285,7 +361,7 @@ func (s *scriptedSession) Submit(context.Context, protocol.MessageSubmitRequest)
 	if !s.hold {
 		close(stream)
 	}
-	return protocol.MessageSubmitResponse{SessionID: "session-1", Accepted: true, Admission: protocol.AdmissionStarted}, stream, nil
+	return protocol.MessageSubmitResponse{SessionID: "session-1", Accepted: true, Admission: protocol.AdmissionStarted, RunID: s.admissionRun}, stream, nil
 }
 
 func (s *scriptedSession) State(context.Context) (protocol.SessionState, error) {

@@ -197,6 +197,20 @@ func resolveGate(ctx context.Context, session Session, gate Gate) error {
 	})
 }
 
+func awaitResolves(ctx context.Context, resolving *sync.WaitGroup) error {
+	settled := make(chan struct{})
+	go func() {
+		resolving.Wait()
+		close(settled)
+	}()
+	select {
+	case <-settled:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func inputGate(runID protocol.RunID, envelope protocol.Envelope, calls map[protocol.ToolCallID]announcedCall) (Gate, error) {
 	var payload protocol.UserInputRequestedPayload
 	if err := envelope.DecodePayload(&payload); err != nil {
@@ -234,7 +248,7 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 	}
 
 	submitCtx, cancelSubmit := context.WithTimeout(ctx, stall)
-	_, events, err := session.Submit(submitCtx, request)
+	admission, events, err := session.Submit(submitCtx, request)
 	submitStalled := ctx.Err() == nil && errors.Is(submitCtx.Err(), context.DeadlineExceeded)
 	cancelSubmit()
 	if err != nil {
@@ -246,7 +260,6 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 
 	var (
 		outcome    RunOutcome
-		runID      protocol.RunID
 		lastSeq    uint64
 		terminal   bool
 		resumes    int
@@ -256,6 +269,7 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 		done       = make(chan struct{})
 	)
 	defer close(done)
+	runID := admission.RunID
 
 	queue := make(chan Result, runEventQueue)
 	readerDone := make(chan struct{})
@@ -278,6 +292,8 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 
 drain:
 	for {
+		var result Result
+		var ok bool
 		select {
 		case <-ctx.Done():
 			if runID != "" {
@@ -287,124 +303,139 @@ drain:
 		case gateErr := <-resolveErr:
 			return outcome, gateErr
 		case <-stallTimer.C:
-			resolving.Wait()
-			return outcome, &StalledError{Wait: stall}
-		case result, ok := <-queue:
-			if !ok {
-				break drain
+			select {
+			case result, ok = <-queue:
+			default:
+				if err := awaitResolves(ctx, &resolving); err != nil {
+					return outcome, err
+				}
+				return outcome, &StalledError{Wait: stall}
 			}
-			if !stallTimer.Stop() {
-				select {
-				case <-stallTimer.C:
-				default:
-				}
-			}
-			stallTimer.Reset(stall)
-			if result.Error != nil {
-				if !errors.Is(result.Error, ErrEventStreamOverflow) {
-					return outcome, result.Error
-				}
-				if runID == "" || resumes >= maxResumes {
-					return outcome, fmt.Errorf("adapter: resume bound %d reached: %w", maxResumes, result.Error)
-				}
-				resumes++
-				recovery, replay, resumeErr := session.Resume(ctx, ResumeRequest{RunID: runID, AfterSequence: lastSeq})
-				var gap *ReplayGap
-				switch {
-				case errors.As(resumeErr, &gap):
-					return outcome, gap
-				case resumeErr != nil:
-					return outcome, resumeErr
-				case recovery.ReplayGap != nil:
-					return outcome, recovery.ReplayGap
-				case replay == nil:
-					return outcome, ErrResumeUnsupported
-				}
-				<-readerDone
-				queue = make(chan Result, runEventQueue)
-				readerDone = make(chan struct{})
-				go pumpTo(replay, queue, done, readerDone)
-				continue drain
-			}
-
-			envelope := result.Envelope
-			if options.Observe != nil {
-				options.Observe(envelope)
-			}
-			if envelope.RunID != "" {
-				runID = envelope.RunID
-			}
-			if envelope.Sequence != nil {
-				if *envelope.Sequence <= lastSeq {
-					continue
-				}
-				lastSeq = *envelope.Sequence
-			}
-			switch envelope.Type {
-			case protocol.TypeActionCallRequested:
-				var call protocol.ActionCallPayload
-				if err := envelope.DecodePayload(&call); err != nil {
-					return outcome, err
-				}
-				calls[call.ToolCallID] = announcedCall{name: call.Name, arguments: call.ArgumentsJSON}
-			case protocol.TypeActionCallStarted:
-				outcome.ToolCalls++
-			case protocol.TypeUserInputRequested:
-				gate, err := inputGate(runID, envelope, calls)
-				if err != nil {
-					return outcome, err
-				}
-				if options.Policy == nil {
-					return outcome, ErrGateUnanswered
-				}
-				answer, err := options.Policy(ctx, gate)
-				if err != nil {
-					return outcome, err
-				}
-				gate.answer = answer
-				answerGate(gate)
-			case protocol.TypeActionPermissionRequested:
-				gate, err := permissionGate(runID, envelope, calls)
-				if err != nil {
-					return outcome, err
-				}
-				if options.Policy == nil {
-					return outcome, ErrGateUnanswered
-				}
-				answer, err := options.Policy(ctx, gate)
-				if err != nil {
-					return outcome, err
-				}
-				gate.answer = answer
-				answerGate(gate)
-			case protocol.TypeRunCompleted:
-				var completed protocol.RunCompletedPayload
-				if err := envelope.DecodePayload(&completed); err != nil {
-					return outcome, err
-				}
-				text, err := MessageText(completed.FinalResponse)
-				if err != nil {
-					return outcome, err
-				}
-				outcome.RunID = completed.RunID
-				outcome.Response = completed.FinalResponse
-				outcome.Text = text
-				outcome.Usage = completed.Usage
-				terminal = true
-			case protocol.TypeRunFailed:
-				var failed protocol.RunFailedPayload
-				if err := envelope.DecodePayload(&failed); err != nil {
-					return outcome, err
-				}
-				outcome.RunID = failed.RunID
-				outcome.Usage = failed.Usage
-				return outcome, &RunFailedError{Failure: failed.Error, Usage: failed.Usage}
-			case protocol.TypeRunCancelled:
-				return outcome, &RunCancelledError{}
+		case result, ok = <-queue:
+		}
+		if !ok {
+			break drain
+		}
+		if !stallTimer.Stop() {
+			select {
+			case <-stallTimer.C:
+			default:
 			}
 		}
+		stallTimer.Reset(stall)
+		if result.Error != nil {
+			if !errors.Is(result.Error, ErrEventStreamOverflow) {
+				return outcome, result.Error
+			}
+			if runID == "" {
+				return outcome, fmt.Errorf("adapter: the stream overflowed before the run named itself: %w", result.Error)
+			}
+			if resumes >= maxResumes {
+				return outcome, fmt.Errorf("adapter: resume bound %d reached: %w", maxResumes, result.Error)
+			}
+			resumes++
+			recovery, replay, resumeErr := session.Resume(ctx, ResumeRequest{RunID: runID, AfterSequence: lastSeq})
+			var gap *ReplayGap
+			switch {
+			case errors.As(resumeErr, &gap):
+				return outcome, gap
+			case resumeErr != nil:
+				return outcome, resumeErr
+			case recovery.ReplayGap != nil:
+				return outcome, recovery.ReplayGap
+			case replay == nil:
+				return outcome, ErrResumeUnsupported
+			}
+			select {
+			case <-readerDone:
+			case <-ctx.Done():
+				return outcome, ctx.Err()
+			}
+			queue = make(chan Result, runEventQueue)
+			readerDone = make(chan struct{})
+			go pumpTo(replay, queue, done, readerDone)
+			continue drain
+		}
+
+		envelope := result.Envelope
+		if options.Observe != nil {
+			options.Observe(envelope)
+		}
+		if envelope.RunID != "" {
+			runID = envelope.RunID
+		}
+		if envelope.Sequence != nil {
+			if *envelope.Sequence <= lastSeq {
+				continue
+			}
+			lastSeq = *envelope.Sequence
+		}
+		switch envelope.Type {
+		case protocol.TypeActionCallRequested:
+			var call protocol.ActionCallPayload
+			if err := envelope.DecodePayload(&call); err != nil {
+				return outcome, err
+			}
+			calls[call.ToolCallID] = announcedCall{name: call.Name, arguments: call.ArgumentsJSON}
+		case protocol.TypeActionCallStarted:
+			outcome.ToolCalls++
+		case protocol.TypeUserInputRequested:
+			gate, err := inputGate(runID, envelope, calls)
+			if err != nil {
+				return outcome, err
+			}
+			if options.Policy == nil {
+				return outcome, ErrGateUnanswered
+			}
+			answer, err := options.Policy(ctx, gate)
+			if err != nil {
+				return outcome, err
+			}
+			gate.answer = answer
+			answerGate(gate)
+		case protocol.TypeActionPermissionRequested:
+			gate, err := permissionGate(runID, envelope, calls)
+			if err != nil {
+				return outcome, err
+			}
+			if options.Policy == nil {
+				return outcome, ErrGateUnanswered
+			}
+			answer, err := options.Policy(ctx, gate)
+			if err != nil {
+				return outcome, err
+			}
+			gate.answer = answer
+			answerGate(gate)
+		case protocol.TypeRunCompleted:
+			var completed protocol.RunCompletedPayload
+			if err := envelope.DecodePayload(&completed); err != nil {
+				return outcome, err
+			}
+			text, err := MessageText(completed.FinalResponse)
+			if err != nil {
+				return outcome, err
+			}
+			outcome.RunID = completed.RunID
+			outcome.Response = completed.FinalResponse
+			outcome.Text = text
+			outcome.Usage = completed.Usage
+			terminal = true
+		case protocol.TypeRunFailed:
+			var failed protocol.RunFailedPayload
+			if err := envelope.DecodePayload(&failed); err != nil {
+				return outcome, err
+			}
+			outcome.RunID = failed.RunID
+			outcome.Usage = failed.Usage
+			return outcome, &RunFailedError{Failure: failed.Error, Usage: failed.Usage}
+		case protocol.TypeRunCancelled:
+			return outcome, &RunCancelledError{}
+		}
 	}
-	resolving.Wait()
+	if err := awaitResolves(ctx, &resolving); err != nil {
+		return outcome, err
+	}
 	select {
 	case gateErr := <-resolveErr:
 		return outcome, gateErr
