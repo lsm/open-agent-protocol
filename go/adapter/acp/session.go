@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"sync"
 
@@ -35,6 +36,7 @@ type session struct {
 	runs         map[protocol.RunID]*runState
 	tools        map[string]*toolState
 	interactions map[protocol.InteractionID]*permissionState
+	nextOrder    uint64
 	journal      []protocol.Envelope
 	stop         chan struct{}
 	stopOnce     sync.Once
@@ -58,6 +60,7 @@ type toolState struct {
 	title, name, kind, status                   string
 	rawInput, rawOutput, jsonContent, locations json.RawMessage
 	requested, started, terminal                bool
+	order                                       uint64
 }
 type permissionState struct {
 	id             protocol.InteractionID
@@ -67,6 +70,7 @@ type permissionState struct {
 	requestEventID protocol.EnvelopeID
 	options        map[string]native.PermissionOption
 	resolved       bool
+	order          uint64
 }
 
 func (s *session) Submit(ctx context.Context, req protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, base.EventStream, error) {
@@ -373,7 +377,8 @@ func (s *session) handleRequest(r *rpc.IncomingRequest) {
 		s.failActive("acp_invalid_permission", "empty permission options")
 		return
 	}
-	ps := &permissionState{id: id, run: run, tool: tool, request: r, options: opts}
+	ps := &permissionState{id: id, run: run, tool: tool, request: r, options: opts, order: s.nextOrder}
+	s.nextOrder++
 	s.interactions[id] = ps
 	s.mu.Unlock()
 
@@ -401,7 +406,8 @@ func (s *session) applyToolCall(run *runState, u native.ToolCall) bool {
 		return false
 	}
 	if t == nil {
-		t = &toolState{nativeID: u.ToolCallID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run}
+		t = &toolState{nativeID: u.ToolCallID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, order: s.nextOrder}
+		s.nextOrder++
 		s.tools[u.ToolCallID] = t
 	}
 	if t.terminal {
@@ -808,6 +814,8 @@ func (s *session) settleChildren(run *runState, cancel bool) {
 		}
 	}
 	s.mu.Unlock()
+	sort.Slice(permissions, func(i, j int) bool { return permissions[i].gate.order < permissions[j].gate.order })
+	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
 	for _, pending := range permissions {
 		p := pending.gate
 		_ = p.request.Respond(context.Background(), native.PermissionResponse{Outcome: native.PermissionOutcome{Outcome: "cancelled"}})
