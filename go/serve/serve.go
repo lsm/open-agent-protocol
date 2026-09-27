@@ -159,10 +159,14 @@ func (h *Hub) Sessions(ctx context.Context) []SessionStatus {
 	entries := h.sessions.list()
 	statuses := make([]SessionStatus, 0, len(entries))
 	for _, entry := range entries {
+		state, err := entry.State(ctx)
+		if entry.IsClosed() {
+
+			continue
+		}
 		status := SessionStatus{
 			SessionID: entry.id, Adapter: entry.adapterName, CreatedAt: entry.created,
 		}
-		state, err := entry.session.State(ctx)
 		status.Status = state.Status
 		status.ActiveRunID = state.ActiveRunID
 		status.ActiveRuns = state.ActiveRuns

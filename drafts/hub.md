@@ -648,7 +648,8 @@ flight.
   (409), `stale_capabilities` (409, with `expected_revision` and
   `current_revision` in `details`), `unsupported_feature` (400, for a tool
   source it will not attach), `capability_degraded` (400, for a feature the
-  request did not opt into), `probe_failed`, `open_failed` (502),
+  request did not opt into), `session_closed` (409, a session that was already
+  closed when the open probed it), `probe_failed`, `open_failed` (502),
   `request_cancelled`, `internal` — and, when the request set `subscribe`, the
   subscription bound can refuse this op specifically.
 - **pinned by:** `TestOpenOpOpensASession`, `TestOpenOpRefusals`,

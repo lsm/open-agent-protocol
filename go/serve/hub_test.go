@@ -1299,3 +1299,30 @@ func TestASubscriptionClosedByItsOwnerEndsTheStream(t *testing.T) {
 		t.Fatalf("closed subscription next = %v, want io.EOF", err)
 	}
 }
+
+func TestTheListingReleasesASessionTheAdapterReportsClosed(t *testing.T) {
+	manual := &manualAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	if _, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "listed-closed"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(hub.Sessions(ctx)); got != 1 {
+		t.Fatalf("the open session is listed as %d entries, want 1", got)
+	}
+	manual.active(t).reportClosed(base.ErrSessionClosed)
+	for _, entry := range hub.Sessions(ctx) {
+		if entry.SessionID == "listed-closed" {
+			t.Fatalf("the listing still carries a closed session: %+v, and reading it did not release it", entry)
+		}
+	}
+	if _, err := hub.Session("listed-closed"); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("the hub answered %v after the listing saw the session closed", err)
+	}
+}
