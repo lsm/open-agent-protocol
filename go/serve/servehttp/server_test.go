@@ -1107,7 +1107,7 @@ func TestQueuedSubmissionRoundTrips(t *testing.T) {
 
 func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
 	_, server := newServer(t, memoryRegistry(0), Options{})
-	for _, contentType := range []string{"text/plain", "", "application/json; charset=latin1"} {
+	for _, contentType := range []string{"text/plain", ""} {
 		response, data := post(t, server, "/adapters/memory/sessions", contentType, []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-g1"}}`))
 		if response.StatusCode != http.StatusUnsupportedMediaType {
 			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)

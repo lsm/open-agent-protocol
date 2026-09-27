@@ -395,7 +395,7 @@ both answers, at the budget and one byte over it.
 
 | HTTP rule | pinned by |
 | --- | --- |
-| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type` and a wrong charset, which take the same branch) |
+| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`, which takes the same branch) |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
@@ -905,9 +905,12 @@ place a differential test would otherwise not see.
 - **G1 — closed.** The status was pinned and nothing else: a `text/plain`
   open is refused `415`, and the assertion was on the status alone, so
   `unsupported_media_type` was written nowhere. `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode`
-  now pins the code, the absent `Content-Type` and a wrong charset, all of
-  which take the same branch. The stdio side still has no counterpart for
-  either, which is a property of the transport rather than a gap.
+  now pins the code and the absent `Content-Type`, both of which take the
+  same branch. The stdio side still has no counterpart for either, which
+  is a property of the transport rather than a gap. A **charset** is
+  another matter: `application/json; charset=latin1` parses to the right
+  media type and is admitted, and the draft says nothing about what a
+  charset must be.
 - **G2 — SSE's hangup ending a stream is unpinned.** A client that drops its
   connection ends the stream by construction — the request context cancels the
   subscription — but no test asserts it, and the stdio side has no way to
