@@ -656,7 +656,10 @@ flight.
   `TestHubOpenDefaultsParticipant`, `TestHubOpenClosesSessionWhenStateFails`,
   `TestHubOpenMarksClosedOnClosedConfirmation`, `TestOpenSession`,
   `TestOpenSessionAssignsIdentifier`, `TestOpenResponseCarriesTheWholeState`,
-  `TestOpenOpMatchesHTTP`, `TestAttachingOpenPinsOnlyWhatItCites`.
+  `TestOpenOpMatchesHTTP`, `TestAttachingOpenPinsOnlyWhatItCites`. The release is
+  not pinned yet: `TestHubOpenMarksClosedOnClosedConfirmation` still keeps a
+  session its adapter confirms closed and answers a subscribe to it with
+  `session_closed`, the kept entry D2 records.
 
 ### `sessions`
 
@@ -678,7 +681,9 @@ flight.
 - **errors:** `unknown_session` (404), `invalid_request`, `state_failed` (500),
   `internal` (500).
 - **pinned by:** `TestStateEndpoint`, `TestStateReportingClosedClosesEntry`,
-  `TestOpErrorCodesMirrorHTTP`.
+  `TestOpErrorCodesMirrorHTTP`. The release is not pinned yet:
+  `TestStateReportingClosedClosesEntry` still answers `state` on a session its
+  adapter reported closed with its final document, the kept entry D2 records.
 
 ### `models`
 
@@ -1102,7 +1107,7 @@ Go change, queued in
 | **Zig does** | The core keeps the entry, its journal and a cursor for every run it had, lists it as closed, and refuses every op on it with `session_closed`. |
 | **Why both are the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
 | **The fix** | [#443](https://github.com/lsm/open-agent-protocol/issues/443) releases the session in Go, and [#444](https://github.com/lsm/open-agent-protocol/issues/444) in Zig. Zig's destructive `close` is the right shape for it. |
-| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`, and `TestEventsOpRefusals` and `TestSSEOnClosedSession` for a request to a session already closed. The Zig side: `zig/src/hub/hub.zig`'s tests that a closed session is refused `session_closed` and listed as closed. |
+| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`, `TestEventsOpRefusals` and `TestSSEOnClosedSession` for a request to a session already closed, and `TestStateReportingClosedClosesEntry` and `TestHubOpenMarksClosedOnClosedConfirmation` for a session its adapter reported closed. The Zig side: `zig/src/hub/hub.zig`'s tests that a closed session is refused `session_closed` and listed as closed. |
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 
