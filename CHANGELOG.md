@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `zig/src/model_catalog.zig` grows a generic catalog loader, so a row in
+  `providers/catalog.json` reaches `/model` and the TUI picker by being
+  discovered rather than by being spelled out in code. The four rows the runtime
+  loaded by hand — Codex, Kimi, Anthropic, Copilot — were every row it loaded;
+  the other nineteen had implemented wires and pinned URLs and were still
+  unreachable, so setting `DEEPSEEK_API_KEY` bought nothing. The loader is
+  modelled on the custom-provider path in the same file, and a row is served
+  when it has three things: a credential `provider_credential.lookup` resolves
+  (an environment variable first, then the Keychain, per the order the epic
+  decided), a wire one of the built-in wire modules claims, and a models URL the
+  catalog composes. Discovery reads the models listing that URL names, caches it
+  at `~/.oapx/model_catalog/catalog-<id>.json` with the same 24-hour preference
+  and the same fetch timeout the custom path uses, and falls back to that cache
+  however old when the fetch fails, so an outage cannot empty the picker.
+  The cache name is deliberately not `custom-<id>.json`: a catalogued row and a
+  custom row can share an id, and one row's listing must never be served as the
+  other's. The built models carry the row's own id, wire and base URL, all read
+  through `provider_catalog` — the row's id and the wire id are the two facts
+  that stay literals, and everything else is data, so no base URL is written
+  twice. A row with no credential, no claimed wire, no endpoint or no models
+  listing is skipped rather than half-loaded, which is what keeps Ollama, Azure
+  and the two OAuth subscriptions out until their own shape is decided. A
+  catalogued row has no declared `models` list to fall back on, so a row whose
+  discovery yields nothing contributes nothing instead of inventing entries. One
+  row is enabled in this change, DeepSeek; the rest follow as their own steps.
+  Both the DeepSeek row and the six values it needs are asserted from the real
+  catalog, so a schema or a wire change that would quietly drop the row fails a
+  test rather than a user's `/model`.
+
 - `contract.Session` grows an optional `readable` slot, so the hub's loop waits on
   every session's child at once instead of giving each a share of the wait in turn.
   The loop gave each open session at least 1 ms of blocking wait, one after
