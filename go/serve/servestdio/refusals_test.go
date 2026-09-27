@@ -86,12 +86,17 @@ func TestOpenOpRefusesAStaleRevisionOnTheSubscribePath(t *testing.T) {
 	request := requestEnvelopeWithRevision(t, "req-open", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
 		SessionID: protocol.SessionID("stale-subscribe"),
 		Subscribe: true,
-	}, "a-revision-from-another-release")
+	}, cited)
 	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"memory","request":%s}`, request))
 	response := f.expectResponse(1)
 	requireCode(t, response, "stale_capabilities")
-	if response.Error.Details["expected_revision"] == nil || response.Error.Details["current_revision"] == nil {
-		t.Fatalf("details = %+v, want both revisions named", response.Error.Details)
+	cited := "a-revision-from-another-release"
+	if response.Error.Details["current_revision"] != cited {
+		t.Fatalf("current_revision = %v, want the revision the request cited (%q)", response.Error.Details["current_revision"], cited)
+	}
+	probed, named := response.Error.Details["expected_revision"].(string)
+	if !named || probed == cited || probed == "" {
+		t.Fatalf("expected_revision = %v, want the revision the probe reported, which is not the one cited", response.Error.Details["expected_revision"])
 	}
 }
 
