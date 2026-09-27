@@ -101,7 +101,10 @@ func TestResolveOpReportsAnUnknownRun(t *testing.T) {
 	f.send(openLine(t, 1, "resolve-unknown"))
 	requireOK(t, f.expectResponse(1))
 	resolve := requestEnvelope(t, "req-resolve", protocol.TypeActionPermissionResolveRequest, protocol.PermissionResolveRequest{
-		InteractionID: protocol.InteractionID("permission-1"),
+		InteractionID: protocol.InteractionID("permission-01"),
+		SessionID:     protocol.SessionID("resolve-unknown"),
+		RunID:         protocol.RunID("run-does-not-exist"),
+		RequestedBy:   protocol.ParticipantID("user"),
 		Granted:       true,
 	}, "resolve-unknown", "run-does-not-exist")
 	f.send(fmt.Sprintf(`{"id":2,"op":"resolve","session_id":%q,"request":%s}`, "resolve-unknown", resolve))
@@ -115,10 +118,13 @@ func TestResolveOpReportsARefusedResolution(t *testing.T) {
 	requireOK(t, f.expectResponse(1))
 	submitGolden(t, f, "resolve-refused", 2)
 	resolve := requestEnvelope(t, "req-resolve", protocol.TypeActionPermissionResolveRequest, protocol.PermissionResolveRequest{
-		InteractionID: protocol.InteractionID("permission-1"),
+		InteractionID: protocol.InteractionID("permission-01"),
+		SessionID:     protocol.SessionID("resolve-refused"),
+		RunID:         protocol.RunID("run-01"),
+		RequestedBy:   protocol.ParticipantID("user"),
 		RespondedBy:   protocol.ParticipantID("someone-else"),
 		Granted:       true,
-	}, "resolve-refused", "run-1")
+	}, "resolve-refused", "run-01")
 	f.send(fmt.Sprintf(`{"id":3,"op":"resolve","session_id":%q,"request":%s}`, "resolve-refused", resolve))
 	response := f.expectResponse(3)
 	requireCode(t, response, "resolution_rejected")
