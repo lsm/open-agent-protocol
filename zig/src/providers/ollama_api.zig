@@ -77,22 +77,23 @@ fn env(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
     return compat.getEnvVarOwned(allocator, name) catch null;
 }
 
-fn buildUrlWithSuffix(allocator: std.mem.Allocator, base_url: []const u8, suffix: []const u8) ![]const u8 {
-    var sb = StringBuilder{};
-    sb.count(base_url);
-    sb.count(suffix);
-    try sb.allocate(allocator);
-    errdefer sb.deinit(allocator);
+pub const wires: []const []const u8 = &.{"ollama"};
 
-    _ = sb.append(base_url);
-    _ = sb.append(suffix);
+const request_wire = provider_catalog.wirePath("ollama") orelse unreachable;
 
-    std.debug.assert(sb.len == sb.cap);
-    const out = sb.ptr.?[0..sb.cap];
-    sb.ptr = null;
-    sb.cap = 0;
-    sb.len = 0;
-    return out;
+test "the ollama request url drops a trailing slash and keeps a suffix already present" {
+    const cases = [_]struct { base: []const u8, want: []const u8 }{
+        .{ .base = "http://localhost:11434", .want = "http://localhost:11434/api/chat" },
+        .{ .base = "http://localhost:11434/", .want = "http://localhost:11434/api/chat" },
+        .{ .base = "http://localhost:11434///", .want = "http://localhost:11434/api/chat" },
+        .{ .base = "http://localhost:11434/api/chat", .want = "http://localhost:11434/api/chat" },
+        .{ .base = "http://localhost:11434/api/chat/", .want = "http://localhost:11434/api/chat" },
+    };
+    for (cases) |case| {
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire);
+        defer std.testing.allocator.free(url);
+        try std.testing.expectEqualStrings(case.want, url);
+    }
 }
 
 fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
@@ -563,7 +564,7 @@ fn runThread(ctx: *ThreadCtx) void {
     var client = compat.http.HttpClient.init(allocator);
     defer client.deinit();
 
-    const url = buildUrlWithSuffix(allocator, base_url, "/api/chat") catch {
+    const url = provider_catalog.joinUrlOwned(allocator, base_url, request_wire) catch {
         ctx.deinit();
         stream.completeWithError("oom url");
         return;

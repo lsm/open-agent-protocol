@@ -450,7 +450,7 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | `Last-Event-ID` reconnects | `TestSSELastEventIDReconnect` |
 | An explicit `?after=` wins over the header | `TestSSEQueryCursorWinsOverHeader` |
 | A live subscription mid-run is not handed a prefix it did not ask for | `TestSSELiveSubscriptionMidRun` |
-| A stream ends when the client closes the connection | structural: the request context; **gap G2** |
+| A stream ends when the client closes the connection | structural: the request context — `TestACancelledSubscriptionEndsTheStream` (a cancelled context ends the stream and leaves it finished) and `TestASubscriptionClosedByItsOwnerEndsTheStream` (`Close` ends it with `io.EOF`) at the hub, where it is observable; nothing in the hub reports subscriber accounting, so the HTTP handler is not itself under test |
 | A stream ends when the session closes | `TestSSEStreamEndsOnSessionClose`, `TestSSEOnClosedSession` |
 | A cursor that is not an unsigned sequence is refused `400 invalid_cursor` | `TestSSECursorErrors` |
 | A session with no run to replay is refused `409 no_run_to_resume` | `TestSSENoRunToResume` |
@@ -917,6 +917,7 @@ place a differential test would otherwise not see.
   `unsupported_media_type` was written nowhere. `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode`
   now pins the code and the absent `Content-Type`, both of which take the
   same branch. The stdio side still has no counterpart for either, which
+<<<<<<< HEAD
   is a property of the transport rather than a gap. The **charset** half
   is now decided rather than open: `application/json; charset=latin1` used
   to be admitted, and is now refused `415` naming the charset, because an
@@ -926,6 +927,25 @@ place a differential test would otherwise not see.
   connection ends the stream by construction — the request context cancels the
   subscription — but no test asserts it, and the stdio side has no way to
   express it at all.
+=======
+  is a property of the transport rather than a gap. A **charset** is
+  another matter: `application/json; charset=latin1` parses to the right
+  media type and is admitted, and the draft says nothing about what a
+  charset must be.
+- **G2 — structural, pinned at the hub.** A client that drops its connection
+  ends the stream by construction — the request context cancels the
+  subscription — and that is now asserted where it is observable:
+  `TestACancelledSubscriptionEndsTheStream` cancels the context a subscription
+  was given and pins that `Next` returns the context's error rather than
+  blocking, and stays finished. Two things it deliberately does **not** claim.
+  The HTTP handler is not under test: nothing in the hub reports subscriber
+  accounting, so "this subscription ended" has no observable from outside the
+  server, and the owner declined to add any. And the error is the context's
+  own (`context.Canceled`), not `io.EOF`, because `io.EOF` is this API's
+  "the run reached its terminal" signal and a client that cancelled mid-run
+  must be able to tell the two apart. The stdio side still has no way to
+  express a hangup at all.
+>>>>>>> origin/main
 - **G3 — #53: stdio cannot end one subscription on request.** The pipe carries
   every subscription at once and has no per-stream hangup, and no op detaches a
   single pump. A pump on a live, idle session ends only at its run's terminal, an

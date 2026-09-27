@@ -1168,3 +1168,41 @@ func TestSubscribingBetweenRunsReportsNoJoinPoint(t *testing.T) {
 	}
 	manual.active(t).endRun()
 }
+
+func TestACancelledSubscriptionEndsTheStream(t *testing.T) {
+	hub := memoryHub(t, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	session := openMemorySession(t, hub, "hangup")
+
+	streamCtx, hangUp := context.WithCancel(ctx)
+	subscription, err := hub.Subscribe(streamCtx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+
+	hangUp()
+	if _, err := subscription.Next(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled subscription next = %v, want the context's own error rather than a block", err)
+	}
+	if _, err := subscription.Next(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second next = %v, want the stream finished rather than reopening", err)
+	}
+}
+
+func TestASubscriptionClosedByItsOwnerEndsTheStream(t *testing.T) {
+	hub := memoryHub(t, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	session := openMemorySession(t, hub, "closed")
+
+	subscription, err := hub.Subscribe(ctx, session.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscription.Close()
+	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("closed subscription next = %v, want io.EOF", err)
+	}
+}
