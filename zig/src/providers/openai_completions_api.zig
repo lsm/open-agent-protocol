@@ -1,4 +1,5 @@
 const std = @import("std");
+const provider_catalog = @import("provider_catalog");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
 const api_registry = @import("api_registry");
@@ -962,56 +963,11 @@ fn parseChunk(
     }
 }
 
-const url_version_prefix = "/v1";
+pub const wires: []const []const u8 = &.{"openai-completions"};
 
-fn isVersionSegment(segment: []const u8) bool {
-    if (segment.len < 2 or segment[0] != 'v') return false;
-    for (segment[1..]) |digit| {
-        if (digit < '0' or digit > '9') return false;
-    }
-    return true;
-}
+const request_wire = provider_catalog.wirePath("openai-completions") orelse unreachable;
 
-fn pathHasVersion(base_url: []const u8) bool {
-    @setEvalBranchQuota(4000);
-    const scheme = std.mem.indexOf(u8, base_url, "://") orelse return false;
-    var rest: []const u8 = base_url[scheme + 3 ..];
-    const cut = std.mem.indexOfScalar(u8, rest, '/') orelse return false;
-    rest = rest[cut + 1 ..];
-    var segments = std.mem.tokenizeScalar(u8, rest, '/');
-    while (segments.next()) |segment| {
-        if (isVersionSegment(segment)) return true;
-    }
-    return false;
-}
-
-fn effectiveUrlSuffix(trimmed_base: []const u8, suffix: []const u8) []const u8 {
-    if (!pathHasVersion(trimmed_base)) return suffix;
-    if (!std.mem.startsWith(u8, suffix, url_version_prefix ++ "/")) return suffix;
-    return suffix[url_version_prefix.len..];
-}
-
-fn buildUrlWithSuffix(allocator: std.mem.Allocator, base_url: []const u8, suffix: []const u8) ![]const u8 {
-    const trimmed = std.mem.trimEnd(u8, base_url, "/");
-    if (std.mem.endsWith(u8, trimmed, suffix)) return allocator.dupe(u8, trimmed);
-    const effective = effectiveUrlSuffix(trimmed, suffix);
-
-    var sb = StringBuilder{};
-    sb.count(trimmed);
-    sb.count(effective);
-    try sb.allocate(allocator);
-    errdefer sb.deinit(allocator);
-
-    _ = sb.append(trimmed);
-    _ = sb.append(effective);
-
-    std.debug.assert(sb.len == sb.cap);
-    const out = sb.ptr.?[0..sb.cap];
-    sb.ptr = null;
-    sb.cap = 0;
-    sb.len = 0;
-    return out;
-}
+const copilot_wire = provider_catalog.Wire{ .id = "github-copilot", .suffix = "/chat/completions", .dedup_version = true };
 
 fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
     var sb = StringBuilder{};
@@ -1083,20 +1039,13 @@ fn runThread(ctx: *ThreadCtx) void {
     var client = compat_mod.http.HttpClient.init(allocator);
     defer client.deinit();
 
-    const url = if (std.mem.eql(u8, model.provider, "github-copilot"))
-        buildUrlWithSuffix(allocator, model.base_url, "/chat/completions") catch {
-            ctx.deinit();
-            stream.completeWithError("oom building url");
-            stream.markThreadDone();
-            return;
-        }
-    else
-        buildUrlWithSuffix(allocator, model.base_url, "/v1/chat/completions") catch {
-            ctx.deinit();
-            stream.completeWithError("oom building url");
-            stream.markThreadDone();
-            return;
-        };
+    const wire = if (std.mem.eql(u8, model.provider, "github-copilot")) copilot_wire else request_wire;
+    const url = provider_catalog.joinUrlOwned(allocator, model.base_url, wire) catch {
+        ctx.deinit();
+        stream.completeWithError("oom building url");
+        stream.markThreadDone();
+        return;
+    };
     defer allocator.free(url);
 
     const auth = buildBearerAuthValue(allocator, api_key) catch {
@@ -2933,7 +2882,37 @@ test "streamSimpleOpenAICompletions exits early when pre-cancelled" {
     try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
 }
 
-test "buildUrlWithSuffix never doubles the version segment" {
+test "the openai completions request url drops a trailing slash and keeps a suffix already present" {
+    const cases = [_]struct { base: []const u8, want: []const u8 }{
+        .{ .base = "https://api.openai.com", .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/", .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com///", .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/v1/chat/completions", .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/v1/chat/completions/", .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.groq.com/openai/v1/", .want = "https://api.groq.com/openai/v1/chat/completions" },
+    };
+    for (cases) |case| {
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire);
+        defer std.testing.allocator.free(url);
+        try std.testing.expectEqualStrings(case.want, url);
+    }
+}
+
+test "the copilot request url drops a trailing slash and never doubles the version segment" {
+    const cases = [_]struct { base: []const u8, want: []const u8 }{
+        .{ .base = "https://api.githubcopilot.com", .want = "https://api.githubcopilot.com/chat/completions" },
+        .{ .base = "https://api.githubcopilot.com/", .want = "https://api.githubcopilot.com/chat/completions" },
+        .{ .base = "https://api.githubcopilot.com/chat/completions", .want = "https://api.githubcopilot.com/chat/completions" },
+        .{ .base = "https://gw.test/v1", .want = "https://gw.test/v1/chat/completions" },
+    };
+    for (cases) |case| {
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, copilot_wire);
+        defer std.testing.allocator.free(url);
+        try std.testing.expectEqualStrings(case.want, url);
+    }
+}
+
+test "the openai completions request url never doubles the version segment" {
     const cases = [_]struct { base: []const u8, suffix: []const u8, want: []const u8 }{
         .{ .base = "https://api.openai.com", .suffix = "/v1/chat/completions", .want = "https://api.openai.com/v1/chat/completions" },
         .{ .base = "https://api.groq.com/openai/v1", .suffix = "/v1/chat/completions", .want = "https://api.groq.com/openai/v1/chat/completions" },
@@ -2948,7 +2927,7 @@ test "buildUrlWithSuffix never doubles the version segment" {
         .{ .base = "https://gw.test/vercel", .suffix = "/v1/chat/completions", .want = "https://gw.test/vercel/v1/chat/completions" },
     };
     for (cases) |case| {
-        const url = try buildUrlWithSuffix(std.testing.allocator, case.base, case.suffix);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, .{ .id = "openai-completions", .suffix = case.suffix, .dedup_version = true });
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }

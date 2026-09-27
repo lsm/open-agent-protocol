@@ -1,5 +1,6 @@
 const std = @import("std");
 const api_registry = @import("api_registry");
+const provider_catalog = @import("provider_catalog");
 const anthropic_api = @import("anthropic_messages_api");
 const openai_completions_api = @import("openai_completions_api");
 const openai_responses_api = @import("openai_responses_api");
@@ -32,4 +33,57 @@ test "registerBuiltInApiProviders registers expected api providers" {
     try std.testing.expect(registry.getApiProvider("google-generative-ai") != null);
     try std.testing.expect(registry.getApiProvider("google-gemini-cli") != null);
     try std.testing.expect(registry.getApiProvider("ollama") != null);
+}
+
+test "every wire in the catalog is claimed by exactly one wire module" {
+    const claims = [_][]const []const u8{
+        anthropic_api.wires,
+        openai_completions_api.wires,
+        openai_responses_api.wires,
+        ollama_api.wires,
+    };
+
+    for (provider_catalog.wire_paths) |wire| {
+        var claimants: usize = 0;
+        for (claims) |claim| {
+            for (claim) |claimed| {
+                if (!std.mem.eql(u8, claimed, wire.id)) continue;
+                claimants += 1;
+                const found = provider_catalog.wirePath(claimed) orelse return error.TestWireClaimNotInCatalog;
+                try std.testing.expectEqualStrings(wire.suffix, found.suffix);
+            }
+        }
+        if (wire.model_scoped) {
+            try std.testing.expectEqual(@as(usize, 0), claimants);
+        } else {
+            try std.testing.expectEqual(@as(usize, 1), claimants);
+        }
+    }
+}
+
+test "no wire module claims a wire the catalog does not hold" {
+    const claims = [_][]const []const u8{
+        anthropic_api.wires,
+        openai_completions_api.wires,
+        openai_responses_api.wires,
+        ollama_api.wires,
+    };
+    for (claims) |claim| {
+        for (claim) |claimed| {
+            if (provider_catalog.wirePath(claimed) == null) return error.TestWireClaimNotInCatalog;
+        }
+    }
+}
+
+test "the request url a wire module builds matches the url the catalog pins" {
+    for (provider_catalog.pinned) |row| {
+        const wire = provider_catalog.wirePath(row.wire) orelse return error.TestWireClaimNotInCatalog;
+        if (wire.model_scoped) {
+            try std.testing.expect(row.request_url == null);
+            continue;
+        }
+        const built = try provider_catalog.joinUrlOwned(std.testing.allocator, row.base_url, wire);
+        defer std.testing.allocator.free(built);
+        try std.testing.expectEqualStrings(row.request_url.?, built);
+    }
 }

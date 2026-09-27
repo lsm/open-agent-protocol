@@ -1107,7 +1107,7 @@ func TestQueuedSubmissionRoundTrips(t *testing.T) {
 
 func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
 	_, server := newServer(t, memoryRegistry(0), Options{})
-	for _, contentType := range []string{"text/plain", ""} {
+	for _, contentType := range []string{"text/plain", "", "application/json; charset=latin1", "application/json; charset=us-ascii", "application/json; charset=iso-8859-1"} {
 		response, data := post(t, server, "/adapters/memory/sessions", contentType, []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-g1"}}`))
 		if response.StatusCode != http.StatusUnsupportedMediaType {
 			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
@@ -1125,6 +1125,20 @@ func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
 		}
 		if failure.Error.Code != "unsupported_media_type" {
 			t.Fatalf("content type %q code = %q, want unsupported_media_type", contentType, failure.Error.Code)
+		}
+		if _, named, found := strings.Cut(contentType, "charset="); found && !strings.Contains(failure.Error.Message, named) {
+			t.Fatalf("content type %q message = %q, want it to name the charset it refused", contentType, failure.Error.Message)
+		}
+	}
+}
+
+func TestASupportedCharsetIsAdmitted(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(0), Options{})
+	for i, contentType := range []string{"application/json", "application/json; charset=utf-8", "application/json; charset=UTF-8", "application/json; charset=utf8", "application/json; charset=UTF8"} {
+		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-charset-` + strconv.Itoa(i) + `"}}`)
+		response, data := post(t, server, "/adapters/memory/sessions", contentType, body)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
 		}
 	}
 }

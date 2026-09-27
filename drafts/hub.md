@@ -372,7 +372,16 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 
-Every route that reads a body requires `Content-Type: application/json`, caps
+Every route that reads a body requires `Content-Type: application/json` with
+no `charset` or a UTF-8 one — any other charset is refused `415
+unsupported_media_type` naming it, because an OAP envelope is UTF-8 JSON and
+the body gate is the only place that knows what the transport received. The
+comparison is case-insensitive, and admits both the registered name
+`utf-8` and its registered alias `utf8`, because a conformant sender may
+use either and refusing the alias would refuse UTF-8 by another name. No
+`charset` at all means UTF-8. A pipe has no
+`Content-Type` at all, so the stdio transport has no counterpart to any of
+this. The daemon also caps
 the body at 16 MiB, and answers a refusal as an `error.response` envelope
 carrying the request's `in_reply_to`, `session_id` and `run_id` so a client can
 correlate it. The two listings answer plain JSON rather than an envelope,
@@ -395,7 +404,8 @@ both answers, at the budget and one byte over it.
 
 | HTTP rule | pinned by |
 | --- | --- |
-| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`, which takes the same branch) |
+| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, the absent `Content-Type`, and a `charset` that is not UTF-8) |
+| A UTF-8 `charset` is admitted — `utf-8` or its alias `utf8`, case-insensitively — and no `charset` means UTF-8 | `TestASupportedCharsetIsAdmitted` |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
@@ -853,8 +863,9 @@ whole reason for existing:
 A subscription ends at exactly one of: its run's terminal envelope, an overflow,
 a stream failure, its session closing, the frontend tearing down, or — over
 HTTP — the client's hangup. **Over stdio there is no host-initiated way to end
-one subscription**; see [gap G3](#known-gaps) and
-[#53](https://github.com/lsm/open-agent-protocol/issues/53).
+one subscription**, and that is a decision rather than an omission: see
+[G3](#known-gaps), where [#53](https://github.com/lsm/open-agent-protocol/issues/53)'s
+three options are weighed and the third is taken in both trees.
 
 The rest of the fan-out is about the runs, not the subscribers: an admitted run
 is ordered by admission, a run that settles is remembered as settled, a queued
@@ -912,10 +923,11 @@ place a differential test would otherwise not see.
   `unsupported_media_type` was written nowhere. `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode`
   now pins the code and the absent `Content-Type`, both of which take the
   same branch. The stdio side still has no counterpart for either, which
-  is a property of the transport rather than a gap. A **charset** is
-  another matter: `application/json; charset=latin1` parses to the right
-  media type and is admitted, and the draft says nothing about what a
-  charset must be.
+  is a property of the transport rather than a gap. The **charset** half
+  is now decided rather than open: `application/json; charset=latin1` used
+  to be admitted, and is now refused `415` naming the charset, because an
+  envelope is UTF-8 JSON and admitting a body that says otherwise hands
+  the decoder bytes the schema never described.
 - **G2 — structural, pinned at the hub.** A client that drops its connection
   ends the stream by construction — the request context cancels the
   subscription — and that is now asserted where it is observable:
@@ -929,18 +941,45 @@ place a differential test would otherwise not see.
   "the run reached its terminal" signal and a client that cancelled mid-run
   must be able to tell the two apart. The stdio side still has no way to
   express a hangup at all.
-- **G3 — #53: stdio cannot end one subscription on request.** The pipe carries
-  every subscription at once and has no per-stream hangup, and no op detaches a
-  single pump. A pump on a live, idle session ends only at its run's terminal, an
-  overflow or stream failure, its session closing, or the frontend tearing down.
-  The `busy` refusal at the subscription ceiling names those paths rather than
-  implying the host can bring one about, which is accurate but is not a release
-  valve. This is carried as a gap in **both** trees: neither has an `unsubscribe`
-  op, and neither is permitted to grow one alone.
-  [Issue #53](https://github.com/lsm/open-agent-protocol/issues/53) weighs the
-  three options; the `close` op and its `POST /sessions/{id}/close` counterpart
-  are the only wire verbs that end a stream today, and they end the whole
-  session with it.
+- **G3 — #53, decided: stdio has no `unsubscribe`, and the ceiling is not a
+  trap.** The pipe carries every subscription at once and has no per-stream
+  hangup, and no op detaches a single pump. [Issue
+  #53](https://github.com/lsm/open-agent-protocol/issues/53) weighed an
+  `unsubscribe` op, id-reuse replacement, and leaving it; **this draft takes the
+  third, in both trees.**
+
+  The reason #53 had a case was that a host at the ceiling could only free a slot
+  through a side effect on a session it might not want to end. That is no longer
+  true, and the reason is a rule this draft already had: **a subscription ends
+  at its run's terminal envelope.** A host that subscribes per run — the shape
+  that actually fills the ceiling — has each subscription end on its own, without
+  touching the session, and it ends without the host asking. The ceiling of 64
+  therefore bounds live streams.
+
+  How quickly an ended subscription stops occupying its slot is the part that is
+  not yet the same in both trees, and it is queued in
+  [#399](https://github.com/lsm/open-agent-protocol/issues/399). Go needs nothing
+  from the consumer: once a session's last reader has gone and no reservation is
+  outstanding, `detachSubsLocked` takes every subscriber off it, so a finished
+  subscription is reclaimed rather than retained. The Zig core keeps an ended
+  subscription on the session's subscriber list until the next event fans out to it
+  or its consumer closes it, so today the ceiling bounds live streams **plus** ended
+  ones, and a host that subscribes per run without closing is the shape that would
+  fill it. The decision does not rest on this half: what it rests on is that a
+  subscription ends on its own, which is what removes the need for a release valve.
+
+  The remaining two options both cost more than they buy. An `unsubscribe` op is
+  a wire verb with no HTTP counterpart, and the honest HTTP form of "drop the
+  connection" is not expressible on a pipe that carries every subscription at
+  once — so it would be the one op the parity job could never check, which is the
+  thing the stdio transport exists to prevent. Id-reuse replacement overloads
+  correlation with lifecycle and still cannot reach zero subscriptions.
+
+  So the ending paths stay as they are, the `busy` refusal at the ceiling names
+  them, and `close` — with its `POST /sessions/{id}/close` counterpart — remains
+  the one verb that ends every subscription on a session, in both trees. **A
+  port may not add an `unsubscribe` op alone**; if this decision is ever revisited
+  it has to be revisited for both, and the HTTP form has to be settled first.
 - **G4 — closed, and one claim in it was wrong.** The gate compares a
   request's cited revision against the probed one on both the attachment and
   the subscribe path, and the **attachment** path was pinned end to end on

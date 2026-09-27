@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `go/adapter` grows the loop a Go program writes to drive a harness: `RunToTerminal(ctx, session, request, options)` submits one prompt, reads the event stream, answers every `user.input.requested` and `action.permission.requested` through a policy function, resumes after an overflow, notices a stalled stream, and returns the run's final response, its text, its usage, its run id and the number of tool calls it started. An interaction policy answers the three things a run can ask of a client — `user.input.requested`, `action.permission.requested`, and the `action.call.requested` of a tool the *client* provides, which is resolved through the session's `CallResolver` and refused with a typed error when the session is not one — and is given the payload and, when the ask names a `tool_call_id`, the tool's name and arguments from the run's own `action.call.requested`, so a consumer decides by tool rather than by parsing the question's prose. Every answer is checked with `ValidateInputAnswer` before `Resolve`, an envelope at or below the last sequence is skipped, a `ReplayGap` or a session that offers no resumed stream ends the call with that error, and a failed, cancelled or silent run each returns its own typed error, as does a session that refuses an answer — the refusal's reason and response are on the returned error rather than lost behind a stall. This is library API: Zig has no counterpart (Decision 0038).
+- `drafts/hub.md` decides [#53](https://github.com/lsm/open-agent-protocol/issues/53):
+  stdio has no `unsubscribe` op, in either tree. The pipe carries every
+  subscription at once and has no per-stream hangup, and the honest HTTP form of
+  "drop the connection" is not expressible there — so an `unsubscribe` op would be
+  the one verb the parity job could never check, which is the thing the stdio
+  transport exists to prevent. A subscription ends at its run's terminal envelope,
+  so a host that subscribes per run, which is the shape that fills a ceiling, has
+  each subscription end on its own and without asking the hub for anything. Go also
+  stops counting it the moment its run's reader exits; the Zig core still counts an
+  ended subscription until a later event fans out to it or its consumer closes it,
+  which is queued in [#399](https://github.com/lsm/open-agent-protocol/issues/399).
+  `close`, with its `POST /sessions/{id}/close` counterpart, stays the one verb that
+  ends a session's subscriptions, and a port may not add an `unsubscribe` op alone.
 - `zig/src/provider_credential.zig` answers one catalog row's credential without loading anything. The row's `credential_env` variables are tried in the order the row records them, then a key in `AuthStorage`, then an OAuth access token, and a row that declares only `api_key` is never answered with an OAuth credential or the other way round. An environment variable wins over a stored key, an empty variable counts as unset, and `needsNoCredential` answers for a row whose `auth` accepts none, which is Ollama today. The environment is passed in as values rather than read here, so the function is pure and its tests touch no process state, no network and no credential.
 - `providers/resolved_urls.json` is the table both trees check their URL resolvers against: every endpoint's base, its models listing and its request URL, in catalog order, with an absent member recording that the catalog resolves no URL there. `zig/build.zig` reads it at build time and `go/providercatalog` from the embedded file, so a tree that resolves a row differently fails on that row rather than on a user's machine, and `goap check` fails when the file no longer matches the catalog. `go run ./go/cmd/goap providers catalog-urls --format=json > providers/resolved_urls.json` rewrites it. The two trees each pinned the same twenty-two rows in a literal before this; one file replaces both.
 - `go/providercatalog` resolves a row's URLs the way the Zig tree does. `ModelsURL(catalog, id, region)` appends the row's recorded `models_endpoint` to the endpoint serving that region, `RequestURL(catalog, id, wire, region)` appends each wire's path — dropping a version the base's path already spells, and treating a base that is already the full path as done — and `Resolve` returns every endpoint's base beside both URLs. Each answers `(url, found)`, so a caller can branch on the catalog not holding the row instead of comparing a URL with `""`. What the catalog does not hold: a row with no static endpoint, a wire this package does not join, a model-scoped wire, or a region no endpoint serves. A table over all twenty-two endpoints pins both URLs in this tree as the Zig table does, and the two agree value for value.
@@ -59,8 +72,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `anthropic-messages` `base_url` ending in `/` no longer requests
+  `//v1/messages`. The anthropic builder trimmed the base only to test whether the
+  path was already present and then appended the untrimmed base, so a user who wrote
+  the trailing slash got a doubled one; the `ollama`, `openai-responses` and
+  `openai-codex-responses` builders concatenated with no check at all, so the same
+  base produced `//api/chat` and `//v1/responses` and those wires also doubled a
+  base that already ended with their path. A trailing `/` is now ignored on every
+  wire, and a base that already ends with its wire's path is used as it is. The
+  four builders had become copies of the catalog's own join with the three flags
+  each had drifted on, so they now call it: one rule, no per-wire `trim` or
+  `idempotent`, with `dedup_version` and `model_scoped` left as descriptor data.
+  `go/providercatalog` gets the same rule, and `providers/resolved_urls.json` is
+  unchanged — no catalogued base ends in `/` or already carries its wire's path, so
+  nothing a catalogued row could observe moved.
+- An expired hub hold is now freed by the hub. `hold()` returned the live
+  `*Subscription`, and `release` never marked it detached, so `reclaim()` skipped it
+  forever: the only thing that could finish an abandoned hold was the holder calling
+  `close()` on a pointer it was still expected to own, and reading that pointer
+  after the hub freed it was a use-after-free. `hold()` now returns a small `Hold`
+  value that names only when it lapses — nothing to dangle on, and nothing for the
+  holder to do — and releasing a subscription marks it detached, which is what makes
+  it reclaimable. An expired hold with events queued now leaves the hub's hold list,
+  its subscriber list and its subscription list all empty, asserted on those counters
+  rather than on the allocator. Adoption is unchanged: the request that follows still
+  receives the live subscription with the events that arrived while it was held.
 - A config document naming a negative `journal_capacity` for an adapter is refused instead of loaded with the default. Every Go constructor treats `<= 0` as "unspecified", so a value no operator would write reported success and silently retained a different depth; the Zig loader already refused one with `ConfigRefused`. A document naming `0` still keeps the default in both trees, because that is a request for the default rather than a malformed value.
 - The `Host` allowlist refusal on the HTTP transport is an `error.response` carrying the code `unrecognized_host`, keeping the 403 and its wording, where it answered a bare `{"error": …}` with no code — a shape a client cannot branch on, and the one divergence that failed a differential comparison on its first request. `TestHostAllowlist` asserts the body, which is why the shape had drifted unpinned.
+- A request whose `Content-Type` names a `charset` other than UTF-8 is refused `415 unsupported_media_type` naming the charset, where the media type alone was checked and `application/json; charset=latin1` was admitted. An OAP envelope is UTF-8 JSON, and the body gate is the only place that knows what the transport received; a pipe has no `Content-Type`, so the stdio transport has no counterpart. The comparison is case-insensitive, admits the registered name `utf-8` and its registered alias `utf8`, and an absent `charset` means UTF-8.
 - A Claude Code permission ask now names the tool call it is for. When `can_use_tool` arrives for a `tool_use_id` the run already announced, both trees put `tool_call_id` on the ask's envelope and in its payload; an ask for a call the run never announced leaves both empty, as before. A client that decides by tool could otherwise only learn which tool an ask was for by parsing the question's prompt text. The envelope's `tool_call_id` follows `turn_id` where the schema orders them, so the two trees serialise an ask that names a tool call identically.
 - The claude, acp, hermes, deepseek and pi adapters now cancel a settling run's pending tool calls, and resolve its open prompts, in the order they started rather than in Go's randomised map order. #343 fixed this in the codex and opencode adapters; with one pending call there was nothing to order, so the order was never observable, and a fixture that opens two would have found the trees disagreeing — the Zig reducers range an `ArrayList` and always keep start order.
 - `zig/src/hub/hub.zig` frees a subscription's queued events when it is closed. A client that disconnected mid-stream left its subscription, both list capacities and up to `stream_queue` event lines behind, because `reclaim()` only frees a subscription whose queues are already empty and nothing drains a closed one — the fan-out no longer reaches it and only the client called `next()`. A closed subscription is unreadable from then on, so its events are released there and the next pump reclaims the subscription itself.
