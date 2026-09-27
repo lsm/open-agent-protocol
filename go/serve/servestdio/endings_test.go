@@ -39,7 +39,7 @@ func TestEventsSignalAClosedSessionByName(t *testing.T) {
 }
 
 func TestEventsSignalAnOverflowWithItsRunAndCursor(t *testing.T) {
-	hub := newTestHub(t, 64, 1)
+	hub := newTestHub(t, 64, 8)
 	session := openSessionEntry(t, hub, "flooded")
 	f := startFrontend(t, hub, Options{WriteQueue: 1})
 	f.send(fmt.Sprintf(`{"id":9,"op":"events","session_id":%q}`, "flooded"))
@@ -98,17 +98,13 @@ func TestTheFrameLimitSignalCarriesItsRunAndSequence(t *testing.T) {
 	session := openSessionEntry(t, hub, wide)
 	runToCompletion(t, hub, session)
 
-	f := startFrontend(t, hub, Options{FrameLimit: 256})
+	f := startFrontend(t, hub, Options{FrameLimit: 300})
 	f.send(fmt.Sprintf(`{"id":11,"op":"events","session_id":%q}`, wide))
 	if response := f.expectResponse(11); !response.OK {
 		t.Fatalf("events failed: %+v", response.Error)
 	}
 	f.expectSignal(11, signalSubscribed)
 
-	// the session id is wide enough that the frames the live pump writes exceed
-	// the limit, so the second run's first event is the one that cannot be
-	// carried; the signal names the run it stopped in and the sequence a fresh
-	// cursor resumes at, which is the event it could not deliver.
 	framed, _ := runToCompletion(t, hub, session)
 	var delivered uint64
 	var limited frameLimitLine
@@ -142,7 +138,7 @@ func TestTheFrameLimitSignalCarriesItsRunAndSequence(t *testing.T) {
 		t.Fatalf("the frame-limit signal names run %q, want the run it stopped in (%q)", limited.RunID, framed)
 	}
 	if limited.Sequence != delivered+1 {
-		t.Fatalf("the frame-limit signal resumes at %d after %d was delivered, want the event it could not carry", limited.Sequence, delivered)
+		t.Fatalf("the frame-limit signal resumes at %d after %d was delivered, want the event it could not carry. A 300-byte limit is above the %d bytes this line needs and below an envelope's; a lower limit makes the fallback minimal line arrive instead, which carries neither member", limited.Sequence, delivered, 259)
 	}
 	if limited.Message == "" {
 		t.Fatal("the frame-limit signal carries no message")
