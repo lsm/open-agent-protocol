@@ -3,13 +3,20 @@ package main
 import "testing"
 
 func TestAPackageIsNotPublicUntilItIsNamed(t *testing.T) {
-	for _, name := range []string{"go/newthing", "go/serve/newbinding", "go/adapter/newharness/internal/native"} {
+	for _, name := range []string{"go/newthing", "go/serve/newbinding", "go/adapter/newharness/internal/native", "go/serve/internal"} {
 		if publicGoPackage(name) {
 			t.Fatalf("%s is public, want undecided until it is named", name)
 		}
 	}
-	if !internalGoPackage("go/adapter/newharness/internal/native") {
-		t.Fatal("an internal element is internal whatever else the path says")
+	for _, name := range []string{"go/adapter/newharness/internal/native", "go/internal", "go/serve/internal", "go/adapter/internal"} {
+		if !internalGoPackage(name) {
+			t.Fatalf("%s is not internal, want an internal element to be internal wherever it sits, including at the end of the path", name)
+		}
+	}
+	for _, name := range []string{"go/serve/internalendpoint", "go/internalish", "go/client"} {
+		if internalGoPackage(name) {
+			t.Fatalf("%s reads as internal, want only an element that is exactly internal", name)
+		}
 	}
 }
 

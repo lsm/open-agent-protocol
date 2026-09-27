@@ -24,7 +24,12 @@ var publicGoPackages = map[string]bool{
 }
 
 func internalGoPackage(name string) bool {
-	return name == "go/internal" || strings.HasPrefix(name, "go/internal/") || strings.Contains(name, "/internal/")
+	for _, element := range strings.Split(name, "/") {
+		if element == "internal" {
+			return true
+		}
+	}
+	return false
 }
 
 func publicGoPackage(name string) bool {
