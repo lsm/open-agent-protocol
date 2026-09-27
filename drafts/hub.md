@@ -240,10 +240,10 @@ subscriptions on one session stay attributable.
 | --- | --- |
 | `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence of that run it missed |
 | `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
-| `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
+| `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes, and `run_id` and `session_id` say which — `TestEventsSignalAnOverflowWithItsRunAndCursor` |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available` and `latest_available` bound what is |
-| `"event":"oap-session-closed"` | the session closed under the subscription |
-| `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it |
+| `"event":"oap-session-closed"` | the session closed under the subscription, named by `session_id` — `TestEventsSignalAClosedSessionByName` |
+| `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
 
 `envelope` and `oap-subscribed` are the only two that do not end the
@@ -263,13 +263,13 @@ host observes directly.
 | The acknowledgement is `result: null`, matching the SSE route's bodyless response | `TestEventsOpDeliversTheRunStream`, `TestSubscribedSignalMatchesHTTP` |
 | `oap-subscribed` is written first, and only when the run had already emitted | `TestEventsReportsWhereALateSubscriptionJoined`, `TestSubscribedSignalMatchesHTTP` |
 | A subscription that begins at the start of its run gets no join signal | `TestEventsReportsNoJoinPointWhenNothingPrecededTheSubscription`, `TestSubscribingBetweenRunsReportsNoJoinPoint` |
-| The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription` — **gap G9**: this test also drives the `oap-frame-limit` ending, but asserts only its `event` name |
-| Overflow is signalled with the cursor to resume from | the line's shape by `TestEveryEndingFitsTheFrameLimitFloor`; the end-to-end path at the core by `TestHubSubscriptionQueueOverflow`; **gap G9** — no stdio test drives an overflow and reads the line |
+| The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`; the `oap-frame-limit` ending it also drives has its members pinned by `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
+| Overflow is signalled with the cursor to resume from | the line's shape by `TestEveryEndingFitsTheFrameLimitFloor`; the end-to-end path at the core by `TestHubSubscriptionQueueOverflow`; read off the stdio wire by `TestEventsSignalAnOverflowWithItsRunAndCursor`, which pins `session_id`, `run_id` and the resume cursor against the last sequence delivered |
 | A failed run stream ends the subscription out loud | `TestAFailedRunStreamEndsTheSubscriptionOutLoud` |
 | An unencodable envelope ends the subscription out loud | `TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud` |
 | A context failure is still announced | `TestAnAdapterContextFailureIsStillAnnounced` |
 | A replay gap is reported with the cursor that was asked for | `TestEventsOpReportsAReplayGap`, `TestAFailedResumeReportsTheRequestedCursor` |
-| The session closing under a subscription is signalled | `TestHubCloseReplaySubscriptionEndsPromptly` |
+| The session closing under a subscription is signalled | `TestHubCloseReplaySubscriptionEndsPromptly`, `TestEventsSignalAClosedSessionByName` (the stdio line, with the session and message it carries) |
 | A live subscription does not stall shutdown | `TestALiveSubscriptionDoesNotStallShutdown` |
 | The cursor advances monotonically, holding its high-water mark across a run boundary | `TestAdvanceCursorHoldsItsHighWaterMark` |
 
@@ -1044,14 +1044,19 @@ place a differential test would otherwise not see.
   `TestTheHubSweepsForTenSecondsByDefault` pins the hub's 10 s and
   `TestEachTeardownStageWaitsFiveSecondsByDefault` the stdio frontend's 5 s per
   stage, each also checking that an explicit window still wins.
-- **G9 — two subscription endings are never driven over stdio, and a third is
-  driven only by its name.** `oap-overflow` and `oap-session-closed` have their
-  minimal shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes
-  each real line, but no stdio test produces either ending and reads it off the
-  wire — so the members they carry when written in anger are unpinned.
-  `oap-frame-limit` **is** driven, by
-  `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`, but
-  only its `event` name is asserted, so its members are unpinned the same way.
+- **G9 — closed.** `oap-overflow` and `oap-session-closed` had their minimal
+  shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes each
+  real line, but no stdio test produced either ending and read it off the wire.
+  `TestEventsSignalAnOverflowWithItsRunAndCursor` now floods a session behind a
+  one-deep write queue and pins the overflow's `session_id`, `run_id`,
+  `last_sequence` and `message`;
+  `TestEventsSignalAClosedSessionByName` closes a session under a live stream
+  and pins the closing signal's `session_id` and `message`. The third,
+  `oap-frame-limit`, **was** driven by
+  `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription` but
+  only its `event` name was asserted;
+  `TestTheFrameLimitSignalCarriesItsRunAndSequence` now pins its `run_id`,
+  `sequence` and `message` against the run and cursor the stream stopped at.
   Over HTTP, `oap-overflow` is pinned, and a session closing under a stream is
   pinned too but as a **silent end** with no named signal — the SSE layer
   defines exactly three, `oap-subscribed`, `oap-overflow` and `oap-replay-gap`.
