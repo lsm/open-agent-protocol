@@ -452,7 +452,8 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | An explicit `?after=` wins over the header | `TestSSEQueryCursorWinsOverHeader` |
 | A live subscription mid-run is not handed a prefix it did not ask for | `TestSSELiveSubscriptionMidRun` |
 | A stream ends when the client closes the connection | structural: the request context — `TestACancelledSubscriptionEndsTheStream` (a cancelled context ends the stream and leaves it finished) and `TestASubscriptionClosedByItsOwnerEndsTheStream` (`Close` ends it with `io.EOF`) at the hub, where it is observable; nothing in the hub reports subscriber accounting, so the HTTP handler is not itself under test |
-| A stream ends when the session closes | `TestSSEStreamEndsOnSessionClose`, `TestSSEOnClosedSession` |
+| A stream ends when the session closes | `TestSSEStreamEndsOnSessionClose` |
+| A connection to a session that has closed is refused `404 unknown_session` | none yet: `TestSSEOnClosedSession` still pins `409 session_closed`, the kept entry D2 records |
 | A cursor that is not an unsigned sequence is refused `400 invalid_cursor` | `TestSSECursorErrors` |
 | A session with no run to replay is refused `409 no_run_to_resume` | `TestSSENoRunToResume` |
 | An unknown session is refused `404` | `TestSSEUnknownSession` |
@@ -662,7 +663,9 @@ exceptions stated once here rather than repeated per row:
   released.
 - **errors:** `invalid_request` (a parameter was supplied).
 - **pinned by:** `TestSessionsOpListsTrackedSessions`, `TestSessionsListingAcrossLifecycle`,
-  `TestListingsMatchHTTP`, `TestHubSessionsListingAcrossAdapters`.
+  `TestListingsMatchHTTP`, `TestHubSessionsListingAcrossAdapters`. The release is
+  not pinned yet: `TestSessionsListingAcrossLifecycle` still lists a closed
+  session as `closed`, the kept entry D2 records.
 
 ### `state`
 
@@ -802,7 +805,10 @@ exceptions stated once here rather than repeated per row:
   `TestSSECursorErrors`, `TestSSEReplayGap`, `TestSSENoRunToResume`,
   `TestSSEUnknownSession`, `TestSSEOnClosedSession`, `TestEventsOpRefusals`
   (the `busy` refusal at the subscription ceiling, whose message names the
-  ending paths rather than implying the host can bring one about).
+  ending paths rather than implying the host can bring one about). The release
+  is not pinned yet: `TestEventsOpRefusals` and `TestSSEOnClosedSession` still
+  answer a session already closed with `session_closed`, the kept entry D2
+  records.
 
 ## The clients are the far-side proof
 
@@ -1093,7 +1099,7 @@ Go change, queued in
 | **Zig does** | The core keeps the entry, its journal and a cursor for every run it had, lists it as closed, and refuses every op on it with `session_closed`. |
 | **Why both are the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
 | **The fix** | [#443](https://github.com/lsm/open-agent-protocol/issues/443) releases the session in Go, and [#444](https://github.com/lsm/open-agent-protocol/issues/444) in Zig. Zig's destructive `close` is the right shape for it. |
-| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`. The Zig side: `zig/src/hub/hub.zig`'s tests that a closed session is refused `session_closed` and listed as closed. |
+| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`, and `TestEventsOpRefusals` and `TestSSEOnClosedSession` for a request to a session already closed. The Zig side: `zig/src/hub/hub.zig`'s tests that a closed session is refused `session_closed` and listed as closed. |
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 
