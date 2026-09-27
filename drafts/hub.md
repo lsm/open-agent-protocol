@@ -1051,27 +1051,23 @@ the body, so [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) no longer fail a
 byte-for-byte comparison on their first request.
 
-**D2 to D7 are what is left, and all of it is the Zig side and all of one kind:**
+**D3 to D7 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
 specifies — a member that does not exist, or a signal with nowhere to report it.
 None of them changes a byte on the wire today, and each is a small contract change
-rather than a re-decision, so they are queued rather than fixed here: D2, D3, D5
-and D6 in [#407](https://github.com/lsm/open-agent-protocol/issues/407), and D7 —
-the per-run exposure a stream failure needs — in
-[#407](https://github.com/lsm/open-agent-protocol/issues/407) too, since it is the
-same kind of gap. D4 is different in one respect: its negative-capacity half is a
-Go change, queued in
+rather than a re-decision, so they are queued rather than fixed here: D3, D5, D6
+and D7 in [#407](https://github.com/lsm/open-agent-protocol/issues/407). D4 is
+different in one respect: its negative-capacity half is a Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
-### D2 — the Zig adapter contract destroys a session on close
-
-| | |
-| --- | --- |
-| **The draft says** | A closed session **stays listed with its final state**, and `state` on it answers the state document. Both are Go's behaviour: `Session.Close` leaves the object readable, and `Hub.Sessions` calls `State` on a closed entry and keeps what it reports. |
-| **Zig does** | `contract.Session`'s `close` is infallible and terminal — it destroys the session. A hub cannot read a closed session at all, so the Zig core reports `status: "closed"` with no active runs in the listing, and every operation on a closed session is refused `session_closed` without touching it. |
-| **Why Zig is the wrong side** | The draft's rule is the better one, and the Zig shape makes a class of host code impossible: a client that lists sessions and then asks a closed one for its state gets a refusal where Go answers a document. |
-| **The fix** | Either `contract` grows a non-terminal `close` that leaves `state` readable, or the Zig core caches the last state it saw and serves that. The first is the smaller change and matches Go; the second is what a hub can do today. |
-| **Pinned today** | The Zig side: `zig/src/hub/hub.zig` refuses `session_closed` before touching a closed session and lists it as closed. The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`. |
+**D2 is withdrawn, not fixed.** It recorded that a closed session stays listed with
+its final state and that the Zig core cannot do that. [Decision
+0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) makes
+close *detach*: it ends the subscriptions with a `session_closed` ending, releases
+the journal, cursors, holds and state, keeps the binding record and nothing else,
+and leaves a closed session unlisted and unaddressable. The rule D2 called the
+better one is the rule 0039 amends, and the Zig contract's terminal close is the
+specified shape rather than a divergence from it.
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 
