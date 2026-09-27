@@ -1134,8 +1134,9 @@ func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
 
 func TestASupportedCharsetIsAdmitted(t *testing.T) {
 	_, server := newServer(t, memoryRegistry(0), Options{})
-	for _, contentType := range []string{"application/json", "application/json; charset=utf-8", "application/json; charset=UTF-8", "application/json; charset=utf8", "application/json; charset=UTF8"} {
-		response, data := post(t, server, "/adapters/memory/sessions", contentType, []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-g1"}}`))
+	for i, contentType := range []string{"application/json", "application/json; charset=utf-8", "application/json; charset=UTF-8", "application/json; charset=utf8", "application/json; charset=UTF8"} {
+		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-charset-` + strconv.Itoa(i) + `"}}`)
+		response, data := post(t, server, "/adapters/memory/sessions", contentType, body)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
 		}
