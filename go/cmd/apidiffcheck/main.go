@@ -9,8 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/lsm/open-agent-protocol/go/internal/publicset"
 )
 
 const goreleaseVersion = "v0.0.0-20260908205506-85c1c2202aba"
@@ -30,6 +33,9 @@ func run(args []string, stdout io.Writer) error {
 	root := flags.String("root", ".", "the module root")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if !filepath.IsAbs(*changelog) {
+		*changelog = filepath.Join(*root, *changelog)
 	}
 	if err := check(*root, *base, *changelog, stdout); err != nil {
 		return err
@@ -116,7 +122,7 @@ func incompatiblePackages(report, module string) []string {
 			incompatible = strings.HasPrefix(line, "## incompatible")
 		case line != "" && current != "" && incompatible:
 			name, found := strings.CutPrefix(current, module+"/")
-			if !found || seen[name] {
+			if !found || seen[name] || !publicset.Public(name) {
 				continue
 			}
 			seen[name] = true

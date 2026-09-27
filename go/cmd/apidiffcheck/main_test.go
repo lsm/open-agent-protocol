@@ -39,6 +39,16 @@ func TestAnEmptyReportNamesNothing(t *testing.T) {
 	}
 }
 
+func TestAnInternalPackageIsNotPublicApiSoItDoesNotCount(t *testing.T) {
+	report := `# github.com/lsm/open-agent-protocol/go/internal/conformance
+## incompatible changes
+Runner: removed
+`
+	if got := incompatiblePackages(report, module); len(got) != 0 {
+		t.Fatalf("incompatible packages %v, want none: an internal package is not public API", got)
+	}
+}
+
 func TestAPackageOutsideTheModuleIsNotCounted(t *testing.T) {
 	report := `# golang.org/x/exp/typeparams
 ## incompatible changes
