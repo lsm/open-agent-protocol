@@ -35,6 +35,8 @@ pub const Error = error{
     ResponseTooLarge,
     NoSpaceLeft,
     MalformedJson,
+    MissingPayload,
+    UnreadablePayload,
 } || std.mem.Allocator.Error || hubmod.Failure;
 
 pub const Sink = struct {
@@ -85,8 +87,8 @@ pub const Request = struct {
 
     fn only(self: Request, parameters: []const []const u8) ?Refusal {
         for (all_parameters) |parameter| {
-            const declared = declares(parameters, parameter);
-            if (declared == self.takes(parameter)) continue;
+            if (!self.takes(parameter)) continue;
+            if (declares(parameters, parameter)) continue;
             return .{ .code = "invalid_request", .message = "this op does not define that parameter" };
         }
         return null;
@@ -254,7 +256,7 @@ pub const Frontend = struct {
             return err;
         };
         switch (outcome) {
-            .answer => |value| try self.answer(request.id, value),
+            .answer => |value| try self.answerValue(request.id, value),
             .answer_line => |payload| try self.answerLine(request.id, payload),
             .refused => |refusal| try self.refuse(arena, request.id, refusal),
             .streaming => return,
@@ -292,6 +294,12 @@ pub const Frontend = struct {
             const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
             return self.state(arena, session_id);
         }
+        if (std.mem.eql(u8, request.op, op_open)) return self.open(arena, request);
+        if (std.mem.eql(u8, request.op, op_submit)) return self.submit(arena, request);
+        if (std.mem.eql(u8, request.op, op_cancel)) return self.cancel(arena, request);
+        if (std.mem.eql(u8, request.op, op_resolve)) return self.resolve(arena, request);
+        if (std.mem.eql(u8, request.op, op_models)) return self.models(arena, request);
+        if (std.mem.eql(u8, request.op, op_tools)) return self.tools(arena, request);
         return .{ .refused = .{ .code = "unknown_op", .message = "this frontend does not serve that op" } };
     }
 
@@ -352,14 +360,14 @@ pub const Frontend = struct {
         const answer_id = try std.fmt.allocPrint(arena, "oapx-hub-{d}", .{self.next_envelope});
         const correlation = try std.fmt.allocPrint(arena, "oapx-hub-request-{d}", .{self.next_envelope});
         const declared = try declaredFeatures(arena, descriptor.features);
-        const tools = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
+        const catalog = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, descriptor.sources);
         const payload = oap_types.CapabilitiesResponse{
             .endpoint = descriptor.endpoint,
             .protocol_versions = &.{oap_types.VERSION},
             .profiles = &.{oap_types.PROFILE},
             .features = declared,
-            .tools = tools,
+            .tools = catalog,
             .sources = sources,
             .limits = descriptor.limits,
         };
@@ -394,6 +402,165 @@ pub const Frontend = struct {
         return .{ .answer = .{ .null = {} } };
     }
 
+    const request_parameters: []const []const u8 = &.{ "session_id", "request" };
+    const open_parameters: []const []const u8 = &.{ "adapter", "request" };
+    const degraded_parameters: []const []const u8 = &.{ "session_id", "allow_degraded_features" };
+
+    fn requestEnvelope(self: *Frontend, request: Request, arena: std.mem.Allocator) Error!oap_types.Envelope {
+        _ = self;
+        const value = request.payload orelse return error.MissingPayload;
+        const line = if (json_encode.valueAlloc(arena, value)) |ready| ready else |_| return error.OutOfMemory;
+        return oap_envelope.deserializeEnvelope(line, arena) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.UnreadablePayload,
+        };
+    }
+
+    fn withEnvelope(self: *Frontend, arena: std.mem.Allocator, in_reply_to: []const u8, revision: []const u8, body: oap_types.Payload) !Outcome {
+        self.next_envelope += 1;
+        const answer_id = try std.fmt.allocPrint(arena, "oapx-hub-{d}", .{self.next_envelope});
+        const line = try oap_envelope.serializeEnvelope(.{
+            .id = answer_id,
+            .in_reply_to = in_reply_to,
+            .capability_revision = if (revision.len > 0) revision else null,
+            .payload = body,
+        }, arena);
+        return .{ .answer_line = line };
+    }
+
+    fn open(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
+        if (request.only(open_parameters)) |refusal| return .{ .refused = refusal };
+        const adapter = request.adapter orelse return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
+        const envelope = self.requestEnvelope(request, arena) catch |err| {
+            return .{ .refused = .{ .code = try payloadCode(err), .message = "the request envelope is not one this op serves" } };
+        };
+        const opening = switch (envelope.payload) {
+            .session_open_request => |value| value,
+            else => return .{ .refused = .{ .code = "type_mismatch", .message = "open takes a session.open.request" } },
+        };
+        if (opening.message_json) |message| {
+            _ = json_encode.parse(arena, message) catch |err| {
+                return .{ .refused = .{ .code = try payloadCode(err), .message = "the open message is not JSON" } };
+            };
+        }
+        const opened = self.hub.open(arena, adapter, .{
+            .session_id = opening.session_id orelse "",
+            .subscribe = opening.subscribe,
+            .allow_degraded_features = opening.allow_degraded_features,
+            .tools_json = opening.tools_json,
+            .tool_sources_json = opening.tool_sources_json,
+        }) catch |err| {
+            return .{ .refused = try self.refusalFor(arena, err, opening.session_id orelse "") };
+        };
+        return self.withEnvelope(arena, envelope.id, opened.revision, .{ .session_open_response = opened.state });
+    }
+
+    fn submit(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
+        if (request.only(request_parameters)) |refusal| return .{ .refused = refusal };
+        const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+        const envelope = self.requestEnvelope(request, arena) catch |err| {
+            return .{ .refused = .{ .code = try payloadCode(err), .message = "the request envelope is not one this op serves" } };
+        };
+        const submission = switch (envelope.payload) {
+            .message_submit_request => |value| value,
+            else => return .{ .refused = .{ .code = "type_mismatch", .message = "submit takes a session.message.submit.request" } },
+        };
+        const admission = self.hub.submit(arena, session_id, &submission) catch |err| {
+            return .{ .refused = try self.refusalFor(arena, err, session_id) };
+        };
+        return self.withEnvelope(arena, envelope.id, "", .{ .message_submit_response = admission });
+    }
+
+    fn cancel(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
+        if (request.only(request_parameters)) |refusal| return .{ .refused = refusal };
+        const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+        const envelope = self.requestEnvelope(request, arena) catch |err| {
+            return .{ .refused = .{ .code = try payloadCode(err), .message = "the request envelope is not one this op serves" } };
+        };
+        const cancellation = switch (envelope.payload) {
+            .run_cancel_request => |value| value,
+            else => return .{ .refused = .{ .code = "type_mismatch", .message = "cancel takes a run.cancel.request" } },
+        };
+        if (!std.mem.eql(u8, cancellation.session_id, session_id)) {
+            return .{ .refused = .{ .code = "scope_mismatch", .message = "the payload names a session other than the addressed one" } };
+        }
+        const cancellation_answer = self.hub.cancel(arena, session_id, cancellation.run_id) catch |err| {
+            return .{ .refused = try self.refusalFor(arena, err, session_id) };
+        };
+        return self.withEnvelope(arena, envelope.id, "", .{ .run_cancel_response = cancellation_answer });
+    }
+
+    fn resolve(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
+        if (request.only(request_parameters)) |refusal| return .{ .refused = refusal };
+        const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+        const envelope = self.requestEnvelope(request, arena) catch |err| {
+            return .{ .refused = .{ .code = try payloadCode(err), .message = "the request envelope is not one this op serves" } };
+        };
+        switch (envelope.payload) {
+            .permission_resolve_request => |value| {
+                if (!std.mem.eql(u8, value.session_id, session_id)) return .{ .refused = .{ .code = "scope_mismatch", .message = "the payload names a session other than the addressed one" } };
+                self.hub.resolve(arena, session_id, .{ .permission = &value }) catch |err| {
+                    return .{ .refused = try self.resolveRefusal(arena, err, session_id) };
+                };
+                return self.withEnvelope(arena, envelope.id, "", .{ .permission_resolve_response = .{
+                    .interaction_id = value.interaction_id,
+                    .session_id = value.session_id,
+                    .run_id = value.run_id,
+                    .accepted = true,
+                } });
+            },
+            .user_input_resolve_request => |value| {
+                if (!std.mem.eql(u8, value.session_id, session_id)) return .{ .refused = .{ .code = "scope_mismatch", .message = "the payload names a session other than the addressed one" } };
+                self.hub.resolve(arena, session_id, .{ .input = &value }) catch |err| {
+                    return .{ .refused = try self.resolveRefusal(arena, err, session_id) };
+                };
+                return self.withEnvelope(arena, envelope.id, "", .{ .user_input_resolve_response = .{
+                    .interaction_id = value.interaction_id,
+                    .session_id = value.session_id,
+                    .run_id = value.run_id,
+                    .accepted = true,
+                } });
+            },
+            .call_resolve_request => |value| {
+                if (!std.mem.eql(u8, value.session_id, session_id)) return .{ .refused = .{ .code = "scope_mismatch", .message = "the payload names a session other than the addressed one" } };
+                const call_answer = self.hub.resolveCall(arena, session_id, value.interaction_id, &value) catch |err| {
+                    return .{ .refused = try self.resolveRefusal(arena, err, session_id) };
+                };
+                return self.withEnvelope(arena, envelope.id, "", .{ .call_resolve_response = call_answer });
+            },
+            else => return .{ .refused = .{ .code = "type_mismatch", .message = "resolve takes a permission, user-input or call resolve request" } },
+        }
+    }
+
+    fn models(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
+        if (request.only(degraded_parameters)) |refusal| return .{ .refused = refusal };
+        const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+        const listing = self.hub.models(arena, session_id, &.{ .session_id = session_id, .allow_degraded_features = request.allow_degraded_features }) catch |err| {
+            return .{ .refused = try self.refusalFor(arena, err, session_id) };
+        };
+        return self.withEnvelope(arena, try std.fmt.allocPrint(arena, "oapx-hub-request-{d}", .{self.next_envelope + 1}), listing.revision, .{ .models_response = listing.models });
+    }
+
+    fn tools(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
+        if (request.only(degraded_parameters)) |refusal| return .{ .refused = refusal };
+        const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+        const listing = self.hub.tools(arena, session_id, &.{ .session_id = session_id, .allow_degraded_features = request.allow_degraded_features }) catch |err| {
+            return .{ .refused = try self.refusalFor(arena, err, session_id) };
+        };
+        const body = try self.withEnvelope(arena, try std.fmt.allocPrint(arena, "oapx-hub-request-{d}", .{self.next_envelope + 1}), listing.revision, .{ .tools_list_response = listing.tools });
+        return body;
+    }
+
+    fn resolveRefusal(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
+        return switch (err) {
+            error.InvalidResolution => .{ .code = "resolution_rejected", .message = try std.fmt.allocPrint(arena, "the interaction on the session \"{s}\" was refused", .{session_id}) },
+            error.RunNotFound => .{ .code = "run_not_found", .message = try std.fmt.allocPrint(arena, "the session \"{s}\" has no such run", .{session_id}) },
+            error.InteractionNotFound => .{ .code = "resolution_rejected", .message = try std.fmt.allocPrint(arena, "the interaction on the session \"{s}\" is not found", .{session_id}) },
+            error.UnsupportedFeature => .{ .code = "unsupported_feature", .message = "this session has no call resolver" },
+            else => try self.refusalFor(arena, err, session_id),
+        };
+    }
+
     fn refusalFor(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
         _ = self;
         return switch (err) {
@@ -401,13 +568,29 @@ pub const Frontend = struct {
             error.SessionClosed => .{ .code = "session_closed", .message = try std.fmt.allocPrint(arena, "the session \"{s}\" is closed", .{session_id}) },
             error.RunActive => .{ .code = "run_active", .message = try std.fmt.allocPrint(arena, "the session \"{s}\" still has a run in flight; cancel it first", .{session_id}) },
             error.SessionExists => .{ .code = "session_exists", .message = try std.fmt.allocPrint(arena, "the session \"{s}\" already exists", .{session_id}) },
+            error.UnknownAdapter => .{ .code = "unknown_adapter", .message = "no adapter by that name is registered" },
+            error.AdapterExists => .{ .code = "internal", .message = "that adapter is already registered" },
+            error.RunNotFound => .{ .code = "run_not_found", .message = try std.fmt.allocPrint(arena, "the session \"{s}\" has no such run", .{session_id}) },
+            error.RunTerminal => .{ .code = "run_terminal", .message = try std.fmt.allocPrint(arena, "the run on the session \"{s}\" already settled", .{session_id}) },
+            error.InvalidSubmission => .{ .code = "invalid_submission", .message = "the submission is not one this session accepts" },
+            error.UnsupportedFeature => .{ .code = "unsupported_feature", .message = "this session does not serve that feature" },
+            error.CapabilityDegraded => .{ .code = "capability_degraded", .message = "this feature is degraded and the request did not opt in" },
+            error.ModelNotFound => .{ .code = "model_not_found", .message = "this session does not serve that model" },
+            error.NoRunToResume => .{ .code = "no_run_to_resume", .message = try std.fmt.allocPrint(arena, "the session \"{s}\" has no run to replay", .{session_id}) },
+            error.InvalidCursor => .{ .code = "invalid_cursor", .message = "a cursor needs both a run and a sequence" },
+            error.ReplayCursorFuture => .{ .code = "replay_cursor_future", .message = "the cursor is ahead of the run" },
+            error.ToolCatalogUnavailable => .{ .code = "tools_failed", .message = "this session has no tool catalog" },
+            error.UnresolvableAttachment => .{ .code = "unsupported_feature", .message = "a tool source will not attach" },
+            error.StaleCapabilities => .{ .code = "stale_capabilities", .message = "the cited revision is not the probed one" },
+            error.CatalogMisScoped => .{ .code = "scope_mismatch", .message = "the catalog names another session" },
+            error.CatalogUnlabelled => .{ .code = "internal", .message = "the catalog was served under no revision" },
             error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "the request names a session other than \"{s}\"", .{session_id}) },
             error.OutOfMemory => return error.OutOfMemory,
             else => .{ .code = "internal", .message = @errorName(err) },
         };
     }
 
-    fn answer(self: *Frontend, id: i64, value: std.json.Value) Error!void {
+    fn answerValue(self: *Frontend, id: i64, value: std.json.Value) Error!void {
         const arena = self.allocator;
         var object = try emptyObject(arena);
         defer object.deinit(arena);
@@ -464,6 +647,14 @@ pub const Frontend = struct {
         };
     }
 };
+
+fn payloadCode(err: Error) ![]const u8 {
+    return switch (err) {
+        error.MissingPayload => "invalid_request",
+        error.MalformedJson => "invalid_payload",
+        else => "schema_invalid",
+    };
+}
 
 fn trim(arena: std.mem.Allocator, message: []const u8) ![]const u8 {
     if (message.len <= message_limit) return message;
@@ -678,8 +869,23 @@ const Harness = struct {
 
 const ReferenceState = struct {
     opened: usize = 0,
-    last_id: []const u8 = "session-1",
+    id_buffer: [64]u8 = undefined,
+    id_len: usize = 0,
     running: bool = false,
+    runs: [4][]const u8 = .{ "", "", "", "" },
+    run_count: usize = 0,
+
+    fn id(self: *const ReferenceState) []const u8 {
+        if (self.id_len == 0) return "session-1";
+        return self.id_buffer[0..self.id_len];
+    }
+
+    fn knows(self: *const ReferenceState, run_id: []const u8) bool {
+        for (self.runs[0..self.run_count]) |known| {
+            if (std.mem.eql(u8, known, run_id)) return true;
+        }
+        return false;
+    }
 };
 
 var reference_holder: ReferenceState = .{};
@@ -700,7 +906,10 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
     _ = refusal;
     state.opened += 1;
     state.running = false;
-    state.last_id = if (request.session_id.len > 0) request.session_id else "session-1";
+    state.run_count = 0;
+    const named = if (request.session_id.len > 0) request.session_id else "session-1";
+    @memcpy(state.id_buffer[0..named.len], named);
+    state.id_len = named.len;
     return .{ .ptr = state, .vtable = &.{
         .id = referenceId,
         .state = referenceState,
@@ -711,13 +920,34 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
         .drain = referenceDrain,
         .activity = referenceActivity,
         .close = referenceClose,
+        .models = referenceModels,
+        .tools = referenceTools,
     } };
+}
+
+fn referenceModels(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ModelsResponse {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    _ = request;
+    _ = refusal;
+    const catalog = try arena.dupe(oap_types.ModelDescriptor, &.{
+        .{ .id = "reference-a", .display_name = "Reference A", .provider_id = "reference", .context_window = 4096, .default = true },
+    });
+    return .{ .session_id = try arena.dupe(u8, referenceId(state)), .models = catalog };
+}
+
+fn referenceTools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ToolsListResponse {
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    _ = request;
+    _ = refusal;
+    const catalog = try arena.dupe(oap_types.ToolDefinition, &.{
+        .{ .name = "echo", .input_schema_json = "{\"type\":\"object\"}", .execution_owner = "client" },
+    });
+    return .{ .session_id = try arena.dupe(u8, referenceId(state)), .tools = catalog };
 }
 
 fn referenceId(ptr: *anyopaque) []const u8 {
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
-    if (state.opened == 0) return "session-1";
-    return state.last_id;
+    return state.id();
 }
 
 fn referenceState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
@@ -735,6 +965,10 @@ fn referenceSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oa
     _ = request;
     _ = refusal;
     state.running = true;
+    if (state.run_count < state.runs.len) {
+        state.runs[state.run_count] = "run-1";
+        state.run_count += 1;
+    }
     const session_id = try arena.dupe(u8, referenceId(state));
     const submission = try arena.dupe(u8, "s1");
     const run = try arena.dupe(u8, "run-1");
@@ -760,6 +994,7 @@ fn referenceResolve(ptr: *anyopaque, arena: std.mem.Allocator, resolution: contr
 fn referenceCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
     _ = refusal;
+    if (!state.knows(run_id)) return error.RunNotFound;
     state.running = false;
     const session_id = try arena.dupe(u8, referenceId(state));
     const named = try arena.dupe(u8, run_id);
@@ -1017,4 +1252,132 @@ fn fadingProbe(ptr: *anyopaque, refusal: *contract.Refusal) contract.Failure!con
     if (state.registered) return .{ .endpoint = fading_descriptor.endpoint, .capability_revision = "", .features = &.{} };
     state.registered = true;
     return fading_descriptor;
+}
+
+fn openLine(harness: *Harness, extra: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"req-1\",\"payload\":{{{s}}}}}}}", .{extra});
+}
+
+test "an open answers the whole state document, correlated and stamped with the revision" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    const answer = try harness.lastValue();
+    try testing.expect(answer.object.get("ok").?.bool);
+    const envelope = answer.object.get("result").?;
+    try testing.expectEqualStrings("session.open.response", try textMember(harness.arena(), envelope, "type"));
+    try testing.expectEqualStrings("req-1", try textMember(harness.arena(), envelope, "in_reply_to"));
+    try testing.expectEqualStrings("reference-v1", try textMember(harness.arena(), envelope, "capability_revision"));
+    const state = envelope.object.get("payload").?;
+    try testing.expectEqualStrings("alpha", try textMember(harness.arena(), state, "session_id"));
+    try testing.expectEqualStrings("idle", try textMember(harness.arena(), state, "status"));
+}
+
+test "an open refuses a payload that is not a session.open.request" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"payload\":{}}}");
+    try testing.expectEqualStrings("schema_invalid", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.cancel.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"alpha\",\"run_id\":\"run-1\"}}}");
+    try testing.expectEqualStrings("type_mismatch", try harness.code());
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try testing.expectEqualStrings("session_exists", try harness.code());
+    try testing.expect(!harness.frontend.stopped);
+}
+
+test "an open refuses an unknown adapter and a missing one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"open\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"req-1\",\"payload\":{}}}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"open\",\"adapter\":\"nobody\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"req-2\",\"payload\":{}}}");
+    try testing.expectEqualStrings("unknown_adapter", try harness.code());
+}
+
+test "an open's compound message must be JSON, or the request is invalid_payload" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\",\"message\":\"{not json\""));
+    try testing.expectEqualStrings("schema_invalid", try harness.code());
+    try testing.expectEqual(@as(usize, 0), harness.hub.sessionCount());
+}
+
+test "a submit answers the admission, correlated to the request envelope" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    const envelope = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("session.message.submit.response", try textMember(harness.arena(), envelope, "type"));
+    try testing.expectEqualStrings("req-2", try textMember(harness.arena(), envelope, "in_reply_to"));
+    try testing.expectEqualStrings("run-1", try textMember(harness.arena(), envelope.object.get("payload").?, "run_id"));
+}
+
+test "a submit of another session is scope_mismatch, and an unknown one is unknown_session" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"elsewhere\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try testing.expectEqualStrings("scope_mismatch", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"submit\",\"session_id\":\"absent\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-3\",\"payload\":{\"session_id\":\"absent\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try harness.send("{\"id\":4,\"op\":\"submit\",\"session_id\":\"alpha\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+}
+
+test "a cancel is intent, and a payload naming another session is scope_mismatch" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"cancel\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.cancel.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"elsewhere\",\"run_id\":\"run-1\"}}}");
+    try testing.expectEqualStrings("scope_mismatch", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"cancel\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.cancel.request\",\"id\":\"req-3\",\"payload\":{\"session_id\":\"alpha\",\"run_id\":\"run-9\"}}}");
+    try testing.expectEqualStrings("run_not_found", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-3\",\"payload\":{\"session_id\":\"alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try harness.send("{\"id\":4,\"op\":\"cancel\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"run.cancel.request\",\"id\":\"req-4\",\"payload\":{\"session_id\":\"alpha\",\"run_id\":\"run-1\"}}}");
+    const envelope = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("run.cancel.response", try textMember(harness.arena(), envelope, "type"));
+    try testing.expectEqualStrings("cancelling", try textMember(harness.arena(), envelope.object.get("payload").?, "status"));
+}
+
+test "resolve takes all three request types and refuses a foreign session on each" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    const cases = [_][]const u8{
+        "{\"id\":2,\"op\":\"resolve\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"action.permission.resolve.request\",\"id\":\"req-2\",\"payload\":{\"interaction_id\":\"permission-1\",\"session_id\":\"elsewhere\",\"run_id\":\"run-1\",\"requested_by\":\"oapx\",\"responded_by\":\"user\",\"granted\":true}}}",
+        "{\"id\":3,\"op\":\"resolve\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"user.input.resolve.request\",\"id\":\"req-3\",\"payload\":{\"interaction_id\":\"input-1\",\"session_id\":\"elsewhere\",\"run_id\":\"run-1\",\"requested_by\":\"oapx\",\"responded_by\":\"user\",\"answers\":[{\"question_id\":\"choice\",\"selected_option_ids\":[\"yes\"]}]}}}",
+        "{\"id\":4,\"op\":\"resolve\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"action.call.resolve.request\",\"id\":\"req-4\",\"payload\":{\"interaction_id\":\"call-1\",\"session_id\":\"elsewhere\",\"run_id\":\"run-1\",\"tool_call_id\":\"tool-1\",\"requested_by\":\"oapx\",\"responded_by\":\"user\",\"result\":{\"type\":\"text\",\"text\":\"done\"}}}}",
+    };
+    for (cases) |line| {
+        try harness.send(line);
+        try testing.expectEqualStrings("scope_mismatch", try harness.code());
+    }
+    try harness.send("{\"id\":5,\"op\":\"resolve\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"action.permission.resolve.request\",\"id\":\"req-5\",\"payload\":{\"interaction_id\":\"permission-1\",\"session_id\":\"alpha\",\"run_id\":\"run-1\",\"requested_by\":\"oapx\",\"responded_by\":\"user\",\"granted\":true}}}");
+    const envelope = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("action.permission.resolve.response", try textMember(harness.arena(), envelope, "type"));
+    try testing.expectEqualStrings("permission-1", try textMember(harness.arena(), envelope.object.get("payload").?, "interaction_id"));
+}
+
+test "a catalog is stamped with the revision it was served under" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"models\",\"session_id\":\"alpha\"}");
+    var envelope = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("models.response", try textMember(harness.arena(), envelope, "type"));
+    try testing.expectEqualStrings("reference-v1", try textMember(harness.arena(), envelope, "capability_revision"));
+    try testing.expectEqualStrings("reference-a", try textMember(harness.arena(), envelope.object.get("payload").?.object.get("models").?.array.items[0], "id"));
+
+    try harness.send("{\"id\":3,\"op\":\"tools\",\"session_id\":\"alpha\"}");
+    envelope = (try harness.lastValue()).object.get("result").?;
+    try testing.expectEqualStrings("action.tools.list.response", try textMember(harness.arena(), envelope, "type"));
+    try testing.expectEqualStrings("reference-v1", try textMember(harness.arena(), envelope, "capability_revision"));
+    try testing.expectEqualStrings("echo", try textMember(harness.arena(), envelope.object.get("payload").?.object.get("tools").?.array.items[0], "name"));
+
+    try harness.send("{\"id\":4,\"op\":\"models\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try harness.send("{\"id\":5,\"op\":\"tools\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
 }
