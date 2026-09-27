@@ -802,7 +802,7 @@ client is what a real host does and a port must satisfy it too.
 | Foreign-session events, a late run start and a misrouted answer are each refused | `TestClientRejectsForeignSessionEvents`, `TestClientRejectsLateRunStart`, `TestClientRejectsMisroutedGetResponses`, `TestClientRejectsMisroutedPostResponses` |
 | An answer the client did not ask for, or one out of scope, is refused | `TestClientRejectsUncorrelatedResponse`, `TestClientRejectsUncorrelatedErrorEnvelope`, `TestClientRejectsOutOfScopeResponse`, `TestClientRejectsAnUnscopedAnswerToItsScopedCatalogRequest` |
 | An error envelope scoped to another session or run is refused, and a correctly scoped one surfaces | `TestClientRefusesAnErrorEnvelopeScopedToAnotherSession`, `TestClientRefusesAnErrorEnvelopeScopedToAnotherRun`, `TestClientSurfacesACorrectlyScopedErrorEnvelope` |
-| An error envelope carrying no code is surfaced as a plain failure rather than a protocol one | `TestClientErrorCodeAbsentForPlainFailures` — the rule D1 would end for the `Host` refusal |
+| An error envelope carrying no code is surfaced as a plain failure rather than a protocol one | `TestClientErrorCodeAbsentForPlainFailures` — the rule every refusal now obeys, the `Host` refusal included |
 | A stream answering with a non-200, a non-`text/event-stream` content type, or a non-204 close is refused | `TestClientRejectsNon200StreamStatus`, `TestClientRejectsNonEventStreamContentType`, `TestClientRejectsNon204Close` |
 | The SSE parser reads the framing as specified: a simple frame, field rules, comments and keepalives, multiple `data` lines, a named event with an `id`, a `NUL`-bearing id, a leading BOM, either line terminator, an unterminated tail, and a dispatch with no data | `TestScanSSESimpleFrames`, `TestScanSSEFieldRules`, `TestScanSSECommentsAndKeepalives`, `TestScanSSEMultiLineData`, `TestScanSSENamedEventAndID`, `TestScanSSEIDWithNULDiscarded`, `TestScanSSELeadingBOM`, `TestScanSSELineTerminators`, `TestScanSSEUnterminatedTailDiscarded`, `TestScanSSENoDataNoDispatch`, `TestScanSSEStopsWhenHandlerDeclines` |
 | A mid-run join is accepted, and the client is told where it joined | `TestClientMidRunJoinAccepted` |
@@ -980,32 +980,23 @@ stdio peer is not an in-process embedding of the core.
 Recorded rather than fixed here, per Decision 0032: the draft decides, the wrong
 side is fixed, and where it cannot be fixed yet the divergence is written down.
 
-**D1 is the one that blocks a differential job.** It must be fixed in Go before
-[#387](https://github.com/lsm/open-agent-protocol/issues/387) and
-[#388](https://github.com/lsm/open-agent-protocol/issues/388) grow a
-byte-for-byte comparison, because a port that obeys the draft and a Go that does
-not would fail that job on its first request.
+**D1 is fixed.** The `Host` refusal is an `error.response` carrying
+`unrecognized_host` in Go as it is in the draft, and `TestHostAllowlist` asserts
+the body, so [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
+[#388](https://github.com/lsm/open-agent-protocol/issues/388) no longer fail a
+byte-for-byte comparison on their first request.
 
-**D2 to D7 are all the Zig side, and all of one kind:** each names something
-`zig/src/adapter/contract.zig` cannot carry that the draft specifies — a member
-that does not exist, or a signal with nowhere to report it. None of them changes a
-byte on the wire today, and each is a small contract change rather than a
-re-decision, so they are queued in
-[#407](https://github.com/lsm/open-agent-protocol/issues/407) (D2, D3, D5, D6) and
-[#398](https://github.com/lsm/open-agent-protocol/issues/398) (D7) rather than
-fixed here. D4 is different in one respect: its negative-capacity half is a Go
-change, queued in
+**D2 to D7 are what is left, and all of it is the Zig side and all of one kind:**
+each names something `zig/src/adapter/contract.zig` cannot carry that the draft
+specifies — a member that does not exist, or a signal with nowhere to report it.
+None of them changes a byte on the wire today, and each is a small contract change
+rather than a re-decision, so they are queued rather than fixed here: D2, D3, D5
+and D6 in [#407](https://github.com/lsm/open-agent-protocol/issues/407), and D7 —
+the per-run exposure a stream failure needs — in
+[#407](https://github.com/lsm/open-agent-protocol/issues/407) too, since it is the
+same kind of gap. D4 is different in one respect: its negative-capacity half is a
+Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
-
-### D1 — the `Host` allowlist refusal is not a typed error
-
-| | |
-| --- | --- |
-| **The draft says** | Every refusal on every route of every transport is an `error.response` envelope carrying a declared `code` and a bounded `message`. The `Host` refusal is `403 unrecognized_host`. |
-| **Go does** | `servehttp` answers the `Host` refusal with a bare `{"error":"unrecognized Host header; this daemon serves loopback clients only"}` — an object with one prose string and **no code** — while every other refusal on both transports is a typed envelope. |
-| **Why Go is the wrong side** | A client cannot branch on a refusal carrying no code, and [Decision 0020](../decisions/0020-error-codes-are-declared.md) exists because the codes are what a host acts on. The status and the prose are right; only the body is wrong. |
-| **The fix** | Answer `error.response` with code `unrecognized_host`, keeping the 403 and the wording. One envelope shape, one code to match on. |
-| **Pinned today** | `TestHostAllowlist` asserts the 403 and nothing about the body, which is why the shape drifted unpinned. |
 
 ### D2 — the Zig adapter contract destroys a session on close
 

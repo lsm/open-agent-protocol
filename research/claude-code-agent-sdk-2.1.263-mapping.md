@@ -330,7 +330,7 @@ mirrors that split exactly rather than imposing a blanket rule:
 | `command_lifecycle.command_uuid` | corroborating admission evidence | Same uuid as the submit; observed-only (untyped in both SDK pins, capability-gated). |
 | one user turn ending in one `result` | `run_id` | Adapter allocates; Claude Code has no native run identity. |
 | assistant `uuid` | transcript `message_id` | One per emitted frame; block-level, not turn-level. |
-| `tool_use` block `id` / `tool_use_id` | `tool_call_id` | Namespace by endpoint and session; also the `can_use_tool` correlation key. |
+| `tool_use` block `id` / `tool_use_id` | `tool_call_id` | Namespace by endpoint and session; also the `can_use_tool` correlation key, and a `can_use_tool` ask carries it when the run already announced that call, on the envelope and in the payload alike. |
 | `task_id` | child action/task identity | Target of `stop_task`; distinct from `tool_use_id` though joinable via `tool_use_id`. |
 | `parent_tool_use_id` | child attribution | Marks subagent-produced frames; links task children to the spawning call. |
 | control `request_id` | private control correlation | Interrupt acknowledgement must never be surfaced as run settlement. |

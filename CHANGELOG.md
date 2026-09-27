@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `Host` allowlist refusal on the HTTP transport is an `error.response` carrying the code `unrecognized_host`, keeping the 403 and its wording, where it answered a bare `{"error": …}` with no code — a shape a client cannot branch on, and the one divergence that failed a differential comparison on its first request. `TestHostAllowlist` asserts the body, which is why the shape had drifted unpinned.
+- A Claude Code permission ask now names the tool call it is for. When `can_use_tool` arrives for a `tool_use_id` the run already announced, both trees put `tool_call_id` on the ask's envelope and in its payload; an ask for a call the run never announced leaves both empty, as before. A client that decides by tool could otherwise only learn which tool an ask was for by parsing the question's prompt text. The envelope's `tool_call_id` follows `turn_id` where the schema orders them, so the two trees serialise an ask that names a tool call identically.
 - `zig/src/hub/hub.zig` frees a subscription's queued events when it is closed. A client that disconnected mid-stream left its subscription, both list capacities and up to `stream_queue` event lines behind, because `reclaim()` only frees a subscription whose queues are already empty and nothing drains a closed one — the fan-out no longer reaches it and only the client called `next()`. A closed subscription is unreadable from then on, so its events are released there and the next pump reclaims the subscription itself.
 - `zig/src/hub/hub.zig` names the run a queue overflow lost, the way Go's
   `lossRun` does, and points its cursor where the client actually stopped. The

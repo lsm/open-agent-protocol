@@ -920,6 +920,23 @@ func TestHostAllowlist(t *testing.T) {
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("foreign host status %d: %s", response.StatusCode, data)
 	}
+	var refusal protocol.Envelope
+	if err := json.Unmarshal(data, &refusal); err != nil {
+		t.Fatalf("foreign host body is not an envelope: %s", data)
+	}
+	if refusal.Type != protocol.TypeErrorResponse {
+		t.Fatalf("foreign host body type = %q", refusal.Type)
+	}
+	var failure protocol.ErrorResponse
+	if err := refusal.DecodePayload(&failure); err != nil {
+		t.Fatal(err)
+	}
+	if failure.Error.Code != "unrecognized_host" {
+		t.Fatalf("foreign host code = %q, want unrecognized_host", failure.Error.Code)
+	}
+	if !strings.Contains(failure.Error.Message, "unrecognized Host header") {
+		t.Fatalf("foreign host message = %q", failure.Error.Message)
+	}
 
 	for _, host := range []string{"localhost", "127.0.0.1"} {
 		request, err := http.NewRequest(http.MethodGet, server.URL+"/adapters", nil)
