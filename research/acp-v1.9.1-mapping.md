@@ -123,3 +123,92 @@ So an ACP entry cannot be translated into a provider setting by the adapter, and
 a row's key reaches such an agent only through the settings that agent's own
 project documents. A backend built on ACP inherits the answer from the agent
 behind it rather than from this protocol.
+
+## Session reload at v1.9.1
+
+Decision 0039's evidence table cites the v1.7.0 ledger for this row. Every
+line below is read from the specification and the generated schema at this
+pin's commit `7e87dc205a7325bd07d0249fd20bb7486ee6ba95`, and the last
+paragraph says what the Go adapter does with it — which is the part 0039
+cannot do without.
+
+**Each operation has its own gate, and a client must check it before
+calling.** `AgentCapabilities` carries a top-level `loadSession: boolean` for
+`session/load`, and a `sessionCapabilities` object whose `list`, `resume`,
+`close`, `delete` and `additionalDirectories` members are each present-or-null
+(`SessionListCapabilities`, `SessionResumeCapabilities`,
+`SessionCloseCapabilities`, `SessionDeleteCapabilities` and
+`SessionAdditionalDirectoriesCapabilities` in
+`schema.unstable.json`, the last two of which the stable schema does not
+define). The spec states the obligation per operation: "If `loadSession` is
+`false` or not present, the Agent does not support loading sessions and
+Clients **MUST NOT** attempt to call `session/load`", and the same shape for
+`sessionCapabilities.resume` and `sessionCapabilities.list`. So a reattach
+cannot assume any of the three: the gates are advertised per agent, and an
+agent that advertises none of them cannot be reattached at all.
+
+**A load is transcript reconstruction, and the spec says so in the
+imperative.** `docs/protocol/v1/session-setup.mdx`: "The Agent **MUST**
+replay the entire conversation to the Client in the form of `session/update`
+notifications (like `session/prompt`)", each replayed message may carry an
+opaque `messageId` "for the replayed message", and "When **all** of the
+conversation entries have been streamed to the Client, the Agent **MUST**
+respond to the original `session/load` request." The response therefore
+arrives *after* the whole transcript, which is what makes it reconstruction
+and not replay: there is no run id, no sequence, no gap semantics, and no
+proof of what was omitted. `LoadSessionRequest` requires `sessionId`, `cwd`
+and `mcpServers`; the response carries `modes` and `configOptions` and
+nothing else — no ids to resume from later.
+
+**A resume is attachment, and it is the operation that re-establishes the
+MCP servers.** The same document: "Unlike `session/load`, the Agent **MUST
+NOT** replay the conversation history via `session/update` notifications
+before responding. Instead, it restores the session context, reconnects to
+the requested MCP servers, and returns once the session is ready to
+continue." `ResumeSessionRequest` requires only `sessionId` and `cwd` —
+`mcpServers` is optional here and required on load — and the response is the
+same `modes`/`configOptions` pair. The difference is the whole of it:
+transcript, or attachment with the client's own servers back.
+
+**A list exists, gated, and paginated on an opaque cursor.**
+`sessionCapabilities.list` gates `session/list`;
+`docs/protocol/v1/session-list.mdx`: "All parameters are optional. A request
+with an empty `params` object returns the first page of sessions", `cwd` "Must
+be an absolute path", and `cursor` is "Opaque cursor token from a previous
+response's `nextCursor` field". `ListSessionsResponse` requires `sessions` and
+carries `nextCursor`. Each entry reports `hasErrors`, and the spec is explicit
+that a listed session's omitted and empty values "MUST NOT" be merged with
+prior values — so a list entry is what the agent claims it knows, not a
+portable transcript, and a host must not read across two pages of it.
+
+**What it answers when the store is gone: nothing is specified.** For
+`session/load` and `session/resume` of an id the agent does not have, the
+stable specification at this pin says neither MUST nor MAY. The one
+session-lifecycle sentence about a missing session is in the **close**
+section — "Agents MAY return an error if the session does not exist or is not
+currently active" — which is a MAY with no code attached, and it is about
+close. So unlike Codex, which answers `-32602` with "no rollout found for
+thread id …", an ACP agent may answer a load or a resume of an unknown id
+with any error, with a success-shaped response, or with silence. Decision
+0039's answer for that case is `unsupported_feature` — the host had the
+binding and the harness cannot load it — which means the *adapter* has to
+produce it whatever the agent does, and cannot read it off the wire. That is
+the one thing in this row a port cannot inherit.
+
+**What the Go adapter does with all of it: nothing, yet.** `go/adapter/acp`
+calls `session/new` and only `session/new` — there is no `session/load`,
+`session/resume` or `session/list` anywhere in it, and the descriptor's own
+`attach` reason says why the *new* path carries the MCP server array "at this
+pin". So ACP has no reattach today, and not because a gate is closed: the
+adapter has no way to name a session it did not create, which is the
+`session/list` this pin does advertise. Whoever takes #446 should read that
+as the shape of the work: an ACP reattach is a list, a resume, and a state
+document, with the load path available only for an agent that advertises
+`loadSession` and only as reconstruction.
+
+**What is not established here.** Every claim above is read from the spec
+and schema at this pin's commit. The v1.9.1 corpus drives `session/new`
+(above), so no frame in it exercises load, resume or list, and this pin's
+process gate is the one that ran those frames. The gates are read from the
+generated schema and the MUSTs from the prose; whether a given agent honours
+them is a property of that agent and not of this pin.
