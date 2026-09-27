@@ -63,6 +63,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A Claude Code permission ask now names the tool call it is for. When `can_use_tool` arrives for a `tool_use_id` the run already announced, both trees put `tool_call_id` on the ask's envelope and in its payload; an ask for a call the run never announced leaves both empty, as before. A client that decides by tool could otherwise only learn which tool an ask was for by parsing the question's prompt text. The envelope's `tool_call_id` follows `turn_id` where the schema orders them, so the two trees serialise an ask that names a tool call identically.
 - The claude, acp, hermes, deepseek and pi adapters now cancel a settling run's pending tool calls, and resolve its open prompts, in the order they started rather than in Go's randomised map order. #343 fixed this in the codex and opencode adapters; with one pending call there was nothing to order, so the order was never observable, and a fixture that opens two would have found the trees disagreeing — the Zig reducers range an `ArrayList` and always keep start order.
 - `zig/src/hub/hub.zig` frees a subscription's queued events when it is closed. A client that disconnected mid-stream left its subscription, both list capacities and up to `stream_queue` event lines behind, because `reclaim()` only frees a subscription whose queues are already empty and nothing drains a closed one — the fan-out no longer reaches it and only the client called `next()`. A closed subscription is unreadable from then on, so its events are released there and the next pump reclaims the subscription itself.
+- `zig/src/hub/hub.zig` names the run a queue overflow lost, the way Go's
+  `lossRun` does, and points its cursor where the client actually stopped. The
+  candidate set is Go's: the event that overflowed, every run with a queued event,
+  the run the subscription is reading, and the session's current run, preferring a
+  run the session has not finished. The current run is the one that was missing —
+  without it a cancel-then-resubmit loss named the run being read while Go named
+  the newer live run, and a client resumed onto a settled run. The cursor is the
+  position the client stopped at *after* draining, not where the queue filled, so a
+  resume neither skips the events already handed over nor repeats them.
+  `drafts/hub.md` records the rest of the overflow table as **D7**: a run's stream
+  failure cannot be attributed to that run or scoped to the subscribers exposed to
+  it, because `contract.Session.drain` reports a failure rather than whose stream
+  failed, so a stream failure ends the whole session where Go confines it to the
+  readers of that run.
+
+  A replay that outgrows the mailbox names the run being replayed at the
+  position it reached, as Go's `nextReplay` does. The loss candidate set answers a
+  different question — which run a *live* stream's loss belongs to — and applying
+  it to a replay named the session's current run and orphaned the replayed suffix.
+
 - A wire whose path carries a version now drops that version when the base's path already spells one, rather than only when the base ends in `/v1`. Five catalogued rows were composing an address no vendor serves: `zai-coding-plan` reached `/api/coding/paas/v4/v1/chat/completions`, `tencent-coding-plan` and `volcengine-coding-plan` reached `/coding/v3/v1/chat/completions`, `deepinfra` reached `/v1/openai/v1/chat/completions`, and on the anthropic wire `minimax-coding-plan` reached `/anthropic/v1/v1/messages`. Probed unauthenticated, the doubled form is a hard 404 for `deepinfra` and `minimax-coding-plan` while the deduplicated form is served, and the other three hosts answer 401 either way; `go/provider/zai.go` already paired that base with a versionless path. A base like `/v1/openai` or `/api/coding/paas/v4` is a versioned root, so the wire's own version must not be appended to it a second time.
 - `goap serve agent --backend codex` closes open interactions and actions in the order they opened, and `goap serve agent --backend opencode` settles unfinished tools in start order, as `oapx` does, instead of Go map iteration order. Neither parity fixture opens two at once, so the corpus cannot see it; the same unordered-map pattern still exists in the other Go adapters' settlement sweeps.
 - `oapx serve agent --backend hermes` decodes `gateway.ready`'s payload against the pinned type, as `goap` does: a member outside `skin`/`change_events`/`replay_epoch` now refuses the open instead of being ignored. The `skin`, `change_events` and 32-hex `replay_epoch` checks were already enforced.
