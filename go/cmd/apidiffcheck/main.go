@@ -63,7 +63,7 @@ func check(root, base, changelogPath string, stdout io.Writer) error {
 	}
 	missing := unrecorded(report, module, unreleased)
 	if len(missing) > 0 {
-		return fmt.Errorf("these packages changed incompatibly against %s without the Unreleased section naming them in backticks: %s. Record each one, or say why the break is intended", base, strings.Join(missing, ", "))
+		return fmt.Errorf("these packages changed incompatibly against %s without the Unreleased section naming them in backticks: %s. Record each one, or say why the break is intended. A package that is gone counts: removing a public package is the most incompatible change there is", base, strings.Join(missing, ", "))
 	}
 	fmt.Fprintf(stdout, "PASS compatibility: no unrecorded incompatible change against %s\n", base)
 	return nil
@@ -122,7 +122,7 @@ func incompatiblePackages(report, module string) []string {
 			incompatible = strings.HasPrefix(line, "## incompatible")
 		case line != "" && current != "" && incompatible:
 			name, found := strings.CutPrefix(current, module+"/")
-			if !found || seen[name] || !publicset.Public(name) {
+			if !found || seen[name] || publicset.Internal(name) {
 				continue
 			}
 			seen[name] = true

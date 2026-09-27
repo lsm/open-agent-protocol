@@ -39,6 +39,17 @@ func TestAnEmptyReportNamesNothing(t *testing.T) {
 	}
 }
 
+func TestARemovedPublicPackageStillCounts(t *testing.T) {
+	report := `# github.com/lsm/open-agent-protocol/go/client
+## incompatible changes
+package removed
+`
+	got := incompatiblePackages(report, module)
+	if len(got) != 1 || got[0] != "go/client" {
+		t.Fatalf("incompatible packages %v, want go/client: a package deleted at head is not in the head's set, and deleting one is the most incompatible change there is", got)
+	}
+}
+
 func TestAnInternalPackageIsNotPublicApiSoItDoesNotCount(t *testing.T) {
 	report := `# github.com/lsm/open-agent-protocol/go/internal/conformance
 ## incompatible changes
