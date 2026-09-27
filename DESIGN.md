@@ -228,6 +228,66 @@ Required performance thresholds (at least one):
 
 ---
 
+### 8.6 The hub's loop (normative)
+
+A multi-session hub has **one** thread, and it owns the hub's state outright:
+entries, journals, cursors, subscribers, holds and the fan-out. It is the only
+thread that touches any of them, so a lock never appears in the hub and the
+sequencing rules in §4 hold by construction rather than by lock discipline.
+
+That thread runs **one** loop, and it waits on the readiest of everything it owns
+rather than on each thing in turn:
+
+- every open session's child output,
+- the transport's own inputs — the host's request stream on stdio, every
+  connection's read side on HTTP and websocket,
+- and its own bounded-output queues, when an output is waiting for room.
+
+A wait is on **readiness**, not on a duration. An idle session contributes
+nothing to a cycle's latency, and a child that has gone silent holds back
+nothing: the loop is not in a blocking read on it while another session has
+something to say. A bounded wait is what a cycle falls back on, never what it
+plans around.
+
+Rejected, and why:
+
+- **A thread per connection with the hub behind a lock.** The hub's fan-out
+  order, its cursor rule and its settle order are specified as sequential
+  per session. Under a lock they hold only if every path takes the lock, and
+  the orderings then depend on which holder ran first. The hub's `pump` is
+  called *by* the transport, so a request being served and a pump draining a
+  child are two callers contending for the same state. Go takes this shape and
+  pays for it in a mutex on the session; the port would pay for it in an audit
+  of every invariant in the hub.
+- **A blocking read per input, round-robin.** This is what the hub did before
+  it had a model: each open session got a share of the wait, at least 1 ms, one
+  after another. Idle sessions added their share to every cycle, and a slow
+  child added its own to every other session's events.
+- **A separate reader thread per input, handing work to the hub over a queue.**
+  It keeps the ordered loop to the part that must be ordered, but it adds a
+  second way into the hub, and the queue is state the loop has to own and bound
+  anyway. A handle the loop can wait on costs less than a queue to protect.
+
+**What a session must expose.** A child that cannot be waited on cannot be in
+this loop, so `contract.Session` exposes a pollable handle — or a readiness
+check — rather than a timed blocking wait, and the hub waits on the readiest
+session. An adapter that cannot expose a handle does not get a second thread
+and a callback: it declares that it cannot, and the transport decides what to
+do. This is the one contract change the model requires.
+
+**What the transports must expose.** Symmetrically, a transport whose inputs
+cannot be waited on cannot be in this loop. stdin's read side, and every
+connection's, are pollable handles. Where a platform offers no handle for an
+input, that input is a documented exception and the loop falls back to a bounded
+wait for it — named in this section, not discovered in a latency profile.
+
+**Both trees.** Go's hub already runs one goroutine per connection behind a
+session mutex. That is Go's shape and is not a normative model for the port;
+what is normative is the loop, and Go's is a port of the same spec in its own
+idiom.
+
+---
+
 ## 9) Test Strategy (Normative)
 
 ### 9.1 Required categories
