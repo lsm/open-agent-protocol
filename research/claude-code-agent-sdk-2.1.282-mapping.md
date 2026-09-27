@@ -201,3 +201,79 @@ the seven variables was found as a standalone string in the 2.1.283 binary — o
 patch above this pin. A variable the site documents that postdates the pin is not
 claimed here; `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` is the one that would
 override all of them, and a host that sets it wins.
+
+## Session reload at 2.1.282
+
+Decision 0039's close detaches and reattaches by the harness's own session
+handle, so what a reload restores, where the store is and what a moved home
+does are facts about this pin, not about the pin that introduced them.
+
+Decision 0039's evidence table cites the 2.1.263 ledger for this row; this
+section is the record at the pin the catalog names.
+
+**The surface is the same as 2.1.280's.** The `sdk.d.ts` delta above
+(0.3.280 → 0.3.282) names no resume member, and
+`src/claude_agent_sdk/_internal/session_resume.py` is unchanged from the
+2.1.280 ledger's provenance entry (`a50e578fdaea7b10de83697fe355145b7351cecc`)
+— the same two arguments this ledger already uses for the frames the adapter
+decodes. So `--resume=<uuid>`, `--continue`, `--fork-session` and
+`--resume-session-at` / `--resume-drops-turn` are the same four reload
+operations at 0.3.282, and the CLI session UUID is still the key.
+
+**A reload restores the conversation and nothing else.** `--resume` starts a
+new process that reads the stored transcript and continues it. Tools are not
+restored from the store: the resumed process announces its own `system/init`
+with the tools that its settings, plugins and built-ins give it, which is the
+same negotiation any new process does. The model is not restored either — this
+ledger's *Model-provider settings at this pin* section establishes that the
+model is read at process start from `--model`, `--settings` or
+`ANTHROPIC_MODEL`, never from a transcript. So a reattach has to re-establish
+tools and model and gets only the messages back. (Carried: 2.1.263's
+*Session state and recovery*, points 1 and 4.)
+
+**The store lives under the home directory, keyed by project and session id:**
+`~/.claude/projects/<project-dir>/<sessionId>.jsonl`, with
+`<sessionId>/subagents/agent-<agentId>.jsonl` beside it. The project directory
+is part of the path, so the same session id under a different project is a
+different file. (Carried: 2.1.263, point 4.)
+
+**A moved home directory fails twice over, for two independent reasons.** The
+store is under the home, so a different home is a different store; and because
+the project directory is part of the key, a *moved project* is a different
+store too, with the same home and the same session id. Separately, the macOS
+keychain service is `Claude Code-<hash>` and
+`Claude Code-credentials-<hash>` with the hash taken from
+`CLAUDE_CONFIG_DIR`, so a process with a replaced configuration directory
+cannot name the login stored for the default one. That second half was
+live-verified at 2.1.280: every `security find-generic-password` the binary
+logged was for the *temporary* `CLAUDE_CONFIG_DIR`'s hash and it answered
+not-found. The 2.1.282 capture repeated the same method with the same result,
+and the two binaries' lookups are indistinguishable in shape — so this
+ledger's claim is that the behaviour is unchanged, not that it was re-derived.
+
+**When the store is gone, the CLI has nothing to resume** — no conversation for
+that id under that project — and the SDK's resume materialization has nothing
+to seed from, which is why it copies (redacted) credentials into a temp
+directory only when there is a transcript to materialize. Decision 0039 has
+that answer and it is not the one for a session the host never had: a reopen
+naming a session the host has no binding for is `unknown_session`, while a
+reopen whose **harness cannot load** the session is `unsupported_feature`, and
+the capabilities say so. A moved home or a moved project is the second case,
+not the first: the host had the binding and the harness cannot honour it. The
+`unsupported_feature` refusal is the stable one to program against, because a
+store that is gone and a store under a different project are the same event
+from the harness's side.
+
+**None of this is OAP replay.** There is no native cursor, no redelivery
+contract and no gap semantics, so both `run.resume` and `run.replay` answer
+`degraded` (2.1.280's #238 section, which moved both from `unavailable`; the
+2.1.263 ledger predates that move), and reattach is resume, not replay — a
+cursor from before the close is answered with a replay gap (0039).
+
+**What is not verified at this pin.** None of the seventeen 2.1.282 probes
+resumes a session, so the runtime answers above — a moved home, a moved
+project, a store that is gone — are carried from the 2.1.263 and 2.1.280
+evidence rather than re-run against 2.1.282, and the store's path layout is
+carried from 2.1.263. A resume probe in the corpus, captured with this
+ledger's method, would make every row above a live claim at this pin; until
+then the API surface is verified here and the behaviour is inherited.
