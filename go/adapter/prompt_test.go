@@ -512,6 +512,90 @@ func TestRunToTerminalLeavesAHarnessOwnedCallAlone(t *testing.T) {
 	}
 }
 
+func TestRunToTerminalGivesTheResumedStreamItsOwnStallWindow(t *testing.T) {
+	session := &scriptedSession{
+		results: []adapter.Result{
+			{Envelope: envelope(protocol.TypeContentDelta, 1, protocol.ContentDeltaPayload{SessionID: "session-1", RunID: "run-1", MessageID: "message-1", Part: protocol.ContentPart{Type: protocol.ContentText, Text: "hi"}})},
+			{Error: adapter.ErrEventStreamOverflow},
+		},
+		hold: true,
+	}
+	session.resume = &scriptedSession{hold: true}
+	started := time.Now()
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{StallWindow: 50 * time.Millisecond})
+	elapsed := time.Since(started)
+	if !errors.Is(err, adapter.ErrStalled) {
+		t.Fatalf("err = %v, want the replay's own silence to be the stall", err)
+	}
+	if elapsed < 90*time.Millisecond {
+		t.Fatalf("returned after %s, want the recovery wait and then a fresh window: the replay had not been silent for the window it is reported with", elapsed)
+	}
+}
+
+func TestRunToTerminalRefusesAnEmptyAnswerSet(t *testing.T) {
+	ask := protocol.UserInputRequestedPayload{
+		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Continue?",
+		Questions: []protocol.InputQuestion{{
+			ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+			Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+		}},
+	}
+	session := &scriptedSession{results: []adapter.Result{{Envelope: envelope(protocol.TypeUserInputRequested, 1, ask)}}}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{}, nil
+		},
+	})
+	if !errors.Is(err, adapter.ErrGateUnanswered) {
+		t.Fatalf("err = %v, want the empty answer set refused", err)
+	}
+	if len(session.resolved) != 0 {
+		t.Fatalf("resolved %d interactions with no answer to resolve them with", len(session.resolved))
+	}
+}
+
+func TestRunToTerminalRefusesADuplicateAnswer(t *testing.T) {
+	ask := protocol.UserInputRequestedPayload{
+		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Continue?",
+		Questions: []protocol.InputQuestion{{
+			ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+			Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+		}},
+	}
+	session := &scriptedSession{results: []adapter.Result{{Envelope: envelope(protocol.TypeUserInputRequested, 1, ask)}}}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Answers: []protocol.InputAnswer{
+				{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}},
+				{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}},
+			}}, nil
+		},
+	})
+	if !errors.Is(err, adapter.ErrInvalidResolution) {
+		t.Fatalf("err = %v, want the duplicate answer refused", err)
+	}
+	if len(session.resolved) != 0 {
+		t.Fatalf("resolved %d interactions with a duplicated answer", len(session.resolved))
+	}
+}
+
+func TestRunToTerminalRefusesAnAcknowledgementItCannotFinish(t *testing.T) {
+	session := &resolvingSession{scriptedSession: &scriptedSession{results: []adapter.Result{{Envelope: providedCall(1)}}}}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Call: &adapter.CallAnswer{Started: true}}, nil
+		},
+	})
+	if !errors.Is(err, adapter.ErrGateUnanswered) {
+		t.Fatalf("err = %v, want the acknowledgement refused rather than left hanging", err)
+	}
+	if session.resolvedCall != nil {
+		t.Fatal("an acknowledgement reached the session with nothing behind it")
+	}
+}
+
 func envelope(typ protocol.EnvelopeType, sequence int, payload any) protocol.Envelope {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -611,7 +695,9 @@ func (s *scriptedSession) Resume(_ context.Context, request adapter.ResumeReques
 	for _, result := range replayed {
 		stream <- result
 	}
-	close(stream)
+	if resume == nil || !resume.hold {
+		close(stream)
+	}
 	return adapter.Recovery{RunID: request.RunID, RequestedAfter: request.AfterSequence, ReplayGap: gap}, stream, nil
 }
 

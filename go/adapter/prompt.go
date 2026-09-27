@@ -153,15 +153,6 @@ func pump(events EventStream, queue chan<- Result, done <-chan struct{}) {
 	}
 }
 
-func inputQuestion(questions []protocol.InputQuestion, id string) (protocol.InputQuestion, bool) {
-	for _, question := range questions {
-		if question.ID == id {
-			return question, true
-		}
-	}
-	return protocol.InputQuestion{}, false
-}
-
 func resolveGate(ctx context.Context, session Session, gate Gate) error {
 	if gate.Call != nil {
 		payload := gate.Call
@@ -172,7 +163,7 @@ func resolveGate(ctx context.Context, session Session, gate Gate) error {
 			Result: answer.Result, Error: answer.Error,
 		}
 		if answer.Started {
-			request.Started = &protocol.ResolveArmStarted{}
+			return fmt.Errorf("adapter: the policy acknowledged %s without a result, and this helper asks once per call, so the run would wait for an answer that never comes: %w", gate.InteractionID, ErrGateUnanswered)
 		}
 		if request.Arm() == "" {
 			return fmt.Errorf("adapter: the policy answered %s with no result, no error and no acknowledgement: %w", gate.InteractionID, ErrGateUnanswered)
@@ -186,14 +177,11 @@ func resolveGate(ctx context.Context, session Session, gate Gate) error {
 	}
 	if gate.UserInput != nil {
 		payload := gate.UserInput
-		for _, answer := range gate.answer.Answers {
-			question, found := inputQuestion(payload.Questions, answer.QuestionID)
-			if !found {
-				return fmt.Errorf("adapter: answer names no question of %s: %w", gate.InteractionID, ErrInvalidResolution)
-			}
-			if err := ValidateInputAnswer(question, answer); err != nil {
-				return fmt.Errorf("adapter: answer for %s: %w", answer.QuestionID, err)
-			}
+		if len(payload.Questions) > 0 && len(gate.answer.Answers) == 0 {
+			return fmt.Errorf("adapter: the policy answered %s with no answers, and the schema asks for at least one: %w", gate.InteractionID, ErrGateUnanswered)
+		}
+		if _, err := IndexInputAnswers(payload.Questions, gate.answer.Answers); err != nil {
+			return fmt.Errorf("adapter: the policy answered %s with an answer the questions do not accept: %w", gate.InteractionID, err)
 		}
 		return session.Resolve(ctx, InteractionResolution{
 			RunID:       gate.RunID,
@@ -411,6 +399,7 @@ drain:
 			case <-recovered.C:
 			}
 			recovered.Stop()
+			resetStall(stallTimer, stall)
 			queue = make(chan Result, runEventQueue)
 			readerDone = make(chan struct{})
 			go pumpTo(replay, queue, done, readerDone)
