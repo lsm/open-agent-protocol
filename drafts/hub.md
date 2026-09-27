@@ -1087,9 +1087,11 @@ the body, so [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) no longer fail a
 byte-for-byte comparison on their first request.
 
-**D2 is both trees against the draft.** [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) made close
-release a session, and neither hub does yet; the releases are
-[#443](https://github.com/lsm/open-agent-protocol/issues/443) (Go) and [#444](https://github.com/lsm/open-agent-protocol/issues/444) (Zig).
+**D2 is Go against the draft.** [Decision
+0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) makes close
+release a session. The Zig core does, in
+[#444](https://github.com/lsm/open-agent-protocol/issues/444); `go/serve` does not
+yet, and that is [#443](https://github.com/lsm/open-agent-protocol/issues/443).
 
 **D3 to D7 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
@@ -1103,16 +1105,16 @@ same kind of gap. D4 is different in one respect: its negative-capacity half is 
 Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
-### D2 — both hubs keep a closed session
+### D2 — go/serve keeps a closed session
 
 | | |
 | --- | --- |
 | **The draft says** | A session that is not open is released ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once its `close` succeeds or its adapter reports it closed, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
 | **Go does** | `go/serve` keeps a closed session in its table. `sessions` lists it with its final state, `state` answers it, a second `close` is `ok`, and an open under its id is refused `session_exists`. |
-| **Zig does** | The core keeps the entry, its journal and a cursor for every run it had, lists it as closed, and refuses every op on it with `session_closed`. |
-| **Why both are the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
+| **Zig does** | Fixed. `close` ends the entry's subscriptions with a `session_closed` ending and releases the entry — its journal, cursors, holds and ids — so the id is free again, every op naming it answers `unknown_session`, and `sessions` lists live sessions only. A session its adapter reports closed is released when it is next observed. |
+| **Why Go is the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
 | **The fix** | [#443](https://github.com/lsm/open-agent-protocol/issues/443) releases the session in Go, and [#444](https://github.com/lsm/open-agent-protocol/issues/444) in Zig. Zig's destructive `close` is the right shape for it. |
-| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`, `TestEventsOpRefusals` and `TestSSEOnClosedSession` for a request to a session already closed, and `TestStateReportingClosedClosesEntry` and `TestHubOpenMarksClosedOnClosedConfirmation` for a session its adapter reported closed. The Zig side: `zig/src/hub/hub.zig`'s tests that a closed session is refused `session_closed` and listed as closed. |
+| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`, `TestEventsOpRefusals` and `TestSSEOnClosedSession` for a request to a session already closed, and `TestStateReportingClosedClosesEntry` and `TestHubOpenMarksClosedOnClosedConfirmation` for a session its adapter reported closed. The Zig side, by the prose names the tests in `zig/src/hub/hub.zig` carry: "a released session's id is free again, and its memory is gone", "close hands its entry over under allocation failure", "closing a session ends every subscription under it, and releases the session", and "a backend that cannot make progress ends its stream, and the session stays open". |
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 
