@@ -95,6 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `go/adapter/pi` and `go/adapter/codex/appserver` answer a `run.cancel` accepted on a live run with `cancelling` and no longer re-read the run's terminal after the abort or interrupt round-trip, so the answer no longer depends on how far the reader goroutine has got. A cancel of a run that was already terminal when it was checked is still refused, and a settled run's recorded status is still not overwritten — but a run that settles *during* the round-trip no longer changes what the cancel answers. The pi parity scenario had flaked on this at least five times (#10); it now runs twenty times over in CI.
+
 - A closed session now leaves the Zig hub entirely, and every operation naming it is
   refused `unknown_session`. The core kept a closed session's entry, its journal and
   a cursor for every run it had, listed it as closed, and answered later operations
