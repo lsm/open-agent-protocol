@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `zig/src/hub/stdio.zig`: the hub's stdio transport-object wire — the layer
+  `drafts/hub.md` specifies and `oapx hub --stdio` will serve from. A request line
+  is decoded strictly, because a pipe is a trust surface: an unknown or repeated
+  key, a fractional or out-of-range `id`, a missing `id` or `op`, an empty line, a
+  carriage return, a line that is not UTF-8, or trailing data all stop serving
+  rather than being answered, while an op the frontend does not serve is a
+  correlated `unknown_op` and the pipe keeps running. A parameter an op does not
+  define is refused `invalid_request` on **presence**, so a supplied-but-null
+  parameter still counts. Five ops are in: `adapters`, `sessions`, `capabilities`,
+  `state` and `close`, with the two listings complete, sorted and never partial —
+  an adapter whose probe fails is listed with an `error` member rather than
+  failing the whole listing, and a closed session stays listed. Refusal messages
+  are bounded so a refusal always frames, and the in-flight bound refuses any op
+  because admission is decided before the op is read. `json_encode.parse` is
+  added so an adapter's embedded `constraints`, `limits` and `input_schema` text
+  can be carried into a result as the JSON it is.
 - `providers/resolved_urls.json` is the table both trees check their URL resolvers against: every endpoint's base, its models listing and its request URL, in catalog order, with an absent member recording that the catalog resolves no URL there. `zig/build.zig` reads it at build time and `go/providercatalog` from the embedded file, so a tree that resolves a row differently fails on that row rather than on a user's machine, and `goap check` fails when the file no longer matches the catalog. `go run ./go/cmd/goap providers catalog-urls --format=json > providers/resolved_urls.json` rewrites it. The two trees each pinned the same twenty-two rows in a literal before this; one file replaces both.
 - `go/providercatalog` resolves a row's URLs the way the Zig tree does. `ModelsURL(catalog, id, region)` appends the row's recorded `models_endpoint` to the endpoint serving that region, `RequestURL(catalog, id, wire, region)` appends each wire's path — dropping a version the base's path already spells, and treating a base that is already the full path as done — and `Resolve` returns every endpoint's base beside both URLs. An empty string is the answer the catalog does not hold: a row with no static endpoint, a wire this package does not join, a model-scoped wire, or a region no endpoint serves. A table over all twenty-two endpoints pins both URLs in this tree as the Zig table does, and the two agree value for value.
 - `zig/src/hub/hub.zig`: the multi-session hub core in Zig, the layer

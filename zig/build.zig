@@ -1359,6 +1359,20 @@ pub fn build(b: *std.Build) void {
     });
     const hub_test = b.addTest(.{ .root_module = hub_mod });
 
+    const hub_stdio_mod = b.createModule(.{
+        .root_source_file = b.path("src/hub/stdio.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "hub", .module = hub_mod },
+        },
+    });
+    const hub_stdio_test = b.addTest(.{ .root_module = hub_stdio_mod });
+
     const deepseek_adapter_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/deepseek/adapter.zig"),
         .target = target,
@@ -2649,6 +2663,8 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
+    test_unit_hub_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
