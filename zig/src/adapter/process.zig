@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const builtin = @import("builtin");
 
 pub const default_frame_limit: usize = 8 << 20;
 pub const default_exit_grace_ns: u64 = 5 * std.time.ns_per_s;
