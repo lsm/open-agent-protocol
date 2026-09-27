@@ -203,6 +203,7 @@ pub const Session = struct {
     };
 
     fn readable(ptr: *anyopaque) ?std.Io.File.Handle {
+        if (builtin.os.tag == .windows) return null;
         const self = cast(ptr);
         const subscription = self.subscription orelse return null;
         if (!subscription.open) return null;

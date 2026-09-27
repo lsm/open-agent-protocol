@@ -662,6 +662,20 @@ pub const Hub = struct {
         return slot(entry.session.ptr);
     }
 
+    fn awaitAny(self: *Hub, arena: std.mem.Allocator, wait_ns: u64) !bool {
+        if (comptime !pollable) return false;
+        var watched = std.ArrayList(std.posix.pollfd).empty;
+        for (self.entries.items) |*entry| {
+            if (entry.closed) continue;
+            const handle = handleOf(entry) orelse continue;
+            try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
+        }
+        if (watched.items.len == 0) return false;
+        const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
+        const awoken = std.posix.poll(watched.items, budget) catch 0;
+        return awoken > 0;
+    }
+
     fn drive(self: *Hub, share: u64) !void {
         for (self.entries.items) |*entry| {
             if (entry.closed) continue;
@@ -682,18 +696,8 @@ pub const Hub = struct {
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
         const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
-        var watched = std.ArrayList(std.posix.pollfd).empty;
-        if (pollable) for (self.entries.items) |*entry| {
-            if (entry.closed) continue;
-            const handle = handleOf(entry) orelse continue;
-            try watched.append(scratch.allocator(), .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
-        };
         try self.drive(share);
-        if (watched.items.len > 0) {
-            const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
-            const awoken = std.posix.poll(watched.items, budget) catch 0;
-            if (awoken > 0) try self.drive(share);
-        }
+        if (try self.awaitAny(scratch.allocator(), wait_ns)) try self.drive(share);
         for (self.entries.items) |*entry| {
             if (entry.closed) continue;
             var events = std.ArrayList(contract.Event).empty;
