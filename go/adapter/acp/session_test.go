@@ -1464,3 +1464,57 @@ func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
 		}
 	}
 }
+
+func acpAskPermission(t *testing.T, f *fakeClient, stream base.EventStream, requestID, toolCallID string, seen *[]protocol.Envelope) {
+	t.Helper()
+	params := json.RawMessage(`{"sessionId":"native-session","toolCall":{"toolCallId":"` + toolCallID + `","title":"Act"},"options":[{"optionId":"allow_once","name":"Allow","kind":"allow_once"}]}`)
+	f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID(requestID), native.MethodSessionRequestPermission, params))}
+	for {
+		envelope := adaptertest.Next(t, stream, 2*time.Second)
+		*seen = append(*seen, envelope)
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			return
+		}
+		if envelope.Type == protocol.TypeRunFailed {
+			t.Fatalf("the run failed before the permission was surfaced: %v", envelope.Payload)
+		}
+	}
+}
+
+func TestPendingPermissionsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	var seen []protocol.Envelope
+	acpAskPermission(t, f, stream, "perm-1", "call-1", &seen)
+	acpAskPermission(t, f, stream, "perm-2", "call-2", &seen)
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := append(seen, collect(t, stream)...)
+	assertValidTrace(t, admission, events)
+
+	var asked, settled []protocol.InteractionID
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeActionPermissionRequested && envelope.Type != protocol.TypeActionPermissionResolved {
+			continue
+		}
+		var payload struct {
+			InteractionID protocol.InteractionID `json:"interaction_id"`
+		}
+		if err := envelope.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			asked = append(asked, payload.InteractionID)
+		} else {
+			settled = append(settled, payload.InteractionID)
+		}
+	}
+	if len(asked) != 2 || len(settled) != 2 {
+		t.Fatalf("asked %v and settled %v, want two of each", asked, settled)
+	}
+	for i := range asked {
+		if settled[i] != asked[i] {
+			t.Fatalf("settled %v, want the order they were asked in %v", settled, asked)
+		}
+	}
+}
