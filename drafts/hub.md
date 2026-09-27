@@ -943,14 +943,14 @@ place a differential test would otherwise not see.
   How quickly an ended subscription stops occupying its slot is the part that is
   not yet the same in both trees, and it is queued in
   [#399](https://github.com/lsm/open-agent-protocol/issues/399). Go needs nothing
-  from the consumer: when a run's reader exits, `detachExposedLocked` removes
-  every subscriber exposed to that run, so a finished subscription is reclaimed
-  rather than retained. The Zig core keeps an ended subscription on the session's
-  subscriber list until the next event fans out to it or its consumer closes it,
-  so today the ceiling bounds live streams **plus** ended ones, and a host that
-  subscribes per run without closing is the shape that would fill it. The decision
-  does not rest on this half: what it rests on is that a subscription ends on its
-  own, which is what removes the need for a release valve.
+  from the consumer: once a session's last reader has gone and no reservation is
+  outstanding, `detachSubsLocked` takes every subscriber off it, so a finished
+  subscription is reclaimed rather than retained. The Zig core keeps an ended
+  subscription on the session's subscriber list until the next event fans out to it
+  or its consumer closes it, so today the ceiling bounds live streams **plus** ended
+  ones, and a host that subscribes per run without closing is the shape that would
+  fill it. The decision does not rest on this half: what it rests on is that a
+  subscription ends on its own, which is what removes the need for a release valve.
 
   The remaining two options both cost more than they buy. An `unsubscribe` op is
   a wire verb with no HTTP counterpart, and the honest HTTP form of "drop the
