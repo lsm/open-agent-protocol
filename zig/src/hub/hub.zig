@@ -2654,6 +2654,8 @@ test "a session that reports a handle is waited on, and handed no wait of its ow
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer flaky.keep.deinit();
     const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    defer compat.stdio.close(ends[1]);
     flaky.read_end = ends[0].handle;
     flaky.write_end = ends[1].handle;
 
@@ -2754,6 +2756,8 @@ test "a handle-less session keeps the timed pump beside one that reports a handl
     waiting.keep = std.heap.ArenaAllocator.init(testing.allocator);
     defer waiting.keep.deinit();
     const ends = try compat.stdio.pipe();
+    defer compat.stdio.close(ends[0]);
+    defer compat.stdio.close(ends[1]);
     waiting.read_end = ends[0].handle;
     waiting.write_end = ends[1].handle;
 
