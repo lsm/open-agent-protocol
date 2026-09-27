@@ -74,6 +74,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A closed session now leaves the Zig hub entirely, and every operation naming it is
+  refused `unknown_session`. The core kept a closed session's entry, its journal and
+  a cursor for every run it had, listed it as closed, and answered later operations
+  with `session_closed` — so an id stayed taken, a `sessions` listing grew for the
+  life of the process, and the memory did too. This is Decision 0039: close detaches,
+  ending the session's subscriptions with a `session_closed` ending and releasing its
+  journal, cursors, holds and state. `close` releases, so the id is free again, and
+  `sessions` lists live sessions only. A session whose adapter reports itself closed
+  is released the same way when it is next observed.
+  A run's stream failing is not a close and no longer acts like one. The hub ends
+  the subscriptions and nothing else: it does not close the child, because
+  `contract.Session.close` destroys the session, so a hub that closed the child of a
+  session it meant to keep would answer the next request from freed memory. The
+  session stays open and answerable until it is closed or released, and the close
+  lands on that release. Scoping a stream failure to its own readers rather than the
+  whole session is still outstanding, and that is D7.
 - The Zig hub's subscriber ceiling no longer counts subscriptions that have
   already ended. `max_subscriptions` bounds a session's subscriber list, and an
   ended subscription stayed on that list until the next event happened to fan out
