@@ -1612,7 +1612,7 @@ pub const App = struct {
 
     pub fn queueFollowUp(self: *App, text: []const u8) !bool {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
-        if (trimmed.len == 0) return false;
+        if (trimmed.len == 0 or isSlashDraft(trimmed)) return false;
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
             return err;
@@ -1948,7 +1948,7 @@ pub const TuiModel = struct {
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
                     .tab => {
-                        if (app.state.mode == .normal and app.state.status.streaming and app.slashQuery() == null) {
+                        if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
                             const text = app.state.composer.text();
                             const queued = app.queueFollowUp(text) catch |err| blk: {
                                 if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
@@ -2105,6 +2105,7 @@ pub const TuiModel = struct {
         composer: []const u8,
         status: []const u8,
         extra: []const u8,
+        queued_rows: usize,
     };
 
     fn renderInlineBody(app: *App, ctx: *const zz.Context, width: usize, budget: usize) ![]const u8 {
@@ -2137,20 +2138,20 @@ pub const TuiModel = struct {
             composer_view.hintText(ctx.allocator, &app.state) catch "";
         const status = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
         const composer = composer_view.render(ctx.allocator, &app.state, .{ .width = width }) catch "";
+        const queued = if (app.state.mode == .normal) renderQueuedFollowUps(ctx.allocator, &app.state, width) catch "" else "";
         const extra = switch (app.state.mode) {
             .approval => approval_view.render(ctx.allocator, &app.state, .{ .width = width }) catch "",
             .session_picker => session_picker_view.render(ctx.allocator, &app.state, .{ .width = width, .height = sessionPickerHeight(app), .offset = app.state.session_scroll }) catch "",
             .picker => renderPicker(ctx.allocator, app, width) catch "",
             .login_input => "",
             .normal => blk: {
-                const queued = renderQueuedFollowUps(ctx.allocator, &app.state, width) catch "";
                 const palette = renderCommandPalette(ctx.allocator, app, width) catch "";
                 if (queued.len == 0) break :blk palette;
                 if (palette.len == 0) break :blk queued;
                 break :blk tui_render.joinVertical(ctx.allocator, &.{ queued, palette }) catch palette;
             },
         };
-        return .{ .composer = composer, .status = status, .extra = extra };
+        return .{ .composer = composer, .status = status, .extra = extra, .queued_rows = countLines(queued) };
     }
 
     fn renderPicker(allocator: std.mem.Allocator, app: *const App, width: usize) ![]const u8 {
@@ -2215,7 +2216,7 @@ pub const TuiModel = struct {
         const width: usize = @max(ctx.width, 20);
         const height: usize = @max(ctx.height, 8);
         const chrome = self.renderChrome(app, ctx, width);
-        return height -| (countLines(chrome.status) + countLines(chrome.composer) + 1);
+        return height -| (countLines(chrome.status) + countLines(chrome.composer) + chrome.queued_rows + 1);
     }
 
     fn renderCommandPalette(allocator: std.mem.Allocator, app: *const App, width: usize) ![]const u8 {
@@ -2478,6 +2479,11 @@ pub const TuiModel = struct {
         return @max(app.last_view_height, 8) / 2;
     }
 };
+
+fn isSlashDraft(text: []const u8) bool {
+    const trimmed = std.mem.trimStart(u8, text, " \t\r\n");
+    return trimmed.len > 0 and trimmed[0] == '/';
+}
 
 fn filterMatches(filter: []const u8, label: []const u8, detail: []const u8) bool {
     var terms = std.mem.tokenizeScalar(u8, filter, ' ');
@@ -3128,7 +3134,7 @@ test "TuiModel Tab queues a follow-up while a turn streams and shows it until it
     try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "queued  then open a PR") == null);
 }
 
-test "TuiModel Tab while idle completes commands and never queues" {
+test "TuiModel Tab queues nothing while idle or for a slash draft" {
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
     var mock = MockAppSession{};
@@ -3148,6 +3154,52 @@ test "TuiModel Tab while idle completes commands and never queues" {
     _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
     try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
     try std.testing.expectEqualStrings("/abort", model.app.?.state.composer.text());
+
+    for ([_][]const u8{ "/model claude", "/model ", "  /status now" }) |draft| {
+        try model.app.?.state.replaceComposerBuffer(draft);
+        _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+        try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+        try std.testing.expectEqualStrings(draft, model.app.?.state.composer.text());
+    }
+    try std.testing.expect(!try model.app.?.queueFollowUp("/model claude"));
+    try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+    try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
+}
+
+test "TuiModel inline flush reserves the queued rows so no row hides behind them" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator), .render_mode = .inline_history };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 60;
+    tctx.ctx.height = 14;
+    try model.app.?.state.appendQueuedFollowUp("first queued follow-up");
+    try model.app.?.state.appendQueuedFollowUp("second queued follow-up");
+    for (0..12) |i| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "history entry {d}", .{i});
+        defer std.testing.allocator.free(text);
+        try model.app.?.state.appendTranscript(.assistant, text);
+    }
+
+    _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+    const above = try tctx.ctx.takeAbove(std.testing.allocator);
+    defer std.testing.allocator.free(above);
+    const frame = model.view(&tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 14), TuiModel.countLines(frame));
+    try std.testing.expect(std.mem.indexOf(u8, frame, "queued  second queued follow-up") != null);
+
+    const stream = try TuiModel.renderInlineStream(std.testing.allocator, &model.app.?.state, 0, 0, 60, true);
+    defer std.testing.allocator.free(stream);
+    const joined = try std.mem.concat(std.testing.allocator, u8, &.{ above, frame });
+    defer std.testing.allocator.free(joined);
+    var expected = std.mem.splitScalar(u8, stream, '\n');
+    var actual = std.mem.splitScalar(u8, joined, '\n');
+    while (expected.next()) |row| {
+        const got = actual.next() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(std.mem.trimEnd(u8, row, " "), std.mem.trimEnd(u8, got, " "));
+    }
+    try std.testing.expectEqualStrings("", std.mem.trimEnd(u8, actual.next() orelse return error.TestUnexpectedResult, " "));
 }
 
 test "TuiModel picker filters by typing and applies the filtered choice" {

@@ -227,7 +227,9 @@ code paths; add a transcript row instead.
 ## Keys
 
 `Enter` send (steer while streaming), `Tab` while streaming queue the draft as a
-follow-up that is sent when the turn stops (it waits above the composer until then),
+follow-up that is sent when the turn stops (it waits above the composer until then,
+and the inline window reserves its rows so no transcript row hides behind it; a
+draft starting with `/` is never queued),
 `Shift+Enter` newline, `Esc` clear draft →
 abort turn → close modal, `Ctrl+C` abort/clear first and quit on a second press
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
