@@ -658,6 +658,7 @@ pub const Hub = struct {
     }
 
     fn handleOf(entry: *const Entry) ?std.Io.File.Handle {
+        if (!pollable) return null;
         const slot = entry.session.vtable.readable orelse return null;
         return slot(entry.session.ptr);
     }
