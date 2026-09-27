@@ -502,6 +502,9 @@ drain:
 			return outcome, &RunCancelledError{}
 		}
 		if terminal {
+			if err := awaitResolves(ctx, &resolving); err != nil {
+				return outcome, err
+			}
 			return outcome, nil
 		}
 	}
