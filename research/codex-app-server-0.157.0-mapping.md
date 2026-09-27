@@ -158,3 +158,96 @@ Verified at the pin: the installed `codex-cli 0.157.0` binary carries
 `model_providers`, `base_url`, `env_key`, `wire_api`, `query_params` and
 `env_http_headers`, and `"responses"` is the only `wire_api` value among its
 strings.
+
+## Session reload at 0.157.0
+
+Decision 0039's evidence table cites the 8d7cc24 ledger for this row. Every
+line below is read from the source at this pin's commit
+`00c972ed5d6ff6499317fd41b7f23605b8e6850d`, and the last paragraph says what
+that does and does not establish.
+
+**A thread list exists, and it is a query, not a dump.** `thread/list` takes
+`cursor` and answers `data` with `nextCursor` and `backwardsCursor`
+(`ThreadListParams` / `ThreadListResponse` in
+`codex-rs/app-server-protocol/schema/json/v2/`), and it filters on `archived`,
+`cwd`, `searchTerm`, `sourceKinds`, `originators`, `modelProviders`,
+`sortKey`/`sortDirection` and `useStateDbOnly`. The method set around it is
+wider than resume: `thread/read`, `thread/items/list`, `thread/turns/list`,
+`thread/loaded/list`, `thread/fork`, `thread/archive`, `thread/unarchive`,
+`thread/delete`, `thread/unsubscribe`, `thread/compact/start`,
+`thread/revert`, `thread/name/set`, `thread/metadata/update`,
+`thread/goal/{get,set,clear}`, `thread/section/move`, `thread/shellCommand`,
+`thread/attachment/{add,list,remove}` and
+`thread/approveGuardianDeniedAction`. None of them was added in this move —
+the *Schema diff* above lists the five that were
+(`account/gatewayOAuth/{login,read,cancel}` and `thread/attachment/{add,list,remove}`)
+— so a reattach can enumerate the threads it may reattach to, and it can do so
+before it has any id.
+
+**A reload restores the conversation and the thread's configuration.**
+`ThreadResumeParams` requires only `threadId` and offers `model`,
+`modelProvider`, `cwd`, `sandbox`, `approvalPolicy`, `approvalsReviewer`,
+`baseInstructions`, `developerInstructions`, `config`, `personality`,
+`serviceTier` and `excludeTurns`. `ThreadResumeResponse` then *requires*
+`approvalPolicy`, `approvalsReviewer`, `cwd`, `model`, `modelProvider`,
+`sandbox` and `thread`, and adds `itemsBackwardsCursor` and
+`turnsBackwardsCursor` with optional `collaborationMode`,
+`disabledPluginIds`, `instructionSources`, `reasoningEffort` and
+`serviceTier`. So unlike a harness that returns only the messages, Codex
+answers a resume with the model, provider, working directory, sandbox and
+approval policy the thread last ran under: those are not the resumed
+process's configuration, they are the thread's. The path that produces them
+is `request_processors::persisted_resume_settings::latest_persisted_resume_settings`,
+which walks the rollout backwards for the last `TurnContext` or
+`ThreadSettingsApplied` and takes the approval policy, the approvals reviewer
+and the active permission profile from it.
+
+**Where the store lives.** `codex_rollout` is the store
+(`codex-rs/rollout/src/lib.rs`: "Rollout persistence and discovery for Codex
+session files"), under the Codex home: `SESSIONS_SUBDIR` is `sessions` and
+`ARCHIVED_SESSIONS_SUBDIR` is `archived_sessions`, and a file is named
+`rollout-<YYYY-MM-DDTHH-MM-SS>-<threadId>.jsonl`, with an extra `_rolloutId`
+appended for a reverted thread (`rollout_file_name::RolloutFileName`). The
+recorder's own doc comment shows the form
+(`~/.codex/sessions/rollout-2025-05-07T17-24-21-<uuid>.jsonl`). Alongside it
+there is a SQLite state database (`state_db`, `sqlite_config`) and a
+`session_index`, and a thread's history can be served from that index instead
+of the file — `ThreadHistoryMode::Paginated` — which is what
+`read_stored_thread_for_resume` checks after reading by rollout path. Rollout
+names also go through `compression::parse_rollout_file_name`, so a rollout
+need not be a plain `.jsonl` on disk.
+
+**What it answers when the store is gone.** `thread_store_resume_read_error`
+in `request_processors/thread_processor.rs` maps
+`ThreadStoreError::ThreadNotFound` to `invalid_request("no rollout found for
+thread id {thread_id}")` — JSON-RPC `-32602`, not a not-found code — and
+`ThreadStoreError::Unsupported` to an unsupported-operation error. The Go
+adapter surfaces that from `Open` as `resume Codex thread: …`, which is
+neither `ErrSessionClosed` nor a typed refusal, so a client sees
+`open_failed` (502). That is the shape Decision 0039 calls
+`unsupported_feature`: the host had the binding, the harness cannot load the
+thread, and a 502 is not the answer for it. This ledger records the answer,
+not the fix; mapping it is [#443](https://github.com/lsm/open-agent-protocol/issues/443)'s
+neighbour, not this step.
+
+**What the adapter does with all of it.** `Config.ResumeThreadID` selects
+`thread/resume` in `Open` and sends **only** `threadId`
+(`go/adapter/codex/appserver/adapter.go`), then refuses a response whose
+`thread.id` is empty or different with `ErrNativeProtocol`.
+`TestOpenResumesExplicitNativeThread` pins that the resume is the one native
+call an open makes. Nothing in the adapter reads the seven configuration
+members the response requires, so a thread resumed under a different model,
+sandbox or approval policy than the process was configured with is resumed
+*silently* under the process's own settings — which is the one thing about
+this row a reattach cannot inherit from `thread/resume` alone.
+
+**What is not established here.** Every claim above is source-read at
+`00c972ed…`, and this pin's real-process evidence (above) does not include a
+resume: no corpus case drives `thread/resume`, and the fixtures carry the
+method only in an omissions note. So the *answers* above — the response's
+shape, the store's layout, the error for a missing rollout — are read from the
+source at this pin rather than observed from this pin's binary. The
+`thread/rollback` refusal in that evidence is the one adjacent data point: a
+method this move removed answers `-32600` as an unknown variant, so Codex
+refuses an absent method with an invalid-request code rather than a
+method-not-found one, which is the same shape as the missing-rollout answer.
