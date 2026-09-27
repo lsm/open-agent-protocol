@@ -612,6 +612,60 @@ func TestRunToTerminalReturnsOnTheTerminalRatherThanWaitingForTheStream(t *testi
 	}
 }
 
+func TestRunToTerminalReportsARefusedCallAnswer(t *testing.T) {
+	session := &resolvingSession{scriptedSession: &scriptedSession{
+		results:      []adapter.Result{{Envelope: providedCall(1)}},
+		callAccepted: false,
+		callReason:   protocol.ReasonAlreadyResolved,
+	}}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Call: &adapter.CallAnswer{Result: json.RawMessage(`{"ok":true}`)}}, nil
+		},
+	})
+	var refused *adapter.CallRefusedError
+	if !errors.As(err, &refused) || refused.Reason != protocol.ReasonAlreadyResolved {
+		t.Fatalf("err = %v, want the refusal with its reason", err)
+	}
+	if refused.InteractionID != "interaction-1" {
+		t.Fatalf("refusal names %q", refused.InteractionID)
+	}
+}
+
+func TestRunToTerminalReportsAFailedAnswerOnTheTerminalPath(t *testing.T) {
+	ask := protocol.UserInputRequestedPayload{
+		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Continue?",
+		Questions: []protocol.InputQuestion{{
+			ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+			Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+		}},
+	}
+	session := &scriptedSession{
+		results: []adapter.Result{
+			{Envelope: envelope(protocol.TypeUserInputRequested, 1, ask)},
+			{Envelope: envelope(protocol.TypeRunCompleted, 2, protocol.RunCompletedPayload{
+				SessionID: "session-1", RunID: "run-1",
+				FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+			})},
+		},
+		resolveDelay: 30 * time.Millisecond,
+		resolveError: errors.New("the adapter refused the answer"),
+	}
+	outcome, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		StallWindow: time.Second,
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "the adapter refused the answer") {
+		t.Fatalf("err = %v, want the refusal that failed while the run completed", err)
+	}
+	if outcome.Text != "done" {
+		t.Fatalf("text = %q, want the completed run still reported alongside the failure", outcome.Text)
+	}
+}
+
 func envelope(typ protocol.EnvelopeType, sequence int, payload any) protocol.Envelope {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -647,6 +701,8 @@ type scriptedSession struct {
 	resolveDelay  time.Duration
 	resolveError  error
 	resolvedCall  *adapter.CallResolution
+	callAccepted  bool
+	callReason    protocol.ResolveReason
 }
 
 func (s *scriptedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
@@ -725,6 +781,9 @@ func (s *resolvingSession) ResolveCall(_ context.Context, resolution adapter.Cal
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resolvedCall = &resolution
+	if s.callReason != "" {
+		return protocol.ActionCallResolveResponse{InteractionID: resolution.Request.InteractionID, Accepted: s.callAccepted, Reason: s.callReason}, nil
+	}
 	return protocol.ActionCallResolveResponse{InteractionID: resolution.Request.InteractionID, Accepted: true}, nil
 }
 

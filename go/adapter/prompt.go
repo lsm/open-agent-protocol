@@ -47,6 +47,16 @@ func (e *RunFailedError) Error() string {
 
 func (e *RunFailedError) Unwrap() error { return ErrRunFailed }
 
+type CallRefusedError struct {
+	InteractionID protocol.InteractionID
+	Reason        protocol.ResolveReason
+	Response      protocol.ActionCallResolveResponse
+}
+
+func (e *CallRefusedError) Error() string {
+	return fmt.Sprintf("adapter: the session refused to resolve %s: %s", e.InteractionID, e.Reason)
+}
+
 type RunCancelledError struct{}
 
 func (e *RunCancelledError) Error() string { return "adapter: the run was cancelled" }
@@ -172,8 +182,14 @@ func resolveGate(ctx context.Context, session Session, gate Gate) error {
 		if !ok {
 			return fmt.Errorf("adapter: %s asks for a provided call and this session cannot resolve one: %w", gate.InteractionID, ErrNoCallResolver)
 		}
-		_, err := resolver.ResolveCall(ctx, CallResolution{RequestID: gate.requestID, Request: request})
-		return err
+		resolution, err := resolver.ResolveCall(ctx, CallResolution{RequestID: gate.requestID, Request: request})
+		if err != nil {
+			return err
+		}
+		if !resolution.Accepted {
+			return &CallRefusedError{InteractionID: gate.InteractionID, Reason: resolution.Reason, Response: resolution}
+		}
+		return nil
 	}
 	if gate.UserInput != nil {
 		payload := gate.UserInput
@@ -504,6 +520,11 @@ drain:
 		if terminal {
 			if err := awaitResolves(ctx, &resolving); err != nil {
 				return outcome, err
+			}
+			select {
+			case gateErr := <-resolveErr:
+				return outcome, gateErr
+			default:
 			}
 			return outcome, nil
 		}
