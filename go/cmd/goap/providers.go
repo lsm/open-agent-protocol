@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +17,12 @@ func checkProviders(stdout io.Writer) error {
 		return err
 	}
 	tree := os.DirFS(repositoryRoot())
+	pinned, err := providercatalog.LoadPinned(providers.Files)
+	if err != nil {
+		return err
+	}
 	findings := append(providercatalog.Check(catalog), providercatalog.CheckLiterals(tree, catalog)...)
+	findings = append(findings, providercatalog.CheckPinned(catalog, pinned)...)
 	if len(findings) > 0 {
 		errs := make([]error, len(findings))
 		for i, finding := range findings {
@@ -29,5 +35,34 @@ func checkProviders(stdout io.Writer) error {
 		endpoints += len(provider.Endpoints)
 	}
 	fmt.Fprintf(stdout, "PASS providers: %d providers, %d endpoints\n", len(catalog.Providers), endpoints)
+	return nil
+}
+
+func runCatalogURLs(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("providers catalog-urls", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	format := fs.String("format", "human", "output format: human or json")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || (*format != "human" && *format != "json") {
+		return errors.New("providers catalog-urls accepts only --format=human|json")
+	}
+	catalog, err := providercatalog.Load(providers.Files)
+	if err != nil {
+		return err
+	}
+	pinned := providercatalog.PinnedFrom(catalog)
+	if *format == "json" {
+		encoded, err := providercatalog.EncodePinned(catalog)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(stdout, "%s\n", encoded)
+		return err
+	}
+	for _, endpoint := range pinned.Endpoints {
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\t%s\n", endpoint.ID, endpoint.Wire, endpoint.Region, endpoint.BaseURL, endpoint.ModelsURL, endpoint.RequestURL)
+	}
 	return nil
 }

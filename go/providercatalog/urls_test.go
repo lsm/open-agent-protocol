@@ -1,49 +1,80 @@
 package providercatalog
 
 import (
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/lsm/open-agent-protocol/providers"
 )
 
-func TestResolveMatchesTheURLsTheTablePins(t *testing.T) {
-	pinned := []Resolved{
-		{"openai", "openai-completions", "", "https://api.openai.com", "https://api.openai.com/v1/models", "https://api.openai.com/v1/chat/completions"},
-		{"openai", "openai-responses", "", "https://api.openai.com", "https://api.openai.com/v1/models", "https://api.openai.com/v1/responses"},
-		{"anthropic", "anthropic-messages", "", "https://api.anthropic.com", "https://api.anthropic.com/v1/models", "https://api.anthropic.com/v1/messages"},
-		{"opencode", "openai-completions", "", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/v1/models", "https://opencode.ai/zen/v1/chat/completions"},
-		{"openrouter", "openai-completions", "", "https://openrouter.ai/api/v1", "https://openrouter.ai/api/v1/models", "https://openrouter.ai/api/v1/chat/completions"},
-		{"deepseek", "openai-completions", "", "https://api.deepseek.com", "https://api.deepseek.com/v1/models", "https://api.deepseek.com/v1/chat/completions"},
-		{"zai-coding-plan", "openai-completions", "", "https://api.z.ai/api/coding/paas/v4", "https://api.z.ai/api/coding/paas/v4/models", "https://api.z.ai/api/coding/paas/v4/chat/completions"},
-		{"kimi", "openai-completions", "china", "https://api.kimi.com/coding", "https://api.kimi.com/coding/v1/models", "https://api.kimi.com/coding/v1/chat/completions"},
-		{"kimi", "openai-completions", "global", "https://api.moonshot.ai", "https://api.moonshot.ai/v1/models", "https://api.moonshot.ai/v1/chat/completions"},
-		{"alibaba-coding-plan", "openai-completions", "", "https://coding-intl.dashscope.aliyuncs.com/v1", "https://coding-intl.dashscope.aliyuncs.com/v1/models", "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions"},
-		{"minimax-coding-plan", "anthropic-messages", "", "https://api.minimax.io/anthropic/v1", "https://api.minimax.io/anthropic/v1/models", "https://api.minimax.io/anthropic/v1/messages"},
-		{"tencent-coding-plan", "openai-completions", "", "https://api.lkeap.cloud.tencent.com/coding/v3", "https://api.lkeap.cloud.tencent.com/coding/v3/models", "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions"},
-		{"volcengine-coding-plan", "openai-completions", "", "https://ark.cn-beijing.volces.com/api/coding/v3", "https://ark.cn-beijing.volces.com/api/coding/v3/models", "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"},
-		{"openai-codex", "openai-codex-responses", "", "https://chatgpt.com/backend-api/codex", "", "https://chatgpt.com/backend-api/codex/responses"},
-		{"xiaomi-token-plan-cn", "openai-completions", "", "https://token-plan-cn.xiaomimimo.com/v1", "https://token-plan-cn.xiaomimimo.com/v1/models", "https://token-plan-cn.xiaomimimo.com/v1/chat/completions"},
-		{"xiaomi-token-plan-sgp", "openai-completions", "", "https://token-plan-sgp.xiaomimimo.com/v1", "https://token-plan-sgp.xiaomimimo.com/v1/models", "https://token-plan-sgp.xiaomimimo.com/v1/chat/completions"},
-		{"xiaomi-token-plan-ams", "openai-completions", "", "https://token-plan-ams.xiaomimimo.com/v1", "https://token-plan-ams.xiaomimimo.com/v1/models", "https://token-plan-ams.xiaomimimo.com/v1/chat/completions"},
-		{"deepinfra", "openai-completions", "", "https://api.deepinfra.com/v1/openai", "https://api.deepinfra.com/v1/openai/models", "https://api.deepinfra.com/v1/openai/chat/completions"},
-		{"xiaomi", "openai-completions", "", "https://api.xiaomimimo.com/v1", "https://api.xiaomimimo.com/v1/models", "https://api.xiaomimimo.com/v1/chat/completions"},
-		{"vercel", "openai-completions", "", "https://ai-gateway.vercel.sh/v1", "https://ai-gateway.vercel.sh/v1/models", "https://ai-gateway.vercel.sh/v1/chat/completions"},
-		{"zenmux", "openai-completions", "", "https://zenmux.ai/api/v1", "https://zenmux.ai/api/v1/models", "https://zenmux.ai/api/v1/chat/completions"},
-		{"google", "google-generative-ai", "", "https://generativelanguage.googleapis.com", "", ""},
-	}
+func TestResolveMatchesTheURLsTheSharedFilePins(t *testing.T) {
 	catalog, err := Load(providers.Files)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	resolved := Resolve(catalog)
-	if len(resolved) != len(pinned) {
-		t.Fatalf("resolved %d endpoints, want %d", len(resolved), len(pinned))
+	pinned, err := LoadPinned(providers.Files)
+	if err != nil {
+		t.Fatalf("load pinned: %v", err)
 	}
-	for index, want := range pinned {
-		if resolved[index] != want {
-			t.Fatalf("endpoint %d = %+v, want %+v", index, resolved[index], want)
+	if findings := CheckPinned(catalog, pinned); len(findings) != 0 {
+		t.Fatalf("findings = %v, want none", findings)
+	}
+	resolved := Resolve(catalog)
+	if len(resolved) != len(pinned.Endpoints) {
+		t.Fatalf("resolved %d endpoints, want %d", len(resolved), len(pinned.Endpoints))
+	}
+	for index, row := range resolved {
+		want := pinned.Endpoints[index]
+		if row.ID != want.ID || row.Wire != want.Wire || row.Region != want.Region ||
+			row.BaseURL != want.BaseURL || row.ModelsURL != want.ModelsURL || row.RequestURL != want.RequestURL {
+			t.Fatalf("endpoint %d = %+v, want %+v", index, row, want)
 		}
 	}
+}
+
+func TestCheckPinnedNamesAStaleRow(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	pinned, err := LoadPinned(providers.Files)
+	if err != nil {
+		t.Fatalf("load pinned: %v", err)
+	}
+	moved := providercatalogPinnedCopy(pinned)
+	moved.Endpoints[0].RequestURL = "https://moved.example.com/v1/chat/completions"
+	findings := CheckPinned(catalog, moved)
+	if len(findings) != 1 || findings[0].Code != CodeStaleURLs {
+		t.Fatalf("findings = %v, want one stale row", findings)
+	}
+	if !strings.Contains(findings[0].Detail, "catalog-urls") {
+		t.Fatalf("finding does not name the command that regenerates: %s", findings[0].Detail)
+	}
+	shortened := providercatalogPinnedCopy(pinned)
+	shortened.Endpoints = shortened.Endpoints[:len(shortened.Endpoints)-1]
+	findings = CheckPinned(catalog, shortened)
+	if len(findings) != 1 || findings[0].Code != CodeStaleURLs {
+		t.Fatalf("findings = %v, want one stale length", findings)
+	}
+}
+
+func TestLoadPinnedRefusesAnUnknownMemberAndAnEmptyFile(t *testing.T) {
+	files := func(body string) fstest.MapFS {
+		return fstest.MapFS{PinnedFile: &fstest.MapFile{Data: []byte(body)}}
+	}
+	if _, err := LoadPinned(files(`{"endpoints":[{"id":"kimi","wire":"openai-completions","base_url":"https://api.kimi.com/coding","surprise":1}]}`)); err == nil {
+		t.Fatal("a member the file does not declare was accepted")
+	}
+	if _, err := LoadPinned(files(`{"endpoints":[]}`)); err == nil {
+		t.Fatal("a file pinning no endpoint was accepted")
+	}
+}
+
+func providercatalogPinnedCopy(pinned PinnedCatalog) PinnedCatalog {
+	out := PinnedCatalog{Endpoints: make([]Pinned, len(pinned.Endpoints))}
+	copy(out.Endpoints, pinned.Endpoints)
+	return out
 }
 
 func TestModelsURLAndRequestURLResolveNothingTheCatalogDoesNotHold(t *testing.T) {

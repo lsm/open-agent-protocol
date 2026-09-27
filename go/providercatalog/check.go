@@ -19,6 +19,7 @@ const (
 	CodeBaseURLText  = "provider_base_url_literal"
 	CodeOffering     = "provider_offering_unknown"
 	CodeStatus       = "provider_status_unknown"
+	CodeStaleURLs    = "provider_resolved_urls_stale"
 )
 
 var LiteralRoots = []string{"go", "zig/src", "zig/build.zig"}
