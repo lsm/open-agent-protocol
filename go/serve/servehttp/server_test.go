@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1101,5 +1102,61 @@ func TestQueuedSubmissionRoundTrips(t *testing.T) {
 
 	if info := sessionAt(t, listSessions(t, server), "queue-http"); len(info.ActiveRuns) != 2 {
 		t.Fatalf("listing active_runs = %+v", info.ActiveRuns)
+	}
+}
+
+func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(0), Options{})
+	for _, contentType := range []string{"text/plain", "", "application/json; charset=latin1"} {
+		response, data := post(t, server, "/adapters/memory/sessions", contentType, []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-g1"}}`))
+		if response.StatusCode != http.StatusUnsupportedMediaType {
+			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
+		}
+		var refusal protocol.Envelope
+		if err := json.Unmarshal(data, &refusal); err != nil {
+			t.Fatalf("content type %q body is not an envelope: %s", contentType, data)
+		}
+		if refusal.Type != protocol.TypeErrorResponse {
+			t.Fatalf("content type %q body type = %q", contentType, refusal.Type)
+		}
+		var failure protocol.ErrorResponse
+		if err := refusal.DecodePayload(&failure); err != nil {
+			t.Fatal(err)
+		}
+		if failure.Error.Code != "unsupported_media_type" {
+			t.Fatalf("content type %q code = %q, want unsupported_media_type", contentType, failure.Error.Code)
+		}
+	}
+}
+
+func TestATruncatedRequestBodyIsRefusedWithItsOwnCode(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(0), Options{})
+	conn, err := net.Dial("tcp", server.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	body := `{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-g10"}}`
+	head := "POST /adapters/memory/sessions HTTP/1.1\r\nHost: " + server.Listener.Addr().String() +
+		"\r\nContent-Type: application/json\r\nContent-Length: " + strconv.Itoa(len(body)+64) + "\r\n\r\n" + body[:20]
+	if _, err := conn.Write([]byte(head)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(testTimeout)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "400 ") {
+		t.Fatalf("a truncated body answered %q, want 400", strings.SplitN(text, "\r\n", 2)[0])
+	}
+	if !strings.Contains(text, "request_read") {
+		t.Fatalf("a truncated body answered %q, want the request_read code", text)
 	}
 }

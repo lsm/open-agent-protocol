@@ -395,8 +395,8 @@ both answers, at the budget and one byte over it.
 
 | HTTP rule | pinned by |
 | --- | --- |
-| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` — **gap G1**: the status only; the code member and the absent-`Content-Type` case are unpinned |
-| A body that cannot be read at all is refused `400 request_read` | **none — gap G10** |
+| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type` and a wrong charset, which take the same branch) |
+| A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
 | A `GET /adapters/{name}/capabilities` response cites a daemon-minted correlation id | `TestCapabilitiesEndpoint` |
@@ -902,12 +902,12 @@ Rules this document specifies that **no Go test pins today**, and one gap the
 draft is asked to carry. A port must implement every one of them; each is a
 place a differential test would otherwise not see.
 
-- **G1 — the `415`'s code and the absent `Content-Type` are unpinned.** The
-  status is pinned: a `text/plain` open is refused `415`. What no test reaches
-  is the code member inside it — the assertion is on the status alone, so
-  `unsupported_media_type` is written nowhere — and a request carrying **no**
-  `Content-Type` at all, which takes the same branch. The stdio side has no
-  counterpart for either.
+- **G1 — closed.** The status was pinned and nothing else: a `text/plain`
+  open is refused `415`, and the assertion was on the status alone, so
+  `unsupported_media_type` was written nowhere. `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode`
+  now pins the code, the absent `Content-Type` and a wrong charset, all of
+  which take the same branch. The stdio side still has no counterpart for
+  either, which is a property of the transport rather than a gap.
 - **G2 — SSE's hangup ending a stream is unpinned.** A client that drops its
   connection ends the stream by construction — the request context cancels the
   subscription — but no test asserts it, and the stdio side has no way to
@@ -963,11 +963,13 @@ place a differential test would otherwise not see.
   defines exactly three, `oap-subscribed`, `oap-overflow` and `oap-replay-gap`.
   `oap-session-closed` and `oap-frame-limit` have no SSE counterpart at all,
   because a socket neither frames nor has to announce its own close.
-- **G10 — `request_read` is unpinned.** A body that cannot be read at all — a
-  host that hangs up mid-body — is refused `400 request_read`, and no test
-  drives a truncated body. It is the one code in the HTTP body gate with no
-  coverage at all, so a port could spell it differently and nothing would say
-  so; the differential job for #388 should carry a truncated-request case.
+- **G10 — closed.** It was the one code in the HTTP body gate with no
+  coverage at all, so a port could spell it differently and nothing would
+  say so. `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` drives a
+  truncated body over a raw connection — the client half-closes so the
+  daemon's read fails rather than the client's write — and pins both the
+  `400` and the code. The differential job for #388 should still carry a
+  truncated-request case: this test pins the code, not the parity.
 
 One asymmetry is deliberate and is **not** a gap: a cross-origin refusal exists
 on the HTTP transport alone. A stdio peer is a separate process on the far side
