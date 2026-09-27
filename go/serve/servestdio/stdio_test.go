@@ -1468,16 +1468,16 @@ func TestSessionsOpListsTrackedSessions(t *testing.T) {
 	if err := json.Unmarshal(f.expectResponse(3).Result, &listing); err != nil {
 		t.Fatal(err)
 	}
-	if len(listing.Sessions) != 2 {
-		t.Fatalf("%d listed sessions, want 2: %+v", len(listing.Sessions), listing.Sessions)
+	if len(listing.Sessions) != 1 {
+		t.Fatalf("%d listed sessions, want 1: %+v", len(listing.Sessions), listing.Sessions)
 	}
-	want := map[string]string{"list-a": "idle", "list-b": "closed"}
-	for index, entry := range listing.Sessions {
+	want := map[string]string{"list-a": "idle"}
+	for _, entry := range listing.Sessions {
 		if entry.Adapter != "memory" || entry.CreatedAt == "" {
 			t.Fatalf("entry %+v lacks adapter or creation time", entry)
 		}
-		if index == 0 && entry.SessionID != "list-a" || index == 1 && entry.SessionID != "list-b" {
-			t.Fatalf("listing out of id order: %+v", listing.Sessions)
+		if entry.SessionID != "list-a" {
+			t.Fatalf("listing %+v, want only the live session", listing.Sessions)
 		}
 		if entry.Status != want[entry.SessionID] {
 			t.Fatalf("session %s listed as %s, want %s", entry.SessionID, entry.Status, want[entry.SessionID])
@@ -1538,11 +1538,10 @@ func TestOpErrorCodesMirrorHTTP(t *testing.T) {
 	f.send(`{"id":130,"op":"close","session_id":"err"}`)
 	requireOK(t, f.expectResponse(130))
 
-	f.send(`{"id":131,"op":"close","session_id":"err"}`)
-	requireOK(t, f.expectResponse(131))
+	op(`{"id":%ID%,"op":"close","session_id":"err"}`, "unknown_session")
 	op(`{"id":%ID%,"op":"submit","session_id":"err","request":`+string(requestEnvelope(t, "s4", protocol.TypeSessionMessageSubmitRequest, protocol.MessageSubmitRequest{
 		SessionID: "err", Delivery: protocol.DeliveryAuto, Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
-	}, "err", ""))+`}`, "session_closed")
+	}, "err", ""))+`}`, "unknown_session")
 	if err := f.finish(); err != nil {
 		t.Fatalf("finish: %v", err)
 	}

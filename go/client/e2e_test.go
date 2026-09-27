@@ -504,12 +504,10 @@ func TestClientCloseRefusesActiveRun(t *testing.T) {
 	if err := session.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	state, err := session.State(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Status != protocol.SessionClosed {
-		t.Fatalf("closed session state %+v", state)
+	if _, err := session.State(ctx); err == nil {
+		t.Fatal("the state of a closed session was served")
+	} else if code, ok := ErrorCode(err); !ok || code != "unknown_session" {
+		t.Fatalf("state after close: %v (code %q, %v)", err, code, ok)
 	}
 }
 

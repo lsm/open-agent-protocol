@@ -73,9 +73,15 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		return nil, protocol.SessionState{}, err
 	}
 
-	entry := newSession(state.SessionID, adapterName, session)
-	if err != nil {
+	entry := newSession(state.SessionID, adapterName, session, func(released *Session) {
+		h.sessions.remove(released.id, released)
+	})
+	if err != nil || state.Status == protocol.SessionClosed {
 		entry.markClosed()
+	}
+	if entry.IsClosed() {
+
+		return entry, state, base.ErrSessionClosed
 	}
 	if err := h.sessions.add(entry); err != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
@@ -153,10 +159,14 @@ func (h *Hub) Sessions(ctx context.Context) []SessionStatus {
 	entries := h.sessions.list()
 	statuses := make([]SessionStatus, 0, len(entries))
 	for _, entry := range entries {
+		state, err := entry.State(ctx)
+		if entry.IsClosed() {
+
+			continue
+		}
 		status := SessionStatus{
 			SessionID: entry.id, Adapter: entry.adapterName, CreatedAt: entry.created,
 		}
-		state, err := entry.session.State(ctx)
 		status.Status = state.Status
 		status.ActiveRunID = state.ActiveRunID
 		status.ActiveRuns = state.ActiveRuns

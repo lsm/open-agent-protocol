@@ -1370,6 +1370,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "config", .module = adapter_config_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
             .{ .name = "memory", .module = memory_adapter_mod },
+            .{ .name = "compat", .module = compat_mod },
         },
     });
     const hub_test = b.addTest(.{ .root_module = hub_mod });

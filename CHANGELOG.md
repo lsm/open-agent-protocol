@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `contract.Session` grows an optional `readable` slot, so the hub's loop waits on
+  every session's child at once instead of giving each a share of the wait in turn.
+  The loop gave each open session at least 1 ms of blocking wait, one after
+  another, so an idle session added its share to every cycle and a silent child added
+  its to every other session's events. `claude`, `codex`, `deepseek`, `pi`, `hermes`,
+  `acp` and `opencode` report the handle they already hold — a spawned child's stdout
+  and a connected socket — and the hub polls them in one `std.posix.poll` and hands
+  each a zero wait, so a cycle's only blocking wait is that one. A session with no
+  handle keeps the timed pump, and the memory adapter has none to report because it
+  has nothing to wait on. This is the model `DESIGN.md` §8.6 states, and it is the
+  one contract change that model requires; `oapx hub` and the HTTP transport build on
+  it. `Endpoint` in `zig/src/adapter/endpoint.zig` runs its own round-robin over the
+  adapters it wraps and reports no handle, so the `serve` path is unchanged.
+  Two properties of that loop are pinned, both on the hub's own accounting rather
+  than on a clock: six idle sessions that report a handle are each handed a zero
+  wait, so a cycle's only blocking wait is that one poll however many sessions
+  there are; and a session with events queued in the same cycle as a silent one
+  receives them, because the loop waits on the readiest rather than on each in turn.
+  Where a platform cannot wait on a handle — Windows, whose only wait is a socket
+  poll and a child's output is a pipe — no handle is used at all and every session
+  keeps its share, which is the old loop and is correct if slower.
 - `go/cmd/apidiffcheck`, and a CI job that runs it: an incompatible change to a public package fails unless the Unreleased section of `CHANGELOG.md` names that package's path in backticks — a delimited reference, so a word in prose or a longer path such as `go/serve/servehttp` cannot record a break in `go/serve`. The baseline is the newest `v*` tag, so it is whatever the last release was; additions never fail, because a compatible change is not a break. It counts every package outside `go/internal`, so a package *deleted* at head still needs a record — deleting a public package is the most incompatible change there is, and filtering on the head's own set would have let it through silently. The classification lives in `go/internal/publicset`, which `goap check` enforces the set with, so the two commands agree on what is internal. It reports the packages it could not account for rather than suggesting a version, because the version is the owner's to choose and the record is the obligation.
 - `go/adapter` grows the loop a Go program writes to drive a harness: `RunToTerminal(ctx, session, request, options)` submits one prompt, reads the event stream, answers every `user.input.requested` and `action.permission.requested` through a policy function, resumes after an overflow, notices a stalled stream, and returns the run's final response, its text, its usage, its run id and the number of tool calls it started. An interaction policy answers the three things a run can ask of a client — `user.input.requested`, `action.permission.requested`, and the `action.call.requested` of a tool the *client* provides, which is resolved through the session's `CallResolver` and refused with a typed error when the session is not one — and is given the payload and, when the ask names a `tool_call_id`, the tool's name and arguments from the run's own `action.call.requested`, so a consumer decides by tool rather than by parsing the question's prose. Every answer is checked with `ValidateInputAnswer` before `Resolve`, an envelope at or below the last sequence is skipped, a `ReplayGap` or a session that offers no resumed stream ends the call with that error, and a failed, cancelled or silent run each returns its own typed error, as does a session that refuses an answer — the refusal's reason and response are on the returned error rather than lost behind a stall. This is library API: Zig has no counterpart (Decision 0038).
 - `drafts/hub.md` decides [#53](https://github.com/lsm/open-agent-protocol/issues/53):
@@ -75,6 +96,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A closed session now leaves the Zig hub entirely, and every operation naming it is
+  refused `unknown_session`. The core kept a closed session's entry, its journal and
+  a cursor for every run it had, listed it as closed, and answered later operations
+  with `session_closed` — so an id stayed taken, a `sessions` listing grew for the
+  life of the process, and the memory did too. This is Decision 0039: close detaches,
+  ending the session's subscriptions with a `session_closed` ending and releasing its
+  journal, cursors, holds and state. `close` releases, so the id is free again, and
+  `sessions` lists live sessions only. A session whose adapter reports itself closed
+  is released the same way when it is next observed.
+  A run's stream failing is not a close and no longer acts like one. The hub ends
+  the subscriptions and nothing else: it does not close the child, because
+  `contract.Session.close` destroys the session, so a hub that closed the child of a
+  session it meant to keep would answer the next request from freed memory. The
+  session stays open and answerable until it is closed or released, and the close
+  lands on that release. Scoping a stream failure to its own readers rather than the
+  whole session is still outstanding, and that is D7.
 - The Zig hub's subscriber ceiling no longer counts subscriptions that have
   already ended. `max_subscriptions` bounds a session's subscriber list, and an
   ended subscription stayed on that list until the next event happened to fan out
@@ -155,6 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - TUI tool rows no longer cut a tool's description at 48 characters; the row fits it to the terminal width. Up and Down move the slash-command palette's selection, which Tab completes and Enter runs, and the composer border no longer pulses while a turn streams.
+- `go/serve` releases a session once it stops being open, so a close is a detach in both trees (Decision 0039). The hub keeps no entry for it: every later operation naming the session answers `unknown_session` over both transports, a second `close` included, and `sessions` lists live sessions only. Both paths release — a successful close, and the adapter reporting `ErrSessionClosed` from any operation that calls it, which today are `State`, `Models`, `SwitchModel`, `Tools` and `Submit` — and a session that is already closed when an `open` probes it is never added, so its id is free at once. `session_closed` now means one thing only: a session that stopped being open while a request was in flight. Subscriptions still end with the `session_closed` signal. The `sessions` listing is where a session the adapter has already closed is noticed — it reads each session's state through the hub — so the listing no longer carries a session that is not open, and reading it releases the entry.
 - The Go packages a program should import are now a named public set: `protocol`, `adapter` and every package under it, `client`, `harness`, `providercatalog`, `serve` with its three bindings (`servehttp`, `serveendpoint`, `servestdio`) and `validation`, plus the three embedded-data packages `harnesses`, `providers` and `schema`, which every adapter and the validator read. `goap check` walks the module root and fails on a package that is in neither the set nor an `internal` directory, so a new package cannot become public API by being added, and `go/provider` and `go/conformance` moved to `go/internal` — only `goap` read either. A nested module is not part of this module's surface and is skipped. This is what makes `go/adapter`, `go/adapter/<harness>` and `go/protocol` the surface a Go program depends on (hyperneo-review, the first one).
 
 - `providers/catalog.schema.json` now states how `models_endpoint` joins a row's base URL: it is appended literally to the base the request would use, including that base's own path, never joined against the origin and never relative to the host, and the same path is appended to every endpoint the row has. `goap check` fails a `models_endpoint` that is not an absolute path. No row changes: all twenty composed listings answer 200 or 401 unauthenticated, and a Zig test keeps every recorded path absolute, every base free of a trailing slash, and a composed listing from spelling its version segment twice.
