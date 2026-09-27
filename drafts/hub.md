@@ -989,12 +989,14 @@ place a differential test would otherwise not see.
   `stale_capabilities` like any other. `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath`
   now drives it over stdio and pins both revisions in `details`, which also
   pins the **stdio `open` op's own mapping** that no stdio test reached.
-- **G5 — the hold's default window is unpinned, the expiry is not.** A held
-  subscription nothing adopts **is** released on expiry, and
-  `TestOpenSubscriptionNotAdoptedIsReleased` drives that: it builds the server
-  with a 50 ms hold and polls until the held set empties, failing if it never
-  does. What no test pins is the **default** 30 s, so a port could choose any
-  window and nothing would say a host had to wait for it.
+- **G5 — closed.** A held subscription nothing adopts **is** released on
+  expiry, and `TestOpenSubscriptionNotAdoptedIsReleased` drives that: it builds
+  the server with a 50 ms hold and polls until the held set empties, failing if
+  it never does. The **default** was the unpinned half — a port could choose
+  any window and nothing said a host had to wait for it.
+  `TestASubscriptionIsHeldForThirtySecondsByDefault` pins the exported
+  `DefaultSubscriptionHold` at 30 s, that a server built with no hold option
+  holds for exactly that, and that an explicit window is still honoured.
 - **G6 — closed.** The HTTP route's `probe_failed` was pinned and the stdio
   op's own mapping was not.
   `TestCapabilitiesOpReportsAProbeFailure` drives it and pins the wire's
@@ -1007,12 +1009,13 @@ place a differential test would otherwise not see.
   `TestResolveOpReportsAnUnknownRun` pins `run_not_found` and
   `TestResolveOpReportsARefusedResolution` pins `resolution_rejected` on a
   live run, resolving it as a participant the session never declared.
-- **G8 — the shutdown window's default is unpinned, the bound is not.** The
-  *mechanism* is well covered: every shutdown test builds the frontend with a
-  short custom window (100 ms or 250 ms) and measures against it. What no test
-  touches is the **default** — 10 s for the hub's session sweep, 5 s per stdio
-  teardown stage — so a port could choose any default and nothing would say a
-  host had to wait that long.
+- **G8 — closed.** The *mechanism* was well covered: every shutdown test builds
+  the frontend with a short custom window (100 ms or 250 ms) and measures
+  against it. The **default** was the unpinned half — a port could choose any
+  default and nothing said a host had to wait that long.
+  `TestTheHubSweepsForTenSecondsByDefault` pins the hub's 10 s and
+  `TestEachTeardownStageWaitsFiveSecondsByDefault` the stdio frontend's 5 s per
+  stage, each also checking that an explicit window still wins.
 - **G9 — two subscription endings are never driven over stdio, and a third is
   driven only by its name.** `oap-overflow` and `oap-session-closed` have their
   minimal shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes
