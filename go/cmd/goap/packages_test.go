@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"strings"
 	"testing"
-
-	"github.com/lsm/open-agent-protocol/go/internal/publicset"
 )
 
-func TestTheCheckWalksTheModuleRoot(t *testing.T) {
-	if !publicset.Public("go/adapter") || publicset.Public("go/newthing") {
-		t.Fatal("the shared public set is not what this check enforces")
+func TestTheCheckWalksTheModuleRootAndAcceptsTheTree(t *testing.T) {
+	var out bytes.Buffer
+	if err := checkGoPackages(&out); err != nil {
+		t.Fatalf("the package walk: %v", err)
+	}
+	if !strings.Contains(out.String(), "PASS go packages") {
+		t.Fatalf("output = %q, want the walk to report what it counted", out.String())
 	}
 }
