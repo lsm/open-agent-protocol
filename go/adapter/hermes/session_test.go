@@ -1772,7 +1772,7 @@ func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	ch := admit(t, s, f, true)
 	f.gate(native.RequestClarify, `{"question":"first?","choices":["a","b"]}`)
 	f.gate(native.RequestClarify, `{"question":"second?","choices":["c","d"]}`)
-	f.event(native.EventMessageComplete, 4, settleFrame("complete", ""))
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
 	admitted := <-ch
 	events := drain(t, admitted.stream)
 
