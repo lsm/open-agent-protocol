@@ -751,6 +751,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "api_registry", .module = api_registry_mod },
@@ -773,6 +774,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "api_registry", .module = api_registry_mod },
@@ -795,6 +797,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "ai_types", .module = ai_types_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "api_registry", .module = api_registry_mod },
@@ -872,6 +875,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "api_registry", .module = api_registry_mod },
             .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
             .{ .name = "openai_completions_api", .module = openai_completions_api_mod },

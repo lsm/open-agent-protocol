@@ -59,6 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `anthropic-messages` `base_url` ending in `/` no longer requests
+  `//v1/messages`. The anthropic builder trimmed the base only to test whether the
+  path was already present and then appended the untrimmed base, so a user who wrote
+  the trailing slash got a doubled one; the `ollama`, `openai-responses` and
+  `openai-codex-responses` builders concatenated with no check at all, so the same
+  base produced `//api/chat` and `//v1/responses` and those wires also doubled a
+  base that already ended with their path. A trailing `/` is now ignored on every
+  wire, and a base that already ends with its wire's path is used as it is. The
+  four builders had become copies of the catalog's own join with the three flags
+  each had drifted on, so they now call it: one rule, no per-wire `trim` or
+  `idempotent`, with `dedup_version` and `model_scoped` left as descriptor data.
+  `go/providercatalog` gets the same rule, and `providers/resolved_urls.json` is
+  unchanged — no catalogued base ends in `/` or already carries its wire's path, so
+  nothing a catalogued row could observe moved.
 - An expired hub hold is now freed by the hub. `hold()` returned the live
   `*Subscription`, and `release` never marked it detached, so `reclaim()` skipped it
   forever: the only thing that could finish an abandoned hold was the holder calling

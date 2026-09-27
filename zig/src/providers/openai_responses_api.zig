@@ -1,4 +1,5 @@
 const std = @import("std");
+const provider_catalog = @import("provider_catalog");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
 const event_stream = @import("event_stream");
@@ -15,6 +16,12 @@ const oauth_storage = @import("oauth/storage");
 const codex_oauth = @import("oauth/openai_codex");
 
 const openai_codex_responses_api = "openai-codex-responses";
+
+pub const wires: []const []const u8 = &.{ "openai-responses", openai_codex_responses_api };
+
+const responses_wire = provider_catalog.wirePath("openai-responses") orelse unreachable;
+
+const codex_responses_wire = provider_catalog.wirePath(openai_codex_responses_api) orelse unreachable;
 const default_codex_instructions = "You are a helpful coding assistant.";
 
 fn shouldSkipAssistant(msg: ai_types.Message) bool {
@@ -406,27 +413,37 @@ fn normalizedOpenAIReasoningEffort(options: ai_types.StreamOptions) ?[]const u8 
     return effort;
 }
 
-fn buildUrlWithSuffix(allocator: std.mem.Allocator, base_url: []const u8, suffix: []const u8) ![]const u8 {
-    var sb = StringBuilder{};
-    sb.count(base_url);
-    sb.count(suffix);
-    try sb.allocate(allocator);
-    errdefer sb.deinit(allocator);
-
-    _ = sb.append(base_url);
-    _ = sb.append(suffix);
-
-    std.debug.assert(sb.len == sb.cap);
-    const out = sb.ptr.?[0..sb.cap];
-    sb.ptr = null;
-    sb.cap = 0;
-    sb.len = 0;
-    return out;
+fn responsesWireForModel(model: ai_types.Model) provider_catalog.Wire {
+    if (isOpenAICodexResponsesModel(model)) return codex_responses_wire;
+    return responses_wire;
 }
 
-fn responsesPathForModel(model: ai_types.Model) []const u8 {
-    if (isOpenAICodexResponsesModel(model)) return "/responses";
-    return "/v1/responses";
+test "the responses wire does not dedup a version segment, which is what #410 records" {
+    const url = try provider_catalog.joinUrlOwned(std.testing.allocator, "https://api.openai.com/v1", responses_wire);
+    defer std.testing.allocator.free(url);
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/v1/responses", url);
+    const codex = try provider_catalog.joinUrlOwned(std.testing.allocator, "https://chatgpt.com/backend-api/codex/v1", codex_responses_wire);
+    defer std.testing.allocator.free(codex);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/codex/v1/responses", codex);
+}
+
+test "the responses request urls drop a trailing slash and keep a suffix already present" {
+    const cases = [_]struct { base: []const u8, wire: provider_catalog.Wire, want: []const u8 }{
+        .{ .base = "https://api.openai.com", .wire = responses_wire, .want = "https://api.openai.com/v1/responses" },
+        .{ .base = "https://api.openai.com/", .wire = responses_wire, .want = "https://api.openai.com/v1/responses" },
+        .{ .base = "https://api.openai.com///", .wire = responses_wire, .want = "https://api.openai.com/v1/responses" },
+        .{ .base = "https://api.openai.com/v1/responses", .wire = responses_wire, .want = "https://api.openai.com/v1/responses" },
+        .{ .base = "https://api.openai.com/v1/responses/", .wire = responses_wire, .want = "https://api.openai.com/v1/responses" },
+        .{ .base = "https://chatgpt.com/backend-api/codex", .wire = codex_responses_wire, .want = "https://chatgpt.com/backend-api/codex/responses" },
+        .{ .base = "https://chatgpt.com/backend-api/codex/", .wire = codex_responses_wire, .want = "https://chatgpt.com/backend-api/codex/responses" },
+        .{ .base = "https://chatgpt.com/backend-api/codex/responses", .wire = codex_responses_wire, .want = "https://chatgpt.com/backend-api/codex/responses" },
+        .{ .base = "https://chatgpt.com/backend-api/codex/responses/", .wire = codex_responses_wire, .want = "https://chatgpt.com/backend-api/codex/responses" },
+    };
+    for (cases) |case| {
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, case.wire);
+        defer std.testing.allocator.free(url);
+        try std.testing.expectEqualStrings(case.want, url);
+    }
 }
 
 fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
@@ -830,7 +847,7 @@ fn runThread(ctx: *ThreadCtx) void {
     var client = compat.http.HttpClient.init(allocator);
     defer client.deinit();
 
-    const url = buildUrlWithSuffix(allocator, model.base_url, responsesPathForModel(model)) catch {
+    const url = provider_catalog.joinUrlOwned(allocator, model.base_url, responsesWireForModel(model)) catch {
         ctx.deinit();
         stream.completeWithError("oom url");
         stream.markThreadDone();
@@ -1741,7 +1758,7 @@ test "OpenAI Codex responses use Codex backend path" {
         .context_window = 128000,
         .max_tokens = 16384,
     };
-    try std.testing.expectEqualStrings("/responses", responsesPathForModel(model));
+    try std.testing.expectEqualStrings("/responses", responsesWireForModel(model).suffix);
 }
 
 test "OpenAI Codex request body includes default instructions" {
