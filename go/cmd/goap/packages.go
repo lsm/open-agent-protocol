@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -21,6 +22,9 @@ var publicGoPackages = map[string]bool{
 	"go/serve/servehttp":     true,
 	"go/serve/servestdio":    true,
 	"go/validation":          true,
+	"harnesses":              true,
+	"providers":              true,
+	"schema":                 true,
 }
 
 func internalGoPackage(name string) bool {
@@ -47,15 +51,20 @@ func checkGoPackages(stdout io.Writer) error {
 	tree := os.DirFS(root)
 	var findings []error
 	public, internalCount, binaries := 0, 0, 0
-	err := fs.WalkDir(tree, "go", func(name string, entry fs.DirEntry, err error) error {
+	err := fs.WalkDir(tree, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if !entry.IsDir() {
 			return nil
 		}
-		if entry.Name() == "testdata" || strings.HasPrefix(entry.Name(), ".") {
+		if name != "." && (entry.Name() == "testdata" || entry.Name() == "node_modules" || strings.HasPrefix(entry.Name(), ".")) {
 			return fs.SkipDir
+		}
+		if name != "." {
+			if _, err := fs.Stat(tree, path.Join(name, "go.mod")); err == nil {
+				return fs.SkipDir
+			}
 		}
 		pkg, err := build.ImportDir(filepath.Join(root, filepath.FromSlash(name)), 0)
 		if err != nil {

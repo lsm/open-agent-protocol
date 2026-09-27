@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestAPackageIsNotPublicUntilItIsNamed(t *testing.T) {
-	for _, name := range []string{"go/newthing", "go/serve/newbinding", "go/adapter/newharness/internal/native", "go/serve/internal"} {
+	for _, name := range []string{"go/newthing", "go/serve/newbinding", "go/adapter/newharness/internal/native", "go/serve/internal", "newroot"} {
 		if publicGoPackage(name) {
 			t.Fatalf("%s is public, want undecided until it is named", name)
 		}
@@ -38,9 +38,20 @@ func TestThePackagesAGoProgramNeedsArePublic(t *testing.T) {
 		"go/serve/servehttp",
 		"go/serve/servestdio",
 		"go/validation",
+		"harnesses",
+		"providers",
+		"schema",
 	} {
 		if !publicGoPackage(name) {
 			t.Fatalf("%s is not public, want it named: hyperneo-review imports the adapter tree and the protocol", name)
+		}
+	}
+}
+
+func TestTheEmbeddedDataPackagesArePublic(t *testing.T) {
+	for _, name := range []string{"harnesses", "providers", "schema"} {
+		if !publicGoPackage(name) {
+			t.Fatalf("%s is not public, want it named: every adapter reads harnesses and validation reads schema, so a consumer of either needs them", name)
 		}
 	}
 }
