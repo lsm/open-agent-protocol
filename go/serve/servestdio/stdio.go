@@ -60,6 +60,14 @@ type Server struct {
 
 const maxConcurrentOps = 16
 
+// maxSubscriptions bounds concurrent subscriptions, not accumulation: a
+// subscription ends at its run's terminal envelope, so a host that subscribes
+// per run — the shape that would otherwise fill this ceiling — has each one end
+// on its own. There is deliberately no unsubscribe op: the pipe carries every
+// subscription at once and has no per-stream hangup, so there is no HTTP form
+// for such a verb to be paired with, and close is the one op that ends a
+// session's subscriptions. drafts/hub.md G3 decides this; a port may not add an
+// unsubscribe op alone. See issue #53.
 const maxSubscriptions = 64
 
 const admissionBytes = maxEnvelopeBytes
