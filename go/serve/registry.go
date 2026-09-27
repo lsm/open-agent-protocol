@@ -122,6 +122,9 @@ func (file *configFile) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(value, &entry); err != nil {
 				return err
 			}
+			if entry.JournalCapacity < 0 {
+				return fmt.Errorf("config: adapter %q: journal_capacity %d is negative; 0 keeps the default", name, entry.JournalCapacity)
+			}
 			file.Adapters[name] = entry
 		}
 	}
