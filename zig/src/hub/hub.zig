@@ -202,6 +202,7 @@ pub const Subscription = struct {
         if (self.detached) return;
         self.detached = true;
         self.hub.detach(self);
+        self.forgetEvents(self.hub.allocator);
     }
 
     fn forgetEvents(self: *Subscription, allocator: std.mem.Allocator) void {
@@ -1237,6 +1238,29 @@ test "a finished subscription is reclaimed, so a long-lived hub's memory is boun
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
     try testing.expectEqual(read, hub.subscriptions.items[0]);
+}
+
+test "a subscription that closes with events queued leaves the hub with nothing outstanding" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "gone" });
+    const leaving = try hub.subscribe(arena, opened.session_id, .{});
+    const staying = try hub.subscribe(arena, opened.session_id, .{});
+    const request = try submitFor(arena, "gone");
+    _ = try hub.submit(arena, "gone", &request);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(leaving.queue.items.len > 0);
+
+    leaving.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+    try testing.expectEqual(staying, hub.subscriptions.items[0]);
 }
 
 test "a resumed subscription ends at the terminal it replays" {
