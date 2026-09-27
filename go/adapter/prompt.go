@@ -501,6 +501,9 @@ drain:
 		case protocol.TypeRunCancelled:
 			return outcome, &RunCancelledError{}
 		}
+		if terminal {
+			return outcome, nil
+		}
 	}
 	if err := awaitResolves(ctx, &resolving); err != nil {
 		return outcome, err

@@ -596,6 +596,22 @@ func TestRunToTerminalRefusesAnAcknowledgementItCannotFinish(t *testing.T) {
 	}
 }
 
+func TestRunToTerminalReturnsOnTheTerminalRatherThanWaitingForTheStream(t *testing.T) {
+	session := &scriptedSession{results: []adapter.Result{
+		{Envelope: envelope(protocol.TypeRunCompleted, 1, protocol.RunCompletedPayload{
+			SessionID: "session-1", RunID: "run-1",
+			FinalResponse: protocol.Message{ID: "message-1", Role: protocol.RoleAssistant, Content: protocol.TextContent("done")},
+		})},
+	}, hold: true}
+	outcome, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{StallWindow: 40 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("err = %v, want the run's terminal to end the call rather than a stream that stays open", err)
+	}
+	if outcome.Text != "done" {
+		t.Fatalf("text = %q", outcome.Text)
+	}
+}
+
 func envelope(typ protocol.EnvelopeType, sequence int, payload any) protocol.Envelope {
 	raw, err := json.Marshal(payload)
 	if err != nil {

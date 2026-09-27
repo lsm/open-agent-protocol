@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -28,6 +29,9 @@ func ExampleRunToTerminal() {
 		Policy: func(_ context.Context, gate adapter.Gate) (adapter.GateAnswer, error) {
 			if gate.Permission != nil {
 				return adapter.GateAnswer{ChoiceID: gate.Permission.Choices[0].ID, Granted: true}, nil
+			}
+			if gate.Call != nil {
+				return adapter.GateAnswer{Call: &adapter.CallAnswer{Result: json.RawMessage(`{"ok":true}`)}}, nil
 			}
 			if len(gate.UserInput.Questions) == 0 {
 				return adapter.GateAnswer{}, errors.New("the run asked a question it cannot phrase")
