@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,24 +21,25 @@ var errTerminalWon = errors.New("deepseek adapter: terminal already selected")
 var errUnavailable = errors.New("deepseek adapter: operation unavailable")
 
 type Session struct {
-	mu       sync.Mutex
-	reduceMu sync.Mutex
-	promptMu sync.Mutex
-	client   Client
-	inbound  <-chan rpc.InboundMessage
-	clock    base.Clock
-	ids      base.IDGenerator
-	nativeID string
-	model    string
-	state    protocol.SessionState
-	closed   bool
-	unusable bool
-	pending  *runState
-	active   *runState
-	runs     map[protocol.RunID]*runState
-	tools    map[string]*toolState
-	children map[string]*childState
-	journal  *journal.Journal
+	mu        sync.Mutex
+	reduceMu  sync.Mutex
+	promptMu  sync.Mutex
+	client    Client
+	inbound   <-chan rpc.InboundMessage
+	clock     base.Clock
+	ids       base.IDGenerator
+	nativeID  string
+	model     string
+	state     protocol.SessionState
+	closed    bool
+	unusable  bool
+	pending   *runState
+	active    *runState
+	runs      map[protocol.RunID]*runState
+	tools     map[string]*toolState
+	children  map[string]*childState
+	nextOrder uint64
+	journal   *journal.Journal
 
 	lastSeq  int64
 	seqSeen  bool
@@ -79,6 +81,7 @@ type toolState struct {
 	args      json.RawMessage
 	requested protocol.EnvelopeID
 	started   protocol.EnvelopeID
+	order     uint64
 	terminal  bool
 }
 type childState struct {
@@ -691,7 +694,8 @@ func (s *Session) startTool(run *runState, v native.ToolCall) {
 		s.failRun(run, "deepseek_tool_lifecycle", "duplicate tool call")
 		return
 	}
-	t := &toolState{nativeID: v.CallID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: v.Name, args: json.RawMessage(v.Arguments)}
+	t := &toolState{nativeID: v.CallID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: v.Name, args: json.RawMessage(v.Arguments), order: s.nextOrder}
+	s.nextOrder++
 	s.tools[key] = t
 	p := s.toolPayload(t)
 	req, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, p, false, "")
@@ -915,11 +919,16 @@ func (s *Session) failRunSettled(run *runState, code, msg, settledBy string) {
 }
 
 func (s *Session) settleOpenTools(run *runState) {
+	tools := make([]*toolState, 0, len(s.tools))
 	for _, t := range s.tools {
 		if t.run != run || t.terminal {
 			continue
 		}
 		t.terminal = true
+		tools = append(tools, t)
+	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
+	for _, t := range tools {
 		p := s.toolPayload(t)
 		p.ArgumentsJSON = nil
 		p.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "turn settled with an unfinished deepseek tool"}

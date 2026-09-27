@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type Session struct {
 	runs         map[protocol.RunID]*runState
 	tools        map[string]*toolState
 	interactions map[protocol.InteractionID]*inputState
+	nextOrder    uint64
 	journal      *journal.Journal
 	lastSeq      int64
 	stop         chan struct{}
@@ -79,6 +81,7 @@ type toolState struct {
 	args      json.RawMessage
 	requested protocol.EnvelopeID
 	started   protocol.EnvelopeID
+	order     uint64
 	terminal  bool
 }
 
@@ -97,6 +100,7 @@ type inputState struct {
 
 	answers   map[string]string
 	requested protocol.EnvelopeID
+	order     uint64
 }
 
 func (r *runState) signalStart(err error) {
@@ -497,7 +501,8 @@ func (s *Session) startTool(run *runState, payload *native.ToolStartPayload) {
 		return
 	}
 	args, _ := json.Marshal(payload.Args)
-	t := &toolState{nativeID: payload.ToolID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: payload.Name, args: args}
+	t := &toolState{nativeID: payload.ToolID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: payload.Name, args: args, order: s.nextOrder}
+	s.nextOrder++
 	s.tools[key] = t
 	p := s.toolPayload(t)
 	req, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, p, false, "")
@@ -544,7 +549,8 @@ func (s *Session) openInteraction(run *runState, request *rpc.IncomingRequest) {
 	}
 	requestID, _ := request.ID.StringValue()
 	id := protocol.InteractionID(s.ids.NewID("interaction"))
-	binding := &inputState{id: id, kind: request.Method, requestID: requestID, request: request, run: run, answers: map[string]string{}}
+	binding := &inputState{id: id, kind: request.Method, requestID: requestID, request: request, run: run, answers: map[string]string{}, order: s.nextOrder}
+	s.nextOrder++
 	var title, description string
 	switch payload := decoded.(type) {
 	case *native.ApprovalRequestParams:
@@ -802,18 +808,28 @@ func (s *Session) flushDeferred(run *runState) {
 }
 
 func (s *Session) settleChildren(run *runState) {
+	bindings := make([]*inputState, 0, len(s.interactions))
 	for _, binding := range s.interactions {
 		if binding.run != run || binding.resolved {
 			continue
 		}
 		binding.resolved = true
+		bindings = append(bindings, binding)
+	}
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].order < bindings[j].order })
+	for _, binding := range bindings {
 		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: binding.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, binding.requested)
 	}
+	tools := make([]*toolState, 0, len(s.tools))
 	for _, t := range s.tools {
 		if t.run != run || t.terminal {
 			continue
 		}
 		t.terminal = true
+		tools = append(tools, t)
+	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
+	for _, t := range tools {
 		p := s.toolPayload(t)
 		p.ArgumentsJSON = nil
 		p.Error = &protocol.ProtocolError{Code: "incomplete_tool", Message: "turn settled with an unfinished hermes tool"}

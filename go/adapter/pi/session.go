@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type Session struct {
 	active             *runState
 	runs               map[protocol.RunID]*runState
 	tools              map[string]*toolState
+	nextOrder          uint64
 	interactions       map[protocol.InteractionID]*inputState
 	interactionsOpened uint64
 	journal            []protocol.Envelope
@@ -72,6 +74,7 @@ type toolState struct {
 	result         json.RawMessage
 	started        bool
 	terminal       bool
+	order          uint64
 	requestedEvent protocol.EnvelopeID
 	startedEvent   protocol.EnvelopeID
 }
@@ -93,6 +96,7 @@ type inputState struct {
 	questions   []protocol.InputQuestion
 	phase       interactionPhase
 	opened      uint64
+	order       uint64
 }
 
 type eventHeader struct {
@@ -698,7 +702,8 @@ func (s *Session) startTool(run *runState, v toolStart) {
 		s.failRun(run, "pi_invalid_tool_lifecycle", "duplicate tool start")
 		return
 	}
-	t := &toolState{nativeID: v.ToolCallID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: v.ToolName, args: cloneRaw(v.Args), started: true}
+	t := &toolState{nativeID: v.ToolCallID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run, name: v.ToolName, args: cloneRaw(v.Args), started: true, order: s.nextOrder}
+	s.nextOrder++
 	s.tools[key] = t
 	requested, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, s.toolPayload(t), false, "")
 	p := s.toolPayload(t)
@@ -1110,7 +1115,8 @@ func (s *Session) applyExtension(r native.ExtensionUIRequest) {
 		question.Options = []protocol.InputOption{{ID: "yes", Label: "Yes"}, {ID: "no", Label: "No"}}
 	}
 	s.interactionsOpened++
-	binding := &inputState{id: id, nativeID: r.ID, run: run, method: r.Method, requestedBy: endpointID, respondedBy: s.participant, questions: []protocol.InputQuestion{question}, opened: s.interactionsOpened}
+	binding := &inputState{id: id, nativeID: r.ID, run: run, method: r.Method, requestedBy: endpointID, respondedBy: s.participant, questions: []protocol.InputQuestion{question}, opened: s.interactionsOpened, order: s.nextOrder}
+	s.nextOrder++
 	s.interactions[id] = binding
 	run.status = protocol.RunWaitingForInput
 	s.state.Status = protocol.SessionWaitingForInput
@@ -1390,11 +1396,16 @@ func (s *Session) Close(ctx context.Context) error {
 }
 
 func (s *Session) settleChildren(run *runState, cancel bool) {
+	tools := make([]*toolState, 0, len(s.tools))
 	for _, t := range s.tools {
 		if t.run != run || t.terminal {
 			continue
 		}
 		t.terminal = true
+		tools = append(tools, t)
+	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
+	for _, t := range tools {
 		p := s.toolPayload(t)
 		p.ArgumentsJSON = nil
 		p.Progress = nil
@@ -1405,12 +1416,16 @@ func (s *Session) settleChildren(run *runState, cancel bool) {
 			_, _ = s.emitEnvelope(run, protocol.TypeActionCallFailed, p, false, t.startedEvent)
 		}
 	}
+	opened := make([]*inputState, 0, len(s.interactions))
 	for _, i := range s.interactions {
 		if i.run != run || i.phase == interactionResolved {
 			continue
 		}
 		i.phase = interactionResolved
-
+		opened = append(opened, i)
+	}
+	sort.Slice(opened, func(i, j int) bool { return opened[i].order < opened[j].order })
+	for _, i := range opened {
 		_ = s.emit(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: i.id, RequestedBy: i.requestedBy, RespondedBy: i.respondedBy, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false)
 	}
 }
