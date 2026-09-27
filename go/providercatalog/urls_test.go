@@ -135,7 +135,7 @@ func TestARequestURLIsTheBaseAndItsWirePath(t *testing.T) {
 		{region: "versioned", request: "https://api.example.com/coding/v4/chat/completions", models: "https://api.example.com/coding/v4/models"},
 		{region: "messages", request: "https://api.example.com/anthropic/v1/messages", models: "https://api.example.com/anthropic/v1/models"},
 		{region: "bare", request: "https://api.example.com/v1/chat/completions", models: "https://api.example.com/models"},
-		{region: "trailing", request: "https://api.example.com/v1/chat/completions", models: "https://api.example.com/v1//models"},
+		{region: "trailing", request: "https://api.example.com/v1/chat/completions", models: "https://api.example.com/v1/models"},
 		{region: "rooted", request: "https://api.example.com/v1/openai/chat/completions", models: "https://api.example.com/v1/openai/models"},
 		{region: "local", request: "http://localhost:11434/api/chat", models: "http://localhost:11434/models"},
 	} {
@@ -189,5 +189,67 @@ func TestResolveJoinsEachEndpointsOwnBase(t *testing.T) {
 	}
 	if url, ok := ModelsURL(catalog, "row", ""); !ok || url != "https://first.example.com/v1/models" {
 		t.Fatalf("models url for the region = %q, found = %t, want the first endpoint's", url, ok)
+	}
+}
+
+func TestJoinRequestDropsTrailingSlash(t *testing.T) {
+	for _, tc := range []struct {
+		base  string
+		wire  string
+		want  string
+		model string
+	}{
+		{base: "https://api.openai.com/", wire: "openai-completions", want: "https://api.openai.com/v1/chat/completions"},
+		{base: "https://api.openai.com///", wire: "openai-completions", want: "https://api.openai.com/v1/chat/completions"},
+		{base: "https://api.openai.com/", wire: "openai-responses", want: "https://api.openai.com/v1/responses"},
+		{base: "https://chatgpt.com/backend-api/codex/", wire: "openai-codex-responses", want: "https://chatgpt.com/backend-api/codex/responses"},
+		{base: "https://api.anthropic.com/", wire: "anthropic-messages", want: "https://api.anthropic.com/v1/messages"},
+		{base: "https://api.minimax.io/anthropic/v1/", wire: "anthropic-messages", want: "https://api.minimax.io/anthropic/v1/messages"},
+		{base: "http://localhost:11434/", wire: "ollama", want: "http://localhost:11434/api/chat"},
+	} {
+		path, ok := wirePaths[tc.wire]
+		if !ok {
+			t.Fatalf("the catalog holds no wire %q", tc.wire)
+		}
+		if got := joinRequest(tc.base, path); got != tc.want {
+			t.Fatalf("joinRequest(%q, %q) = %q, want %q", tc.base, tc.wire, got, tc.want)
+		}
+	}
+}
+
+func TestJoinRequestKeepsACompleteBase(t *testing.T) {
+	for _, tc := range []struct {
+		base string
+		wire string
+		want string
+	}{
+		{base: "https://api.openai.com/v1/chat/completions", wire: "openai-completions", want: "https://api.openai.com/v1/chat/completions"},
+		{base: "https://api.openai.com/v1/chat/completions/", wire: "openai-completions", want: "https://api.openai.com/v1/chat/completions"},
+		{base: "https://api.openai.com/v1/responses", wire: "openai-responses", want: "https://api.openai.com/v1/responses"},
+		{base: "https://chatgpt.com/backend-api/codex/responses", wire: "openai-codex-responses", want: "https://chatgpt.com/backend-api/codex/responses"},
+		{base: "https://api.anthropic.com/v1/messages", wire: "anthropic-messages", want: "https://api.anthropic.com/v1/messages"},
+		{base: "http://localhost:11434/api/chat", wire: "ollama", want: "http://localhost:11434/api/chat"},
+	} {
+		path, ok := wirePaths[tc.wire]
+		if !ok {
+			t.Fatalf("the catalog holds no wire %q", tc.wire)
+		}
+		if got := joinRequest(tc.base, path); got != tc.want {
+			t.Fatalf("joinRequest(%q, %q) = %q, want %q", tc.base, tc.wire, got, tc.want)
+		}
+	}
+}
+
+func TestJoinModelsDropsTrailingSlash(t *testing.T) {
+	for _, tc := range []struct{ base, want string }{
+		{base: "https://api.openai.com", want: "https://api.openai.com/v1/models"},
+		{base: "https://api.openai.com/", want: "https://api.openai.com/v1/models"},
+		{base: "https://api.openai.com///", want: "https://api.openai.com/v1/models"},
+		{base: "https://api.openai.com/v1/models", want: "https://api.openai.com/v1/models"},
+		{base: "https://api.openai.com/v1/models/", want: "https://api.openai.com/v1/models"},
+	} {
+		if got := joinModels(tc.base, "/v1/models"); got != tc.want {
+			t.Fatalf("joinModels(%q) = %q, want %q", tc.base, got, tc.want)
+		}
 	}
 }

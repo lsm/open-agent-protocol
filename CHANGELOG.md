@@ -59,6 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An `anthropic-messages` `base_url` ending in `/` no longer requests
+  `//v1/messages`. The anthropic builder trimmed the base only to test whether the
+  path was already present and then appended the untrimmed base, so a user who wrote
+  the trailing slash got a doubled one; the `ollama`, `openai-responses` and
+  `openai-codex-responses` builders concatenated with no check at all, so the same
+  base produced `//api/chat` and `//v1/responses` and those wires also doubled a
+  base that already ended with their path. A trailing `/` is now ignored on every
+  wire, and a base that already ends with its wire's path is used as it is. The
+  four builders had become copies of the catalog's own join with the three flags
+  each had drifted on, so they now call it: one rule, no per-wire `trim` or
+  `idempotent`, with `dedup_version` and `model_scoped` left as descriptor data.
+  `go/providercatalog` gets the same rule, and `providers/resolved_urls.json` is
+  unchanged — no catalogued base ends in `/` or already carries its wire's path, so
+  nothing a catalogued row could observe moved.
 - A config document naming a negative `journal_capacity` for an adapter is refused instead of loaded with the default. Every Go constructor treats `<= 0` as "unspecified", so a value no operator would write reported success and silently retained a different depth; the Zig loader already refused one with `ConfigRefused`. A document naming `0` still keeps the default in both trees, because that is a request for the default rather than a malformed value.
 - The `Host` allowlist refusal on the HTTP transport is an `error.response` carrying the code `unrecognized_host`, keeping the 403 and its wording, where it answered a bare `{"error": …}` with no code — a shape a client cannot branch on, and the one divergence that failed a differential comparison on its first request. `TestHostAllowlist` asserts the body, which is why the shape had drifted unpinned.
 - A Claude Code permission ask now names the tool call it is for. When `can_use_tool` arrives for a `tool_use_id` the run already announced, both trees put `tool_call_id` on the ask's envelope and in its payload; an ask for a call the run never announced leaves both empty, as before. A client that decides by tool could otherwise only learn which tool an ask was for by parsing the question's prompt text. The envelope's `tool_call_id` follows `turn_id` where the schema orders them, so the two trees serialise an ask that names a tool call identically.

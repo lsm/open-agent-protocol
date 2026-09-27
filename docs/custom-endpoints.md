@@ -73,7 +73,20 @@ these reach `https://api.groq.com/openai/v1/chat/completions`:
 ```
 
 Without that normalisation the first form would produce `/v1/v1/chat/completions`
-and a 404, since the OpenAI request builder concatenates without checking.
+and a 404: the builder drops a version segment only on the wires whose descriptor
+says it does, and stripping at read time is what covers the rest.
+
+A trailing `/` is ignored too, on every wire, so all three of these reach the same
+URL:
+
+```
+"base_url": "https://api.groq.com/openai"
+"base_url": "https://api.groq.com/openai/"
+"base_url": "https://api.groq.com/openai/v1/chat/completions"
+```
+
+No vendor serves `//`, and a base that already ends with its wire's path is used
+as it is rather than having the path appended again.
 
 ## Credentials
 
