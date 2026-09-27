@@ -554,7 +554,7 @@ under — the citation is checked, never required.
 | An unschematic message is refused at the gate | `TestOpenCarryingAnUnschematicMessageIsRefusedAtTheGate` |
 | `subscribe` against an endpoint that never advertised it is refused | `TestOpenRefusesSubscribeAgainstAnEndpointThatNeverAdvertisedIt` |
 | A degraded `subscribe` is refused without the opt-in, and admitted with it | `TestSharedGateRefusesADisclosureAnOpenCannotElect` |
-| An open citing a stale revision is refused `stale_capabilities`, naming both revisions; an open citing none is admitted under the revision it was gated with | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP); **gap G4** — the same comparison on the `subscribe` path, and the stdio op's own mapping of it, are unpinned |
+| An open citing a stale revision is refused `stale_capabilities`, naming both revisions; an open citing none is admitted under the revision it was gated with | `TestAttachingOpenPinsOnlyWhatItCites` (both halves, end to end on HTTP); `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath` (the same comparison on the `subscribe` path, and the stdio op's own mapping of it) |
 | An open response that cannot be encoded rolls the session back and says so | `TestOpenRollsBackWhenItsResponseCannotEncode`, `TestAnOpenThatCannotEncodeIsRolledBack` |
 | An open whose id the host named is **kept** when its response cannot be framed, and the refusal says which | `TestAnOpenTheHostNamedIsKeptAndSaidSo` |
 | A submit acknowledgement that will not frame rolls its run back and names the outcome | `TestSubmitRollsBackUnframableAcknowledgement`, `TestSubmitRollbackWaitsForSettlement` |
@@ -619,8 +619,11 @@ exceptions stated once here rather than repeated per row:
 - **errors:** `invalid_request` (no `adapter`, or a parameter the op does not
   define), `unknown_adapter`, `probe_failed`, `internal`.
 - **pinned by:** `TestCapabilitiesEndpoint`, `TestCapabilitiesRequiresDescriptorRevision`,
-  `TestOpErrorCodesMirrorHTTP`, `TestListingsMatchHTTP` — **gap G6**: no test
-  drives the stdio `capabilities` op's own `probe_failed` or `internal` path.
+  `TestOpErrorCodesMirrorHTTP`, `TestListingsMatchHTTP`,
+  `TestCapabilitiesOpReportsAProbeFailure`,
+  `TestCapabilitiesOpReportsAnUnencodableDescriptorAsInternal` — the last two
+  drive the op's own `probe_failed` and `internal` mappings, the second by
+  making the response impossible to encode.
 
 ### `open`
 
@@ -727,9 +730,11 @@ exceptions stated once here rather than repeated per row:
   resolved, answered by the wrong responder, or refused as invalid),
   `unsupported_feature` (400, a session with no `CallResolver`), `session_closed`
   (409), `request_cancelled` (400), `internal` (500).
-- **pinned by:** `TestResolveRejections`, `TestUnadvertisedControlRefusalKeepsItsWireShape`
-  — **gap G7**: no test drives the stdio `resolve` op's `resolution_rejected`
-  or `run_not_found` path; only the HTTP route's refusals are covered.
+- **pinned by:** `TestResolveRejections`, `TestUnadvertisedControlRefusalKeepsItsWireShape`,
+  `TestResolveOpReportsAnUnknownRun`, `TestResolveOpReportsARefusedResolution`
+  — the last two drive the stdio `resolve` op's own `run_not_found` and
+  `resolution_rejected` mappings, which until now only the HTTP route
+  covered.
 
 ### `cancel`
 
@@ -975,26 +980,36 @@ place a differential test would otherwise not see.
   the one verb that ends every subscription on a session, in both trees. **A
   port may not add an `unsubscribe` op alone**; if this decision is ever revisited
   it has to be revisited for both, and the HTTP form has to be settled first.
-- **G4 — the `stale_capabilities` refusal is only half pinned.** The gate
-  compares a request's cited revision against the probed one on both the
-  attachment and the subscribe path. The **attachment** path is pinned end to
-  end on HTTP: a stale citation is refused `409` with both
-  `expected_revision` and `current_revision` in `details`. What no test reaches
-  is the **subscribe** path — a `subscribe` open citing a stale revision is
-  refused on the capability rung first, so the comparison is never made — and
-  the **stdio `open` op's own mapping** of the same error, which no stdio test
-  drives on any path.
+- **G4 — closed, and one claim in it was wrong.** The gate compares a
+  request's cited revision against the probed one on both the attachment and
+  the subscribe path, and the **attachment** path was pinned end to end on
+  HTTP: a stale citation is refused `409` with both `expected_revision` and
+  `current_revision` in `details`. This entry used to say a `subscribe` open
+  citing a stale revision "is refused on the capability rung first, so the
+  comparison is never made". That is not what the code does: `SubscribeGate`
+  compares the revision *before* it asks whether `session.open.subscribe` is
+  advertised, so a stale citation on the subscribe path is refused
+  `stale_capabilities` like any other. `TestOpenOpRefusesAStaleRevisionOnTheSubscribePath`
+  now drives it over stdio and pins both revisions in `details`, which also
+  pins the **stdio `open` op's own mapping** that no stdio test reached.
 - **G5 — the hold's default window is unpinned, the expiry is not.** A held
   subscription nothing adopts **is** released on expiry, and
   `TestOpenSubscriptionNotAdoptedIsReleased` drives that: it builds the server
   with a 50 ms hold and polls until the held set empties, failing if it never
   does. What no test pins is the **default** 30 s, so a port could choose any
   window and nothing would say a host had to wait for it.
-- **G6 — the stdio `capabilities` op's `probe_failed` and `internal` paths are
-  unpinned.** The HTTP route's `probe_failed` is pinned; the stdio op's own
-  mapping is not.
-- **G7 — the stdio `resolve` op's `resolution_rejected` and `run_not_found`
-  paths are unpinned.** Only the HTTP route's refusals are covered.
+- **G6 — closed.** The HTTP route's `probe_failed` was pinned and the stdio
+  op's own mapping was not.
+  `TestCapabilitiesOpReportsAProbeFailure` drives it and pins the wire's
+  message bound on the way through, and
+  `TestCapabilitiesOpReportsAnUnencodableDescriptorAsInternal` reaches
+  `internal` with a descriptor whose feature constraints carry invalid JSON,
+  so the response cannot be encoded at all — the one path that had no
+  coverage because nothing could reach it.
+- **G7 — closed.** Only the HTTP route's refusals were covered.
+  `TestResolveOpReportsAnUnknownRun` pins `run_not_found` and
+  `TestResolveOpReportsARefusedResolution` pins `resolution_rejected` on a
+  live run, resolving it as a participant the session never declared.
 - **G8 — the shutdown window's default is unpinned, the bound is not.** The
   *mechanism* is well covered: every shutdown test builds the frontend with a
   short custom window (100 ms or 250 ms) and measures against it. What no test
