@@ -81,6 +81,7 @@ func requestEnvelopeWithRevision(t *testing.T, id string, typ protocol.EnvelopeT
 }
 
 func TestOpenOpRefusesAStaleRevisionOnTheSubscribePath(t *testing.T) {
+	const cited = "a-revision-from-another-release"
 	hub := newTestHub(t, 64, 64)
 	f := startFrontend(t, hub, Options{})
 	request := requestEnvelopeWithRevision(t, "req-open", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
