@@ -848,8 +848,9 @@ whole reason for existing:
 A subscription ends at exactly one of: its run's terminal envelope, an overflow,
 a stream failure, its session closing, the frontend tearing down, or — over
 HTTP — the client's hangup. **Over stdio there is no host-initiated way to end
-one subscription**; see [gap G3](#known-gaps) and
-[#53](https://github.com/lsm/open-agent-protocol/issues/53).
+one subscription**, and that is a decision rather than an omission: see
+[G3](#known-gaps), where [#53](https://github.com/lsm/open-agent-protocol/issues/53)'s
+three options are weighed and the third is taken in both trees.
 
 The rest of the fan-out is about the runs, not the subscribers: an admitted run
 is ordered by admission, a run that settles is remembered as settled, a queued
@@ -912,18 +913,33 @@ place a differential test would otherwise not see.
   connection ends the stream by construction — the request context cancels the
   subscription — but no test asserts it, and the stdio side has no way to
   express it at all.
-- **G3 — #53: stdio cannot end one subscription on request.** The pipe carries
-  every subscription at once and has no per-stream hangup, and no op detaches a
-  single pump. A pump on a live, idle session ends only at its run's terminal, an
-  overflow or stream failure, its session closing, or the frontend tearing down.
-  The `busy` refusal at the subscription ceiling names those paths rather than
-  implying the host can bring one about, which is accurate but is not a release
-  valve. This is carried as a gap in **both** trees: neither has an `unsubscribe`
-  op, and neither is permitted to grow one alone.
-  [Issue #53](https://github.com/lsm/open-agent-protocol/issues/53) weighs the
-  three options; the `close` op and its `POST /sessions/{id}/close` counterpart
-  are the only wire verbs that end a stream today, and they end the whole
-  session with it.
+- **G3 — #53, decided: stdio has no `unsubscribe`, and the ceiling is not a
+  trap.** The pipe carries every subscription at once and has no per-stream
+  hangup, and no op detaches a single pump. [Issue
+  #53](https://github.com/lsm/open-agent-protocol/issues/53) weighed an
+  `unsubscribe` op, id-reuse replacement, and leaving it; **this draft takes the
+  third, in both trees.**
+
+  The reason #53's case was that a host at the ceiling could only free a slot
+  through a side effect on a session it might not want to end. That is no longer
+  true, and the reason is a rule this draft already had: **a subscription ends
+  at its run's terminal envelope.** A host that subscribes per run — the shape
+  that actually fills the ceiling — has each subscription end on its own, without
+  touching the session. The ceiling of 64 therefore bounds concurrency, not
+  accumulation, and a finished subscription is reclaimed rather than retained.
+
+  The remaining two options both cost more than they buy. An `unsubscribe` op is
+  a wire verb with no HTTP counterpart, and the honest HTTP form of "drop the
+  connection" is not expressible on a pipe that carries every subscription at
+  once — so it would be the one op the parity job could never check, which is the
+  thing the stdio transport exists to prevent. Id-reuse replacement overloads
+  correlation with lifecycle and still cannot reach zero subscriptions.
+
+  So the ending paths stay as they are, the `busy` refusal at the ceiling names
+  them, and `close` — with its `POST /sessions/{id}/close` counterpart — remains
+  the one verb that ends every subscription on a session, in both trees. **A
+  port may not add an `unsubscribe` op alone**; if this decision is ever revisited
+  it has to be revisited for both, and the HTTP form has to be settled first.
 - **G4 — the `stale_capabilities` refusal is only half pinned.** The gate
   compares a request's cited revision against the probed one on both the
   attachment and the subscribe path. The **attachment** path is pinned end to
