@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lsm/open-agent-protocol/go/internal/provider"
 	"github.com/lsm/open-agent-protocol/go/internal/providertest"
-	"github.com/lsm/open-agent-protocol/go/provider"
 )
 
 func TestZAIChinaCodingPlanPresets(t *testing.T) {
