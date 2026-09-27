@@ -185,6 +185,7 @@ pub const Session = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .readable = readable,
         .activity = activity,
         .close = close,
         .tools = tools,
@@ -524,6 +525,11 @@ pub const Session = struct {
         const cancelled = try arena.dupe(u8, run_id);
         try self.control(arena, .interrupt, self.owner.config.control_timeout_ns, refusal);
         return .{ .session_id = self.id, .run_id = cancelled, .accepted = true, .status = .cancelling };
+    }
+
+    fn readable(ptr: *anyopaque) ?std.Io.File.Handle {
+        const self = cast(ptr);
+        return self.engine.transport.readable();
     }
 
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {

@@ -176,6 +176,7 @@ pub const Session = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .readable = readable,
         .activity = activity,
         .close = close,
     };
@@ -436,6 +437,11 @@ pub const Session = struct {
         self.reducer = kept;
         self.retained = self.reducer_arena.queryCapacity();
         return true;
+    }
+
+    fn readable(ptr: *anyopaque) ?std.Io.File.Handle {
+        const self = cast(ptr);
+        return self.transport.readable();
     }
 
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {

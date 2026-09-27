@@ -281,6 +281,14 @@ connection's, are pollable handles. Where a platform offers no handle for an
 input, that input is a documented exception and the loop falls back to a bounded
 wait for it — named in this section, not discovered in a latency profile.
 
+**The one exception today: Windows has no wait for a child's pipe.** A spawned
+child's standard output is an anonymous pipe, and the wait available there is a
+socket poll, so a pipe handle cannot be waited on. The hub therefore does not
+wait on any handle on that platform: every session keeps its share of the bounded
+wait, which is the old loop and is correct if slower. This is recorded here
+rather than discovered per platform, and it goes away when a wait that covers
+pipe handles does.
+
 **Both trees.** Go's hub already runs one goroutine per connection behind a
 session mutex. That is Go's shape and is not a normative model for the port;
 what is normative is the loop, and Go's is a port of the same spec in its own
