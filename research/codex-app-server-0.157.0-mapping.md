@@ -235,11 +235,14 @@ neighbour, not this step.
 (`go/adapter/codex/appserver/adapter.go`), then refuses a response whose
 `thread.id` is empty or different with `ErrNativeProtocol`.
 `TestOpenResumesExplicitNativeThread` pins that the resume is the one native
-call an open makes. Nothing in the adapter reads the seven configuration
-members the response requires, so a thread resumed under a different model,
-sandbox or approval policy than the process was configured with is resumed
-*silently* under the process's own settings — which is the one thing about
-this row a reattach cannot inherit from `thread/resume` alone.
+call an open makes. Of the seven members the response requires it reads
+exactly one, `thread.id`, and only to check it is the id it asked for: the
+six that carry configuration — `model`, `modelProvider`, `cwd`, `sandbox`,
+`approvalPolicy` and `approvalsReviewer` — are decoded and dropped. So a
+thread resumed under a different model, sandbox or approval policy than the
+process was configured with is resumed *silently* under the process's own
+settings, which is the one thing about this row a reattach cannot inherit
+from `thread/resume` alone.
 
 **What is not established here.** Every claim above is source-read at
 `00c972ed…`, and this pin's real-process evidence (above) does not include a
