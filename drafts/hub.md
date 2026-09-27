@@ -269,7 +269,7 @@ host observes directly.
 | An unencodable envelope ends the subscription out loud | `TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud` |
 | A context failure is still announced | `TestAnAdapterContextFailureIsStillAnnounced` |
 | A replay gap is reported with the cursor that was asked for | `TestEventsOpReportsAReplayGap`, `TestAFailedResumeReportsTheRequestedCursor` |
-| The session closing under a subscription is signalled | `TestHubCloseReplaySubscriptionEndsPromptly` |
+| The session closing under a subscription is signalled | `TestHubCloseReplaySubscriptionEndsPromptly`, `TestEventsSignalAClosedSessionByName` (the stdio line, with the session and message it carries) |
 | A live subscription does not stall shutdown | `TestALiveSubscriptionDoesNotStallShutdown` |
 | The cursor advances monotonically, holding its high-water mark across a run boundary | `TestAdvanceCursorHoldsItsHighWaterMark` |
 
