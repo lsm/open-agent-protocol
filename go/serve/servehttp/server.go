@@ -87,9 +87,7 @@ func (s *Server) Handler() http.Handler {
 				host = strings.ToLower(name)
 			}
 			if !s.allowHosts[host] {
-				writeJSON(w, http.StatusForbidden, map[string]string{
-					"error": "unrecognized Host header; this daemon serves loopback clients only",
-				})
+				s.writeError(w, http.StatusForbidden, "unrecognized_host", "unrecognized Host header; this daemon serves loopback clients only", protocol.Envelope{})
 				return
 			}
 			routed.ServeHTTP(w, r)
