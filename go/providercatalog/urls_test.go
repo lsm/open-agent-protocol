@@ -92,8 +92,8 @@ func TestModelsURLAndRequestURLResolveNothingTheCatalogDoesNotHold(t *testing.T)
 		{id: "openai", wire: "no-such-wire"},
 		{id: "no-such-provider", wire: "openai-completions"},
 	} {
-		if url := RequestURL(catalog, absent.id, absent.wire, absent.region); url != "" {
-			t.Fatalf("request url for %s on %s = %q, want none", absent.id, absent.wire, url)
+		if url, ok := RequestURL(catalog, absent.id, absent.wire, absent.region); ok || url != "" {
+			t.Fatalf("request url for %s on %s = %q, found = %t, want none", absent.id, absent.wire, url, ok)
 		}
 	}
 	for _, absent := range []struct{ id, region string }{
@@ -105,14 +105,14 @@ func TestModelsURLAndRequestURLResolveNothingTheCatalogDoesNotHold(t *testing.T)
 		{id: "kimi", region: "mars"},
 		{id: "no-such-provider"},
 	} {
-		if url := ModelsURL(catalog, absent.id, absent.region); url != "" {
-			t.Fatalf("models url for %s in %q = %q, want none", absent.id, absent.region, url)
+		if url, ok := ModelsURL(catalog, absent.id, absent.region); ok || url != "" {
+			t.Fatalf("models url for %s in %q = %q, found = %t, want none", absent.id, absent.region, url, ok)
 		}
 	}
-	if url := RequestURL(catalog, "kimi", "openai-completions", "china"); url != "https://api.kimi.com/coding/v1/chat/completions" {
-		t.Fatalf("kimi china request url = %q", url)
+	if url, ok := RequestURL(catalog, "kimi", "openai-completions", "china"); !ok || url != "https://api.kimi.com/coding/v1/chat/completions" {
+		t.Fatalf("kimi china request url = %q, found = %t", url, ok)
 	}
-	if url := ModelsURL(catalog, "kimi", "global"); url != "https://api.moonshot.ai/v1/models" {
+	if url, ok := ModelsURL(catalog, "kimi", "global"); !ok || url != "https://api.moonshot.ai/v1/models" {
 		t.Fatalf("kimi global models url = %q", url)
 	}
 }
@@ -139,15 +139,15 @@ func TestARequestURLIsTheBaseAndItsWirePath(t *testing.T) {
 		{region: "rooted", request: "https://api.example.com/v1/openai/chat/completions", models: "https://api.example.com/v1/openai/models"},
 		{region: "local", request: "http://localhost:11434/api/chat", models: "http://localhost:11434/models"},
 	} {
-		if got := RequestURL(catalog, "row", wireForRegion(want.region), want.region); got != want.request {
-			t.Fatalf("%s request = %q, want %q", want.region, got, want.request)
+		if got, ok := RequestURL(catalog, "row", wireForRegion(want.region), want.region); !ok || got != want.request {
+			t.Fatalf("%s request = %q, found = %t, want %q", want.region, got, ok, want.request)
 		}
-		if got := ModelsURL(catalog, "row", want.region); got != want.models {
-			t.Fatalf("%s models = %q, want %q", want.region, got, want.models)
+		if got, ok := ModelsURL(catalog, "row", want.region); !ok || got != want.models {
+			t.Fatalf("%s models = %q, found = %t, want %q", want.region, got, ok, want.models)
 		}
 	}
-	if got := RequestURL(catalog, "row", "openai-responses", "responses"); got != "https://api.example.com/v1/responses" {
-		t.Fatalf("responses request = %q", got)
+	if got, ok := RequestURL(catalog, "row", "openai-responses", "responses"); !ok || got != "https://api.example.com/v1/responses" {
+		t.Fatalf("responses request = %q, found = %t", got, ok)
 	}
 }
 
@@ -187,7 +187,7 @@ func TestResolveJoinsEachEndpointsOwnBase(t *testing.T) {
 		}
 		t.Fatalf("no resolved endpoint = %+v, want %+v", resolved, want)
 	}
-	if url := ModelsURL(catalog, "row", ""); url != "https://first.example.com/v1/models" {
-		t.Fatalf("models url for the region = %q, want the first endpoint's", url)
+	if url, ok := ModelsURL(catalog, "row", ""); !ok || url != "https://first.example.com/v1/models" {
+		t.Fatalf("models url for the region = %q, found = %t, want the first endpoint's", url, ok)
 	}
 }
