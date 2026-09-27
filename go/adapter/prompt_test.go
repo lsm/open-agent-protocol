@@ -23,10 +23,11 @@ func TestRunToTerminalAnswersBothGatesAndReportsTheRun(t *testing.T) {
 			}
 			if gate.Permission != nil {
 				gates = append(gates, "permission:"+gate.ToolName)
-				return adapter.GateAnswer{Granted: true}, nil
+				return adapter.GateAnswer{ChoiceID: "approve", Granted: true}, nil
 			}
+			question := gate.UserInput.Questions[0]
 			gates = append(gates, "input:"+gate.ToolName)
-			return adapter.GateAnswer{Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"accept"}}}}, nil
+			return adapter.GateAnswer{Answers: []protocol.InputAnswer{{QuestionID: question.ID, SelectedOptionIDs: []string{question.Options[0].ID}}}}, nil
 		},
 		Observe: func(protocol.Envelope) { seen++ },
 	})
@@ -134,6 +135,22 @@ func TestRunToTerminalReportsAReplayGap(t *testing.T) {
 	}
 }
 
+func TestRunToTerminalReportsAGapCarriedInTheRecovery(t *testing.T) {
+	gap := &adapter.ReplayGap{RequestedAfter: 5, OldestAvailable: 11, LatestAvailable: 14}
+	session := &scriptedSession{
+		results: []adapter.Result{
+			{Envelope: envelope(protocol.TypeContentDelta, 5, protocol.ContentDeltaPayload{SessionID: "session-1", RunID: "run-1", MessageID: "message-1", Part: protocol.ContentPart{Type: protocol.ContentText, Text: "hi"}})},
+			{Error: adapter.ErrEventStreamOverflow},
+		},
+		recoveryGap: gap,
+	}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{})
+	var reported *adapter.ReplayGap
+	if !errors.As(err, &reported) || reported.OldestAvailable != 11 {
+		t.Fatalf("err = %v, want the gap the recovery carries", err)
+	}
+}
+
 func TestRunToTerminalBoundsResumes(t *testing.T) {
 	overflow := adapter.Result{Error: adapter.ErrEventStreamOverflow}
 	session := &scriptedSession{results: []adapter.Result{
@@ -164,7 +181,17 @@ func TestRunToTerminalReportsAStall(t *testing.T) {
 }
 
 func TestRunToTerminalRefusesAnInvalidAnswerBeforeResolving(t *testing.T) {
-	session := newTestSession(t, 64)
+	ask := protocol.UserInputRequestedPayload{
+		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Continue?",
+		Questions: []protocol.InputQuestion{{
+			ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+			Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+		}},
+	}
+	session := &scriptedSession{results: []adapter.Result{
+		{Envelope: envelope(protocol.TypeUserInputRequested, 1, ask)},
+	}}
 	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
 		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
 			return adapter.GateAnswer{Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"not-offered"}}}}, nil
@@ -172,6 +199,31 @@ func TestRunToTerminalRefusesAnInvalidAnswerBeforeResolving(t *testing.T) {
 	})
 	if !errors.Is(err, adapter.ErrInvalidResolution) {
 		t.Fatalf("err = %v, want the invalid answer refused", err)
+	}
+	if len(session.resolved) != 0 {
+		t.Fatalf("resolved %d interactions after an answer the validator refused", len(session.resolved))
+	}
+}
+
+func TestRunToTerminalRefusesAPermissionThePolicyNamedNoChoiceFor(t *testing.T) {
+	ask := protocol.PermissionRequestedPayload{
+		InteractionID: "permission-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Allow it",
+		Choices: []protocol.PermissionChoice{{ID: "allow", Label: "Allow"}, {ID: "deny", Label: "Deny"}},
+	}
+	session := &scriptedSession{results: []adapter.Result{
+		{Envelope: envelope(protocol.TypeActionPermissionRequested, 1, ask)},
+	}}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Granted: true}, nil
+		},
+	})
+	if !errors.Is(err, adapter.ErrGateUnanswered) {
+		t.Fatalf("err = %v, want the unanswered permission", err)
+	}
+	if len(session.resolved) != 0 {
+		t.Fatalf("resolved %d interactions without a choice to resolve them with", len(session.resolved))
 	}
 }
 
@@ -200,13 +252,15 @@ func envelope(typ protocol.EnvelopeType, sequence int, payload any) protocol.Env
 	}
 	value := uint64(sequence)
 	return protocol.Envelope{
-		Protocol: "open-agent-protocol",
-		Version:  "0.1",
-		Profile:  "open-agent-protocol.agent-control-core",
-		Type:     typ,
-		ID:       protocol.EnvelopeID("event"),
-		Payload:  raw,
-		Sequence: &value,
+		Protocol:  "open-agent-protocol",
+		Version:   "0.1",
+		Profile:   "open-agent-protocol.agent-control-core",
+		Type:      typ,
+		ID:        protocol.EnvelopeID("event"),
+		Payload:   raw,
+		Sequence:  &value,
+		SessionID: "session-1",
+		RunID:     "run-1",
 	}
 }
 
@@ -216,6 +270,7 @@ type scriptedSession struct {
 	hold          bool
 	resume        *scriptedSession
 	resumeError   error
+	recoveryGap   *adapter.ReplayGap
 	resumes       int
 	resumeRequest adapter.ResumeRequest
 	cancelled     protocol.RunID
@@ -257,16 +312,21 @@ func (s *scriptedSession) Resume(_ context.Context, request adapter.ResumeReques
 	s.resumeRequest = request
 	resume := s.resume
 	resumeErr := s.resumeError
+	gap := s.recoveryGap
 	s.mu.Unlock()
 	if resumeErr != nil {
 		return adapter.Recovery{}, nil, resumeErr
 	}
-	stream := make(chan adapter.Result, len(resume.results)+1)
-	for _, result := range resume.results {
+	replayed := []adapter.Result{{Error: adapter.ErrEventStreamOverflow}}
+	if resume != nil {
+		replayed = resume.results
+	}
+	stream := make(chan adapter.Result, len(replayed))
+	for _, result := range replayed {
 		stream <- result
 	}
 	close(stream)
-	return adapter.Recovery{RunID: request.RunID, RequestedAfter: request.AfterSequence}, stream, nil
+	return adapter.Recovery{RunID: request.RunID, RequestedAfter: request.AfterSequence, ReplayGap: gap}, stream, nil
 }
 
 func (s *scriptedSession) Close(context.Context) error { return nil }

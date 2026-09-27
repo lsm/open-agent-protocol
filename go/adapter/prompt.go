@@ -24,7 +24,7 @@ var (
 	ErrRunCancelled      = errors.New("adapter: the run was cancelled")
 	ErrNoTerminal        = errors.New("adapter: the stream ended without a terminal run event")
 	ErrResumeUnsupported = errors.New("adapter: the session offers no stream to resume")
-	ErrGateUnanswered    = errors.New("adapter: a gate arrived and no policy answers it")
+	ErrGateUnanswered    = errors.New("adapter: a gate was not answered")
 )
 
 type StalledError struct {
@@ -72,9 +72,10 @@ type Gate struct {
 }
 
 type GateAnswer struct {
-	Answers []protocol.InputAnswer
-	Granted bool
-	Reason  string
+	Answers  []protocol.InputAnswer
+	ChoiceID string
+	Granted  bool
+	Reason   string
 }
 
 type GatePolicy func(context.Context, Gate) (GateAnswer, error)
@@ -177,6 +178,9 @@ func resolveGate(ctx context.Context, session Session, gate Gate) error {
 		})
 	}
 	payload := gate.Permission
+	if gate.answer.ChoiceID == "" {
+		return fmt.Errorf("adapter: the policy answered %s granting %t without naming one of its %d choices: %w", gate.InteractionID, gate.answer.Granted, len(payload.Choices), ErrGateUnanswered)
+	}
 	return session.Resolve(ctx, InteractionResolution{
 		RunID:       gate.RunID,
 		RespondedBy: payload.RespondedBy,
@@ -186,6 +190,7 @@ func resolveGate(ctx context.Context, session Session, gate Gate) error {
 			RespondedBy:   payload.RespondedBy,
 			SessionID:     payload.SessionID,
 			RunID:         payload.RunID,
+			ChoiceID:      gate.answer.ChoiceID,
 			Granted:       gate.answer.Granted,
 			Reason:        gate.answer.Reason,
 		},
@@ -303,13 +308,15 @@ drain:
 					return outcome, fmt.Errorf("adapter: resume bound %d reached: %w", maxResumes, result.Error)
 				}
 				resumes++
-				_, replay, resumeErr := session.Resume(ctx, ResumeRequest{RunID: runID, AfterSequence: lastSeq})
+				recovery, replay, resumeErr := session.Resume(ctx, ResumeRequest{RunID: runID, AfterSequence: lastSeq})
 				var gap *ReplayGap
 				switch {
 				case errors.As(resumeErr, &gap):
 					return outcome, gap
 				case resumeErr != nil:
 					return outcome, resumeErr
+				case recovery.ReplayGap != nil:
+					return outcome, recovery.ReplayGap
 				case replay == nil:
 					return outcome, ErrResumeUnsupported
 				}
