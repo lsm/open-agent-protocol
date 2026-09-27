@@ -314,8 +314,8 @@ pub const Reducer = struct {
         if (in_reply_to.len > 0) try self.put(&envelope, "in_reply_to", str(in_reply_to));
         try self.put(&envelope, "session_id", str(self.options.session_id));
         try self.put(&envelope, "run_id", str(run.id));
-        if (tool_call_id.len > 0) try self.put(&envelope, "tool_call_id", str(tool_call_id));
         if (correlation.turn_id.len > 0) try self.put(&envelope, "turn_id", str(correlation.turn_id));
+        if (tool_call_id.len > 0) try self.put(&envelope, "tool_call_id", str(tool_call_id));
         try self.put(&envelope, "capability_revision", str(self.options.revision));
         if (correlation.extensions) |carried| try self.put(&envelope, "extensions", carried);
         try self.envelopes.append(self.allocator(), .{ .object = envelope });
