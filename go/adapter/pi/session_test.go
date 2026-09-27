@@ -1461,7 +1461,7 @@ func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
 func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
 	client := newFakeClient()
 	s := openTest(t, client, 32)
-	response, stream := submitTest(t, s)
+	_, stream := submitTest(t, s)
 	trace := []protocol.Envelope{adaptertest.Next(t, stream, time.Second)}
 	for i, id := range []string{"ui-1", "ui-2"} {
 		client.extension(native.ExtensionUIRequest{Type: "extension_ui_request", ID: id, Method: native.ExtensionInput, Title: "Name " + id})
