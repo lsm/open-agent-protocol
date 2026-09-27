@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lsm/open-agent-protocol/go/conformance"
+	"github.com/lsm/open-agent-protocol/go/internal/conformance"
 	"github.com/lsm/open-agent-protocol/go/protocol"
 	"github.com/lsm/open-agent-protocol/go/validation"
 )

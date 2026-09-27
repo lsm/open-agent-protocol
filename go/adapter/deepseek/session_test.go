@@ -1643,3 +1643,36 @@ func TestResumeRefusesAnUnknownRunAReceiptAndAClosedSession(t *testing.T) {
 		t.Fatalf("resume on a closed session = %v", err)
 	}
 }
+
+func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	events := failingTurn(t, func(f *fakeClient) {
+		for i := 1; i <= 3; i++ {
+			call := native.ToolCall{Turn: 1, Step: 1, CallID: "call-" + strconv.Itoa(i), Name: "read", Arguments: `{}`}
+			f.ev(int64(4+i), "tool/call", call)
+		}
+		f.ev(8, "assistant/message", assistantMessage(1, 1, "a", []native.ContentBlock{{Type: "text", Text: "done"}}, native.MessageSource{Kind: "model", Provider: "deepseek", Model: "chat"}, `[]`, nil))
+		f.ev(9, "step/end", native.StepBoundary{Turn: 1, Step: 1})
+		f.ev(10, "turn/end", native.TurnEnd{Turn: 1, Reason: json.RawMessage(`{"kind":"completed"}`)})
+		f.notify(&native.SessionStatusNotification{SessionID: "session", Status: "idle"})
+	})
+	var started, settled []protocol.ToolCallID
+	for _, e := range events {
+		if e.ToolCallID == "" {
+			continue
+		}
+		switch e.Type {
+		case protocol.TypeActionCallRequested:
+			started = append(started, e.ToolCallID)
+		case protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
+			settled = append(settled, e.ToolCallID)
+		}
+	}
+	if len(started) != 3 || len(settled) != 3 {
+		t.Fatalf("started %v and settled %v, want three of each", started, settled)
+	}
+	for i := range started {
+		if settled[i] != started[i] {
+			t.Fatalf("settled %v, want the start order %v", settled, started)
+		}
+	}
+}

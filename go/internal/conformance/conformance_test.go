@@ -52,7 +52,7 @@ func oapBinary(t *testing.T) string {
 		if buildErr != nil {
 			return
 		}
-		root, err := filepath.Abs(filepath.Join("..", ".."))
+		root, err := filepath.Abs(filepath.Join("..", "..", ".."))
 		if err != nil {
 			buildErr = err
 			return

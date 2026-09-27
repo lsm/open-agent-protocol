@@ -1733,3 +1733,73 @@ func TestEmptyDeltasProjectNothing(t *testing.T) {
 	}
 	validateWithCapabilities(t, got.response, events)
 }
+
+func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	for i, id := range []string{"t1", "t2", "t3"} {
+		f.event(native.EventToolStart, int64(2+i), `{"tool_id":"`+id+`","name":"read","context":"read"}`)
+	}
+	f.event(native.EventMessageComplete, 5, settleFrame("complete", ""))
+	admitted := <-ch
+	events := drain(t, admitted.stream)
+
+	var started, settled []protocol.ToolCallID
+	for _, envelope := range events {
+		if envelope.ToolCallID == "" {
+			continue
+		}
+		switch envelope.Type {
+		case protocol.TypeActionCallRequested:
+			started = append(started, envelope.ToolCallID)
+		case protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
+			settled = append(settled, envelope.ToolCallID)
+		}
+	}
+	if len(started) != 3 || len(settled) != 3 {
+		t.Fatalf("started %v and settled %v, want three of each", started, settled)
+	}
+	for i := range started {
+		if settled[i] != started[i] {
+			t.Fatalf("settled %v, want the start order %v", settled, started)
+		}
+	}
+	validateWithCapabilities(t, admitted.response, events)
+}
+
+func TestPendingPromptsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	s, f := openTest(t)
+	ch := admit(t, s, f, true)
+	f.gate(native.RequestClarify, `{"question":"first?","choices":["a","b"]}`)
+	f.gate(native.RequestClarify, `{"question":"second?","choices":["c","d"]}`)
+	f.event(native.EventMessageComplete, 2, settleFrame("complete", ""))
+	admitted := <-ch
+	events := drain(t, admitted.stream)
+
+	var asked, resolved []protocol.InteractionID
+	for _, envelope := range events {
+		switch envelope.Type {
+		case protocol.TypeUserInputRequested:
+			var payload protocol.UserInputRequestedPayload
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			asked = append(asked, payload.InteractionID)
+		case protocol.TypeUserInputResolved:
+			var payload protocol.UserInputResolvedPayload
+			if err := envelope.DecodePayload(&payload); err != nil {
+				t.Fatal(err)
+			}
+			resolved = append(resolved, payload.InteractionID)
+		}
+	}
+	if len(asked) != 2 || len(resolved) != 2 {
+		t.Fatalf("asked %v and resolved %v, want two of each", asked, resolved)
+	}
+	for i := range asked {
+		if resolved[i] != asked[i] {
+			t.Fatalf("resolved %v, want the order they were asked in %v", resolved, asked)
+		}
+	}
+	validateWithCapabilities(t, admitted.response, events)
+}

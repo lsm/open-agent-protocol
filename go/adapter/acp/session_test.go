@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1426,6 +1427,94 @@ func TestSettlingChildrenOfATerminalRunClaimsNothing(t *testing.T) {
 		}
 		if gate.resolved {
 			t.Fatal("a gate was marked resolved by a settlement nothing emitted")
+		}
+	}
+}
+
+func TestPendingToolsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	for i, id := range []string{"call-1", "call-2", "call-3"} {
+		f.update(t, native.ToolCall{SessionUpdate: "tool_call", ToolCallID: id, Title: "Act " + id, Status: "pending"})
+		waitCursor(t, s, strconv.Itoa(i+2))
+	}
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := collect(t, stream)
+	assertValidTrace(t, admission, events)
+
+	var started, settled []protocol.ToolCallID
+	for _, event := range events {
+		if event.ToolCallID == "" {
+			continue
+		}
+		switch event.Type {
+		case protocol.TypeActionCallRequested:
+			started = append(started, event.ToolCallID)
+		case protocol.TypeActionCallFailed, protocol.TypeActionCallCancelled:
+			settled = append(settled, event.ToolCallID)
+		}
+	}
+	if len(started) != 3 || len(settled) != 3 {
+		t.Fatalf("started %v and settled %v, want three of each", started, settled)
+	}
+	for i := range started {
+		if settled[i] != started[i] {
+			t.Fatalf("settled %v, want the start order %v", settled, started)
+		}
+	}
+}
+
+func acpAskPermission(t *testing.T, f *fakeClient, stream base.EventStream, requestID, toolCallID string, seen *[]protocol.Envelope) {
+	t.Helper()
+	params := json.RawMessage(`{"sessionId":"native-session","toolCall":{"toolCallId":"` + toolCallID + `","title":"Act"},"options":[{"optionId":"allow_once","name":"Allow","kind":"allow_once"}]}`)
+	f.inbound <- rpc.InboundMessage{Request: corpusIncomingRequest(t, rpc.Request(rpc.StringID(requestID), native.MethodSessionRequestPermission, params))}
+	for {
+		envelope := adaptertest.Next(t, stream, 2*time.Second)
+		*seen = append(*seen, envelope)
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			return
+		}
+		if envelope.Type == protocol.TypeRunFailed {
+			t.Fatalf("the run failed before the permission was surfaced: %v", envelope.Payload)
+		}
+	}
+}
+
+func TestPendingPermissionsAreSettledInTheOrderTheyStarted(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	var seen []protocol.Envelope
+	acpAskPermission(t, f, stream, "perm-1", "call-1", &seen)
+	acpAskPermission(t, f, stream, "perm-2", "call-2", &seen)
+	f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	events := append(seen, collect(t, stream)...)
+	assertValidTrace(t, admission, events)
+
+	var asked, settled []protocol.InteractionID
+	for _, envelope := range events {
+		if envelope.Type != protocol.TypeActionPermissionRequested && envelope.Type != protocol.TypeActionPermissionResolved {
+			continue
+		}
+		var payload struct {
+			InteractionID protocol.InteractionID `json:"interaction_id"`
+		}
+		if err := envelope.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Type == protocol.TypeActionPermissionRequested {
+			asked = append(asked, payload.InteractionID)
+		} else {
+			settled = append(settled, payload.InteractionID)
+		}
+	}
+	if len(asked) != 2 || len(settled) != 2 {
+		t.Fatalf("asked %v and settled %v, want two of each", asked, settled)
+	}
+	for i := range asked {
+		if settled[i] != asked[i] {
+			t.Fatalf("settled %v, want the order they were asked in %v", settled, asked)
 		}
 	}
 }

@@ -16,8 +16,8 @@ import (
 
 	"github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/adapter/adaptertest"
+	"github.com/lsm/open-agent-protocol/go/internal/provider"
 	"github.com/lsm/open-agent-protocol/go/protocol"
-	"github.com/lsm/open-agent-protocol/go/provider"
 	"github.com/lsm/open-agent-protocol/go/validation"
 )
 
@@ -236,6 +236,9 @@ func runCheck(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	if err := checkProviders(stdout); err != nil {
 		return fmt.Errorf("providers: %w", err)
+	}
+	if err := checkGoPackages(stdout); err != nil {
+		return fmt.Errorf("go packages: %w", err)
 	}
 	if err := runFixtures(nil, stdout); err != nil {
 		return fmt.Errorf("fixtures: %w", err)

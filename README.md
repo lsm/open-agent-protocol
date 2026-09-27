@@ -583,6 +583,37 @@ Pick the tier that fits: `adapter.Session` directly for one embedded session
 `serve` for multi-adapter, multi-session hosts in process; `goap hub` plus
 `client` for out-of-process or non-Go consumers over HTTP + SSE.
 
+### Depending on the Go library
+
+A Go program depends on this repository as a module, and one tag carries both
+the library and the released `oapx` binary:
+
+```
+go get github.com/lsm/open-agent-protocol@v0.1.0-alpha.4
+```
+
+Tags are shared with `oapx` releases, so a consumer that installs the library
+and a host that installs the binary are on the same pin. `go get` without a
+version takes the newest tag; a program that must stay on a known release
+should name it, the way this repository names its harness pins.
+
+The public packages are the ones a program should import: `protocol`,
+`adapter` with every harness package under it (`acp`, `claude`,
+`codex/appserver`, `deepseek`, `hermes`, `opencode`, `pi`), `client`,
+`harness`, `providercatalog`, `serve` with its three bindings (`servehttp`,
+`serveendpoint`, `servestdio`), `validation`, and the embedded-data packages
+`harnesses`, `providers` and `schema`. Everything else lives under
+`go/internal`, and `goap check` fails on a package that is in neither set, so
+the list cannot drift by adding a directory.
+
+`adapter.RunToTerminal` is the shortest path from a prompt to a result: it
+submits, reads the stream, answers every interaction through a policy
+function, resumes after an overflow, and returns the run's response, usage,
+run id and tool-call count. The [Go client](#go-client-client) and
+[registry](#embedding-the-registry-serve) sections below show the same
+lifecycles written out by hand, which is what a host does when it needs to
+answer interactions itself.
+
 ### Go client (`client`)
 
 The `client` package is the far-side conformance proof for that wire: a public

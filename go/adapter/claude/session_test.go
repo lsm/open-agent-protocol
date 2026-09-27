@@ -2325,3 +2325,75 @@ func TestPermissionAskNamesNoToolCallWhenTheRunAnnouncedNone(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingToolsAreSweptInTheOrderTheyStarted(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	content := `{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}},` +
+		`{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"pwd"}},` +
+		`{"type":"tool_use","id":"toolu_3","name":"Bash","input":{"command":"id"}}`
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[` + content + `],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-three","user_message_uuid":"` + uuid + `"}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
+
+	var started, swept []protocol.ToolCallID
+	for _, event := range events {
+		if event.ToolCallID == "" {
+			continue
+		}
+		switch event.Type {
+		case protocol.TypeActionCallRequested:
+			started = append(started, event.ToolCallID)
+		case protocol.TypeActionCallCancelled, protocol.TypeActionCallFailed:
+			swept = append(swept, event.ToolCallID)
+		}
+	}
+	if len(started) != 3 || len(swept) != 3 {
+		t.Fatalf("started %v and swept %v, want three of each", started, swept)
+	}
+	for i := range started {
+		if swept[i] != started[i] {
+			t.Fatalf("swept %v, want the start order %v", swept, started)
+		}
+	}
+}
+
+func TestPendingGatesAreSweptInTheOrderTheyStarted(t *testing.T) {
+	_, session, peer := openWire(t)
+	uuid, outcome := admit(t, session, peer)
+	content := `{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"ls"}},` +
+		`{"type":"tool_use","id":"toolu_02","name":"Bash","input":{"command":"pwd"}}`
+	peer.send(`{"type":"assistant","message":{"id":"m","model":"claude-test","content":[` + content + `],"stop_reason":null,"usage":{"input_tokens":7}},"parent_tool_use_id":null,"session_id":"` + peerSession + `","uuid":"a-gates","user_message_uuid":"` + uuid + `"}`)
+	peer.send(`{"type":"control_request","request_id":"ask-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_01"}}`)
+	peer.send(`{"type":"control_request","request_id":"ask-2","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pwd"},"tool_use_id":"toolu_02"}}`)
+	peer.send(resultFrame(uuid, "success", false, "completed", "done", 0))
+	events := adaptertest.Drain(t, outcome.stream, 5*time.Second)
+	assertValidTrace(t, outcome.request, outcome.admission, events)
+
+	var asked, swept []protocol.InteractionID
+	for _, event := range events {
+		if event.Type != protocol.TypeUserInputRequested && event.Type != protocol.TypeUserInputResolved {
+			continue
+		}
+		var payload struct {
+			InteractionID protocol.InteractionID `json:"interaction_id"`
+		}
+		if err := event.DecodePayload(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == protocol.TypeUserInputRequested {
+			asked = append(asked, payload.InteractionID)
+		} else {
+			swept = append(swept, payload.InteractionID)
+		}
+	}
+	if len(asked) != 2 || len(swept) != 2 {
+		t.Fatalf("asked %v and swept %v, want two of each", asked, swept)
+	}
+	for i := range asked {
+		if swept[i] != asked[i] {
+			t.Fatalf("swept %v, want the order they were asked in %v", swept, asked)
+		}
+	}
+}
