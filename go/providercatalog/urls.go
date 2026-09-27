@@ -91,36 +91,36 @@ func findProvider(catalog Catalog, id string) (Provider, bool) {
 	return Provider{}, false
 }
 
-func ModelsURL(catalog Catalog, id, region string) string {
+func ModelsURL(catalog Catalog, id, region string) (string, bool) {
 	provider, known := findProvider(catalog, id)
 	if !known || provider.ModelsPath == "" {
-		return ""
+		return "", false
 	}
 	for _, endpoint := range provider.Endpoints {
 		if endpoint.Region != region {
 			continue
 		}
-		return joinModels(endpoint.BaseURL, provider.ModelsPath)
+		return joinModels(endpoint.BaseURL, provider.ModelsPath), true
 	}
-	return ""
+	return "", false
 }
 
-func RequestURL(catalog Catalog, id, wire, region string) string {
+func RequestURL(catalog Catalog, id, wire, region string) (string, bool) {
 	provider, known := findProvider(catalog, id)
 	if !known {
-		return ""
+		return "", false
 	}
 	path, joined := wirePaths[wire]
 	if !joined || path.modelScoped {
-		return ""
+		return "", false
 	}
 	for _, endpoint := range provider.Endpoints {
 		if endpoint.Wire != wire || endpoint.Region != region {
 			continue
 		}
-		return joinRequest(endpoint.BaseURL, path)
+		return joinRequest(endpoint.BaseURL, path), true
 	}
-	return ""
+	return "", false
 }
 
 func Resolve(catalog Catalog) []Resolved {
