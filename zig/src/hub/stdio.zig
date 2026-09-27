@@ -201,6 +201,47 @@ pub const Options = struct {
     max_subscriptions: usize = default_max_subscriptions,
 };
 
+pub const Watch = struct {
+    id: i64,
+    session_id: []const u8,
+    subscription: *hubmod.Subscription,
+};
+
+const Member = struct { key: []const u8, integer: u64 };
+
+fn signal(arena: std.mem.Allocator, event: []const u8, id: i64, session_id: []const u8, run_id: []const u8, members: []const Member, message: []const u8) Error!std.ArrayList(u8) {
+    var scratch = std.heap.ArenaAllocator.init(arena);
+    defer scratch.deinit();
+    const quoted = json_encode.valueAlloc(scratch.allocator(), .{ .string = session_id }) catch return error.OutOfMemory;
+    var line = std.ArrayList(u8).empty;
+    errdefer line.deinit(arena);
+    try appendAll(arena, &line, try std.fmt.allocPrint(scratch.allocator(), "{{\"event\":\"{s}\",\"id\":{d},\"session_id\":{s}", .{ event, id, quoted }));
+    if (run_id.len > 0) {
+        const named = json_encode.valueAlloc(scratch.allocator(), .{ .string = run_id }) catch return error.OutOfMemory;
+        try appendAll(arena, &line, try std.fmt.allocPrint(scratch.allocator(), ",\"run_id\":{s}", .{named}));
+    }
+    for (members) |entry| {
+        try appendAll(arena, &line, try std.fmt.allocPrint(scratch.allocator(), ",\"{s}\":{d}", .{ entry.key, entry.integer }));
+    }
+    if (message.len > 0) {
+        const quoted_message = json_encode.valueAlloc(scratch.allocator(), .{ .string = message }) catch return error.OutOfMemory;
+        try appendAll(arena, &line, try std.fmt.allocPrint(scratch.allocator(), ",\"message\":{s}", .{quoted_message}));
+    }
+    try appendAll(arena, &line, "}");
+    return line;
+}
+
+
+fn appendAll(arena: std.mem.Allocator, line: *std.ArrayList(u8), text: []const u8) Error!void {
+    line.appendSlice(arena, text) catch return error.OutOfMemory;
+}
+
+fn append(arena: std.mem.Allocator, line: *std.ArrayList(u8), text: []const u8) !void {
+    try line.ensureUnusedCapacity(arena, text.len + 16);
+    line.appendSliceAssumeCapacity(arena, "{\"");
+    line.appendSliceAssumeCapacity(arena, text);
+}
+
 pub const Frontend = struct {
     hub: *Hub,
     sink: Sink,
@@ -210,7 +251,7 @@ pub const Frontend = struct {
     max_subscriptions: usize,
     in_flight: usize = 0,
     next_envelope: u64 = 0,
-    subscriptions: std.ArrayList(*hubmod.Subscription) = .empty,
+    subscriptions: std.ArrayList(Watch) = .empty,
     stopped: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, hub: *Hub, sink: Sink, options: Options) Error!Frontend {
@@ -300,6 +341,7 @@ pub const Frontend = struct {
         if (std.mem.eql(u8, request.op, op_resolve)) return self.resolve(arena, request);
         if (std.mem.eql(u8, request.op, op_models)) return self.models(arena, request);
         if (std.mem.eql(u8, request.op, op_tools)) return self.tools(arena, request);
+        if (std.mem.eql(u8, request.op, op_events)) return self.events(arena, request);
         return .{ .refused = .{ .code = "unknown_op", .message = "this frontend does not serve that op" } };
     }
 
@@ -403,6 +445,7 @@ pub const Frontend = struct {
     }
 
     const request_parameters: []const []const u8 = &.{ "session_id", "request" };
+    const events_parameters: []const []const u8 = &.{ "session_id", "run_id", "after" };
     const open_parameters: []const []const u8 = &.{ "adapter", "request" };
     const degraded_parameters: []const []const u8 = &.{ "session_id", "allow_degraded_features" };
 
@@ -530,6 +573,114 @@ pub const Frontend = struct {
             },
             else => return .{ .refused = .{ .code = "type_mismatch", .message = "resolve takes a permission, user-input or call resolve request" } },
         }
+    }
+
+    fn events(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
+        if (request.only(events_parameters)) |refusal| return .{ .refused = refusal };
+        const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+        const named = request.run_id orelse "";
+        if (named.len > 0 and request.after == null) {
+            return .{ .refused = .{ .code = "invalid_cursor", .message = "a run_id needs a cursor" } };
+        }
+        const subscription = self.hub.subscribe(arena, session_id, .{ .run_id = named, .after = request.after }) catch |err| {
+            return .{ .refused = try self.refusalFor(arena, err, session_id) };
+        };
+        try self.answerValue(request.id, .{ .null = {} });
+        if (subscription.joined) {
+            try self.subscribedLine(request.id, session_id, subscription.run_id, subscription.joined_after);
+        }
+        if (subscription.gap) |gap| {
+            try self.gapLine(request.id, session_id, gap.requested_after, gap.oldest_available, gap.latest_available);
+            subscription.ending = .expired;
+            return .{ .streaming = {} };
+        }
+        if (subscription.ending != .open) {
+            try self.endLine(request.id, session_id, subscription);
+            return .{ .streaming = {} };
+        }
+        try self.subscriptions.append(self.allocator, .{ .id = request.id, .session_id = session_id, .subscription = subscription });
+        return .{ .streaming = {} };
+    }
+
+    pub fn pump(self: *Frontend, allocator: std.mem.Allocator, wait_ns: u64) Error!void {
+        try self.hub.pump(allocator, wait_ns);
+        var index: usize = 0;
+        while (index < self.subscriptions.items.len) {
+            const watch = self.subscriptions.items[index];
+            var progressed = false;
+            while (watch.subscription.next()) |delivery| {
+                progressed = true;
+                try self.envelopeLine(self.allocator, watch.id, watch.session_id, delivery);
+            }
+            if (watch.subscription.ending == .open) {
+                if (progressed) continue;
+                index += 1;
+                continue;
+            }
+            try self.endLine(watch.id, watch.session_id, watch.subscription);
+            watch.subscription.close();
+            _ = self.subscriptions.orderedRemove(index);
+        }
+    }
+
+    fn subscribedLine(self: *Frontend, id: i64, session_id: []const u8, run_id: []const u8, joined: u64) Error!void {
+        const members = [_]Member{.{ .key = "joined_after", .integer = joined }};
+        var line = try signal(self.allocator, "oap-subscribed", id, session_id, run_id, &members, "the subscription begins after this sequence; resubscribe with a cursor at or before it to replay what preceded this point");
+        defer line.deinit(self.allocator);
+        try self.write(line.items);
+    }
+
+    fn gapLine(self: *Frontend, id: i64, session_id: []const u8, requested: u64, oldest: u64, latest: u64) Error!void {
+        const members = [_]Member{ .{ .key = "requested_after", .integer = requested }, .{ .key = "oldest_available", .integer = oldest }, .{ .key = "latest_available", .integer = latest } };
+        var line = try signal(self.allocator, "oap-replay-gap", id, session_id, "", &members, "the cursor is older than this run's journal; resubscribe at or after oldest_available");
+        defer line.deinit(self.allocator);
+        try self.write(line.items);
+    }
+
+    fn endLine(self: *Frontend, id: i64, session_id: []const u8, subscription: *hubmod.Subscription) Error!void {
+        const ending = subscription.ending;
+        if (ending == .run_terminal) return;
+        const named = if (ending == .overflow) subscription.overflow_run else subscription.run_id;
+        var written: std.ArrayList(u8) = .empty;
+        defer written.deinit(self.allocator);
+        switch (ending) {
+            .overflow => {
+                const members = [_]Member{.{ .key = "last_sequence", .integer = subscription.overflow_sequence }};
+                written = try signal(self.allocator, "oap-overflow", id, session_id, named, &members, "this consumer fell behind; resubscribe after last_sequence to continue");
+                try self.write(written.items);
+            },
+            .session_closed => {
+                written = try signal(self.allocator, "oap-session-closed", id, session_id, "", &.{}, "the session closed under this subscription");
+                try self.write(written.items);
+            },
+            .stream_failed => {
+                const members = [_]Member{.{ .key = "sequence", .integer = subscription.highest }};
+                written = try signal(self.allocator, "oap-stream-failed", id, session_id, named, &members, "the run's event stream failed; resume with a cursor after this sequence");
+                try self.write(written.items);
+            },
+            .expired => {
+                const members = [_]Member{ .{ .key = "requested_after", .integer = 0 }, .{ .key = "oldest_available", .integer = 0 }, .{ .key = "latest_available", .integer = 0 } };
+                written = try signal(self.allocator, "oap-replay-gap", id, session_id, named, &members, "this subscription was released before it was read");
+                try self.write(written.items);
+            },
+            else => {},
+        }
+    }
+
+    fn envelopeLine(self: *Frontend, arena: std.mem.Allocator, id: i64, session_id: []const u8, delivery: hubmod.Delivery) Error!void {
+        var scratch = std.heap.ArenaAllocator.init(arena);
+        defer scratch.deinit();
+        const quoted = json_encode.valueAlloc(scratch.allocator(), .{ .string = session_id }) catch return error.OutOfMemory;
+        const line = if (std.fmt.allocPrint(arena, "{{\"event\":\"envelope\",\"id\":{d},\"session_id\":{s},\"sequence\":{d},\"envelope\":{s}}}", .{ id, quoted, delivery.sequence, delivery.line })) |ready| ready else |_| return error.OutOfMemory;
+        defer arena.free(line);
+        if (line.len > self.frame_limit) {
+            const members = [_]Member{.{ .key = "sequence", .integer = delivery.sequence }};
+            var shed = try signal(self.allocator, "oap-frame-limit", id, session_id, delivery.run_id, &members, "this envelope does not fit the frame limit; resubscribe after this sequence");
+            defer shed.deinit(self.allocator);
+            try self.write(shed.items);
+            return;
+        }
+        try self.write(line);
     }
 
     fn models(self: *Frontend, arena: std.mem.Allocator, request: Request) !Outcome {
@@ -807,6 +958,13 @@ const Recorder = struct {
     }
 };
 
+const scripted_envelopes = [_][]const u8{
+    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"run.started\",\"id\":\"e1\",\"payload\":{\"session_id\":\"s\"}}",
+    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"e2\",\"payload\":{\"session_id\":\"s\"}}",
+    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.completed\",\"id\":\"e3\",\"payload\":{\"session_id\":\"s\"}}",
+    "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"run.completed\",\"id\":\"e4\",\"payload\":{\"session_id\":\"s\"}}",
+};
+
 const reference_descriptor = contract.Descriptor{
     .endpoint = .{ .id = "reference", .name = "Reference", .version = "0.1", .adapter = "script" },
     .capability_revision = "reference-v1",
@@ -874,6 +1032,8 @@ const ReferenceState = struct {
     running: bool = false,
     runs: [4][]const u8 = .{ "", "", "", "" },
     run_count: usize = 0,
+    outbox: [8][]const u8 = .{ "", "", "", "", "", "", "", "" },
+    outbox_len: usize = 0,
 
     fn id(self: *const ReferenceState) []const u8 {
         if (self.id_len == 0) return "session-1";
@@ -907,6 +1067,7 @@ fn referenceOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.Op
     state.opened += 1;
     state.running = false;
     state.run_count = 0;
+    state.outbox_len = 0;
     const named = if (request.session_id.len > 0) request.session_id else "session-1";
     @memcpy(state.id_buffer[0..named.len], named);
     state.id_len = named.len;
@@ -969,6 +1130,12 @@ fn referenceSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oa
         state.runs[state.run_count] = "run-1";
         state.run_count += 1;
     }
+    for (scripted_envelopes) |line| {
+        if (state.outbox_len < state.outbox.len) {
+            state.outbox[state.outbox_len] = line;
+            state.outbox_len += 1;
+        }
+    }
     const session_id = try arena.dupe(u8, referenceId(state));
     const submission = try arena.dupe(u8, "s1");
     const run = try arena.dupe(u8, "run-1");
@@ -1008,9 +1175,14 @@ fn referencePump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
 }
 
 fn referenceDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
-    _ = ptr;
-    _ = allocator;
-    _ = out;
+    const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    var index: usize = 0;
+    while (index < state.outbox_len) : (index += 1) {
+        const line = try allocator.dupe(u8, state.outbox[index]);
+        const run = try allocator.dupe(u8, if (state.run_count > 0) state.runs[0] else "run-1");
+        try out.append(allocator, .{ .line = line, .run_id = run, .sequence = index + 1 });
+    }
+    state.outbox_len = 0;
 }
 
 fn referenceActivity(ptr: *anyopaque) contract.Activity {
@@ -1380,4 +1552,118 @@ test "a catalog is stamped with the revision it was served under" {
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":5,\"op\":\"tools\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+fn eventMember(harness: *Harness, line: []const u8, key: []const u8) !std.json.Value {
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena(), line, .{});
+    if (parsed != .object) return error.Shape;
+    return parsed.object.get(key) orelse error.Shape;
+}
+
+test "an events op acknowledges before the stream, and every envelope line is tagged with its id" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try harness.send("{\"id\":7,\"op\":\"events\",\"session_id\":\"alpha\"}");
+    const acknowledgement = harness.recorder.lines.items[harness.recorder.lines.items.len - 1];
+    try testing.expectEqualStrings("{\"id\":7,\"ok\":true,\"result\":null}", acknowledgement);
+    try harness.frontend.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 7), harness.recorder.lines.items.len);
+    const first = harness.recorder.lines.items[3];
+    const first_event = try eventMember(harness, first, "event");
+    if (first_event != .string) return error.Shape;
+    try testing.expectEqualStrings("envelope", first_event.string);
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, harness.arena(), first, .{});
+    try testing.expectEqual(@as(i64, 7), parsed.object.get("id").?.integer);
+    try testing.expectEqualStrings("alpha", parsed.object.get("session_id").?.string);
+    try testing.expectEqual(@as(i64, 1), parsed.object.get("sequence").?.integer);
+    try testing.expectEqualStrings("run.started", try textMember(harness.arena(), parsed.object.get("envelope").?, "type"));
+}
+
+test "a run's terminal envelope is the marker, and no end line follows it" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try harness.send("{\"id\":7,\"op\":\"events\",\"session_id\":\"alpha\"}");
+    try harness.frontend.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), harness.frontend.subscriptions.items.len);
+    var terminals: usize = 0;
+    for (harness.recorder.lines.items) |line| {
+        if (std.mem.indexOf(u8, line, "\"run.completed\"") != null) terminals += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), terminals);
+}
+
+test "a subscription that joins mid-run is told where it began, and the signal never ends it" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try harness.frontend.pump(testing.allocator, 0);
+    try harness.send("{\"id\":7,\"op\":\"events\",\"session_id\":\"alpha\"}");
+    const join = harness.recorder.last();
+    try testing.expect(std.mem.indexOf(u8, join, "\"oap-subscribed\"") != null);
+    try testing.expect(std.mem.indexOf(u8, join, "\"joined_after\":4") != null);
+    try testing.expectEqual(hubmod.Ending.open, harness.frontend.subscriptions.items[0].subscription.ending);
+}
+
+test "a replay gap is not an error: the op acknowledges, then reports the gap and ends" {
+    const harness = try Harness.init(testing.allocator, .{ .journal_capacity = 2, .stream_queue = 8 }, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"alpha\",\"run_id\":\"run-77\",\"after\":0}");
+    try testing.expectEqualStrings("run_not_found", try harness.code());
+
+    try harness.send("{\"id\":3,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-3\",\"payload\":{\"session_id\":\"alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try harness.frontend.pump(testing.allocator, 0);
+    try harness.send("{\"id\":4,\"op\":\"events\",\"session_id\":\"alpha\",\"run_id\":\"run-1\",\"after\":1}");
+    const gap = harness.recorder.last();
+    const acknowledgement = harness.recorder.lines.items[harness.recorder.lines.items.len - 2];
+    try testing.expectEqualStrings("{\"id\":4,\"ok\":true,\"result\":null}", acknowledgement);
+    try testing.expect(std.mem.indexOf(u8, gap, "\"oap-replay-gap\"") != null);
+    try testing.expect(std.mem.indexOf(u8, gap, "\"requested_after\":1") != null);
+    try testing.expectEqual(@as(usize, 0), harness.frontend.subscriptions.items.len);
+}
+
+test "an events op refuses a run without a cursor, a closed session, and an unknown one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"alpha\",\"run_id\":\"run-1\"}");
+    try testing.expectEqualStrings("invalid_cursor", try harness.code());
+    try harness.send("{\"id\":3,\"op\":\"events\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try harness.send("{\"id\":4,\"op\":\"events\"}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    harness.hub.close(harness.arena(), "alpha") catch {};
+    try harness.send("{\"id\":5,\"op\":\"events\",\"session_id\":\"alpha\"}");
+    try testing.expectEqualStrings("session_closed", try harness.code());
+}
+
+test "a subscriber that falls behind is ended out loud with the cursor to resume from" {
+    const harness = try Harness.init(testing.allocator, .{ .stream_queue = 2, .journal_capacity = 32 }, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"submit\",\"session_id\":\"alpha\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.message.submit.request\",\"id\":\"req-2\",\"payload\":{\"session_id\":\"alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"run\"}],\"delivery\":\"auto\"}}}");
+    try harness.send("{\"id\":7,\"op\":\"events\",\"session_id\":\"alpha\"}");
+    try harness.frontend.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), harness.frontend.subscriptions.items.len);
+    const end = harness.recorder.last();
+    try testing.expect(std.mem.indexOf(u8, end, "\"oap-overflow\"") != null);
+    try testing.expect(std.mem.indexOf(u8, end, "\"last_sequence\":0") != null);
+}
+
+test "the session closing under a subscription is announced" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send(try openLine(harness, "\"session_id\":\"alpha\""));
+    try harness.send("{\"id\":2,\"op\":\"events\",\"session_id\":\"alpha\"}");
+    try testing.expectEqual(@as(usize, 1), harness.frontend.subscriptions.items.len);
+    harness.hub.closeSessions();
+    try harness.frontend.pump(testing.allocator, 0);
+    const end = harness.recorder.last();
+    try testing.expect(std.mem.indexOf(u8, end, "\"oap-session-closed\"") != null);
+    try testing.expectEqual(@as(usize, 0), harness.frontend.subscriptions.items.len);
 }

@@ -32,7 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   envelope's own `id` — which is the difference between a hub and an endpoint,
   where the frontend mints it. A `resolve` covers a permission gate, a user-input
   gate and a client-provided tool call on one op, and the request's type picks the
-  path.
+  path. The twelfth op, `events`, is the one a multi-session wire exists for: the
+  op acknowledges with a bare `result: null` before the first envelope, every
+  subscription line carries the `events` request's own id so overlapping
+  subscriptions on one session stay attributable, and the five endings that need a
+  line get one — `oap-subscribed` with the sequence a late subscription joined
+  after, `oap-overflow` with `last_sequence`, `oap-replay-gap` with the cursor
+  that was asked for and the bounds that are retained, `oap-session-closed`, and
+  `oap-frame-limit` for an envelope the framing cannot carry. A run's terminal
+  envelope gets no line: it is delivered as an ordinary envelope and is the
+  marker, exactly as the SSE body stops after it. A replay gap is not an error —
+  the op acknowledges, reports, and ends.
 - `providers/resolved_urls.json` is the table both trees check their URL resolvers against: every endpoint's base, its models listing and its request URL, in catalog order, with an absent member recording that the catalog resolves no URL there. `zig/build.zig` reads it at build time and `go/providercatalog` from the embedded file, so a tree that resolves a row differently fails on that row rather than on a user's machine, and `goap check` fails when the file no longer matches the catalog. `go run ./go/cmd/goap providers catalog-urls --format=json > providers/resolved_urls.json` rewrites it. The two trees each pinned the same twenty-two rows in a literal before this; one file replaces both.
 - `go/providercatalog` resolves a row's URLs the way the Zig tree does. `ModelsURL(catalog, id, region)` appends the row's recorded `models_endpoint` to the endpoint serving that region, `RequestURL(catalog, id, wire, region)` appends each wire's path — dropping a version the base's path already spells, and treating a base that is already the full path as done — and `Resolve` returns every endpoint's base beside both URLs. An empty string is the answer the catalog does not hold: a row with no static endpoint, a wire this package does not join, a model-scoped wire, or a region no endpoint serves. A table over all twenty-two endpoints pins both URLs in this tree as the Zig table does, and the two agree value for value.
 - `zig/src/hub/hub.zig`: the multi-session hub core in Zig, the layer
