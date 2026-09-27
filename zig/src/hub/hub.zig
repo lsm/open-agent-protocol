@@ -664,18 +664,16 @@ pub const Hub = struct {
         self.reclaim();
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
+        const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
         var watched = std.ArrayList(std.posix.pollfd).empty;
         for (self.entries.items) |*entry| {
             if (entry.closed) continue;
             const handle = handleOf(entry) orelse continue;
             try watched.append(scratch.allocator(), .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
         }
-        var share: u64 = 0;
         if (watched.items.len > 0) {
             const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
             _ = std.posix.poll(watched.items, budget) catch 0;
-        } else {
-            share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
         }
         for (self.entries.items) |*entry| {
             if (entry.closed) continue;
@@ -2541,6 +2539,37 @@ test "a session that reports a handle is waited on, and handed no wait of its ow
     try hub.pump(testing.allocator, 250 * std.time.ns_per_ms);
     try testing.expectEqual(@as(usize, 1), flaky.wait_len);
     try testing.expectEqual(@as(u64, 0), flaky.waits[0]);
+}
+
+test "a handle-less session keeps the timed pump beside one that reports a handle" {
+    if (!std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    var waiting = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    waiting.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer waiting.keep.deinit();
+    const ends = try std.Io.Threaded.pipe2(.{});
+    waiting.read_end = ends[0];
+    waiting.write_end = ends[1];
+
+    var silent = Flaky{ .allocator = testing.allocator, .fail_drain = false, .reported = false };
+    silent.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer silent.keep.deinit();
+
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("waiting", waiting.adapter());
+    try hub.register("silent", silent.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    _ = try hub.open(arena, "waiting", .{ .session_id = "polled" });
+    _ = try hub.open(arena, "silent", .{ .session_id = "untimed" });
+
+    try hub.pump(testing.allocator, 40 * std.time.ns_per_ms);
+    try testing.expectEqual(@as(usize, 1), waiting.wait_len);
+    try testing.expectEqual(@as(u64, 0), waiting.waits[0]);
+    try testing.expectEqual(@as(usize, 1), silent.wait_len);
+    try testing.expect(silent.waits[0] > 0);
 }
 
 test "a session that reports no handle keeps the timed pump" {
