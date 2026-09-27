@@ -659,6 +659,20 @@ pub const Hub = struct {
         return slot(entry.session.ptr);
     }
 
+    fn drive(self: *Hub, share: u64) !void {
+        for (self.entries.items) |*entry| {
+            if (entry.closed) continue;
+            const wait = if (handleOf(entry) != null) 0 else share;
+            _ = entry.session.pump(wait) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    entry.session.close();
+                    self.closeSession(entry, .stream_failed);
+                },
+            };
+        }
+    }
+
     pub fn pump(self: *Hub, allocator: std.mem.Allocator, wait_ns: u64) !void {
         self.expireHolds();
         self.reclaim();
@@ -671,20 +685,11 @@ pub const Hub = struct {
             const handle = handleOf(entry) orelse continue;
             try watched.append(scratch.allocator(), .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
         }
+        try self.drive(share);
         if (watched.items.len > 0) {
             const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
-            _ = std.posix.poll(watched.items, budget) catch 0;
-        }
-        for (self.entries.items) |*entry| {
-            if (entry.closed) continue;
-            const wait = if (handleOf(entry) != null) 0 else share;
-            _ = entry.session.pump(wait) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    entry.session.close();
-                    self.closeSession(entry, .stream_failed);
-                },
-            };
+            const awoken = std.posix.poll(watched.items, budget) catch 0;
+            if (awoken > 0) try self.drive(share);
         }
         for (self.entries.items) |*entry| {
             if (entry.closed) continue;
