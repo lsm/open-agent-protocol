@@ -240,10 +240,10 @@ subscriptions on one session stay attributable.
 | --- | --- |
 | `"event":"oap-subscribed"` | the subscription joined a run already in progress; `joined_after` is the last sequence of that run it missed |
 | `"event":"envelope"` | one event, with `sequence` repeated outside the envelope so a host can resume without decoding it |
-| `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes |
+| `"event":"oap-overflow"` | the consumer fell behind; `last_sequence` is where a cursor resumes, and `run_id` and `session_id` say which — `TestEventsSignalAnOverflowWithItsRunAndCursor` |
 | `"event":"oap-replay-gap"` | the `after` cursor is no longer retained; `oldest_available` and `latest_available` bound what is |
-| `"event":"oap-session-closed"` | the session closed under the subscription |
-| `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it |
+| `"event":"oap-session-closed"` | the session closed under the subscription, named by `session_id` — `TestEventsSignalAClosedSessionByName` |
+| `"event":"oap-frame-limit"` | an envelope this framing cannot carry; `sequence` is where a fresh cursor resumes past it, with the `run_id` it stopped in — `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
 | `"event":"oap-stream-failed"` | the run's event stream failed; `run_id` and `sequence` are the last position delivered |
 
 `envelope` and `oap-subscribed` are the only two that do not end the
@@ -263,13 +263,13 @@ host observes directly.
 | The acknowledgement is `result: null`, matching the SSE route's bodyless response | `TestEventsOpDeliversTheRunStream`, `TestSubscribedSignalMatchesHTTP` |
 | `oap-subscribed` is written first, and only when the run had already emitted | `TestEventsReportsWhereALateSubscriptionJoined`, `TestSubscribedSignalMatchesHTTP` |
 | A subscription that begins at the start of its run gets no join signal | `TestEventsReportsNoJoinPointWhenNothingPrecededTheSubscription`, `TestSubscribingBetweenRunsReportsNoJoinPoint` |
-| The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription` — **gap G9**: this test also drives the `oap-frame-limit` ending, but asserts only its `event` name |
-| Overflow is signalled with the cursor to resume from | the line's shape by `TestEveryEndingFitsTheFrameLimitFloor`; the end-to-end path at the core by `TestHubSubscriptionQueueOverflow`; **gap G9** — no stdio test drives an overflow and reads the line |
+| The join signal is advisory: it never ends the subscription | `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`; the `oap-frame-limit` ending it also drives has its members pinned by `TestTheFrameLimitSignalCarriesItsRunAndSequence` |
+| Overflow is signalled with the cursor to resume from | the line's shape by `TestEveryEndingFitsTheFrameLimitFloor`; the end-to-end path at the core by `TestHubSubscriptionQueueOverflow`; read off the stdio wire by `TestEventsSignalAnOverflowWithItsRunAndCursor`, which pins `session_id`, `run_id` and the resume cursor against the last sequence delivered |
 | A failed run stream ends the subscription out loud | `TestAFailedRunStreamEndsTheSubscriptionOutLoud` |
 | An unencodable envelope ends the subscription out loud | `TestAnUnencodableEnvelopeEndsTheSubscriptionOutLoud` |
 | A context failure is still announced | `TestAnAdapterContextFailureIsStillAnnounced` |
 | A replay gap is reported with the cursor that was asked for | `TestEventsOpReportsAReplayGap`, `TestAFailedResumeReportsTheRequestedCursor` |
-| The session closing under a subscription is signalled | `TestHubCloseReplaySubscriptionEndsPromptly` |
+| The session closing under a subscription is signalled | `TestHubCloseReplaySubscriptionEndsPromptly`, `TestEventsSignalAClosedSessionByName` (the stdio line, with the session and message it carries) |
 | A live subscription does not stall shutdown | `TestALiveSubscriptionDoesNotStallShutdown` |
 | The cursor advances monotonically, holding its high-water mark across a run boundary | `TestAdvanceCursorHoldsItsHighWaterMark` |
 
@@ -786,10 +786,10 @@ flight.
   `internal` (500). A second `close` is `unknown_session`, because the first
   released the session; a host that retries a close whose answer it lost treats
   that as done.
-- **pinned by:** `TestSessionsListingAcrossLifecycle`, `TestOpErrorCodesMirrorHTTP`
-  (a `close` of a running session is `run_active`), `TestHubSessionCloseSemantics`,
-  `TestListingsMatchHTTP`, `TestOpErrorCodesMirrorHTTP` for a second `close`
-  answering `unknown_session` on stdio. The release is pinned through a `close`:
+- **pinned by:** `TestSessionsListingAcrossLifecycle`, `TestHubSessionCloseSemantics`,
+  `TestListingsMatchHTTP`, and `TestOpErrorCodesMirrorHTTP` for both of a
+  `close`'s refusals — `run_active` on a running session and `unknown_session`
+  on a second one. The release is pinned through a `close`:
   `TestHubSessionCloseSemantics` finds the session absent from the listing and
   the hub answering `unknown_session` for it.
 
@@ -1052,14 +1052,19 @@ place a differential test would otherwise not see.
   `TestTheHubSweepsForTenSecondsByDefault` pins the hub's 10 s and
   `TestEachTeardownStageWaitsFiveSecondsByDefault` the stdio frontend's 5 s per
   stage, each also checking that an explicit window still wins.
-- **G9 — two subscription endings are never driven over stdio, and a third is
-  driven only by its name.** `oap-overflow` and `oap-session-closed` have their
-  minimal shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes
-  each real line, but no stdio test produces either ending and reads it off the
-  wire — so the members they carry when written in anger are unpinned.
-  `oap-frame-limit` **is** driven, by
-  `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription`, but
-  only its `event` name is asserted, so its members are unpinned the same way.
+- **G9 — closed.** `oap-overflow` and `oap-session-closed` had their minimal
+  shape pinned by `TestEveryEndingFitsTheFrameLimitFloor`, which encodes each
+  real line, but no stdio test produced either ending and read it off the wire.
+  `TestEventsSignalAnOverflowWithItsRunAndCursor` now floods a session behind a
+  one-deep write queue and pins the overflow's `session_id`, `run_id`,
+  `last_sequence` and `message`;
+  `TestEventsSignalAClosedSessionByName` closes a session under a live stream
+  and pins the closing signal's `session_id` and `message`. The third,
+  `oap-frame-limit`, **was** driven by
+  `TestAJoinPointTooLargeToFrameFallsBackRatherThanEndingTheSubscription` but
+  only its `event` name was asserted;
+  `TestTheFrameLimitSignalCarriesItsRunAndSequence` now pins its `run_id`,
+  `sequence` and `message` against the run and cursor the stream stopped at.
   Over HTTP, `oap-overflow` is pinned, and a session closing under a stream is
   pinned too but as a **silent end** with no named signal — the SSE layer
   defines exactly three, `oap-subscribed`, `oap-overflow` and `oap-replay-gap`.
@@ -1090,10 +1095,10 @@ the body, so [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) no longer fail a
 byte-for-byte comparison on their first request.
 
-**D2 is the Zig side only now.** [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) made close
-release a session, and Go does since [#443](https://github.com/lsm/open-agent-protocol/issues/443), with the release
-pinned on both transports. What is left is
-[#444](https://github.com/lsm/open-agent-protocol/issues/444).
+**D2 is fixed.** Both hubs release a session once it stops being open
+([#452](https://github.com/lsm/open-agent-protocol/pull/452) in Go,
+[#455](https://github.com/lsm/open-agent-protocol/pull/455) in Zig), so a session that is not open answers
+`unknown_session` to every later operation, a second `close` included, and its id is free.
 
 **D3 to D7 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
@@ -1106,17 +1111,6 @@ the per-run exposure a stream failure needs — in
 same kind of gap. D4 is different in one respect: its negative-capacity half is a
 Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
-
-### D2 — the Zig hub keeps a closed session
-
-| | |
-| --- | --- |
-| **The draft says** | A session that is not open is released ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once its `close` succeeds or its adapter reports it closed, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
-| **Go does** | The right thing, since [#443](https://github.com/lsm/open-agent-protocol/issues/443): the entry is released on its **first** closed transition, whichever path gets there — a successful `close`, or the adapter reporting `ErrSessionClosed` from `State`, `Models`, `Tools` or `Submit`. A session already closed when an `open` probes it is never added, so its id is free at once. |
-| **Zig does** | The core keeps the entry, its journal and a cursor for every run it had, lists it as closed, and refuses every op on it with `session_closed`. |
-| **Why Zig is the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
-| **The fix** | [#444](https://github.com/lsm/open-agent-protocol/issues/444) releases the entry in Zig. Its destructive `close` is the right shape for it: the entry never has to be readable to be released. |
-| **Pinned today** | The Go side, which is fixed: `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` for the release through a `close`, `TestTheHubReleasesASessionTheAdapterReportsClosed` for the adapter-reported path, `TestHubOpenRefusesASessionThatWasAlreadyClosedAndLeavesItsIDFree` and `TestStateReportingClosedClosesEntry` for a session that is never open, `TestEventsOpRefusals` and `TestSSEOnClosedSession` for a request naming a released session, and `TestOpErrorCodesMirrorHTTP` for a second `close` answering `unknown_session` on stdio. The Zig side: `zig/src/hub/hub.zig`'s tests that a closed session is refused `session_closed` and listed as closed. |
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 

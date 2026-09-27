@@ -159,6 +159,7 @@ pub const Session = struct {
         switch_model: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *Refusal) Failure!Switched = null,
         resolve_call: ?*const fn (ptr: *anyopaque, arena: std.mem.Allocator, request_id: []const u8, request: *const oap_types.CallResolveRequest, refusal: *Refusal) Failure!oap_types.CallResolveResponse = null,
         replay: ?*const fn (ptr: *anyopaque, allocator: std.mem.Allocator, run_id: []const u8, after: u64, refusal: *Refusal) Failure!Replay = null,
+        readable: ?*const fn (ptr: *anyopaque) ?std.Io.File.Handle = null,
     };
 
     pub fn id(self: Session) []const u8 {
