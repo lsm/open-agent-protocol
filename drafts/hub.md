@@ -922,10 +922,19 @@ place a differential test would otherwise not see.
   to be admitted, and is now refused `415` naming the charset, because an
   envelope is UTF-8 JSON and admitting a body that says otherwise hands
   the decoder bytes the schema never described.
-  connection ends the stream by construction — the request context cancels the
-  subscription — but no test asserts it, and the stdio side has no way to
-  express it at all.
 - **G2 — structural, pinned at the hub.** A client that drops its connection
+  ends the stream by construction — the request context cancels the
+  subscription — and that is now asserted where it is observable:
+  `TestACancelledSubscriptionEndsTheStream` cancels the context a subscription
+  was given and pins that `Next` returns the context's error rather than
+  blocking, and stays finished. Two things it deliberately does **not** claim.
+  The HTTP handler is not under test: nothing in the hub reports subscriber
+  accounting, so "this subscription ended" has no observable from outside the
+  server, and the owner declined to add any. And the error is the context's
+  own (`context.Canceled`), not `io.EOF`, because `io.EOF` is this API's
+  "the run reached its terminal" signal and a client that cancelled mid-run
+  must be able to tell the two apart. The stdio side still has no way to
+  express a hangup at all.
 - **G3 — #53: stdio cannot end one subscription on request.** The pipe carries
   every subscription at once and has no per-stream hangup, and no op detaches a
   single pump. A pump on a live, idle session ends only at its run's terminal, an
