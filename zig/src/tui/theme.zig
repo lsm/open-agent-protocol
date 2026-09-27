@@ -39,6 +39,14 @@ pub const palette = struct {
     pub const code_inline = zz.Color.fromRgb(255, 199, 119);
     pub const selection_bg = zz.Color.fromRgb(40, 46, 70);
     pub const heading = zz.Color.fromRgb(170, 198, 255);
+    pub const shell_command = zz.Color.fromRgb(122, 162, 247);
+    pub const shell_keyword = zz.Color.fromRgb(187, 154, 247);
+    pub const shell_flag = zz.Color.fromRgb(125, 207, 255);
+    pub const shell_string = zz.Color.fromRgb(158, 206, 106);
+    pub const shell_variable = zz.Color.fromRgb(224, 175, 104);
+    pub const shell_operator = zz.Color.fromRgb(137, 221, 255);
+    pub const shell_comment = zz.Color.fromRgb(86, 95, 137);
+    pub const shell_text = zz.Color.gray(18);
 };
 
 pub const ToolVisualKind = enum {
@@ -110,15 +118,6 @@ pub fn spinnerFrame(anim_tick: u64) []const u8 {
 
 pub fn pulseFrame(anim_tick: u64) []const u8 {
     return glyph.pulse[@intCast((anim_tick / 4) % glyph.pulse.len)];
-}
-
-pub fn pulseColor(anim_tick: u64) zz.Color {
-    return switch ((anim_tick / 5) % 4) {
-        0 => palette.accent_dim,
-        1 => palette.accent,
-        2 => palette.accent_bright,
-        else => palette.accent,
-    };
 }
 
 pub fn base() zz.Style {
@@ -429,6 +428,5 @@ test "spinner and pulse frames cycle without leaving the table" {
     while (tick < 64) : (tick += 1) {
         try std.testing.expect(spinnerFrame(tick).len > 0);
         try std.testing.expect(pulseFrame(tick).len > 0);
-        _ = pulseColor(tick);
     }
 }

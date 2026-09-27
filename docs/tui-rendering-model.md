@@ -217,17 +217,33 @@ code paths; add a transcript row instead.
   the row is parsed only for rows without a live link (a resumed session's transcript),
   and that parse skips the known label so a tool named "Deployment failed checks" is
   not read as failed.
+- A tool row's argument is fitted to the terminal width by the row, not clipped when
+  the summary is written. A shell tool's row puts the call's `command` under the
+  title, lexed by `tui/shell_highlight.zig` (command words, flags, strings, variables,
+  operators, heredoc bodies, comments), wrapped to the body width and capped at 12
+  rows with a `… +n more lines` marker. When the title's argument is that command,
+  the title drops it so the command shows once.
 
 ## Keys
 
-`Enter` send (steer while streaming), `Shift+Enter` newline, `Esc` clear draft →
+`Enter` send (steer while streaming), `Tab` while streaming queue the draft as a
+follow-up that is sent when the turn stops (it waits above the composer until then),
+`Shift+Enter` newline, `Esc` clear draft →
 abort turn → close modal, `Ctrl+C` abort/clear first and quit on a second press
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
-empty idle composer, `Tab` complete a slash command, `Ctrl+Y` copy the last reply,
-`Shift+Tab` cycle thinking, `Up/Down` history, `PgUp/PgDn` (and the mouse wheel when
+empty idle composer, `Tab` complete the slash command the palette selects,
+`Ctrl+Y` copy the last reply, `Shift+Tab` cycle thinking, `Up/Down` move the slash
+palette's selection while it is open and otherwise walk history (once a recalled entry
+is showing they keep walking history), `PgUp/PgDn` (and the mouse wheel when
 mouse reporting is on) scroll the live window over the whole transcript row stream,
 `Ctrl+A/E` home/end, `Ctrl+U/K` cut to line start/end, `Ctrl+W` / `Alt+Backspace`
 delete word, `Ctrl+Left/Right`, `Alt+Left/Right`, `Alt+B/F` word moves, `Delete`.
+`Enter` on an open palette runs its selected command.
+
+In the model, login and permission pickers, typing filters the list: every
+space-separated term must appear, case-insensitively, in an item's label or detail.
+`Backspace` edits the filter, `Up/Down` and `PgUp/PgDn` move, `Enter` selects and `Esc`
+closes; reopening a picker clears its filter.
 
 Scrolling: while `transcript_scroll` is non-zero the inline body is a window over the
 full transcript rendered at the current width (rows already flushed into terminal
