@@ -24,6 +24,7 @@ pub const Failure = error{
     AdapterDescriptorUnbound,
     CatalogMisScoped,
     CatalogUnlabelled,
+    ConfigRefused,
 } || contract.Failure;
 
 pub const Options = struct {
@@ -330,8 +331,9 @@ pub const Hub = struct {
         var taken = self.journal_capacity != default_journal_capacity;
         for (file.adapters) |entry| {
             if (entry.journal_capacity) |capacity| {
+                if (capacity < 0) return error.ConfigRefused;
                 if (!taken) {
-                    self.journal_capacity = @intCast(capacity);
+                    if (capacity > 0) self.journal_capacity = @intCast(capacity);
                     taken = true;
                 }
             }
@@ -1371,17 +1373,35 @@ test "a replay larger than the mailbox seeds a cursor instead of growing without
     try testing.expectEqual(Ending.open, again.ending);
 }
 
-test "a registry document's zero journal capacity means no retention" {
+test "a registry document's journal capacity is read, and its zero keeps the default" {
     var adapter = memory.Adapter.init(testing.allocator);
     var hub = Hub.init(testing.allocator, testClock, .{});
     defer hub.deinit();
     var scratch = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    const file = config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} };
-    try hub.load(arena, file, .{ .context = &adapter, .make = scripted });
-    try testing.expectEqual(@as(usize, 0), hub.journal_capacity);
+    try hub.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 12 }} }, .{ .context = &adapter, .make = scripted });
+    try testing.expectEqual(@as(usize, 12), hub.journal_capacity);
 
+    var zeroed = Hub.init(testing.allocator, testClock, .{});
+    defer zeroed.deinit();
+    try zeroed.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} }, .{ .context = &adapter, .make = scripted });
+    try testing.expectEqual(@as(usize, default_journal_capacity), zeroed.journal_capacity);
+
+    var refused = Hub.init(testing.allocator, testClock, .{});
+    defer refused.deinit();
+    try testing.expectError(error.ConfigRefused, refused.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = -1 }} }, .{ .context = &adapter, .make = scripted }));
+    try testing.expectEqual(@as(usize, 0), refused.sessionCount());
+}
+
+test "a hub built with no journal capacity keeps nothing" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .journal_capacity = 0 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
     const opened = try hub.open(arena, "memory", .{ .session_id = "unremembered" });
     const request = try submitFor(arena, "unremembered");
     _ = try hub.submit(arena, "unremembered", &request);
