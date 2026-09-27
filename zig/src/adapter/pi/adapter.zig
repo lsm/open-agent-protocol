@@ -197,6 +197,7 @@ pub const Session = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .readable = readable,
         .activity = activity,
         .close = close,
     };
@@ -631,6 +632,11 @@ pub const Session = struct {
         try self.recordTerminal();
         const status: oap_types.RunStatus = if (self.statuses.get(run_id)) |settled| std.meta.stringToEnum(oap_types.RunStatus, settled) orelse .cancelling else .cancelling;
         return .{ .session_id = self.id, .run_id = try arena.dupe(u8, run_id), .accepted = true, .status = status };
+    }
+
+    fn readable(ptr: *anyopaque) ?std.Io.File.Handle {
+        const self = cast(ptr);
+        return self.transport.readable();
     }
 
     fn pump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {

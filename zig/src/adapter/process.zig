@@ -162,6 +162,12 @@ pub const Transport = struct {
         ended,
     };
 
+    pub fn readable(self: *Transport) ?std.Io.File.Handle {
+        const child = self.child orelse return null;
+        const stdout = child.stdout orelse return null;
+        return stdout.handle;
+    }
+
     pub fn poll(self: *Transport, wait_ns: u64) !Poll {
         if (try self.take()) |frame| return .{ .frame = frame };
         if (!self.ended) {

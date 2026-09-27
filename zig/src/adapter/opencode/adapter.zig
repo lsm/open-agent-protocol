@@ -196,10 +196,18 @@ pub const Session = struct {
         .cancel = cancel,
         .pump = pump,
         .drain = drain,
+        .readable = readable,
         .activity = activity,
         .close = close,
         .models = models,
     };
+
+    fn readable(ptr: *anyopaque) ?std.Io.File.Handle {
+        const self = cast(ptr);
+        const subscription = self.subscription orelse return null;
+        if (!subscription.open) return null;
+        return @intCast(compat.net.streamHandle(&subscription.stream));
+    }
 
     fn cast(ptr: *anyopaque) *Session {
         return @ptrCast(@alignCast(ptr));

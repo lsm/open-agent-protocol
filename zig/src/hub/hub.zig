@@ -654,15 +654,33 @@ pub const Hub = struct {
         }
     }
 
+    fn handleOf(entry: *const Entry) ?std.Io.File.Handle {
+        const slot = entry.session.vtable.readable orelse return null;
+        return slot(entry.session.ptr);
+    }
+
     pub fn pump(self: *Hub, allocator: std.mem.Allocator, wait_ns: u64) !void {
         self.expireHolds();
         self.reclaim();
         var scratch = std.heap.ArenaAllocator.init(allocator);
         defer scratch.deinit();
-        const share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
+        var watched = std.ArrayList(std.posix.pollfd).empty;
         for (self.entries.items) |*entry| {
             if (entry.closed) continue;
-            _ = entry.session.pump(share) catch |err| switch (err) {
+            const handle = handleOf(entry) orelse continue;
+            try watched.append(scratch.allocator(), .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
+        }
+        var share: u64 = 0;
+        if (watched.items.len > 0) {
+            const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
+            _ = std.posix.poll(watched.items, budget) catch 0;
+        } else {
+            share = @max(wait_ns / @max(self.entries.items.len, 1), std.time.ns_per_ms);
+        }
+        for (self.entries.items) |*entry| {
+            if (entry.closed) continue;
+            const wait = if (handleOf(entry) != null) 0 else share;
+            _ = entry.session.pump(wait) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {
                     entry.session.close();
@@ -2348,6 +2366,11 @@ const Flaky = struct {
     active_run: []const u8 = "",
     fail_drain: bool = true,
     fail_pump: bool = false,
+    read_end: ?std.posix.fd_t = null,
+    write_end: ?std.posix.fd_t = null,
+    waits: [8]u64 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
+    wait_len: usize = 0,
+    reported: bool = true,
 
     fn adapter(self: *Flaky) contract.Adapter {
         return .{ .ptr = self, .vtable = &.{ .probe = flakyProbe, .open = flakyOpen } };
@@ -2383,9 +2406,16 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
         .drain = flakyDrain,
         .activity = flakyActivity,
         .close = flakyClose,
+        .readable = flakyReadable,
     } };
     self.owned_id = id;
     return self.session;
+}
+
+fn flakyReadable(ptr: *anyopaque) ?std.Io.File.Handle {
+    const self: *Flaky = @ptrCast(@alignCast(ptr));
+    if (!self.reported) return null;
+    return self.read_end;
 }
 
 fn flakyId(ptr: *anyopaque) []const u8 {
@@ -2431,7 +2461,10 @@ fn flakyCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, re
 
 fn flakyPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
     const self: *Flaky = @ptrCast(@alignCast(ptr));
-    _ = wait_ns;
+    if (self.wait_len < self.waits.len) {
+        self.waits[self.wait_len] = wait_ns;
+        self.wait_len += 1;
+    }
     if (self.fail_pump) return error.BackendFailed;
     return false;
 }
@@ -2483,6 +2516,51 @@ test "a session whose stream fails is ended, its subscribers told, and its child
     try testing.expectEqual(Ending.stream_failed, subscription.ending);
     try testing.expectError(error.SessionClosed, hub.state(arena, "doomed"));
     try testing.expectEqual(@as(usize, 1), flaky.closes);
+}
+
+test "a session that reports a handle is waited on, and handed no wait of its own" {
+    if (!@hasDecl(std.Io.net, "has_unix_sockets") or !std.Io.net.has_unix_sockets) return error.SkipZigTest;
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    const ends = try std.Io.Threaded.pipe2(.{});
+    flaky.read_end = ends[0];
+    flaky.write_end = ends[1];
+
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "readable" });
+    try testing.expectEqual(@as(?std.Io.File.Handle, ends[0]), Hub.handleOf(&hub.entries.items[0]));
+    try testing.expectEqualStrings("readable", opened.session_id);
+
+    try hub.pump(testing.allocator, 250 * std.time.ns_per_ms);
+    try testing.expectEqual(@as(usize, 1), flaky.wait_len);
+    try testing.expectEqual(@as(u64, 0), flaky.waits[0]);
+}
+
+test "a session that reports no handle keeps the timed pump" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false, .reported = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 8, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    _ = try hub.open(arena, "flaky", .{ .session_id = "timed" });
+    try testing.expectEqual(@as(?std.Io.File.Handle, null), Hub.handleOf(&hub.entries.items[0]));
+
+    try hub.pump(testing.allocator, 20 * std.time.ns_per_ms);
+    try testing.expectEqual(@as(usize, 1), flaky.wait_len);
+    try testing.expect(flaky.waits[0] > 0);
 }
 
 test "the subscriber count has its own bound, not the mailbox depth" {
