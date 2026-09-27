@@ -598,16 +598,19 @@ exceptions stated once here rather than repeated per row:
   `response_too_large` for a result its frame limit cannot carry. All four
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
-- **A session that is not open is released, not kept** ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)).
-  A session stops being open when its `close` succeeds or when the hub ends it:
-  its harness reports the session closed, or its stream fails. From then on
-  every op naming it answers `unknown_session` (404), a second `close`
-  included, and `sessions` no longer lists it. `session_closed` (409) in the
-  rows below is a session that stops being open while the request is in flight.
 - **The HTTP body gate answers three codes no operation owns.**
   `unsupported_media_type`, `request_too_large` and `request_read`, stated once
   in [the HTTP rules](#the-http-routes-and-sse-framing). `request_too_large` is
   the one of the three stdio answers too, for the same 16 MiB budget.
+
+**A session that is not open is released, not kept** ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)).
+A session stops being open when its `close` succeeds, or when its adapter
+reports the session closed. A run's stream failing does not end the session:
+it is reported against that run, and the session takes the next submit. From
+then on every op naming the session answers `unknown_session` (404), a second
+`close` included, and `sessions` no longer lists it. `session_closed` (409) in
+the rows below is a session that stops being open while the request is in
+flight.
 
 ### `adapters`
 
@@ -1094,7 +1097,7 @@ Go change, queued in
 
 | | |
 | --- | --- |
-| **The draft says** | A session that is not open is released ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once its `close` succeeds or the hub ends it, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
+| **The draft says** | A session that is not open is released ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once its `close` succeeds or its adapter reports it closed, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
 | **Go does** | `go/serve` keeps a closed session in its table. `sessions` lists it with its final state, `state` answers it, a second `close` is `ok`, and an open under its id is refused `session_exists`. |
 | **Zig does** | The core keeps the entry, its journal and a cursor for every run it had, lists it as closed, and refuses every op on it with `session_closed`. |
 | **Why both are the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
