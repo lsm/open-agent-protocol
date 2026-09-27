@@ -98,6 +98,9 @@ Decision 0003's four steps translate into these exit criteria for every unit:
 | 4 | T3 tool sources | T3a catalog with sources: Claude `system/init` (tools, MCP servers), Codex `mcpToolCall.server`; T3b attach at open: ACP `session/new.mcpServers`, Claude MCP config at spawn and `mcp_set_servers`; T3c control-layer tools: Makai `tool_execute`/`tool_result` bridge, Claude `sdkMcpServers` with `mcp_message`, ACP reverse fs/terminal calls | T3a Claude, T3b ACP, T3c Makai | Codex, Claude |
 | 5 | T4 steer | pi `steer` with `queue_update` and injection at a turn boundary; OpenCode `delivery:"steer"` while busy; Hermes `session.steer` and busy `steered` | pi | OpenCode, Hermes; Codex only after a new ledger pin covers `turn/steer` (the pinned Codex ledger defers it; the expected-turn-id detail comes from unpinned research) |
 | 6 | T5b auth state | Claude `auth_status` frames; OpenCode `provider.list` | staged | — |
+| 7 | T7 session reattach | Claude `--resume=<uuid>`; Codex `thread/resume`, which the Go adapter already selects through `ResumeThreadID`; ACP `session/load` and `session/resume`; pi's durable session file and `switch_session`; Hermes' native `session.resume`, which its adapter does not write | Codex (native) | Claude, ACP, pi |
+| 8 | T6 transcript load | pi `get_entries` with `since`; ACP `session/load` replaying the conversation through `session/update` | pi (degraded) | ACP |
+| 9 | T8 session list | a host's binding records; ACP's optional native list | staged | — |
 
 Ledgers: [Codex](../research/codex-app-server-0.157.0-mapping.md) ·
 [Claude Code](../research/claude-code-agent-sdk-2.1.282-mapping.md) ·
@@ -4195,11 +4198,56 @@ Decision 0012 records four questions this unit's decision must answer rather
 than inherit — what the cursor is, what an entry is when the harness stores a
 tree, whether the read is bounded and what a truncated one says, and how an
 endpoint with no durable store declines. It is staged behind T4, which has
-older evidence and more of it.
+older evidence and more of it, and behind T7, since a client reopens a session
+before it reads the session's history.
 
-`session.list` and `transcript.delta` are not staged. Neither has native
-evidence, and Pi's `entry_appended` specifically contradicts the second: its
-ledger records that the event is not a comprehensive feed of persisted writes.
+[Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)
+adds one constraint: the unit's entries and its cursor are OAP's vocabulary,
+not a harness's rows. That answers the first question in part — the cursor is
+OAP's opaque string, not a harness entry id — and it lets the same read serve
+a session whose store is later OAP's own. ACP's `session/load`, which replays
+the whole conversation through `session/update` before it answers, is a second
+piece of evidence beside pi's.
+
+`transcript.delta` is not staged. It has no native evidence, and Pi's
+`entry_appended` specifically contradicts it: its ledger records that the event
+is not a comprehensive feed of persisted writes. `session.list`, which Decision
+0012 did not stage either, is staged by Decision 0039 as T8.
+
+## T7. Session reattach
+
+Unit name: `session-reattach`. Planned decision: its own. Staged by
+[Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md),
+which gives a session an identity that outlives every process and makes close
+a detach.
+
+An open that asks to reopen a session with no live process loads it through
+the session's binding — the harness's own mechanism — and answers with the
+session's state document, declaring `recovery.recovered: true`. Creating and
+reopening are distinct requests, and each fails closed: a create naming a
+bound id is `session_exists`, a reopen with no binding is `unknown_session`,
+and a reopen the harness cannot load is `unsupported_feature`. It is the
+conversation half of the resume Decision 0001 names, not replay: the events of
+runs before the close are answered with a replay gap.
+
+The evidence is in the order table: Claude, Codex, ACP and pi load a session
+natively today. The unit's decision must answer which request member carries
+the intent (the `recovery` object `session.open.request` already carries is
+the first candidate), how a host records a binding and where, and what a
+reopen answers when the harness's store is no longer where the binding says —
+a different home or working directory.
+
+## T8. Session list
+
+Unit name: `session-list`. Planned decision: its own. Staged by Decision 0039
+after Decision 0012 declined to stage it.
+
+A list of the sessions a host could reopen. Decision 0012 found no pinned
+harness exposing a list over its control wire. A host's binding records now
+say what it can reopen, and the ACP ledger records an optional native list.
+That is enough to stage the unit and not enough to decide it: its decision must
+say whether the list is the host's records, the harness's, or both, and how a
+long list is paged.
 
 ## T4. Steer
 
