@@ -494,3 +494,25 @@ func TestSharedGateRefusesADisclosureAnOpenCannotElect(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRegistryRefusesANegativeJournalCapacity(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory", "journal_capacity": -1}}}`)
+	_, err := LoadRegistry(path, os.LookupEnv)
+	if err == nil {
+		t.Fatal("a negative journal_capacity loaded, want the document refused")
+	}
+	if !strings.Contains(err.Error(), `config: adapter "memory": journal_capacity -1 is negative`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoadRegistryKeepsTheDefaultForAZeroJournalCapacity(t *testing.T) {
+	path := writeConfig(t, `{"adapters": {"memory": {"type": "memory", "journal_capacity": 0}}}`)
+	registry, err := LoadRegistry(path, os.LookupEnv)
+	if err != nil {
+		t.Fatalf("a zero journal_capacity was refused: %v", err)
+	}
+	if _, ok := registry.Lookup("memory"); !ok {
+		t.Fatal("entry did not load with the default capacity")
+	}
+}
