@@ -686,9 +686,12 @@ flight.
 - **pinned by:** `TestStateEndpoint`, `TestStateReportingClosedClosesEntry`,
   `TestOpErrorCodesMirrorHTTP`,
   `TestTheHubReleasesASessionTheAdapterReportsClosed`. The release is pinned
-  through the state op: the in-flight request still answers `session_closed`,
-  and the next `state` on the same id is `unknown_session` because the entry is
-  gone.
+  through the state op: the in-flight request still answers `200` with the
+  session's final closed document, as `state` always has for a session its
+  adapter reports closed, and the *next* `state` on the same id is
+  `unknown_session` because the entry is gone. A port that answered
+  `409 session_closed` to the in-flight request would diverge from both trees
+  here.
 
 ### `models`
 
