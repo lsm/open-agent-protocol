@@ -161,3 +161,13 @@ test "every allocation failure while encoding is reported and leaks nothing" {
     , .{});
     try testing.checkAllAllocationFailures(testing.allocator, encodeUnderFailure, .{value});
 }
+
+pub const ParseError = std.mem.Allocator.Error || error{MalformedJson};
+
+pub fn parse(allocator: std.mem.Allocator, text: []const u8) ParseError!std.json.Value {
+    const document = std.json.parseFromSliceLeaky(std.json.Value, allocator, text, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.MalformedJson,
+    };
+    return document;
+}
