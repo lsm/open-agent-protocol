@@ -68,7 +68,7 @@ security posture, and a port carries all of them or is not conformant.
 | **`Host` allowlisted on a loopback bind** | When the bind address names `localhost`, `127.0.0.1` or `::1`, only requests whose `Host` header names one of those three are served; anything else is refused `403`. Comparison is case-insensitive and the port is stripped. A non-loopback bind has no allowlist. | `TestHostAllowlist`, `TestLoopbackHosts` |
 | **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist` |
 | **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice` |
-| **A restart ends every session** | Run children are per-session and no adapter survives the process. Nothing persists across restarts, so a client that reconnects to a restarted hub finds no session. Session entries accumulate for the daemon's lifetime — closed sessions stay listed with their final state — and there is no eviction. | `TestServeSessionsClosedOnShutdown`, `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle` |
+| **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | `TestServeSessionsClosedOnShutdown`, `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle` |
 | **No payload or environment logging** | The hub, its codecs and its clients never log envelope payloads or resolved environment values. | `TestDaemonOutputNeverCarriesEnvironmentValues` (environment values, through the listing and a load failure); no test pins the payload half |
 
 ## The registry
@@ -435,7 +435,8 @@ same cursor. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 A stream ends at the run's terminal envelope, at an overflow or a replay gap, at
 the client's hangup, or when the session closes — a stream open when the session
 closes receives the events already in flight and then ends. A connection made to
-an already-closed session is refused `409 session_closed` rather than parked.
+a session that has closed is refused `404 unknown_session` rather than parked:
+close releases the session ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)).
 
 **The three signals above are the whole set.** A session closing under a live
 stream ends it *silently* — a socket has no end to announce — so a port must not
@@ -596,6 +597,11 @@ exceptions stated once here rather than repeated per row:
   `response_too_large` for a result its frame limit cannot carry. All four
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
+- **A closed session is released, not kept** ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)). Once
+  its close succeeds, every op naming it answers `unknown_session` (404), a
+  second `close` included, and `sessions` no longer lists it.
+  `session_closed` (409) in the rows below is a session that closes while the
+  request is in flight.
 - **The HTTP body gate answers three codes no operation owns.**
   `unsupported_media_type`, `request_too_large` and `request_read`, stated once
   in [the HTTP rules](#the-http-routes-and-sse-framing). `request_too_large` is
@@ -651,7 +657,8 @@ exceptions stated once here rather than repeated per row:
 
 - **params:** none.
 - **answer:** `{"sessions":[{"session_id":…,"adapter":…,"status":…,"active_run_id":…,"active_runs":[…],"created_at":…}]}`,
-  sorted by session id, with a closed session listed under its final state.
+  sorted by session id. Only live sessions are listed: a closed session is
+  released.
 - **errors:** `invalid_request` (a parameter was supplied).
 - **pinned by:** `TestSessionsOpListsTrackedSessions`, `TestSessionsListingAcrossLifecycle`,
   `TestListingsMatchHTTP`, `TestHubSessionsListingAcrossAdapters`.
@@ -757,11 +764,15 @@ exceptions stated once here rather than repeated per row:
 - **answer:** `{"id":N,"ok":true,"result":null}` over stdio; `204 No Content`
   with no body over HTTP.
 - **errors:** `unknown_session` (404), `invalid_request`, `run_active` (409, a
-  run still in flight — a host cancels first), `session_closed` (409),
-  `request_cancelled` (400), `internal` (500).
+  run still in flight — a host cancels first), `session_closed` (409, a session
+  that closes while the request is in flight), `request_cancelled` (400),
+  `internal` (500). A second `close` is `unknown_session`, because the first
+  released the session; a host that retries a close whose answer it lost treats
+  that as done.
 - **pinned by:** `TestSessionsListingAcrossLifecycle`, `TestOpErrorCodesMirrorHTTP`
-  (a `close` of a running session is `run_active`; a second `close` of a closed
-  session is `ok`), `TestHubSessionCloseSemantics`, `TestListingsMatchHTTP`.
+  (a `close` of a running session is `run_active`), `TestHubSessionCloseSemantics`,
+  `TestListingsMatchHTTP`. The release is not pinned yet: these tests still pin
+  the kept entry, and D2 records it.
 
 ### `events`
 
@@ -772,8 +783,8 @@ exceptions stated once here rather than repeated per row:
   acknowledgement is the empty body of a `200` whose headers have already been
   flushed.
 - **errors:** `unknown_session` (404), `invalid_request` (a parameter the op
-  does not define), `session_closed` (409, a session that is already closed —
-  refused rather than parked), `invalid_cursor` (400, a cursor that is not an
+  does not define), `session_closed` (409, a session that closes while the
+  request is in flight; one already closed is `unknown_session`), `invalid_cursor` (400, a cursor that is not an
   unsigned sequence, or a `run_id` with no cursor), `replay_cursor_future` (400),
   `run_not_found` (404), `no_run_to_resume` (409, a cursor on a session with no
   run to replay), `request_cancelled`, `internal` (500). A **replay gap is not
@@ -890,8 +901,10 @@ a second submit does not open a second reader over one run. Pinned:
 ## Shutdown
 
 Every exit closes every session, so a child agent process is never orphaned —
-including a failed exit. A **restart ends every session**; nothing persists
-across a restart, so a reconnecting client finds no session.
+including a failed exit. A **restart ends every harness process**, and with it
+every live session. [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) makes a session
+outlive its process, but reopening one is staged as T7, so until it lands a
+reconnecting client finds no session.
 
 `CloseSessions` divides its window across the sessions it still has to close, so
 one stuck child cannot consume the whole budget and leave the rest orphaned. A
@@ -1054,27 +1067,32 @@ the body, so [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) no longer fail a
 byte-for-byte comparison on their first request.
 
-**D2 to D7 are what is left, and all of it is the Zig side and all of one kind:**
+**D2 is both trees against the draft.** [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) made close
+release a session, and neither hub does yet; the releases are
+[#443](https://github.com/lsm/open-agent-protocol/issues/443) (Go) and [#444](https://github.com/lsm/open-agent-protocol/issues/444) (Zig).
+
+**D3 to D7 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
 specifies — a member that does not exist, or a signal with nowhere to report it.
 None of them changes a byte on the wire today, and each is a small contract change
-rather than a re-decision, so they are queued rather than fixed here: D2, D3, D5
-and D6 in [#407](https://github.com/lsm/open-agent-protocol/issues/407), and D7 —
+rather than a re-decision, so they are queued rather than fixed here: D3, D5 and
+D6 in [#407](https://github.com/lsm/open-agent-protocol/issues/407), and D7 —
 the per-run exposure a stream failure needs — in
 [#407](https://github.com/lsm/open-agent-protocol/issues/407) too, since it is the
 same kind of gap. D4 is different in one respect: its negative-capacity half is a
 Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
-### D2 — the Zig adapter contract destroys a session on close
+### D2 — both hubs keep a closed session
 
 | | |
 | --- | --- |
-| **The draft says** | A closed session **stays listed with its final state**, and `state` on it answers the state document. Both are Go's behaviour: `Session.Close` leaves the object readable, and `Hub.Sessions` calls `State` on a closed entry and keeps what it reports. |
-| **Zig does** | `contract.Session`'s `close` is infallible and terminal — it destroys the session. A hub cannot read a closed session at all, so the Zig core reports `status: "closed"` with no active runs in the listing, and every operation on a closed session is refused `session_closed` without touching it. |
-| **Why Zig is the wrong side** | The draft's rule is the better one, and the Zig shape makes a class of host code impossible: a client that lists sessions and then asks a closed one for its state gets a refusal where Go answers a document. |
-| **The fix** | Either `contract` grows a non-terminal `close` that leaves `state` readable, or the Zig core caches the last state it saw and serves that. The first is the smaller change and matches Go; the second is what a hub can do today. |
-| **Pinned today** | The Zig side: `zig/src/hub/hub.zig` refuses `session_closed` before touching a closed session and lists it as closed. The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`. |
+| **The draft says** | Close releases a session ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once it succeeds, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
+| **Go does** | `go/serve` keeps a closed session in its table. `sessions` lists it with its final state, `state` answers it, a second `close` is `ok`, and an open under its id is refused `session_exists`. |
+| **Zig does** | The core keeps the entry, its journal and a cursor for every run it had, lists it as closed, and refuses every op on it with `session_closed`. |
+| **Why both are the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
+| **The fix** | [#443](https://github.com/lsm/open-agent-protocol/issues/443) releases the session in Go, and [#444](https://github.com/lsm/open-agent-protocol/issues/444) in Zig. Zig's destructive `close` is the right shape for it. |
+| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`. The Zig side: `zig/src/hub/hub.zig`'s tests that a closed session is refused `session_closed` and listed as closed. |
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 
