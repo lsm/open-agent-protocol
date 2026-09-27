@@ -1063,15 +1063,15 @@ same kind of gap. D4 is different in one respect: its negative-capacity half is 
 Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
-### D2 — the Zig adapter contract destroys a session on close
+### D2 — resolved by Decision 0039: a close releases the session
 
 | | |
 | --- | --- |
-| **The draft says** | A closed session **stays listed with its final state**, and `state` on it answers the state document. Both are Go's behaviour: `Session.Close` leaves the object readable, and `Hub.Sessions` calls `State` on a closed entry and keeps what it reports. |
-| **Zig does** | `contract.Session`'s `close` is infallible and terminal — it destroys the session. A hub cannot read a closed session at all, so the Zig core reports `status: "closed"` with no active runs in the listing, and every operation on a closed session is refused `session_closed` without touching it. |
-| **Why Zig is the wrong side** | The draft's rule is the better one, and the Zig shape makes a class of host code impossible: a client that lists sessions and then asks a closed one for its state gets a refusal where Go answers a document. |
-| **The fix** | Either `contract` grows a non-terminal `close` that leaves `state` readable, or the Zig core caches the last state it saw and serves that. The first is the smaller change and matches Go; the second is what a hub can do today. |
-| **Pinned today** | The Zig side: `zig/src/hub/hub.zig` refuses `session_closed` before touching a closed session and lists it as closed. The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`. |
+| **The draft said** | A closed session **stays listed with its final state**, and `state` on it answers the state document. Both were Go's behaviour: `Session.Close` left the object readable, and `Hub.Sessions` called `State` on a closed entry and kept what it reported. |
+| **Zig did** | `contract.Session`'s `close` is infallible and terminal — it destroys the session. A hub cannot read a closed session at all, so the Zig core reported `status: "closed"` with no active runs in the listing, and every operation on a closed session was refused `session_closed` without touching it. |
+| **Why the rule changed** | Decision 0039 makes close a **detach**: the harness process ends and the hub keeps nothing but the binding, in both trees. A session that is not open is `unknown_session` to every later operation, a second `close` included, and `sessions` lists live sessions only. Zig's terminal `close` is therefore no longer the wrong side — it is the shape the rule wants — and Go's readable closed entry is what changes. `session_closed` keeps exactly one meaning: a session that stopped being open while a request was in flight, which is what the adapter reported. |
+| **What Go does** | The entry is released on the **first** closed transition, whichever path gets there: a successful close, or the adapter reporting `ErrSessionClosed` from `State`, `Models`, `Tools` or `Submit`. A session already closed when an `open` probes it is never added, so its id is free at once and the open itself answers `session_closed` (#443). Subscriptions still end with the `session_closed` signal. |
+| **Pinned today** | `TestStateReportingClosedClosesEntry` (the release fires once, and only on the first transition), `TestTheHubReleasesASessionTheAdapterReportsClosed` (the adapter-reported path, and that later operations are `unknown_session`), `TestHubSessionCloseSemantics`, `TestHubOpenRefusesASessionThatWasAlreadyClosedAndLeavesItsIDFree`, `TestSessionsListingAcrossLifecycle`, `TestOpErrorCodesMirrorHTTP`, `TestSSEOnClosedSession`. |
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 

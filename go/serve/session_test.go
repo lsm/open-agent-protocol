@@ -33,7 +33,7 @@ func runEnvelope(t *testing.T, runID protocol.RunID, sequence uint64) protocol.E
 }
 
 func TestQueueOverflowCursorTracksPosition(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -60,7 +60,7 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 		t.Fatalf("overflow cursor %+v, want run-b at sequence 0 — the unseen dropped run", overflow)
 	}
 
-	latecomer := newSession("hub", "memory", nil)
+	latecomer := newSession("hub", "memory", nil, nil)
 	positioned, _, _, ok := latecomer.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -88,7 +88,7 @@ func TestQueueOverflowCursorTracksPosition(t *testing.T) {
 }
 
 func TestOverflowRecoversFromTheLiveRunNotASettledReservation(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -164,7 +164,7 @@ func waitForFinished(t *testing.T, entry *Session, run protocol.RunID) {
 }
 
 func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -216,7 +216,7 @@ func TestDeferredEndDoesNotClobberOverflowTerminal(t *testing.T) {
 }
 
 func TestMarkClosedDefersFinishToReader(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -266,7 +266,7 @@ func TestMarkClosedDefersFinishToReader(t *testing.T) {
 }
 
 func TestMarkClosedFinishesImmediatelyWithoutReader(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(4)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -283,7 +283,7 @@ func TestMarkClosedFinishesImmediatelyWithoutReader(t *testing.T) {
 }
 
 func TestOverlappingReadersDeliverCurrentRunEnd(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -319,7 +319,7 @@ func TestOverlappingReadersDeliverCurrentRunEnd(t *testing.T) {
 }
 
 func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	spanning, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -362,7 +362,7 @@ func TestAdapterOverflowScopedToExposedSubscribers(t *testing.T) {
 }
 
 func TestOverflowFollowsDeliveredRuns(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -418,7 +418,7 @@ func (g *gatedSession) Submit(_ context.Context, request protocol.MessageSubmitR
 
 func TestSubmitReservationBridgesAdmission(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -474,7 +474,7 @@ func TestSubmitReservationBridgesAdmission(t *testing.T) {
 
 func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -510,7 +510,7 @@ func TestSubmitReservationReleasesOnFailure(t *testing.T) {
 
 func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -552,7 +552,7 @@ func TestDeferredFinishSurvivesLaterReservations(t *testing.T) {
 
 func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrRunActive}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	cohort, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -628,7 +628,7 @@ func TestDeferredFinishSparesLaterSubscribers(t *testing.T) {
 }
 
 func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	cohort, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -706,7 +706,7 @@ func TestDeferredRunEndSparesLaterSubscribers(t *testing.T) {
 func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrInvalidSubmission}
 	close(gated.release)
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -744,7 +744,7 @@ func TestRejectedSubmitKeepsSubscriptions(t *testing.T) {
 }
 
 func TestLateOverflowDoesNotCutNewerRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -798,7 +798,7 @@ func TestCloseSessionsAttemptsEverySession(t *testing.T) {
 	for index := range sessions {
 		s := &countingSession{stubSession: stubSession{settleAfter: 1000}}
 		sessions[index] = s
-		if err := daemon.sessions.add(newSession(protocol.SessionID(fmt.Sprintf("stuck-%d", index)), "stub", s)); err != nil {
+		if err := daemon.sessions.add(newSession(protocol.SessionID(fmt.Sprintf("stuck-%d", index)), "stub", s, nil)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -821,7 +821,7 @@ func (c *countingSession) Close(ctx context.Context) error {
 }
 
 func TestCloseEndsSubscribersRegisteredAfterDeferredRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	early, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -861,7 +861,7 @@ func TestCloseEndsSubscribersRegisteredAfterDeferredRun(t *testing.T) {
 }
 
 func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	streamA := make(chan base.Result, 4)
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
@@ -898,7 +898,7 @@ func TestAdapterOverflowScopesByAcknowledgedRun(t *testing.T) {
 }
 
 func TestStaleRunErrorReachesExposedSubscribers(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -942,7 +942,7 @@ func TestStaleRunErrorReachesExposedSubscribers(t *testing.T) {
 }
 
 func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -978,7 +978,7 @@ func TestAcknowledgedPositionOverridesStalePending(t *testing.T) {
 }
 
 func TestNewerPendingRunExposesOverflow(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1012,7 +1012,7 @@ func TestNewerPendingRunExposesOverflow(t *testing.T) {
 }
 
 func TestQueueOverflowCursorRecoversDroppedRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(1)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1049,7 +1049,7 @@ func TestQueueOverflowCursorRecoversDroppedRun(t *testing.T) {
 
 func TestSubmitErrorStreamStillDrains(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1092,7 +1092,7 @@ func TestSubmitErrorStreamStillDrains(t *testing.T) {
 
 func TestOrphanBecomesCurrentOverCompletedRun(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 
 	streamOld := make(chan base.Result, 4)
 	entry.startRun("run-old", streamOld)
@@ -1147,7 +1147,7 @@ func TestOrphanBecomesCurrentOverCompletedRun(t *testing.T) {
 
 func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1213,7 +1213,7 @@ func TestEmptyErrorStreamKeepsSubscriptionsParked(t *testing.T) {
 }
 
 func TestAcknowledgedOrderStaysMonotonic(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1242,7 +1242,7 @@ func TestAcknowledgedOrderStaysMonotonic(t *testing.T) {
 }
 
 func TestExposureByAdmissionOrder(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1278,7 +1278,7 @@ func TestExposureByAdmissionOrder(t *testing.T) {
 
 func TestCloseDuringEmptyErrorStreamEndsSubscribers(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1317,7 +1317,7 @@ func TestCloseDuringEmptyErrorStreamEndsSubscribers(t *testing.T) {
 }
 
 func TestAttachmentRunOrdersPendingExposure(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	streamA := make(chan base.Result, 4)
 	streamB := make(chan base.Result, 4)
 	entry.startRun("run-a", streamA)
@@ -1348,7 +1348,7 @@ func TestAttachmentRunOrdersPendingExposure(t *testing.T) {
 
 func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1398,7 +1398,7 @@ func TestDeferredErrorSurvivesNewAdmission(t *testing.T) {
 }
 
 func TestQueueOverflowPreservesNewerRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(1)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1434,7 +1434,7 @@ func TestQueueOverflowPreservesNewerRun(t *testing.T) {
 }
 
 func TestAcknowledgedRunStaysPairedWithSerial(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	sub, _, _, ok := entry.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1479,7 +1479,7 @@ func TestAcknowledgedRunStaysPairedWithSerial(t *testing.T) {
 }
 
 func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	cohort, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1533,7 +1533,7 @@ func TestCloseGivesNewcomersCleanEndOverDeferredError(t *testing.T) {
 }
 
 func TestQueueOverflowPrefersAttachedRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	streamA := make(chan base.Result, 1)
 	entry.startRun("run-a", streamA)
 	streamB := make(chan base.Result, 1)
@@ -1562,7 +1562,7 @@ func TestQueueOverflowPrefersAttachedRun(t *testing.T) {
 
 func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1618,7 +1618,7 @@ func TestEmptyOrphanAppliesDeferredRunEnd(t *testing.T) {
 }
 
 func TestQueueOverflowPrefersNewerQueuedRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	streamA := make(chan base.Result, 1)
 	entry.startRun("run-a", streamA)
 	streamB := make(chan base.Result, 1)
@@ -1652,7 +1652,7 @@ func TestQueueOverflowPrefersNewerQueuedRun(t *testing.T) {
 func TestTerminalSubmitErrorClosesEntry(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{}), fail: base.ErrSessionClosed}
 	close(gated.release)
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1679,7 +1679,7 @@ func TestTerminalSubmitErrorClosesEntry(t *testing.T) {
 
 func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 	gated := &gatedSession{entered: make(chan struct{}, 4), release: make(chan struct{})}
-	entry := newSession("gated", "stub", gated)
+	entry := newSession("gated", "stub", gated, nil)
 	cohort, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1739,7 +1739,7 @@ func TestCloseOverReservationErrorSplitsCohorts(t *testing.T) {
 }
 
 func TestQueueOverflowIncludesCurrentRun(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	streamA := make(chan base.Result, 1)
 	entry.startRun("run-a", streamA)
 	streamB := make(chan base.Result, 1)
@@ -1800,7 +1800,8 @@ func (s *idleClosedSession) Close(context.Context) error { return base.ErrSessio
 var _ base.Session = (*idleClosedSession)(nil)
 
 func TestStateReportingClosedClosesEntry(t *testing.T) {
-	entry := newSession("idle-death", "stub", &idleClosedSession{id: "idle-death"})
+	released := make(chan protocol.SessionID, 2)
+	entry := newSession("idle-death", "stub", &idleClosedSession{id: "idle-death"}, func() { released <- "idle-death" })
 	sub, _, _, ok := entry.subscribe(8)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")
@@ -1817,6 +1818,22 @@ func TestStateReportingClosedClosesEntry(t *testing.T) {
 	subscription := &Subscription{session: entry, ctx: ctx, sub: sub}
 	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("terminal %v, want the clean end of a closed session", err)
+	}
+	select {
+	case id := <-released:
+		if id != "idle-death" {
+			t.Fatalf("released %q, want the entry's own id", id)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("the entry recorded the close without releasing itself")
+	}
+	if _, err := entry.State(ctx); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("second state error %v, want the adapter's own closed refusal", err)
+	}
+	select {
+	case id := <-released:
+		t.Fatalf("released %q a second time", id)
+	default:
 	}
 }
 
@@ -1852,7 +1869,7 @@ func (s *stubSession) Close(context.Context) error {
 
 func TestCloseRetriesThroughAsyncCancel(t *testing.T) {
 	stub := &stubSession{settleAfter: 2}
-	entry := newSession("stub", "stub", stub)
+	entry := newSession("stub", "stub", stub, nil)
 	start := time.Now()
 	if err := entry.closeForShutdown(context.Background()); err != nil {
 		t.Fatalf("close did not settle: %v", err)
@@ -1870,7 +1887,7 @@ func TestCloseRetriesThroughAsyncCancel(t *testing.T) {
 
 func TestCloseStopsAtContextDeadline(t *testing.T) {
 	stub := &stubSession{settleAfter: 1000}
-	entry := newSession("stub", "stub", stub)
+	entry := newSession("stub", "stub", stub, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	start := time.Now()
@@ -1916,7 +1933,7 @@ var _ base.Session = (*queuedStubSession)(nil)
 
 func TestCloseCancelsReservationsTheSnapshotNames(t *testing.T) {
 	stub := &queuedStubSession{needed: 1, live: []protocol.ActiveRun{{RunID: "run-queued", Status: protocol.RunQueued, Relationship: protocol.RelationshipPrimary}}}
-	entry := newSession("stub", "stub", stub)
+	entry := newSession("stub", "stub", stub, nil)
 	if err := entry.closeForShutdown(context.Background()); err != nil {
 		t.Fatalf("close did not settle a reservation-only session: %v", err)
 	}
@@ -1937,7 +1954,7 @@ func TestCloseCancelsEveryRunTheSnapshotLists(t *testing.T) {
 			{RunID: "run-queued", Status: protocol.RunQueued, Relationship: protocol.RelationshipPrimary},
 		},
 	}
-	entry := newSession("stub", "stub", stub)
+	entry := newSession("stub", "stub", stub, nil)
 	if err := entry.closeForShutdown(context.Background()); err != nil {
 		t.Fatalf("close did not settle: %v", err)
 	}
@@ -1948,7 +1965,7 @@ func TestCloseCancelsEveryRunTheSnapshotLists(t *testing.T) {
 
 func TestCloseFallsBackToTheNamedActiveRun(t *testing.T) {
 	stub := &queuedStubSession{needed: 1, activeRun: "run-started"}
-	entry := newSession("stub", "stub", stub)
+	entry := newSession("stub", "stub", stub, nil)
 	if err := entry.closeForShutdown(context.Background()); err != nil {
 		t.Fatalf("close did not settle: %v", err)
 	}
@@ -1976,8 +1993,8 @@ func (s *blockingSession) Close(ctx context.Context) error {
 func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
 	daemon := New(NewRegistry(), Options{ShutdownTimeout: 600 * time.Millisecond})
 	blocker := &blockingSession{stubSession: stubSession{}, unblocked: make(chan struct{})}
-	blockerEntry := newSession("blocker", "stub", blocker)
-	quickEntry := newSession("quick", "stub", &stubSession{})
+	blockerEntry := newSession("blocker", "stub", blocker, nil)
+	quickEntry := newSession("quick", "stub", &stubSession{}, nil)
 	if err := daemon.sessions.add(blockerEntry); err != nil {
 		t.Fatal(err)
 	}
@@ -2004,7 +2021,7 @@ func TestCloseSessionsSplitsBudgetPerSession(t *testing.T) {
 func TestCloseSessionsBoundsTotalSweep(t *testing.T) {
 	daemon := New(NewRegistry(), Options{ShutdownTimeout: 600 * time.Millisecond})
 	for index := range 4 {
-		if err := daemon.sessions.add(newSession(protocol.SessionID(fmt.Sprintf("stuck-%d", index)), "stub", &stubSession{settleAfter: 1000})); err != nil {
+		if err := daemon.sessions.add(newSession(protocol.SessionID(fmt.Sprintf("stuck-%d", index)), "stub", &stubSession{settleAfter: 1000}, nil)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2023,7 +2040,7 @@ func TestCloseSessionsBoundsTotalSweep(t *testing.T) {
 }
 
 func TestHubSubscriberQueueOverflow(t *testing.T) {
-	entry := newSession("hub", "memory", nil)
+	entry := newSession("hub", "memory", nil, nil)
 	slow, _, _, ok := entry.subscribe(2)
 	if !ok {
 		t.Fatal("subscribe on an open session was refused")

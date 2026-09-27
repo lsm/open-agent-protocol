@@ -592,8 +592,15 @@ func TestSessionsListingAcrossLifecycle(t *testing.T) {
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("close status %d", response.StatusCode)
 	}
-	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "closed" || entry.ActiveRunID != "" {
-		t.Fatalf("closed listing: %+v", entry)
+	for _, entry := range listSessions(t, server) {
+		if entry.SessionID == "listing" {
+			t.Fatalf("the closed session %+v is still listed", entry)
+		}
+	}
+	requireSessionUnknown(t, server, "listing")
+	openSession(t, server, "memory", "listing")
+	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "idle" {
+		t.Fatalf("reopened listing: %+v", entry)
 	}
 }
 
@@ -864,30 +871,14 @@ func TestCloseAfterCancellation(t *testing.T) {
 		t.Fatalf("close status %d: %s", response.StatusCode, data)
 	}
 
-	stateResponse, err := server.Client().Get(server.URL + "/sessions/close-cancel/state")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stateResponse.Body.Close()
-	stateData, _ := io.ReadAll(stateResponse.Body)
-	envelope, err := protocol.ParseEnvelope(stateData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state protocol.SessionState
-	if err := envelope.DecodePayload(&state); err != nil {
-		t.Fatal(err)
-	}
-	if state.Status != protocol.SessionClosed {
-		t.Fatalf("state after close: %+v", state)
-	}
+	requireSessionUnknown(t, server, "close-cancel")
 
 	submit := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-closed", protocol.MessageSubmitRequest{
 		SessionID: "close-cancel", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 	}, "close-cancel", "", "")
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/close-cancel/submit", submit)
-	requireErrorResponse(t, status, http.StatusConflict, errorEnvelope, "session_closed")
+	requireErrorResponse(t, status, http.StatusNotFound, errorEnvelope, "unknown_session")
 }
 
 func TestCancelRejections(t *testing.T) {
