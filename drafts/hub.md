@@ -932,7 +932,7 @@ place a differential test would otherwise not see.
   `unsubscribe` op, id-reuse replacement, and leaving it; **this draft takes the
   third, in both trees.**
 
-  The reason #53's case was that a host at the ceiling could only free a slot
+  The reason #53 had a case was that a host at the ceiling could only free a slot
   through a side effect on a session it might not want to end. That is no longer
   true, and the reason is a rule this draft already had: **a subscription ends
   at its run's terminal envelope.** A host that subscribes per run — the shape
