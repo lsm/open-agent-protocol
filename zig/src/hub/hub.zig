@@ -226,6 +226,7 @@ pub const Subscription = struct {
 const Cursor = struct {
     run_id: []u8,
     latest: u64 = 0,
+    terminal: u64 = 0,
 };
 
 const Journaled = struct {
@@ -776,6 +777,14 @@ pub const Hub = struct {
         entry.run_id = owned;
     }
 
+    fn settledAt(self: *Hub, entry: *const Entry, run_id: []const u8) u64 {
+        _ = self;
+        for (entry.cursors.items) |cursor| {
+            if (std.mem.eql(u8, cursor.run_id, run_id)) return cursor.terminal;
+        }
+        return 0;
+    }
+
     fn knownRun(self: *Hub, entry: *const Entry, run_id: []const u8) bool {
         _ = self;
         for (entry.cursors.items) |cursor| {
@@ -808,6 +817,7 @@ pub const Hub = struct {
             try self.noteRun(entry, event.run_id, true);
         }
         entry.cursors.items[index].latest = @max(entry.cursors.items[index].latest, event.sequence);
+        if (terminal(event.line)) entry.cursors.items[index].terminal = event.sequence;
         if (self.journal_capacity == 0) return;
         const line = try self.allocator.dupe(u8, event.line);
         errdefer self.allocator.free(line);
@@ -965,6 +975,8 @@ pub const Hub = struct {
             if (terminal(kept.line)) try self.noteTerminal(subscription, subscription.run_id, kept.sequence);
             try subscription.replay.append(self.allocator, .{ .line = copy, .run_id = subscription.run_id, .sequence = kept.sequence });
         }
+        const settled = self.settledAt(entry, named);
+        if (settled > 0 and after >= settled) subscription.ending = .run_terminal;
     }
 };
 
@@ -1225,6 +1237,36 @@ test "a resumed subscription ends at the terminal it replays" {
     while (resumed.next()) |_| delivered += 1;
     try testing.expectEqual(@as(usize, 1), delivered);
     try testing.expectEqual(Ending.run_terminal, resumed.ending);
+}
+
+test "a cursor sitting on a settled run's terminal ends at once and hears nothing later" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 3 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "at-terminal" });
+    const request = try submitFor(arena, "at-terminal");
+    _ = try hub.submit(arena, "at-terminal", &request);
+    var queued = request;
+    queued.delivery = .queue;
+    const waiting = try hub.submit(arena, "at-terminal", &queued);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "at-terminal", waiting.run_id.?);
+    try hub.pump(testing.allocator, 0);
+
+    const settled = try hub.subscribe(arena, opened.session_id, .{ .run_id = waiting.run_id.?, .after = 1 });
+    try testing.expectEqual(Ending.run_terminal, settled.ending);
+    try testing.expect(settled.next() == null);
+
+    const later = try submitFor(arena, "at-terminal");
+    _ = try hub.submit(arena, "at-terminal", &later);
+    try hub.pump(testing.allocator, 0);
+    try testing.expect(settled.next() == null);
+    try testing.expectEqual(Ending.run_terminal, settled.ending);
 }
 
 test "a queued run's id can be named by a cursor before it has emitted" {

@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot lose the race with its own message, and the held subscription a transport
   whose response carries no stream adopts on the next request. A subscriber that
   falls behind is detached and told the run and position it last read rather than
-  waited on; a subscription ends once it has been handed a run's terminal envelope, live or replayed;
+  waited on; a subscription ends once it has been handed a run's terminal envelope, live or replayed, or once its cursor already sits at one;
   and the shutdown sweep cancels each session's live runs before closing it, so a
   child agent process is never left running. No transport yet: the operations are
   in-process methods, and #387 and #388 add the stdio and HTTP wires over them.
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `serve.OpenCompound` does in Go — and `journal_capacity` from the registry
   document is now read rather than decoded and ignored. Six places where the Zig
   adapter contract cannot carry what the draft specifies are recorded as D2 to D6 in
-  the draft, beside D1, which is Go's to fix. Forty-one unit tests over a scripted
+  the draft, beside D1, which is Go's to fix. Forty-two unit tests over a scripted
   backend, and `checkAllAllocationFailures` over every function that allocates and
   hands off ownership — which is what found three places swallowing `OutOfMemory`,
   three use-after-frees on a closed session or a borrowed run id, a stream-failed
