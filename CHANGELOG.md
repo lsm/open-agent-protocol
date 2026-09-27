@@ -59,10 +59,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `zig/src/hub/hub.zig` frees a subscription's queued events when it is closed. A client that disconnected mid-stream left its subscription, both list capacities and up to `stream_queue` event lines behind, because `reclaim()` only frees a subscription whose queues are already empty and nothing drains a closed one — the fan-out no longer reaches it and only the client called `next()`. A closed subscription is unreadable from then on, so its events are released there and the next pump reclaims the subscription itself.
-- `zig/src/hub/hub.zig` names the run a queue overflow lost, the way Go's `lossRun` does. It recorded the run the subscription was reading, so a loss on a newer run was answered with the older one, and a subscriber that had read nothing was given no run at all. The named run is now chosen among the event that overflowed, the run being read and every run with a queued event, preferring one the session has not finished and otherwise the newest the session has seen; the sequence beside it is that run's own position, which is zero when the subscriber has received none of it.
-- A wire whose path carries a version now drops that version when the base's path already spells one, rather than only when the base ends in `/v1`. Five catalogued rows were composing an address no vendor serves: `zai-coding-plan` reached `/api/coding/paas/v4/v1/chat/completions`, `tencent-coding-plan` and `volcengine-coding-plan` reached `/coding/v3/v1/chat/completions`, `deepinfra` reached `/v1/openai/v1/chat/completions`, and on the anthropic wire `minimax-coding-plan` reached `/anthropic/v1/v1/messages`. Probed unauthenticated, the doubled form is a hard 404 for `deepinfra` and `minimax-coding-plan` while the deduplicated form is served, and the other three hosts answer 401 either way; `go/provider/zai.go` already paired that base with a versionless path. A base like `/v1/openai` or `/api/coding/paas/v4` is a versioned root, so the wire's own version must not be appended to it a second time.
-- `goap serve agent --backend codex` closes open interactions and actions in the order they opened, and `goap serve agent --backend opencode` settles unfinished tools in start order, as `oapx` does, instead of Go map iteration order. Neither parity fixture opens two at once, so the corpus cannot see it; the same unordered-map pattern still exists in the other Go adapters' settlement sweeps.
-- `oapx serve agent --backend hermes` decodes `gateway.ready`'s payload against the pinned type, as `goap` does: a member outside `skin`/`change_events`/`replay_epoch` now refuses the open instead of being ignored. The `skin`, `change_events` and 32-hex `replay_epoch` checks were already enforced.
+- `zig/src/hub/hub.zig` names the run a queue overflow lost, the way Go's
+  `lossRun` does, and points its cursor where the client actually stopped. The
+  candidate set is Go's: the event that overflowed, every run with a queued event,
+  the run the subscription is reading, and the session's current run, preferring a
+  run the session has not finished. The current run is the one that was missing —
+  without it a cancel-then-resubmit loss named the run being read while Go named
+  the newer live run, and a client resumed onto a settled run. The cursor is the
+  position the client stopped at *after* draining, not where the queue filled, so a
+  resume neither skips the events already handed over nor repeats them.
+  `drafts/hub.md` records the rest of the overflow table as **D7**: a run's stream
+  failure cannot be attributed to that run or scoped to the subscribers exposed to
+  it, because `contract.Session.drain` reports a failure rather than whose stream
+  failed, so a stream failure ends the whole session where Go confines it to the
+  readers of that run.
 
 - The Zig JSON writer escapes `<`, `>`, `&`, U+2028 and U+2029 as `encoding/json` does (`\u003c`, `\u003e`, `\u0026`, `\u2028`, `\u2029`), so OAP envelopes written through `zig/src/json/writer.zig` match Go's default HTML-safe escaping. No ledger recorded the gap.
 - `goap` always emits the required member of a `text` or `reasoning` content part, even when it is empty, matching `schema/v0.1/common.schema.json` (which requires `text` and `reasoning` respectively) and `oapx`. `protocol.ContentPart` had tagged both `omitempty`, so an empty `text_delta` or `thinking_delta` produced `{"type":"text"}` or `{"type":"reasoning"}` with no member.

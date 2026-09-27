@@ -497,10 +497,10 @@ and the run it wants is usually the one that just ended under it.
 | Fan-out reaches every subscriber of a run | `TestHubFansOutToSubscribers` |
 | A subscriber's context cancellation ends its subscription | `TestHubSubscriptionContextCancel` |
 | A live stream error surfaces to the subscriber as itself | `TestHubLiveStreamErrorSurfaces` |
-| An adapter's own stream overflow reaches only the subscribers exposed to that run | `TestHubAdapterStreamOverflow`, `TestAdapterOverflowScopedToExposedSubscribers` |
-| Overflow follows the run the subscriber actually read | `TestOverflowFollowsDeliveredRuns`, `TestAdapterOverflowScopesByAcknowledgedRun` |
-| An acknowledged position overrides a stale pending one | `TestAcknowledgedPositionOverridesStalePending` |
-| A late overflow does not cut a newer run | `TestLateOverflowDoesNotCutNewerRun` |
+| An adapter's own stream overflow reaches only the subscribers exposed to that run | `TestHubAdapterStreamOverflow`, `TestAdapterOverflowScopedToExposedSubscribers` — **D7**: the Zig contract cannot say whose stream failed, so a stream failure ends the session |
+| Overflow follows the run the subscriber actually read | `TestOverflowFollowsDeliveredRuns`, `TestAdapterOverflowScopesByAcknowledgedRun` — ported for the run a **queue** overflow names (`lossRun`); the per-run scoping half is **D7** |
+| An acknowledged position overrides a stale pending one | `TestAcknowledgedPositionOverridesStalePending` — **D7**: a single mailbox has no stale pending position to override |
+| A late overflow does not cut a newer run | `TestLateOverflowDoesNotCutNewerRun` — **D7**: a late stream failure ends the whole session |
 
 ## Compound open and the held subscription
 
@@ -831,7 +831,13 @@ whole reason for existing:
    `TestHubSubscriberQueueOverflow`, `TestQueueOverflowIncludesCurrentRun`,
    `TestQueueOverflowPrefersAttachedRun`, `TestQueueOverflowPrefersNewerQueuedRun`,
    `TestQueueOverflowPreservesNewerRun`, `TestOverflowRecoversFromTheLiveRunNotASettledReservation`,
-   `TestSSEOverflowSignalLive`, `TestSSEOverflowSignalReplay`.
+   `TestSSEOverflowSignalLive`, `TestSSEOverflowSignalReplay`. The candidate set and
+   the preference are ported in Zig as `lossRun`, which considers the dropped run,
+   every run with a queued event, the run the subscription is reading and the
+   session's current run, preferring a run the session has not finished; the cursor
+   is the position the client stopped at after draining rather than where the queue
+   filled. Pinned in Zig by the four overflow tests in `zig/src/hub/hub.zig`.
+   **D7** covers what a *stream* overflow cannot do here.
 3. **An overflow is scoped to the run the subscriber was actually reading.** A
    subscriber that has moved on is not told about an earlier run's overflow, and
    one still reading it is. Pinned: `TestOverflowFollowsDeliveredRuns`,
@@ -978,11 +984,18 @@ side is fixed, and where it cannot be fixed yet the divergence is written down.
 [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) grow a
 byte-for-byte comparison, because a port that obeys the draft and a Go that does
-not would fail that job on its first request. The rest are recorded by the Zig
-core, found while building it, and none of them changes a byte on the wire
-today: each says where a field or a rule the draft specifies is missing from
-`zig/src/adapter/contract.zig`, so they are one fix each rather than a
-re-decision.
+not would fail that job on its first request.
+
+**D2 to D7 are all the Zig side, and all of one kind:** each names something
+`zig/src/adapter/contract.zig` cannot carry that the draft specifies — a member
+that does not exist, or a signal with nowhere to report it. None of them changes a
+byte on the wire today, and each is a small contract change rather than a
+re-decision, so they are queued in
+[#407](https://github.com/lsm/open-agent-protocol/issues/407) (D2, D3, D5, D6) and
+[#398](https://github.com/lsm/open-agent-protocol/issues/398) (D7) rather than
+fixed here. D4 is different in one respect: its negative-capacity half is a Go
+change, queued in
+[#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
 ### D1 — the `Host` allowlist refusal is not a typed error
 
@@ -1038,6 +1051,17 @@ re-decision.
 | **Why the retry is not portable** | Go's `closeForShutdown` retries because `Session.Close` can answer `ErrRunActive`. `contract.Session.close` is infallible and terminal — there is no refusal to observe — so a Zig adapter's close always succeeds, and the retry Go needs has nothing to retry. Cancelling first is therefore the whole of the rule that is portable, and the Zig sweep does it. |
 | **Why the split is not portable** | The window exists to bound *waiting*. Zig's close returns immediately once the runs are cancelled, so there is no wait to divide; the deadline is still checked per session, so a slow `state` or `cancel` cannot make the sweep run past its budget. |
 | **The fix** | `contract`'s close reports whether a run is active, as Go's does, and the sweep retries as the draft says. |
+
+### D7 — a stream failure ends the whole session in Zig, not the subscribers exposed to the run
+
+| | |
+| --- | --- |
+| **The draft says** | Four overflow rules, each pinned by a Go test: *an adapter's own stream overflow reaches only the subscribers exposed to that run* (`TestHubAdapterStreamOverflow`, `TestAdapterOverflowScopedToExposedSubscribers`); *overflow follows the run the subscriber actually read* (`TestOverflowFollowsDeliveredRuns`); *an acknowledged position overrides a stale pending one* (`TestAcknowledgedPositionOverridesStalePending`); and *a late overflow does not cut a newer run* (`TestLateOverflowDoesNotCutNewerRun`). |
+| **Go does** | A subscriber tracks exposure **per run** — the run it is attached to, the run it has acknowledged, and every run with a queued event — and `exposedTo` decides whether a given run's stream failure reaches it at all. A run-a stream overflow therefore never reaches a subscriber that has acknowledged run-b, and a late overflow on an older run cannot cut a newer one. |
+| **Zig does** | One mailbox per subscription and no per-run exposure. `contract.Session.drain` reports a failure, not *whose* stream failed, so a stream failure is not an overflow and not attributable to a run: `pump` ends the **session** with `.stream_failed` and every subscription on it. `lossRun` names the right run for a *queue* overflow, and the cursor is the post-drain position, but there is no way to express "this run's stream overflowed, and only its readers care". |
+| **Why it matters** | A backend that overflows one run's stream takes down every subscriber on the session in Zig, where Go confines it. A host watching a healthy newer run is disconnected by an older run's failure. The rules are not merely unimplemented — the contract has no member that would let a port implement them, which is the same class as D2 to D6. |
+| **The fix** | `contract`'s drain reports the run that failed and whether it was an overflow, beside the failure, and `Subscription` tracks the run set it is exposed to the way Go's `subscriber` does. Two members, and all four rules become implementable. |
+| **What *is* ported** | Which run a **queue** overflow names, and where its cursor points. `lossRun` considers the dropped event's run, every run with a queued event, the run the subscription is reading and the session's current run, preferring a run the session has not finished — Go's candidate set, including the current run. The cursor is the position the client stopped at **after** draining, not where the queue filled, so a resume neither skips nor repeats. Pinned by `zig/src/hub/hub.zig`'s `a subscriber that falls behind is ended with a cursor on the run that overflowed`, `a loss on a newer run names the newer run rather than the one being read`, `the overflow cursor is where the client stopped after draining, not where the queue filled` and `a loss on a settled run names the live current run, which is what Go's candidate set reaches`. |
 
 ### Recorded, and not divergences
 

@@ -196,6 +196,9 @@ pub const Subscription = struct {
             self.highest = 0;
         }
         if (event.sequence > self.highest) self.highest = event.sequence;
+        if (self.ending == .overflow and std.mem.eql(u8, self.overflow_run, event.run_id)) {
+            self.overflow_sequence = event.sequence;
+        }
     }
 
     pub fn close(self: *Subscription) void {
@@ -867,28 +870,28 @@ pub const Hub = struct {
         return entry.cursors.items.len - 1;
     }
 
-    fn spentFor(self: *Hub, entry: *const Entry, subscription: *const Subscription, run_id: []const u8) bool {
+    fn spentFor(self: *Hub, entry: *const Entry, run_id: []const u8) bool {
         if (run_id.len == 0) return false;
-        if (std.mem.eql(u8, run_id, subscription.run_id)) return false;
+        if (std.mem.eql(u8, run_id, entry.run_id)) return false;
         return self.settledAt(entry, run_id) != 0;
     }
 
     fn lossRun(self: *Hub, entry: *const Entry, subscription: *const Subscription, dropped: []const u8) []const u8 {
         var newest = dropped;
         var newest_ordinal = ordinal(entry, dropped);
-        var live = !self.spentFor(entry, subscription, dropped);
+        var live = !self.spentFor(entry, dropped);
         var index: usize = 0;
         while (index < subscription.queue.items.len) : (index += 1) {
-            self.considerLoss(entry, subscription, &newest, &newest_ordinal, &live, subscription.queue.items[index].run_id);
+            self.considerLoss(entry, &newest, &newest_ordinal, &live, subscription.queue.items[index].run_id);
         }
-        self.considerLoss(entry, subscription, &newest, &newest_ordinal, &live, subscription.run_id);
+        self.considerLoss(entry, &newest, &newest_ordinal, &live, subscription.run_id);
+        self.considerLoss(entry, &newest, &newest_ordinal, &live, entry.run_id);
         return newest;
     }
 
     fn considerLoss(
         self: *Hub,
         entry: *const Entry,
-        subscription: *const Subscription,
         newest: *[]const u8,
         newest_ordinal: *i64,
         live: *bool,
@@ -896,7 +899,7 @@ pub const Hub = struct {
     ) void {
         if (run_id.len == 0) return;
         if (std.mem.eql(u8, run_id, newest.*)) return;
-        const run_live = !self.spentFor(entry, subscription, run_id);
+        const run_live = !self.spentFor(entry, run_id);
         if (live.* and !run_live) return;
         if (!live.* and run_live) {
             newest.* = run_id;
@@ -1239,13 +1242,84 @@ test "a subscriber that falls behind is ended with a cursor on the run that over
 
     _ = try hub.cancel(arena, "slow", "run-1");
     const second = try submitFor(arena, "slow");
-    _ = try hub.submit(arena, "slow", &second);
+    const admitted = try hub.submit(arena, "slow", &second);
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.overflow, subscription.ending);
-    try testing.expectEqualStrings("run-1", subscription.overflow_run);
-    try testing.expectEqual(last_read, subscription.overflow_sequence);
+    try testing.expectEqualStrings(admitted.run_id.?, subscription.overflow_run);
+    try testing.expectEqual(@as(u64, 0), subscription.overflow_sequence);
+    try testing.expect(last_read > 0);
     const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = subscription.overflow_run, .after = subscription.overflow_sequence });
     try testing.expect(resumed.next() != null);
+}
+
+test "the overflow cursor is where the client stopped after draining, not where the queue filled" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "tail" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    const first = try submitFor(arena, "tail");
+    const admitted = try hub.submit(arena, "tail", &first);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(Ending.open, subscription.ending);
+
+    var delivered: u64 = 0;
+    var seen: usize = 0;
+    while (subscription.next()) |event| {
+        delivered = event.sequence;
+        seen += 1;
+        if (seen == 2) {
+            _ = try hub.cancel(arena, "tail", admitted.run_id.?);
+            try hub.pump(testing.allocator, 0);
+        }
+    }
+    try testing.expectEqual(Ending.overflow, subscription.ending);
+    try testing.expectEqualStrings(admitted.run_id.?, subscription.overflow_run);
+    try testing.expectEqual(delivered, subscription.overflow_sequence);
+    try testing.expect(subscription.overflow_sequence > 2);
+
+    const resumed = try hub.subscribe(arena, opened.session_id, .{ .run_id = subscription.overflow_run, .after = subscription.overflow_sequence });
+    try testing.expectEqual(Ending.open, resumed.ending);
+    const tail = resumed.next().?;
+    try testing.expectEqual(subscription.overflow_sequence + 1, tail.sequence);
+}
+
+test "a loss on a settled run names the live current run, which is what Go's candidate set reaches" {
+    var flaky = Flaky{ .allocator = testing.allocator, .fail_drain = false };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 4, .journal_capacity = 64 });
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "flaky", .{ .session_id = "current" });
+    const subscription = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectEqual(Ending.open, subscription.ending);
+
+    flaky.script[0] = .{ .run = "run-a", .sequence = 1, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"a1\"}" };
+    flaky.script[1] = .{ .run = "run-a", .sequence = 2, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"run.completed\",\"id\":\"a2\"}" };
+    flaky.script_len = 2;
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqualStrings("run-a", hub.entries.items[0].run_id);
+    try testing.expectEqual(Ending.open, subscription.ending);
+
+    flaky.script[0] = .{ .run = "run-b", .sequence = 1, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"b1\"}" };
+    flaky.script[1] = .{ .run = "run-b", .sequence = 2, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"b2\"}" };
+    flaky.script[2] = .{ .run = "run-a", .sequence = 3, .line = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"type\":\"content.delta\",\"id\":\"a3\"}" };
+    flaky.script_len = 3;
+    try hub.pump(testing.allocator, 0);
+
+    try testing.expectEqual(Ending.overflow, subscription.ending);
+    try testing.expectEqualStrings("run-b", hub.entries.items[0].run_id);
+    try testing.expectEqualStrings("run-b", subscription.overflow_run);
 }
 
 test "a loss on a newer run names the newer run rather than the one being read" {
@@ -2184,7 +2258,7 @@ const Flaky = struct {
     closes: usize = 0,
     cancels: usize = 0,
     emit_line: ?[]const u8 = null,
-    script: [4]?Scripted = .{ null, null, null, null },
+    script: [8]?Scripted = .{ null, null, null, null, null, null, null, null },
     script_len: usize = 0,
     active_run: []const u8 = "",
     fail_drain: bool = true,
@@ -2374,13 +2448,13 @@ test "an overflow cursor survives the mailbox being drained across a run boundar
 
     _ = try hub.cancel(arena, "spanning", "run-1");
     const second = try submitFor(arena, "spanning");
-    _ = try hub.submit(arena, "spanning", &second);
+    const admitted = try hub.submit(arena, "spanning", &second);
     try hub.pump(testing.allocator, 0);
     try testing.expectEqual(Ending.overflow, subscription.ending);
     while (subscription.next()) |_| {}
     try testing.expectEqualStrings("run-1", expected_run);
-    try testing.expectEqualStrings("run-1", subscription.overflow_run);
-    try testing.expectEqual(read.sequence, subscription.overflow_sequence);
+    try testing.expectEqualStrings(admitted.run_id.?, subscription.overflow_run);
+    try testing.expectEqual(@as(u64, 0), subscription.overflow_sequence);
 }
 
 const fading_descriptor = contract.Descriptor{
