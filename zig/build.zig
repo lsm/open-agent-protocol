@@ -661,6 +661,17 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const provider_credential_mod = b.createModule(.{
+        .root_source_file = b.path("src/provider_credential.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "auth_resolver", .module = auth_resolver_mod },
+        },
+    });
+    const provider_credential_test = b.addTest(.{ .root_module = provider_credential_mod });
+
     const auth_provider_defs_mod = b.createModule(.{
         .root_source_file = b.path("src/auth/providers.zig"),
         .target = target,
@@ -2712,6 +2723,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_provider_defs_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_resolver_test).step);
+    test_step.dependOn(&b.addRunArtifact(provider_credential_test).step);
     test_step.dependOn(&b.addRunArtifact(openai_completions_api_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_error_detail_test).step);
     test_step.dependOn(&b.addRunArtifact(anthropic_messages_api_test).step);
@@ -2938,6 +2950,7 @@ pub fn build(b: *std.Build) void {
     test_unit_utils_step.dependOn(&b.addRunArtifact(sanitize_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(auth_resolver_test).step);
+    test_unit_utils_step.dependOn(&b.addRunArtifact(provider_credential_test).step);
 
     const test_unit_makai_cli_step = b.step("test-unit-makai-cli", "Run makai CLI unit tests");
     test_unit_makai_cli_step.dependOn(&auth_cli_test_run.step);
