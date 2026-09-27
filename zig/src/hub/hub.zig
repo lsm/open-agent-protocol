@@ -182,7 +182,10 @@ pub const Subscription = struct {
     }
 
     fn settle(self: *Subscription, event: Pending) Delivery {
-        if (self.ending == .open and event.terminal) self.ending = .run_terminal;
+        if (self.ending == .open and event.terminal) {
+            self.ending = .run_terminal;
+            self.hub.leave(self);
+        }
         return .{ .line = event.line, .run_id = event.run_id, .sequence = event.sequence };
     }
 
@@ -620,7 +623,10 @@ pub const Hub = struct {
         }
         try self.subscriptions.append(self.allocator, subscription);
         errdefer _ = self.subscriptions.pop();
-        try entry.subscribers.append(self.allocator, subscription);
+        if (subscription.ending == .open) {
+            try entry.subscribers.append(self.allocator, subscription);
+            errdefer _ = entry.subscribers.pop();
+        }
         return subscription;
     }
 
@@ -1005,6 +1011,10 @@ pub const Hub = struct {
         entry.subscribers.clearRetainingCapacity();
     }
 
+
+    pub fn leave(self: *Hub, subscription: *Subscription) void {
+        self.detach(subscription);
+    }
 
     fn detach(self: *Hub, subscription: *Subscription) void {
         const entry = self.findSession(subscription.session_id) orelse return;
@@ -2488,6 +2498,82 @@ test "the subscriber count has its own bound, not the mailbox depth" {
     _ = try hub.subscribe(arena, opened.session_id, .{});
     _ = try hub.subscribe(arena, opened.session_id, .{});
     try testing.expectError(error.SubscriptionFull, hub.subscribe(arena, opened.session_id, .{}));
+}
+
+test "a subscription that has read its terminal stops occupying a ceiling slot" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .max_subscriptions = 1, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "ceiling" });
+    const first = try hub.subscribe(arena, opened.session_id, .{});
+    const request = try submitFor(arena, "ceiling");
+    const started = try hub.submit(arena, "ceiling", &request);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "ceiling", started.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
+    try testing.expectError(error.SubscriptionFull, hub.subscribe(arena, opened.session_id, .{}));
+
+    while (first.next()) |_| {}
+    try testing.expectEqual(Ending.run_terminal, first.ending);
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+
+    _ = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
+}
+
+test "an ended subscription keeps its handle until close, and close reclaims it" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "handle" });
+    const ended = try hub.subscribe(arena, opened.session_id, .{});
+    const request = try submitFor(arena, "handle");
+    const started = try hub.submit(arena, "handle", &request);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "handle", started.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    while (ended.next()) |_| {}
+    try testing.expectEqual(Ending.run_terminal, ended.ending);
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+
+    ended.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
+}
+
+test "a replay that already lost events never takes a ceiling slot" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .max_subscriptions = 1, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "replayed-slot" });
+    const request = try submitFor(arena, "replayed-slot");
+    const started = try hub.submit(arena, "replayed-slot", &request);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "replayed-slot", started.run_id.?);
+    try hub.pump(testing.allocator, 0);
+
+    const replayed = try hub.subscribe(arena, opened.session_id, .{ .run_id = started.run_id.?, .after = 0 });
+    try testing.expectEqual(Ending.overflow, replayed.ending);
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    _ = try hub.subscribe(arena, opened.session_id, .{});
+    try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
 }
 
 test "a hub with no subscriber bound takes any number of them" {

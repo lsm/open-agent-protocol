@@ -10,41 +10,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/lsm/open-agent-protocol/go/internal/publicset"
 )
-
-var publicGoPackages = map[string]bool{
-	"go/client":              true,
-	"go/harness":             true,
-	"go/protocol":            true,
-	"go/providercatalog":     true,
-	"go/serve":               true,
-	"go/serve/serveendpoint": true,
-	"go/serve/servehttp":     true,
-	"go/serve/servestdio":    true,
-	"go/validation":          true,
-	"harnesses":              true,
-	"providers":              true,
-	"schema":                 true,
-}
-
-func internalGoPackage(name string) bool {
-	for _, element := range strings.Split(name, "/") {
-		if element == "internal" {
-			return true
-		}
-	}
-	return false
-}
-
-func publicGoPackage(name string) bool {
-	if internalGoPackage(name) {
-		return false
-	}
-	if name == "go/adapter" || strings.HasPrefix(name, "go/adapter/") {
-		return true
-	}
-	return publicGoPackages[name]
-}
 
 func checkGoPackages(stdout io.Writer) error {
 	root := repositoryRoot()
@@ -74,11 +42,11 @@ func checkGoPackages(stdout io.Writer) error {
 			binaries++
 			return nil
 		}
-		if internalGoPackage(name) {
+		if publicset.Internal(name) {
 			internalCount++
 			return nil
 		}
-		if !publicGoPackage(name) {
+		if !publicset.Public(name) {
 			findings = append(findings, fmt.Errorf("%s is importable and is in neither the public set nor go/internal, so every exported name in it is public API the day a Go program imports this module: name it or move it", name))
 			return nil
 		}
