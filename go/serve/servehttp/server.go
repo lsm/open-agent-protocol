@@ -275,6 +275,8 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			status, code = http.StatusNotFound, "unknown_adapter"
 		case errors.Is(err, serve.ErrSessionExists):
 			status, code = http.StatusConflict, "session_exists"
+		case errors.Is(err, base.ErrSessionClosed):
+			status, code = http.StatusConflict, "session_closed"
 		}
 		s.writeError(w, status, code, adapterMessage(err), envelope)
 		return

@@ -1165,3 +1165,21 @@ func TestATruncatedRequestBodyIsRefusedWithItsOwnCode(t *testing.T) {
 		t.Fatalf("a truncated body answered %q, want the request_read code", text)
 	}
 }
+
+func TestOpenRefusesASessionTheAdapterReportsClosed(t *testing.T) {
+	registry := memoryRegistry(0)
+	if err := registry.Register("closed", &statefulAdapter{state: protocol.SessionState{Status: protocol.SessionClosed}}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := httptest.NewServer(server.Handler())
+	t.Cleanup(daemon.Close)
+
+	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-closed", protocol.SessionOpenRequest{SessionID: "never-open"}, "never-open", "", "")
+	status, response := postEnvelope(t, daemon, "/adapters/closed/sessions", request)
+	requireErrorResponse(t, status, http.StatusConflict, response, "session_closed")
+}
