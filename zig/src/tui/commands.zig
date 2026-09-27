@@ -308,6 +308,7 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
         ctx.state.status.streaming = false;
         ctx.state.stream_aborted = true;
         ctx.state.clearPendingSteers();
+        ctx.state.clearPendingFollowUps();
         if (ctx.state.mode == .approval) {
             ctx.state.approval.deinit(ctx.allocator);
             ctx.state.mode = .normal;

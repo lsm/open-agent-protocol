@@ -545,6 +545,8 @@ pub const App = struct {
     pending_clipboard: ?[]u8 = null,
     interrupt_armed_tick: ?u64 = null,
     pending_clear_screen: bool = false,
+    slash_index: usize = 0,
+    slash_index_query: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
@@ -748,6 +750,7 @@ pub const App = struct {
 
     fn openPicker(self: *App, kind: tui_state.PickerKind) void {
         self.state.picker_kind = kind;
+        self.state.clearPickerFilter();
         self.state.menu_index = 0;
         self.state.menu_scroll = 0;
         switch (kind) {
@@ -776,7 +779,7 @@ pub const App = struct {
         self.ensureMenuSelectionVisible();
     }
 
-    fn menuItemCount(self: *const App) usize {
+    fn pickerSourceCount(self: *const App) usize {
         return switch (self.state.picker_kind) {
             .model => if (self.runtime) |runtime| runtime.availableModels().len else 0,
             .login => login_providers.len,
@@ -784,14 +787,49 @@ pub const App = struct {
         };
     }
 
+    fn pickerItem(self: *const App, index: usize, current: ?ai_types.Model) menu_picker_view.Item {
+        return switch (self.state.picker_kind) {
+            .model => if (self.runtime) |runtime| model_item: {
+                const model = runtime.availableModels()[index];
+                const is_current = if (current) |active| std.mem.eql(u8, active.id, model.id) else false;
+                break :model_item .{ .label = model.id, .detail = model.provider, .badge = if (is_current) tui_theme.glyph.system ++ " current" else null };
+            } else .{ .label = "" },
+            .login => .{ .label = login_providers[index], .badge = loginBadge(self.login_status[index]) },
+            .permission => .{ .label = @tagName(permission_modes[index]), .detail = TuiModel.permissionModeDetail(permission_modes[index]) },
+        };
+    }
+
+    fn pickerMatches(self: *const App, index: usize) bool {
+        const item = self.pickerItem(index, null);
+        return filterMatches(self.state.pickerFilter(), item.label, item.detail orelse "");
+    }
+
+    fn pickerMatchCount(self: *const App) usize {
+        var count: usize = 0;
+        for (0..self.pickerSourceCount()) |i| {
+            if (self.pickerMatches(i)) count += 1;
+        }
+        return count;
+    }
+
+    fn pickerSourceIndex(self: *const App, position: usize) ?usize {
+        var seen: usize = 0;
+        for (0..self.pickerSourceCount()) |i| {
+            if (!self.pickerMatches(i)) continue;
+            if (seen == position) return i;
+            seen += 1;
+        }
+        return null;
+    }
+
     fn applySelectedModel(self: *App) !void {
         const runtime = self.runtime orelse return error.NoRuntimeConfigured;
         const models = runtime.availableModels();
-        if (models.len == 0 or self.state.menu_index >= models.len) {
+        if (models.len == 0) {
             self.state.mode = .normal;
             return;
         }
-        const model = models[self.state.menu_index];
+        const model = models[self.pickerSourceIndex(self.state.menu_index) orelse return];
         if (self.session) |*session| {
             try session.switchModelExact(model);
         } else {
@@ -883,12 +921,12 @@ pub const App = struct {
     }
 
     fn applySelectedLogin(self: *App) !void {
-        const idx = @min(self.state.menu_index, login_providers.len - 1);
+        const idx = self.pickerSourceIndex(self.state.menu_index) orelse return;
         try self.startLoginProviderIndex(idx);
     }
 
     fn applySelectedPermission(self: *App) !void {
-        const idx = @min(self.state.menu_index, permission_modes.len - 1);
+        const idx = self.pickerSourceIndex(self.state.menu_index) orelse return;
         const mode = permission_modes[idx];
         const runtime = self.runtime orelse return error.NoRuntimeConfigured;
         try runtime.setPermissionMode(mode);
@@ -1053,7 +1091,7 @@ pub const App = struct {
     }
 
     fn moveMenuSelection(self: *App, delta: isize) void {
-        const n = self.menuItemCount();
+        const n = self.pickerMatchCount();
         if (n == 0) {
             self.state.menu_index = 0;
             self.state.menu_scroll = 0;
@@ -1534,14 +1572,56 @@ pub const App = struct {
         return text[1..];
     }
 
+    pub fn slashSelection(self: *const App) usize {
+        const query = self.slashQuery() orelse return 0;
+        if (self.slash_index_query != std.hash.Wyhash.hash(0, query)) return 0;
+        const count = slashMatchCount(query);
+        if (count == 0) return 0;
+        return @min(self.slash_index, count - 1);
+    }
+
+    pub fn moveSlashSelection(self: *App, delta: isize) bool {
+        if (self.state.composer.history_index != null) return false;
+        const query = self.slashQuery() orelse return false;
+        const count = slashMatchCount(query);
+        if (count == 0) return false;
+        const current = self.slashSelection();
+        self.slash_index = if (delta < 0) current -| @as(usize, @intCast(-delta)) else @min(count - 1, current + @as(usize, @intCast(delta)));
+        self.slash_index_query = std.hash.Wyhash.hash(0, query);
+        return true;
+    }
+
     pub fn completeSlashCommand(self: *App) !bool {
         const query = self.slashQuery() orelse return false;
-        for (&tui_commands.commands) |info| {
-            if (!std.mem.startsWith(u8, info.name, query)) continue;
-            const has_args = std.mem.indexOfScalar(u8, info.usage, ' ') != null;
-            const completed = try std.fmt.allocPrint(self.allocator, "/{s}{s}", .{ info.name, if (has_args) " " else "" });
-            defer self.allocator.free(completed);
-            try self.state.replaceComposerBuffer(completed);
+        const info = slashMatch(query, self.slashSelection()) orelse return false;
+        const has_args = std.mem.indexOfScalar(u8, info.usage, ' ') != null;
+        const completed = try std.fmt.allocPrint(self.allocator, "/{s}{s}", .{ info.name, if (has_args) " " else "" });
+        defer self.allocator.free(completed);
+        try self.state.replaceComposerBuffer(completed);
+        return true;
+    }
+
+    pub fn selectSlashCommand(self: *App) !void {
+        const query = self.slashQuery() orelse return;
+        const info = slashMatch(query, self.slashSelection()) orelse return;
+        if (std.mem.eql(u8, query, info.name)) return;
+        const command = try std.fmt.allocPrint(self.allocator, "/{s}", .{info.name});
+        defer self.allocator.free(command);
+        try self.state.replaceComposerBuffer(command);
+    }
+
+    pub fn queueFollowUp(self: *App, text: []const u8) !bool {
+        const trimmed = std.mem.trim(u8, text, " \t\r\n");
+        if (trimmed.len == 0 or isSlashDraft(trimmed)) return false;
+        self.applyPendingSessionResetSync() catch |err| {
+            if (err == error.PendingSessionReset) try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
+            return err;
+        };
+        try self.ensureSessionId();
+        if (self.session) |*session| {
+            try session.followUp(trimmed);
+            try self.state.appendQueuedFollowUp(trimmed);
+            self.refreshQueuedCounts();
             return true;
         }
         return false;
@@ -1799,11 +1879,12 @@ pub const TuiModel = struct {
                     switch (key.key) {
                         .up => app.moveMenuSelection(-1),
                         .down => app.moveMenuSelection(1),
-                        .char => |c| switch (c) {
-                            'k' => app.moveMenuSelection(-1),
-                            'j' => app.moveMenuSelection(1),
-                            else => {},
-                        },
+                        .page_up => app.moveMenuSelection(-@as(isize, @intCast(sessionPickerHeight(app)))),
+                        .page_down => app.moveMenuSelection(@intCast(sessionPickerHeight(app))),
+                        .char => |c| appendPickerChar(app, c) catch {},
+                        .space => app.state.appendPickerFilter(" ") catch {},
+                        .paste => |text| app.state.appendPickerFilter(text) catch {},
+                        .backspace => _ = app.state.popPickerFilter(),
                         .enter => switch (app.state.picker_kind) {
                             .model => app.applySelectedModel() catch |err| app.recordError(@errorName(err)) catch {},
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
@@ -1824,6 +1905,7 @@ pub const TuiModel = struct {
                             app.state.status.setError(app.allocator, @errorName(err)) catch {};
                             app.state.appendTranscript(.@"error", @errorName(err)) catch {};
                         };
+                        if (app.state.mode == .normal) app.selectSlashCommand() catch |err| app.recordError(@errorName(err)) catch {};
                         const text = app.state.composer.text();
                         if (app.state.mode == .approval) {
                             const command = tui_commands.parse(text) catch return .none;
@@ -1865,7 +1947,21 @@ pub const TuiModel = struct {
                     },
                     .backspace => _ = app.state.composer.deleteBeforeCursor(),
                     .delete => _ = app.state.composer.deleteAtCursor(),
-                    .tab => _ = app.completeSlashCommand() catch false,
+                    .tab => {
+                        if (app.state.mode == .normal and app.state.status.streaming and !isSlashDraft(app.state.composer.text())) {
+                            const text = app.state.composer.text();
+                            const queued = app.queueFollowUp(text) catch |err| blk: {
+                                if (err != error.PendingSessionReset) app.recordError(@errorName(err)) catch {};
+                                break :blk false;
+                            };
+                            if (queued) {
+                                app.state.recordComposerHistory(text) catch |err| app.recordError(@errorName(err)) catch {};
+                                app.state.composer.clear();
+                            }
+                        } else {
+                            _ = app.completeSlashCommand() catch false;
+                        }
+                    },
                     .char => |c| appendChar(app, c) catch {},
                     .paste => |text| app.state.composer.insertSlice(app.allocator, text) catch {},
                     .space => app.state.composer.insertSlice(app.allocator, " ") catch {},
@@ -1874,10 +1970,10 @@ pub const TuiModel = struct {
                     .home => app.state.composer.moveCursorHome(),
                     .end => app.state.composer.moveCursorEnd(),
                     .up => {
-                        _ = app.state.composerHistoryPrev() catch false;
+                        if (app.state.mode != .normal or !app.moveSlashSelection(-1)) _ = app.state.composerHistoryPrev() catch false;
                     },
                     .down => {
-                        _ = app.state.composerHistoryNext() catch false;
+                        if (app.state.mode != .normal or !app.moveSlashSelection(1)) _ = app.state.composerHistoryNext() catch false;
                     },
                     .page_up => app.state.transcript_scroll += 5,
                     .page_down => app.state.transcript_scroll -|= 5,
@@ -2009,6 +2105,7 @@ pub const TuiModel = struct {
         composer: []const u8,
         status: []const u8,
         extra: []const u8,
+        queued_rows: usize,
     };
 
     fn renderInlineBody(app: *App, ctx: *const zz.Context, width: usize, budget: usize) ![]const u8 {
@@ -2040,65 +2137,86 @@ pub const TuiModel = struct {
         else
             composer_view.hintText(ctx.allocator, &app.state) catch "";
         const status = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
-        const composer = composer_view.render(ctx.allocator, &app.state, .{
-            .width = width,
-            .anim_tick = app.state.anim_tick,
-        }) catch "";
+        const composer = composer_view.render(ctx.allocator, &app.state, .{ .width = width }) catch "";
+        const queued = if (app.state.mode == .normal) renderQueuedFollowUps(ctx.allocator, &app.state, width) catch "" else "";
         const extra = switch (app.state.mode) {
             .approval => approval_view.render(ctx.allocator, &app.state, .{ .width = width }) catch "",
             .session_picker => session_picker_view.render(ctx.allocator, &app.state, .{ .width = width, .height = sessionPickerHeight(app), .offset = app.state.session_scroll }) catch "",
-            .picker => blk: {
-                var login_items: [App.login_providers.len]menu_picker_view.Item = undefined;
-                var permission_items: [App.permission_modes.len]menu_picker_view.Item = undefined;
-                var title: []const u8 = "";
-                var empty_message: []const u8 = "  (nothing to select)";
-                const items: []const menu_picker_view.Item = switch (app.state.picker_kind) {
-                    .model => model_items: {
-                        const models = if (app.runtime) |runtime| runtime.availableModels() else &[_]ai_types.Model{};
-                        const current = if (app.runtime) |runtime| runtime.currentModel() else null;
-                        const list = ctx.allocator.alloc(menu_picker_view.Item, models.len) catch break :blk "";
-                        for (models, 0..) |model, i| {
-                            const is_current = if (current) |active| std.mem.eql(u8, active.id, model.id) else false;
-                            list[i] = .{ .label = model.id, .detail = model.provider, .badge = if (is_current) tui_theme.glyph.system ++ " current" else null };
-                        }
-                        title = "Select model";
-                        empty_message = "  no models available";
-                        break :model_items list;
-                    },
-                    .login => login_items_blk: {
-                        for (App.login_providers, 0..) |provider, i| login_items[i] = .{ .label = provider, .badge = App.loginBadge(app.login_status[i]) };
-                        title = "Login provider";
-                        break :login_items_blk &login_items;
-                    },
-                    .permission => permission_items_blk: {
-                        for (App.permission_modes, 0..) |mode, i| {
-                            permission_items[i] = .{ .label = @tagName(mode), .detail = permissionModeDetail(mode) };
-                        }
-                        title = "Tool permissions";
-                        break :permission_items_blk &permission_items;
-                    },
-                };
-                break :blk menu_picker_view.render(ctx.allocator, .{
-                    .title = title,
-                    .items = items,
-                    .selected = app.state.menu_index,
-                    .width = width,
-                    .height = sessionPickerHeight(app),
-                    .offset = app.state.menu_scroll,
-                    .empty_message = empty_message,
-                }) catch "";
-            },
+            .picker => renderPicker(ctx.allocator, app, width) catch "",
             .login_input => "",
-            .normal => renderCommandPalette(ctx.allocator, app, width) catch "",
+            .normal => blk: {
+                const palette = renderCommandPalette(ctx.allocator, app, width) catch "";
+                if (queued.len == 0) break :blk palette;
+                if (palette.len == 0) break :blk queued;
+                break :blk tui_render.joinVertical(ctx.allocator, &.{ queued, palette }) catch palette;
+            },
         };
-        return .{ .composer = composer, .status = status, .extra = extra };
+        return .{ .composer = composer, .status = status, .extra = extra, .queued_rows = countLines(queued) };
+    }
+
+    fn renderPicker(allocator: std.mem.Allocator, app: *const App, width: usize) ![]const u8 {
+        const count = app.pickerSourceCount();
+        const items = try allocator.alloc(menu_picker_view.Item, count);
+        const current = if (app.state.picker_kind == .model) (if (app.runtime) |runtime| runtime.currentModel() else null) else null;
+        var len: usize = 0;
+        for (0..count) |i| {
+            if (!app.pickerMatches(i)) continue;
+            items[len] = app.pickerItem(i, current);
+            len += 1;
+        }
+        const filter = app.state.pickerFilter();
+        const title: []const u8 = switch (app.state.picker_kind) {
+            .model => "Select model",
+            .login => "Login provider",
+            .permission => "Tool permissions",
+        };
+        const empty_message = if (filter.len > 0)
+            try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "  nothing matches \"{s}\"", .{filter}), width -| 4)
+        else if (app.state.picker_kind == .model) "  no models available" else "  (nothing to select)";
+        const subtitle: ?[]const u8 = if (filter.len > 0)
+            try tui_text.truncateLineToWidth(allocator, try std.fmt.allocPrint(allocator, "{s} {s}{s}", .{ tui_theme.glyph.prompt, filter, tui_theme.glyph.caret }), width -| 4)
+        else if (app.state.picker_kind == .model) tui_theme.glyph.prompt ++ " type to filter" else null;
+        return menu_picker_view.render(allocator, .{
+            .title = title,
+            .subtitle = subtitle,
+            .items = items[0..len],
+            .selected = app.state.menu_index,
+            .width = width,
+            .height = sessionPickerHeight(app),
+            .offset = app.state.menu_scroll,
+            .empty_message = empty_message,
+        });
+    }
+
+    const max_queued_rows: usize = 3;
+
+    fn renderQueuedFollowUps(allocator: std.mem.Allocator, state: *const tui_state.AppState, width: usize) ![]const u8 {
+        const pending = state.pending_follow_ups.items;
+        if (pending.len == 0) return "";
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        errdefer out.deinit();
+        const writer = &out.writer;
+        const shown = @min(pending.len, max_queued_rows);
+        for (pending[0..shown], 0..) |text, i| {
+            if (i > 0) try writer.writeByte('\n');
+            const flat = try std.mem.replaceOwned(u8, allocator, text, "\n", " ");
+            const safe = try tui_text.sanitizeTerminalText(allocator, flat);
+            const line = try std.fmt.allocPrint(allocator, "  \u{21b3} queued  {s}", .{safe});
+            try writer.writeAll(try tui_theme.muted().render(allocator, try tui_text.truncateLineToWidth(allocator, line, width -| 1)));
+        }
+        if (pending.len > shown) {
+            const more = try std.fmt.allocPrint(allocator, "    +{d} more queued", .{pending.len - shown});
+            try writer.writeByte('\n');
+            try writer.writeAll(try tui_theme.dim().render(allocator, more));
+        }
+        return out.toOwnedSlice();
     }
 
     fn flushBudget(self: *TuiModel, app: *App, ctx: *const zz.Context) usize {
         const width: usize = @max(ctx.width, 20);
         const height: usize = @max(ctx.height, 8);
         const chrome = self.renderChrome(app, ctx, width);
-        return height -| (countLines(chrome.status) + countLines(chrome.composer) + 1);
+        return height -| (countLines(chrome.status) + countLines(chrome.composer) + chrome.queued_rows + 1);
     }
 
     fn renderCommandPalette(allocator: std.mem.Allocator, app: *const App, width: usize) ![]const u8 {
@@ -2111,22 +2229,27 @@ pub const TuiModel = struct {
             len += 1;
         }
         if (len == 0) return "";
+        const selected = app.slashSelection();
         return menu_picker_view.render(allocator, .{
             .title = "Commands",
             .items = items[0..len],
-            .selected = 0,
+            .selected = selected,
             .width = width,
-            .height = 8,
-            .footer = tui_theme.key.tab ++ " complete " ++ tui_theme.glyph.dot ++ " " ++ tui_theme.key.enter ++ " run",
+            .height = palette_rows,
+            .offset = if (selected >= palette_rows) selected + 1 - palette_rows else 0,
+            .footer = tui_theme.key.up_down ++ " select " ++ tui_theme.glyph.dot ++ " " ++ tui_theme.key.tab ++ " complete " ++ tui_theme.glyph.dot ++ " " ++ tui_theme.key.enter ++ " run",
         });
     }
+
+    const palette_rows: usize = 8;
 
     fn renderInlineBlock(allocator: std.mem.Allocator, state: *const tui_state.AppState, index: usize, width: usize, live: bool) ![]u8 {
         const entries = state.transcript.items;
         const entry = &entries[index];
         const detached = index == 0 or !transcript_view.entriesAttached(&entries[index - 1], entry);
         const awaiting = live and state.mode == .approval and entry.kind == .tool and entry.tool_call_id.len > 0 and std.mem.eql(u8, entry.tool_call_id, state.approval.tool_call_id);
-        const rendered = try transcript_view.renderTranscriptEntryWith(allocator, entry, width, .{ .live = live and isLiveEntry(state, index), .anim_tick = state.anim_tick, .awaiting_approval = awaiting });
+        const tool = if (entry.kind == .tool and entry.tool_call_id.len > 0) state.toolById(entry.tool_call_id) else null;
+        const rendered = try transcript_view.renderTranscriptEntryWith(allocator, entry, width, .{ .live = live and isLiveEntry(state, index), .anim_tick = state.anim_tick, .awaiting_approval = awaiting, .tool = tool });
         defer allocator.free(rendered);
         if (!detached) return allocator.dupe(u8, rendered);
         return std.mem.concat(allocator, u8, &.{ "\n", rendered });
@@ -2195,6 +2318,12 @@ pub const TuiModel = struct {
         var buf: [4]u8 = undefined;
         const len = try std.unicode.utf8Encode(c, &buf);
         try app.state.composer.insertSlice(app.allocator, buf[0..len]);
+    }
+
+    fn appendPickerChar(app: *App, c: u21) !void {
+        var buf: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(c, &buf);
+        try app.state.appendPickerFilter(buf[0..len]);
     }
 
     fn flushInlineHistory(self: *TuiModel, app: *App, ctx: *zz.Context, include_active: bool) !void {
@@ -2350,6 +2479,37 @@ pub const TuiModel = struct {
         return @max(app.last_view_height, 8) / 2;
     }
 };
+
+fn isSlashDraft(text: []const u8) bool {
+    const trimmed = std.mem.trimStart(u8, text, " \t\r\n");
+    return trimmed.len > 0 and trimmed[0] == '/';
+}
+
+fn filterMatches(filter: []const u8, label: []const u8, detail: []const u8) bool {
+    var terms = std.mem.tokenizeScalar(u8, filter, ' ');
+    while (terms.next()) |term| {
+        if (std.ascii.indexOfIgnoreCase(label, term) == null and std.ascii.indexOfIgnoreCase(detail, term) == null) return false;
+    }
+    return true;
+}
+
+fn slashMatchCount(query: []const u8) usize {
+    var count: usize = 0;
+    for (&tui_commands.commands) |info| {
+        if (std.mem.startsWith(u8, info.name, query)) count += 1;
+    }
+    return count;
+}
+
+fn slashMatch(query: []const u8, position: usize) ?tui_commands.CommandInfo {
+    var seen: usize = 0;
+    for (&tui_commands.commands) |info| {
+        if (!std.mem.startsWith(u8, info.name, query)) continue;
+        if (seen == position) return info;
+        seen += 1;
+    }
+    return null;
+}
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test)
@@ -2871,6 +3031,217 @@ test "TuiModel Tab completes the first matching slash command" {
     try std.testing.expect(model.app.?.slashQuery() == null);
 }
 
+test "TuiModel arrow keys move the slash palette selection that Tab completes" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 30;
+    try model.app.?.state.replaceComposerBuffer("/perm");
+
+    _ = model.update(.{ .key = .{ .key = .down } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 1), model.app.?.slashSelection());
+    const frame = model.view(&tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, frame, tui_theme.glyph.select ++ " /perm [ask|bypass]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, tui_theme.glyph.select ++ " /permissions") == null);
+
+    _ = model.update(.{ .key = .{ .key = .up } }, &tctx.ctx);
+    _ = model.update(.{ .key = .{ .key = .up } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), model.app.?.slashSelection());
+    _ = model.update(.{ .key = .{ .key = .down } }, &tctx.ctx);
+    _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("/perm ", model.app.?.state.composer.text());
+    try std.testing.expectEqual(@as(usize, 0), model.app.?.state.composer.history.items.len);
+}
+
+test "TuiModel Enter runs the slash command the palette selects" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    try model.app.?.state.replaceComposerBuffer("/");
+
+    _ = model.update(.{ .key = .{ .key = .down } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("model", slashMatch("", model.app.?.slashSelection()).?.name);
+    _ = model.update(.{ .key = .{ .key = .enter } }, &tctx.ctx);
+    try std.testing.expectEqual(tui_state.AppMode.picker, model.app.?.state.mode);
+    try std.testing.expectEqual(tui_state.PickerKind.model, model.app.?.state.picker_kind);
+    try std.testing.expectEqualStrings("", model.app.?.state.composer.text());
+}
+
+test "TuiModel typing after a palette move resets the selection" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    try model.app.?.state.replaceComposerBuffer("/");
+
+    _ = model.update(.{ .key = .{ .key = .down } }, &tctx.ctx);
+    _ = model.update(.{ .key = .{ .key = .down } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 2), model.app.?.slashSelection());
+    _ = model.update(.{ .key = .{ .key = .{ .char = 'p' } } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), model.app.?.slashSelection());
+    _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("/provider ", model.app.?.state.composer.text());
+}
+
+test "TuiModel arrow keys keep walking history once a recalled entry is shown" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    try model.app.?.state.recordComposerHistory("first prompt");
+    try model.app.?.state.recordComposerHistory("/model");
+
+    _ = model.update(.{ .key = .{ .key = .up } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("/model", model.app.?.state.composer.text());
+    _ = model.update(.{ .key = .{ .key = .up } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("first prompt", model.app.?.state.composer.text());
+}
+
+test "TuiModel Tab queues a follow-up while a turn streams and shows it until it is consumed" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    model.app.?.session = mock.session();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 24;
+    model.app.?.state.status.streaming = true;
+    try model.app.?.state.replaceComposerBuffer("  then open a PR  ");
+
+    _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 1), mock.follow_up_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.steer_count);
+    try std.testing.expectEqualStrings("", model.app.?.state.composer.text());
+    try std.testing.expectEqual(@as(usize, 1), model.app.?.state.pending_follow_ups.items.len);
+    try std.testing.expectEqualStrings("then open a PR", model.app.?.state.pending_follow_ups.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), model.app.?.state.queue.follow_up);
+    for (model.app.?.state.transcript.items) |entry| try std.testing.expect(!std.mem.eql(u8, entry.text.items, "then open a PR"));
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "queued  then open a PR") != null);
+
+    mock.queued_counts.follow_up = 0;
+    _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "queued  then open a PR") == null);
+}
+
+test "TuiModel Tab queues nothing while idle or for a slash draft" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    model.app.?.session = mock.session();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    try model.app.?.state.replaceComposerBuffer("plain draft");
+
+    _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+    try std.testing.expectEqualStrings("plain draft", model.app.?.state.composer.text());
+
+    model.app.?.state.status.streaming = true;
+    try model.app.?.state.replaceComposerBuffer("/ab");
+    _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+    try std.testing.expectEqualStrings("/abort", model.app.?.state.composer.text());
+
+    for ([_][]const u8{ "/model claude", "/model ", "  /status now" }) |draft| {
+        try model.app.?.state.replaceComposerBuffer(draft);
+        _ = model.update(.{ .key = .{ .key = .tab } }, &tctx.ctx);
+        try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+        try std.testing.expectEqualStrings(draft, model.app.?.state.composer.text());
+    }
+    try std.testing.expect(!try model.app.?.queueFollowUp("/model claude"));
+    try std.testing.expectEqual(@as(usize, 0), mock.follow_up_count);
+    try std.testing.expectEqual(@as(usize, 0), model.app.?.state.pending_follow_ups.items.len);
+}
+
+test "TuiModel inline flush reserves the queued rows so no row hides behind them" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator), .render_mode = .inline_history };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 60;
+    tctx.ctx.height = 14;
+    try model.app.?.state.appendQueuedFollowUp("first queued follow-up");
+    try model.app.?.state.appendQueuedFollowUp("second queued follow-up");
+    for (0..12) |i| {
+        const text = try std.fmt.allocPrint(std.testing.allocator, "history entry {d}", .{i});
+        defer std.testing.allocator.free(text);
+        try model.app.?.state.appendTranscript(.assistant, text);
+    }
+
+    _ = model.update(.{ .tick = .{ .timestamp = 0, .delta = 0 } }, &tctx.ctx);
+    const above = try tctx.ctx.takeAbove(std.testing.allocator);
+    defer std.testing.allocator.free(above);
+    const frame = model.view(&tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 14), TuiModel.countLines(frame));
+    try std.testing.expect(std.mem.indexOf(u8, frame, "queued  second queued follow-up") != null);
+
+    const stream = try TuiModel.renderInlineStream(std.testing.allocator, &model.app.?.state, 0, 0, 60, true);
+    defer std.testing.allocator.free(stream);
+    const joined = try std.mem.concat(std.testing.allocator, u8, &.{ above, frame });
+    defer std.testing.allocator.free(joined);
+    var expected = std.mem.splitScalar(u8, stream, '\n');
+    var actual = std.mem.splitScalar(u8, joined, '\n');
+    while (expected.next()) |row| {
+        const got = actual.next() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings(std.mem.trimEnd(u8, row, " "), std.mem.trimEnd(u8, got, " "));
+    }
+    try std.testing.expectEqualStrings("", std.mem.trimEnd(u8, actual.next() orelse return error.TestUnexpectedResult, " "));
+}
+
+test "TuiModel picker filters by typing and applies the filtered choice" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 30;
+    model.app.?.openPicker(.permission);
+    try std.testing.expectEqual(@as(usize, 2), model.app.?.pickerMatchCount());
+
+    for ("ASK") |c| _ = model.update(.{ .key = .{ .key = .{ .char = c } } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("ASK", model.app.?.state.pickerFilter());
+    try std.testing.expectEqual(@as(usize, 1), model.app.?.pickerMatchCount());
+    try std.testing.expectEqual(@as(?usize, 1), model.app.?.pickerSourceIndex(0));
+    const frame = model.view(&tctx.ctx);
+    try std.testing.expect(std.mem.indexOf(u8, frame, tui_theme.glyph.prompt ++ " ASK") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "ask before tool execution") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "run tools without prompts") == null);
+
+    _ = model.update(.{ .key = .{ .key = .{ .char = 'x' } } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 0), model.app.?.pickerMatchCount());
+    try std.testing.expect(std.mem.indexOf(u8, model.view(&tctx.ctx), "nothing matches") != null);
+    _ = model.update(.{ .key = .{ .key = .enter } }, &tctx.ctx);
+    try std.testing.expectEqual(tui_state.AppMode.picker, model.app.?.state.mode);
+
+    _ = model.update(.{ .key = .{ .key = .backspace } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("ASK", model.app.?.state.pickerFilter());
+    model.app.?.openPicker(.permission);
+    try std.testing.expectEqualStrings("", model.app.?.state.pickerFilter());
+}
+
+test "filterMatches needs every term in the label or the detail" {
+    try std.testing.expect(filterMatches("", "claude-opus-4", "anthropic"));
+    try std.testing.expect(filterMatches("OPUS", "claude-opus-4", "anthropic"));
+    try std.testing.expect(filterMatches("anthropic opus", "claude-opus-4", "anthropic"));
+    try std.testing.expect(!filterMatches("openai opus", "claude-opus-4", "anthropic"));
+    try std.testing.expect(!filterMatches("gpt", "claude-opus-4", "anthropic"));
+}
+
 test "TuiModel word editing shortcuts edit the composer" {
     var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
     defer model.deinit();
@@ -3313,6 +3684,7 @@ test "App welcome uses session count" {
 
 const MockAppSession = struct {
     steer_count: usize = 0,
+    follow_up_count: usize = 0,
     submit_count: usize = 0,
     resume_count: usize = 0,
     cancel_count: usize = 0,
@@ -3332,6 +3704,7 @@ const MockAppSession = struct {
                 .cancel = cancel,
                 .submit_turn = submitTurn,
                 .steer = steer,
+                .follow_up = followUp,
                 .clear_queued_messages = clearQueuedMessages,
                 .queued_counts = queuedCounts,
                 .steers_consumed = steersConsumed,
@@ -3379,6 +3752,13 @@ const MockAppSession = struct {
         const self = ptr(ctx);
         self.steer_count += 1;
         if (self.queued_counts.total() == 0) self.queued_counts.steering += 1;
+    }
+
+    fn followUp(ctx: ?*anyopaque, text: []const u8) anyerror!void {
+        _ = text;
+        const self = ptr(ctx);
+        self.follow_up_count += 1;
+        self.queued_counts.follow_up += 1;
     }
 
     fn clearQueuedMessages(ctx: ?*anyopaque) void {
