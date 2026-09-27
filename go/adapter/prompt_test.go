@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -92,9 +93,56 @@ func TestRunToTerminalReportsAStreamWithNoTerminal(t *testing.T) {
 	session := &scriptedSession{results: []adapter.Result{
 		{Envelope: envelope(protocol.TypeRunStatusUpdated, 1, protocol.RunStatusUpdatedPayload{SessionID: "session-1", RunID: "run-1", Status: protocol.RunRunning})},
 	}}
-	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{})
+	outcome, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{})
 	if !errors.Is(err, adapter.ErrNoTerminal) {
 		t.Fatalf("err = %v, want no terminal", err)
+	}
+	if outcome.RunID != "run-1" {
+		t.Fatalf("outcome names %q, want the run the caller has to reconcile", outcome.RunID)
+	}
+}
+
+func TestRunToTerminalReportsTheRunOnACancelledCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &scriptedSession{results: []adapter.Result{
+		{Envelope: envelope(protocol.TypeContentDelta, 1, protocol.ContentDeltaPayload{SessionID: "session-1", RunID: "run-1", MessageID: "message-1", Part: protocol.ContentPart{Type: protocol.ContentText, Text: "hi"}})},
+	}, hold: true}
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	outcome, err := adapter.RunToTerminal(ctx, session, plainSubmit, adapter.RunOptions{StallWindow: time.Second})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the cancelled context", err)
+	}
+	if outcome.RunID != "run-1" {
+		t.Fatalf("outcome names %q, want the run left active on the harness", outcome.RunID)
+	}
+}
+
+func TestRunToTerminalPrefersARefusedAnswerOverAStall(t *testing.T) {
+	ask := protocol.UserInputRequestedPayload{
+		InteractionID: "interaction-1", RequestedBy: "harness", RespondedBy: "user",
+		SessionID: "session-1", RunID: "run-1", Title: "Continue?",
+		Questions: []protocol.InputQuestion{{
+			ID: "choice", Prompt: "Continue?", Kind: protocol.InputSingleChoice, Required: true,
+			Options: []protocol.InputOption{{ID: "yes", Label: "Yes"}},
+		}},
+	}
+	session := &scriptedSession{
+		results:      []adapter.Result{{Envelope: envelope(protocol.TypeUserInputRequested, 1, ask)}},
+		hold:         true,
+		resolveDelay: 60 * time.Millisecond,
+		resolveError: errors.New("the adapter refused the answer"),
+	}
+	_, err := adapter.RunToTerminal(context.Background(), session, plainSubmit, adapter.RunOptions{
+		StallWindow: 20 * time.Millisecond,
+		Policy: func(context.Context, adapter.Gate) (adapter.GateAnswer, error) {
+			return adapter.GateAnswer{Answers: []protocol.InputAnswer{{QuestionID: "choice", SelectedOptionIDs: []string{"yes"}}}}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "the adapter refused the answer") {
+		t.Fatalf("err = %v, want the refusal that caused the silence", err)
 	}
 }
 
@@ -388,6 +436,8 @@ type scriptedSession struct {
 	resumeRequest adapter.ResumeRequest
 	cancelled     protocol.RunID
 	resolved      []adapter.InteractionResolution
+	resolveDelay  time.Duration
+	resolveError  error
 }
 
 func (s *scriptedSession) Submit(context.Context, protocol.MessageSubmitRequest) (protocol.MessageSubmitResponse, adapter.EventStream, error) {
@@ -417,10 +467,13 @@ func (s *scriptedSession) State(context.Context) (protocol.SessionState, error) 
 }
 
 func (s *scriptedSession) Resolve(_ context.Context, resolution adapter.InteractionResolution) error {
+	if s.resolveDelay > 0 {
+		time.Sleep(s.resolveDelay)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resolved = append(s.resolved, resolution)
-	return nil
+	return s.resolveError
 }
 
 func (s *scriptedSession) Cancel(_ context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {

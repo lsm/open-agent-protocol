@@ -247,7 +247,7 @@ func permissionGate(runID protocol.RunID, envelope protocol.Envelope, calls map[
 	return gate, nil
 }
 
-func RunToTerminal(ctx context.Context, session Session, request protocol.MessageSubmitRequest, options RunOptions) (RunOutcome, error) {
+func RunToTerminal(ctx context.Context, session Session, request protocol.MessageSubmitRequest, options RunOptions) (outcome RunOutcome, err error) {
 	stall := options.StallWindow
 	if stall <= 0 {
 		stall = DefaultStallWindow
@@ -268,8 +268,14 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 		return RunOutcome{}, err
 	}
 
+	runID := admission.RunID
+	defer func() {
+		if outcome.RunID == "" {
+			outcome.RunID = runID
+		}
+	}()
+
 	var (
-		outcome    RunOutcome
 		lastSeq    uint64
 		terminal   bool
 		resumes    int
@@ -279,7 +285,6 @@ func RunToTerminal(ctx context.Context, session Session, request protocol.Messag
 		done       = make(chan struct{})
 	)
 	defer close(done)
-	runID := admission.RunID
 
 	queue := make(chan Result, runEventQueue)
 	readerDone := make(chan struct{})
@@ -329,6 +334,11 @@ drain:
 			}
 			if takeQueued() {
 				break
+			}
+			select {
+			case gateErr := <-resolveErr:
+				return outcome, gateErr
+			default:
 			}
 			return outcome, &StalledError{Wait: stall}
 		case result, ok = <-queue:
@@ -462,6 +472,5 @@ drain:
 	if !terminal {
 		return outcome, &NoTerminalError{}
 	}
-	outcome.RunID = runID
 	return outcome, nil
 }
