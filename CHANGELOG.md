@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it, because `contract.Session.drain` reports a failure rather than whose stream
   failed, so a stream failure ends the whole session where Go confines it to the
   readers of that run.
+  the readers of that run. A replay that outgrows the mailbox names the run
+  being replayed at the position it reached, as Go's `nextReplay` does — the loss
+  candidate set answers a different question, which run a *live* stream's loss
+  belongs to, and applying it to a replay named the session's current run and
+  orphaned the replayed suffix.
 
 - A wire whose path carries a version now drops that version when the base's path already spells one, rather than only when the base ends in `/v1`. Five catalogued rows were composing an address no vendor serves: `zai-coding-plan` reached `/api/coding/paas/v4/v1/chat/completions`, `tencent-coding-plan` and `volcengine-coding-plan` reached `/coding/v3/v1/chat/completions`, `deepinfra` reached `/v1/openai/v1/chat/completions`, and on the anthropic wire `minimax-coding-plan` reached `/anthropic/v1/v1/messages`. Probed unauthenticated, the doubled form is a hard 404 for `deepinfra` and `minimax-coding-plan` while the deduplicated form is served, and the other three hosts answer 401 either way; `go/provider/zai.go` already paired that base with a versionless path. A base like `/v1/openai` or `/api/coding/paas/v4` is a versioned root, so the wire's own version must not be appended to it a second time.
 - `goap serve agent --backend codex` closes open interactions and actions in the order they opened, and `goap serve agent --backend opencode` settles unfinished tools in start order, as `oapx` does, instead of Go map iteration order. Neither parity fixture opens two at once, so the corpus cannot see it; the same unordered-map pattern still exists in the other Go adapters' settlement sweeps.
