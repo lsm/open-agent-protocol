@@ -435,7 +435,9 @@ same cursor. A named signal is written `event: <name>\ndata: {...}\n\n` with no
 A stream ends at the run's terminal envelope, at an overflow or a replay gap, at
 the client's hangup, or when the session closes — a stream open when the session
 closes receives the events already in flight and then ends. A connection made to
-an already-closed session is refused `409 session_closed` rather than parked.
+a session that is not open is refused `404 unknown_session` rather than
+parked; `409 session_closed` is the answer for the one request that finds a
+session stopping under it.
 
 **The three signals above are the whole set.** A session closing under a live
 stream ends it *silently* — a socket has no end to announce — so a port must not
