@@ -139,25 +139,23 @@ pub fn oauthOrigin(id: []const u8) ?OAuthOrigin {
     return row.oauth_origin;
 }
 
-const Wire = struct {
+pub const Wire = struct {
     id: []const u8,
     suffix: []const u8,
-    trim: bool,
-    dedup_version: bool,
-    idempotent: bool,
-    model_scoped: bool,
+    dedup_version: bool = false,
+    model_scoped: bool = false,
 };
 
-const wire_paths = [_]Wire{
-    .{ .id = "openai-completions", .suffix = "/v1/chat/completions", .trim = true, .dedup_version = true, .idempotent = true, .model_scoped = false },
-    .{ .id = "openai-responses", .suffix = "/v1/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
-    .{ .id = "openai-codex-responses", .suffix = "/responses", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
-    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .trim = false, .dedup_version = true, .idempotent = true, .model_scoped = false },
-    .{ .id = "ollama", .suffix = "/api/chat", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = false },
-    .{ .id = "google-generative-ai", .suffix = "", .trim = false, .dedup_version = false, .idempotent = false, .model_scoped = true },
+pub const wire_paths = [_]Wire{
+    .{ .id = "openai-completions", .suffix = "/v1/chat/completions", .dedup_version = true },
+    .{ .id = "openai-responses", .suffix = "/v1/responses" },
+    .{ .id = "openai-codex-responses", .suffix = "/responses" },
+    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .dedup_version = true },
+    .{ .id = "ollama", .suffix = "/api/chat" },
+    .{ .id = "google-generative-ai", .suffix = "", .model_scoped = true },
 };
 
-fn wirePath(wire: []const u8) ?Wire {
+pub fn wirePath(wire: []const u8) ?Wire {
     for (wire_paths) |path| {
         if (std.mem.eql(u8, path.id, wire)) return path;
     }
@@ -185,18 +183,36 @@ fn pathHasVersion(base_url: []const u8) bool {
     return false;
 }
 
-fn joinRequest(comptime base: []const u8, comptime path: Wire) []const u8 {
-    const trimmed = if (path.trim) std.mem.trimEnd(u8, base, "/") else base;
-    if (path.idempotent and std.mem.endsWith(u8, trimmed, path.suffix)) return trimmed;
-    const suffix = if (path.dedup_version and pathHasVersion(trimmed) and std.mem.startsWith(u8, path.suffix, "/v1/"))
-        path.suffix["/v1".len..]
+pub const UrlParts = struct {
+    head: []const u8,
+    tail: []const u8,
+};
+
+pub fn urlParts(base: []const u8, wire: Wire) UrlParts {
+    const head = std.mem.trimEnd(u8, base, "/");
+    if (wire.suffix.len == 0) return .{ .head = head, .tail = "" };
+    if (std.mem.endsWith(u8, head, wire.suffix)) return .{ .head = head, .tail = "" };
+    const tail = if (wire.dedup_version and pathHasVersion(head) and std.mem.startsWith(u8, wire.suffix, "/v1/"))
+        wire.suffix["/v1".len..]
     else
-        path.suffix;
-    return trimmed ++ suffix;
+        wire.suffix;
+    return .{ .head = head, .tail = tail };
 }
 
-fn joinModels(comptime base: []const u8, comptime path: []const u8) []const u8 {
-    return base ++ path;
+pub fn joinUrl(comptime base: []const u8, comptime wire: Wire) []const u8 {
+    const parts = comptime urlParts(base, wire);
+    if (parts.tail.len == 0) return base[0..parts.head.len];
+    return base[0..parts.head.len] ++ parts.tail;
+}
+
+pub fn joinUrlOwned(allocator: std.mem.Allocator, base: []const u8, wire: Wire) ![]const u8 {
+    const parts = urlParts(base, wire);
+    if (parts.tail.len == 0) return allocator.dupe(u8, parts.head);
+    return std.mem.concat(allocator, u8, &.{ parts.head, parts.tail });
+}
+
+pub fn joinModelsUrl(comptime base: []const u8, comptime path: []const u8) []const u8 {
+    return joinUrl(base, .{ .id = "models", .suffix = path });
 }
 
 pub const Resolved = struct {
@@ -221,8 +237,8 @@ pub const resolved = blk: {
                 .wire = endpoint.wire,
                 .region = endpoint.region,
                 .base_url = endpoint.base_url,
-                .models_url = if (row.models_endpoint) |models_path| joinModels(endpoint.base_url, models_path) else null,
-                .request_url = if (path) |known| if (known.model_scoped) null else joinRequest(endpoint.base_url, known) else null,
+                .models_url = if (row.models_endpoint) |models_path| joinModelsUrl(endpoint.base_url, models_path) else null,
+                .request_url = if (path) |known| if (known.model_scoped) null else joinUrl(endpoint.base_url, known) else null,
             };
             index += 1;
         }
@@ -566,5 +582,31 @@ test "every catalogued endpoint resolves the two URLs providers/resolved_urls.js
         try std.testing.expectEqualStrings(want.base_url, entry.base_url);
         try expectSameOptionalString(want.models_url, entry.models_url);
         try expectSameOptionalString(want.request_url, entry.request_url);
+    }
+}
+
+const google_wire = wirePath("google-generative-ai") orelse unreachable;
+
+test "a wire with no path joins to the base, trailing slash dropped" {
+    try std.testing.expectEqualStrings("https://generativelanguage.example", joinUrl("https://generativelanguage.example/", google_wire));
+    const owned = try joinUrlOwned(std.testing.allocator, "https://generativelanguage.example///", google_wire);
+    defer std.testing.allocator.free(owned);
+    try std.testing.expectEqualStrings("https://generativelanguage.example", owned);
+}
+
+test "the models path is joined by the same rule as a wire path" {
+    const wire = Wire{ .id = "models", .suffix = "/v1/models" };
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/models", joinModelsUrl("https://api.openai.com/", "/v1/models"));
+    const cases = [_]struct { base: []const u8, want: []const u8 }{
+        .{ .base = "https://api.openai.com", .want = "https://api.openai.com/v1/models" },
+        .{ .base = "https://api.openai.com/", .want = "https://api.openai.com/v1/models" },
+        .{ .base = "https://api.openai.com///", .want = "https://api.openai.com/v1/models" },
+        .{ .base = "https://api.openai.com/v1/models", .want = "https://api.openai.com/v1/models" },
+        .{ .base = "https://api.openai.com/v1/models/", .want = "https://api.openai.com/v1/models" },
+    };
+    for (cases) |case| {
+        const owned = try joinUrlOwned(std.testing.allocator, case.base, wire);
+        defer std.testing.allocator.free(owned);
+        try std.testing.expectEqualStrings(case.want, owned);
     }
 }

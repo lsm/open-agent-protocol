@@ -10,17 +10,15 @@ import (
 
 type wirePath struct {
 	suffix       string
-	trim         bool
 	dedupVersion bool
-	idempotent   bool
 	modelScoped  bool
 }
 
 var wirePaths = map[string]wirePath{
-	"openai-completions":     {suffix: "/v1/chat/completions", trim: true, dedupVersion: true, idempotent: true},
+	"openai-completions":     {suffix: "/v1/chat/completions", dedupVersion: true},
 	"openai-responses":       {suffix: "/v1/responses"},
 	"openai-codex-responses": {suffix: "/responses"},
-	"anthropic-messages":     {suffix: "/v1/messages", dedupVersion: true, idempotent: true},
+	"anthropic-messages":     {suffix: "/v1/messages", dedupVersion: true},
 	"ollama":                 {suffix: "/api/chat"},
 	"google-generative-ai":   {modelScoped: true},
 }
@@ -64,11 +62,8 @@ func pathHasVersion(baseURL string) bool {
 }
 
 func joinRequest(base string, path wirePath) string {
-	trimmed := base
-	if path.trim {
-		trimmed = strings.TrimRight(base, "/")
-	}
-	if path.idempotent && strings.HasSuffix(trimmed, path.suffix) {
+	trimmed := strings.TrimRight(base, "/")
+	if strings.HasSuffix(trimmed, path.suffix) {
 		return trimmed
 	}
 	suffix := path.suffix
@@ -79,7 +74,7 @@ func joinRequest(base string, path wirePath) string {
 }
 
 func joinModels(base, path string) string {
-	return base + path
+	return joinRequest(base, wirePath{suffix: path})
 }
 
 func findProvider(catalog Catalog, id string) (Provider, bool) {
