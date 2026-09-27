@@ -85,7 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ever added. Neither needs a `close()` from anyone, so the ceiling of 64 bounds
   live streams, as Go's already did when its last reader exits. An event that
   arrives for a settled run still reaches a live subscription, so a late loss is
-  still reported against the run the subscriber is following.
+  still reported against the run the subscriber is following. The handle itself is
+  the holder's until it calls `close()`: an ended subscription costs no slot, but
+  the hub keeps the handle rather than freeing one its holder may still close.
 - An `anthropic-messages` `base_url` ending in `/` no longer requests
   `//v1/messages`. The anthropic builder trimmed the base only to test whether the
   path was already present and then appended the untrimmed base, so a user who wrote

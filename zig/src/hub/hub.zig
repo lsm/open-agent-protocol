@@ -2527,6 +2527,32 @@ test "a subscription that has read its terminal stops occupying a ceiling slot" 
     try testing.expectEqual(@as(usize, 1), hub.entries.items[0].subscribers.items.len);
 }
 
+test "an ended subscription keeps its handle until close, and close reclaims it" {
+    var adapter = memory.Adapter.init(testing.allocator);
+    var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 256, .journal_capacity = 256 });
+    defer hub.deinit();
+    try hub.register("memory", adapter.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+
+    const opened = try hub.open(arena, "memory", .{ .session_id = "handle" });
+    const ended = try hub.subscribe(arena, opened.session_id, .{});
+    const request = try submitFor(arena, "handle");
+    const started = try hub.submit(arena, "handle", &request);
+    try hub.pump(testing.allocator, 0);
+    _ = try hub.cancel(arena, "handle", started.run_id.?);
+    try hub.pump(testing.allocator, 0);
+    while (ended.next()) |_| {}
+    try testing.expectEqual(Ending.run_terminal, ended.ending);
+    try testing.expectEqual(@as(usize, 0), hub.entries.items[0].subscribers.items.len);
+    try testing.expectEqual(@as(usize, 1), hub.subscriptions.items.len);
+
+    ended.close();
+    try hub.pump(testing.allocator, 0);
+    try testing.expectEqual(@as(usize, 0), hub.subscriptions.items.len);
+}
+
 test "a replay that already lost events never takes a ceiling slot" {
     var adapter = memory.Adapter.init(testing.allocator);
     var hub = Hub.init(testing.allocator, testClock, .{ .stream_queue = 2, .max_subscriptions = 1, .journal_capacity = 256 });
