@@ -178,11 +178,11 @@ wider than resume: `thread/read`, `thread/items/list`, `thread/turns/list`,
 `thread/revert`, `thread/name/set`, `thread/metadata/update`,
 `thread/goal/{get,set,clear}`, `thread/section/move`, `thread/shellCommand`,
 `thread/attachment/{add,list,remove}` and
-`thread/approveGuardianDeniedAction`. None of them was added in this move —
-the *Schema diff* above lists the five that were
-(`account/gatewayOAuth/{login,read,cancel}` and `thread/attachment/{add,list,remove}`)
-— so a reattach can enumerate the threads it may reattach to, and it can do so
-before it has any id.
+`thread/approveGuardianDeniedAction`. The *Schema diff* above names every
+method this move added, and it is `account/gatewayOAuth/*` and
+`thread/attachment/*` — the list and the resume a reattach needs are not among
+them, so a reattach can enumerate the threads it may reattach to, and it can
+do so before it has any id.
 
 **A reload restores the conversation and the thread's configuration.**
 `ThreadResumeParams` requires only `threadId` and offers `model`,
@@ -243,8 +243,11 @@ this row a reattach cannot inherit from `thread/resume` alone.
 
 **What is not established here.** Every claim above is source-read at
 `00c972ed…`, and this pin's real-process evidence (above) does not include a
-resume: no corpus case drives `thread/resume`, and the fixtures carry the
-method only in an omissions note. So the *answers* above — the response's
+resume: no corpus case drives `thread/resume`, and the only place the
+fixtures name it is the `run.resume` capability's **reason** string
+("thread/resume restores native attachment; canonical replay is bounded
+process memory"), which is prose about the method rather than a frame from
+it. So the *answers* above — the response's
 shape, the store's layout, the error for a missing rollout — are read from the
 source at this pin rather than observed from this pin's binary. The
 `thread/rollback` refusal in that evidence is the one adjacent data point: a
