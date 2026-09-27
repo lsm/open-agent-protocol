@@ -597,11 +597,12 @@ exceptions stated once here rather than repeated per row:
   `response_too_large` for a result its frame limit cannot carry. All four
   exist because a pipe gives no back pressure and has one shape a socket does
   not; a port must not produce any of them over HTTP.
-- **A closed session is released, not kept** ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)). Once
-  its close succeeds, every op naming it answers `unknown_session` (404), a
-  second `close` included, and `sessions` no longer lists it.
-  `session_closed` (409) in the rows below is a session that closes while the
-  request is in flight.
+- **A session that is not open is released, not kept** ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)).
+  A session stops being open when its `close` succeeds or when the hub ends it:
+  its harness reports the session closed, or its stream fails. From then on
+  every op naming it answers `unknown_session` (404), a second `close`
+  included, and `sessions` no longer lists it. `session_closed` (409) in the
+  rows below is a session that stops being open while the request is in flight.
 - **The HTTP body gate answers three codes no operation owns.**
   `unsupported_media_type`, `request_too_large` and `request_read`, stated once
   in [the HTTP rules](#the-http-routes-and-sse-framing). `request_too_large` is
@@ -1087,7 +1088,7 @@ Go change, queued in
 
 | | |
 | --- | --- |
-| **The draft says** | Close releases a session ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once it succeeds, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
+| **The draft says** | A session that is not open is released ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once its `close` succeeds or the hub ends it, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
 | **Go does** | `go/serve` keeps a closed session in its table. `sessions` lists it with its final state, `state` answers it, a second `close` is `ok`, and an open under its id is refused `session_exists`. |
 | **Zig does** | The core keeps the entry, its journal and a cursor for every run it had, lists it as closed, and refuses every op on it with `session_closed`. |
 | **Why both are the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
@@ -1136,7 +1137,7 @@ Go change, queued in
 | **The draft says** | Four overflow rules, each pinned by a Go test: *an adapter's own stream overflow reaches only the subscribers exposed to that run* (`TestHubAdapterStreamOverflow`, `TestAdapterOverflowScopedToExposedSubscribers`); *overflow follows the run the subscriber actually read* (`TestOverflowFollowsDeliveredRuns`); *an acknowledged position overrides a stale pending one* (`TestAcknowledgedPositionOverridesStalePending`); and *a late overflow does not cut a newer run* (`TestLateOverflowDoesNotCutNewerRun`). |
 | **Go does** | A subscriber tracks exposure **per run** — the run it is attached to, the run it has acknowledged, and every run with a queued event — and `exposedTo` decides whether a given run's stream failure reaches it at all. A run-a stream overflow therefore never reaches a subscriber that has acknowledged run-b, and a late overflow on an older run cannot cut a newer one. |
 | **Zig does** | One mailbox per subscription and no per-run exposure. `contract.Session.drain` reports a failure, not *whose* stream failed, so a stream failure is not an overflow and not attributable to a run: `pump` ends the **session** with `.stream_failed` and every subscription on it. `lossRun` names the right run for a *queue* overflow, and the cursor is the post-drain position, but there is no way to express "this run's stream overflowed, and only its readers care". |
-| **Why it matters** | A backend that overflows one run's stream takes down every subscriber on the session in Zig, where Go confines it. A host watching a healthy newer run is disconnected by an older run's failure. The rules are not merely unimplemented — the contract has no member that would let a port implement them, which is the same class as D2 to D6. |
+| **Why it matters** | A backend that overflows one run's stream takes down every subscriber on the session in Zig, where Go confines it. A host watching a healthy newer run is disconnected by an older run's failure. The rules are not merely unimplemented — the contract has no member that would let a port implement them, which is the same class as D3 to D6. |
 | **The fix** | `contract`'s drain reports the run that failed and whether it was an overflow, beside the failure, and `Subscription` tracks the run set it is exposed to the way Go's `subscriber` does. Two members, and all four rules become implementable. |
 | **What *is* ported** | Which run a **queue** overflow names, and where its cursor points. `lossRun` considers the dropped event's run, every run with a queued event, the run the subscription is reading and the session's current run, preferring a run the session has not finished — Go's candidate set, including the current run. The cursor is the position the client stopped at **after** draining, not where the queue filled, so a resume neither skips nor repeats. Pinned by `zig/src/hub/hub.zig`'s `a subscriber that falls behind is ended with a cursor on the run that overflowed`, `a loss on a newer run names the newer run rather than the one being read`, `the overflow cursor is where the client stopped after draining, not where the queue filled` and `a loss on a settled run names the live current run, which is what Go's candidate set reaches`. |
 

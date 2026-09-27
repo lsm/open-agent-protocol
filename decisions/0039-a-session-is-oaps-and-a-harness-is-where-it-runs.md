@@ -165,10 +165,12 @@ transcript entry is OAP's vocabulary.
 
 - **The hub draft changes.** Close releases the session; the rule that a
   closed session stays listed with its final state goes; `sessions` lists live
-  sessions. D2 stops being a divergence, because the Zig contract's
-  destructive close is now the specified shape, and #408 is superseded. The
-  trust model's "a restart ends every session" becomes "a restart ends every
-  harness process; sessions reopen".
+  sessions. D2 changes from a Zig divergence into one both hubs share until
+  #443 and #444 land: the Zig contract's destructive close is the specified
+  shape, and the entries both trees keep are what they drop. #408 is
+  superseded. The trust model's "a restart ends every session" becomes "a
+  restart ends every harness process", and a session reopens once
+  `session-reattach` lands.
 - **A host keeps binding records, and only those.** `oapx` keeps them in its
   state directory. The Go library takes them from an interface the embedding
   program supplies, since Decision 0038 makes it a library a program links.
