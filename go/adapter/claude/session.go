@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,6 +59,7 @@ type Session struct {
 	interactions map[protocol.InteractionID]*gateState
 	children     map[string]*childState
 	policyDenied map[string]bool
+	nextOrder    uint64
 	journal      *journal.Journal
 	stop         chan struct{}
 	stopOnce     sync.Once
@@ -96,6 +98,7 @@ type toolState struct {
 	args      json.RawMessage
 	requested protocol.EnvelopeID
 	started   protocol.EnvelopeID
+	order     uint64
 	terminal  bool
 }
 
@@ -107,6 +110,7 @@ type gateState struct {
 	questions []protocol.InputQuestion
 	resolved  bool
 	requested protocol.EnvelopeID
+	order     uint64
 }
 
 type childState struct {
@@ -719,8 +723,9 @@ func (s *Session) startTool(run *runState, nativeID, name string, input json.Raw
 	args, _ := json.Marshal(input)
 	tool := &toolState{
 		nativeID: nativeID, id: protocol.ToolCallID(s.ids.NewID("tool-call")), run: run,
-		name: name, source: s.attributionFor(name), args: args,
+		name: name, source: s.attributionFor(name), args: args, order: s.nextOrder,
 	}
+	s.nextOrder++
 	s.tools[nativeID] = tool
 	payload := s.toolPayload(tool)
 	requested, _ := s.emitEnvelope(run, protocol.TypeActionCallRequested, payload, false, "")
@@ -830,7 +835,8 @@ func (s *Session) openGate(control *rpc.IncomingControl, ask *native.CanUseToolR
 			{ID: "deny", Label: "Deny"},
 		},
 	}}
-	gate := &gateState{id: id, control: control, ask: ask, run: run, questions: questions}
+	gate := &gateState{id: id, control: control, ask: ask, run: run, questions: questions, order: s.nextOrder}
+	s.nextOrder++
 	s.interactions[id] = gate
 	requested, emitErr := s.emitEnvelope(run, protocol.TypeUserInputRequested, protocol.UserInputRequestedPayload{InteractionID: id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Title: title, Description: description, Questions: questions, AllowCancel: true}, false, "")
 	if emitErr != nil {
@@ -1064,11 +1070,16 @@ func reportedCost(frame *native.ResultFrame) map[string]json.RawMessage {
 }
 
 func (s *Session) sweepRun(run *runState) {
+	tools := make([]*toolState, 0, len(s.tools))
 	for _, tool := range s.tools {
 		if tool.run != run || tool.terminal {
 			continue
 		}
 		tool.terminal = true
+		tools = append(tools, tool)
+	}
+	sort.Slice(tools, func(i, j int) bool { return tools[i].order < tools[j].order })
+	for _, tool := range tools {
 		payload := s.toolPayload(tool)
 		payload.ArgumentsJSON = nil
 		if s.policyDenied[tool.nativeID] {
@@ -1079,12 +1090,17 @@ func (s *Session) sweepRun(run *runState) {
 		}
 		_, _ = s.emitEnvelope(run, protocol.TypeActionCallCancelled, payload, false, tool.started)
 	}
+	gates := make([]*gateState, 0, len(s.interactions))
 	for _, gate := range s.interactions {
 		if gate.run != run || gate.resolved {
 			continue
 		}
 		gate.resolved = true
 		delete(s.interactions, gate.id)
+		gates = append(gates, gate)
+	}
+	sort.Slice(gates, func(i, j int) bool { return gates[i].order < gates[j].order })
+	for _, gate := range gates {
 		_ = gate.control.RespondError(context.Background(), "claude adapter: run settled while the permission ask was open")
 		_, _ = s.emitEnvelope(run, protocol.TypeUserInputResolved, protocol.UserInputResolvedPayload{InteractionID: gate.id, RequestedBy: endpointID, RespondedBy: s.participant, SessionID: s.state.SessionID, RunID: run.id, Status: protocol.InputCancelled}, false, gate.requested)
 	}
