@@ -460,11 +460,23 @@ fn catalogEndpointFromEnvironment(allocator: std.mem.Allocator, id: []const u8) 
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
-const catalog_loader_ids = [_][]const u8{"deepseek"};
+const catalog_loader_ids = [_][]const u8{
+    "deepseek",
+    "openrouter",
+    "opencode",
+    "vercel",
+    "zenmux",
+    "deepinfra",
+};
 
 const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
+
+fn catalogModelsUrlForTest(id: []const u8) ?[]const u8 {
+    const target = catalogTarget(id) orelse return null;
+    return target.models_url;
+}
 
 fn loadCatalogModels(
     allocator: std.mem.Allocator,
@@ -2500,6 +2512,106 @@ test "a row with no implemented wire, endpoint or models listing has no target" 
     try std.testing.expect(catalogTarget("ollama") == null);
     try std.testing.expect(catalogTarget("kimi") == null);
     try std.testing.expect(catalogTarget("no-such-provider") == null);
+}
+
+test "every gateway row the loader enables has its own target, wire and version fact" {
+    const gateways = [_][]const u8{ "openrouter", "opencode", "vercel", "zenmux", "deepinfra" };
+    for (gateways) |id| {
+        const target = catalogTarget(id) orelse return error.TestExpectedTarget;
+        try std.testing.expectEqualStrings(id, target.id);
+        try std.testing.expectEqualStrings("openai-completions", target.wire);
+        try std.testing.expect(provider_catalog.endpointCarriesVersion(id, target.base_url));
+        try std.testing.expectEqualStrings("openai-completions", provider_catalog.wirePath(target.wire).?.id);
+    }
+}
+
+test "a gateway row's discovered models carry that row's base and its own listing url" {
+    const cases = [_]struct { id: []const u8, env: []const u8, model: []const u8 }{
+        .{ .id = "openrouter", .env = "OPENROUTER_API_KEY", .model = "openai/gpt-4o-mini" },
+        .{ .id = "opencode", .env = "OPENCODE_API_KEY", .model = "grok-code-fast-1" },
+        .{ .id = "vercel", .env = "AI_GATEWAY_API_KEY", .model = "anthropic/claude-sonnet-4.5" },
+        .{ .id = "zenmux", .env = "ZENMUX_API_KEY", .model = "bigseek/code" },
+        .{ .id = "deepinfra", .env = "DEEPINFRA_API_KEY", .model = "meta-llama/Llama-3.3-70B-Instruct" },
+    };
+    for (cases) |case| {
+        const target = catalogTarget(case.id) orelse return error.TestExpectedTarget;
+        test_catalog_discovery = &[_]CatalogDiscovery{.{
+            .id = case.id,
+            .models_url = target.models_url,
+            .model_ids = &.{case.model},
+        }};
+        test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+            .{ .name = case.env, .value = "row-key" },
+        };
+        const models = try loadCatalogModelsWithRows(
+            std.testing.allocator,
+            &.{case.id},
+            null,
+            .allow_cache,
+        );
+        defer {
+            for (models) |*model| model.deinit(std.testing.allocator);
+            std.testing.allocator.free(models);
+        }
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+
+        try std.testing.expectEqual(@as(usize, 1), models.len);
+        try std.testing.expectEqualStrings(case.model, models[0].id);
+        try std.testing.expectEqualStrings(case.id, models[0].provider);
+        try std.testing.expectEqualStrings("openai-completions", models[0].api);
+        try std.testing.expectEqualStrings(target.base_url, models[0].base_url);
+    }
+}
+
+test "a gateway row with a credential but no discovery contributes nothing" {
+    test_catalog_discovery = &[_]CatalogDiscovery{};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "OPENROUTER_API_KEY", .value = "row-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{"openrouter"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 0), models.len);
+}
+
+test "the production loader enables deepseek and every gateway this step adds" {
+    const enabled = [_][]const u8{ "deepseek", "openrouter", "opencode", "vercel", "zenmux", "deepinfra" };
+    try std.testing.expectEqual(enabled.len, catalog_loader_ids.len);
+    for (enabled, 0..) |id, index| {
+        try std.testing.expectEqualStrings(id, catalog_loader_ids[index]);
+        try std.testing.expect(catalogTarget(id) != null);
+    }
+}
+
+test "loadProductionModels serves a gateway row's discovered models beside deepseek's" {
+    const deepseek = catalogTarget("deepseek") orelse return error.TestExpectedTarget;
+    const openrouter = catalogTarget("openrouter") orelse return error.TestExpectedTarget;
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = deepseek.models_url, .model_ids = &.{"deepseek-chat"} },
+        .{ .id = "openrouter", .models_url = openrouter.models_url, .model_ids = &.{"openai/gpt-4o-mini"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "DEEPSEEK_API_KEY", .value = "deepseek-key" },
+        .{ .name = "OPENROUTER_API_KEY", .value = "openrouter-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadProductionModels(std.testing.allocator);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 2), models.len);
+    try std.testing.expectEqualStrings("deepseek", models[0].provider);
+    try std.testing.expectEqualStrings("openrouter", models[1].provider);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", models[0].base_url);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1", models[1].base_url);
 }
 
 test "the loader's rows are catalog rows the target answers for" {
