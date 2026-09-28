@@ -1120,7 +1120,7 @@ fn runThread(ctx: *ThreadCtx) void {
     var http_client = compat.http.HttpClient.init(allocator);
     defer http_client.deinit();
 
-    const url = provider_catalog.joinUrlOwned(allocator, model.base_url, request_wire) catch {
+    const url = provider_catalog.joinModelUrlOwned(allocator, model, request_wire) catch {
         ctx.deinit();
         stream.completeWithError("oom building url");
         return;
@@ -1854,22 +1854,24 @@ test "the anthropic request url drops a trailing slash and keeps a suffix alread
         .{ .base = "https://api.anthropic.com/v1/messages/", .want = "https://api.anthropic.com/v1/messages" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire, false);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
 }
 
-test "the anthropic request url never doubles the version segment" {
-    const cases = [_]struct { base: []const u8, want: []const u8 }{
-        .{ .base = "https://api.minimax.io/anthropic/v1", .want = "https://api.minimax.io/anthropic/v1/messages" },
-        .{ .base = "https://api.minimax.io/anthropic/v1/", .want = "https://api.minimax.io/anthropic/v1/messages" },
-        .{ .base = "https://gw.test/v1", .want = "https://gw.test/v1/messages" },
-        .{ .base = "https://gw.test/v3", .want = "https://gw.test/v3/messages" },
-        .{ .base = "https://gw.test/anthropic", .want = "https://gw.test/anthropic/v1/messages" },
+test "the anthropic request url drops the wire's version only when the fact says the base has one" {
+    const cases = [_]struct { base: []const u8, fact: bool, want: []const u8 }{
+        .{ .base = "https://api.minimax.io/anthropic/v1", .fact = true, .want = "https://api.minimax.io/anthropic/v1/messages" },
+        .{ .base = "https://api.minimax.io/anthropic/v1/", .fact = true, .want = "https://api.minimax.io/anthropic/v1/messages" },
+        .{ .base = "https://gw.test/v1", .fact = true, .want = "https://gw.test/v1/messages" },
+        .{ .base = "https://gw.test/v3", .fact = true, .want = "https://gw.test/v3/messages" },
+        .{ .base = "https://gw.test/anthropic", .fact = true, .want = "https://gw.test/anthropic/messages" },
+        .{ .base = "https://gw.test/anthropic", .fact = false, .want = "https://gw.test/anthropic/v1/messages" },
+        .{ .base = "https://gw.test/v1", .fact = false, .want = "https://gw.test/v1/v1/messages" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire, case.fact);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }

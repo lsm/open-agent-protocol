@@ -9,16 +9,15 @@ import (
 )
 
 type wirePath struct {
-	suffix       string
-	dedupVersion bool
-	modelScoped  bool
+	suffix      string
+	modelScoped bool
 }
 
 var wirePaths = map[string]wirePath{
-	"openai-completions":     {suffix: "/v1/chat/completions", dedupVersion: true},
+	"openai-completions":     {suffix: "/v1/chat/completions"},
 	"openai-responses":       {suffix: "/v1/responses"},
 	"openai-codex-responses": {suffix: "/responses"},
-	"anthropic-messages":     {suffix: "/v1/messages", dedupVersion: true},
+	"anthropic-messages":     {suffix: "/v1/messages"},
 	"ollama":                 {suffix: "/api/chat"},
 	"google-generative-ai":   {modelScoped: true},
 }
@@ -32,49 +31,49 @@ type Resolved struct {
 	RequestURL string
 }
 
-func isVersionSegment(segment string) bool {
-	if len(segment) < 2 || segment[0] != 'v' {
+func CarriesVersion(catalog Catalog, id, baseURL string) bool {
+	provider, known := findProvider(catalog, id)
+	if !known {
 		return false
 	}
-	for _, digit := range segment[1:] {
-		if digit < '0' || digit > '9' {
-			return false
+	wanted := strings.TrimRight(baseURL, "/")
+	for _, endpoint := range provider.Endpoints {
+		if strings.TrimRight(endpoint.BaseURL, "/") != wanted {
+			continue
 		}
-	}
-	return true
-}
-
-func pathHasVersion(baseURL string) bool {
-	_, rest, scheme := strings.Cut(baseURL, "://")
-	if !scheme {
-		return false
-	}
-	_, path, rooted := strings.Cut(rest, "/")
-	if !rooted {
-		return false
-	}
-	for _, segment := range strings.Split(path, "/") {
-		if isVersionSegment(segment) {
-			return true
-		}
+		return endpoint.CarriesVersion
 	}
 	return false
 }
 
-func joinRequest(base string, path wirePath) string {
+func CarriesVersionFor(catalog Catalog, id, baseURL string, stated *bool) bool {
+	if stated != nil {
+		return *stated
+	}
+	return CarriesVersion(catalog, id, baseURL)
+}
+
+func joinRequest(base string, path wirePath, carriesVersion bool) string {
 	trimmed := strings.TrimRight(base, "/")
 	if strings.HasSuffix(trimmed, path.suffix) {
 		return trimmed
 	}
 	suffix := path.suffix
-	if path.dedupVersion && pathHasVersion(trimmed) && strings.HasPrefix(suffix, "/v1/") {
+	if carriesVersion && strings.HasPrefix(suffix, "/v1/") {
 		suffix = strings.TrimPrefix(suffix, "/v1")
 	}
 	return trimmed + suffix
 }
 
-func joinModels(base, path string) string {
-	return joinRequest(base, wirePath{suffix: path})
+func joinModels(base, path string, carriesVersion bool) string {
+	return joinRequest(base, wirePath{suffix: path}, carriesVersion)
+}
+
+func listingPath(path string, carriesVersion, overridden bool) string {
+	if carriesVersion && overridden {
+		return "/v1" + path
+	}
+	return path
 }
 
 func wireTakesVersionedPath(wire string) bool {
@@ -100,9 +99,13 @@ func ModelsURL(catalog Catalog, id, region string) (string, bool) {
 		if endpoint.Region != region {
 			continue
 		}
-		return joinModels(endpoint.BaseURL, provider.ModelsPath), true
+		return joinModels(endpoint.BaseURL, provider.ModelsPath, endpoint.CarriesVersion), true
 	}
 	return "", false
+}
+
+func ModelsURLForBase(baseURL, path string, carriesVersion, overridden bool) string {
+	return joinModels(baseURL, listingPath(path, carriesVersion, overridden), carriesVersion && !overridden)
 }
 
 func RequestURL(catalog Catalog, id, wire, region string) (string, bool) {
@@ -118,9 +121,13 @@ func RequestURL(catalog Catalog, id, wire, region string) (string, bool) {
 		if endpoint.Wire != wire || endpoint.Region != region {
 			continue
 		}
-		return joinRequest(endpoint.BaseURL, path), true
+		return joinRequest(endpoint.BaseURL, path, endpoint.CarriesVersion), true
 	}
 	return "", false
+}
+
+func RequestURLForBase(baseURL string, path wirePath, carriesVersion bool) string {
+	return joinRequest(baseURL, path, carriesVersion)
 }
 
 func Resolve(catalog Catalog) []Resolved {
@@ -129,11 +136,11 @@ func Resolve(catalog Catalog) []Resolved {
 		for _, endpoint := range provider.Endpoints {
 			models := ""
 			if provider.ModelsPath != "" {
-				models = joinModels(endpoint.BaseURL, provider.ModelsPath)
+				models = joinModels(endpoint.BaseURL, provider.ModelsPath, endpoint.CarriesVersion)
 			}
 			request := ""
 			if path, joined := wirePaths[endpoint.Wire]; joined && !path.modelScoped {
-				request = joinRequest(endpoint.BaseURL, path)
+				request = joinRequest(endpoint.BaseURL, path, endpoint.CarriesVersion)
 			}
 			resolved = append(resolved, Resolved{
 				ID:         provider.ID,

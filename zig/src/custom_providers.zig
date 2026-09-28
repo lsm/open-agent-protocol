@@ -51,6 +51,7 @@ pub const CustomProvider = struct {
     models: []const ModelSpec = &.{},
     compat: ?ai_types.OpenAICompatOptions = null,
     reasoning: bool = false,
+    carries_version: ?bool = null,
     context_window: u32 = 128_000,
     max_tokens: u32 = 8_192,
 
@@ -212,6 +213,7 @@ fn parseProvider(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
     }
 
     provider.reasoning = objectBool(obj, "reasoning") orelse false;
+    provider.carries_version = objectBool(obj, "carries_version");
     provider.context_window = objectU32(obj, "context_window") orelse 128_000;
     provider.max_tokens = objectU32(obj, "max_tokens") orelse 8_192;
     provider.compat = parseCapabilities(obj);
@@ -400,6 +402,26 @@ fn objectString(obj: *const std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = obj.get(key) orelse return null;
     if (value != .string) return null;
     return value.string;
+}
+
+test "a declared carries_version is read and an absent one is not stated" {
+    const stated = try parse(testing.allocator,
+        \\{"providers":[{"id":"zai","base_url":"https://api.z.ai/api/coding/paas/v4","carries_version":true}]}
+    );
+    defer deinitProviders(testing.allocator, stated);
+    try testing.expectEqual(@as(?bool, true), stated[0].carries_version);
+
+    const absent = try parse(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}]}
+    );
+    defer deinitProviders(testing.allocator, absent);
+    try testing.expectEqual(@as(?bool, null), absent[0].carries_version);
+
+    const denied = try parse(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test","carries_version":false}]}
+    );
+    defer deinitProviders(testing.allocator, denied);
+    try testing.expectEqual(@as(?bool, false), denied[0].carries_version);
 }
 
 fn objectBool(obj: *const std.json.ObjectMap, key: []const u8) ?bool {

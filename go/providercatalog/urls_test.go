@@ -8,29 +8,69 @@ import (
 	"github.com/lsm/open-agent-protocol/providers"
 )
 
-func TestEveryEndpointsRecordedVersionFactEqualsTheInferenceItReplaces(t *testing.T) {
+func TestCarriesVersionReadsTheRowsOwnEndpointAndNothingElse(t *testing.T) {
 	catalog, err := Load(providers.Files)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	recorded, inferred := 0, 0
-	for _, provider := range catalog.Providers {
-		for _, endpoint := range provider.Endpoints {
-			path, joined := wirePaths[endpoint.Wire]
-			want := joined && path.dedupVersion && pathHasVersion(endpoint.BaseURL)
-			if endpoint.CarriesVersion != want {
-				t.Errorf("%s on %s in %s records carries_version=%v, the inference it replaces says %v",
-					provider.ID, endpoint.Wire, endpoint.BaseURL, endpoint.CarriesVersion, want)
-			}
-			if endpoint.CarriesVersion {
-				recorded++
-			} else {
-				inferred++
-			}
+	if !CarriesVersion(catalog, "openrouter", "https://openrouter.ai/api/v1") {
+		t.Error("openrouter records carries_version on its endpoint")
+	}
+	if !CarriesVersion(catalog, "openrouter", "https://openrouter.ai/api/v1/") {
+		t.Error("a trailing slash must not change which endpoint is matched")
+	}
+	if !CarriesVersion(catalog, "deepinfra", "https://api.deepinfra.com/v1/openai") {
+		t.Error("deepinfra's version is not the last segment but the row records it")
+	}
+	for _, id := range []string{"deepseek", "kimi", "ollama", "no-such-provider"} {
+		if CarriesVersion(catalog, id, "https://api.openai.com/v1") {
+			t.Errorf("%s records carries_version for a base it does not hold", id)
 		}
 	}
-	if recorded == 0 || inferred == 0 {
-		t.Fatalf("recorded %d and inferred %d, want both recorded and inferred", recorded, inferred)
+	if CarriesVersion(catalog, "openrouter", "https://proxy.example/api/v1") {
+		t.Error("an override must never match the catalogued base and inherit the fact")
+	}
+
+	stated := true
+	if !CarriesVersionFor(catalog, "openrouter", "https://proxy.example/api/v1", &stated) {
+		t.Error("a stated fact must win over the catalog")
+	}
+	denied := false
+	if CarriesVersionFor(catalog, "openrouter", "https://openrouter.ai/api/v1", &denied) {
+		t.Error("a stated false must win over the catalog")
+	}
+	if !CarriesVersionFor(catalog, "openrouter", "https://openrouter.ai/api/v1", nil) {
+		t.Error("an unstated fact must resolve from the catalog")
+	}
+}
+
+func TestAListingAndItsRequestAgreeUnderAnOverride(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, id := range []string{"openrouter", "vercel", "zenmux", "opencode", "deepinfra", "deepseek", "anthropic"} {
+		provider, known := findProvider(catalog, id)
+		if !known {
+			t.Fatalf("no row %s", id)
+		}
+		endpoint := provider.Endpoints[0]
+		path, joined := wirePaths[endpoint.Wire]
+		if !joined || path.modelScoped {
+			continue
+		}
+		overridden := "https://proxy.example"
+		listing := ModelsURLForBase(overridden, provider.ModelsPath, endpoint.CarriesVersion, true)
+		request := RequestURLForBase(overridden, path, false)
+		if !strings.HasPrefix(listing, overridden+"/v1/") {
+			t.Errorf("%s listing under an override = %s, want it under the version", id, listing)
+		}
+		if !strings.HasPrefix(request, overridden+"/v1/") {
+			t.Errorf("%s request under an override = %s, want it under the version", id, request)
+		}
+		if strings.Count(strings.TrimPrefix(listing, overridden), "v1") != strings.Count(strings.TrimPrefix(request, overridden), "v1") {
+			t.Errorf("%s listing %s and request %s disagree about the version", id, listing, request)
+		}
 	}
 }
 
@@ -148,11 +188,11 @@ func TestARequestURLIsTheBaseAndItsWirePath(t *testing.T) {
 		ID:         "row",
 		ModelsPath: "/models",
 		Endpoints: []Endpoint{
-			{Wire: "openai-completions", BaseURL: "https://api.example.com/coding/v4", Region: "versioned"},
-			{Wire: "anthropic-messages", BaseURL: "https://api.example.com/anthropic/v1", Region: "messages"},
+			{Wire: "openai-completions", BaseURL: "https://api.example.com/coding/v4", Region: "versioned", CarriesVersion: true},
+			{Wire: "anthropic-messages", BaseURL: "https://api.example.com/anthropic/v1", Region: "messages", CarriesVersion: true},
 			{Wire: "openai-completions", BaseURL: "https://api.example.com", Region: "bare"},
-			{Wire: "openai-completions", BaseURL: "https://api.example.com/v1/", Region: "trailing"},
-			{Wire: "openai-completions", BaseURL: "https://api.example.com/v1/openai", Region: "rooted"},
+			{Wire: "openai-completions", BaseURL: "https://api.example.com/v1/", Region: "trailing", CarriesVersion: true},
+			{Wire: "openai-completions", BaseURL: "https://api.example.com/v1/openai", Region: "rooted", CarriesVersion: true},
 			{Wire: "ollama", BaseURL: "http://localhost:11434", Region: "local"},
 			{Wire: "openai-responses", BaseURL: "https://api.example.com", Region: "responses"},
 		},
@@ -193,8 +233,8 @@ func TestResolveJoinsEachEndpointsOwnBase(t *testing.T) {
 		ID:         "row",
 		ModelsPath: "/models",
 		Endpoints: []Endpoint{
-			{Wire: "openai-completions", BaseURL: "https://first.example.com/v1"},
-			{Wire: "openai-responses", BaseURL: "https://second.example.com/api/v1"},
+			{Wire: "openai-completions", BaseURL: "https://first.example.com/v1", CarriesVersion: true},
+			{Wire: "openai-responses", BaseURL: "https://second.example.com/api/v1", CarriesVersion: true},
 		},
 	}}}
 	resolved := Resolve(catalog)
@@ -203,7 +243,7 @@ func TestResolveJoinsEachEndpointsOwnBase(t *testing.T) {
 	}
 	for _, want := range []Resolved{
 		{ID: "row", Wire: "openai-completions", BaseURL: "https://first.example.com/v1", ModelsURL: "https://first.example.com/v1/models", RequestURL: "https://first.example.com/v1/chat/completions"},
-		{ID: "row", Wire: "openai-responses", BaseURL: "https://second.example.com/api/v1", ModelsURL: "https://second.example.com/api/v1/models", RequestURL: "https://second.example.com/api/v1/v1/responses"},
+		{ID: "row", Wire: "openai-responses", BaseURL: "https://second.example.com/api/v1", ModelsURL: "https://second.example.com/api/v1/models", RequestURL: "https://second.example.com/api/v1/responses"},
 	} {
 		if resolved[0] == want {
 			continue
@@ -222,6 +262,7 @@ func TestJoinRequestDropsTrailingSlash(t *testing.T) {
 	for _, tc := range []struct {
 		base  string
 		wire  string
+		fact  bool
 		want  string
 		model string
 	}{
@@ -230,15 +271,16 @@ func TestJoinRequestDropsTrailingSlash(t *testing.T) {
 		{base: "https://api.openai.com/", wire: "openai-responses", want: "https://api.openai.com/v1/responses"},
 		{base: "https://chatgpt.com/backend-api/codex/", wire: "openai-codex-responses", want: "https://chatgpt.com/backend-api/codex/responses"},
 		{base: "https://api.anthropic.com/", wire: "anthropic-messages", want: "https://api.anthropic.com/v1/messages"},
-		{base: "https://api.minimax.io/anthropic/v1/", wire: "anthropic-messages", want: "https://api.minimax.io/anthropic/v1/messages"},
-		{base: "http://localhost:11434/", wire: "ollama", want: "http://localhost:11434/api/chat"},
+		{base: "https://api.minimax.io/anthropic/v1/", wire: "anthropic-messages", fact: true, want: "https://api.minimax.io/anthropic/v1/messages"},
+		{base: "https://api.minimax.io/anthropic/v1/", wire: "anthropic-messages", want: "https://api.minimax.io/anthropic/v1/v1/messages"},
+		{base: "http://localhost:11434/", wire: "ollama", fact: true, want: "http://localhost:11434/api/chat"},
 	} {
 		path, ok := wirePaths[tc.wire]
 		if !ok {
 			t.Fatalf("the catalog holds no wire %q", tc.wire)
 		}
-		if got := joinRequest(tc.base, path); got != tc.want {
-			t.Fatalf("joinRequest(%q, %q) = %q, want %q", tc.base, tc.wire, got, tc.want)
+		if got := joinRequest(tc.base, path, tc.fact); got != tc.want {
+			t.Fatalf("joinRequest(%q, %q, %t) = %q, want %q", tc.base, tc.wire, tc.fact, got, tc.want)
 		}
 	}
 }
@@ -260,8 +302,8 @@ func TestJoinRequestKeepsACompleteBase(t *testing.T) {
 		if !ok {
 			t.Fatalf("the catalog holds no wire %q", tc.wire)
 		}
-		if got := joinRequest(tc.base, path); got != tc.want {
-			t.Fatalf("joinRequest(%q, %q) = %q, want %q", tc.base, tc.wire, got, tc.want)
+		if got := joinRequest(tc.base, path, false); got != tc.want {
+			t.Fatalf("joinRequest(%q, %q, false) = %q, want %q", tc.base, tc.wire, got, tc.want)
 		}
 	}
 }
@@ -274,8 +316,8 @@ func TestJoinModelsDropsTrailingSlash(t *testing.T) {
 		{base: "https://api.openai.com/v1/models", want: "https://api.openai.com/v1/models"},
 		{base: "https://api.openai.com/v1/models/", want: "https://api.openai.com/v1/models"},
 	} {
-		if got := joinModels(tc.base, "/v1/models"); got != tc.want {
-			t.Fatalf("joinModels(%q) = %q, want %q", tc.base, got, tc.want)
+		if got := joinModels(tc.base, "/v1/models", false); got != tc.want {
+			t.Fatalf("joinModels(%q, false) = %q, want %q", tc.base, got, tc.want)
 		}
 	}
 }

@@ -335,6 +335,7 @@ fn customModel(
         .headers = headers,
         .compat = provider.compat,
         .allows_anonymous = provider.auth_none,
+        .carries_version = provider.carries_version,
         .is_owned = true,
     };
 }
