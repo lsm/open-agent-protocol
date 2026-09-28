@@ -903,12 +903,12 @@ fn parseCatalogModels(allocator: std.mem.Allocator, data: []const u8) ![]Discove
             if (name.len > 0) model.name = try allocator.dupe(u8, name);
         }
         if (model.context_window == null) {
-            model.context_window = objectU32(&item.object, "context_length") orelse
-                objectU32(&item.object, "context_window");
+            model.context_window = positiveU32(objectU32(&item.object, "context_length") orelse
+                objectU32(&item.object, "context_window"));
         }
         if (model.max_tokens == null) {
-            model.max_tokens = objectU32(&item.object, "max_output_tokens") orelse
-                objectU32(&item.object, "max_tokens");
+            model.max_tokens = positiveU32(objectU32(&item.object, "max_output_tokens") orelse
+                objectU32(&item.object, "max_tokens"));
         }
         if (model.reasoning == null) {
             model.reasoning = objectBool(&item.object, "supports_reasoning") orelse
@@ -926,6 +926,12 @@ fn parseCatalogModels(allocator: std.mem.Allocator, data: []const u8) ![]Discove
         try models.append(allocator, model);
     }
     return models.toOwnedSlice(allocator);
+}
+
+fn positiveU32(value: ?u32) ?u32 {
+    const found = value orelse return null;
+    if (found == 0) return null;
+    return found;
 }
 
 fn listNamesImage(obj: *const std.json.ObjectMap, key: []const u8) bool {
@@ -3046,13 +3052,14 @@ test "a provider's own listing speaks for its models, and a row's figures are on
         \\{"data":[
         \\  {"id":"kimi-for-coding","display_name":"Kimi For Coding","context_length":1048576,"max_output_tokens":32768,"supports_reasoning":true,"supports_image_in":true},
         \\  {"id":"kimi-k2-turbo-preview","context_window":262144,"max_tokens":16384,"reasoning":false,"modalities":["text","image"]},
+        \\  {"id":"zero-model","context_length":0,"max_tokens":0},
         \\  {"id":"plain-model"}
         \\]}
     ;
 
     const parsed = try parseCatalogModels(allocator, body);
     defer freeDiscoveredModels(allocator, parsed);
-    try std.testing.expectEqual(@as(usize, 3), parsed.len);
+    try std.testing.expectEqual(@as(usize, 4), parsed.len);
 
     try std.testing.expectEqualStrings("kimi-for-coding", parsed[0].id);
     try std.testing.expectEqualStrings("Kimi For Coding", parsed[0].name orelse "<none>");
@@ -3068,12 +3075,16 @@ test "a provider's own listing speaks for its models, and a row's figures are on
     try std.testing.expectEqual(@as(?bool, false), parsed[1].reasoning);
     try std.testing.expectEqual(@as(?bool, true), parsed[1].image_input);
 
-    try std.testing.expectEqualStrings("plain-model", parsed[2].id);
-    try std.testing.expect(parsed[2].name == null);
+    try std.testing.expectEqualStrings("zero-model", parsed[2].id);
     try std.testing.expect(parsed[2].context_window == null);
     try std.testing.expect(parsed[2].max_tokens == null);
-    try std.testing.expect(parsed[2].reasoning == null);
-    try std.testing.expect(parsed[2].image_input == null);
+
+    try std.testing.expectEqualStrings("plain-model", parsed[3].id);
+    try std.testing.expect(parsed[3].name == null);
+    try std.testing.expect(parsed[3].context_window == null);
+    try std.testing.expect(parsed[3].max_tokens == null);
+    try std.testing.expect(parsed[3].reasoning == null);
+    try std.testing.expect(parsed[3].image_input == null);
 }
 
 test "a discovered model's own figures outrank the row's, which outrank the generic guess" {

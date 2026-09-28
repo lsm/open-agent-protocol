@@ -179,6 +179,10 @@
       "credential_env": [
         "KIMI_API_KEY"
       ],
+      "credential_precedence": [
+        "stored",
+        "environment"
+      ],
       "region_env": "KIMI_REGION",
       "default_region": "china",
       "wires": [

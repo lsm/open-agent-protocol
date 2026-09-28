@@ -53,6 +53,40 @@ pub fn lookup(
     id: []const u8,
 ) std.mem.Allocator.Error!?Credential {
     const row = provider_catalog.provider(id) orelse return null;
+    for (precedence(row)) |source| {
+        switch (source) {
+            .stored => if (try storedCredential(allocator, auth_storage, row)) |found| return found,
+            .environment => if (try environmentCredential(allocator, environment, row)) |found| return found,
+        }
+    }
+    return null;
+}
+
+const SourceOrder = enum { stored, environment };
+
+fn precedence(row: provider_catalog.Provider) []const SourceOrder {
+    if (row.credential_precedence.len == 0) return &.{ .environment, .stored };
+    var out: [2]SourceOrder = undefined;
+    var filled: usize = 0;
+    for (row.credential_precedence) |name| {
+        if (filled == out.len) break;
+        if (std.mem.eql(u8, name, "stored")) {
+            out[filled] = .stored;
+            filled += 1;
+        } else if (std.mem.eql(u8, name, "environment")) {
+            out[filled] = .environment;
+            filled += 1;
+        }
+    }
+    if (filled == 0) return &.{ .environment, .stored };
+    return out[0..filled];
+}
+
+fn environmentCredential(
+    allocator: std.mem.Allocator,
+    environment: []const EnvironmentValue,
+    row: provider_catalog.Provider,
+) std.mem.Allocator.Error!?Credential {
     for (row.credential_env) |name| {
         for (environment) |held| {
             if (!std.mem.eql(u8, held.name, name)) continue;
@@ -64,6 +98,15 @@ pub fn lookup(
             };
         }
     }
+    return null;
+}
+
+fn storedCredential(
+    allocator: std.mem.Allocator,
+    auth_storage: ?*AuthStorage,
+    row: provider_catalog.Provider,
+) std.mem.Allocator.Error!?Credential {
+    const id = row.id;
     const held = auth_storage orelse return null;
     const stored = held.resolvedCredential(id) orelse return null;
     switch (stored) {
@@ -104,6 +147,28 @@ fn emptyStorage(allocator: std.mem.Allocator) AuthStorage {
 }
 
 const testing = std.testing;
+
+test "a row that says stored first lists under the login a request will sign with" {
+    var store = emptyStorage(testing.allocator);
+    defer store.deinit();
+    try store.providers.put(try testing.allocator.dupe(u8, "kimi"), .{ .oauth = .{
+        .access = try testing.allocator.dupe(u8, "sk-stored"),
+        .refresh = try testing.allocator.dupe(u8, ""),
+        .expires = 0,
+        .provider_data = try testing.allocator.dupe(u8, "region:global"),
+    } });
+    const environment = [_]EnvironmentValue{.{ .name = "KIMI_API_KEY", .value = "sk-env" }};
+
+    var found = (try lookup(testing.allocator, &environment, &store, "kimi")).?;
+    defer found.deinit(testing.allocator);
+    try testing.expectEqual(Source.stored, found.source);
+    try testing.expectEqualStrings("sk-stored", found.key);
+
+    var without_login = (try lookup(testing.allocator, &environment, null, "kimi")).?;
+    defer without_login.deinit(testing.allocator);
+    try testing.expectEqual(Source.environment, without_login.source);
+    try testing.expectEqualStrings("sk-env", without_login.key);
+}
 
 test "an environment variable wins over a stored key" {
     var store = emptyStorage(testing.allocator);

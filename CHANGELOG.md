@@ -58,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default behind them. Reasoning and image input are what a TUI shows and what a
   request sends; no row's listing is asked for them today, because only Kimi's
   parser read them and that parser went with the bespoke loader.
+  **A listing that reports a zero is treated as saying nothing**, for a context
+  window or an output cap: a model served a zero-token budget cannot be used, and
+  the row's own figures are a better guess than a provider's empty field.
+  **A row may now say which credential outranks which.** The environment has been
+  read before a stored login since the generic loader began, and a request is
+  signed with the stored credential first, so a user with both a Kimi login and
+  `KIMI_API_KEY` had their models listed under one key and their requests signed
+  with the other, at the region the other one chose. `kimi` records
+  `["stored", "environment"]`, which is the order its own loader used before the
+  generic one; every other row keeps the default. `goap check` refuses a source
+  it does not know, or the same one twice.
   **A Kimi login made in the TUI keeps working, which it very nearly did not.**
   The TUI stores an API key with its region as an *oauth* entry, because the
   api-key entry has nowhere to put a region. The old Kimi code accepted either
