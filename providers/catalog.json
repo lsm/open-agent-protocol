@@ -84,7 +84,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://opencode.ai/zen/v1"
+          "base_url": "https://opencode.ai/zen/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -108,7 +109,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://openrouter.ai/api/v1"
+          "base_url": "https://openrouter.ai/api/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -159,7 +161,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://api.z.ai/api/coding/paas/v4"
+          "base_url": "https://api.z.ai/api/coding/paas/v4",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -214,7 +217,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1"
+          "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -238,7 +242,8 @@
       "endpoints": [
         {
           "wire": "anthropic-messages",
-          "base_url": "https://api.minimax.io/anthropic/v1"
+          "base_url": "https://api.minimax.io/anthropic/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -262,7 +267,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3"
+          "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -286,7 +292,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3"
+          "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -335,7 +342,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://token-plan-cn.xiaomimimo.com/v1"
+          "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -359,7 +367,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://token-plan-sgp.xiaomimimo.com/v1"
+          "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -383,7 +392,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://token-plan-ams.xiaomimimo.com/v1"
+          "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -407,7 +417,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://api.deepinfra.com/v1/openai"
+          "base_url": "https://api.deepinfra.com/v1/openai",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -431,7 +442,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://api.xiaomimimo.com/v1"
+          "base_url": "https://api.xiaomimimo.com/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -455,7 +467,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://ai-gateway.vercel.sh/v1"
+          "base_url": "https://ai-gateway.vercel.sh/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",
@@ -479,7 +492,8 @@
       "endpoints": [
         {
           "wire": "openai-completions",
-          "base_url": "https://zenmux.ai/api/v1"
+          "base_url": "https://zenmux.ai/api/v1",
+          "carries_version": true
         }
       ],
       "models_endpoint": "/models",

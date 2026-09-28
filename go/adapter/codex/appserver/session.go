@@ -395,24 +395,18 @@ func (session *session) Cancel(ctx context.Context, runID protocol.RunID) (proto
 		session.mu.Lock()
 		close(inFlight)
 		run.cancelInFlight = nil
-		terminal, status := run.terminal, run.status
-		if err == nil && !terminal {
+		live := err == nil && !run.terminal
+		if live {
 			run.cancelPending = true
 			run.status = protocol.RunCancelling
 		}
 		session.mu.Unlock()
-		if err == nil && !terminal {
+		if live {
 			_ = session.emit(run, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: session.state.SessionID, RunID: run.id, Status: protocol.RunCancelling, UpdatedAtMS: session.clock.Now().UnixMilli()}, false)
 		}
 		session.opMu.Unlock()
 		if err != nil {
 			return protocol.RunCancelResponse{}, fmt.Errorf("interrupt Codex turn: %w", err)
-		}
-		if terminal {
-			if status == protocol.RunCancelled {
-				return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: status}, nil
-			}
-			return protocol.RunCancelResponse{}, &adapter.RunTerminalError{RunID: runID, Status: status}
 		}
 		return protocol.RunCancelResponse{SessionID: session.state.SessionID, RunID: runID, Accepted: true, Status: protocol.RunCancelling}, nil
 	}

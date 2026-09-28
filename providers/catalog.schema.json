@@ -73,6 +73,10 @@
           "description": "The region this endpoint serves, for a provider that ships one endpoint per region. An endpoint with no region is the provider's only one.",
           "type": "string",
           "minLength": 1
+        },
+        "carries_version": {
+          "description": "true when base_url already contains the API version (v1, v3, v4…), so the request path is the wire's path without its leading /v1. Absent means the wire's full path is appended.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false
