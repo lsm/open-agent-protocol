@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/binding"
@@ -90,6 +91,7 @@ func TestAClosedSessionIsRecordedAsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	time.Sleep(2 * time.Millisecond)
 	if err := session.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +104,9 @@ func TestAClosedSessionIsRecordedAsClosed(t *testing.T) {
 	}
 	if history[1].TimeMS <= history[0].TimeMS {
 		t.Fatalf("the close is stamped %d and the open %d, want the close later than the open it records", history[1].TimeMS, history[0].TimeMS)
+	}
+	if history[1].TimeMS < time.Now().Add(-time.Minute).UnixMilli() {
+		t.Fatalf("the close is stamped %d, which is before the test ran, so it is not the close's own time", history[1].TimeMS)
 	}
 }
 
