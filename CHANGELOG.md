@@ -475,12 +475,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `base.ToolCatalog` do. The hub stamped the answer with the **adapter descriptor's**
   revision and never learned what the lister thought, so a lister serving a catalog
   under one revision while its descriptor claimed another was silently restamped
-  with the descriptor's. An empty revision is refused `catalog_unlabelled`, which is
-  Go's own rule.
+  with the descriptor's. An empty revision is refused, which is Go's own rule: an
+  adapter that serves a catalog with no capability revision is a backend failure.
+  Both trees answer `internal` for it — `catalog_unlabelled` is the core's name
+  for the condition and has no wire code of its own.
   `endpoint` now stamps the lister's revision on the envelopes it forwards rather
-  than the descriptor's, and refuses an unlabelled catalog as `catalog_unlabelled`
-  rather than passing one through, so a session mediated by an endpoint is checked
-  the same way a direct one is.
+  than the descriptor's, and refuses an unlabelled catalog rather than passing one
+  through, so a session mediated by an endpoint is checked the same way a direct one is.
+  A lister that reports the session closed now releases the session and answers
+  `unknown_session`, as `state`, `cancel` and `resolveCall` already did. The two
+  catalog operations propagated it raw and left a stale entry in the hub for the life
+  of the process.
 - **A run no longer stops by itself after 100 turns.** The agent loop capped a run at 100 model turns when its caller set no limit, and the TUI never sets one, so a long task ended right after a tool call, with no reply and no message. A run now goes on until the model answers without calling a tool or you cancel it, as pi-mono's loop does. `max_iterations` still sets a limit for a caller that wants one.
 - **The agent loop runs the tool calls a reply carries, whatever stop reason it reports.** It used to act on the stop reason alone, and the OpenAI Responses and Google providers never report `tool_use`, so a reply calling a tool through them ended the run without running it. A reply reporting `tool_use` with no tool call now ends the run instead of asking again. A tool call cut off at the output token limit is not run: the model gets an error asking it to call the tool again with complete arguments, and the run goes on. A fourth cut-off reply in a row ends the run, and the TUI now says when a run ends on a reply cut off at the output token limit.
 - **The duplicate-key JSON walk no longer refuses a valid message because of a number it cannot hold.** The walk exists to catch a wire that disagrees with itself, and `encoding/json`'s token reader turns a number into a `float64` by default — so a well-formed integer literal longer than a `float64` can represent (`1e999`, or 400 digits) made the walk return a range error and the adapter reject a message that is perfectly valid. The deepseek copies already asked for `UseNumber()`; acp, claude, codex, hermes, pi and opencode did not, so six adapters refused valid traffic in six slightly different ways, and opencode's copy is exported as `native.RejectDuplicateKeys`. All of them ask now, and the copies that remain are [#489](https://github.com/lsm/open-agent-protocol/issues/489)'s to collapse.

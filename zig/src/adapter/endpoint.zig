@@ -509,7 +509,7 @@ pub const Endpoint = struct {
         const lister = entry.session.vtable.models orelse
             return refusal.unsupported(contract.feature_models_list, contract.reason_unadvertised);
         const catalog = try lister(entry.session.ptr, arena, payload, refusal);
-        if (catalog.revision.len == 0) return self.deny("catalog_unlabelled", "adapter: the model catalog names no capability revision", &.{});
+        if (catalog.revision.len == 0) return error.BackendFailed;
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),
@@ -524,7 +524,7 @@ pub const Endpoint = struct {
         const lister = entry.session.vtable.tools orelse
             return self.deny("tool_catalog_unavailable", "adapter: no portable tool catalog is served", &.{});
         const catalog = try lister(entry.session.ptr, arena, payload, refusal);
-        if (catalog.revision.len == 0) return self.deny("catalog_unlabelled", "adapter: the tool catalog names no capability revision", &.{});
+        if (catalog.revision.len == 0) return error.BackendFailed;
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),

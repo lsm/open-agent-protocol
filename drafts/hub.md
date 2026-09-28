@@ -1152,9 +1152,11 @@ Go change, queued in
 `contract.Catalog` and a `contract.ToolSet`, each pairing the response with the
 revision the lister says it served it under, as `base.Catalog` and
 `base.ToolCatalog` do in Go. The hub stamps the answer with **that** revision
-rather than with the adapter's descriptor revision, and refuses an empty one
-`catalog_unlabelled` — which is Go's own rule, `an adapter served a model catalog
-with no capability revision`. A lister that served a catalog under one revision
+rather than with the adapter’s descriptor revision, and refuses an empty one — which
+is Go’s own rule, `an adapter served a model catalog with no capability revision`.
+`catalog_unlabelled` is the core’s name for the condition and has **no wire code
+of its own**: both trees answer `internal`, so they do not disagree by disagreeing
+about the name.
 while its descriptor claimed another is now visible to the hub rather than
 silently restamped.
 

@@ -537,7 +537,13 @@ pub const Hub = struct {
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, session_id)) return error.ScopeMismatch;
         const lister = entry.session.vtable.models orelse return error.UnsupportedFeature;
         var refusal = contract.Refusal{};
-        const served = try lister(entry.session.ptr, arena, request, &refusal);
+        const served = lister(entry.session.ptr, arena, request, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
         if (!std.mem.eql(u8, served.response.session_id, session_id)) return error.CatalogMisScoped;
         if (served.revision.len == 0) return error.CatalogUnlabelled;
         return .{ .models = served.response, .revision = served.revision };
@@ -550,7 +556,13 @@ pub const Hub = struct {
         }
         const lister = entry.session.vtable.tools orelse return error.ToolCatalogUnavailable;
         var refusal = contract.Refusal{};
-        const catalog = try lister(entry.session.ptr, arena, request, &refusal);
+        const catalog = lister(entry.session.ptr, arena, request, &refusal) catch |err| switch (err) {
+            error.SessionClosed => {
+                self.releaseSession(entry);
+                return error.UnknownSession;
+            },
+            else => |failure| return failure,
+        };
         if (catalog.response.session_id) |named| {
             if (!std.mem.eql(u8, named, session_id)) return error.CatalogMisScoped;
         }
