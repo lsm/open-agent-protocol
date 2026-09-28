@@ -323,10 +323,16 @@ func scrubbed(value any) any {
 
 func TestChildLinesCompareDataNotBytes(t *testing.T) {
 	escaped := "{\"id\":\"req_1\",\"params\":{\"text\":\"a<b>c&d\u2028e\"}}"
-	plain := "{\"params\":{\"text\":\"a\u003cb\u003ec\u0026d\u2028e\"},\"id\":\"req_1\"}"
+	plain := "{\"params\":{\"text\":\"a\\u003cb\\u003ec\\u0026d\u2028e\"},\"id\":\"req_1\"}"
+	if escaped == plain {
+		t.Fatal("the two inputs are the same bytes, so the comparison is not exercised")
+	}
+	if len(escaped) == len(plain) {
+		t.Fatalf("the two inputs are the same length (%d), so no escaping is being compared", len(escaped))
+	}
 	missing, extra := childLineDifference(t, escaped+"\n", plain+"\n")
 	if len(missing)+len(extra) != 0 {
-		t.Fatalf("the same data in different bytes compared unequal: only goap %v, only oapx %v", missing, extra)
+		t.Fatalf("the same data in different bytes compared unequal: only goap %v, only oapx %v\ngoap %q\noapx %q", missing, extra, escaped, plain)
 	}
 	changed := "{\"id\":\"req_1\",\"params\":{\"text\":\"a<b>c&d\u2028f\"}}"
 	missing, extra = childLineDifference(t, escaped+"\n", changed+"\n")
