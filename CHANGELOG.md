@@ -139,6 +139,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the same agent is not silenced by the first run's terminal. A provider that
   refuses is unchanged: it is a run that got far enough to end, so it ends with a
   normal `agent_end`.
+  A run that failed also ends the TUI's stream as an error rather than as a
+  completion. That reason was inferred from the last turn's stop reason, and a run
+  that fails before a turn ends never set one, so the inference read a failure as a
+  success — and a success is what drains the user's queued follow-ups, so a failed
+  run discarded them. The reason is passed by the caller that knows it now, the same
+  way compaction takes it from the outcome.
 - A long reply in the TUI is no longer cut off at two minutes with `Provider protocol
   stream timed out`. The in-process provider bridge counted its 120-second limit from
   the request, so a response still streaming at two minutes was ended mid-sentence. The

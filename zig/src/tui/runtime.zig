@@ -815,14 +815,6 @@ pub const TuiRuntime = struct {
         const reason: TuiEndReason = if (self.cancelled.load(.acquire)) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
         return self.endRun(reason);
     }
-
-    /// Ends the TUI's run with a reason the caller already knows.
-    ///
-    /// A run that failed is not a run that completed, and it cannot be inferred
-    /// from `last_turn_stop_reason`: a run that fails before a turn ends never set
-    /// it, so the inference reads a failure as a success. The reason is therefore
-    /// passed rather than guessed, the same way `finishCompaction` takes it from
-    /// the outcome.
     fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
         self.completed = true;
         self.pushTerminal(.{ .agent_end = .{ .reason = reason } });
