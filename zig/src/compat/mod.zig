@@ -8,7 +8,7 @@ pub const stdio = @import("stdio.zig");
 pub const http = @import("http.zig");
 pub const net = @import("net.zig");
 
-fn runtimeEnviron() std.process.Environ {
+pub fn runtimeEnviron() std.process.Environ {
     const builtin = @import("builtin");
     if (builtin.is_test) {
         return std.testing.environ;

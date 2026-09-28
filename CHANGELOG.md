@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **The CI fixture auth provider is served only when a test asks for it by
+  name.** `oapx auth providers` returns the catalog's rows and nothing else
+  unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running
+  the binary is no longer offered a row called `Test Fixture (CI)` that cannot
+  log in against anything. `1` and `true` opt in; `0`, an empty value, any other
+  string, and a variable that is merely similar in name do not.
+  The gate covers the **login** as well as the listing, which the first cut of
+  this did not: the fixture's flow was hardcoded into the auth server and never
+  consulted the provider table, so `oapx auth login --provider test-fixture`
+  still started the fixture's prompt with the variable unset. It now answers
+  `UnknownProvider`, and the opt-in is visible in every call site rather than
+  hidden in a list.
+  The SDKs' real-binary tests set the variable where they log into the fixture —
+  the Rust suite through a new `real_builder_with_fixture` beside the existing
+  `real_builder`, so a test that wants a plain user keeps exercising what a plain
+  user sees. **A test that asked for the fixture and did not get it now fails.**
+  That is the point of the change: in #486 the fixture was removed from the
+  served list and `sdk/go/binary_smoke_test.go:185` *skipped*, so the loss of
+  coverage looked like a pass. A skip is only acceptable for a precondition the
+  test did not choose; here the test chose it, so its absence is a failure.
+  The Rust and TypeScript suites each gained the other half — a test that asks
+  for nothing and asserts the fixture is *not* offered — so the default is
+  pinned from the consumer's side as well as the runtime's. Python's real-binary
+  test iterates whatever providers it is given and never named the fixture, so
+  it needs no variable and loses nothing.
+  The Go suite is unchanged in this PR: `sdk/go` is being folded into `go/sdk` by
+  #492, and touching `binary_smoke_test.go` before that lands would conflict. Its
+  `requireFixtureAuthProvider` skip becomes a `t.Fatalf` in a follow-up commit
+  on this same PR once #492 has merged. Its decision and this constraint are
+  recorded on #354, where the owner chose this shape over serving the row always
+  or removing it and changing what four SDKs assert.
+
 ### Added
 - **Every Go decoder that reads bytes from outside the process now has a fuzz target, and a scheduled job runs them.** The class is the rule: not the two decoders an issue happens to name, but every function that turns bytes another program wrote into a value. That is `validation.Validator.Validate` (a whole envelope trace), the hand-rolled duplicate-key JSON walk in six places, the adapters' native entry points (`DecodeNotification` for hermes and deepseek, `DecodeServerRequest`, `DecodeObservation` and `DecodeControlRequest` for claude, `DecodeEvent` for opencode, `DecodeStrict` for pi, hermes and deepseek), and the limit-bounded frame reader in the codex app-server codec. Each target asserts a property rather than merely returning: a refusal carries no value, an admission implies the invariant it was admitted for (an opencode event with a valid id, a supported type and a durable position; a codex frame that is a request, a result or an error and nothing else), a method the decoder does not serve is refused whatever the data says, and a decoder never hands back bytes that are not one whole JSON document. **A scheduled leg that names no target, and a target nothing schedules, both fail a test** (`go/internal/fuzzseed/matrix_test.go`): the matrix and the tree are checked against each other in both directions, and a leg is named by its package as well as its target so a failing job is identifiable. It earned its place immediately -- it found that `go/validation` already carried `FuzzValidateNeverPanics` and `FuzzApplyEnvelopeNeverPanics` and nothing ran them, and it found that two targets this change had added were later edited out of the tree while the matrix still listed them. **Seeds come from the corpus, through the catalog**: `fuzzseed.Corpus(harnessID)` resolves the current corpus of a harness from `harnesses/*.json`, so no version pin is spelled in the tree (the `pin_literal` gate would refuse it) and a new corpus version re-seeds the targets without a code change; `fuzzseed.Manifest` does the same for the 573 conformance fixtures, spread evenly across the corpus rather than taken from its head. The seeds are bounded and deduplicated, because a seed corpus runs on every ordinary `go test`. `.github/workflows/fuzz.yml` runs each target for 45 s on a weekly schedule and on demand, six at a time inside a 20-minute ceiling, and uploads the input that failed so it can become a fixture.
 

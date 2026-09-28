@@ -682,6 +682,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
+            .{ .name = "compat", .module = compat_mod },
         },
     });
 
@@ -1651,6 +1652,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "auth_types", .module = protocol_auth_types_mod },
             .{ .name = "auth_server", .module = protocol_auth_server_mod },
+            .{ .name = "auth/providers", .module = auth_provider_defs_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "oap_types", .module = protocol_oap_types_mod },
         },
@@ -2552,6 +2554,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "auth_server", .module = protocol_auth_server_mod },
             .{ .name = "auth_runtime", .module = protocol_auth_runtime_mod },
             .{ .name = "auth_envelope", .module = protocol_auth_envelope_mod },
+            .{ .name = "auth/providers", .module = auth_provider_defs_mod },
             .{ .name = "transports/in_process", .module = in_process_transport_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
             .{ .name = "compat", .module = compat_mod },

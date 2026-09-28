@@ -2,6 +2,7 @@
 const std = @import("std");
 const compat = @import("compat");
 const auth_server_mod = @import("auth_server");
+const auth_providers = @import("auth/providers");
 const auth_runtime_mod = @import("auth_runtime");
 const auth_envelope_mod = @import("auth_envelope");
 const in_process = @import("transports/in_process");
@@ -687,6 +688,8 @@ test "runLoginCommand routes through protocol runtime and completes test-fixture
     const allocator = std.testing.allocator;
     var test_io = TestIo.init(allocator);
     defer test_io.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
 
     try test_io.pushInput("bad-code");
     try test_io.pushInput("ok");
@@ -716,6 +719,8 @@ test "runLoginCommand json mode emits per-event envelopes followed by terminal s
     const allocator = std.testing.allocator;
     var test_io = TestIo.init(allocator);
     defer test_io.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
 
     try test_io.pushInput("ok");
 

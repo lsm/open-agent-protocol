@@ -27,6 +27,7 @@ const tui_app = @import("tui_app");
 const model_catalog = @import("model_catalog");
 const provider_base_url = @import("provider_base_url");
 const provider_catalog = @import("provider_catalog");
+const auth_providers = @import("auth/providers");
 
 const kimi_china_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "china");
 const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "global");
@@ -3764,6 +3765,8 @@ test "stdio protocol loop decodes and dispatches auth providers request and emit
 }
 
 test "stdio auth login flow supports prompt loop terminal ordering and no secret leakage" {
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     const allocator = std.testing.allocator;
 
     var registry = api_registry.ApiRegistry.init(allocator);
@@ -3876,6 +3879,8 @@ test "stdio auth login flow supports prompt loop terminal ordering and no secret
 }
 
 test "stdio auth login flow cancellation emits cancelled result and ignores late prompt responses" {
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     const allocator = std.testing.allocator;
 
     var registry = api_registry.ApiRegistry.init(allocator);
@@ -6708,6 +6713,8 @@ test "handleAuth providers --json end-to-end emits backward-compatible shape" {
 }
 
 test "handleAuth login end-to-end drives prompt loop through CLI wrapper" {
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     const allocator = std.testing.allocator;
 
     var harness = try AuthCliHarness.init(allocator, &.{ "login", "--provider", "test-fixture" });
