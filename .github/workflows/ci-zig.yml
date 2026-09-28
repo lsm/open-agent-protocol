@@ -250,6 +250,44 @@ jobs:
           OAP_OAPX_BIN: /tmp/oapx-memory/bin/oapx
         run: go test ./go/cmd/goap/ -run TestMemoryBackendMatchesOapx -v
 
+  hub-parity:
+    name: Differential - the two stdio hubs answer the same
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build oapx
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-hub
+
+      - name: Require oapx hub --stdio to answer exactly as goap hub --stdio
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-hub/bin/oapx
+        run: go test ./go/cmd/goap/ -run TestHubStdio -v
+
+      - name: Require oapx hub to refuse what it does not carry
+        run: |
+          set -euo pipefail
+          for flag in --addr=127.0.0.1:0 --config=missing.json; do
+            if /tmp/oapx-hub/bin/oapx hub "$flag" </dev/null >/dev/null 2>&1; then
+              echo "oapx hub $flag exited 0; a transport it does not carry must not"
+              exit 1
+            fi
+          done
+
   # =============================================================================
   rust-sdk:
     name: Rust SDK
