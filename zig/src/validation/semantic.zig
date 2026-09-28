@@ -471,6 +471,7 @@ pub const Machine = struct {
     sessions: std.StringArrayHashMapUnmanaged(*Session) = .empty,
     recoveries: std.StringArrayHashMapUnmanaged(*Recovery) = .empty,
     requests: std.StringArrayHashMapUnmanaged(Request) = .empty,
+    late_cancels: std.StringArrayHashMapUnmanaged(void) = .empty,
     packs: Packs = .{},
     features: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
     scopes: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
@@ -498,6 +499,7 @@ pub const Machine = struct {
     pub fn deinit(self: *Machine) void {
         self.diagnostics.deinit(self.allocator);
         self.ids.deinit(self.allocator);
+        self.late_cancels.deinit(self.allocator);
         self.runs.deinit(self.allocator);
         self.recoveries.deinit(self.allocator);
         self.requests.deinit(self.allocator);
@@ -807,8 +809,12 @@ pub const Machine = struct {
             try self.stateDocument(index, payload, std.mem.eql(u8, declared, "session.state.updated"));
             return;
         }
+        if (std.mem.eql(u8, declared, "run.cancel.request")) {
+            try self.cancelRequest(envelope, payload);
+            return;
+        }
         if (std.mem.eql(u8, declared, "run.cancel.response")) {
-            try self.cancelResponse(index, payload);
+            try self.cancelResponse(index, field(envelope, "in_reply_to"), payload);
             return;
         }
         if (isRunEvent(declared)) {
@@ -2719,11 +2725,17 @@ pub const Machine = struct {
         });
     }
 
-    fn cancelResponse(self: *Machine, index: usize, payload: std.json.Value) !void {
+    fn cancelRequest(self: *Machine, envelope: std.json.Value, payload: std.json.Value) !void {
+        const run = self.runs.get(memberString(payload, "run_id")) orelse return;
+        if (!run.terminal or std.mem.eql(u8, run.terminal_type, "run.cancelled")) return;
+        try self.late_cancels.put(self.allocator, field(envelope, "id"), {});
+    }
+
+    fn cancelResponse(self: *Machine, index: usize, in_reply_to: []const u8, payload: std.json.Value) !void {
         if (!memberBool(payload, "accepted")) return;
         const run_id = memberString(payload, "run_id");
         const run = self.runs.get(run_id);
-        if (run == null or (run.?.terminal and !std.mem.eql(u8, run.?.terminal_type, "run.cancelled"))) {
+        if (run == null or self.late_cancels.contains(in_reply_to)) {
             try self.add(code_illegal_run_transition, index);
             return;
         }

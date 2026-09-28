@@ -4233,10 +4233,23 @@ runs before the close are answered with a replay gap.
 The evidence is in the order table: Claude, Codex, ACP and pi load a session
 natively today. The intent is a `reopen: true` member on
 `session.open.request`, and the reopened state document reports the model and
-settings the session actually runs under (owner, 2026-09-27, #446). The unit's
-decision must answer how a host records a binding and where, and what a reopen
-answers when the harness's store is no longer where the binding says — a
-different home or working directory.
+settings the session actually runs under (owner, 2026-09-27, #446).
+
+**Status: [Decision 0040](../decisions/0040-a-session-reopens-through-its-own-binding.md)
+is proposed and answers this section's two remaining questions.** How a host
+records a binding and where: a binding is a record the host supplies through an
+interface, carrying the session id, the harness and its pin, the harness' own
+session id, the home and working directory the open ran in, and the model and
+settings the open asked for — never a credential, and never a resolved
+environment value. It is written atomically, a torn write is detected and never
+read, and history is appended rather than replaced. What a reopen answers when
+the store is no longer where the binding says: `unsupported_feature`, as
+Decision 0039 already rules — the host had the binding and the harness cannot
+load what it points at. **The code comes from the binding, not from the
+harness's reply**, because the ledgers record that two harnesses (Hermes and
+OpenCode) create a missing store before looking in it, so those two cannot tell
+a gone store from a session that never existed, and pi's discovery answers
+`null` either way.
 
 ## T8. Session list
 

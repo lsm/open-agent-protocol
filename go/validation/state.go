@@ -138,6 +138,7 @@ type state struct {
 	participants      map[protocol.ParticipantID]bool
 	sessions          map[protocol.SessionID]*sessionTrack
 	runs              map[protocol.RunID]*runState
+	lateCancels       map[protocol.EnvelopeID]bool
 	currentCapability string
 	capabilitiesStale bool
 	initialized       bool
@@ -183,7 +184,7 @@ type state struct {
 }
 
 func newState(f string) *state {
-	return &state{fixture: f, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
+	return &state{fixture: f, lateCancels: map[protocol.EnvelopeID]bool{}, ids: map[protocol.EnvelopeID]int{}, requests: map[protocol.EnvelopeID]*requestState{}, participants: map[protocol.ParticipantID]bool{}, sessions: map[protocol.SessionID]*sessionTrack{}, runs: map[protocol.RunID]*runState{}, recoveries: map[protocol.SessionID]*recoveryExpectation{}, features: map[string]protocol.SupportLevel{}, featureSupports: map[string]protocol.FeatureSupport{}, pendingControls: map[protocol.EnvelopeID]*pendingSubmit{}, pendingLists: map[protocol.EnvelopeID]*pendingList{}, pendingOpens: map[protocol.EnvelopeID]*pendingOpen{}, pendingSubscribes: map[protocol.EnvelopeID]*pendingSubscribe{}, pendingResolves: map[protocol.EnvelopeID]*pendingResolve{}, declaredSources: map[string]protocol.ToolSourceDescriptor{}, pendingModels: map[protocol.EnvelopeID]*pendingModelsQuery{}, authFlows: map[protocol.AuthFlowID]*authFlow{}, openSubmits: map[protocol.SessionID][]*pendingSubmit{}}
 }
 func (s *state) add(code string, i, line int, e protocol.Envelope, ptr, msg string) {
 	s.diagnostics = append(s.diagnostics, baseDiagnostic(s.fixture, PhaseSemantic, code, i, line, e, ptr, msg))
@@ -430,7 +431,7 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		if r := s.runs[p.RunID]; r == nil {
 			s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "cannot cancel an unknown run")
 		} else if r.terminal && r.terminalType != protocol.TypeRunCancelled {
-			s.add(CodeIllegalRunTransition, i, line, e, "/payload/run_id", "cannot cancel a completed or failed run")
+			s.lateCancels[e.ID] = true
 		}
 	case protocol.TypeActionToolsListRequest:
 
@@ -482,8 +483,10 @@ func (s *state) apply(i, line int, e protocol.Envelope) {
 		s.checkScope(i, line, e, p.SessionID, p.RunID)
 		if p.Accepted {
 			r := s.runs[p.RunID]
-			if r == nil || (r.terminal && r.terminalType != protocol.TypeRunCancelled) {
-				s.add(CodeIllegalRunTransition, i, line, e, "/payload/accepted", "cancellation cannot be accepted for an unknown, completed, or failed run")
+			if r == nil {
+				s.add(CodeIllegalRunTransition, i, line, e, "/payload/accepted", "cancellation cannot be accepted for an unknown run")
+			} else if s.lateCancels[e.InReplyTo] {
+				s.add(CodeIllegalRunTransition, i, line, e, "/payload/accepted", "cancellation cannot be accepted when the request arrived after the run completed or failed")
 			} else if !r.terminal {
 				r.cancelAccepted = true
 				r.status = protocol.RunCancelling

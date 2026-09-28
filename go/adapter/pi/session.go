@@ -1302,13 +1302,6 @@ func (s *Session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		s.reduceMu.Unlock()
 		return protocol.RunCancelResponse{}, err
 	}
-	s.mu.Lock()
-	terminal := run.terminal
-	status := run.status
-	s.mu.Unlock()
-	if terminal {
-		return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: status}, nil
-	}
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 

@@ -601,16 +601,14 @@ pub const Reducer = struct {
     fn interruptAcknowledged(self: *Reducer, index: usize) !void {
         const run = &self.runs.items[index];
         run.cancel_in_flight = false;
-        if (run.terminal) {
-            try self.settled.append(self.allocator(), .{ .cancel = .{ .accepted = std.mem.eql(u8, run.status, "cancelled"), .status = run.status } });
-            return;
+        if (!run.terminal) {
+            run.cancel_pending = true;
+            run.status = "cancelling";
+            var payload = try self.runPayload(index);
+            try self.put(&payload, "status", str("cancelling"));
+            try self.put(&payload, "updated_at_ms", int(self.now()));
+            try self.emit(index, "run.status.updated", payload, "", false);
         }
-        run.cancel_pending = true;
-        run.status = "cancelling";
-        var payload = try self.runPayload(index);
-        try self.put(&payload, "status", str("cancelling"));
-        try self.put(&payload, "updated_at_ms", int(self.now()));
-        try self.emit(index, "run.status.updated", payload, "", false);
         try self.settled.append(self.allocator(), .{ .cancel = .{ .accepted = true, .status = "cancelling" } });
     }
 
@@ -1766,8 +1764,8 @@ test "a natural terminal wins the race with an interrupt still in flight" {
     try answerCall(&reducer, "{}");
     try testing.expectEqualStrings("run.completed", lastType(&reducer));
     const outcome = reducer.settled.items[2].cancel;
-    try testing.expect(!outcome.accepted);
-    try testing.expectEqualStrings("completed", outcome.status);
+    try testing.expect(outcome.accepted);
+    try testing.expectEqualStrings("cancelling", outcome.status);
     const late = (try reducer.cancel("run-02")).?;
     try testing.expect(!late.accepted);
 }

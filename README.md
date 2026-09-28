@@ -605,6 +605,9 @@ The public packages are the ones a program should import: `protocol`,
 `harnesses`, `providers` and `schema`. Everything else lives under
 `go/internal`, and `goap check` fails on a package that is in neither set, so
 the list cannot drift by adding a directory.
+[`docs/go-library.md`](docs/go-library.md) says what each of those is for and
+which file in `goap` uses it, which is where to start when the signature alone
+does not answer the question.
 
 `adapter.RunToTerminal` is the shortest path from a prompt to a result: it
 submits, reads the stream, answers every interaction through a policy
