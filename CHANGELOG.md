@@ -277,6 +277,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could grow the daemon's buffer until it ran out of memory; the buffered bytes are
   now bounded by the limit and a line over it is a framing defect naming what was
   buffered.
+- `oapx hub --stdio` now notices a host that closed its pipe on Linux. An empty
+  pipe whose writer has closed polls as `POLLHUP` without `POLLIN`, so the wait saw
+  "no input" and the daemon never learned the request stream had ended — it ran
+  until it was killed. A hangup means a read will return end-of-stream, so it
+  counts as ready. This one only shows on the platform whose `poll` says it that
+  way, which is why the differential job that would have caught it is not wired
+  into CI yet: it needs an `oapx` binary, and that is #390.
 - A host that stopped reading now ends the serve. A failed write propagated out of
   the op but was caught as if it were an unreadable request, so the loop kept
   reading a host that was no longer there, once per cycle, for as long as the

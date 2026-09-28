@@ -787,7 +787,8 @@ fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns
     const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
     const awoken = std.posix.poll(watched.items, budget) catch 0;
     if (awoken == 0) return false;
-    return (watched.items[watched.items.len - 1].revents & std.posix.POLL.IN) != 0;
+    const input_events = watched.items[watched.items.len - 1].revents;
+    return (input_events & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0;
 }
 
 const Recorder = struct {
