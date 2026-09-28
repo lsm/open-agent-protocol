@@ -9,12 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
+  and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
+  `close` and `state` — over the transport objects the draft specifies. Framing is
+  strict rather than lenient on purpose: a carriage return, invalid UTF-8, an empty
+  line, a line over the frame limit, or a parameter an op does not define are all
+  refused with a code, and a line over the limit is a defect rather than something to
+  grow into. An op the frontend does not serve is a correlated refusal, not a
+  defect, so a host learns which ops this build has without being told the pipe
+  broke. Thirteen tests cover the framing, the five ops, the in-flight bound, and a
+  refusal whose message is bounded so a long one still frames.
+  `close` answers a bare `null`, and a repeated `close` is `unknown_session` rather
+  than a second success — Decision 0039's close releases the session, so there is
+  nothing left to close. The envelopes it mints carry the ids Go's stdio frontend
+  mints, `oap-response-N` and an `oap-request-N` in reply to, spending the counter
+  in Go's per-op order, so the two trees number the same answers the same way.
+  They still differ in the order the members are written: Go's envelope struct
+  puts `payload` straight after `id` and this tree's serializer writes it last,
+  which the hub draft's divergence ledger records.
+  A session's `created_at` is now RFC 3339 in UTC at whole-second precision with
+  a trailing `Z` and no fractional part, which is what Go's `time.RFC3339` writes.
+  It carried milliseconds, so the two trees wrote the same session differently in
+  every listing and the difference was not in the divergence ledger. A sub-second
+  remainder is truncated rather than rounded, as Go does, and the format is stated
+  in the hub draft's `sessions` row.
+  The module is now compiled for the Windows cross-compile targets, which the
+  cross-compile never reached while it was outside the `oapx` binary.
 - The TUI's `/compact [focus]` has the model summarize the conversation and replaces
   the history with that summary. The replaced messages are kept as JSONL transcripts,
   and every summary names all of them, so the agent can read back what a summary
   dropped. A resumed session starts from its latest summary. The unused compactor that
   truncated each message to 800 characters is removed.
-
 - `contract.Session` grows an optional `readable` slot, so the hub's loop waits on
   every session's child at once instead of giving each a share of the wait in turn.
   The loop gave each open session at least 1 ms of blocking wait, one after
@@ -110,7 +135,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ending the session's subscriptions with a `session_closed` ending and releasing its
   journal, cursors, holds and state. `close` releases, so the id is free again, and
   `sessions` lists live sessions only. A session whose adapter reports itself closed
-  is released the same way when it is next observed.
+  is released the same way when it is next observed, and a `state` in flight at that
+  moment answers the closed document the adapter reported rather than `unknown_session`
+  — the host learns how the session ended instead of only that it is not there. The
+  next `state` is `unknown_session`, the same as Go's, which ignores
+  `ErrSessionClosed` and answers what the session last said.
   A run's stream failing is not a close and no longer acts like one. The hub ends
   the subscriptions and nothing else: it does not close the child, because
   `contract.Session.close` destroys the session, so a hub that closed the child of a

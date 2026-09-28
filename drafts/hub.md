@@ -199,8 +199,16 @@ a bad request. So is an unknown field, a repeated key, a key that differs from
 its exact protocol spelling, a missing `id`, a missing `op`, an empty line, a
 line carrying a carriage return, a line that is not UTF-8, an unterminated
 final line, a line over the frame limit, and trailing data after the object.
-The daemon **fails closed** on all of them: it stops serving and reports a
+So is a parameter whose **declared type** the line does not carry: a number for
+`adapter`, a list for `session_id`, a string for `allow_degraded_features`. The
+daemon **fails closed** on all of them: it stops serving and reports a
 framing defect naming the line.
+
+A parameter that is present and **null** is not among them. A null member counts
+as supplied, so an op that does not define that parameter refuses it
+`invalid_request` on presence, and an op that does define it treats it as absent.
+The distinction is the type, not the presence: `null` is a value every parameter
+admits, and a number where a string belongs is a line the daemon cannot read.
 
 The **frame limit bounds the payload**, not the line: the terminating `\n` is
 framing and does not count, so a line whose payload is exactly the limit is
@@ -667,7 +675,10 @@ flight.
 - **params:** none.
 - **answer:** `{"sessions":[{"session_id":…,"adapter":…,"status":…,"active_run_id":…,"active_runs":[…],"created_at":…}]}`,
   sorted by session id. Only live sessions are listed: a closed session is
-  released.
+  released. `created_at` is **RFC 3339 in UTC at whole-second precision**, with a
+  trailing `Z` and no fractional part — `2023-11-14T22:15:23Z`, which is what Go's
+  `time.RFC3339` writes. A sub-second remainder is truncated, not rounded, so two
+  trees listing the same session at the same instant write the same byte.
 - **errors:** `invalid_request` (a parameter was supplied).
 - **pinned by:** `TestSessionsOpListsTrackedSessions`, `TestSessionsListingAcrossLifecycle`,
   `TestListingsMatchHTTP`, `TestHubSessionsListingAcrossAdapters`. The release is
@@ -1163,8 +1174,18 @@ Go change, queued in
 
 ### Recorded, and not divergences
 
-Two places where the two trees will *look* different and neither is wrong. A
-differential test compares the members, not the prose, at both.
+Three places where the two trees will *look* different and none of them is a
+wrong answer. A differential test compares the members, not the prose, at the
+first two; the third is about bytes and is named here so nobody reads the
+member comparison as a byte comparison.
+
+- **An envelope's member order.** Go's `protocol.Envelope` struct writes
+  `payload` straight after `id`; `zig/src/protocol/oap/envelope.zig` writes it
+  last. Same members, same values, different bytes. The ids, the codes, the
+  wording and every member agree, and the zig stdio frontend mints the same
+  `oap-request-N` and `oap-response-N` in the same per-op order Go spends its
+  counter in — so a differential test that compares members is satisfied, and one
+  that compares bytes is not, and the two are not the same test.
 
 - **A signal's wording.** The stdio `oap-overflow` message says `resume with a
   cursor after this sequence`; the SSE one says `reconnect with a cursor after
