@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
 	"io"
 	"regexp"
 )
@@ -510,7 +511,7 @@ func DecodeData(e Event, dst any) error {
 }
 
 func decodeStrict(data []byte, dst any, unknown bool) error {
-	if err := RejectDuplicateKeys(data); err != nil {
+	if err := jsonwalk.RejectDuplicateKeys(data); err != nil {
 		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -526,66 +527,6 @@ func decodeStrict(data []byte, dst any, unknown bool) error {
 			return errors.New("trailing JSON value")
 		}
 		return fmt.Errorf("trailing data: %w", err)
-	}
-	return nil
-}
-
-func RejectDuplicateKeys(data []byte) error {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var walk func() error
-	walk = func() error {
-		token, err := dec.Token()
-		if err != nil {
-			return err
-		}
-		delim, ok := token.(json.Delim)
-		if !ok {
-			return nil
-		}
-		switch delim {
-		case '{':
-			seen := make(map[string]struct{})
-			for dec.More() {
-				keyToken, err := dec.Token()
-				if err != nil {
-					return err
-				}
-				key, ok := keyToken.(string)
-				if !ok {
-					return errors.New("object key is not a string")
-				}
-				if _, duplicate := seen[key]; duplicate {
-					return fmt.Errorf("duplicate object key %q", key)
-				}
-				seen[key] = struct{}{}
-				if err := walk(); err != nil {
-					return err
-				}
-			}
-			_, err := dec.Token()
-			return err
-		case '[':
-			for dec.More() {
-				if err := walk(); err != nil {
-					return err
-				}
-			}
-			_, err := dec.Token()
-			return err
-		default:
-			return errors.New("unexpected closing delimiter")
-		}
-	}
-	if err := walk(); err != nil {
-		return err
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("trailing JSON value")
-		}
-		return err
 	}
 	return nil
 }
