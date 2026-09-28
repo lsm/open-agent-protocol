@@ -951,16 +951,16 @@ test "AuthProtocolServer refuses the fixture login when the opt-in is not set" {
     });
     defer server.deinit();
 
+    const start_payload = auth_types.AuthLoginStartRequest{
+        .provider_id = OwnedSlice(u8).initOwned(try allocator.dupe(u8, auth_providers.fixture_provider_id)),
+    };
     const flow_id = auth_types.generateUlid();
-    const start_id = auth_types.generateUlid();
     var start_env = auth_types.Envelope{
         .stream_id = flow_id,
-        .message_id = start_id,
+        .message_id = auth_types.generateUlid(),
         .sequence = 1,
         .timestamp = compat.time.nowMillis(),
-        .payload = .{ .auth_login_start = .{
-            .provider_id = OwnedSlice(u8).initOwned(try allocator.dupe(u8, auth_providers.fixture_provider_id)),
-        } },
+        .payload = .{ .auth_login_start = start_payload },
     };
     defer start_env.deinit(allocator);
 
@@ -986,7 +986,19 @@ test "AuthProtocolServer refuses the fixture login when the opt-in is not set" {
 
     auth_providers.test_fixture_opt_in = true;
     defer auth_providers.test_fixture_opt_in = null;
-    try std.testing.expect((try server.handleEnvelope(start_env)).?.payload == .ack);
+    const second_payload = auth_types.AuthLoginStartRequest{
+        .provider_id = OwnedSlice(u8).initOwned(try allocator.dupe(u8, auth_providers.fixture_provider_id)),
+    };
+    var second_env = auth_types.Envelope{
+        .stream_id = auth_types.generateUlid(),
+        .message_id = auth_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .auth_login_start = second_payload },
+    };
+    defer second_env.deinit(allocator);
+
+    try std.testing.expect((try server.handleEnvelope(second_env)).?.payload == .ack);
     var prompt = try waitForAuthOutbound(&server, IsPrompt, 2_000);
     defer prompt.deinit(allocator);
     try std.testing.expectEqualStrings("Enter fixture code:", prompt.payload.auth_event.prompt.message.slice());
