@@ -245,14 +245,12 @@ pub const Frontend = struct {
             },
         };
         if (self.in_flight >= self.max_ops) {
-            return self.refuse(arena, request.id, .{ .code = "busy", .message = "the frontend is already running 16 operations; send this request again" });
+            const message = try std.fmt.allocPrint(arena, "the frontend is already running {d} operations; send this request again", .{self.max_ops});
+            return self.refuse(arena, request.id, .{ .code = "busy", .message = message });
         }
         self.in_flight += 1;
         defer self.in_flight -= 1;
-        const outcome = self.dispatch(arena, request) catch |err| {
-            self.in_flight -= 1;
-            return err;
-        };
+        const outcome = try self.dispatch(arena, request);
         switch (outcome) {
             .answer => |value| try self.answer(request.id, value),
             .answer_line => |payload| try self.answerLine(request.id, payload),
@@ -349,8 +347,8 @@ pub const Frontend = struct {
             else => return .{ .refused = .{ .code = "probe_failed", .message = try std.fmt.allocPrint(arena, "the adapter \"{s}\" could not be probed", .{name}) } },
         };
         self.next_envelope += 1;
-        const answer_id = try std.fmt.allocPrint(arena, "oapx-hub-{d}", .{self.next_envelope});
-        const correlation = try std.fmt.allocPrint(arena, "oapx-hub-request-{d}", .{self.next_envelope});
+        const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
+        const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
         const declared = try declaredFeatures(arena, descriptor.features);
         const tools = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, descriptor.sources);
@@ -377,11 +375,12 @@ pub const Frontend = struct {
             return .{ .refused = try self.refusalFor(arena, err, session_id) };
         };
         self.next_envelope += 1;
-        const answer_id = try std.fmt.allocPrint(arena, "oapx-hub-{d}", .{self.next_envelope});
-        const correlation = try std.fmt.allocPrint(arena, "oapx-hub-request-{d}", .{self.next_envelope});
+        const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
+        const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
         const envelope = oap_types.Envelope{
             .id = answer_id,
             .in_reply_to = correlation,
+            .session_id = reported.session_id,
             .payload = .{ .session_state_response = reported },
         };
         return .{ .answer_line = try oap_envelope.serializeEnvelope(envelope, arena) };
@@ -965,6 +964,11 @@ test "state answers a daemon-minted envelope and refuses an unknown session" {
     try harness.send("{\"id\":1,\"op\":\"state\",\"session_id\":\"asked\"}");
     const envelope = (try harness.lastValue()).object.get("result").?;
     try testing.expectEqualStrings("session.state.response", try textMember(harness.arena(), envelope, "type"));
+    try testing.expectEqualStrings("oap-response-1", try textMember(harness.arena(), envelope, "id"));
+    try testing.expectEqualStrings("oap-request-1", try textMember(harness.arena(), envelope, "in_reply_to"));
+    try testing.expectEqualStrings("asked", try textMember(harness.arena(), envelope, "session_id"));
+    const payload = envelope.object.get("payload").?;
+    try testing.expectEqualStrings("asked", try textMember(harness.arena(), payload, "session_id"));
     try harness.send("{\"id\":2,\"op\":\"state\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":3,\"op\":\"state\"}");
@@ -992,6 +996,7 @@ test "the in-flight bound refuses any op, naming the bound that refused it" {
     try harness.send("{\"id\":2,\"op\":\"sessions\"}");
     const message = (try harness.lastValue()).object.get("error").?.object.get("message").?.string;
     try testing.expect(std.mem.indexOf(u8, message, "send this request again") != null);
+    try testing.expect(std.mem.indexOf(u8, message, "already running 1 operations") != null);
 }
 
 const fading_descriptor = contract.Descriptor{
