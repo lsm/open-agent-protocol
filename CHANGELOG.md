@@ -616,10 +616,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `contract.Session`'s `models` and `tools` now report the revision the lister served
-- A session open's `metadata` now reaches the adapter. `contract.OpenRequest` and
-  `hub.OpenRequest` carry it and the hub forwards it, as a parsed value, which is
-  what Go hands an adapter. It was neither validated nor forwarded: a Zig hub
-  accepted a request member the draft specifies and then silently discarded it.
   the catalog under, beside the catalog itself, as Go's `base.Catalog` and
   `base.ToolCatalog` do. The hub stamped the answer with the **adapter descriptor's**
   revision and never learned what the lister thought, so a lister serving a catalog
@@ -632,9 +628,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   than the descriptor's, and refuses an unlabelled catalog rather than passing one
   through, so a session mediated by an endpoint is checked the same way a direct one is.
   A lister that reports the session closed now releases the session and answers
-  `unknown_session`, as `state`, `cancel` and `resolveCall` already did. The two
-  catalog operations propagated it raw and left a stale entry in the hub for the life
-  of the process.
+  `session_closed`, as Go does: it marks the session closed and still propagates the
+  error, so the answer is that once and `unknown_session` only on the next operation.
+- A session open's `metadata` now reaches the adapter. `contract.OpenRequest` and
+  `hub.OpenRequest` carry it and the hub forwards it, as a parsed value, which is
+  what Go hands an adapter. It was neither validated nor forwarded: a Zig hub
+  accepted a request member the draft specifies and then silently discarded it.
 - **`docs/oap-system-map.html` is kept and made true.** The page was an orphan with nothing linking to it, and everything countable on it had drifted: it said 546 fixtures where `fixtures/manifest.json` lists 576, 53 diagnostic codes where `go/validation/diagnostic.go` declares 57, twelve schema documents where `schema/v0.1/` holds thirteen, and it showed eleven conformance units where `drafts/conformance.md` lists twelve — `+provider-attach` was missing from the chips. The status ladder was behind the tree: **semantic is complete** (`nothing_outstanding` in `zig/src/validation/semantic_gate.zig` is empty) and **all seven adapters are reachable behind `oapx serve agent --backend`**, so the page now carries a hub row instead — `oapx hub --stdio` serves `adapters`, `sessions`, `capabilities`, `state` and `close` and answers `unknown_op` for the rest — and names #496 for the differential. The commands table was wrong about the released binary: `oapx serve agent provider` is `oapx serve agent,provider --stdio`, `oapx run` only enters the agent loop with `--agent`, and `oapx hub --stdio` and `oapx validate` were missing; the hero now says `oapx` is the released binary and that `goap` is run with `go run ./go/cmd/goap` and never installed. The SVG's harnesses are pinned to catalogued versions rather than to one commit (Decision 0033), and the vendor box says it shows four of the catalog's 23 rows. The trace section and the `goap validate --format=json` transcript were checked against `fixtures/valid/tools-permission-completed.json` and the command's real output and are unchanged — every key and value the page shows is in the fixture, field for field. The README links the page and says to open it in a browser, and its SDK line now names three SDKs in `sdk/` and the Go one at `go/sdk/`.
 - **A run no longer stops by itself after 100 turns.** The agent loop capped a run at 100 model turns when its caller set no limit, and the TUI never sets one, so a long task ended right after a tool call, with no reply and no message. A run now goes on until the model answers without calling a tool or you cancel it, as pi-mono's loop does. `max_iterations` still sets a limit for a caller that wants one.
 - **The agent loop runs the tool calls a reply carries, whatever stop reason it reports.** It used to act on the stop reason alone, and the OpenAI Responses and Google providers never report `tool_use`, so a reply calling a tool through them ended the run without running it. A reply reporting `tool_use` with no tool call now ends the run instead of asking again. A tool call cut off at the output token limit is not run: the model gets an error asking it to call the tool again with complete arguments, and the run goes on. A fourth cut-off reply in a row ends the run, and the TUI now says when a run ends on a reply cut off at the output token limit.
