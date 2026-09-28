@@ -16,17 +16,10 @@ const (
 	ActionRefused  Action = "refused"
 )
 
-// Live reports whether a session was still open when an entry was written: the
-// entry is one that opened or reopened it, and not a later close. A refusal is
-// not a state, so it never answers either way.
 func Live(entry Entry) bool {
 	return entry.Action == ActionOpened || entry.Action == ActionReopened
 }
 
-// State is the last entry that claims to be a state of the session, which is
-// what a host reads when a refusal for the same id is in the history: a
-// refused duplicate open says the hub already held the id, and says nothing
-// about the session that holds it.
 func State(history []Entry) (Entry, bool) {
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].Action != ActionRefused {
