@@ -699,15 +699,15 @@ func (s *session) Cancel(ctx context.Context, id protocol.RunID) (protocol.RunCa
 		return protocol.RunCancelResponse{}, err
 	}
 	s.mu.Lock()
-	if r.terminal {
-		status := r.status
-		s.mu.Unlock()
-		return protocol.RunCancelResponse{}, &base.RunTerminalError{RunID: id, Status: status}
+	live := !r.terminal
+	if live {
+		r.cancelRequested = true
+		r.status = protocol.RunCancelling
 	}
-	r.cancelRequested = true
-	r.status = protocol.RunCancelling
 	s.mu.Unlock()
-	_ = s.emit(r, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+	if live {
+		_ = s.emit(r, protocol.TypeRunStatusUpdated, protocol.RunStatusUpdatedPayload{SessionID: s.state.SessionID, RunID: id, Status: protocol.RunCancelling, UpdatedAtMS: s.clock.Now().UnixMilli()}, false)
+	}
 	return protocol.RunCancelResponse{SessionID: s.state.SessionID, RunID: id, Accepted: true, Status: protocol.RunCancelling}, nil
 }
 func (s *session) Resume(ctx context.Context, q base.ResumeRequest) (base.Recovery, base.EventStream, error) {

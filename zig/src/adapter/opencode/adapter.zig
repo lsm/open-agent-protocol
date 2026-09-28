@@ -413,12 +413,7 @@ pub const Session = struct {
             .session_id = self.id,
             .run_id = try arena.dupe(u8, answered.run_id),
             .accepted = true,
-            .status = switch (answered.status) {
-                .cancelled => .cancelled,
-                .queued => .queued,
-                .running => .running,
-                else => .cancelling,
-            },
+            .status = .cancelling,
         };
     }
 
