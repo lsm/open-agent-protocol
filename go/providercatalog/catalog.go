@@ -31,6 +31,7 @@ type Provider struct {
 	CredentialEnv []string     `json:"credential_env,omitempty"`
 	BaseURLEnv    []string     `json:"base_url_env,omitempty"`
 	RegionEnv     string       `json:"region_env,omitempty"`
+	DefaultRegion string       `json:"default_region,omitempty"`
 	Wires         []string     `json:"wires,omitempty"`
 	BaseURLSource string       `json:"base_url_source,omitempty"`
 	Endpoints     []Endpoint   `json:"endpoints,omitempty"`

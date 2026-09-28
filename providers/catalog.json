@@ -180,6 +180,7 @@
         "KIMI_API_KEY"
       ],
       "region_env": "KIMI_REGION",
+      "default_region": "china",
       "wires": [
         "openai-completions"
       ],

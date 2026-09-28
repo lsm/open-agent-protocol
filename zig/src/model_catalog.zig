@@ -24,12 +24,9 @@ const kimi_model_id = "kimi-k2.7-code";
 const github_copilot_provider_id = "github-copilot";
 const github_copilot_api_name = "openai-completions";
 const kimi_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, kimi_api_id, "china");
-const kimi_global_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, kimi_api_id, "global");
 const kimi_env_key = provider_catalog.credentialEnv(kimi_provider_id)[0];
-const kimi_china_catalog_name = "kimi.json";
-const kimi_global_catalog_name = "kimi-global.json";
-const kimi_context_window: u32 = 262_144;
-const kimi_max_output_tokens: u32 = 16_384;
+const kimi_region_env = provider_catalog.regionEnv(kimi_provider_id) orelse
+    @compileError("providers/catalog.json records no region_env for kimi");
 const codex_models_cache_name = "models_cache.json";
 const makai_catalog_dir_name = "model_catalog";
 const makai_codex_catalog_name = "openai-codex.json";
@@ -95,15 +92,8 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     };
     defer deinitModels(allocator, codex_models);
 
-    var kimi_models = try loadKimiModels(allocator, storage, mode);
-    defer deinitModels(allocator, kimi_models);
-
     var anthropic_models = try loadAnthropicModels(allocator, storage, mode);
     defer deinitModels(allocator, anthropic_models);
-
-    if (kimi_models.len == 0 and anthropic_models.len == 0) {
-        if (codex_refresh_error) |err| return err;
-    }
 
     var copilot_models = try loadGitHubCopilotModels(allocator, storage);
     defer deinitModels(allocator, copilot_models);
@@ -114,7 +104,15 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
     var catalog_models = try loadCatalogModels(allocator, storage, mode);
     defer deinitModels(allocator, catalog_models);
 
-    const lists = [_]*[]ai_types.Model{ &codex_models, &kimi_models, &anthropic_models, &copilot_models, &custom_models, &catalog_models };
+    if (codex_refresh_error) |err| {
+        if (anthropic_models.len == 0 and copilot_models.len == 0 and
+            custom_models.len == 0 and catalog_models.len == 0)
+        {
+            return err;
+        }
+    }
+
+    const lists = [_]*[]ai_types.Model{ &codex_models, &anthropic_models, &copilot_models, &custom_models, &catalog_models };
     var total: usize = 0;
     for (lists) |list| total += list.len;
     const models = try allocator.alloc(ai_types.Model, total);
@@ -398,17 +396,21 @@ const CatalogEndpoint = struct {
 };
 
 fn catalogTarget(id: []const u8) ?CatalogEndpoint {
+    return catalogTargetInRegion(id, null);
+}
+
+fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) ?CatalogEndpoint {
     const row = provider_catalog.provider(id) orelse return null;
     var chosen: ?[]const u8 = null;
     for (row.wires) |wire| {
         if (!wireIsImplemented(wire)) continue;
-        if (provider_catalog.requestUrl(id, wire, null) == null) continue;
+        if (provider_catalog.requestUrl(id, wire, region) == null) continue;
         chosen = wire;
         break;
     }
     const wire = chosen orelse return null;
-    const base_url = provider_catalog.baseUrl(id, wire, null) orelse return null;
-    const models_url = provider_catalog.modelsUrl(id, null) orelse return null;
+    const base_url = provider_catalog.baseUrl(id, wire, region) orelse return null;
+    const models_url = provider_catalog.modelsUrl(id, region) orelse return null;
     return .{ .id = row.id, .wire = wire, .base_url = base_url, .models_url = models_url };
 }
 
@@ -449,15 +451,50 @@ fn catalogEndpointWithOverrides(
     id: []const u8,
     overrides: provider_base_url.BaseUrlOverrides,
 ) !?CatalogEndpoint {
-    const catalog = catalogTarget(id) orelse return null;
+    const region = catalogRegion(allocator, id);
+    const catalog = catalogTargetInRegion(id, region) orelse return null;
     const base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, overrides);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
 fn catalogEndpointFromEnvironment(allocator: std.mem.Allocator, id: []const u8) !?CatalogEndpoint {
-    const catalog = catalogTarget(id) orelse return null;
-    const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, null);
+    const region = catalogRegion(allocator, id);
+    const catalog = catalogTargetInRegion(id, region) orelse return null;
+    const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
+}
+
+fn catalogRegion(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
+    const name = provider_catalog.regionEnv(id) orelse return provider_catalog.defaultRegion(id);
+    const value = compat.getEnvVarOwned(allocator, name) catch return provider_catalog.defaultRegion(id);
+    defer allocator.free(value);
+    if (value.len == 0) return provider_catalog.defaultRegion(id);
+    if (regionSynonym(id, value)) |aliased| return aliased;
+    for (provider_catalog.regionsFor(id)) |region| {
+        if (std.ascii.eqlIgnoreCase(region, value)) return region;
+    }
+    return provider_catalog.defaultRegion(id);
+}
+
+fn regionSynonym(id: []const u8, value: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, id, kimi_provider_id)) return null;
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (std.ascii.eqlIgnoreCase(trimmed, "moonshot")) return "global";
+    if (std.ascii.eqlIgnoreCase(trimmed, "cn") or std.ascii.eqlIgnoreCase(trimmed, "coding")) return "china";
+    return null;
+}
+
+fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]const u8 {
+    const stored = storage orelse return null;
+    const auth = stored.providers.get(id) orelse return null;
+    if (auth != .oauth) return null;
+    const provider_data = auth.oauth.provider_data orelse return null;
+    if (!std.mem.startsWith(u8, provider_data, "region:")) return null;
+    const wanted = provider_data["region:".len..];
+    for (provider_catalog.regionsFor(id)) |region| {
+        if (std.ascii.eqlIgnoreCase(region, wanted)) return region;
+    }
+    return null;
 }
 
 const catalog_loader_ids = [_][]const u8{
@@ -473,6 +510,7 @@ const catalog_loader_ids = [_][]const u8{
     "tencent-coding-plan",
     "volcengine-coding-plan",
     "openai",
+    "kimi",
 };
 
 const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
@@ -794,78 +832,15 @@ fn parseModelIds(allocator: std.mem.Allocator, data: []const u8) ![][]const u8 {
     return ids.toOwnedSlice(allocator);
 }
 
-fn loadKimiModels(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, mode: CatalogLoadMode) ![]ai_types.Model {
-    if (builtin.is_test) {
-        if (!test_force_kimi_model) return emptyModels(allocator);
-        return try kimiStaticModels(allocator, "china");
-    }
 
-    const env_key = kimiEnvKey(allocator);
-    defer if (env_key) |value| secureFree(allocator, value);
-    const credential = kimiCredential(allocator, storage, env_key) orelse return emptyModels(allocator);
-    defer secureFree(allocator, credential);
 
-    var region = kimiStoredRegion(storage);
-    if (kimiRegionFromEnv(allocator)) |env_region| region = env_region;
-    const cache_name = kimiCatalogName(region);
 
-    if (mode == .allow_cache) {
-        if (try loadCachedKimiModels(allocator, cache_name, region, anthropic_catalog_max_age_ms)) |models| return models;
-    }
-    if (fetchKimiModelsCatalog(allocator, region, credential)) |body| {
-        defer allocator.free(body);
-        if (parseKimiModels(allocator, body, region)) |models| {
-            if (models.len > 0) {
-                saveMakaiCatalog(allocator, cache_name, body) catch {};
-                return models;
-            }
-            allocator.free(models);
-        } else |_| {}
-    } else |_| {}
-    if (try loadCachedKimiModels(allocator, cache_name, region, null)) |models| return models;
-    return try kimiStaticModels(allocator, region);
-}
 
-fn kimiStaticModels(allocator: std.mem.Allocator, region: []const u8) ![]ai_types.Model {
-    const models = try allocator.alloc(ai_types.Model, 1);
-    errdefer allocator.free(models);
-    models[0] = try kimiModel(allocator, region);
-    return models;
-}
 
-fn kimiCredential(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, env_key: ?[]const u8) ?[]u8 {
-    if (storage) |stored| {
-        if (stored.providers.get(kimi_provider_id)) |auth| {
-            switch (auth) {
-                .api_key => |key| return allocator.dupe(u8, key) catch null,
-                .oauth => |credentials| return allocator.dupe(u8, credentials.access) catch null,
-            }
-        }
-    }
-    if (env_key) |value| {
-        if (value.len > 0) return allocator.dupe(u8, value) catch null;
-    }
-    return null;
-}
 
-fn kimiEnvKey(allocator: std.mem.Allocator) ?[]u8 {
-    const value = compat.getEnvVarOwned(allocator, kimi_env_key) catch return null;
-    if (value.len > 0) return value;
-    allocator.free(value);
-    return null;
-}
 
-fn kimiStoredRegion(storage: ?*oauth_storage.AuthStorage) []const u8 {
-    var region: []const u8 = "china";
-    if (storage) |stored| {
-        if (stored.providers.get(kimi_provider_id)) |auth| {
-            if (auth == .oauth) {
-                if (auth.oauth.provider_data) |provider_data| region = kimiRegionFromProviderData(provider_data);
-            }
-        }
-    }
-    return region;
-}
+
+
 
 var test_force_kimi_model: bool = false;
 var test_force_codex_refresh_error: bool = false;
@@ -1141,168 +1116,30 @@ fn fetchCustomModelsCatalog(
     return body;
 }
 
-fn normalizeKimiRegion(value: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (std.ascii.eqlIgnoreCase(trimmed, "global") or std.ascii.eqlIgnoreCase(trimmed, "moonshot")) return "global";
-    if (std.ascii.eqlIgnoreCase(trimmed, "china") or
-        std.ascii.eqlIgnoreCase(trimmed, "cn") or
-        std.ascii.eqlIgnoreCase(trimmed, "coding"))
-    {
-        return "china";
-    }
-    return null;
-}
 
-fn kimiRegionFromProviderData(provider_data: []const u8) []const u8 {
-    if (std.mem.startsWith(u8, provider_data, "region:")) {
-        return normalizeKimiRegion(provider_data["region:".len..]) orelse "china";
-    }
-    return "china";
-}
 
-fn kimiRegionFromEnv(allocator: std.mem.Allocator) ?[]const u8 {
-    const env_region = compat.getEnvVarOwned(allocator, "KIMI_REGION") catch return null;
-    defer allocator.free(env_region);
-    return normalizeKimiRegion(env_region);
-}
 
-fn kimiModel(allocator: std.mem.Allocator, region: []const u8) !ai_types.Model {
-    return kimiModelForId(allocator, region, kimi_model_id, .{ .name = "Kimi K2.7 Code" });
-}
 
-const KimiModelSpec = struct {
-    name: []const u8,
-    context_window: u32 = kimi_context_window,
-    reasoning: bool = false,
-    image_input: bool = false,
-};
 
-fn kimiSpecFromObject(obj: *const std.json.ObjectMap, id: []const u8) KimiModelSpec {
-    var spec: KimiModelSpec = .{ .name = id };
-    if (objectString(obj, "display_name")) |name| {
-        if (name.len > 0) spec.name = name;
-    }
-    if (objectU32(obj, "context_length")) |context_window| {
-        if (context_window > 0) spec.context_window = context_window;
-    }
-    if (objectBool(obj, "supports_reasoning")) |reasoning| spec.reasoning = reasoning;
-    if (objectBool(obj, "supports_image_in")) |image_input| spec.image_input = image_input;
-    return spec;
-}
 
-fn kimiModelForId(allocator: std.mem.Allocator, region: []const u8, id_text: []const u8, spec: KimiModelSpec) !ai_types.Model {
-    const id = try allocator.dupe(u8, id_text);
-    errdefer allocator.free(id);
-    const name = try allocator.dupe(u8, spec.name);
-    errdefer allocator.free(name);
-    const api = try allocator.dupe(u8, kimi_api_id);
-    errdefer allocator.free(api);
-    const provider = try allocator.dupe(u8, kimi_provider_id);
-    errdefer allocator.free(provider);
 
-    const base_url = try allocator.dupe(u8, kimiBaseUrl(region));
-    errdefer allocator.free(base_url);
 
-    const input = try allocator.alloc([]const u8, if (spec.image_input) 2 else 1);
-    errdefer allocator.free(input);
-    input[0] = try allocator.dupe(u8, "text");
-    errdefer allocator.free(input[0]);
-    if (spec.image_input) {
-        input[1] = try allocator.dupe(u8, "image");
-        errdefer allocator.free(input[1]);
-    }
 
-    return .{
-        .id = id,
-        .name = name,
-        .api = api,
-        .provider = provider,
-        .base_url = base_url,
-        .reasoning = spec.reasoning,
-        .input = input,
-        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = spec.context_window,
-        .max_tokens = kimi_max_output_tokens,
-        .is_owned = true,
-    };
-}
 
-fn kimiBaseUrl(region: []const u8) []const u8 {
-    if (std.mem.eql(u8, region, "global")) return kimi_global_base_url;
-    return kimi_base_url;
-}
 
-fn kimiCatalogName(region: []const u8) []const u8 {
-    if (std.mem.eql(u8, region, "global")) return kimi_global_catalog_name;
-    return kimi_china_catalog_name;
-}
 
-fn kimiModelsUrl(allocator: std.mem.Allocator, region: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}/v1/models", .{kimiBaseUrl(region)});
-}
 
-fn parseKimiModels(allocator: std.mem.Allocator, data: []const u8, region: []const u8) ![]ai_types.Model {
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
-    defer parsed.deinit();
-    if (parsed.value != .object) return error.InvalidModelCatalog;
-    const list = parsed.value.object.get("data") orelse return error.InvalidModelCatalog;
-    if (list != .array) return error.InvalidModelCatalog;
 
-    var models = std.ArrayList(ai_types.Model).empty;
-    errdefer {
-        for (models.items) |*model| model.deinit(allocator);
-        models.deinit(allocator);
-    }
-    for (list.array.items) |item| {
-        if (item != .object) continue;
-        const id = objectString(&item.object, "id") orelse continue;
-        if (id.len == 0) continue;
-        var model = try kimiModelForId(allocator, region, id, kimiSpecFromObject(&item.object, id));
-        errdefer model.deinit(allocator);
-        try models.append(allocator, model);
-    }
-    if (models.items.len == 0) return error.InvalidModelCatalog;
-    return models.toOwnedSlice(allocator);
-}
 
-fn loadCachedKimiModels(allocator: std.mem.Allocator, name: []const u8, region: []const u8, max_age_ms: ?i64) !?[]ai_types.Model {
-    const path = makaiCatalogPath(allocator, name) catch return null;
-    defer allocator.free(path);
-    if (max_age_ms) |max_age| {
-        const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return null;
-        if (!catalogIsFresh(modified, compat.time.nowMillis(), max_age)) return null;
-    }
-    const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_catalog_bytes) catch return null;
-    defer allocator.free(data);
-    const models = parseKimiModels(allocator, data, region) catch return null;
-    if (models.len > 0) return models;
-    allocator.free(models);
-    return null;
-}
 
-fn fetchKimiModelsCatalog(allocator: std.mem.Allocator, region: []const u8, token: []const u8) ![]u8 {
-    const url = try kimiModelsUrl(allocator, region);
-    defer allocator.free(url);
-    const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
-    defer secureFree(allocator, bearer);
 
-    var headers: std.ArrayList(std.http.Header) = .empty;
-    defer headers.deinit(allocator);
-    try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
-    try headers.append(allocator, .{ .name = "authorization", .value = bearer });
 
-    var fetched = compat.http.fetch(allocator, url, .{
-        .method = .GET,
-        .extra_headers = headers.items,
-        .accept_encoding = "identity",
-        .max_response_bytes = max_catalog_bytes,
-        .timeout_ms = catalog_fetch_timeout_ms,
-    }) catch return error.ModelCatalogFetchFailed;
-    errdefer fetched.deinit(allocator);
 
-    if (fetched.status != 200) return error.ModelCatalogFetchFailed;
-    return fetched.body;
-}
+
+
+
+
+
 
 fn refreshOpenAICodexCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !oauth_storage.Credentials {
     const refreshed = try codex_oauth.refreshToken(.{
@@ -2113,21 +1950,70 @@ test "parseCodexModelsCache maps visible supported Codex models" {
     try std.testing.expectEqualStrings("0.135.0", models[0].headers.?[0].value);
 }
 
-test "loadProductionModels includes Kimi model when enabled" {
-    test_force_kimi_model = true;
-    defer test_force_kimi_model = false;
+test "loadProductionModels includes the Kimi model, discovered like any other row" {
+    const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
+    test_catalog_discovery = &[_]CatalogDiscovery{.{
+        .id = "kimi",
+        .models_url = target.models_url,
+        .model_ids = &.{kimi_model_id},
+    }};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = kimi_env_key, .value = "kimi-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
 
     const models = try loadProductionModels(std.testing.allocator);
     defer deinitModels(std.testing.allocator, models);
 
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings(kimi_model_id, models[0].id);
-    try std.testing.expectEqualStrings("Kimi K2.7 Code", models[0].name);
     try std.testing.expectEqualStrings(kimi_provider_id, models[0].provider);
     try std.testing.expectEqualStrings(kimi_api_id, models[0].api);
     try std.testing.expectEqualStrings(kimi_base_url, models[0].base_url);
-    try std.testing.expectEqual(@as(u32, 262_144), models[0].context_window);
-    try std.testing.expectEqual(@as(u32, 16_384), models[0].max_tokens);
+}
+
+test "the Kimi row serves the China base by default and the global base when the region says so" {
+    const china = catalogRegion(std.testing.allocator, "kimi");
+    try std.testing.expectEqualStrings("china", china.?);
+    const china_target = catalogTargetInRegion("kimi", china) orelse return error.TestExpectedTarget;
+    try std.testing.expectEqualStrings("https://api.kimi.com/coding", china_target.base_url);
+    try std.testing.expectEqualStrings("https://api.kimi.com/coding/v1/models", china_target.models_url);
+
+    const global_target = catalogTargetInRegion("kimi", "global") orelse return error.TestExpectedTarget;
+    try std.testing.expectEqualStrings("https://api.moonshot.ai", global_target.base_url);
+    try std.testing.expectEqualStrings("https://api.moonshot.ai/v1/models", global_target.models_url);
+}
+
+test "KIMI_REGION chooses the region, and an unusable value falls back to the row's default" {
+    const cases = [_]struct { set: []const u8, want: []const u8 }{
+        .{ .set = "global", .want = "global" },
+        .{ .set = "GLOBAL", .want = "global" },
+        .{ .set = "moonshot", .want = "global" },
+        .{ .set = "china", .want = "china" },
+        .{ .set = "cn", .want = "china" },
+        .{ .set = "coding", .want = "china" },
+        .{ .set = "mars", .want = "china" },
+        .{ .set = "", .want = "china" },
+    };
+    for (cases) |case| {
+        try compat.setTestEnv(std.testing.allocator, kimi_region_env, case.set);
+        const got = catalogRegion(std.testing.allocator, "kimi");
+        if (!std.mem.eql(u8, case.want, got orelse "")) {
+            std.debug.print("\nKIMI_REGION={s} should resolve to {s}\n", .{ case.set, case.want });
+        }
+        try std.testing.expectEqualStrings(case.want, got.?);
+    }
+    compat.clearTestEnv();
+
+    try compat.setTestEnv(std.testing.allocator, "KIMI_REGION", "global");
+    defer compat.clearTestEnv();
+    const chosen = catalogRegion(std.testing.allocator, "kimi");
+    try std.testing.expectEqualStrings("global", chosen.?);
+    const target = catalogTargetInRegion("kimi", chosen) orelse return error.TestExpectedTarget;
+    try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
 }
 
 test "loadProductionModels omits Kimi model by default in tests" {
@@ -2139,101 +2025,57 @@ test "loadProductionModels omits Kimi model by default in tests" {
     }
 }
 
-test "Kimi stored provider_data region normalizes to stable static values" {
-    try std.testing.expectEqualStrings("global", kimiRegionFromProviderData("region:global"));
-    try std.testing.expectEqualStrings("global", kimiRegionFromProviderData("region:moonshot"));
-    try std.testing.expectEqualStrings("china", kimiRegionFromProviderData("region:cn"));
-    try std.testing.expectEqualStrings("china", kimiRegionFromProviderData("region:unknown"));
-    try std.testing.expectEqualStrings("china", kimiRegionFromProviderData("not-region:global"));
-}
-
-test "parseKimiModels maps the models response into owned Kimi models" {
-    const data =
-        \\{"object":"list","has_more":false,"data":[
-        \\{"id":"kimi-for-coding","object":"model","display_name":"K2.8 Preview","context_length":1048576,"supports_reasoning":true,"supports_image_in":true},
-        \\{"id":"kimi-k2.7-code","object":"model","context_length":262144,"supports_reasoning":false},
-        \\"not-a-model"]}
-    ;
-
-    const models = try parseKimiModels(std.testing.allocator, data, "china");
-    defer deinitModels(std.testing.allocator, models);
-
-    try std.testing.expectEqual(@as(usize, 2), models.len);
-    try std.testing.expectEqualStrings("kimi-for-coding", models[0].id);
-    try std.testing.expectEqualStrings("K2.8 Preview", models[0].name);
-    try std.testing.expectEqualStrings(kimi_provider_id, models[0].provider);
-    try std.testing.expectEqualStrings(kimi_api_id, models[0].api);
-    try std.testing.expectEqualStrings(kimi_base_url, models[0].base_url);
-    try std.testing.expectEqual(@as(u32, 1_048_576), models[0].context_window);
-    try std.testing.expectEqual(@as(u32, kimi_max_output_tokens), models[0].max_tokens);
-    try std.testing.expect(models[0].reasoning);
-    try std.testing.expectEqual(@as(usize, 2), models[0].input.len);
-    try std.testing.expectEqualStrings("text", models[0].input[0]);
-    try std.testing.expectEqualStrings("image", models[0].input[1]);
-
-    try std.testing.expectEqualStrings("kimi-k2.7-code", models[1].id);
-    try std.testing.expectEqualStrings("kimi-k2.7-code", models[1].name);
-    try std.testing.expectEqual(@as(u32, 262_144), models[1].context_window);
-    try std.testing.expect(!models[1].reasoning);
-    try std.testing.expectEqual(@as(usize, 1), models[1].input.len);
-
-    const global = try parseKimiModels(std.testing.allocator, data, "global");
-    defer deinitModels(std.testing.allocator, global);
-
-    try std.testing.expectEqual(@as(usize, 2), global.len);
-    try std.testing.expectEqualStrings(kimi_global_base_url, global[0].base_url);
-}
-
-test "parseKimiModels rejects a body without a usable model list" {
-    try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "{}", "china"));
-    try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "[]", "china"));
-    try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "{\"data\":[]}", "china"));
-    try std.testing.expectError(error.InvalidModelCatalog, parseKimiModels(std.testing.allocator, "{\"data\":[\"not-an-object\"]}", "china"));
-}
-
-test "Kimi models endpoint names the region's own host" {
-    const china = try kimiModelsUrl(std.testing.allocator, "china");
-    defer std.testing.allocator.free(china);
-    try std.testing.expectEqualStrings("https://api.kimi.com/coding/v1/models", china);
-
-    const global = try kimiModelsUrl(std.testing.allocator, "global");
-    defer std.testing.allocator.free(global);
-    try std.testing.expectEqualStrings("https://api.moonshot.ai/v1/models", global);
-}
-
-test "Kimi credential prefers a stored login and falls back to the environment key" {
+test "a stored OAuth credential's region picks the row's endpoint, and an unusable one does not" {
     const allocator = std.testing.allocator;
-
-    var storage = oauth_storage.AuthStorage{
-        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
-        .allocator = allocator,
+    const cases = [_]struct { provider_data: ?[]const u8, want: ?[]const u8, label: []const u8 }{
+        .{ .provider_data = "region:global", .want = "global", .label = "the stored region" },
+        .{ .provider_data = "region:moonshot", .want = null, .label = "a synonym the variable accepts but the row does not name" },
+        .{ .provider_data = "region:mars", .want = null, .label = "a region no endpoint has" },
+        .{ .provider_data = null, .want = null, .label = "no region stored" },
     };
-    defer storage.deinit();
-    try storage.providers.put(try allocator.dupe(u8, kimi_provider_id), .{ .api_key = try allocator.dupe(u8, "stored-kimi-key") });
+    for (cases) |case| {
+        var storage = oauth_storage.AuthStorage{
+            .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+            .allocator = allocator,
+        };
+        defer storage.deinit();
+        const creds: oauth_storage.ProviderAuth = if (case.provider_data) |data| .{ .oauth = .{
+            .access = try allocator.dupe(u8, "access"),
+            .refresh = try allocator.dupe(u8, "refresh"),
+            .expires = 0,
+            .provider_data = try allocator.dupe(u8, data),
+        } } else .{ .api_key = try allocator.dupe(u8, "key") };
+        try storage.providers.put(try allocator.dupe(u8, kimi_provider_id), creds);
 
-    const stored = kimiCredential(allocator, &storage, "env-kimi-key");
-    try std.testing.expect(stored != null);
-    defer secureFree(allocator, stored.?);
-    try std.testing.expectEqualStrings("stored-kimi-key", stored.?);
+        const got = catalogStoredRegion(kimi_provider_id, &storage);
+        if (!std.mem.eql(u8, case.want orelse "", got orelse "")) {
+            std.debug.print("\n{s} should resolve to {s}\n", .{ case.label, case.want orelse "nothing" });
+        }
+        try std.testing.expectEqualStrings(case.want orelse "", got orelse "");
+    }
 
-    var empty = oauth_storage.AuthStorage{
-        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
-        .allocator = allocator,
-    };
-    defer empty.deinit();
-
-    const from_env = kimiCredential(allocator, &empty, "env-kimi-key");
-    try std.testing.expect(from_env != null);
-    defer secureFree(allocator, from_env.?);
-    try std.testing.expectEqualStrings("env-kimi-key", from_env.?);
-
-    try std.testing.expect(kimiCredential(allocator, &empty, null) == null);
-    try std.testing.expect(kimiCredential(allocator, &empty, "") == null);
+    try std.testing.expect(catalogStoredRegion(kimi_provider_id, null) == null);
+    try std.testing.expect(catalogStoredRegion("anthropic", null) == null);
 }
+
+
+
+
 
 test "refreshProductionModels keeps Kimi when Codex refresh fails" {
-    test_force_kimi_model = true;
-    defer test_force_kimi_model = false;
+    const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
+    test_catalog_discovery = &[_]CatalogDiscovery{.{
+        .id = "kimi",
+        .models_url = target.models_url,
+        .model_ids = &.{kimi_model_id},
+    }};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = kimi_env_key, .value = "kimi-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
     test_force_codex_refresh_error = true;
     defer test_force_codex_refresh_error = false;
 
@@ -2598,11 +2440,12 @@ test "the production loader enables deepseek, every gateway and every coding pla
         "tencent-coding-plan",
         "volcengine-coding-plan",
         "openai",
+        "kimi",
     };
     try std.testing.expectEqual(enabled.len, catalog_loader_ids.len);
     for (enabled, 0..) |id, index| {
         try std.testing.expectEqualStrings(id, catalog_loader_ids[index]);
-        try std.testing.expect(catalogTarget(id) != null);
+        try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
 }
 
@@ -2873,7 +2716,7 @@ test "the loader's rows are catalog rows the target answers for" {
     try std.testing.expect(catalog_loader_ids.len > 0);
     for (catalog_loader_ids) |id| {
         try std.testing.expect(provider_catalog.provider(id) != null);
-        try std.testing.expect(catalogTarget(id) != null);
+        try std.testing.expect(catalogTargetInRegion(id, provider_catalog.defaultRegion(id)) != null);
     }
 }
 

@@ -131,6 +131,46 @@ pub fn regionEnv(id: []const u8) ?[]const u8 {
     return row.region_env;
 }
 
+pub fn defaultRegion(id: []const u8) ?[]const u8 {
+    const row = provider(id) orelse return null;
+    return row.default_region;
+}
+
+pub fn isRegional(id: []const u8) bool {
+    const row = provider(id) orelse return false;
+    for (row.endpoints) |endpoint| {
+        if (endpoint.region != null) return true;
+    }
+    return false;
+}
+
+pub fn regionsFor(id: []const u8) []const []const u8 {
+    for (resolved) |entry| {
+        if (!std.mem.eql(u8, entry.id, id)) continue;
+        return entry.regions;
+    }
+    return &.{};
+}
+
+fn regionNames(comptime row: Provider) []const []const u8 {
+    comptime {
+        var names: [row.endpoints.len][]const u8 = undefined;
+        var total: usize = 0;
+        for (row.endpoints) |endpoint| {
+            const region = endpoint.region orelse continue;
+            var repeated = false;
+            for (names[0..total]) |prior| {
+                if (std.mem.eql(u8, prior, region)) repeated = true;
+            }
+            if (repeated) continue;
+            names[total] = region;
+            total += 1;
+        }
+        const frozen = names;
+        return frozen[0..total];
+    }
+}
+
 pub fn modelsEndpoint(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     return row.models_endpoint;
@@ -313,6 +353,7 @@ pub const Resolved = struct {
     base_url: []const u8,
     models_url: ?[]const u8,
     request_url: ?[]const u8,
+    regions: []const []const u8 = &.{},
 };
 
 pub const resolved = blk: {
@@ -330,6 +371,7 @@ pub const resolved = blk: {
                 .base_url = endpoint.base_url,
                 .models_url = if (row.models_endpoint) |models_path| joinModelsUrl(endpoint.base_url, models_path, endpoint.carries_version) else null,
                 .request_url = if (path) |known| if (known.model_scoped) null else joinUrl(endpoint.base_url, known, endpoint.carries_version) else null,
+                .regions = regionNames(row),
             };
             index += 1;
         }

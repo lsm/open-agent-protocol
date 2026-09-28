@@ -13,14 +13,15 @@ import (
 )
 
 const (
-	CodeDuplicateID  = "provider_duplicate_id"
-	CodeMissingID    = "provider_missing_id"
-	CodeEndpointLone = "provider_endpoint_without_wire"
-	CodeBaseURLText  = "provider_base_url_literal"
-	CodeOffering     = "provider_offering_unknown"
-	CodeStatus       = "provider_status_unknown"
-	CodeStaleURLs    = "provider_resolved_urls_stale"
-	CodeCarriesOn    = "provider_carries_version_without_versioned_path"
+	CodeDuplicateID   = "provider_duplicate_id"
+	CodeMissingID     = "provider_missing_id"
+	CodeEndpointLone  = "provider_endpoint_without_wire"
+	CodeBaseURLText   = "provider_base_url_literal"
+	CodeOffering      = "provider_offering_unknown"
+	CodeStatus        = "provider_status_unknown"
+	CodeStaleURLs     = "provider_resolved_urls_stale"
+	CodeCarriesOn     = "provider_carries_version_without_versioned_path"
+	CodeDefaultRegion = "provider_default_region_unknown"
 )
 
 var LiteralRoots = []string{"go", "zig/src", "zig/build.zig"}
@@ -53,6 +54,9 @@ func Check(catalog Catalog) []Finding {
 				findings = append(findings, Finding{Provider: provider.ID, Code: CodeCarriesOn, Detail: fmt.Sprintf("provider %q records carries_version on its %s endpoint, whose wire appends a path with no leading /v1/, so the fact cannot apply to it", provider.ID, endpoint.Wire)})
 			}
 		}
+		if provider.DefaultRegion != "" && !rowHasRegion(provider, provider.DefaultRegion) {
+			findings = append(findings, Finding{Provider: provider.ID, Code: CodeDefaultRegion, Detail: fmt.Sprintf("provider %q names default_region %q, which is not the region of any of its endpoints", provider.ID, provider.DefaultRegion)})
+		}
 		switch provider.Offering {
 		case "coding_plan", "subscription", "api_key", "":
 		default:
@@ -66,6 +70,15 @@ func Check(catalog Catalog) []Finding {
 	}
 	sort.SliceStable(findings, func(i, j int) bool { return findings[i].Detail < findings[j].Detail })
 	return findings
+}
+
+func rowHasRegion(provider Provider, region string) bool {
+	for _, endpoint := range provider.Endpoints {
+		if endpoint.Region == region {
+			return true
+		}
+	}
+	return false
 }
 
 type baseURLValue struct {

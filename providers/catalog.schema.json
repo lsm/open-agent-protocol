@@ -147,6 +147,10 @@
           "description": "Environment variable naming the region, for a provider with one endpoint per region.",
           "$ref": "#/$defs/nonEmptyString"
         },
+        "default_region": {
+          "description": "The region used when the provider has one endpoint per region and nothing names one. Must be the region of one of this row's endpoints.",
+          "$ref": "#/$defs/nonEmptyString"
+        },
         "wires": {
           "description": "The API or wire identifiers this provider is reached with.",
           "type": "array",
