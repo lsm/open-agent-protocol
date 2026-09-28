@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
 	"io"
 	"strconv"
 	"unicode/utf8"
@@ -134,7 +135,7 @@ func ParseMessage(data []byte) (Message, error) {
 	if len(data) == 0 || data[0] != '{' || data[len(data)-1] != '}' {
 		return Message{}, fmt.Errorf("%w: frame must be exactly one JSON object", ErrInvalidMessage)
 	}
-	if err := rejectDuplicateKeys(data); err != nil {
+	if err := jsonwalk.RejectDuplicateKeys(data); err != nil {
 		return Message{}, fmt.Errorf("%w: %v", ErrInvalidMessage, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))

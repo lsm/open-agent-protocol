@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
+	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
 )
 
 func FuzzAFrameIsEitherWithinTheLimitOrRefusedAndNeverAHalfMessage(f *testing.F) {
@@ -39,7 +40,7 @@ func FuzzTheWalkRefusesADuplicateKeyInAnyFrameOfAMessage(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
-		if _, err := ParseMessage([]byte(raw)); err == nil && rejectDuplicateKeys([]byte(raw)) != nil {
+		if _, err := ParseMessage([]byte(raw)); err == nil && jsonwalk.RejectDuplicateKeys([]byte(raw)) != nil {
 			t.Fatalf("the message parse admitted bytes the walk refuses as duplicated: %q", raw)
 		}
 	})

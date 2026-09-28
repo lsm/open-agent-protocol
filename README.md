@@ -32,7 +32,7 @@ Run the combined endpoint with:
 oapx serve agent,provider --stdio
 ```
 
-The four SDKs in `sdk/` use this OAP mode by default. The agent's selected
+The three SDKs in `sdk/` — Python, Rust and TypeScript — and the Go one at `go/sdk/` use this OAP mode by default. The agent's selected
 model can be changed mid-session with `session.model.switch`, and local
 authentication flows use the optional `+auth` unit. Dynamic provider
 attachment is specified but optional; a remote HTTP provider binding is
@@ -63,9 +63,10 @@ registry shaped like [`examples/oap-serve.json`](examples/oap-serve.json):
 unknown members are refused and `environment` is an explicit allowlist.
 `--backend memory` serves the in-memory reference script and answers exactly as
 `goap`'s does: CI runs `goap conformance` against it and a parity job that
-feeds both trees the same traffic and requires identical output. What that job is the last check on, and what the corpora cover instead,
-is written down in [docs/parity-job.md](docs/parity-job.md). What each cannot do through this path is
-recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
+feeds both trees the same traffic and requires identical output. What that job
+is the last check on, and what the corpora cover instead, is written down in
+[docs/parity-job.md](docs/parity-job.md). What each cannot do through this path
+is recorded in its ledger: [claude](research/claude-code-agent-sdk-2.1.282-mapping.md),
 [codex](research/codex-app-server-0.157.0-mapping.md),
 [acp](research/acp-v1.9.1-mapping.md). Without `--config`, codex runs `codex`
 from `PATH` with only `HOME` and `PATH`; an ACP agent has no default and needs
@@ -94,6 +95,7 @@ Current drafts:
 Protocol artifacts:
 
 - [Illustrative protocol envelopes](examples/README.md)
+- [The system map](docs/oap-system-map.html) — what the pieces are and where the port stands, as one page. Open it in a browser; GitHub serves an `.html` file as source.
 - `fixtures/`: normative executable conformance traces
 - `fixtures/packs/`: extension packs, loadable with `go run ./go/cmd/goap validate -pack`
 - `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles
