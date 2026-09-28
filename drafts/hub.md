@@ -380,14 +380,15 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 
-Every route that reads a body requires `Content-Type: application/json` with
-no `charset` or a UTF-8 one — any other charset is refused `415
-unsupported_media_type` naming it, because an OAP envelope is UTF-8 JSON and
-the body gate is the only place that knows what the transport received. The
-comparison is case-insensitive, and admits both the registered name
-`utf-8` and its registered alias `utf8`, because a conformant sender may
-use either and refusing the alias would refuse UTF-8 by another name. No
-`charset` at all means UTF-8. A pipe has no
+Every route that reads a body requires `Content-Type: application/json`, and
+the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
+records that no `charset` parameter is defined for `application/json` — the
+media type registers no parameters at all — so a sender that names one is
+describing something the grammar does not carry, and a receiver that refuses it
+is refusing a request it can parse. The two trees admit every charset,
+including `latin1` and a name that is not a charset at all. What the gate still
+refuses is a media type that is not `application/json`, because that is a
+different grammar rather than a different spelling of this one. A pipe has no
 `Content-Type` at all, so the stdio transport has no counterpart to any of
 this. The daemon also caps
 the body at 16 MiB, and answers a refusal as an `error.response` envelope
@@ -413,7 +414,7 @@ both answers, at the budget and one byte over it.
 | HTTP rule | pinned by |
 | --- | --- |
 | A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, the absent `Content-Type`, and a `charset` that is not UTF-8) |
-| A UTF-8 `charset` is admitted — `utf-8` or its alias `utf8`, case-insensitively — and no `charset` means UTF-8 | `TestASupportedCharsetIsAdmitted` |
+| Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body carries non-ASCII text and the answer must name the session that body asked for, so a misread body cannot pass |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
@@ -592,7 +593,8 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 | --- | --- |
 | A held subscription is adopted by the adopting `events` request | `TestOpenSubscriptionIsAdoptedByTheEventsRequest` |
 | A held subscription nothing adopts is released | `TestOpenSubscriptionNotAdoptedIsReleased` |
-| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release); **gap G5** — only the default 30 s is unpinned |
+| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release) |
+| The default hold is 30 s, and an explicit window still wins | `TestASubscriptionIsHeldForThirtySecondsByDefault` |
 
 ## The operations
 
@@ -964,20 +966,24 @@ first be asked to stop.
 
 ## Known gaps
 
-Rules this document specifies that **no Go test pins today**, and one gap the
-draft is asked to carry. A port must implement every one of them; each is a
-place a differential test would otherwise not see.
+The rules this document specifies that a Go test did not pin when it was
+written, and where each is pinned now. Every entry names the test that closes
+it, because a port implementing this draft should be able to check itself
+against the same list. A port must implement every rule here; each was a place
+a differential test would otherwise not see.
 
 - **G1 — closed.** The status was pinned and nothing else: a `text/plain`
   open is refused `415`, and the assertion was on the status alone, so
   `unsupported_media_type` was written nowhere. `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode`
   now pins the code and the absent `Content-Type`, both of which take the
   same branch. The stdio side still has no counterpart for either, which
-  is a property of the transport rather than a gap. The **charset** half
-  is now decided rather than open: `application/json; charset=latin1` used
-  to be admitted, and is now refused `415` naming the charset, because an
-  envelope is UTF-8 JSON and admitting a body that says otherwise hands
-  the decoder bytes the schema never described.
+  is a property of the transport rather than a gap. The **charset** half is
+  decided the other way from what it first was: the hub admits every
+  `charset` and reads the body as UTF-8, per RFC 8259 §11, which defines no
+  `charset` parameter for `application/json` at all. A refusal turned a
+  sender's redundant parameter into an error the schema never described, so
+  `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` pins the admission
+  instead.
 - **G2 — structural, pinned at the hub.** A client that drops its connection
   ends the stream by construction — the request context cancels the
   subscription — and that is now asserted where it is observable:
