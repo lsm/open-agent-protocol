@@ -13,8 +13,11 @@ const ProtocolServer = protocol_server.ProtocolServer;
 const ProtocolClient = protocol_client.ProtocolClient;
 const ProviderProtocolRuntime = protocol_runtime.ProviderProtocolRuntime;
 
+const default_idle_timeout_ms: i64 = 600_000;
+
 pub const InProcessProviderProtocolBridge = struct {
     registry: *api_registry.ApiRegistry,
+    idle_timeout_ms: i64 = default_idle_timeout_ms,
 
     pub fn init(registry: *api_registry.ApiRegistry) InProcessProviderProtocolBridge {
         return .{ .registry = registry };
@@ -37,6 +40,7 @@ const StreamThreadContext = struct {
     options: agent_types.ProtocolOptions,
     api_key: ?[]u8,
     session_id: ?[]u8,
+    idle_timeout_ms: i64,
 
     fn deinit(self: *StreamThreadContext) void {
         self.model.deinit(self.allocator);
@@ -74,6 +78,7 @@ fn streamViaProtocol(
         .options = options,
         .api_key = if (options.api_key) |k| try allocator.dupe(u8, k) else null,
         .session_id = if (options.session_id) |sid| try allocator.dupe(u8, sid) else null,
+        .idle_timeout_ms = bridge.idle_timeout_ms,
     };
 
     const thread = try std.Thread.spawn(.{}, runStreamThread, .{thread_ctx});
@@ -96,12 +101,15 @@ fn pushEventBlocking(stream: *event_stream.AssistantMessageEventStream, ev: ai_t
     }
 }
 
-fn drainClientEvents(client: *ProtocolClient, out_stream: *event_stream.AssistantMessageEventStream, allocator: std.mem.Allocator) !void {
+fn drainClientEvents(client: *ProtocolClient, out_stream: *event_stream.AssistantMessageEventStream, allocator: std.mem.Allocator) !bool {
+    var drained = false;
     while (client.getEventStream().poll()) |ev| {
         var owned_ev = ev;
         defer ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
         try pushEventBlocking(out_stream, ev);
+        drained = true;
     }
+    return drained;
 }
 
 fn reasoningEffort(level: ai_types.ThinkingLevel, model_id: []const u8) []const u8 {
@@ -220,8 +228,7 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
         return;
     };
 
-    const start_ms = compat.time.nowMillis();
-    const timeout_ms: i64 = 120_000;
+    var last_progress_ms = compat.time.nowMillis();
 
     while (!client.isComplete()) {
         _ = runtime.pumpOnce(&client) catch |err| {
@@ -229,12 +236,14 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
             return;
         };
 
-        drainClientEvents(&client, ctx.out_stream, ctx.allocator) catch |err| {
+        const drained = drainClientEvents(&client, ctx.out_stream, ctx.allocator) catch |err| {
             ctx.out_stream.completeWithError(@errorName(err));
             return;
         };
 
-        if (compat.time.nowMillis() - start_ms > timeout_ms) {
+        const now_ms = compat.time.nowMillis();
+        if (drained) last_progress_ms = now_ms;
+        if (now_ms - last_progress_ms > ctx.idle_timeout_ms) {
             ctx.out_stream.completeWithError("Provider protocol stream timed out");
             return;
         }
@@ -243,7 +252,7 @@ fn runStreamThread(ctx: *StreamThreadContext) void {
     }
 
     _ = runtime.pumpOnce(&client) catch {};
-    drainClientEvents(&client, ctx.out_stream, ctx.allocator) catch |err| {
+    _ = drainClientEvents(&client, ctx.out_stream, ctx.allocator) catch |err| {
         ctx.out_stream.completeWithError(@errorName(err));
         return;
     };
@@ -548,4 +557,223 @@ test "InProcessProviderProtocolBridge preserves streamed tool call terminal resu
     owned_result.deinit(allocator);
     stream.result = null;
     try std.testing.expect(saw_tool_end);
+}
+
+const PacedProvider = struct {
+    var deltas: usize = 0;
+    var gap_ms: u64 = 0;
+    var hold_ms: u64 = 0;
+
+    const Job = struct {
+        stream: *event_stream.AssistantMessageEventStream,
+        cancel_token: ?ai_types.CancelToken,
+        allocator: std.mem.Allocator,
+    };
+
+    fn partial() ai_types.AssistantMessage {
+        return .{
+            .content = &.{},
+            .api = "paced-api",
+            .provider = "mock",
+            .model = "paced-model",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = compat.time.nowMillis(),
+            .is_owned = false,
+        };
+    }
+
+    fn cancelled(token: ?ai_types.CancelToken) bool {
+        const t = token orelse return false;
+        return t.isCancelled();
+    }
+
+    fn run(job: *Job) void {
+        const s = job.stream;
+        const token = job.cancel_token;
+        const a = job.allocator;
+        std.heap.page_allocator.destroy(job);
+        defer s.markThreadDone();
+
+        s.push(.{ .start = .{ .partial = partial() } }) catch {};
+        s.push(.{ .text_start = .{ .content_index = 0, .partial = partial() } }) catch {};
+        var sent: usize = 0;
+        while (sent < deltas and !cancelled(token)) : (sent += 1) {
+            compat.time.sleepMs(gap_ms);
+            s.push(.{ .text_delta = .{ .content_index = 0, .delta = "x", .partial = partial() } }) catch {};
+        }
+        var held: u64 = 0;
+        while (held < hold_ms and !cancelled(token)) : (held += 1) compat.time.sleepMs(1);
+        if (cancelled(token)) {
+            s.completeWithError("cancelled");
+            return;
+        }
+
+        const text = a.alloc(u8, deltas) catch {
+            s.completeWithError("OutOfMemory");
+            return;
+        };
+        defer a.free(text);
+        @memset(text, 'x');
+        s.push(.{ .text_end = .{ .content_index = 0, .content = text, .partial = partial() } }) catch {};
+
+        const content = [_]ai_types.AssistantContent{.{ .text = .{ .text = text } }};
+        const result = ai_types.cloneAssistantMessage(a, .{
+            .content = &content,
+            .api = "paced-api",
+            .provider = "mock",
+            .model = "paced-model",
+            .usage = .{},
+            .stop_reason = .stop,
+            .timestamp = compat.time.nowMillis(),
+            .is_owned = false,
+        }) catch {
+            s.completeWithError("OutOfMemory");
+            return;
+        };
+        s.complete(result);
+    }
+
+    fn stream(
+        model: ai_types.Model,
+        context: ai_types.Context,
+        options: ?ai_types.StreamOptions,
+        a: std.mem.Allocator,
+    ) anyerror!*event_stream.AssistantMessageEventStream {
+        _ = model;
+        _ = context;
+
+        const s = try a.create(event_stream.AssistantMessageEventStream);
+        errdefer a.destroy(s);
+        s.* = event_stream.AssistantMessageEventStream.init(a);
+        s.owns_events = true;
+        s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+
+        const job = try std.heap.page_allocator.create(Job);
+        errdefer std.heap.page_allocator.destroy(job);
+        job.* = .{
+            .stream = s,
+            .cancel_token = if (options) |o| o.cancel_token else null,
+            .allocator = a,
+        };
+        const thread = try std.Thread.spawn(.{}, run, .{job});
+        thread.detach();
+        return s;
+    }
+
+    fn streamSimple(
+        model: ai_types.Model,
+        context: ai_types.Context,
+        options: ?ai_types.SimpleStreamOptions,
+        a: std.mem.Allocator,
+    ) anyerror!*event_stream.AssistantMessageEventStream {
+        _ = options;
+        return stream(model, context, null, a);
+    }
+
+    const paced_model = ai_types.Model{
+        .id = "paced-model",
+        .name = "Paced",
+        .api = "paced-api",
+        .provider = "mock",
+        .base_url = "",
+        .reasoning = false,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+};
+
+test "a stream that keeps delivering outlives the idle window" {
+    const allocator = std.testing.allocator;
+
+    PacedProvider.deltas = 60;
+    PacedProvider.gap_ms = 10;
+    PacedProvider.hold_ms = 0;
+
+    var registry = api_registry.ApiRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{
+        .api = "paced-api",
+        .stream = PacedProvider.stream,
+        .stream_simple = PacedProvider.streamSimple,
+    }, null);
+
+    var bridge = InProcessProviderProtocolBridge.init(&registry);
+    bridge.idle_timeout_ms = 250;
+    const protocol = bridge.protocolClient();
+
+    const user = ai_types.Message{ .user = .{
+        .content = .{ .text = "write a long answer" },
+        .timestamp = compat.time.nowMillis(),
+    } };
+    const ctx = ai_types.Context{ .messages = &[_]ai_types.Message{user} };
+
+    const started_ms = compat.time.nowMillis();
+    const stream = try protocol.stream(PacedProvider.paced_model, ctx, .{ .api_key = "test-key" }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    var deltas_seen: usize = 0;
+    while (stream.wait()) |ev| {
+        var owned_ev = ev;
+        defer ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
+        if (ev == .text_delta) deltas_seen += 1;
+    }
+    const elapsed_ms = compat.time.nowMillis() - started_ms;
+
+    try std.testing.expect(stream.getError() == null);
+    try std.testing.expect(elapsed_ms > bridge.idle_timeout_ms);
+    try std.testing.expectEqual(PacedProvider.deltas, deltas_seen);
+
+    const result = stream.getResult() orelse return error.TestUnexpectedResult;
+    var owned_result = result;
+    defer {
+        owned_result.deinit(allocator);
+        stream.result = null;
+    }
+    try std.testing.expectEqual(@as(usize, 1), result.content.len);
+    try std.testing.expectEqual(PacedProvider.deltas, result.content[0].text.text.len);
+}
+
+test "a stream that goes silent for the idle window fails as timed out" {
+    const allocator = std.testing.allocator;
+
+    PacedProvider.deltas = 0;
+    PacedProvider.gap_ms = 0;
+    PacedProvider.hold_ms = 5_000;
+
+    var registry = api_registry.ApiRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerApiProvider(.{
+        .api = "paced-api",
+        .stream = PacedProvider.stream,
+        .stream_simple = PacedProvider.streamSimple,
+    }, null);
+
+    var bridge = InProcessProviderProtocolBridge.init(&registry);
+    bridge.idle_timeout_ms = 100;
+    const protocol = bridge.protocolClient();
+
+    const user = ai_types.Message{ .user = .{
+        .content = .{ .text = "think quietly" },
+        .timestamp = compat.time.nowMillis(),
+    } };
+    const ctx = ai_types.Context{ .messages = &[_]ai_types.Message{user} };
+
+    const stream = try protocol.stream(PacedProvider.paced_model, ctx, .{ .api_key = "test-key" }, allocator);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    while (stream.wait()) |ev| {
+        var owned_ev = ev;
+        ai_types.deinitAssistantMessageEvent(allocator, &owned_ev);
+    }
+
+    try std.testing.expectEqualStrings("Provider protocol stream timed out", stream.getError() orelse "");
 }

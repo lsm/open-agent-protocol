@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +43,9 @@ func TestBackendsMatchOapx(t *testing.T) {
 			}
 			if missing, extra := lineDifference(wantOut, gotOut); len(missing)+len(extra) > 0 {
 				t.Errorf("oapx answers differently\n--- only goap\n%s\n--- only oapx\n%s", strings.Join(missing, "\n"), strings.Join(extra, "\n"))
+			}
+			if where := runOrderDifference(t, wantOut, gotOut); where != "" {
+				t.Errorf("oapx orders a run differently: %s", where)
 			}
 			if missing, extra := childLineDifference(t, wantChild, gotChild); len(missing)+len(extra) > 0 {
 				t.Errorf("oapx writes different data to its child\n--- only goap\n%s\n--- only oapx\n%s", strings.Join(missing, "\n"), strings.Join(extra, "\n"))
@@ -284,7 +288,6 @@ func settledExchange(t *testing.T, cmd *exec.Cmd, lines []string) []string {
 	for _, line := range out {
 		normalized = append(normalized, normalizedLine(t, requestEntropy.ReplaceAllString(line, "${1}_@ENTROPY@")))
 	}
-	sort.Strings(normalized)
 	return normalized
 }
 
@@ -390,6 +393,101 @@ func canonicalJSON(t *testing.T, line string) string {
 		t.Fatal(err)
 	}
 	return string(encoded)
+
+}
+
+func TestRunOrderDifferenceSeesOrderWithinARun(t *testing.T) {
+	lines := func(specs ...string) []string {
+		var out []string
+		for i, spec := range specs {
+			out = append(out, `{"protocol":"open-agent-protocol","run_id":"run-1","sequence":`+strconv.Itoa(i+1)+`,"payload":{"run_id":"run-1","status":"`+spec+`"}}`)
+		}
+		return out
+	}
+	unsequenced := []string{`{"protocol":"open-agent-protocol","run_id":"run-1","type":"run.cancel.response","payload":{"run_id":"run-1","accepted":true}}`}
+	if where := runOrderDifference(t, lines("queued", "running", "completed"), lines("queued", "running", "completed")); where != "" {
+		t.Fatalf("the same order compared unequal: %s", where)
+	}
+	reordered := lines("queued", "running", "completed")
+	reordered[1], reordered[2] = reordered[2], reordered[1]
+	where := runOrderDifference(t, lines("queued", "running", "completed"), reordered)
+	if where == "" {
+		t.Fatal("a run whose envelopes arrived in a different order compared equal")
+	}
+	if !strings.Contains(where, "run run-1 at line 2") {
+		t.Fatalf("the disagreement is not located: %s", where)
+	}
+	if where := runOrderDifference(t, lines("queued", "running", "completed"), lines("queued", "running")); where == "" {
+		t.Fatal("a run that stopped early compared equal")
+	}
+	shortened := lines("queued", "running")
+	if where := runOrderDifference(t, shortened, lines("queued", "running", "completed")); where == "" {
+		t.Fatal("a run that answered more compared equal")
+	}
+	unrun := []string{`{"protocol":"open-agent-protocol","payload":{"session_id":"session"}}`}
+	if where := runOrderDifference(t, unrun, unrun); where != "" {
+		t.Fatalf("output with no run compared unequal: %s", where)
+	}
+	withResponse := append(append([]string{}, unsequenced...), lines("queued", "running")...)
+	if where := runOrderDifference(t, withResponse, lines("queued", "running")); where != "" {
+		t.Fatalf("a response with no sequence compared unequal against a stream without one: %s", where)
+	}
+}
+
+func runOrderDifference(t *testing.T, want, got []string) string {
+	t.Helper()
+	wantRuns, gotRuns := runGroups(t, want), runGroups(t, got)
+	ids := make([]string, 0, len(wantRuns)+len(gotRuns))
+	for id := range wantRuns {
+		ids = append(ids, id)
+	}
+	for id := range gotRuns {
+		if _, seen := wantRuns[id]; !seen {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		where, onlyGoap, onlyOapx := orderedDifference(wantRuns[id], gotRuns[id])
+		if where != "" {
+			return fmt.Sprintf("run %s at line %s: goap %s, oapx %s", id, where, onlyGoap, onlyOapx)
+		}
+	}
+	return ""
+}
+
+func runGroups(t *testing.T, lines []string) map[string][]string {
+	t.Helper()
+	groups := map[string][]string{}
+	for _, line := range lines {
+		var envelope struct {
+			RunID    string  `json:"run_id"`
+			Sequence *uint64 `json:"sequence"`
+		}
+		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
+			t.Fatalf("not JSON: %q", line)
+		}
+		if envelope.RunID == "" || envelope.Sequence == nil {
+			continue
+		}
+		groups[envelope.RunID] = append(groups[envelope.RunID], normalizedLine(t, line))
+	}
+	return groups
+}
+
+func orderedDifference(want, got []string) (string, string, string) {
+	for i := 0; i < len(want) || i < len(got); i++ {
+		where := strconv.Itoa(i + 1)
+		switch {
+		case i >= len(got):
+			return where, want[i], "<nothing>"
+		case i >= len(want):
+			return where, "<nothing>", got[i]
+		case want[i] != got[i]:
+			return where, want[i], got[i]
+		}
+	}
+	return "", "", ""
 }
 
 func lineDifference(want, got []string) ([]string, []string) {
