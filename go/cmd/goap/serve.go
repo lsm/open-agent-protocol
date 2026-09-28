@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"github.com/lsm/open-agent-protocol/go/serve"
 	"github.com/lsm/open-agent-protocol/go/serve/servehttp"
 	"github.com/lsm/open-agent-protocol/go/serve/servestdio"
@@ -26,6 +27,7 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	configPath := fs.String("config", "", "adapter registry JSON path (default: built-in memory adapter)")
 	addr := fs.String("addr", servehttp.DefaultAddr, "listen address")
 	overStdio := fs.Bool("stdio", false, "serve newline-delimited JSON on stdin/stdout instead of listening on a port")
+	bindingsPath := fs.String("bindings", "", "append-only JSONL file recording a binding per open, so a host can reopen what it opened")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -57,9 +59,18 @@ func runHub(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 	signals, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	hub := serve.New(registry, serve.Options{
+	options := serve.Options{
 		Logger: log.New(stderr, "goap: ", 0),
-	})
+		Home:   homeDirectory(),
+	}
+	if *bindingsPath != "" {
+		store, err := binding.File(*bindingsPath)
+		if err != nil {
+			return err
+		}
+		options.Bindings = store
+	}
+	hub := serve.New(registry, options)
 	if *overStdio {
 		return serveStdio(signals, hub, registry, stdin, stdout, stderr)
 	}
@@ -147,4 +158,12 @@ func loopbackHosts(addr string) []string {
 
 		return nil
 	}
+}
+
+func homeDirectory() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
 }

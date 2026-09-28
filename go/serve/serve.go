@@ -1,9 +1,12 @@
 package serve
 
 import (
+	"os"
+
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"io"
 	"log"
 	"time"
@@ -24,6 +27,10 @@ type Options struct {
 	Logger *log.Logger
 
 	ShutdownTimeout time.Duration
+
+	Bindings binding.Store
+
+	Home string
 }
 
 type Hub struct {
@@ -32,6 +39,8 @@ type Hub struct {
 	queue    int
 	shutdown time.Duration
 	logger   *log.Logger
+	bindings binding.Store
+	home     string
 }
 
 func New(registry *Registry, options Options) *Hub {
@@ -50,6 +59,7 @@ func New(registry *Registry, options Options) *Hub {
 	return &Hub{
 		registry: registry, sessions: newSessionRegistry(),
 		queue: queue, shutdown: shutdown, logger: logger,
+		bindings: options.Bindings, home: options.Home,
 	}
 }
 
@@ -87,7 +97,35 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
+	h.recordOpen(ctx, adapterName, implementation, state, request)
 	return entry, state, nil
+}
+
+func (h *Hub) recordOpen(ctx context.Context, adapterName string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest) {
+	if h.bindings == nil {
+		return
+	}
+	version := ""
+	if descriptor, err := implementation.Probe(ctx); err == nil {
+		version = descriptor.Capabilities.Endpoint.Version
+	}
+	sources := make([]string, 0, len(request.ToolSources))
+	for _, source := range request.ToolSources {
+		sources = append(sources, string(source.ID))
+	}
+	directory := ""
+	if wd, err := os.Getwd(); err == nil {
+		directory = wd
+	}
+	record := binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, directory, sources)
+	_ = h.bindings.Append(context.WithoutCancel(ctx), binding.Opened(record, state.UpdatedAtMS))
+}
+
+// Binding returns the store the hub records bindings in, or nil when the host
+// supplied none. A reopen reads it; the wire member that asks for one arrives
+// with the reopen unit.
+func (h *Hub) Binding() binding.Store {
+	return h.bindings
 }
 
 func (h *Hub) Session(id protocol.SessionID) (*Session, error) {
