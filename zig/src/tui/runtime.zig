@@ -811,7 +811,10 @@ pub const TuiRuntime = struct {
         return OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, value));
     }
 
-    fn handleAgentEndEvent(self: *TuiRuntime) anyerror!void {
+    fn handleAgentEndEvent(self: *TuiRuntime, termination: ?agent_types.AgentTermination) anyerror!void {
+        if (termination == .max_turns) {
+            self.push(.{ .system_warning = .{ .message = try self.dupeOwned("Stopped at this run's turn limit. Send a message to continue.") } });
+        }
         const reason: TuiEndReason = if (self.cancelled.load(.acquire)) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
         return self.endRun(reason);
     }
@@ -1076,7 +1079,7 @@ pub const TuiRuntime = struct {
                 }
                 self.pushTerminal(.{ .turn_end = .{ .stop_reason = payload.message.stop_reason } });
             },
-            .agent_end => try self.handleAgentEndEvent(),
+            .agent_end => |payload| try self.handleAgentEndEvent(payload.termination),
             .run_failed => |payload| {
                 self.push(.{ .@"error" = .{ .message = self.dupeOwned(payload.reason.slice()) catch OwnedSlice(u8).initBorrowed(payload.reason.slice()) } });
                 try self.endRun(.@"error");
@@ -2773,4 +2776,47 @@ test "TuiRuntime replaceMessages clears stale backpressure counters" {
     const bp = runtime.backpressureState();
     try std.testing.expect(!bp.active);
     try std.testing.expectEqual(@as(u64, 0), bp.dropped_count);
+}
+
+fn drainEndOfRun(runtime: *TuiRuntime) !struct { warning: ?[]u8, reason: ?TuiEndReason } {
+    var warning: ?[]u8 = null;
+    errdefer if (warning) |text| std.testing.allocator.free(text);
+    var reason: ?TuiEndReason = null;
+    while (runtime.event_stream.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        switch (ev) {
+            .system_warning => |payload| {
+                try std.testing.expect(reason == null);
+                warning = try std.testing.allocator.dupe(u8, payload.message.slice());
+            },
+            .agent_end => |payload| reason = payload.reason,
+            else => {},
+        }
+    }
+    return .{ .warning = warning, .reason = reason };
+}
+
+test "runtime warns before ending a run that stopped at its turn limit" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+
+    try runtime.handleAgentEvent(.{ .agent_end = .{ .termination = .max_turns } });
+
+    const ended = try drainEndOfRun(&runtime);
+    defer if (ended.warning) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("Stopped at this run's turn limit. Send a message to continue.", ended.warning.?);
+    try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
+}
+
+test "runtime ends a run that finished on its own without a turn-limit warning" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+
+    try runtime.handleAgentEvent(.{ .agent_end = .{} });
+
+    const ended = try drainEndOfRun(&runtime);
+    defer if (ended.warning) |text| std.testing.allocator.free(text);
+    try std.testing.expect(ended.warning == null);
+    try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
 }

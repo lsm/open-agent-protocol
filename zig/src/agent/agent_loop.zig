@@ -306,6 +306,29 @@ fn createErrorResult(allocator: std.mem.Allocator, err: anyerror) !AgentToolResu
     };
 }
 
+fn truncatedToolCallResult(allocator: std.mem.Allocator, tool_name: []const u8) !AgentToolResult {
+    const content = try allocator.alloc(ai_types.UserContentPart, 1);
+    errdefer allocator.free(content);
+    const text = try std.fmt.allocPrint(allocator, "Tool call \"{s}\" was not run: the reply hit the output token limit, so its arguments may be cut off. Call the tool again with complete arguments.", .{tool_name});
+    errdefer allocator.free(text);
+    content[0] = .{ .text = .{ .text = text } };
+    const details = try std.json.Stringify.valueAlloc(allocator, .{ .ok = false, .err = "OutputTruncated" }, .{});
+    return .{
+        .content = types.OwnedSlice(ai_types.UserContentPart).initOwned(content),
+        .details_json = ai_types.OwnedSlice(u8).initOwned(details),
+        .is_error = true,
+    };
+}
+
+fn buildAndFreeTruncatedToolCallResult(allocator: std.mem.Allocator, tool_name: []const u8) !void {
+    var result = try truncatedToolCallResult(allocator, tool_name);
+    result.deinit(allocator);
+}
+
+test "truncatedToolCallResult frees what it built when an allocation fails" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, buildAndFreeTruncatedToolCallResult, .{"write"});
+}
+
 fn rejectedToolResult(allocator: std.mem.Allocator) !AgentToolResult {
     const content = try allocator.alloc(ai_types.UserContentPart, 1);
     content[0] = .{ .text = .{
@@ -657,6 +680,13 @@ fn executeToolCalls(
         var result: AgentToolResult = undefined;
         var is_error = false;
         var execution_args = tool_call.arguments_json;
+
+        if (assistant_message.stop_reason == .length) {
+            result = try truncatedToolCallResult(allocator, tool_call.name);
+            is_error = true;
+            try finalizeToolExecution(allocator, config, event_stream, &results, tool_call, execution_args, &result, is_error);
+            continue;
+        }
 
         if (tool) |t| {
             const validated_args = validateToolArguments(allocator, t, tool_call.arguments_json) catch |err| {
@@ -1013,6 +1043,70 @@ fn setFinalMessage(state: *LoopState, allocator: std.mem.Allocator, msg: ai_type
     state.final_message = cloned;
 }
 
+fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
+    const limit = max_iterations orelse return true;
+    return iterations < limit;
+}
+
+const TurnOutcome = enum { failed, answered, called_tools };
+
+fn turnOutcome(message: ai_types.AssistantMessage) TurnOutcome {
+    switch (message.stop_reason) {
+        .@"error", .aborted => return .failed,
+        .content_filter => return .answered,
+        .stop, .length, .tool_use => {},
+    }
+    for (message.content) |block| {
+        if (block == .tool_call) return .called_tools;
+    }
+    return .answered;
+}
+
+test "withinTurnLimit stops at a set limit and never without one" {
+    try std.testing.expect(withinTurnLimit(std.math.maxInt(u32), null));
+    try std.testing.expect(withinTurnLimit(1, 2));
+    try std.testing.expect(!withinTurnLimit(2, 2));
+    try std.testing.expect(!withinTurnLimit(0, 0));
+}
+
+fn outcomeOf(stop_reason: ai_types.StopReason, content: []const ai_types.AssistantContent) TurnOutcome {
+    return turnOutcome(.{
+        .content = content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = stop_reason,
+        .timestamp = 0,
+    });
+}
+
+test "turnOutcome runs a reply's tool calls whatever stop reason it reports" {
+    const calls = [_]ai_types.AssistantContent{
+        .{ .text = .{ .text = "reading" } },
+        .{ .tool_call = .{ .id = "call_1", .name = "read", .arguments_json = "{}" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.tool_use, &calls));
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.stop, &calls));
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.length, &calls));
+}
+
+test "turnOutcome ends the run on a reply without tool calls, even one reporting tool_use" {
+    const text = [_]ai_types.AssistantContent{.{ .text = .{ .text = "done" } }};
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.tool_use, &text));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &text));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &.{}));
+}
+
+test "turnOutcome never runs the tool calls of a failed, aborted or filtered reply" {
+    const calls = [_]ai_types.AssistantContent{
+        .{ .tool_call = .{ .id = "call_1", .name = "read", .arguments_json = "{}" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.@"error", &calls));
+    try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.aborted, &calls));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.content_filter, &calls));
+}
+
 fn runLoop(
     allocator: std.mem.Allocator,
     prompts: ?[]const ai_types.Message,
@@ -1044,12 +1138,10 @@ fn runLoop(
 
     try pushAgentEvent(event_stream, .agent_start);
 
-    const max_iterations = config.max_iterations orelse 100;
-
     var ended_before_cap = false;
     var cancelled_run = false;
 
-    outer: while (state.iterations < max_iterations) {
+    outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
             if (token.isCancelled()) {
                 ended_before_cap = true;
@@ -1058,7 +1150,7 @@ fn runLoop(
             }
         }
 
-        while (state.iterations < max_iterations) {
+        while (withinTurnLimit(state.iterations, config.max_iterations)) {
             var steering_messages: ?[]const ai_types.Message = null;
             if (config.get_steering_messages_fn) |get_steering| {
                 steering_messages = try get_steering(config.get_steering_messages_ctx, allocator);
@@ -1121,8 +1213,8 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            switch (assistant_message.stop_reason) {
-                .@"error", .aborted => {
+            switch (turnOutcome(assistant_message)) {
+                .failed => {
                     const final_error_msg = state.final_message orelse assistant_message;
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = final_error_msg,
@@ -1135,7 +1227,7 @@ fn runLoop(
                     ended_before_cap = true;
                     break :outer;
                 },
-                .stop, .length, .content_filter => {
+                .answered => {
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
                         .message = assistant_message,
                         .tool_results = types.OwnedSlice(ai_types.ToolResultMessage).initBorrowed(&.{}),
@@ -1186,7 +1278,7 @@ fn runLoop(
                     ended_before_cap = true;
                     break :outer;
                 },
-                .tool_use => {
+                .called_tools => {
                     var tool_result = try executeToolCalls(
                         allocator,
                         assistant_message,

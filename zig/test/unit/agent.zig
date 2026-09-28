@@ -77,6 +77,8 @@ const MockProtocolState = struct {
     mode: MockMode,
     text: []const u8 = "ok",
     stop_reason: ai_types.StopReason = .stop,
+    tool_turns: usize = 0,
+    tool_turn_stop_reason: ai_types.StopReason = .tool_use,
     call_count: usize = 0,
     last_options: ?ProtocolOptions = null,
 
@@ -123,6 +125,31 @@ fn makeOwnedAssistantMessage(
     };
 }
 
+fn makeOwnedToolCallMessage(
+    allocator: std.mem.Allocator,
+    stop_reason: ai_types.StopReason,
+) !ai_types.AssistantMessage {
+    const id = try allocator.dupe(u8, "call_probe");
+    errdefer allocator.free(id);
+    const name = try allocator.dupe(u8, "probe");
+    errdefer allocator.free(name);
+    const arguments_json = try allocator.dupe(u8, "{}");
+    errdefer allocator.free(arguments_json);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    content[0] = .{ .tool_call = .{ .id = id, .name = name, .arguments_json = arguments_json } };
+
+    return .{
+        .content = content,
+        .api = "mock-api",
+        .provider = "mock-provider",
+        .model = "mock-model",
+        .usage = .{},
+        .stop_reason = stop_reason,
+        .timestamp = compat.time.nowMillis(),
+        .is_owned = false,
+    };
+}
+
 fn mockProtocolStream(
     ctx: ?*anyopaque,
     model: ai_types.Model,
@@ -148,7 +175,9 @@ fn mockProtocolStream(
     const stream = try allocator.create(event_stream.AssistantMessageEventStream);
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
 
-    const msg = if (state.mode == .done)
+    const msg = if (state.mode == .done and state.call_count <= state.tool_turns)
+        try makeOwnedToolCallMessage(allocator, state.tool_turn_stop_reason)
+    else if (state.mode == .done)
         try makeOwnedAssistantMessage(allocator, state.text, state.stop_reason)
     else
         ai_types.AssistantMessage{
@@ -352,7 +381,7 @@ test "agentLoop: handles provider error" {
 test "agentLoop: iteration cap reports max_turns on agent_end" {
     const allocator = testing.allocator;
 
-    var state = MockProtocolState{ .mode = .done, .text = "need tools", .stop_reason = .tool_use };
+    var state = MockProtocolState{ .mode = .done, .tool_turns = std.math.maxInt(usize) };
 
     var ctx = AgentContext.init(allocator);
     defer ctx.deinit();
@@ -558,11 +587,7 @@ test "agentLoop: cancellation token stops before protocol stream call" {
 test "agentLoop: max_iterations caps repeated tool_use loop" {
     const allocator = testing.allocator;
 
-    var state = MockProtocolState{
-        .mode = .done,
-        .text = "need tools",
-        .stop_reason = .tool_use,
-    };
+    var state = MockProtocolState{ .mode = .done, .tool_turns = std.math.maxInt(usize) };
     var ctx = AgentContext.init(allocator);
     defer ctx.deinit();
 
@@ -588,4 +613,167 @@ test "agentLoop: max_iterations caps repeated tool_use loop" {
     const result = stream.getResult().?;
     try testing.expectEqual(@as(usize, 2), result.iterations);
     try testing.expectEqual(@as(usize, 2), state.call_count);
+}
+
+const ProbeTool = struct {
+    runs: usize = 0,
+};
+
+fn runProbeTool(
+    ctx: ?*anyopaque,
+    tool_call_id: []const u8,
+    tool_name: []const u8,
+    args_json: []const u8,
+    cancel_token: ?ai_types.CancelToken,
+    on_update_ctx: ?*anyopaque,
+    on_update: ?agent_types.ToolUpdateCallback,
+    allocator: std.mem.Allocator,
+) anyerror!agent_types.AgentToolResult {
+    _ = tool_call_id;
+    _ = tool_name;
+    _ = args_json;
+    _ = cancel_token;
+    _ = on_update_ctx;
+    _ = on_update;
+    const probe: *ProbeTool = @ptrCast(@alignCast(ctx.?));
+    probe.runs += 1;
+    const text = try allocator.dupe(u8, "probed");
+    errdefer allocator.free(text);
+    const content = try allocator.alloc(ai_types.UserContentPart, 1);
+    content[0] = .{ .text = .{ .text = text } };
+    return .{ .content = agent_types.OwnedSlice(ai_types.UserContentPart).initOwned(content) };
+}
+
+test "agentLoop: without max_iterations a run keeps calling tools past a hundred turns" {
+    const allocator = testing.allocator;
+
+    var state = MockProtocolState{ .mode = .done, .text = "finished", .tool_turns = 150 };
+    var ctx = AgentContext.init(allocator);
+    defer ctx.deinit();
+
+    const prompt_text = try allocator.dupe(u8, "keep going");
+    const prompt = ai_types.Message{ .user = .{
+        .content = .{ .text = prompt_text },
+        .timestamp = compat.time.nowMillis(),
+    } };
+
+    const config = AgentLoopConfig{
+        .model = createModel(),
+        .protocol = createMockProtocol(&state),
+    };
+
+    const stream = try agent_loop.agentLoop(allocator, &.{prompt}, &ctx, config);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+
+    var agent_end_termination: ?agent_types.AgentTermination = .max_turns;
+    while (stream.wait()) |event| {
+        switch (event) {
+            .agent_end => |payload| agent_end_termination = payload.termination,
+            else => {},
+        }
+    }
+
+    const result = stream.getResult().?;
+    try testing.expectEqual(@as(usize, 151), state.call_count);
+    try testing.expectEqual(@as(u32, 151), result.iterations);
+    try testing.expect(result.final_message.stop_reason == .stop);
+    try testing.expectEqual(@as(?agent_types.AgentTermination, null), result.termination);
+    try testing.expectEqual(@as(?agent_types.AgentTermination, null), agent_end_termination);
+}
+
+test "agentLoop: a tool call in a reply reported as stop still runs" {
+    const allocator = testing.allocator;
+
+    var state = MockProtocolState{ .mode = .done, .text = "finished", .tool_turns = 1, .tool_turn_stop_reason = .stop };
+    var probe = ProbeTool{};
+    const tools = [_]agent_types.AgentTool{.{
+        .label = "Probe",
+        .name = "probe",
+        .description = "Probe",
+        .parameters_schema_json = "{\"type\":\"object\"}",
+        .execute = undefined,
+    }};
+    var ctx = AgentContext.init(allocator);
+    defer ctx.deinit();
+
+    const prompt_text = try allocator.dupe(u8, "probe it");
+    const prompt = ai_types.Message{ .user = .{
+        .content = .{ .text = prompt_text },
+        .timestamp = compat.time.nowMillis(),
+    } };
+
+    const config = AgentLoopConfig{
+        .model = createModel(),
+        .protocol = createMockProtocol(&state),
+        .tools = &tools,
+        .execute_tool_via_protocol_fn = runProbeTool,
+        .execute_tool_via_protocol_ctx = &probe,
+    };
+
+    const stream = try agent_loop.agentLoop(allocator, &.{prompt}, &ctx, config);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |_| {}
+
+    const result = stream.getResult().?;
+    try testing.expectEqual(@as(usize, 1), probe.runs);
+    try testing.expectEqual(@as(usize, 2), state.call_count);
+    try testing.expectEqual(@as(u32, 2), result.iterations);
+    try testing.expect(result.final_message.stop_reason == .stop);
+}
+
+test "agentLoop: a tool call cut off at the output limit is answered with an error instead of run, and the run goes on" {
+    const allocator = testing.allocator;
+
+    var state = MockProtocolState{ .mode = .done, .text = "finished", .tool_turns = 1, .tool_turn_stop_reason = .length };
+    var probe = ProbeTool{};
+    const tools = [_]agent_types.AgentTool{.{
+        .label = "Probe",
+        .name = "probe",
+        .description = "Probe",
+        .parameters_schema_json = "{\"type\":\"object\"}",
+        .execute = undefined,
+    }};
+    var ctx = AgentContext.init(allocator);
+    defer ctx.deinit();
+
+    const prompt_text = try allocator.dupe(u8, "probe it");
+    const prompt = ai_types.Message{ .user = .{
+        .content = .{ .text = prompt_text },
+        .timestamp = compat.time.nowMillis(),
+    } };
+
+    const config = AgentLoopConfig{
+        .model = createModel(),
+        .protocol = createMockProtocol(&state),
+        .tools = &tools,
+        .execute_tool_via_protocol_fn = runProbeTool,
+        .execute_tool_via_protocol_ctx = &probe,
+    };
+
+    const stream = try agent_loop.agentLoop(allocator, &.{prompt}, &ctx, config);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |_| {}
+
+    const result = stream.getResult().?;
+    var answers: usize = 0;
+    for (result.messages.slice()) |message| {
+        if (message != .tool_result) continue;
+        try testing.expect(message.tool_result.is_error);
+        try testing.expect(std.mem.indexOf(u8, message.tool_result.content[0].text.text, "output token limit") != null);
+        answers += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), answers);
+    try testing.expectEqual(@as(usize, 0), probe.runs);
+    try testing.expectEqual(@as(usize, 2), state.call_count);
+    try testing.expectEqual(@as(u32, 2), result.iterations);
+    try testing.expect(result.final_message.stop_reason == .stop);
 }
