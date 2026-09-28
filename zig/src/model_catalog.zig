@@ -2659,27 +2659,56 @@ test "every coding plan row the loader enables carries its own version in the ba
     }
 }
 
-test "an override on a versioned base lists under /v1 and the request keeps the base's own" {
+test "an override on a coding plan row lists and requests through the loader's own resolution" {
     const id = "volcengine-coding-plan";
-    const target = catalogTarget(id) orelse return error.TestExpectedTarget;
-    const overridden = try provider_catalog.listingUrlOwned(
+    const catalogued = catalogTarget(id) orelse return error.TestExpectedTarget;
+    try std.testing.expect(std.mem.endsWith(u8, catalogued.models_url, "/coding/v3/models"));
+
+    const overridden_models_url = try provider_catalog.listingUrlOwned(
         std.testing.allocator,
-        "https://proxy.example/api",
+        proxy_models_url[0 .. proxy_models_url.len - "/models".len],
         "/models",
         true,
         true,
     );
-    defer std.testing.allocator.free(overridden);
-    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", overridden);
-    const request = try provider_catalog.joinUrlOwned(
+    defer std.testing.allocator.free(overridden_models_url);
+    try std.testing.expectEqualStrings(proxy_models_url, overridden_models_url);
+
+    test_catalog_base_urls = .{ .global = proxy_models_url[0 .. proxy_models_url.len - "/models".len] };
+    test_catalog_discovery = &[_]CatalogDiscovery{.{
+        .id = id,
+        .models_url = overridden_models_url,
+        .model_ids = &.{"doubao-seed-code"},
+    }};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "ARK_CODING_PLAN_API_KEY", .value = "row-key" },
+    };
+    defer {
+        test_catalog_base_urls = null;
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModelsWithRows(
         std.testing.allocator,
-        "https://proxy.example/api",
-        provider_catalog.wirePath(target.wire).?,
-        true,
+        &.{id},
+        null,
+        .allow_cache,
+    );
+    defer deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
+
+    const request = try provider_catalog.joinModelUrlOwned(
+        std.testing.allocator,
+        models[0],
+        provider_catalog.wirePath(models[0].api).?,
     );
     defer std.testing.allocator.free(request);
-    try std.testing.expectEqualStrings("https://proxy.example/api/chat/completions", request);
-    try std.testing.expect(std.mem.endsWith(u8, target.models_url, "/coding/v3/models"));
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/chat/completions", request);
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", overridden_models_url);
+    try std.testing.expect(countVersions(overridden_models_url) == countVersions(request));
+    try std.testing.expect(!std.mem.endsWith(u8, overridden_models_url, "/v1/v1/models"));
 }
 
 test "a coding plan row's discovered models carry that row's base, wire and own listing url" {
