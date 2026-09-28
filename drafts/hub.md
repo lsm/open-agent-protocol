@@ -1134,21 +1134,23 @@ byte-for-byte comparison on their first request.
 [#455](https://github.com/lsm/open-agent-protocol/pull/455) in Zig), so a session that is not open answers
 `unknown_session` to every later operation, a second `close` included, and its id is free.
 
-**D3 to D7 are what is left, and all of it is the Zig side and all of one kind:**
+**D3 is fixed** ([#500](https://github.com/lsm/open-agent-protocol/pull/500)): a catalog is
+stamped with the revision its *lister* served it under, which is what makes the
+draft's "refuse one that disagrees with the descriptor" check possible at all.
+
+**D4 to D7 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
 specifies — a member that does not exist, or a signal with nowhere to report it.
 None of them changes a byte on the wire today, and each is a small contract change
-rather than a re-decision, so they are queued rather than fixed here: D3, D5 and
-D6 in [#407](https://github.com/lsm/open-agent-protocol/issues/407), and D7 —
-the per-run exposure a stream failure needs — in
-[#407](https://github.com/lsm/open-agent-protocol/issues/407) too, since it is the
-same kind of gap. D4 is different in one respect: its negative-capacity half is a
-Go change, queued in
+rather than a re-decision, so they are queued rather than fixed here: D5 and D6 in
+[#407](https://github.com/lsm/open-agent-protocol/issues/407), and D7 — the per-run
+exposure a stream failure needs — in the same issue, since it is the same kind of gap.
+D4 is different in one respect: its negative-capacity half is a Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
 ### D3 — a served catalog's revision comes from the lister
 
-**Fixed**, in the PR that carried it. `contract`'s `models` and `tools` return a
+**Fixed**, in [#500](https://github.com/lsm/open-agent-protocol/pull/500).
 `contract.Catalog` and a `contract.ToolSet`, each pairing the response with the
 revision the lister says it served it under, as `base.Catalog` and
 `base.ToolCatalog` do in Go. The hub stamps the answer with **that** revision
