@@ -198,6 +198,32 @@ models, and naming three keeps `/model` readable. Omit the list entirely and
 every model the endpoint advertises is offered, which is what you want for a
 server hosting one.
 
+### Catalogued rows
+
+A row in `providers/catalog.json` is discovered the same way, from the models URL
+that row's `models_endpoint` and base URL compose into, and cached per row at
+`~/.oapx/model_catalog/catalog-<id>.json` — a name of its own, so a catalogued
+row and a custom row sharing an id never share a cache entry. The row's
+credential comes from `provider_credential.lookup`, so an environment variable
+beats a stored key, and a row with no credential anywhere contributes nothing
+rather than being fetched unauthenticated.
+
+A catalogued row has no declared list to fall back on, so a row whose discovery
+produced nothing contributes nothing. The models it does build carry the row's
+own id, wire and base URL, which are read through the catalog rather than
+written here: nothing in this runtime spells a catalogued base URL. The two
+values discovery does not carry are the same defaults a custom provider starts
+from, 128000 and 8192, until a wire reports better ones.
+
+The base URL a discovered row uses is resolved the way every other row's is, in
+the order `provider_base_url` documents: `OAPX_BASE_URL` first, then the row's
+`base_url_env` (`DEEPSEEK_BASE_URL`, `OPENAI_BASE_URL`, …), then the catalog. So
+`DEEPSEEK_BASE_URL` points a discovered row at a proxy, and it points **discovery**
+at the proxy too — the models listing is read from the override, not from the
+vendor, so a key is never sent to an endpoint the operator redirected away from.
+A versioned override keeps the rule above: a trailing `/v1` is dropped, because
+the wire adds its own.
+
 ## Capabilities
 
 Capability detection is otherwise a hostname guess, which cannot work for an
