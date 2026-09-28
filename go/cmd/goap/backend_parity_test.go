@@ -47,8 +47,8 @@ func TestBackendsMatchOapx(t *testing.T) {
 			if where := runOrderDifference(t, wantOut, gotOut); where != "" {
 				t.Errorf("oapx orders a run differently: %s", where)
 			}
-			if wantChild != gotChild {
-				t.Errorf("oapx writes the child differently\n--- goap\n%s\n--- oapx\n%s", wantChild, gotChild)
+			if missing, extra := childLineDifference(t, wantChild, gotChild); len(missing)+len(extra) > 0 {
+				t.Errorf("oapx writes different data to its child\n--- only goap\n%s\n--- only oapx\n%s", strings.Join(missing, "\n"), strings.Join(extra, "\n"))
 			}
 		})
 	}
@@ -322,6 +322,78 @@ func scrubbed(value any) any {
 		return typed
 	}
 	return value
+}
+
+func TestChildLinesCompareDataNotBytes(t *testing.T) {
+	escaped := "{\"id\":\"req_1\",\"params\":{\"text\":\"a<b>c&d\u2028e\"}}"
+	plain := "{\"params\":{\"text\":\"a\\u003cb\\u003ec\\u0026d\u2028e\"},\"id\":\"req_1\"}"
+	if escaped == plain {
+		t.Fatal("the two inputs are the same bytes, so the comparison is not exercised")
+	}
+	if len(escaped) == len(plain) {
+		t.Fatalf("the two inputs are the same length (%d), so no escaping is being compared", len(escaped))
+	}
+	missing, extra := childLineDifference(t, escaped+"\n", plain+"\n")
+	if len(missing)+len(extra) != 0 {
+		t.Fatalf("the same data in different bytes compared unequal: only goap %v, only oapx %v\ngoap %q\noapx %q", missing, extra, escaped, plain)
+	}
+	changed := "{\"id\":\"req_1\",\"params\":{\"text\":\"a<b>c&d\u2028f\"}}"
+	missing, extra = childLineDifference(t, escaped+"\n", changed+"\n")
+	if len(missing) != 1 || len(extra) != 1 {
+		t.Fatalf("different data compared equal: only goap %v, only oapx %v", missing, extra)
+	}
+	if _, extra := childLineDifference(t, "--- GET\n", "--- GET\n/api/session/ses_1/event\n"); len(extra) != 1 {
+		t.Fatalf("a request the other tree never made compared equal: %v", extra)
+	}
+	withID := "{\"id\":\"msg_oap0000000000000001\",\"params\":{\"text\":\"a<b>c&d\"}}"
+	otherID := "{\"id\":\"msg_oap0000000000000002\",\"params\":{\"text\":\"a<b>c&d\"}}"
+	if missing, extra := childLineDifference(t, withID+"\n", otherID+"\n"); len(missing) != 1 || len(extra) != 1 {
+		t.Fatalf("two trees minting different ids compared equal: only goap %v, only oapx %v", missing, extra)
+	}
+}
+
+func childLineDifference(t *testing.T, want, got string) ([]string, []string) {
+	t.Helper()
+	return lineDifference(childLines(t, want), childLines(t, got))
+}
+
+func childLines(t *testing.T, text string) []string {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			continue
+		}
+		lines = append(lines, parsedChildLine(t, line))
+	}
+	return lines
+}
+
+func parsedChildLine(t *testing.T, line string) string {
+	t.Helper()
+	at := strings.IndexByte(line, '{')
+	if at < 0 {
+		return line
+	}
+	prefix, body := line[:at], line[at:]
+	if !json.Valid([]byte(body)) {
+		return line
+	}
+	return prefix + canonicalJSON(t, body)
+}
+
+func canonicalJSON(t *testing.T, line string) string {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal([]byte(line), &value); err != nil {
+		t.Fatalf("not JSON: %q", line)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+
 }
 
 func TestRunOrderDifferenceSeesOrderWithinARun(t *testing.T) {

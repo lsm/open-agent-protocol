@@ -100,6 +100,9 @@ func TestAClosedSessionIsRecordedAsClosed(t *testing.T) {
 	if len(history) != 2 || history[1].Action != binding.ActionClosed {
 		t.Fatalf("history = %+v, want the open and the close", history)
 	}
+	if history[1].TimeMS <= history[0].TimeMS {
+		t.Fatalf("the close is stamped %d and the open %d, want the close later than the open it records", history[1].TimeMS, history[0].TimeMS)
+	}
 }
 
 func TestAHubWithNoStoreRecordsNothingAndSaysSo(t *testing.T) {

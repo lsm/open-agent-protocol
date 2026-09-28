@@ -85,8 +85,11 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 
 	entry := newSession(state.SessionID, adapterName, session, func(released *Session) {
 		h.sessions.remove(released.id, released)
-		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, released.bindingTimeMS)
+		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
 	})
+	opened := h.openRecord(ctx, adapterName, implementation, state, request)
+	entry.binding = opened
+	entry.bindingTimeMS = state.UpdatedAtMS
 	if err != nil || state.Status == protocol.SessionClosed {
 		entry.markClosed()
 	}
@@ -98,13 +101,17 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
-	h.recordOpen(ctx, adapterName, implementation, state, request, entry)
+	h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
 	return entry, state, nil
 }
 
-func (h *Hub) recordOpen(ctx context.Context, adapterName string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest, entry *Session) {
+func (h *Hub) now() int64 {
+	return time.Now().UnixMilli()
+}
+
+func (h *Hub) openRecord(ctx context.Context, adapterName string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest) binding.Record {
 	if h.bindings == nil {
-		return
+		return binding.Record{}
 	}
 	version := ""
 	if descriptor, err := implementation.Probe(ctx); err == nil {
@@ -118,10 +125,7 @@ func (h *Hub) recordOpen(ctx context.Context, adapterName string, implementation
 	if wd, err := os.Getwd(); err == nil {
 		directory = wd
 	}
-	record := binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, directory, sources)
-	entry.binding = record
-	entry.bindingTimeMS = state.UpdatedAtMS
-	h.recordBinding(ctx, record, binding.ActionOpened, state.UpdatedAtMS)
+	return binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, directory, sources)
 }
 
 func (h *Hub) recordBinding(ctx context.Context, record binding.Record, action binding.Action, timeMS int64) {
