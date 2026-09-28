@@ -205,14 +205,15 @@ ones that force the inference are in the pi ledger (discovery returns `null`)
 and the ACP ledger (the spec says nothing).
 
 **What a reattach would call, and what the adapter calls instead.** The session
-group (`packages/protocol/src/groups/session.ts`) carries sixteen routes:
+group (`packages/protocol/src/groups/session.ts`) carries seventeen routes:
 `session.list` (`GET /api/session`, cursor-paged, default limit 50),
 `session.create` (`POST /api/session`), `session.active`, `session.get`,
 `session.context`, `session.history`, `session.events`
 (`GET /api/session/:sessionID/event`), `session.message`, `session.switchAgent`,
 `session.switchModel`, `session.prompt`, `session.compact`, `session.wait`,
-`session.interrupt` and three `session.revert.*` stages. The Go adapter uses
-seven of them, and the port goldens in
+`session.interrupt`, `session.message` and the three `session.revert.*` stages —
+seventeen `HttpApiEndpoint`s in the group, counted rather than estimated. The
+Go adapter uses seven of them, and the port goldens in
 `go/adapter/opencode/testdata/port-goldens.json` name every request it makes:
 `POST /api/session`, `POST /api/session/:id/prompt`, `POST
 /api/session/:id/interrupt`, `GET /api/session/active`,
