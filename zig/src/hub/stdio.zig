@@ -129,6 +129,12 @@ fn member(root: std.json.ObjectMap, name: []const u8) ?std.json.Value {
     return root.get(name);
 }
 
+fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
+    const value = member(root, name) orelse return;
+    if (value == .null or value == .string) return;
+    return Error.MalformedLine;
+}
+
 fn stringMember(root: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = member(root, name) orelse return null;
     if (value != .string) return null;
@@ -160,6 +166,9 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
     request.supplied.after = member(root, "after") != null;
     request.supplied.request = member(root, "request") != null;
     request.supplied.allow_degraded_features = member(root, "allow_degraded_features") != null;
+    try requireStringOrNull(root, "adapter");
+    try requireStringOrNull(root, "session_id");
+    try requireStringOrNull(root, "run_id");
     request.adapter = stringMember(root, "adapter");
     request.session_id = stringMember(root, "session_id");
     request.run_id = stringMember(root, "run_id");
@@ -509,10 +518,12 @@ pub const Frontend = struct {
 
     fn tooLarge(self: *Frontend, arena: std.mem.Allocator, id: i64) Error!void {
         var object = try emptyObject(arena);
+        defer object.deinit(arena);
         try object.put(arena, "id", .{ .integer = id });
         try object.put(arena, "ok", .{ .bool = false });
         try object.put(arena, "result", .{ .null = {} });
         var body = try emptyObject(arena);
+        defer body.deinit(arena);
         try body.put(arena, "code", .{ .string = "response_too_large" });
         try body.put(arena, "message", .{ .string = "the encoded response exceeds the frame limit" });
         try object.put(arena, "error", .{ .object = body });
@@ -750,6 +761,8 @@ const ReferenceState = struct {
     opened: usize = 0,
     last_id: []const u8 = "session-1",
     running: bool = false,
+    state_fails: bool = false,
+    closed: bool = false,
 };
 
 var reference_holder: ReferenceState = .{};
@@ -792,8 +805,10 @@ fn referenceId(ptr: *anyopaque) []const u8 {
 
 fn referenceState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
+    if (state.state_fails) return error.BackendFailed;
     _ = refusal;
     const session_id = try arena.dupe(u8, referenceId(state));
+    if (state.closed) return .{ .session_id = session_id, .status = .closed };
     if (!state.running) return .{ .session_id = session_id, .status = .idle };
     const run = try arena.dupe(u8, "run-1");
     const runs = try arena.dupe(oap_types.ActiveRun, &.{.{ .run_id = run, .status = .running, .relationship = "primary" }});
@@ -1071,6 +1086,25 @@ test "state answers a daemon-minted envelope and refuses an unknown session" {
     try testing.expectEqualStrings("invalid_request", try harness.code());
 }
 
+test "a null parameter is supplied and refused, and a wrongly typed one is a defect" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"adapters\",\"adapter\":null}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"sessions\",\"session_id\":null}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+
+    for ([_][]const u8{
+        "{\"id\":3,\"op\":\"adapters\",\"adapter\":7}",
+        "{\"id\":4,\"op\":\"state\",\"session_id\":[\"a\"]}",
+        "{\"id\":5,\"op\":\"state\",\"run_id\":true}",
+        "{\"id\":6,\"op\":\"open\",\"allow_degraded_features\":\"a\"}",
+    }) |line| {
+        const built = try harness.arena().dupe(u8, line);
+        try testing.expectError(error.MalformedLine, decode(harness.arena(), built));
+    }
+}
+
 test "a refusal's message is bounded so a long one still frames" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
@@ -1120,13 +1154,40 @@ test "the sessions listing carries each session's runs as an array of objects" {
     try testing.expectEqualStrings("reference", try textMember(harness.arena(), rows.items[0], "adapter"));
 }
 
+test "a closed session answers its final state, and the next one is unknown" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    _ = try harness.hub.open(arena_state.allocator(), "reference", .{ .session_id = "ended" });
+    reference_holder.closed = true;
+    defer reference_holder.closed = false;
+    try harness.send("{\"id\":1,\"op\":\"state\",\"session_id\":\"ended\"}");
+    const envelope = (try harness.lastValue()).object.get("result").?;
+    const payload = envelope.object.get("payload").?;
+    try testing.expectEqualStrings("closed", try textMember(harness.arena(), payload, "status"));
+    try testing.expectEqualStrings("ended", try textMember(harness.arena(), payload, "session_id"));
+    try harness.send("{\"id\":2,\"op\":\"state\",\"session_id\":\"ended\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
 test "a state that cannot be read is state_failed, not internal" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     try harness.send("{\"id\":1,\"op\":\"state\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
-    try harness.send("{\"id\":2,\"op\":\"state\",\"session_id\":\"reference\"}");
-    try testing.expectEqualStrings("unknown_session", try harness.code());
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    _ = try harness.hub.open(arena_state.allocator(), "reference", .{ .session_id = "unreadable" });
+    reference_holder.state_fails = true;
+    defer reference_holder.state_fails = false;
+    try harness.send("{\"id\":2,\"op\":\"state\",\"session_id\":\"unreadable\"}");
+    try testing.expectEqualStrings("state_failed", try harness.code());
+
+    reference_holder.state_fails = false;
+    try harness.send("{\"id\":3,\"op\":\"state\",\"session_id\":\"unreadable\"}");
+    try testing.expectEqualStrings("session.state.response", try textMember(harness.arena(), (try harness.lastValue()).object.get("result").?, "type"));
 }
 
 test "the in-flight bound refuses any op, naming the bound that refused it" {

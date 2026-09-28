@@ -199,8 +199,16 @@ a bad request. So is an unknown field, a repeated key, a key that differs from
 its exact protocol spelling, a missing `id`, a missing `op`, an empty line, a
 line carrying a carriage return, a line that is not UTF-8, an unterminated
 final line, a line over the frame limit, and trailing data after the object.
-The daemon **fails closed** on all of them: it stops serving and reports a
+So is a parameter whose **declared type** the line does not carry: a number for
+`adapter`, a list for `session_id`, a string for `allow_degraded_features`. The
+daemon **fails closed** on all of them: it stops serving and reports a
 framing defect naming the line.
+
+A parameter that is present and **null** is not among them. A null member counts
+as supplied, so an op that does not define that parameter refuses it
+`invalid_request` on presence, and an op that does define it treats it as absent.
+The distinction is the type, not the presence: `null` is a value every parameter
+admits, and a number where a string belongs is a line the daemon cannot read.
 
 The **frame limit bounds the payload**, not the line: the terminating `\n` is
 framing and does not count, so a line whose payload is exactly the limit is

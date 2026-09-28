@@ -528,7 +528,6 @@ pub const Hub = struct {
         };
         if (reported.status == .closed) {
             self.releaseSession(entry);
-            return error.UnknownSession;
         }
         return reported;
     }
