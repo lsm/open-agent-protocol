@@ -1188,9 +1188,21 @@ are "stamped with the revision the lister served it under", and both name
 | **The two zeros are not the same zero** | A **document's** `journal_capacity: 0` keeps the default in both trees, because every Go constructor treats `<= 0` as "unspecified" (`go/adapter/memory.go:123`) and the Zig `load` does the same. The Zig **core's** own `Options.journal_capacity = 0` means *retain nothing*, and no config document can reach it — a host that wants no journal sets the option, and a host that writes `0` gets the default. Go has no equivalent: a `0` reaching an adapter always becomes that adapter's own capacity. So the two trees agree on every document, and differ only on a value only a Zig host can set. |
 | **A negative is refused, not defaulted** | Both trees refuse it. The Zig `load` refuses a negative with `ConfigRefused`, and the Go registry refuses a document naming one, because a negative capacity is a malformed document and defaulting it would report success for something the operator did not write. A document naming `0` still keeps the default in both, because that is a request for the default rather than a malformed value. |
 
-### D5 — `session.open.request`'s `metadata` never reaches an adapter
+### D5 — `session.open.request`'s `metadata` never reached an adapter
 
-`session.open.request` carries `metadata`, and the draft names `invalid_payload` for a value that is not JSON. `contract.OpenRequest` has no `metadata` member, so the Zig core cannot carry one to an adapter at all: it is neither validated nor forwarded, and a Zig hub silently drops what a Go hub passes to the adapter. The field is the fix, and until it exists the two trees differ on a request member the draft specifies.
+**Fixed.** `contract.OpenRequest` and `hub.OpenRequest` both carry a `metadata`
+member and the hub forwards it, so a session open's metadata is a value an
+adapter receives rather than one the core drops. It is a `std.json.Value`, which
+is what Go hands an adapter: `base.OpenRequest.Metadata` is a `map[string]any`,
+parsed, not raw text. A host that sent metadata to a Zig hub had it silently
+discarded, which is what this names — a Zig hub accepted a request member the
+draft specifies and then did nothing with it.
+
+The draft's `invalid_payload` for a value that is not JSON is enforced where the
+value is read, which is the wire op and not the core: the core's member is
+already a parsed value, so there is nothing left for it to refuse. That is
+recorded rather than left implied, because "the core does not validate it" and
+"nothing validates it" are different sentences and only the first is true.
 
 ### D6 — the Zig shutdown sweep cannot retry a close that refuses
 

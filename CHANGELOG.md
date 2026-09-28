@@ -616,6 +616,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `contract.Session`'s `models` and `tools` now report the revision the lister served
+- A session open's `metadata` now reaches the adapter. `contract.OpenRequest` and
+  `hub.OpenRequest` carry it and the hub forwards it, as a parsed value, which is
+  what Go hands an adapter. It was neither validated nor forwarded: a Zig hub
+  accepted a request member the draft specifies and then silently discarded it.
   the catalog under, beside the catalog itself, as Go's `base.Catalog` and
   `base.ToolCatalog` do. The hub stamped the answer with the **adapter descriptor's**
   revision and never learned what the lister thought, so a lister serving a catalog

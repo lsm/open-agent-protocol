@@ -2337,11 +2337,6 @@ test "an open's metadata reaches the adapter" {
     var scratch = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-
-    // `session.open.request` carries metadata and the draft names `invalid_payload`
-    // for a value that is not JSON, so it is a first-class member rather than
-    // something the core drops. Before this it was neither validated nor
-    // forwarded, and a Zig hub silently discarded what a Go hub hands the adapter.
     try testing.expect(flaky.saw_metadata == null);
     _ = try hub.open(arena, "flaky", .{ .session_id = "bare" });
     try testing.expect(flaky.saw_metadata == null);
