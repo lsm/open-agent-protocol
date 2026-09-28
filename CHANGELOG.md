@@ -217,6 +217,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input per cycle. It used to be told nothing was ready, and with no sessions open
   that was forever: a loop that waits for input it never reads.
 - `oapx`'s usage text now names the `hub` verb.
+- `compat.stdio.pipe` now refuses on Windows instead of failing to compile there.
+  It has never been compiled for a Windows target until the hub's stdio module
+  imported `compat`, and the `compile-hub` step has been reporting it since — I read
+  my own measurement of that step as clean and carried on, which is the failure the
+  step was built to prevent.
 - The hub's stdio serve loop no longer stops driving the hub after the first
   request. It read until end-of-stream inside one cycle, so a host that stayed
   connected and had nothing more to say left every session undriven for as long
