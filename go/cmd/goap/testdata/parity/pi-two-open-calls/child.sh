@@ -24,7 +24,6 @@ printf '%s\n' '{"type":"message_update","usage":{},"assistantMessageEvent":{"typ
 printf '%s\n' '{"type":"tool_execution_start","toolCallId":"a","toolName":"read","args":{"path":"a"}}'
 printf '%s\n' '{"type":"tool_execution_start","toolCallId":"b","toolName":"read","args":{"path":"b"}}'
 printf '%s\n' '{"type":"tool_execution_update","toolCallId":"a","toolName":"read","args":{"path":"a"},"partialResult":{"text":"half"}}'
-printf '%s\n' '{"type":"tool_execution_end","toolCallId":"a","toolName":"read","result":{"text":"a"},"isError":false}'
 printf '%s\n' "{\"type\":\"message_end\",\"message\":$assistant}"
 printf '%s\n' "{\"type\":\"turn_end\",\"message\":$assistant,\"toolResults\":[]}"
 printf '%s\n' "{\"type\":\"agent_end\",\"messages\":[$assistant],\"willRetry\":false}"

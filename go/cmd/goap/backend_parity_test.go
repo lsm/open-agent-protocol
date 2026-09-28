@@ -376,6 +376,18 @@ func TestTwoFixtureDirectoryNamesOneBackend(t *testing.T) {
 	}
 }
 
+func TestTheTwoOpenCallsFixtureLeavesBothOpenAtSettlement(t *testing.T) {
+	child, err := os.ReadFile(filepath.Join("testdata", "parity", "pi-two-open-calls", "child.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := strings.Count(string(child), `"type":"tool_execution_start"`)
+	ended := strings.Count(string(child), `"type":"tool_execution_end"`)
+	if started != 2 || ended != 0 {
+		t.Errorf("the fixture starts %d calls and ends %d; the contested settlement needs two calls open when the run settles", started, ended)
+	}
+}
+
 func TestChildLinesCompareDataNotBytes(t *testing.T) {
 	escaped := "{\"id\":\"req_1\",\"params\":{\"text\":\"a<b>c&d\u2028e\"}}"
 	plain := "{\"params\":{\"text\":\"a\\u003cb\\u003ec\\u0026d\u2028e\"},\"id\":\"req_1\"}"

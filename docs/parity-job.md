@@ -71,14 +71,15 @@ separate implementations, which is why the comparison scrubs `id` and every
 memory backend holds one pending interaction, so no memory fixture can open two;
 `pi` has no such ceiling, and its script can start a second tool call while the
 first is still running. The scenario therefore drives one `pi` run in which
-`read a` and `read b` both start, `a` finishes, and `b` never does — so when the
-run settles, two calls are open at once and each tree has to close them in the
-same order. It is the case #433 asked for, and it is the one the ordered
-comparison exists to catch: in both trees the run emits
-`action.call.requested`/`started` for both calls before either closes, then
-`completed` for `a` and `failed` for `b`. The settlement order is read out of
-`settleRun` (`go/adapter/pi/session.go`), which sweeps the open children in
-`order`, and out of its Zig counterpart.
+`read a` and `read b` both start and **neither** finishes — so when the run
+settles, two calls are open at once and each tree has to close them in the same
+order. It is the case #433 asked for, and it is the one the ordered comparison
+exists to catch: in both trees the run emits `action.call.requested`/`started`
+for both calls, a `progress` for `a`, and then `action.call.failed` for `a`
+followed by `action.call.failed` for `b` as the settlement sweeps them. The
+sweep order is read out of `settleRun` (`go/adapter/pi/session.go`), which sorts
+the open children by `order`, and out of its Zig counterpart; sorting that sweep
+the other way round makes this fixture fail, which is what makes it worth having.
 
 **Two tests, and only one of them looks at order.** `TestBackendsMatchOapx`
 runs the eight harness fixtures and `memory` with a content diff **and** the
