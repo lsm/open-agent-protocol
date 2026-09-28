@@ -292,7 +292,8 @@ override of a shipped one.
 
 ## Session reload at dsh-v0.1.7-rc.2
 
-Decision 0039's evidence table cites this ledger for the DeepSeek row. Every
+0039's evidence table records "nothing" for DeepSeek, so this section is what
+fills that cell in: the store read at the pin the catalog now names. Every
 line below is read from the source at this pin's own commit
 `477b4f420553e8a52c2fbccc464d7561b239c443` — the same commit and tree as
 *Provenance* above — and the last paragraph says what that does and does not
