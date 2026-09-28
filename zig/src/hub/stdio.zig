@@ -526,11 +526,6 @@ pub const Frontend = struct {
                 .{ .key = "feature", .value = feature },
             }),
             error.ModelNotFound => try refusalWith(arena, "model_not_found", @errorName(err), &.{}),
-            // A mis-scoped catalog is the lister's error, not the caller's, so it
-            // takes the op's own fallback rather than `scope_mismatch`: Go's
-            // `modelsError` has no case for it and falls through to `internal`, and
-            // `toolsError` falls through to `tools_failed`. One shared mapping made
-            // the `models` op answer a code the draft does not list for it.
             error.CatalogMisScoped => .{ .code = fallback, .message = "the adapter served a catalog scoped to another session" },
             error.CatalogUnlabelled => .{ .code = fallback, .message = "the adapter served a catalog with no capability revision" },
             error.OutOfMemory => return error.OutOfMemory,
@@ -1551,11 +1546,6 @@ test "the two catalog ops fall back to their own code, not a shared one" {
     _ = try harness.hub.open(arena, "reference", .{ .session_id = "unlabelled" });
     reference_holder.lister_revision = "";
     defer reference_holder.lister_revision = "reference-lister-v2";
-
-    // `tools` falls back to `tools_failed` and `models` to `internal`, because that
-    // is what Go's `toolsError` and `modelsError` do. One shared mapping made the
-    // `models` operation answer a code the draft does not list for it, and the other
-    // way round would have been just as wrong.
     try harness.send("{\"id\":1,\"op\":\"tools\",\"session_id\":\"unlabelled\"}");
     try testing.expectEqualStrings("tools_failed", try harness.code());
     try harness.send("{\"id\":2,\"op\":\"models\",\"session_id\":\"unlabelled\"}");
@@ -1577,9 +1567,6 @@ test "an adapter with no lister is unsupported_feature, naming the feature each 
     const models_details = models.object.get("error").?.object.get("details").?;
     try testing.expectEqualStrings("models.list", try textMember(harness.arena(), models_details, "feature"));
     try testing.expectEqualStrings("unadvertised", try textMember(harness.arena(), models_details, "reason"));
-
-    // The `tools` op asked for `action.tools.list`, and naming `models.list` here
-    // would tell a host the wrong feature is missing.
     try harness.send("{\"id\":2,\"op\":\"tools\",\"session_id\":\"bare\"}");
     const tools = try harness.lastValue();
     const tools_details = tools.object.get("error").?.object.get("details").?;
