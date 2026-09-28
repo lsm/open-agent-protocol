@@ -975,6 +975,7 @@ const ReferenceState = struct {
     last_id: []const u8 = "session-1",
     running: bool = false,
     state_fails: bool = false,
+    lister_closed: bool = false,
     closed: bool = false,
 };
 
@@ -1021,6 +1022,7 @@ fn referenceId(ptr: *anyopaque) []const u8 {
 fn referenceModels(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
     _ = refusal;
+    if (state.lister_closed) return error.SessionClosed;
     if (!state.has_lister) return error.UnsupportedFeature;
     const models = try arena.dupe(oap_types.ModelDescriptor, &.{.{ .id = "reference-model", .default = true }});
     return .{ .revision = state.lister_revision, .response = .{
@@ -1034,6 +1036,7 @@ fn referenceTools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap
     const state: *ReferenceState = @ptrCast(@alignCast(ptr));
     _ = refusal;
     _ = arena;
+    if (state.lister_closed) return error.SessionClosed;
     if (!state.has_lister) return error.ToolCatalogUnavailable;
     return .{ .revision = state.lister_revision, .response = .{ .session_id = request.session_id } };
 }
@@ -1571,6 +1574,22 @@ test "an adapter with no lister is unsupported_feature, naming the feature each 
     const tools = try harness.lastValue();
     const tools_details = tools.object.get("error").?.object.get("details").?;
     try testing.expectEqualStrings("action.tools.list", try textMember(harness.arena(), tools_details, "feature"));
+}
+
+test "a session that closes under a catalog is told session_closed, and is gone after" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "closing" });
+    reference_holder.lister_closed = true;
+    defer reference_holder.lister_closed = false;
+
+    try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"closing\"}");
+    try testing.expectEqualStrings("session_closed", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"tools\",\"session_id\":\"closing\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
 }
 
 test "a null parameter is supplied and refused, and a wrongly typed one is a defect" {

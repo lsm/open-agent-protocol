@@ -63,7 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A catalog refused `unsupported_feature` now names the `feature` and `reason` in
   `details`, an unlabelled one is `internal` — the code both trees answer, since
   `catalog_unlabelled` is the core's name and has no wire code of its own — and a
-  mis-scoped one is `scope_mismatch`.
+  mis-scoped one takes that op's own fallback, because it is the lister's
+  error and not the caller's.
   `request_cancelled` is recorded as **D8** rather than mapped: `contract` has no
   cancellation signal and `hub.Failure` has no error for one, so a cancelled lister
   call arrives as whatever the adapter chose. Mapping it would have been a mapping
@@ -73,6 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `action.tools.list` or `models.list` — rather than one shared answer for both. A
   mis-scoped or unlabelled catalog takes the op's own fallback, because it is the
   lister's error and not the caller's.
+  A session that closes under a catalog answers `session_closed` once and is gone
+  after, as Go does: it marks the session closed and still propagates the error.
 - **The contested settlement has a fixture: `pi-two-open-calls`.** A terminal
   event sweeping several open calls at once had no fixture, and #433 step 4 was
   parked waiting for a hub that could serve one. The memory backend structurally
