@@ -398,6 +398,8 @@ func (s *Server) openOp(ctx context.Context, request requestLine, stream context
 			code = "unknown_adapter"
 		case errors.Is(err, serve.ErrSessionExists):
 			code = "session_exists"
+		case errors.Is(err, base.ErrSessionClosed):
+			code = "session_closed"
 		}
 		return nil, nil, &wireError{Code: code, Message: adapterMessage(err)}
 	}

@@ -159,6 +159,20 @@ func getCapabilities(t *testing.T, server *httptest.Server, adapterName string) 
 	return envelope
 }
 
+func requireSessionUnknown(t *testing.T, server *httptest.Server, sessionID string) {
+	t.Helper()
+	response, err := server.Client().Get(server.URL + "/sessions/" + sessionID + "/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	envelope, err := protocol.ParseEnvelope(readAll(t, response))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireErrorResponse(t, response.StatusCode, http.StatusNotFound, envelope, "unknown_session")
+}
+
 func getState(t *testing.T, server *httptest.Server, sessionID string) protocol.Envelope {
 	t.Helper()
 	response, err := server.Client().Get(server.URL + "/sessions/" + sessionID + "/state")
@@ -190,14 +204,7 @@ func TestCloseSessionsSettlesActiveRuns(t *testing.T) {
 	stream.expectEnd()
 
 	for _, sessionID := range []string{"shutdown-idle", "shutdown-active"} {
-		state := getState(t, server, sessionID)
-		var payload protocol.SessionState
-		if err := state.DecodePayload(&payload); err != nil {
-			t.Fatal(err)
-		}
-		if payload.Status != protocol.SessionClosed {
-			t.Fatalf("session %s status after CloseSessions: %s", sessionID, payload.Status)
-		}
+		requireSessionUnknown(t, server, sessionID)
 	}
 }
 

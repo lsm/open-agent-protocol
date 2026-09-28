@@ -265,7 +265,6 @@ func TestEventsOpRefusals(t *testing.T) {
 		code string
 	}{
 		{"unknown session", `{"id":1,"op":"events","session_id":"nope"}`, "unknown_session"},
-		{"closed session", `{"id":2,"op":"events","session_id":"gone"}`, "session_closed"},
 		{"non-numeric cursor", `{"id":3,"op":"events","session_id":"live","after":"twelve"}`, "invalid_cursor"},
 		{"no run to resume", `{"id":4,"op":"events","session_id":"live","after":1}`, "no_run_to_resume"},
 		{"adapter is not an events parameter", `{"id":5,"op":"events","session_id":"live","adapter":"memory"}`, "invalid_request"},
@@ -280,6 +279,11 @@ func TestEventsOpRefusals(t *testing.T) {
 				t.Fatalf("code %q, want %q (%s)", response.Error.Code, testCase.code, response.Error.Message)
 			}
 		})
+	}
+	f.send(`{"id":6,"op":"events","session_id":"gone"}`)
+	released := f.decodeResponse(f.line())
+	if released.OK || released.Error.Code != "unknown_session" {
+		t.Fatalf("a released session answered %+v, want unknown_session: the hub cannot tell it from one that never existed", released.Error)
 	}
 	if err := f.finish(); err != nil {
 		t.Fatal(err)

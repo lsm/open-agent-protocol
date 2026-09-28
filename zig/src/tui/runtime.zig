@@ -309,6 +309,7 @@ pub const TuiRuntime = struct {
                 .cancel = sessionCancel,
                 .submit_turn = sessionSubmitTurn,
                 .steer = sessionSteer,
+                .follow_up = sessionFollowUp,
                 .clear_queued_messages = sessionClearQueuedMessages,
                 .queued_counts = sessionQueuedCounts,
                 .steers_consumed = sessionSteersConsumed,
@@ -461,6 +462,17 @@ pub const TuiRuntime = struct {
         var queued = false;
         errdefer if (!queued) msg.deinit(self.allocator);
         try local.steer(msg);
+        queued = true;
+        try self.resumeQueuedMessagesIfIdle();
+    }
+
+    pub fn followUp(self: *TuiRuntime, text: []const u8) !void {
+        if (!self.started) return error.RuntimeNotStarted;
+        const local = &(self.local_agent orelse return error.RuntimeNotStarted);
+        var msg = try self.makeUserMessage(text);
+        var queued = false;
+        errdefer if (!queued) msg.deinit(self.allocator);
+        try local.followUp(msg);
         queued = true;
         try self.resumeQueuedMessagesIfIdle();
     }
@@ -1176,6 +1188,11 @@ fn sessionSubmitTurn(ctx: ?*anyopaque, text: []const u8) anyerror!void {
 fn sessionSteer(ctx: ?*anyopaque, text: []const u8) anyerror!void {
     const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
     try self.steer(text);
+}
+
+fn sessionFollowUp(ctx: ?*anyopaque, text: []const u8) anyerror!void {
+    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    try self.followUp(text);
 }
 
 fn sessionClearQueuedMessages(ctx: ?*anyopaque) void {
@@ -1933,6 +1950,42 @@ test "runtime active steering continues after plain assistant stop" {
         }
     }
     try std.testing.expect(saw_steering_user);
+}
+
+test "runtime follow-up runs once the turn stops and is not tagged as steering" {
+    var mock = MockProtocolCtx{ .wait_before_text_first = true };
+    const models = [_]ai_types.Model{test_model_a};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
+    defer runtime.deinit();
+
+    var tui_session = runtime.createSession();
+    try tui_session.start();
+    try tui_session.submitTurn("first");
+    try tui_session.followUp("queued follow-up");
+
+    if (runtime.local_agent) |*local| local.waitForIdle();
+
+    try std.testing.expectEqual(@as(usize, 2), mock.call_count);
+    try std.testing.expectEqual(@as(usize, 0), tui_session.queuedCounts().follow_up);
+    try std.testing.expectEqual(@as(u64, 0), runtime.steersConsumedCount());
+
+    var follow_up_ends: usize = 0;
+    var follow_up_tagged = false;
+    while (tui_session.popEvent()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        switch (ev) {
+            .message_end => |payload| {
+                if (payload.role == .user and std.mem.eql(u8, payload.text.slice(), "queued follow-up")) {
+                    follow_up_ends += 1;
+                    follow_up_tagged = follow_up_tagged or payload.steering;
+                }
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), follow_up_ends);
+    try std.testing.expect(!follow_up_tagged);
 }
 
 test "runtime tags consumed steer message_end with steering provenance" {

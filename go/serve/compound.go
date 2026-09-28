@@ -78,7 +78,7 @@ func OpenCompound(ctx context.Context, hub *Hub, name string, open base.OpenRequ
 
 func Rollback(ctx context.Context, hub *Hub, entry *Session) error {
 	err := entry.Close(ctx)
-	hub.sessions.remove(entry.ID())
+	hub.sessions.remove(entry.ID(), entry)
 	return err
 }
 

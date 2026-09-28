@@ -7,7 +7,6 @@ const tui_render = @import("tui_render");
 
 pub const Options = struct {
     width: usize = 80,
-    anim_tick: u64 = 0,
 };
 
 const cursor_blank = " ";
@@ -19,14 +18,13 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
     const inner_width = options.width -| 4;
     const input = try renderInput(allocator, state, inner_width);
     defer allocator.free(input);
-    const border = borderColor(state, options.anim_tick);
+    const border = borderColor(state);
     return tui_theme.panelWith(border).width(@intCast(@min(inner_width, std.math.maxInt(u16)))).render(allocator, input);
 }
 
-pub fn borderColor(state: *const tui_state.AppState, anim_tick: u64) zz.Color {
+pub fn borderColor(state: *const tui_state.AppState) zz.Color {
     if (state.mode == .approval) return tui_theme.palette.warning;
     if (state.mode == .login_input) return tui_theme.palette.thinking;
-    if (state.status.streaming) return tui_theme.pulseColor(anim_tick);
     if (state.composer.text().len > 0) return tui_theme.palette.accent;
     return tui_theme.palette.panel_border;
 }
@@ -37,17 +35,18 @@ pub fn hintText(allocator: std.mem.Allocator, state: *const tui_state.AppState) 
     switch (state.mode) {
         .approval => return allocator.dupe(u8, "y allow · a always · n deny · esc abort"),
         .login_input => return std.fmt.allocPrint(allocator, "{s} submit · esc cancel", .{k.enter}),
-        .picker, .session_picker => return std.fmt.allocPrint(allocator, "{s} move · {s} select · esc close", .{ k.up_down, k.enter }),
+        .picker => return std.fmt.allocPrint(allocator, "type to filter · {s} move · {s} select · esc close", .{ k.up_down, k.enter }),
+        .session_picker => return std.fmt.allocPrint(allocator, "{s} move · {s} select · esc close", .{ k.up_down, k.enter }),
         .normal => {},
     }
+    if (std.mem.startsWith(u8, text, "/")) return std.fmt.allocPrint(allocator, "{s} select · {s} complete · {s} run · esc clear", .{ k.up_down, k.tab, k.enter });
     if (state.status.streaming) {
         const queued = state.queue.total();
-        if (queued > 0) return std.fmt.allocPrint(allocator, "{s} steer · queued {d} · esc abort", .{ k.enter, queued });
-        return std.fmt.allocPrint(allocator, "{s} steer · esc abort", .{k.enter});
+        if (queued > 0) return std.fmt.allocPrint(allocator, "{s} steer · {s} queue · queued {d} · esc abort", .{ k.enter, k.tab, queued });
+        return std.fmt.allocPrint(allocator, "{s} steer · {s} queue · esc abort", .{ k.enter, k.tab });
     }
     if (std.mem.startsWith(u8, text, "!")) return std.fmt.allocPrint(allocator, "shell mode · {s} runs the command through the agent", .{k.enter});
     if (std.mem.startsWith(u8, text, "@")) return allocator.dupe(u8, "file picker · type a path or query");
-    if (std.mem.startsWith(u8, text, "/")) return std.fmt.allocPrint(allocator, "{s} complete · {s} run · esc clear", .{ k.tab, k.enter });
     if (state.composer.history.items.len > 0) {
         return std.fmt.allocPrint(allocator, "{s} history · {s}{s} newline · / commands", .{ k.up_down, k.shift, k.enter });
     }
@@ -94,8 +93,8 @@ fn placeholderFor(allocator: std.mem.Allocator, state: *const tui_state.AppState
     }
     if (state.status.streaming) {
         const queued = state.queue.total();
-        if (queued > 0) return std.fmt.allocPrint(allocator, "{d} queued · type to steer more…", .{queued});
-        return allocator.dupe(u8, "type to steer the running turn…");
+        if (queued > 0) return std.fmt.allocPrint(allocator, "{d} queued · type to steer or queue more…", .{queued});
+        return std.fmt.allocPrint(allocator, "type to steer the running turn · {s} queues a follow-up…", .{tui_theme.key.tab});
     }
     return allocator.dupe(u8, placeholder_text);
 }
@@ -253,9 +252,17 @@ test "composer hint follows the interaction state" {
     state.queue.steering = 2;
     const streaming = try hintText(std.testing.allocator, &state);
     defer std.testing.allocator.free(streaming);
-    try std.testing.expect(std.mem.indexOf(u8, streaming, "steer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, streaming, tui_theme.key.enter ++ " steer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, streaming, tui_theme.key.tab ++ " queue") != null);
     try std.testing.expect(std.mem.indexOf(u8, streaming, "queued 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, streaming, "Alt+Enter") == null);
+
+    try state.replaceComposerBuffer("/ab");
+    const streaming_slash = try hintText(std.testing.allocator, &state);
+    defer std.testing.allocator.free(streaming_slash);
+    try std.testing.expect(std.mem.indexOf(u8, streaming_slash, tui_theme.key.tab ++ " complete") != null);
+    try std.testing.expect(std.mem.indexOf(u8, streaming_slash, "queue") == null);
+    state.composer.clear();
     state.status.streaming = false;
     state.queue.steering = 0;
 
@@ -272,7 +279,18 @@ test "composer hint follows the interaction state" {
     try state.replaceComposerBuffer("/mo");
     const slash = try hintText(std.testing.allocator, &state);
     defer std.testing.allocator.free(slash);
+    try std.testing.expect(std.mem.indexOf(u8, slash, tui_theme.key.up_down ++ " select") != null);
     try std.testing.expect(std.mem.indexOf(u8, slash, "complete") != null);
+
+    state.mode = .picker;
+    const picker = try hintText(std.testing.allocator, &state);
+    defer std.testing.allocator.free(picker);
+    try std.testing.expect(std.mem.indexOf(u8, picker, "type to filter") != null);
+
+    state.mode = .session_picker;
+    const sessions = try hintText(std.testing.allocator, &state);
+    defer std.testing.allocator.free(sessions);
+    try std.testing.expect(std.mem.indexOf(u8, sessions, "filter") == null);
 
     state.mode = .approval;
     const approval = try hintText(std.testing.allocator, &state);
@@ -288,13 +306,13 @@ test "streaming placeholder carries the queued count at any width" {
     state.status.streaming = true;
     const steering = try placeholderFor(std.testing.allocator, &state);
     defer std.testing.allocator.free(steering);
-    try std.testing.expectEqualStrings("type to steer the running turn…", steering);
+    try std.testing.expectEqualStrings("type to steer the running turn · " ++ tui_theme.key.tab ++ " queues a follow-up…", steering);
 
     state.queue.steering = 1;
     const queued = try placeholderFor(std.testing.allocator, &state);
     defer std.testing.allocator.free(queued);
     try std.testing.expect(std.mem.indexOf(u8, queued, "1 queued") != null);
-    try std.testing.expect(std.mem.indexOf(u8, queued, "steer more") != null);
+    try std.testing.expect(std.mem.indexOf(u8, queued, "steer or queue more") != null);
 
     const rendered = try render(std.testing.allocator, &state, .{ .width = 30 });
     defer std.testing.allocator.free(rendered);
@@ -311,17 +329,26 @@ test "streaming placeholder carries the queued count at any width" {
     try std.testing.expect(std.mem.indexOf(u8, approval_rendered, "1 queued") != null);
 }
 
-test "composer border reflects mode and streaming state" {
+test "composer border follows the mode and the draft but holds still while streaming" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
-    try std.testing.expect(std.meta.eql(borderColor(&state, 0), tui_theme.palette.panel_border));
+    try std.testing.expect(std.meta.eql(borderColor(&state), tui_theme.palette.panel_border));
     try state.replaceComposerBuffer("draft");
-    try std.testing.expect(std.meta.eql(borderColor(&state, 0), tui_theme.palette.accent));
+    try std.testing.expect(std.meta.eql(borderColor(&state), tui_theme.palette.accent));
     state.mode = .approval;
-    try std.testing.expect(std.meta.eql(borderColor(&state, 0), tui_theme.palette.warning));
+    try std.testing.expect(std.meta.eql(borderColor(&state), tui_theme.palette.warning));
     state.mode = .normal;
     state.status.streaming = true;
-    try std.testing.expect(std.meta.eql(borderColor(&state, 0), tui_theme.pulseColor(0)));
+    try std.testing.expect(std.meta.eql(borderColor(&state), tui_theme.palette.accent));
+    state.composer.clear();
+    try std.testing.expect(std.meta.eql(borderColor(&state), tui_theme.palette.panel_border));
+
+    const first = try render(std.testing.allocator, &state, .{ .width = 40 });
+    defer std.testing.allocator.free(first);
+    state.anim_tick += 7;
+    const later = try render(std.testing.allocator, &state, .{ .width = 40 });
+    defer std.testing.allocator.free(later);
+    try std.testing.expectEqualStrings(first, later);
 }
 
 test "composer renders multiline draft content" {

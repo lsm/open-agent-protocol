@@ -330,6 +330,7 @@ pub const TuiSessionOps = struct {
     cancel: *const fn (ctx: ?*anyopaque) void = undefined,
     submit_turn: *const fn (ctx: ?*anyopaque, text: []const u8) anyerror!void = undefined,
     steer: *const fn (ctx: ?*anyopaque, text: []const u8) anyerror!void = undefined,
+    follow_up: *const fn (ctx: ?*anyopaque, text: []const u8) anyerror!void = undefined,
     clear_queued_messages: *const fn (ctx: ?*anyopaque) void = undefined,
     queued_counts: *const fn (ctx: ?*anyopaque) QueuedCounts = undefined,
     steers_consumed: *const fn (ctx: ?*anyopaque) u64 = undefined,
@@ -367,6 +368,10 @@ pub const TuiSession = struct {
 
     pub fn steer(self: *TuiSession, text: []const u8) !void {
         try self.ops.steer(self.ctx, text);
+    }
+
+    pub fn followUp(self: *TuiSession, text: []const u8) !void {
+        try self.ops.follow_up(self.ctx, text);
     }
 
     pub fn clearQueuedMessages(self: *TuiSession) void {
