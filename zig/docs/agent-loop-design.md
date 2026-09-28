@@ -299,7 +299,7 @@ pub const AgentLoopConfig = struct {
     cancel_token: ?ai_types.CancelToken = null,
 
     // Agent-specific options
-    max_iterations: ?u32 = null, // Max tool use iterations
+    max_iterations: ?u32 = null, // Model turns before the run stops; null means no limit
     session_id: ?[]const u8 = null,
     thinking_budgets: ?ai_types.ThinkingBudgets = null,
     max_retry_delay_ms: ?u32 = 60_000,
@@ -462,10 +462,13 @@ pub fn agentLoopContinue(
           - Call protocol.stream()
           - Forward AssistantMessageEvents as message_update events
           - Emit message_start on first event, message_end on done
-      iii. Check stop_reason:
+      iii. Check the reply, not only its stop_reason:
            - error/aborted: exit both loops
-           - tool_use: execute tools
-           - stop: continue to outer loop
+           - content_filter, or no tool calls in the reply: continue to outer loop
+           - tool calls in the reply, whatever else it reports: execute tools
+           - after a length stop, answer each tool call with an error instead
+             of running it, since its arguments may be cut off; a fourth
+             length stop with tool calls in a row ends the run instead
       iv. If tool calls:
           - For each tool call (sequential):
             a. Emit tool_execution_start
