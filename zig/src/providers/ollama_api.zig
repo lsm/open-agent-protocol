@@ -90,7 +90,7 @@ test "the ollama request url drops a trailing slash and keeps a suffix already p
         .{ .base = "http://localhost:11434/api/chat/", .want = "http://localhost:11434/api/chat" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire, false);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
@@ -564,7 +564,7 @@ fn runThread(ctx: *ThreadCtx) void {
     var client = compat.http.HttpClient.init(allocator);
     defer client.deinit();
 
-    const url = provider_catalog.joinUrlOwned(allocator, base_url, request_wire) catch {
+    const url = provider_catalog.joinUrlOwned(allocator, base_url, request_wire, false) catch {
         ctx.deinit();
         stream.completeWithError("oom url");
         return;

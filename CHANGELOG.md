@@ -59,12 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays a literal because no wire defines a models path.
   The 14 endpoints that deduplicate today carry `carries_version: true`: the ten
   whose base ends in `/v1` — OpenRouter, OpenCode Zen, Alibaba's, MiniMax's, the
-  three Xiaomi plans and Xiaomi, Vercel and ZenMux — and the four whose version is
-  not the last segment, Z.AI's `/paas/v4`, Tencent's and Volcengine's
-  `/coding/v3`, and Deep Infra's `/v1/openai`. The other 8 say nothing, which
-  means the wire's full path is appended. Absent means absent: no endpoint is
-  asked to repeat a default, so adding a wire with a versioned path needs no
-  catalog edit.
+  three Xiaomi plans and Xiaomi, Vercel and ZenMux — plus three that end in a
+  version other than `v1`, Z.AI's `/paas/v4` and Tencent's and Volcengine's
+  `/coding/v3`, and Deep Infra's `/v1/openai`, where the version is not the last
+  segment. The other 8 say nothing, which means the wire's full path is appended.
+  Absent means absent: no endpoint is asked to repeat a default, so adding a
+  wire with a versioned path needs no catalog edit.
   Two loaders carry the member, `Endpoint.CarriesVersion` in `go/providercatalog`
   and the generated `Endpoint.carries_version` in the Zig tree, and two refuse it
   where the fact cannot mean anything: `goap check` reports
@@ -73,10 +73,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ollama` or `google-generative-ai`, whose wires append no leading `/v1`. Those
   two hold the generator's own list of versioned wires, so a Zig test re-checks
   every recorded fact against `wire_paths` as well: a fact the generator let
-  through is still caught where the wire table lives.
-  Nothing reads the fact yet. One test per tree asserts it equals the inference it
-  replaces, so the 14 are recorded before the inference goes, and both are
-  deleted when it does.
+  through is still caught where the wire table lives. Nothing moves a URL —
+  `providers/resolved_urls.json` regenerates byte-identical.
+  At request time the fact reaches the join as `Model.carries_version: ?bool`,
+  null meaning not stated, and a null resolves with one exact lookup of provider
+  plus base URL against the catalog's endpoints, both sides trimmed the way the
+  join trims. Nothing sets the field: the catalog loader, the Kimi, Anthropic,
+  Codex and Copilot special cases, custom providers and every static model on
+  the provider server all pin a base, and none of them can get the fact wrong,
+  and neither wire carries a member — so the agent protocol's model keeps its
+  deduplication through a decoder that was never taught a new field. A base that
+  is not a catalog endpoint's resolves false, so an override never inherits the
+  vendor's fact, and only `providers.json` states one.
+  Two things change for a user. A custom base or a `*_BASE_URL` whose version is
+  not trailing — `…/paas/v4`, `…/v1/openai` — now gets the wire's full path
+  appended where it used to be deduplicated; the remedy is in
+  `docs/custom-endpoints.md`, and it is `providers.json` with `carries_version`,
+  because an environment variable cannot state a fact about a path. And a models
+  listing under an override is built the way its request is, so a
+  carries-version endpoint's listing gains the version its request gains:
+  `OAPX_BASE_URL=https://proxy.example` sends opencode to `…/v1/models` and
+  `…/v1/chat/completions` rather than one of each.
+  A base that ends in `/v1` and states nothing is unchanged, and that is the
+  documented convention rather than the guess this removes: a base the catalog
+  does not hold resolves from a trailing `/v1` alone, so an override naming
+  `https://proxy.example/v1` and a provider-protocol client sending
+  `http://host:8000/v1` both still reach `/v1/chat/completions`. Only a *stated*
+  fact skips that convention, and stating it also turns the read-time strip off
+  in `providers.json`, so the strip and the join cannot both drop the same
+  version. What is gone is the wider guess — a version segment anywhere in the
+  path, `…/v4`, `…/v1/openai` — which is what mis-served a proxy under the
+  vendor's own path shape.
+  `Wire.dedup_version` and the version-segment scan are gone from both trees.
+  `copilot_wire` keeps its suffix and loses only the flag, which had never done
+  anything: its path is `/chat/completions`, with no leading `/v1` to drop.
 
 - The TUI composer grows with the draft up to `min(12, height/3)` content rows
   instead of windowing a long draft with `…`; past that the window follows the cursor

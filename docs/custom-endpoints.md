@@ -50,6 +50,7 @@ the built-in ones.
 | `models` | no | Allowlist and fallback list; strings, or objects with `id`, `name`, `context_window`, `max_tokens`. |
 | `capabilities` | no | Overrides for what the endpoint supports; see below. |
 | `reasoning` | no | Whether models expose reasoning. Default `false`. |
+| `carries_version` | no | `true` when `base_url` already contains the API version, so the request path is the wire's path without its leading `/v1`. Absent means the wire's full path is appended. This is the only place a user states the fact; see Base URLs below. |
 | `context_window`, `max_tokens` | no | Defaults for models that do not state their own. Default 128000 and 8192. |
 
 A malformed entry fails the whole file rather than being skipped, so a typo
@@ -75,6 +76,35 @@ these reach `https://api.groq.com/openai/v1/chat/completions`:
 Without that normalisation the first form would produce `/v1/v1/chat/completions`
 and a 404: the builder drops a version segment only on the wires whose descriptor
 says it does, and stripping at read time is what covers the rest.
+
+That trailing-`/v1` strip is the whole of the rule, and it is deliberately
+narrow: it handles `/v1` at the end and nothing else. A version that is **not**
+trailing — Z.AI's `/api/coding/paas/v4`, Deep Infra's `/v1/openai` — is left
+alone, and the wire appends its full path, so a base like that now reaches
+`/v4/v1/chat/completions` where it used to reach `/v4/chat/completions`. Say so
+with `carries_version`, which is the only way to state it:
+
+```
+"base_url": "https://api.z.ai/api/coding/paas/v4",
+"carries_version": true
+```
+
+Stating it also turns the strip off, so the two cannot both fire and delete the
+version between them. With `carries_version` set, `base_url` is used as written
+and the wire appends only its tail; without it, a trailing `/v1` is stripped as
+above. So write the base the way the vendor documents it and state the fact only
+when the version is not trailing.
+
+This is the one place a user can state the fact, and an environment variable
+cannot: a `*_BASE_URL` override is a bare string, so a base it names that ends in
+something other than `/v1` has no way to say so. Use `providers.json` for an
+endpoint whose version is not trailing.
+
+A catalogued row is not affected. `providers/catalog.json` records
+`carries_version` per endpoint, and a discovered model resolves its path from
+that, so the fourteen catalogued bases keep the URLs they had. Only a base the
+user names — a custom entry, an override, or one a provider-protocol client sends
+— reaches the rule above.
 
 A trailing `/` is ignored too, on every wire, so all three of these reach the same
 URL:
