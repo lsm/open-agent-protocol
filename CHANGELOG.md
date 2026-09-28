@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **The CI fixture auth provider is served only when a test asks for it by
+  name.** `oapx auth providers` returns the catalog's rows and nothing else
+  unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running
+  the binary is no longer offered a row called `Test Fixture (CI)` that cannot
+  log in against anything. `1` and `true` opt in; `0`, an empty value, any other
+  string, and a variable that is merely similar in name do not.
+  The gate covers the **login** as well as the listing, which the first cut of
+  this did not: the fixture's flow was hardcoded into the auth server and never
+  consulted the provider table, so `oapx auth login --provider test-fixture`
+  still started the fixture's prompt with the variable unset. It now answers
+  `UnknownProvider`, and the opt-in is visible in every call site rather than
+  hidden in a list.
+  The SDKs' real-binary tests set the variable where they log into the fixture —
+  the Rust suite through a new `real_builder_with_fixture` beside the existing
+  `real_builder`, so a test that wants a plain user keeps exercising what a plain
+  user sees. **A test that asked for the fixture and did not get it now fails.**
+  That is the point of the change: in #486 the fixture was removed from the
+  served list and `sdk/go/binary_smoke_test.go:185` *skipped*, so the loss of
+  coverage looked like a pass. A skip is only acceptable for a precondition the
+  test did not choose; here the test chose it, so its absence is a failure.
+  The Rust and TypeScript suites each gained the other half — a test that asks
+  for nothing and asserts the fixture is *not* offered — so the default is
+  pinned from the consumer's side as well as the runtime's. Python's real-binary
+  test iterates whatever providers it is given and never named the fixture, so
+  it needs no variable and loses nothing.
+  The Go suite lands with the others now that #492 has moved it: its
+  `requireFixtureAuthProvider` is a `t.Fatalf` rather than a skip, and
+  `TestSmokeAuthListProviders` asserts the row too, so "asked and got it" is a
+  claim in Go as well as in Rust. Each SDK that names the fixture sets the
+  variable, and each was found by running the suite rather than by reading it —
+  the TypeScript demo test drives the login through the demo server, which
+  spawns the runtime with its own environment, so the variable had to go in
+  *that* spawn rather than in the test process.
+  The decision is recorded on #354, where the owner chose this shape over
+  serving the row always or removing it and changing what four SDKs assert.
+- **The fixture opt-in is read portably.** The gate read the environment
+  through a POSIX-only accessor, so `zig build -Dtarget=x86_64-windows` and
+  `aarch64-windows` failed to compile — caught by CI's cross-compile matrix,
+  and by running the same two targets locally before pushing the fix. The read
+  goes through the same cross-platform path the rest of the tree uses, taking
+  the environment as a value, which is also what lets a test drive it with a
+  literal rather than by mutating the process.
+
 ### Added
 - **Nothing a user reads suggests installing `goap` any more.** Every run instruction now goes through `go run ./go/cmd/goap` — the README's `hub`, `hub --stdio`, `validate` and `conformance` examples, its `fixtures/packs/` line, `examples/README.md`'s pack invocation and `docs/go-library.md`'s check-you-work line, and the eight runnable-looking commands in `docs/oap-system-map.html` — an orphan page nothing links to, which is how it drifted, and which I swept rather than deleted, because whether it should exist is the owner's call — and the daemon section says up front that `goap` is this repository's own command, run with `go run`, and what the released `oapx hub` carries today (the stdio transport; `unavailable` for `--addr` and `--config`, naming which). `drafts/cli.md` no longer frames two binaries: its title is *One Verb Set*, it states Decision 0038 inline in the decision's own words — one released binary, and a library for every language — and the `goap` column is labelled *repository tool* and records what the Go tree carries so the trees can be compared, rather than presenting a second product. `CLAUDE.md` says the Go command is internal to the repository.
 
