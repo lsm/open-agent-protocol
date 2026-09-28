@@ -21,8 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **The gate is opt-in twice over, and neither opt-in is a credential.** A
   credential's presence alone does not run it, which is the rule the harness
   gates keep and which the existing provider E2E tests do *not* keep — they skip
-  on the key and nothing else, so a developer with `DEEPSEEK_API_KEY` exported
-  runs them by accident. This one reads no key until `OAP_PROVIDER_SMOKE` names a
+  on the key and nothing else, so a developer with `OPENAI_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN` exported runs them by accident. This one reads no key
+  until `OAP_PROVIDER_SMOKE` names a
   row it knows, and it refuses outright when `CI` is set, so a misconfigured
   runner cannot start spending a key. Both properties are exercised by running
   the step with a key exported and no opt-in, and again with the opt-in under
