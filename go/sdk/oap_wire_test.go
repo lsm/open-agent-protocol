@@ -264,7 +264,7 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 		t.Fatalf("expected typed agent auth failure, got %v", err)
 	}
 	providers, err := client.Auth.ListProviders(ctx)
-	if err != nil || len(providers) != 1 {
+	if err != nil || len(providers) != 3 {
 		t.Fatalf("auth providers: %v, %+v", err, providers)
 	}
 	var events []AuthEventType
