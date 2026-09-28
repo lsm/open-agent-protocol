@@ -23,7 +23,7 @@ from oap_sdk.types import (
 PROVIDERS = [
     {"id": "anthropic", "name": "Anthropic", "auth_kinds": ["api_key", "oauth"], "auth_status": "login_required"},
     {"id": "openai", "name": "OpenAI", "auth_kinds": ["api_key"], "auth_status": "authenticated"},
-    {"id": "weird", "name": "Weird", "auth_kinds": ["passkey"], "auth_status": "not-a-real-status"},
+    {"id": "weird", "name": "Weird", "auth_kinds": ["api_key", "passkey"], "auth_status": "not-a-real-status"},
     {"id": "broken", "name": "Broken", "auth_status": "failed", "last_error": "boom"},
 ]
 
@@ -47,8 +47,8 @@ async def test_list_providers(fake: FakeServerFactory) -> None:
     # The kinds come through in the catalog's order, not a reordering.
     assert providers[0].auth_kinds == ("api_key", "oauth")
     assert providers[1].auth_kinds == ("api_key",)
-    # A kind this build does not know is dropped, and the known ones survive.
-    assert providers[2].auth_kinds == ()
+    # A kind this build does not know is dropped; the known ones survive beside it.
+    assert providers[2].auth_kinds == ("api_key",)
     # No list at all is a runtime predating the field, which reads as empty.
     assert providers[3].auth_kinds == ()
 
