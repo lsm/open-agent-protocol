@@ -77,10 +77,14 @@ the fixture, not to the backend test.
 - **It is not the harness's coverage.** A harness whose adapter agrees with
   the other adapter may still be driven wrongly; the corpora record the real
   wire and the per-adapter tests drive the adapter.
-- **It is not a race detector.** The exchange is one deterministic script per
-  fixture. A divergence that only appears under concurrency belongs in a test
-  that can schedule it, and #475's ordering work found those by reading the
-  diff, not by running this job.
+- **It is not a race detector** — one deterministic script per fixture, run
+  once, cannot schedule a race. But a parity flake that *recurs* is race
+  evidence, and this repository's own history is the proof rather than the
+  counterexample: `pi`'s cancel divergence was found by running this job (the
+  scenario's flake, recorded five times on #10, became #463), and #475's
+  ordering divergence surfaced the moment the comparison ran with the sort
+  removed. A test that can schedule the race is where it gets fixed; finding it
+  is what this job is for. `pi-parity-repeat` is the same instinct in CI.
 
 ## Running it
 
