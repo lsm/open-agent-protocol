@@ -135,13 +135,13 @@ fn declares(parameters: []const []const u8, parameter: []const u8) bool {
 fn member(root: std.json.ObjectMap, name: []const u8) ?std.json.Value {
     return root.get(name);
 }
-
 fn refusalWith(
+    arena: std.mem.Allocator,
     code: []const u8,
     message: []const u8,
     details: []const oap_types.DetailEntry,
-) Refusal {
-    return Refusal{ .code = code, .message = message, .details = details };
+) std.mem.Allocator.Error!Refusal {
+    return Refusal{ .code = code, .message = message, .details = try arena.dupe(oap_types.DetailEntry, details) };
 }
 
 fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
@@ -461,7 +461,7 @@ pub const Frontend = struct {
             .session_id = session_id,
             .allow_degraded_features = degraded,
         }) catch |err| {
-            return .{ .refused = try self.catalogRefusal(arena, err, session_id) };
+            return .{ .refused = try self.catalogRefusal(arena, err, session_id, contract.feature_models_list, "internal") };
         };
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
@@ -482,7 +482,7 @@ pub const Frontend = struct {
             .session_id = session_id,
             .allow_degraded_features = degraded,
         }) catch |err| {
-            return .{ .refused = try self.catalogRefusal(arena, err, session_id orelse "") };
+            return .{ .refused = try self.catalogRefusal(arena, err, session_id orelse "", contract.feature_tools_list, "tools_failed") };
         };
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
@@ -505,30 +505,39 @@ pub const Frontend = struct {
         return .{ .answer = .{ .null = {} } };
     }
 
-    fn catalogRefusal(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
+    fn catalogRefusal(
+        self: *Frontend,
+        arena: std.mem.Allocator,
+        err: hubmod.Failure,
+        session_id: []const u8,
+        feature: []const u8,
+        fallback: []const u8,
+    ) !Refusal {
         _ = self;
         return switch (err) {
             error.UnknownSession => .{ .code = "unknown_session", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
             error.SessionClosed => .{ .code = "session_closed", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
             error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "no session \"{s}\"", .{session_id}) },
-            error.UnsupportedFeature => refusalWith( "unsupported_feature", @errorName(err), &.{
-                .{ .key = "feature", .value = contract.feature_models_list },
+            error.UnsupportedFeature, error.ToolCatalogUnavailable => try refusalWith(arena, "unsupported_feature", @errorName(err), &.{
+                .{ .key = "feature", .value = feature },
                 .{ .key = "reason", .value = contract.reason_unadvertised },
             }),
-            error.ToolCatalogUnavailable => refusalWith( "unsupported_feature", @errorName(err), &.{
-                .{ .key = "feature", .value = contract.feature_tools_list },
-                .{ .key = "reason", .value = contract.reason_unadvertised },
+            error.CapabilityDegraded => try refusalWith(arena, "capability_degraded", @errorName(err), &.{
+                .{ .key = "feature", .value = feature },
             }),
-            error.CapabilityDegraded => refusalWith( "capability_degraded", @errorName(err), &.{
-                .{ .key = "feature", .value = contract.feature_models_list },
-            }),
-            error.ModelNotFound => refusalWith( "model_not_found", @errorName(err), &.{}),
-            error.CatalogMisScoped => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "the catalog is scoped to another session", .{}) },
-            error.CatalogUnlabelled => .{ .code = "internal", .message = "the adapter served a catalog with no capability revision" },
+            error.ModelNotFound => try refusalWith(arena, "model_not_found", @errorName(err), &.{}),
+            // A mis-scoped catalog is the lister's error, not the caller's, so it
+            // takes the op's own fallback rather than `scope_mismatch`: Go's
+            // `modelsError` has no case for it and falls through to `internal`, and
+            // `toolsError` falls through to `tools_failed`. One shared mapping made
+            // the `models` op answer a code the draft does not list for it.
+            error.CatalogMisScoped => .{ .code = fallback, .message = "the adapter served a catalog scoped to another session" },
+            error.CatalogUnlabelled => .{ .code = fallback, .message = "the adapter served a catalog with no capability revision" },
             error.OutOfMemory => return error.OutOfMemory,
-            else => .{ .code = "tools_failed", .message = @errorName(err) },
+            else => .{ .code = fallback, .message = @errorName(err) },
         };
     }
+
 
     fn refusalFor(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
         _ = self;
@@ -1519,7 +1528,7 @@ test "a catalog refuses an unknown session, and names a parameter the op does no
     try testing.expectEqualStrings("no session \"\"", try harness.message());
 }
 
-test "a catalog the lister will not serve is unsupported_feature, with the feature named" {
+test "a catalog the lister serves with no revision is refused, not stamped" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1531,6 +1540,50 @@ test "a catalog the lister will not serve is unsupported_feature, with the featu
     try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"unlabelled\"}");
     try testing.expectEqualStrings("internal", try harness.code());
     try testing.expectEqualStrings("the adapter served a catalog with no capability revision", try harness.message());
+}
+
+test "the two catalog ops fall back to their own code, not a shared one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "unlabelled" });
+    reference_holder.lister_revision = "";
+    defer reference_holder.lister_revision = "reference-lister-v2";
+
+    // `tools` falls back to `tools_failed` and `models` to `internal`, because that
+    // is what Go's `toolsError` and `modelsError` do. One shared mapping made the
+    // `models` operation answer a code the draft does not list for it, and the other
+    // way round would have been just as wrong.
+    try harness.send("{\"id\":1,\"op\":\"tools\",\"session_id\":\"unlabelled\"}");
+    try testing.expectEqualStrings("tools_failed", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"models\",\"session_id\":\"unlabelled\"}");
+    try testing.expectEqualStrings("internal", try harness.code());
+}
+
+test "an adapter with no lister is unsupported_feature, naming the feature each op asked for" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "bare" });
+    reference_holder.has_lister = false;
+    defer reference_holder.has_lister = true;
+
+    try harness.send("{\"id\":1,\"op\":\"models\",\"session_id\":\"bare\"}");
+    const models = try harness.lastValue();
+    const models_details = models.object.get("error").?.object.get("details").?;
+    try testing.expectEqualStrings("models.list", try textMember(harness.arena(), models_details, "feature"));
+    try testing.expectEqualStrings("unadvertised", try textMember(harness.arena(), models_details, "reason"));
+
+    // The `tools` op asked for `action.tools.list`, and naming `models.list` here
+    // would tell a host the wrong feature is missing.
+    try harness.send("{\"id\":2,\"op\":\"tools\",\"session_id\":\"bare\"}");
+    const tools = try harness.lastValue();
+    const tools_details = tools.object.get("error").?.object.get("details").?;
+    try testing.expectEqualStrings("action.tools.list", try textMember(harness.arena(), tools_details, "feature"));
 }
 
 test "a null parameter is supplied and refused, and a wrongly typed one is a defect" {
