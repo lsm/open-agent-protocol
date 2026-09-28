@@ -70,6 +70,7 @@ pub fn clearTestEnv() void {
 fn testEnvValue(name: []const u8) ?[]const u8 {
     const held = test_env orelse return null;
     return held.get(name);
+}
 
 pub fn getEnvVarOwnedFrom(environ: std.process.Environ, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     return std.process.Environ.getAlloc(environ, allocator, name);
