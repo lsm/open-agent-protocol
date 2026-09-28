@@ -89,6 +89,12 @@ with `carries_version`, which is the only way to state it:
 "carries_version": true
 ```
 
+Stating it also turns the strip off, so the two cannot both fire and delete the
+version between them. With `carries_version` set, `base_url` is used as written
+and the wire appends only its tail; without it, a trailing `/v1` is stripped as
+above. So write the base the way the vendor documents it and state the fact only
+when the version is not trailing.
+
 This is the one place a user can state the fact, and an environment variable
 cannot: a `*_BASE_URL` override is a bare string, so a base it names that ends in
 something other than `/v1` has no way to say so. Use `providers.json` for an
@@ -97,7 +103,8 @@ endpoint whose version is not trailing.
 A catalogued row is not affected. `providers/catalog.json` records
 `carries_version` per endpoint, and a discovered model resolves its path from
 that, so the fourteen catalogued bases keep the URLs they had. Only a base the
-user names — a custom entry, or an override — reaches the rule above.
+user names — a custom entry, an override, or one a provider-protocol client sends
+— reaches the rule above.
 
 A trailing `/` is ignored too, on every wire, so all three of these reach the same
 URL:

@@ -153,7 +153,11 @@ fn parseProvider(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
     try validateId(raw_id);
 
     const raw_base = objectString(obj, "base_url") orelse return ConfigError.MissingBaseUrl;
-    const base_trimmed = provider_base_url.normalizeVersionedBaseUrl(raw_base);
+    const stated_version = objectBool(obj, "carries_version");
+    const base_trimmed = if (stated_version orelse false)
+        std.mem.trimEnd(u8, raw_base, "/")
+    else
+        provider_base_url.normalizeVersionedBaseUrl(raw_base);
     if (base_trimmed.len == 0) return ConfigError.MissingBaseUrl;
     _ = std.Uri.parse(base_trimmed) catch return ConfigError.InvalidBaseUrl;
 
@@ -213,7 +217,7 @@ fn parseProvider(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
     }
 
     provider.reasoning = objectBool(obj, "reasoning") orelse false;
-    provider.carries_version = objectBool(obj, "carries_version");
+    provider.carries_version = stated_version;
     provider.context_window = objectU32(obj, "context_window") orelse 128_000;
     provider.max_tokens = objectU32(obj, "max_tokens") orelse 8_192;
     provider.compat = parseCapabilities(obj);
@@ -422,6 +426,27 @@ test "a declared carries_version is read and an absent one is not stated" {
     );
     defer deinitProviders(testing.allocator, denied);
     try testing.expectEqual(@as(?bool, false), denied[0].carries_version);
+}
+
+test "a stated carries_version keeps the read-time /v1 strip from deleting the version" {
+    const stated = try parse(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test/api/v1","carries_version":true}]}
+    );
+    defer deinitProviders(testing.allocator, stated);
+    try testing.expectEqualStrings("https://gw.test/api/v1", stated[0].base_url);
+    try testing.expectEqual(@as(?bool, true), stated[0].carries_version);
+
+    const unstated = try parse(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test/api/v1"}]}
+    );
+    defer deinitProviders(testing.allocator, unstated);
+    try testing.expectEqualStrings("https://gw.test/api", unstated[0].base_url);
+
+    const denied = try parse(testing.allocator,
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test/api/v1","carries_version":false}]}
+    );
+    defer deinitProviders(testing.allocator, denied);
+    try testing.expectEqualStrings("https://gw.test/api", denied[0].base_url);
 }
 
 fn objectBool(obj: *const std.json.ObjectMap, key: []const u8) ?bool {

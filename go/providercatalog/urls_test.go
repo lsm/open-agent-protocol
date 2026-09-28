@@ -8,6 +8,59 @@ import (
 	"github.com/lsm/open-agent-protocol/providers"
 )
 
+func TestABaseTheCatalogDoesNotHoldReadsTheTrailingV1AClientSupplies(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, base := range []string{"http://host:8000/v1", "https://proxy.example/v1/"} {
+		if !BaseCarriesTrailingVersion(base) {
+			t.Errorf("%q carries a trailing v1", base)
+		}
+		if !CarriesVersionFor(catalog, "gateway", base, nil) {
+			t.Errorf("%q resolves to no version without being stated", base)
+		}
+	}
+	for _, base := range []string{"https://proxy.example", "https://gw.test/api/coding/paas/v4", "https://api.deepinfra.com/v1/openai", ""} {
+		if BaseCarriesTrailingVersion(base) {
+			t.Errorf("%q carries a trailing v1", base)
+		}
+	}
+	denied := false
+	if CarriesVersionFor(catalog, "gateway", "http://host:8000/v1", &denied) {
+		t.Error("a stated false must win over the trailing v1")
+	}
+	if !CarriesVersionFor(catalog, "openrouter", "https://openrouter.ai/api/v1", nil) {
+		t.Error("a catalogued base resolves from its own endpoint")
+	}
+}
+
+func TestAListingAndARequestAgreeOnAVersionedBaseWithNoFact(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	path, ok := wirePaths["openai-completions"]
+	if !ok {
+		t.Fatal("the catalog holds no openai-completions wire")
+	}
+	const base = "http://host:8000/v1"
+	listing := ModelsURLForBase(base, "/models", false, true)
+	request := RequestURLForStatedBase(catalog, "gateway", base, nil, path)
+	if want := "http://host:8000/v1/chat/completions"; request != want {
+		t.Errorf("request = %q, want %q", request, want)
+	}
+	if !strings.HasPrefix(listing, "http://host:8000/v1/") {
+		t.Errorf("listing = %q, want it under the same version", listing)
+	}
+
+	stated := false
+	doubled := RequestURLForStatedBase(catalog, "gateway", base, &stated, path)
+	if want := "http://host:8000/v1/v1/chat/completions"; doubled != want {
+		t.Errorf("stated false request = %q, want %q", doubled, want)
+	}
+}
+
 func TestCarriesVersionReadsTheRowsOwnEndpointAndNothingElse(t *testing.T) {
 	catalog, err := Load(providers.Files)
 	if err != nil {

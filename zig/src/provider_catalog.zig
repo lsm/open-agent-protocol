@@ -174,7 +174,13 @@ pub fn endpointCarriesVersion(provider_id: []const u8, base_url: []const u8) boo
 
 pub fn carriesVersionFor(provider_id: []const u8, base_url: []const u8, stated: ?bool) bool {
     if (stated) |given| return given;
-    return endpointCarriesVersion(provider_id, base_url);
+    if (endpointCarriesVersion(provider_id, base_url)) return true;
+    return baseCarriesTrailingVersion(base_url);
+}
+
+pub fn baseCarriesTrailingVersion(base_url: []const u8) bool {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    return std.mem.endsWith(u8, trimmed, "/v1");
 }
 
 pub const UrlParts = struct {
@@ -520,7 +526,7 @@ test "an endpoint recorded as carrying the version holds one in its base, and on
     }
 }
 
-test "an unstated fact resolves from the row's own endpoint, and a base it does not hold is the full path" {
+test "an unstated fact resolves from the row's own endpoint, else from a trailing v1" {
     try std.testing.expect(carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", null));
     try std.testing.expect(!carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", false));
     try std.testing.expect(carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", true));
@@ -528,9 +534,8 @@ test "an unstated fact resolves from the row's own endpoint, and a base it does 
     try std.testing.expect(!carriesVersionFor("deepseek", "https://api.deepseek.com", null));
     try std.testing.expect(carriesVersionFor("deepseek", "https://api.deepseek.com", true));
 
-    try std.testing.expect(!carriesVersionFor("openrouter", "https://proxy.example/api/v1", null));
     try std.testing.expect(!carriesVersionFor("kimi", "https://api.kimi.com/coding", null));
-    try std.testing.expect(!carriesVersionFor("no-such-provider", "https://openrouter.ai/api/v1", null));
+    try std.testing.expect(!carriesVersionFor("no-such-provider", "https://api.openai.com", null));
 
     try std.testing.expect(endpointCarriesVersion("openrouter", "https://openrouter.ai/api/v1/"));
     try std.testing.expect(!endpointCarriesVersion("kimi", "https://api.kimi.com/coding"));
@@ -555,11 +560,27 @@ test "a wire drops its leading version only when the fact says the base has one"
     try std.testing.expectEqualStrings("https://proxy.example/api/chat", joinUrl("https://proxy.example", ollama, false));
 }
 
-test "an unstated fact appends the wire's full path even to a base ending in v1" {
+test "an unstated fact keeps the documented trailing v1 and appends the full path to anything else" {
     const completions = comptime wirePath("openai-completions").?;
     const messages = comptime wirePath("anthropic-messages").?;
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example/v1", completions, carriesVersionFor("gateway", "https://proxy.example/v1", null)));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/messages", joinUrl("https://proxy.example/v1", messages, carriesVersionFor("gateway", "https://proxy.example/v1", null)));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example", completions, carriesVersionFor("gateway", "https://proxy.example", null)));
+    try std.testing.expectEqualStrings("https://gw.test/api/coding/paas/v4/v1/chat/completions", joinUrl("https://gw.test/api/coding/paas/v4", completions, carriesVersionFor("gateway", "https://gw.test/api/coding/paas/v4", null)));
+    try std.testing.expectEqualStrings("https://gw.test/api/coding/paas/v4/chat/completions", joinUrl("https://gw.test/api/coding/paas/v4", completions, carriesVersionFor("gateway", "https://gw.test/api/coding/paas/v4", true)));
     try std.testing.expectEqualStrings("https://proxy.example/v1/v1/chat/completions", joinUrl("https://proxy.example/v1", completions, false));
-    try std.testing.expectEqualStrings("https://proxy.example/v1/v1/messages", joinUrl("https://proxy.example/v1", messages, false));
+}
+
+test "a base the catalog does not hold reads the trailing v1 a client or an override supplies" {
+    try std.testing.expect(baseCarriesTrailingVersion("http://host:8000/v1"));
+    try std.testing.expect(baseCarriesTrailingVersion("https://proxy.example/v1/"));
+    try std.testing.expect(!baseCarriesTrailingVersion("https://proxy.example"));
+    try std.testing.expect(!baseCarriesTrailingVersion("https://gw.test/api/coding/paas/v4"));
+    try std.testing.expect(!baseCarriesTrailingVersion("https://api.deepinfra.com/v1/openai"));
+    try std.testing.expect(!baseCarriesTrailingVersion(""));
+    try std.testing.expect(carriesVersionFor("gateway", "http://host:8000/v1", null));
+    try std.testing.expect(!carriesVersionFor("gateway", "http://host:8000/v1", false));
+    try std.testing.expect(carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", null));
 }
 
 test "a base that already ends with its wire's path is used whole, whatever the fact" {
@@ -802,16 +823,16 @@ fn joinProbeModel(provider_id: []const u8, base_url: []const u8, carries_version
     };
 }
 
-test "a model's unstated fact resolves from its own row, and a base the row does not hold is the full path" {
+test "a model's unstated fact resolves from its own row, and a wire-supplied base keeps its trailing v1" {
     const completions = comptime wirePath("openai-completions").?;
 
     const openrouter = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("openrouter", "https://openrouter.ai/api/v1", null), completions);
     defer std.testing.allocator.free(openrouter);
     try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", openrouter);
 
-    const proxied = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("openrouter", "https://proxy.example/api/v1", null), completions);
-    defer std.testing.allocator.free(proxied);
-    try std.testing.expectEqualStrings("https://proxy.example/api/v1/v1/chat/completions", proxied);
+    const supplied = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("gateway", "http://host:8000/v1", null), completions);
+    defer std.testing.allocator.free(supplied);
+    try std.testing.expectEqualStrings("http://host:8000/v1/chat/completions", supplied);
 
     const stated = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("openrouter", "https://proxy.example/api/v1", true), completions);
     defer std.testing.allocator.free(stated);

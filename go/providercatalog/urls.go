@@ -50,7 +50,14 @@ func CarriesVersionFor(catalog Catalog, id, baseURL string, stated *bool) bool {
 	if stated != nil {
 		return *stated
 	}
-	return CarriesVersion(catalog, id, baseURL)
+	if CarriesVersion(catalog, id, baseURL) {
+		return true
+	}
+	return BaseCarriesTrailingVersion(baseURL)
+}
+
+func BaseCarriesTrailingVersion(baseURL string) bool {
+	return strings.HasSuffix(strings.TrimRight(baseURL, "/"), "/v1")
 }
 
 func joinRequest(base string, path wirePath, carriesVersion bool) string {
@@ -128,6 +135,10 @@ func RequestURL(catalog Catalog, id, wire, region string) (string, bool) {
 
 func RequestURLForBase(baseURL string, path wirePath, carriesVersion bool) string {
 	return joinRequest(baseURL, path, carriesVersion)
+}
+
+func RequestURLForStatedBase(catalog Catalog, id, baseURL string, stated *bool, path wirePath) string {
+	return joinRequest(baseURL, path, CarriesVersionFor(catalog, id, baseURL, stated))
 }
 
 func Resolve(catalog Catalog) []Resolved {

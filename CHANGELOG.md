@@ -58,9 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listing under an override is built the way its request is, so a
   carries-version endpoint's listing gains the version its request gains:
   `OAPX_BASE_URL=https://proxy.example` sends opencode to `…/v1/models` and
-  `…/v1/chat/completions` rather than one of each. An unstated fact appends the
-  full path even to a base that happens to end in `/v1`, which is the guess
-  leaving rather than a new rule.
+  `…/v1/chat/completions` rather than one of each.
+  A base that ends in `/v1` and states nothing is unchanged, and that is the
+  documented convention rather than the guess this removes: a base the catalog
+  does not hold resolves from a trailing `/v1` alone, so an override naming
+  `https://proxy.example/v1` and a provider-protocol client sending
+  `http://host:8000/v1` both still reach `/v1/chat/completions`. Only a *stated*
+  fact skips that convention, and stating it also turns the read-time strip off
+  in `providers.json`, so the strip and the join cannot both drop the same
+  version. What is gone is the wider guess — a version segment anywhere in the
+  path, `…/v4`, `…/v1/openai` — which is what mis-served a proxy under the
+  vendor's own path shape.
   `Wire.dedup_version` and the version-segment scan are gone from both trees.
   `copilot_wire` keeps its suffix and loses only the flag, which had never done
   anything: its path is `/chat/completions`, with no leading `/v1` to drop.
