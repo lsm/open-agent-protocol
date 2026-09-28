@@ -93,6 +93,59 @@ func TestATornAppendIsDetectedAndNeverRead(t *testing.T) {
 	}
 }
 
+func TestATornTailIsTruncatedSoTheStoreKeepsWorking(t *testing.T) {
+	ctx := context.Background()
+	store := fileStoreIn(t)
+	path := store.(*fileStore).path
+	if err := store.Append(ctx, Opened(sample(), 1)); err != nil {
+		t.Fatal(err)
+	}
+	partial := append(readFile(t, store), []byte("3f1a9b2c {\"action\":\"opene")...)
+	if err := os.WriteFile(path, partial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Latest(ctx, "session-1"); !errors.Is(err, ErrTorn) {
+		t.Fatalf("latest err = %v, want the torn tail reported before it is repaired", err)
+	}
+	if err := store.Append(ctx, Reopened(sample(), "native-7", 2)); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.History(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history has %d entries, want the whole record and the one written after the repair", len(history))
+	}
+	if history[1].Action != ActionReopened {
+		t.Fatalf("the last entry is %q, want the reopen", history[1].Action)
+	}
+}
+
+func TestATornTailIsTruncatedWhenTheStoreIsOpenedAgain(t *testing.T) {
+	ctx := context.Background()
+	store := fileStoreIn(t)
+	path := store.(*fileStore).path
+	if err := store.Append(ctx, Opened(sample(), 1)); err != nil {
+		t.Fatal(err)
+	}
+	partial := append(readFile(t, store), []byte("3f1a9b2c {\"action\":\"clo")...)
+	if err := os.WriteFile(path, partial, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := reopened.History(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Action != ActionOpened {
+		t.Fatalf("history = %+v, want the whole record the file already held", history)
+	}
+}
+
 func TestARecordWhoseBytesDoNotMatchItsChecksumIsRefused(t *testing.T) {
 	ctx := context.Background()
 	store := fileStoreIn(t)

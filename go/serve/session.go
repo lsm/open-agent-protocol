@@ -69,8 +69,7 @@ type Session struct {
 	closed  bool
 	release func(*Session)
 
-	binding       binding.Record
-	bindingTimeMS int64
+	binding binding.Record
 
 	readers      int
 	reservations int

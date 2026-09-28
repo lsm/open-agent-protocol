@@ -2,6 +2,7 @@ package binding
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,7 +40,42 @@ func File(path string) (Store, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	return &fileStore{path: path}, nil
+	store := &fileStore{path: path}
+	if err := store.repair(); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *fileStore) repair() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.repairLocked()
+}
+
+func (s *fileStore) repairLocked() error {
+	info, err := os.Stat(s.path)
+	if err != nil || info.Size() == 0 {
+		return err
+	}
+	file, err := os.OpenFile(s.path, os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	tail := make([]byte, 1)
+	if _, err := file.ReadAt(tail, info.Size()-1); err != nil {
+		return err
+	}
+	if tail[0] == '\n' {
+		return nil
+	}
+	whole, err := os.ReadFile(s.path)
+	if err != nil {
+		return err
+	}
+	keep := bytes.LastIndexByte(whole, '\n') + 1
+	return file.Truncate(int64(keep))
 }
 
 func (s *fileStore) Append(_ context.Context, entry Entry) error {
@@ -49,6 +85,9 @@ func (s *fileStore) Append(_ context.Context, entry Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.repairLocked(); err != nil {
+		return err
+	}
 	file, err := os.OpenFile(s.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err

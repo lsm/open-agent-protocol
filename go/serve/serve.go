@@ -89,7 +89,6 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	})
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
 	entry.binding = opened
-	entry.bindingTimeMS = state.UpdatedAtMS
 	if err != nil || state.Status == protocol.SessionClosed {
 		entry.markClosed()
 	}
