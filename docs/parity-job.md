@@ -20,9 +20,10 @@ trees emit the same answer, in the same order, with the same refusals?**
 | an answer one tree refuses and the other admits | the content diff | — |
 | **the order of a run's events** | `runOrderDifference` within `TestBackendsMatchOapx`, since #475 | anything in the corpus or the unit tests |
 | a refusal's code, reason or detail that differs | the content diff | — |
+| **what each tree writes to the harness** | the child diff (`childLineDifference`) and, for `opencode`, the fake server's transcript | nothing — a tree can serve identical envelopes while driving its child differently, and only a second tree shows that |
 | a **settlement order** — which of two open interactions ends the run, and in what order the calls close | the ordered comparison, given a fixture that opens more than one. `memory` is the only fixture that opens two interactions, and it is not a harness | the corpora, which record one interaction at a time |
 
-Everything else a divergence can be is covered cheaper elsewhere, and the
+One row in that table cannot be placed by the rule below it, and the note says so rather than bending the rule: comparing what a tree writes to its harness needs two trees, so there is nowhere cheaper for it to live. Everything else a divergence can be is covered cheaper elsewhere, and the
 parity job is deliberately not where it is duplicated: the fixtures are the
 oracle for the wire, the corpora are the oracle for each harness, and the
 per-adapter tests are the oracle for each adapter's own error handling. If a
