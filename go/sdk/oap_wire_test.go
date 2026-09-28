@@ -8,9 +8,14 @@ import (
 )
 
 func oapFakeReply(request *frame, kind string, payload any) *frame {
-	reply := oapFrame(request.Profile, kind, payload)
+	reply := oapHostFrame(request.Profile, kind, payload)
 	reply.InReplyTo = request.ID
 	return reply
+}
+
+func oapHostFrame(profile, kind string, payload any) *frame {
+	return &frame{Protocol: oapProtocol, Version: oapVersion, Profile: profile,
+		Type: kind, ID: newULID(), Payload: mustMarshal(payload)}
 }
 
 func runOAPHost() {
@@ -44,7 +49,7 @@ func runOAPHost() {
 			response.InferenceID = "inference-1"
 			fakeEmit(response)
 			if request.payload().str("model_ref") == "fixture/other:test@parts" {
-				completed := oapFrame(oapProvider, "inference.completed", map[string]any{
+				completed := oapHostFrame(oapProvider, "inference.completed", map[string]any{
 					"message": map[string]any{"role": "assistant", "content": []map[string]any{
 						{"type": "text", "text": "before "},
 						{"type": "reasoning", "reasoning": "thought", "carry": "sig"},
@@ -57,7 +62,7 @@ func runOAPHost() {
 				continue
 			}
 			if request.payload().str("model_ref") == "fixture/other:test@auth-once" {
-				failure := oapFrame(oapProvider, "inference.failed", map[string]any{"error": map[string]any{
+				failure := oapHostFrame(oapProvider, "inference.failed", map[string]any{"error": map[string]any{
 					"code": "credential_missing", "message": "login required",
 				}})
 				failure.InferenceID = "inference-1"
@@ -73,7 +78,7 @@ func runOAPHost() {
 				{"inference.part.delta", map[string]any{"part_index": 0, "delta": "hello"}},
 				{"inference.completed", map[string]any{"message": map[string]any{"role": "assistant", "content": "hello"}, "stop_reason": "stop"}},
 			} {
-				event := oapFrame(oapProvider, item.kind, item.payload)
+				event := oapHostFrame(oapProvider, item.kind, item.payload)
 				event.InferenceID = "inference-1"
 				fakeEmit(event)
 			}
@@ -104,10 +109,10 @@ func runOAPHost() {
 			response.SessionID = sessionID
 			fakeEmit(response)
 			if selectedModel == "fixture/other:test@auth-once" {
-				started := oapFrame(oapAgent, "run.started", map[string]any{"session_id": sessionID, "run_id": "run-1", "model_id": selectedModel})
+				started := oapHostFrame(oapAgent, "run.started", map[string]any{"session_id": sessionID, "run_id": "run-1", "model_id": selectedModel})
 				started.SessionID, started.RunID = sessionID, "run-1"
 				fakeEmit(started)
-				failure := oapFrame(oapAgent, "run.failed", map[string]any{"session_id": sessionID, "run_id": "run-1", "error": map[string]any{
+				failure := oapHostFrame(oapAgent, "run.failed", map[string]any{"session_id": sessionID, "run_id": "run-1", "error": map[string]any{
 					"code": "credential_missing", "message": "login required",
 				}})
 				failure.SessionID, failure.RunID = sessionID, "run-1"
@@ -122,7 +127,7 @@ func runOAPHost() {
 				{"content.delta", map[string]any{"session_id": sessionID, "run_id": "run-1", "part": map[string]any{"type": "text", "text": "agent"}}},
 				{"run.completed", map[string]any{"session_id": sessionID, "run_id": "run-1", "final_response": map[string]any{"role": "assistant", "content": "agent"}, "model_id": "fixture/other:test@ok", "stop_reason": "stop"}},
 			} {
-				event := oapFrame(oapAgent, item.kind, item.payload)
+				event := oapHostFrame(oapAgent, item.kind, item.payload)
 				event.SessionID = sessionID
 				event.RunID = "run-1"
 				fakeEmit(event)
@@ -141,14 +146,14 @@ func runOAPHost() {
 				if providerID == "manual" && index == 1 {
 					eventPayload = map[string]any{"flow_id": "flow-1", "provider_id": providerID, "kind": "prompt", "prompt_id": "prompt-1", "message": "Enter code", "allow_empty": false}
 				}
-				event := oapFrame(oapAgent, "auth.login.event", eventPayload)
+				event := oapHostFrame(oapAgent, "auth.login.event", eventPayload)
 				event.Sequence = int64(index + 1)
 				fakeEmit(event)
 			}
 			if providerID == "manual" {
 				continue
 			}
-			terminal := oapFrame(oapAgent, "auth.login.completed", map[string]any{
+			terminal := oapHostFrame(oapAgent, "auth.login.completed", map[string]any{
 				"flow_id": "flow-1", "provider_id": "fixture", "status": "success",
 			})
 			terminal.Sequence = 3

@@ -168,8 +168,9 @@ func (s *ProviderStream) Close() error {
 			return s.err
 		}
 		if !s.finished && s.oapInferenceID != "" {
-			f := oapFrame(oapProvider, "inference.cancel.request", map[string]any{"reason": "caller_closed"})
-			f.InferenceID = s.oapInferenceID
+			f := &frame{Protocol: oapProtocol, Version: oapVersion, Profile: oapProvider,
+				Type: "inference.cancel.request", ID: newULID(), InferenceID: s.oapInferenceID,
+				Payload: mustMarshal(map[string]any{"reason": "caller_closed"})}
 			s.transport.sendBestEffort(f)
 		}
 		s.sub.close()
