@@ -40,17 +40,25 @@ ordered list drawn from `common.authKind` — `api_key`, `oauth`, `none`.
   one. Emptiness is therefore reserved: it can only mean "a runtime predating
   this field", never "this provider needs no credential", which is what `none`
   is for.
-- **Ordered by preference.** A provider that takes both lists `oauth` before
-  `api_key`, so a caller can take the first entry it can perform.
+- **Ordered as the catalog records it, and this decision does not set the
+  order.** The values come from each row's `auth` array and the runtime copies
+  that array verbatim, so the order is the catalog's and whatever the catalog
+  says today is what goes on the wire. Today no row lists `oauth` first —
+  `anthropic` is `["api_key", "oauth"]` and `ollama` is `["none", "api_key"]` —
+  which means a caller taking the first entry it can perform gets an API key
+  for Anthropic. That is a fact about the catalog, not a preference this
+  decision states, and a later step may reorder the catalog to say otherwise;
+  doing so needs no wire change, only a new reading of the same field.
 - **`none` is a real answer.** Ollama needs no credential, and a row that said so
   is more useful than one that omits itself.
-- **The SDKs tolerate its absence.** Rust, TypeScript, Go and Python read a
-  missing or unrecognised list as empty rather than failing the whole listing.
-  Decision 0029's own additive-only rule requires it: a new client must stay
-  usable against a runtime that has not shipped the field yet, and a listing of
-  twenty-four providers is worth more than a field. A caller that needs the
-  kinds can tell the two cases apart, because only an older runtime produces an
-  empty list.
+- **The SDKs tolerate what they do not recognise.** Rust, TypeScript, Go and
+  Python read a missing list as empty and drop kinds they do not have a name
+  for, rather than failing the whole listing. Decision 0029's own additive-only
+  rule requires it in both directions: a new client must stay usable against a
+  runtime that has not shipped the field, and against one that has shipped a
+  kind this build predates. A partly-new list is still useful, so what survives
+  is the entries that parse. A caller that needs the kinds can tell the two
+  cases apart, because only an older runtime produces a wholly empty list.
 
 The values come from the catalog's own `auth` array rather than a second list, so
 a row's kinds cannot disagree with the row's `auth_kinds` — the runtime reads

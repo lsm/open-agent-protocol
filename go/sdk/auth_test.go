@@ -29,9 +29,9 @@ func TestAuthListProviders(t *testing.T) {
 		t.Errorf("second provider status = %q", providers[1].Status)
 	}
 	if len(providers[0].AuthKinds) != 2 ||
-		providers[0].AuthKinds[0] != protocol.CredentialKindOAuth ||
-		providers[0].AuthKinds[1] != protocol.CredentialKindAPIKey {
-		t.Errorf("anthropic auth kinds = %v, want [oauth api_key]", providers[0].AuthKinds)
+		providers[0].AuthKinds[0] != protocol.CredentialKindAPIKey ||
+		providers[0].AuthKinds[1] != protocol.CredentialKindOAuth {
+		t.Errorf("anthropic auth kinds = %v, want [api_key oauth]", providers[0].AuthKinds)
 	}
 	if len(providers[1].AuthKinds) != 1 || providers[1].AuthKinds[0] != protocol.CredentialKindAPIKey {
 		t.Errorf("test-fixture auth kinds = %v, want [api_key]", providers[1].AuthKinds)

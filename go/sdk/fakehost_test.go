@@ -365,7 +365,7 @@ func defaultModelsResponse() map[string]any {
 
 func defaultAuthProviders() map[string]any {
 	return map[string]any{"providers": []any{
-		map[string]any{"id": "anthropic", "name": "Anthropic", "auth_kinds": []any{"oauth", "api_key"}, "auth_status": "login_required"},
+		map[string]any{"id": "anthropic", "name": "Anthropic", "auth_kinds": []any{"api_key", "oauth"}, "auth_status": "login_required"},
 		map[string]any{"id": "test-fixture", "name": "Test Fixture (CI)", "auth_kinds": []any{"api_key"}, "auth_status": "authenticated"},
 	}}
 }

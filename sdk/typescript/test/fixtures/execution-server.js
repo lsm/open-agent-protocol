@@ -355,7 +355,7 @@ rl.on("line", (line) => {
         auth_status: authenticatedProviders.has("test-fixture") ? "authenticated" : "login_required",
       },
       { id: "github-copilot", name: "GitHub Copilot", auth_kinds: ["oauth"], auth_status: "unknown" },
-      { id: "anthropic", name: "Anthropic", auth_kinds: ["oauth", "api_key"], auth_status: "unknown" },
+      { id: "anthropic", name: "Anthropic", auth_kinds: ["api_key", "oauth"], auth_status: "unknown" },
     ] : [];
     emit(frame(env, "auth_providers_response", { providers }, 3));
   } else if (env.type === "auth_login_start") {

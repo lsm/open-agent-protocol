@@ -423,7 +423,7 @@ pub const AuthProtocolServer = struct {
             providers[index] = .{
                 .id = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.id)),
                 .name = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.name)),
-                .auth_kinds = definition.auth_kinds,
+                .auth_kinds = try self.allocator.dupe(auth_types.AuthKind, definition.auth_kinds),
                 .auth_status = status,
             };
         }
@@ -949,6 +949,7 @@ test "the providers response carries each row's own credential kinds, in the cat
         const definition = auth_providers.ALL_DEFINITIONS[index];
         try std.testing.expectEqualStrings(definition.id, info.id.slice());
         try std.testing.expect(info.auth_kinds.len > 0);
+        try std.testing.expectEqual(definition.auth_kinds.len, info.auth_kinds.len);
         for (info.auth_kinds, definition.auth_kinds) |got, want| {
             try std.testing.expectEqual(want, got);
         }

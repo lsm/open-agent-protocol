@@ -32,7 +32,7 @@ function providerResponseEnvelope(envelope) {
     version: 1,
     payload: {
       providers: [
-        { id: "anthropic", name: "Anthropic", auth_kinds: ["oauth", "api_key"], auth_status: "login_required" },
+        { id: "anthropic", name: "Anthropic", auth_kinds: ["api_key", "oauth"], auth_status: "login_required" },
       ],
     },
   };

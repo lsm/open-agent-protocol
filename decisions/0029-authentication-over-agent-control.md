@@ -60,19 +60,20 @@ an active transition from a missing credential. A successful login does not
 return a token; a subsequent status or model-catalog read observes whether the
 provider became usable.
 
-Each row also carries `auth_kinds`, a non-empty ordered list drawn from
+Each row also carries `auth_kinds`, a non-empty list drawn from
 `common.authKind` — `api_key`, `oauth` or `none` — saying how that provider
 accepts a credential. Without it the response describes a row's *state* but not
 its *means*, so a caller cannot tell an API-key-only provider from an OAuth one
-and has no way to ask for the right kind of login. The list is ordered by
-preference, so a provider that takes both offers OAuth first. `none` is how a
-provider that needs no credential says so, which is why the field is required
-and why the schema's `minItems` is one: an empty list would be ambiguous between
-"needs nothing" and "did not say", and a runtime predating the field is
-indistinguishable from a broken one unless emptiness is reserved. The SDKs read
-a missing or unrecognised list as empty rather than failing the whole listing,
-because V1 evolution is additive-only and a new client must stay usable against
-an older runtime.
+and has no way to ask for the right kind of login. The list is the provider
+catalog's own `auth` array in its own order, so the wire and the catalog cannot
+disagree. `none` is how a provider that needs no credential says so, which is
+why the field is required and why the schema's `minItems` is one: an empty list
+would be ambiguous between "needs nothing" and "did not say", and a runtime
+predating the field is indistinguishable from a broken one unless emptiness is
+reserved. The SDKs read a missing list as empty and drop kinds they do not
+recognise rather than failing the whole listing, because V1 evolution is
+additive-only and a new client must stay usable against a runtime on either
+side of this field.
 
 ### Credential boundary
 

@@ -37,6 +37,7 @@ pub const AuthProviderInfo = struct {
         self.id.deinit(allocator);
         self.name.deinit(allocator);
         self.last_error.deinit(allocator);
+        allocator.free(self.auth_kinds);
         self.* = undefined;
     }
 };
