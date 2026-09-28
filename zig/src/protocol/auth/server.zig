@@ -420,9 +420,12 @@ pub const AuthProtocolServer = struct {
                 }
             }
 
+            const kinds = try self.allocator.dupe(auth_types.AuthKind, definition.auth_kinds);
+            errdefer self.allocator.free(kinds);
             providers[index] = .{
                 .id = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.id)),
                 .name = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.name)),
+                .auth_kinds = kinds,
                 .auth_status = status,
             };
         }
@@ -920,6 +923,43 @@ fn saveOAuthCredentials(provider_id: []const u8, credentials: oauth_storage.Cred
         },
     });
     try storage.persist();
+}
+
+test "the providers response carries each row's own credential kinds, in the catalog's order" {
+    const allocator = std.testing.allocator;
+    var server = AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer server.deinit();
+
+    const response = try server.buildProvidersResponse();
+    var owned = response;
+    defer owned.providers.deinit(allocator);
+
+    try std.testing.expectEqual(auth_providers.servedDefinitions().len, owned.providers.slice().len);
+
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
+    const with_fixture = try server.buildProvidersResponse();
+    var fixture_owned = with_fixture;
+    defer fixture_owned.providers.deinit(allocator);
+
+    const served = fixture_owned.providers.slice();
+    try std.testing.expectEqual(auth_providers.ALL_DEFINITIONS.len, served.len);
+    for (served, 0..) |info, index| {
+        const definition = auth_providers.ALL_DEFINITIONS[index];
+        try std.testing.expectEqualStrings(definition.id, info.id.slice());
+        try std.testing.expect(info.auth_kinds.len > 0);
+        try std.testing.expectEqual(definition.auth_kinds.len, info.auth_kinds.len);
+        for (info.auth_kinds, definition.auth_kinds) |got, want| {
+            try std.testing.expectEqual(want, got);
+        }
+    }
+
+    const ollama = auth_providers.findProvider("ollama") orelse return error.TestExpectedProvider;
+    try std.testing.expect(ollama.auth_kinds.len > 0);
+    try std.testing.expect(ollama.auth_kinds[0] == .none);
 }
 
 test "AuthProtocolServer type is available" {

@@ -9477,7 +9477,7 @@
       "phase": "",
       "codes": [],
       "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
     },
     {
       "id": "auth-login-cancelled",
@@ -9487,7 +9487,7 @@
       "phase": "",
       "codes": [],
       "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
     },
     {
       "id": "auth-answer-on-wire",
@@ -9497,7 +9497,17 @@
       "phase": "schema",
       "codes": ["schema_invalid"],
       "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
+    },
+    {
+      "id": "auth-provider-without-kinds",
+      "path": "schema-invalid/auth-provider-without-kinds.json",
+      "kind": "schema-invalid",
+      "valid": false,
+      "phase": "schema",
+      "codes": ["schema_invalid"],
+      "units": ["core", "auth"],
+      "provenance": ["decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
     },
     {
       "id": "auth-event-before-start",
@@ -9507,7 +9517,7 @@
       "phase": "semantic",
       "codes": ["auth_flow_order"],
       "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
     },
     {
       "id": "auth-missing-terminal",
@@ -9517,7 +9527,7 @@
       "phase": "semantic",
       "codes": ["missing_auth_terminal"],
       "units": ["core", "auth"],
-      "provenance": ["decisions/0029-authentication-over-agent-control.md"]
+      "provenance": ["decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
     },
     {
       "id": "auth-revision-not-repeated",
@@ -9527,7 +9537,7 @@
       "phase": "semantic",
       "codes": ["stale_capability_revision"],
       "units": ["core", "auth"],
-      "provenance": ["drafts/conformance.md", "decisions/0029-authentication-over-agent-control.md"]
+      "provenance": ["drafts/conformance.md", "decisions/0029-authentication-over-agent-control.md", "decisions/0043-auth-providers-carry-how-they-accept-a-credential.md"]
     },
     {
       "id": "model-switch-live",

@@ -33,6 +33,7 @@ export {
   type MakaiAuthErrorKind,
   type MakaiAuthEvent,
   type ProviderAuthInfo,
+  type AuthKind,
   type ProviderId,
 } from "./auth_protocol";
 
