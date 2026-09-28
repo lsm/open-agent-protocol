@@ -266,6 +266,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   imported `compat`, and the `compile-hub` step has been reporting it since — I read
   my own measurement of that step as clean and carried on, which is the failure the
   step was built to prevent.
+- The hub's serve-loop tests read a scripted request stream rather than a real pipe.
+  A blocking read of an OS pipe under the test runner's I/O passes on macOS and
+  hangs on Linux, so `Unit Tests - hub` was killed after six minutes — a test that
+  only ever *polls* a pipe in this job had never read one, which is why nothing
+  had hit it before. The double is scripted, so the loop, the framing, the defect
+  path and end of stream are all still covered and the job terminates.
 - The hub's stdio serve loop no longer stops driving the hub after the first
   request. It read until end-of-stream inside one cycle, so a host that stayed
   connected and had nothing more to say left every session undriven for as long

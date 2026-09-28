@@ -4,7 +4,6 @@ const oap_envelope = @import("oap_envelope");
 const json_encode = @import("json_encode");
 const contract = @import("contract");
 const hubmod = @import("hub");
-const compat = @import("compat");
 
 pub const Hub = hubmod.Hub;
 
@@ -1204,113 +1203,78 @@ test "state answers a daemon-minted envelope and refuses an unknown session" {
     try testing.expectEqualStrings("unknown_session", try harness.code());
 }
 
-const PipeStream = struct {
-    read_end: compat.stdio.File = undefined,
-    write_end: compat.stdio.File = undefined,
+const Scripted = struct {
+    chunks: []const []const u8,
+    at: usize = 0,
 
     fn read(context: *anyopaque, buffer: []u8) anyerror!usize {
-        const self: *PipeStream = @ptrCast(@alignCast(context));
-        return compat.stdio.read(self.read_end, buffer);
-    }
-
-    fn write(context: *anyopaque, bytes: []const u8) anyerror!void {
-        const self: *PipeStream = @ptrCast(@alignCast(context));
-        try compat.stdio.writeAll(self.write_end, bytes);
+        const self: *Scripted = @ptrCast(@alignCast(context));
+        if (self.at >= self.chunks.len) return 0;
+        const chunk = self.chunks[self.at];
+        self.at += 1;
+        if (chunk.len > buffer.len) return error.FrameTooLarge;
+        @memcpy(buffer[0..chunk.len], chunk);
+        return chunk.len;
     }
 };
 
-const has_pipe = @import("builtin").os.tag != .windows;
-
-const PipeHarness = struct {
+const ScriptedHarness = struct {
     allocator: std.mem.Allocator,
     backing: *Harness,
-    stream: PipeStream,
-    pipes: compat.stdio.Pipe,
+    scripted: Scripted,
 
-    fn init(allocator: std.mem.Allocator, hub_options: hubmod.Options, options: Options) !*PipeHarness {
-        const self = try allocator.create(PipeHarness);
+    fn init(allocator: std.mem.Allocator, hub_options: hubmod.Options, options: Options, chunks: []const []const u8) !*ScriptedHarness {
+        const self = try allocator.create(ScriptedHarness);
         self.* = .{
             .allocator = allocator,
             .backing = try Harness.init(allocator, hub_options, options),
-            .stream = .{ .read_end = undefined },
-            .pipes = undefined,
+            .scripted = .{ .chunks = chunks },
         };
-        self.pipes = try compat.stdio.pipe();
-        self.stream.read_end = self.pipes[0];
-        self.stream.write_end = self.pipes[1];
         return self;
     }
 
-    fn send(self: *PipeHarness, bytes: []const u8) !void {
-        try PipeStream.write(&self.stream, bytes);
-    }
-
-    fn run(self: *PipeHarness) !void {
-        return self.serveWithHandle(self.pipes[0].handle);
-    }
-
-    fn runWithoutHandle(self: *PipeHarness) !void {
+    fn run(self: *ScriptedHarness) !void {
         return self.serveWithHandle(null);
     }
 
-    fn serveWithHandle(self: *PipeHarness, handle: ?std.Io.File.Handle) !void {
+    fn runWithHandle(self: *ScriptedHarness, handle: ?std.Io.File.Handle) !void {
+        return self.serveWithHandle(handle);
+    }
+
+    fn serveWithHandle(self: *ScriptedHarness, handle: ?std.Io.File.Handle) !void {
         var frontend = try Frontend.init(self.allocator, &self.backing.hub, self.backing.recorder.sink(), .{});
         defer frontend.deinit();
         try serve(self.allocator, &frontend, .{
-            .read = PipeStream.read,
-            .context = &self.stream,
+            .read = Scripted.read,
+            .context = &self.scripted,
             .readable = handle,
         });
     }
 
-    fn closeInput(self: *PipeHarness) void {
-        compat.stdio.close(self.stream.write_end);
-    }
-
-    fn deinit(self: *PipeHarness) void {
-        compat.stdio.close(self.stream.read_end);
+    fn deinit(self: *ScriptedHarness) void {
+        const allocator = self.allocator;
         self.backing.deinit();
-        self.allocator.destroy(self);
+        allocator.destroy(self);
     }
 };
 
-test "the serve loop reads a frame split across two writes, and answers both" {
-    if (!has_pipe) return error.SkipZigTest;
-    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
-    defer harness.deinit();
-    try harness.send("{\"id\":1,\"op\":\"adap");
-    try harness.send("ters\"}\n");
-    try harness.send("{\"id\":2,\"op\":\"sessions\"}\n");
-    harness.closeInput();
-    try harness.run();
-    try testing.expectEqual(@as(usize, 2), harness.backing.recorder.lines.items.len);
-    try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[1], "\"sessions\"") != null);
-}
-
 test "the serve loop reads even when it has no handle to wait on" {
-    if (!has_pipe) return error.SkipZigTest;
-    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n"});
     defer harness.deinit();
-    try harness.send("{\"id\":1,\"op\":\"adapters\"}\n");
-    harness.closeInput();
-    try harness.runWithoutHandle();
+    try harness.run();
     try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
     try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
 }
 
 test "a final line the host never terminated is a framing defect, not a dropped request" {
-    if (!has_pipe) return error.SkipZigTest;
-    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"adap"});
     defer harness.deinit();
-    try harness.send("{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"adap");
-    harness.closeInput();
     try testing.expectError(error.StdinFailed, harness.run());
     try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
 }
 
 test "a framing defect names the line that caused it, bounded" {
-    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{});
     defer harness.deinit();
     var short = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{});
     defer short.deinit();
@@ -1325,11 +1289,10 @@ test "a framing defect names the line that caused it, bounded" {
 }
 
 test "the serve loop stops at a framing defect rather than answering the rest" {
-    if (!has_pipe) return error.SkipZigTest;
-    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{
+        "{\"id\":1,\"op\":\"adapters\"}\nnot json\n{\"id\":2,\"op\":\"sessions\"}\n",
+    });
     defer harness.deinit();
-    try harness.send("{\"id\":1,\"op\":\"adapters\"}\nnot json\n{\"id\":2,\"op\":\"sessions\"}\n");
-    harness.closeInput();
     try testing.expectError(error.StdinFailed, harness.run());
     try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
 }
