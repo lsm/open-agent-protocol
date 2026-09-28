@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/internal/jsonwalk"
 	"io"
 	"net/http"
 	"net/url"
@@ -134,7 +135,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 }
 
 func decodeStrict(data []byte, out any) error {
-	if err := native.RejectDuplicateKeys(data); err != nil {
+	if err := jsonwalk.RejectDuplicateKeys(data); err != nil {
 		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
