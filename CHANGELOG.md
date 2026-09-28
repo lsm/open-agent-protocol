@@ -53,6 +53,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal rather than by mutating the process.
 
 ### Added
+- **`go/internal/provider`: the `openai-completions` client, part of #358 step 2.**
+  A Go program can now drive an OpenAI-compatible endpoint without a Zig binary in
+  the path. The package is `internal` on purpose: it is not yet a public surface,
+  and `goap check` refuses an importable package that is in neither the public set
+  nor `go/internal`, because every exported name in one becomes public API the day
+  a program imports the module. It moves out when the serving layer that maps its
+  events to the profile's envelopes lands.
+
+  It is a **transcription of `zig/src/providers/openai_completions_api.zig`**, and
+  the awkward parts are transcribed rather than tidied, because the point is
+  parity in step 5:
+
+  - **The SSE parser** keeps four rules the obvious implementations get wrong. A
+    blank line is the separator and a line feed alone is not; a carriage return
+    followed by a line feed is **one** delimiter, including when the two bytes
+    land in different chunks; repeated `data:` lines are joined with a newline;
+    and an `event:` line with no `data` emits nothing **but still leaves its type
+    bound**, so a later `data:` inherits it. The limits are a mebibyte per line
+    and four per event, and the event limit counts the type, the data and the
+    separators between data lines.
+  - **`isOpenAINative` and `isOpenAIHost` are two different functions** and are
+    ported as two. The first matches the substring `api.openai.com` anywhere in
+    the base URL; the second parses the URL and compares the host to `openai.com`
+    with a label boundary, case-insensitively. They disagree for
+    `https://api.openai.com.evil.example` and for a proxy carrying the name in its
+    query. **#511 records the divergence and it is not fixed here** — it is a
+    behaviour change in Zig and therefore the provider agent's to decide. What the
+    port does is keep them apart: six decisions ride on the pair, and the
+    detection gate is what discards the native caps for a URL matching the
+    substring but not the host.
+  - **The thinking member is named `reasoning_content` unless a signature comes
+    back**, in which case the signature becomes the member's name. That is a wire
+    quirk — the field name is data from the previous turn — so it is spelled out
+    and tested rather than derived.
+  - **The credential order is the caller's key, then the environment, then the
+    anonymous rule**, and an empty value at either of the first two steps falls
+    through rather than winning. A variable that is set but empty is therefore not
+    an anonymous grant. The client takes an explicit key; the wider stored and
+    oauth lookup stays with the caller, which is what step 4's discovery needs.
+  - **The stream emits thirteen event kinds** — `start`, `text_start`,
+    `text_delta`, `text_end`, `thinking_start`, `thinking_delta`,
+    `thinking_end`, `toolcall_start`, `toolcall_delta`, `toolcall_end`, `done`,
+    `error`, `keepalive` — each carrying a content index and a partial, because
+    the Go SDK's six `ProviderEvent`s cannot express the starts and the ends, and
+    a serving layer cannot map what is not there. The SDK types are untouched: they
+    remain the client API over the profile's envelopes.
+  - **`toolcall_end` carries a different content index than its `toolcall_start`
+    did.** The start counts tool calls alone; the end is the position in the final
+    array, which also holds the thinking and the text. The partial on that event is
+    the content accumulated *so far*, so it grows with each one.
+
+  Two behaviours are transcribed because Zig has them, and both are pinned by tests
+  so a later reader knows they are deliberate rather than accidents: the orphan
+  check on a tool result runs only on the **first** of a run, so an orphan
+  following an answered one is still written; and a malformed chunk is
+  **swallowed** rather than failing the stream, which is why the partial-text rule
+  has no reachable caller here.
 - **The contested settlement has a fixture: `pi-two-open-calls`.** A terminal
   event sweeping several open calls at once had no fixture, and #433 step 4 was
   parked waiting for a hub that could serve one. The memory backend structurally
