@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -58,11 +59,28 @@ func FuzzTheValidatorIsTotalOverARepeatedEnvelopeWithoutGrowingItsVerdictWithout
 		if once.Valid() != twice.Valid() || len(once.Diagnostics) != len(twice.Diagnostics) {
 			t.Fatalf("two verdicts over the same bytes disagree: %+v and %+v", once, twice)
 		}
-		lines := strings.Count(trace, "\n") + 1
-		if len(once.Diagnostics) > lines {
-			t.Fatalf("%d lines produced %d diagnostics, so one line is reported more than once: %q", lines, len(once.Diagnostics), trace)
+		if envelopes := countEnvelopes(trace); len(once.Diagnostics) > envelopes {
+			t.Fatalf("%d envelopes produced %d diagnostics, so one envelope is reported more than once: %q", envelopes, len(once.Diagnostics), trace)
 		}
 	})
+}
+
+func TestEnvelopesAreCountedNotLines(t *testing.T) {
+	compact := `[{"a":1},{"a":2},{"a":3}]`
+	if got := countEnvelopes(compact); got != 3 {
+		t.Fatalf("countEnvelopes read %d envelopes out of a one-line array of three", got)
+	}
+	if got := countEnvelopes("{\"a\":1}\n{\"a\":2}\n"); got != 2 {
+		t.Fatalf("countEnvelopes read %d envelopes out of two lines", got)
+	}
+}
+
+func countEnvelopes(trace string) int {
+	var array []json.RawMessage
+	if err := json.Unmarshal([]byte(trace), &array); err == nil {
+		return len(array)
+	}
+	return strings.Count(strings.TrimSpace(trace), "\n") + 1
 }
 
 func knownPhase(phase Phase) bool {

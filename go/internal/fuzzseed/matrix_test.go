@@ -22,9 +22,9 @@ func TestEveryFuzzTargetInTheTreeIsInTheWeeklyMatrix(t *testing.T) {
 		t.Fatal("no fuzz target was found in the tree, so this gate is vacuous")
 	}
 	listed := matrixEntries(t, root)
-	for target, where := range found {
-		if _, ok := listed[target]; !ok {
-			t.Errorf("%s declares %s, and .github/workflows/fuzz.yml does not run it: a target nothing schedules is a target nobody reads", where, target)
+	for leg, where := range found {
+		if _, ok := listed[leg]; !ok {
+			t.Errorf("%s declares %s, and .github/workflows/fuzz.yml does not run it: a target nothing schedules is a target nobody reads", where, leg)
 		}
 	}
 }
@@ -39,9 +39,9 @@ func TestEveryTargetInTheWeeklyMatrixExistsInTheTree(t *testing.T) {
 	if len(listed) == 0 {
 		t.Fatal("the matrix has no entries, so this gate is vacuous")
 	}
-	for target, where := range listed {
-		if _, ok := found[target]; !ok {
-			t.Errorf(".github/workflows/fuzz.yml runs %s at %s, and no such target exists: that leg of the job fuzzes nothing", target, where)
+	for leg := range listed {
+		if _, ok := found[leg]; !ok {
+			t.Errorf(".github/workflows/fuzz.yml runs %s, and no such target exists: that leg of the job fuzzes nothing", leg)
 		}
 	}
 }
@@ -58,11 +58,11 @@ func targetsInTree(t *testing.T, root string) map[string]string {
 			return err
 		}
 		for _, match := range fuzzTarget.FindAllStringSubmatch(string(body), -1) {
-			relative, err := filepath.Rel(root, path)
+			relative, err := filepath.Rel(root, filepath.Dir(path))
 			if err != nil {
-				relative = path
+				relative = filepath.Dir(path)
 			}
-			found[match[1]] = relative
+			found[relative+" "+match[1]] = relative
 		}
 		return nil
 	})
@@ -88,27 +88,9 @@ func matrixEntries(t *testing.T, root string) map[string]string {
 		if err != nil {
 			packagePath = match[1]
 		}
-		entries[match[2]] = packagePath
+		entries[packagePath+" "+match[2]] = packagePath
 	}
 	return entries
-}
-
-func TestTheMatrixNamesAPackageThatHoldsTheTargetItRuns(t *testing.T) {
-	root, err := RepositoryRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	listed := matrixEntries(t, root)
-	found := targetsInTree(t, root)
-	for target, where := range listed {
-		claimed, ok := found[target]
-		if !ok {
-			continue
-		}
-		if filepath.Dir(claimed) != where {
-			t.Errorf("the matrix runs %s under %s, and it is declared in %s: the leg would fuzz the wrong package", target, where, filepath.Dir(claimed))
-		}
-	}
 }
 
 func TestEveryLegOfTheJobIsDistinguishable(t *testing.T) {

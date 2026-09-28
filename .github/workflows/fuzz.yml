@@ -73,6 +73,8 @@ jobs:
             target: FuzzAnEventIsAdmittedOnlyWithAValidIDTypeAndDurablePosition
           - package: ./go/adapter/opencode/internal/native
             target: FuzzAnAdmittedEventsDataIsAWholeJSONValueOrNothing
+          - package: ./go/adapter/opencode/internal/native
+            target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
           - package: ./go/adapter/pi/internal/native
             target: FuzzTheJSONWalkAdmitsOnlyBytesJSONAdmits
           - package: ./go/adapter/pi/internal/native
