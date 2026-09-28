@@ -47,11 +47,12 @@ scenario doubles as a regression gate.
 subdirectory with `transcript.bin`, `batches.jsonl`, `frames.jsonl` (named
 ANSI-stripped screen checkpoints), and `notes.json` (observed findings):
 
-- `commands` — every ratified slash command: `/help` (asserts all ten usage
+- `commands` — every ratified slash command: `/help` (asserts all eleven usage
   strings render), `/status`, `/provider`, `/model` (picker + explicit switch),
   `/login` (picker, escape without triggering a real OAuth flow), `/permissions`
   (picker + `ask`/`bypass`/invalid-arg), `/resume` on an empty store, `/abort`
-  while idle, an unknown command, `/clear`, `/quit`.
+  while idle, `/compact` with nothing to compact, an unknown command, `/clear`,
+  `/quit`.
 - `keys` — the kept keys: Ctrl+Y copy (asserts the raw stream carries
   exactly one `OSC 52 ; c` clipboard write whose base64 payload decodes to
   the last reply; a malformed payload — or any second write — is itself a

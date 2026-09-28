@@ -247,6 +247,30 @@ space-separated term must appear, case-insensitively, in an item's label or deta
 `Backspace` edits the filter, `Up/Down` and `PgUp/PgDn` move, `Enter` selects and `Esc`
 closes; reopening a picker clears its filter.
 
+## Compaction
+
+`/compact [focus]` replaces the agent's history with a summary the current model
+writes. The request reuses the turn's system prompt, tools and thinking level so the
+provider's prompt cache still applies, and ends with a user message asking for a
+sectioned summary inside `<summary>` tags without tool calls; the optional focus is
+appended to it. The history becomes that summary as a user turn plus a fixed assistant
+acknowledgement, so queued messages still run through the normal continue path.
+Before the request, the messages being replaced are written to
+`~/.oapx/sessions/<session>/compaction-<n>.jsonl`, one message per line, and the
+summary lists every transcript written so far in the session. A later transcript
+starts with the summary before it, so the chain reaches the first message. When the
+history does not fit in one request, the oldest turns are left out and the summary
+says so. A provider error that reports an overflow retries with a quarter less
+history, up to three attempts.
+
+While compacting, the status bar reads `compacting`, `Enter` and `Tab` queue the draft
+until the summary lands, and `Esc` cancels it, leaving the history unchanged. The
+result is a System entry with the message count, estimated tokens before and after,
+the transcript path and the summary. The session file records the result as a
+`compaction_end` event; a resume replays it by resetting the history to the summary.
+None of this crosses the protocol: the agent loop runs in-process, and the summary
+request is an ordinary model call.
+
 Scrolling: while `transcript_scroll` is non-zero the inline body is a window over the
 full transcript rendered at the current width (rows already flushed into terminal
 scrollback are re-rendered inside the window while it is scrolled), topped by a

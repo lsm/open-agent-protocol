@@ -159,6 +159,14 @@ fn estimateContextUsage(context: ai_types.Context) ContextUsage {
     };
 }
 
+pub fn estimatePromptTokens(context: ai_types.Context) u64 {
+    return estimateContextUsage(context).totalEstimatedTokens();
+}
+
+pub fn estimateMessageTokens(message: ai_types.Message) u64 {
+    return estimateMessage(message).estimated_tokens;
+}
+
 fn pushAgentEvent(event_stream: *AgentEventStream, event: AgentEvent) !void {
     if (!event_stream.pushBlocking(event)) {
         return error.StreamCompleted;

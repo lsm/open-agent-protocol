@@ -40,6 +40,7 @@ pub fn hintText(allocator: std.mem.Allocator, state: *const tui_state.AppState) 
         .normal => {},
     }
     if (std.mem.startsWith(u8, text, "/")) return std.fmt.allocPrint(allocator, "{s} select · {s} complete · {s} run · esc clear", .{ k.up_down, k.tab, k.enter });
+    if (state.status.compacting) return std.fmt.allocPrint(allocator, "compacting · {s} queue · esc cancel", .{k.enter});
     if (state.status.streaming) {
         const queued = state.queue.total();
         if (queued > 0) return std.fmt.allocPrint(allocator, "{s} steer · {s} queue · queued {d} · esc abort", .{ k.enter, k.tab, queued });
@@ -91,6 +92,7 @@ fn placeholderFor(allocator: std.mem.Allocator, state: *const tui_state.AppState
         if (queued > 0) return std.fmt.allocPrint(allocator, "{d} queued · y / a / n to decide", .{queued});
         return allocator.dupe(u8, "y / a / n to decide, or type /abort");
     }
+    if (state.status.compacting) return allocator.dupe(u8, "compacting the conversation · type now, it sends when done…");
     if (state.status.streaming) {
         const queued = state.queue.total();
         if (queued > 0) return std.fmt.allocPrint(allocator, "{d} queued · type to steer or queue more…", .{queued});

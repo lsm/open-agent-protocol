@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The TUI's `/compact [focus]` has the model summarize the conversation and replaces
+  the history with that summary. The replaced messages are kept as JSONL transcripts,
+  and every summary names all of them, so the agent can read back what a summary
+  dropped. A resumed session starts from its latest summary. The unused compactor that
+  truncated each message to 800 characters is removed.
+
 - `contract.Session` grows an optional `readable` slot, so the hub's loop waits on
   every session's child at once instead of giving each a share of the wait in turn.
   The loop gave each open session at least 1 ms of blocking wait, one after
