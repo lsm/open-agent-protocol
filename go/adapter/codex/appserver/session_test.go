@@ -500,10 +500,14 @@ func TestNaturalTerminalWinsCancellationRace(t *testing.T) {
 			client.send(t, native.MethodTurnStarted, native.TurnStartedNotification{ThreadID: client.threadID, Turn: native.Turn{ID: client.turnID, Status: native.TurnInProgress}})
 			_ = nextEvent(t, stream)
 			client.interruptGate = make(chan struct{})
-			cancelled := make(chan error, 1)
+			type cancelAnswer struct {
+				protocol.RunCancelResponse
+				err error
+			}
+			cancelled := make(chan cancelAnswer, 1)
 			go func() {
-				_, err := session.Cancel(context.Background(), admission.RunID)
-				cancelled <- err
+				response, err := session.Cancel(context.Background(), admission.RunID)
+				cancelled <- cancelAnswer{response, err}
 			}()
 			deadline := time.Now().Add(time.Second)
 			for {
@@ -525,8 +529,12 @@ func TestNaturalTerminalWinsCancellationRace(t *testing.T) {
 			client.send(t, native.MethodTurnCompleted, native.TurnCompletedNotification{ThreadID: client.threadID, Turn: turn})
 			events := drainClosed(t, stream)
 			close(client.interruptGate)
-			if err := <-cancelled; !errors.Is(err, adapter.ErrRunAlreadyTerminal) {
-				t.Fatalf("cancel result: %v", err)
+			answer := <-cancelled
+			if answer.err != nil {
+				t.Fatalf("cancel error: %v", answer.err)
+			}
+			if answer.Status != protocol.RunCancelling {
+				t.Fatalf("cancel status %q, want %q: the turn was live when the cancel was accepted, and the natural terminal settles the stream behind it", answer.Status, protocol.RunCancelling)
 			}
 			if len(events) != 1 || events[0].Type != test.want {
 				t.Fatalf("race events: %+v", events)

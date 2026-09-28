@@ -5,7 +5,11 @@ Status: accepted (admission clause amended by
 clause amended by [Decision 0010](0010-terminal-provenance.md); the
 "no cross-process persistence" clause amended by
 [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md), which
-lets a closed session be reopened through its harness)
+lets a closed session be reopened through its harness; the "Cancellation intent
+is not settlement" paragraph amended by
+[Decision 0041](0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md),
+which judges acceptance when the cancel is checked and puts a cancel response
+outside the run's ordering)
 Date: 2026-09-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -94,8 +98,11 @@ only confirmed interruption emits `run.cancelled`.
 
 Duplicate cancellation of a cancelling or cancelled run is idempotent. A stale
 cancellation must not affect a later run. Cancellation of a completed or failed
-run returns a typed `run_already_terminal` error. A timeout alone does not prove
-cancellation.
+run returns a typed `run_already_terminal` error — judged when the cancel is
+checked, so a cancel asked for while the run was live may still be accepted
+after a natural completion, and one asked for after the run settled is refused
+on the answer rather than on the request. A cancel response is unordered against
+the run's stream. A timeout alone does not prove cancellation.
 
 ### Resume, reconciliation, and replay are separate
 
