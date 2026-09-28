@@ -1138,13 +1138,13 @@ byte-for-byte comparison on their first request.
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
-**D4 to D7 are what is left, and all of it is the Zig side and all of one kind:**
+**D4 to D8 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
 specifies — a member that does not exist, or a signal with nowhere to report it.
 None of them changes a byte on the wire today, and each is a small contract change
-rather than a re-decision, so they are queued rather than fixed here: D5 and D6 in
-[#407](https://github.com/lsm/open-agent-protocol/issues/407), and D7 — the per-run
-exposure a stream failure needs — in the same issue, since it is the same kind of gap.
+rather than a re-decision, so they are queued rather than fixed here: D5, D6, D7 and
+D8 in [#407](https://github.com/lsm/open-agent-protocol/issues/407). D7 is the per-run
+exposure a stream failure needs; D8 is that `request_cancelled` has no signal to come from.
 D4 is different in one respect: its negative-capacity half is a Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
@@ -1165,6 +1165,17 @@ silently restamped.
 The two rows that depended on it, `models` and `tools`, carry this: both answers
 are "stamped with the revision the lister served it under", and both name
 `unsupported_feature` for an adapter that cannot serve one at all.
+
+### D8 — `request_cancelled` has nowhere to come from in Zig
+
+| | |
+| --- | --- |
+| **The draft says** | Both `models` and `tools` name `request_cancelled` (400), and both say a catalog the adapter cannot serve is `unsupported_feature` or `tools_failed`. |
+| **Go does** | `modelsError` and `toolsError` both map `context.Canceled` and `context.DeadlineExceeded` to `request_cancelled`, so a caller who gave up is told they gave up rather than that the backend failed. |
+| **Zig does** | `contract` has no cancellation signal and `hub.Failure` has no error for one, so a lister that was cancelled arrives as whatever the adapter chose — `BackendFailed`, most often — and the wire answers `tools_failed`. |
+| **Why it matters** | A host that cancelled a catalog request and one whose backend failed are told the same thing, so a host cannot tell "I stopped listening" from "the adapter broke". The same gap applies to every op the draft lists `request_cancelled` for, so it is not specific to the catalog operations. |
+| **Why it is not fixable here** | It needs `contract`'s slots to report cancellation, which is a member that does not exist — the same kind of gap as D3 and D5, and the reason it is recorded rather than papered over with a mapping the hub cannot actually reach. |
+| **The fix** | `contract`'s slots report cancellation as its own error, as Go's context does, and the transports map it to `request_cancelled`. |
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 

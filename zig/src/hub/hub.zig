@@ -542,7 +542,7 @@ pub const Hub = struct {
         const served = lister(entry.session.ptr, arena, request, &refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
@@ -561,7 +561,7 @@ pub const Hub = struct {
         const catalog = lister(entry.session.ptr, arena, request, &refusal) catch |err| switch (err) {
             error.SessionClosed => {
                 self.releaseSession(entry);
-                return error.UnknownSession;
+                return error.SessionClosed;
             },
             else => |failure| return failure,
         };
