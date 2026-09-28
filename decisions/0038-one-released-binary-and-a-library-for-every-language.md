@@ -1,6 +1,6 @@
 # Decision 0038: One Released Binary, and a Library for Every Language
 
-Status: accepted 2026-09-26 (policy decision; its work is tracked in #364 and #384)
+Status: accepted 2026-09-26 (policy decision; its work is tracked in #364 and #384); amended 2026-09-28 on its parity section by #417, which compares the trees by parsed JSON
 Date: 2026-09-26
 Protocol: `open-agent-protocol` version `0.1`
 Profiles: neither; this record governs what ships and what each language gets,
@@ -56,10 +56,23 @@ not documented as something a user installs. Its verbs keep the meanings
 
 ### Parity is protocol behaviour, not the command line
 
-Between the trees, parity is what crosses the wire: traces, the bytes a backend
+Between the trees, parity is what crosses the wire: traces, the data a backend
 writes to its child, the answers an endpoint gives. Verbs, flags, exit codes,
 output formats and configuration defaults are `oapx`'s alone, and a difference
 there is not a divergence either tree records.
+
+That data is compared as **parsed JSON**, not as bytes. An exact byte
+comparison stays only where a harness's ledger records that the harness reads
+those bytes, and each such case is named in the test that keeps it. The reason
+is [Decision 0032](0032-go-and-zig-are-peers.md): a Go runtime quirk is not
+protocol behaviour until a decision says so. Byte equality made Zig copy
+`encoding/json`'s encoder — #319 and #330 made `zig/src/json/writer.zig`
+escape `<`, `>`, `&`, U+2028 and U+2029 in everything it writes, provider
+requests included, where no decision required it. Each escaped character
+becomes six bytes, in prompts and tool output full of code, and an encoder
+quirk is not a protocol. The same reasoning decides the one place bytes *are*
+normative: a ledger that records a harness reading them is evidence, and a
+Go habit is not.
 
 ### Each language gets a library, in one of two shapes
 
