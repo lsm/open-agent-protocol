@@ -77,9 +77,10 @@ Go habit is not.
 At this amendment no ledger records that, at any pin: the two that discuss
 byte-exactness say the opposite — a gate "must be structural, never
 byte-exact" — and no pinned harness is recorded parsing the raw text of what
-an adapter writes. So the differential suite compares parsed data throughout,
-and a case that earns byte equality is named in this record and in the test
-that keeps it, when there is one.
+an adapter writes. **The byte-exact set is therefore empty**, and a case that
+earns byte equality is named in this record and in the test that keeps it,
+when there is one. What the suite does about it is implementation, and the
+rule above is what it implements.
 
 ### Each language gets a library, in one of two shapes
 
