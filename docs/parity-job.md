@@ -21,7 +21,7 @@ trees emit the same answer, in the same order, with the same refusals?**
 | **the order of a run's events** | `runOrderDifference` within `TestBackendsMatchOapx`, since #475 | anything in the corpus or the unit tests |
 | a refusal's code, reason or detail that differs | the content diff | — |
 | **what each tree writes to the harness** | the child diff (`childLineDifference`) and, for `opencode`, the fake server's transcript | nothing — a tree can serve identical envelopes while driving its child differently, and only a second tree shows that |
-| a **settlement order** — which of two open interactions ends the run, and in what order the calls close | the ordered comparison, given a fixture that opens more than one. `memory` is the only fixture that opens two interactions, and it is not a harness | the corpora, which record one interaction at a time |
+| a **contested settlement** — several gates open at once, and the order the tree closes them in | the ordered comparison, *given* such a fixture, and no fixture is one | nothing today. The `memory` run has two interactions but opens them one after the other, and a terminal event sweeping several open gates — what `sweepRun` does in the claude adapter, and what #475 was written for — has no fixture |
 
 One row in that table cannot be placed by the rule below it, and the note says so rather than bending the rule: comparing what a tree writes to its harness needs two trees, so there is nowhere cheaper for it to live. Everything else a divergence can be is covered cheaper elsewhere, and the
 parity job is deliberately not where it is duplicated: the fixtures are the
@@ -35,7 +35,7 @@ and the fix is cheaper there.
 | fixture | the divergence it is the last check on |
 | --- | --- |
 | `acp`, `claude`, `codex`, `deepseek`, `hermes`, `opencode`, `pi` | that tree's adapter translates this harness's frames the same way the other tree's does |
-| `memory` | that a run's whole event stream — including both of its interactions and its terminal — comes out identical and in the same order |
+| `memory` | that a whole run's event stream — from the permission gate through the tool call and the input gate to the terminal, both interactions in sequence — comes out identical and in the same order |
 
 The seven harness fixtures share one shape: a fixed `scenario.jsonl` and a
 `registry.json` naming the adapter. Six drive a `child.sh` that answers
@@ -50,11 +50,15 @@ and then announces. What subscribes is the submit handler
 the only fixture that asks for it, and asking is not what makes the run
 visible.
 
-What `memory` adds is the only run with **two open interactions** at once —
-`permission-2` and `input-3`, both resolved against `run-1` — so the ordered
-comparison reads a settlement order there and nowhere else; every other fixture
-resolves at most one interaction per run. Its script is in-process, with no child
-process mediating the exchange. It is not, however, identical in both trees by
+What `memory` adds is the only run long enough to be worth reading as a stream,
+and the only one with **two** interactions in it — `permission-2` and
+`input-3`, both resolved against `run-1`, where every other fixture resolves at
+most one per run. They open one after the other, not together:
+`resolvePermission` ends in `requestInput`, and both adapters hold a single
+pending interaction, so the second cannot open before the first closes. What the
+ordered comparison reads there is therefore the sequence, not a contested
+settlement. Its script is in-process, with no child process mediating the
+exchange. It is not, however, identical in both trees by
 construction: `go/adapter/memory.go` and `zig/src/adapter/memory/adapter.zig` are
 separate implementations, which is why the comparison scrubs `id` and every
 `*_ms` member before it compares anything.
