@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const compat = @import("compat");
 const provider_catalog = @import("provider_catalog");
 
 pub const AuthKind = provider_catalog.AuthKind;
@@ -11,6 +13,20 @@ pub const ProviderDefinition = struct {
 
 pub const fixture_provider_id = "test-fixture";
 pub const fixture_provider_name = "Test Fixture (CI)";
+pub const fixture_opt_in_env = "OAPX_TEST_FIXTURE_PROVIDER";
+
+pub var test_fixture_opt_in: ?bool = null;
+
+pub fn fixtureOptInIsSet(allocator: std.mem.Allocator, environ: std.process.Environ) bool {
+    const raw = compat.getEnvVarOwnedFrom(environ, allocator, fixture_opt_in_env) catch return false;
+    defer allocator.free(raw);
+    return std.mem.eql(u8, raw, "1") or std.ascii.eqlIgnoreCase(raw, "true");
+}
+
+pub fn fixtureRequested() bool {
+    if (builtin.is_test) return test_fixture_opt_in orelse false;
+    return fixtureOptInIsSet(std.heap.page_allocator, compat.runtimeEnviron());
+}
 
 fn definitionOf(comptime row: anytype) ProviderDefinition {
     return .{
@@ -47,8 +63,13 @@ pub const ALL_DEFINITIONS = blk: {
     break :blk &frozen;
 };
 
+pub fn servedDefinitions() []const ProviderDefinition {
+    if (fixtureRequested()) return ALL_DEFINITIONS;
+    return CATALOG_PROVIDER_DEFINITIONS;
+}
+
 pub fn findProvider(provider_id: []const u8) ?ProviderDefinition {
-    for (ALL_DEFINITIONS) |provider| {
+    for (servedDefinitions()) |provider| {
         if (std.mem.eql(u8, provider.id, provider_id)) {
             return provider;
         }
@@ -125,10 +146,68 @@ test "the CI fixture row is not a catalog row and is served last, for tests only
         try std.testing.expectEqualStrings(provider_catalog.all[index].id, definition.id);
     }
 
+    test_fixture_opt_in = true;
+    defer test_fixture_opt_in = null;
     const found = findProvider(fixture_provider_id) orelse return error.TestExpectedProvider;
     try std.testing.expectEqualStrings(fixture_provider_name, found.name);
     try std.testing.expectEqual(@as(usize, 1), found.auth_kinds.len);
     try std.testing.expect(found.auth_kinds[0] == .api_key);
+}
+
+fn environOf(entries: [:null]const ?[*:0]const u8) std.process.Environ {
+    return .{ .block = .{ .slice = entries } };
+}
+
+test "the fixture is served only when the opt-in variable asks for it by name" {
+    const cases = [_]struct { entries: [:null]const ?[*:0]const u8, want: bool, label: []const u8 }{
+        .{ .entries = &.{}, .want = false, .label = "nothing set at all" },
+        .{ .entries = &.{ "PATH=/usr/bin", "HOME=/home/dev" }, .want = false, .label = "a full environment without it" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER=1"}, .want = true, .label = "1" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER=true"}, .want = true, .label = "true" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER=TRUE"}, .want = true, .label = "TRUE" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER=0"}, .want = false, .label = "0 is not an opt-in" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER="}, .want = false, .label = "set but empty is not an opt-in" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER=yes"}, .want = false, .label = "yes is not an opt-in" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER=11"}, .want = false, .label = "not a prefix match" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER_=1"}, .want = false, .label = "a different variable's name" },
+        .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER2=1"}, .want = false, .label = "a different variable's suffix" },
+    };
+    for (cases) |case| {
+        const got = fixtureOptInIsSet(std.testing.allocator, environOf(case.entries));
+        if (got != case.want) std.debug.print("\n{s} should be {}\n", .{ case.label, case.want });
+        try std.testing.expectEqual(case.want, got);
+    }
+}
+
+test "the opt-in is read under the name the tests are told to set" {
+    try std.testing.expectEqualStrings("OAPX_TEST_FIXTURE_PROVIDER", fixture_opt_in_env);
+    try std.testing.expect(fixtureOptInIsSet(std.testing.allocator, environOf(&.{"OAPX_TEST_FIXTURE_PROVIDER=1"})));
+}
+
+test "a user who did not ask for the fixture is not offered it" {
+    try std.testing.expect(!fixtureRequested());
+    defer test_fixture_opt_in = null;
+
+    try std.testing.expectEqual(@as(usize, provider_catalog.all.len), servedDefinitions().len);
+    try std.testing.expect(findProvider(fixture_provider_id) == null);
+    for (CATALOG_PROVIDER_DEFINITIONS) |definition| {
+        try std.testing.expect(findProvider(definition.id) != null);
+    }
+    for (servedDefinitions()) |definition| {
+        try std.testing.expect(!std.mem.eql(u8, definition.id, fixture_provider_id));
+    }
+}
+
+test "a test that asked for the fixture is served it, last" {
+    test_fixture_opt_in = true;
+    defer test_fixture_opt_in = null;
+
+    try std.testing.expect(fixtureRequested());
+    try std.testing.expectEqual(ALL_DEFINITIONS.len, servedDefinitions().len);
+    const last = servedDefinitions()[servedDefinitions().len - 1];
+    try std.testing.expectEqualStrings(fixture_provider_id, last.id);
+    try std.testing.expectEqualStrings(fixture_provider_name, last.name);
+    try std.testing.expect(findProvider(fixture_provider_id) != null);
 }
 
 test "findProvider answers a catalogued id and refuses an unknown one" {
