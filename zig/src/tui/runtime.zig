@@ -813,6 +813,17 @@ pub const TuiRuntime = struct {
 
     fn handleAgentEndEvent(self: *TuiRuntime) anyerror!void {
         const reason: TuiEndReason = if (self.cancelled.load(.acquire)) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
+        return self.endRun(reason);
+    }
+
+    /// Ends the TUI's run with a reason the caller already knows.
+    ///
+    /// A run that failed is not a run that completed, and it cannot be inferred
+    /// from `last_turn_stop_reason`: a run that fails before a turn ends never set
+    /// it, so the inference reads a failure as a success. The reason is therefore
+    /// passed rather than guessed, the same way `finishCompaction` takes it from
+    /// the outcome.
+    fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
         self.completed = true;
         self.pushTerminal(.{ .agent_end = .{ .reason = reason } });
         self.event_stream.complete(.{ .reason = reason });
@@ -1076,7 +1087,7 @@ pub const TuiRuntime = struct {
             .agent_end => try self.handleAgentEndEvent(),
             .run_failed => |payload| {
                 self.push(.{ .@"error" = .{ .message = self.dupeOwned(payload.reason.slice()) catch OwnedSlice(u8).initBorrowed(payload.reason.slice()) } });
-                try self.handleAgentEndEvent();
+                try self.endRun(.@"error");
             },
             .context_usage => |payload| self.push(.{ .context_usage = .{
                 .system_prompt_bytes = payload.system_prompt_bytes,
