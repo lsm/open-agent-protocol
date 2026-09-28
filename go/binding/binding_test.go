@@ -180,6 +180,35 @@ func TestLiveReadsTheEntryThatClaimsToOpenTheSession(t *testing.T) {
 	}
 }
 
+func TestStateSkipsAnOpenTheNextEntryRefused(t *testing.T) {
+	first := FromOpen("session-1", "memory", "memory-oap-v1", "a-model", "/home/op", "/work", []string{"fs"})
+	second := FromOpen("session-1", "memory", "memory-oap-v1", "another-model", "/home/op", "/work", []string{"git"})
+	history := []Entry{
+		Opened(first, 1),
+		Opened(second, 2),
+		{Action: ActionRefused, TimeMS: 3, Record: second},
+	}
+	state, found := State(history)
+	if !found {
+		t.Fatal("no state found")
+	}
+	if state.Action != ActionOpened || state.Record.Model != "a-model" {
+		t.Fatalf("state = %+v, want the open that is actually running", state)
+	}
+	if !Live(state) {
+		t.Fatal("the running session does not read as live")
+	}
+	if len(state.Record.ToolSourceIDs) != 1 || state.Record.ToolSourceIDs[0] != "fs" {
+		t.Fatalf("state carries the refused request's tool sources: %+v", state.Record.ToolSourceIDs)
+	}
+}
+
+func TestStateOfOnlyRefusalsIsUnknown(t *testing.T) {
+	if _, found := State([]Entry{{Action: ActionRefused, TimeMS: 1, Record: sample()}}); found {
+		t.Fatal("a history of refusals reported a state")
+	}
+}
+
 func TestOneSessionsRecordsAreNotAnotherSessions(t *testing.T) {
 	ctx := context.Background()
 	store := fileStoreIn(t)
