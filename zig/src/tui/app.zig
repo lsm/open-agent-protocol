@@ -658,8 +658,7 @@ pub const App = struct {
         switch (event) {
             .agent_end => |payload| return payload.reason == .completed,
             .compaction_end => |payload| {
-                if (payload.outcome != .completed) return false;
-                try self.recordCompactionTranscript(payload.transcript.slice());
+                if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
                 return true;
             },
             else => return false,
@@ -4959,23 +4958,21 @@ test "App /compact reports an empty or freshly compacted history without compact
     try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
 }
 
-test "App sends queued messages once a compaction completes but not after a cancelled one" {
+test "App sends the drafts queued during a compaction however the compaction ends" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
     var mock = MockAppSession{ .history_messages = &compaction_history };
     defer mock.deinit();
     app.session = mock.session();
 
-    mock.queued_counts.steering = 1;
-    try mock.eventStream().push(.{ .compaction_start = .{} });
-    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .cancelled } });
-    try app.drainEvents();
-    try std.testing.expectEqual(@as(usize, 0), mock.resume_count);
+    const outcomes = [_]tui_runtime.TuiEvent.CompactionOutcome{ .cancelled, .failed, .completed };
+    for (outcomes, 1..) |outcome, sent| {
+        mock.queued_counts.steering = 1;
+        try mock.eventStream().push(.{ .compaction_start = .{} });
+        try mock.eventStream().push(.{ .compaction_end = .{ .outcome = outcome } });
+        try app.drainEvents();
+        try std.testing.expectEqual(sent, mock.resume_count);
+        try std.testing.expect(!app.state.status.compacting);
+    }
     try std.testing.expectEqual(@as(usize, 0), app.compaction_transcripts.items.len);
-
-    try mock.eventStream().push(.{ .compaction_start = .{} });
-    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
-    try app.drainEvents();
-    try std.testing.expectEqual(@as(usize, 1), mock.resume_count);
-    try std.testing.expect(!app.state.status.compacting);
 }

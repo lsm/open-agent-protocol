@@ -263,13 +263,14 @@ history does not fit in one request, the oldest turns are left out and the summa
 says so. A provider error that reports an overflow retries with a quarter less
 history, up to three attempts.
 
-While compacting, the status bar reads `compacting`, `Enter` and `Tab` queue the draft
-until the summary lands, and `Esc` cancels it, leaving the history unchanged. The
-result is a System entry with the message count, estimated tokens before and after,
-the transcript path and the summary. The session file records the result as a
-`compaction_end` event; a resume replays it by resetting the history to the summary.
-None of this crosses the protocol: the agent loop runs in-process, and the summary
-request is an ordinary model call.
+While compacting, the status bar reads `compacting` and `Enter` and `Tab` queue the
+draft. `Esc` cancels the compaction and leaves the history unchanged, but keeps the
+queued drafts: they are sent once the compaction ends, whether it completed, failed or
+was cancelled. The result is a System entry with the message count, estimated tokens
+before and after, the transcript path and the summary. The session file records the
+result as a `compaction_end` event; a resume replays it by resetting the history to
+the summary. None of this crosses the protocol: the agent loop runs in-process, and
+the summary request is an ordinary model call.
 
 Scrolling: while `transcript_scroll` is non-zero the inline body is a window over the
 full transcript rendered at the current width (rows already flushed into terminal

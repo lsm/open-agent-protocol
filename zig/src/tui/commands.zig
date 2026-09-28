@@ -303,10 +303,17 @@ fn handleCompact(ctx: CommandContext, command: Command) !CommandResult {
 
 fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
+    if (ctx.state.status.compacting) {
+        if (ctx.session) |session| {
+            session.cancel();
+        } else if (ctx.runtime) |runtime| {
+            runtime.cancel();
+        }
+        return .{};
+    }
     const active = ctx.state.status.streaming or
         (ctx.runtime != null and ctx.runtime.?.stream_active);
     if (active) {
-        const compacting = ctx.state.status.compacting;
         if (ctx.session) |session| {
             session.cancel();
             session.clearQueuedMessages();
@@ -324,7 +331,6 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
             ctx.state.approval.deinit(ctx.allocator);
             ctx.state.mode = .normal;
         }
-        if (compacting) return .{};
         return .{ .output = try ctx.allocator.dupe(u8, "Turn aborted.") };
     }
     return .{ .output = try ctx.allocator.dupe(u8, "Nothing to abort — agent is idle.") };
@@ -505,11 +511,13 @@ test "compact takes its focus and waits for a running turn" {
     try std.testing.expect(std.mem.indexOf(u8, again.output, "Already compacting") != null);
 }
 
-test "abort during compaction cancels it and leaves the report to the compaction" {
+test "abort during compaction cancels it without dropping queued drafts" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
     state.status.streaming = true;
     state.status.compacting = true;
+    try state.appendSteeredMessage("steered while compacting");
+    try state.appendQueuedFollowUp("queued while compacting");
 
     var mock = MockAbortSession{};
     defer mock.deinit();
@@ -520,7 +528,11 @@ test "abort during compaction cancels it and leaves the report to the compaction
 
     try std.testing.expectEqual(@as(usize, 0), result.output.len);
     try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
-    try std.testing.expect(state.stream_aborted);
+    try std.testing.expectEqual(@as(usize, 0), mock.clear_count);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_steers.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_follow_ups.items.len);
+    try std.testing.expect(state.status.compacting);
+    try std.testing.expect(!state.stream_aborted);
 }
 
 test "abort when idle reports idle" {
