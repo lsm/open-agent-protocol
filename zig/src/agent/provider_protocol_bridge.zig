@@ -13,7 +13,7 @@ const ProtocolServer = protocol_server.ProtocolServer;
 const ProtocolClient = protocol_client.ProtocolClient;
 const ProviderProtocolRuntime = protocol_runtime.ProviderProtocolRuntime;
 
-const default_idle_timeout_ms: i64 = 120_000;
+const default_idle_timeout_ms: i64 = 600_000;
 
 pub const InProcessProviderProtocolBridge = struct {
     registry: *api_registry.ApiRegistry,

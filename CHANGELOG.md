@@ -131,7 +131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream timed out`. The in-process provider bridge counted its 120-second limit from
   the request, so a response still streaming at two minutes was ended mid-sentence. The
   limit is now an idle window that every event resets, as `oapx serve provider --http`
-  already does, and a provider silent for 120 seconds still fails.
+  already does, and the window is ten minutes on both paths, up from two, because a
+  thinking model can stay silent for minutes before its first token. A provider silent
+  for longer still fails.
 - A closed session now leaves the Zig hub entirely, and every operation naming it is
   refused `unknown_session`. The core kept a closed session's entry, its journal and
   a cursor for every run it had, listed it as closed, and answered later operations
