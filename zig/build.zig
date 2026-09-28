@@ -148,6 +148,7 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_adapter_step = b.step("test-unit-adapter", "Run the shared adapter corpus harness tests");
     const test_unit_hub_step = b.step("test-unit-hub", "Run the multi-session hub core and stdio wire unit tests");
+    const compile_hub_step = b.step("compile-hub", "Compile the multi-session hub core and stdio wire without running them");
 
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
@@ -2679,6 +2680,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_test).step);
+    compile_hub_step.dependOn(&hub_test.step);
+    compile_hub_step.dependOn(&hub_stdio_test.step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
+  and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
+  `close` and `state` — over the transport objects the draft specifies. Framing is
+  strict rather than lenient on purpose: a carriage return, invalid UTF-8, an empty
+  line, a line over the frame limit, or a parameter an op does not define are all
+  refused with a code, and a line over the limit is a defect rather than something to
+  grow into. An op the frontend does not serve is a correlated refusal, not a
+  defect, so a host learns which ops this build has without being told the pipe
+  broke. Thirteen tests cover the framing, the five ops, the in-flight bound, and a
+  refusal whose message is bounded so a long one still frames.
+  `close` answers a bare `null`, and a repeated `close` is `unknown_session` rather
+  than a second success — Decision 0039's close releases the session, so there is
+  nothing left to close.
+  The module is now compiled for the Windows cross-compile targets, which the
+  cross-compile never reached while it was outside the `oapx` binary.
 - `contract.Session` grows an optional `readable` slot, so the hub's loop waits on
   every session's child at once instead of giving each a share of the wait in turn.
   The loop gave each open session at least 1 ms of blocking wait, one after
