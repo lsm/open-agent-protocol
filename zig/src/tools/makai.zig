@@ -2444,7 +2444,7 @@ fn runHub(
         .readable = if (@import("builtin").os.tag == .windows) null else input.handle,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.StdinFailed => {
+        error.StdinFailed, error.FrameLimitTooSmall => {
             if (frontend.defect()) |line| {
                 var buffer: [640]u8 = undefined;
                 const message = std.fmt.bufPrint(&buffer, "oapx: framing defect, stopped serving: {s}{s}\n", .{
@@ -2457,6 +2457,16 @@ fn runHub(
             }
             core.closeSessions();
             return error.FramingDefect;
+        },
+        error.InputFailed => {
+            core.closeSessions();
+            try compat.stdio.writeAll(stderr, "oapx: the request stream failed, stopped serving\n");
+            return error.InputFailed;
+        },
+        error.OutputStalled => {
+            core.closeSessions();
+            try compat.stdio.writeAll(stderr, "oapx: the host stopped reading, stopped serving\n");
+            return error.OutputStalled;
         },
         else => return err,
     };
@@ -6923,7 +6933,7 @@ pub fn main(init: std.process.Init) !void {
                 try printUsage(stderr);
                 return error.InvalidArgument;
             }
-            if (err == error.FramingDefect) std.process.exit(1);
+            if (err == error.FramingDefect or err == error.InputFailed or err == error.OutputStalled) std.process.exit(1);
             return err;
         };
         return;

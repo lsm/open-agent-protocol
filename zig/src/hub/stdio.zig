@@ -31,6 +31,7 @@ pub const Error = error{
     FrameLimitTooSmall,
     OutputStalled,
     StdinFailed,
+    InputFailed,
     BackendRefused,
     ResponseTooLarge,
     NoSpaceLeft,
@@ -716,7 +717,7 @@ pub const Stream = struct {
     readable: ?std.Io.File.Handle = null,
 };
 
-const ReadFailure = error{StdinFailed};
+const ReadFailure = error{InputFailed};
 
 pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) Error!void {
     var pending: std.ArrayList(u8) = .empty;
@@ -731,11 +732,16 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
         var more = false;
         if (input_ready) {
             more = try readAvailable(allocator, stream, &pending);
+            if (pending.items.len > pending_bound(frontend.frame_limit)) {
+                frontend.noteDefect(pending.items);
+                return Error.FrameLimitTooSmall;
+            }
             while (std.mem.indexOfScalar(u8, pending.items, '\n')) |cut| {
                 const line = pending.items[0..cut];
                 const rest = pending.items[cut + 1 ..];
                 frontend.handleLine(line) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
+                    Error.OutputStalled => return Error.OutputStalled,
                     else => break,
                 };
                 std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
@@ -759,12 +765,15 @@ fn readAvailable(allocator: std.mem.Allocator, stream: Stream, pending: *std.Arr
     const read = stream.read(stream.context, &buffer) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.EndOfStream => return false,
-        else => return ReadFailure.StdinFailed,
+        else => return ReadFailure.InputFailed,
     };
     if (read == 0) return false;
     try pending.ensureUnusedCapacity(allocator, read);
     pending.appendSliceAssumeCapacity(buffer[0..read]);
     return true;
+}
+fn pending_bound(limit: usize) usize {
+    return limit + 1;
 }
 
 const pollable = @import("builtin").os.tag != .windows;
@@ -1206,15 +1215,23 @@ test "state answers a daemon-minted envelope and refuses an unknown session" {
 const Scripted = struct {
     chunks: []const []const u8,
     at: usize = 0,
+    fail_at: ?usize = null,
 
     fn read(context: *anyopaque, buffer: []u8) anyerror!usize {
         const self: *Scripted = @ptrCast(@alignCast(context));
+        if (self.fail_at != null and self.at == self.fail_at.?) return error.BrokenPipe;
         if (self.at >= self.chunks.len) return 0;
         const chunk = self.chunks[self.at];
         self.at += 1;
         if (chunk.len > buffer.len) return error.FrameTooLarge;
         @memcpy(buffer[0..chunk.len], chunk);
         return chunk.len;
+    }
+};
+
+const RefusesWrites = struct {
+    fn write(_: *anyopaque, _: []const u8) anyerror!void {
+        return Error.OutputStalled;
     }
 };
 
@@ -1235,6 +1252,23 @@ const ScriptedHarness = struct {
 
     fn run(self: *ScriptedHarness) !void {
         return self.serveWithHandle(null);
+    }
+
+    fn runRefusingWrites(self: *ScriptedHarness) !void {
+        var frontend = try Frontend.init(self.allocator, &self.backing.hub, .{
+            .context = undefined,
+            .write = RefusesWrites.write,
+        }, .{});
+        defer frontend.deinit();
+        return serve(self.allocator, &frontend, .{
+            .read = Scripted.read,
+            .context = &self.scripted,
+            .readable = null,
+        });
+    }
+
+    fn failReadAt(self: *ScriptedHarness, index: usize) void {
+        self.scripted.fail_at = index;
     }
 
     fn runWithHandle(self: *ScriptedHarness, handle: ?std.Io.File.Handle) !void {
@@ -1264,6 +1298,35 @@ test "the serve loop reads even when it has no handle to wait on" {
     try harness.run();
     try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
     try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
+}
+
+test "a request stream that never ends its line is a framing defect, bounded" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{ .frame_limit = 256 }, &.{"q" ** 400});
+    defer harness.deinit();
+    var frontend = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{ .frame_limit = 256 });
+    defer frontend.deinit();
+    try testing.expectError(error.FrameLimitTooSmall, serve(testing.allocator, &frontend, .{
+        .read = Scripted.read,
+        .context = &harness.scripted,
+        .readable = null,
+    }));
+    try testing.expectEqual(@as(usize, 0), harness.backing.recorder.lines.items.len);
+    try testing.expectEqualStrings("q" ** 400, frontend.defect().?);
+    try testing.expect(!frontend.recorded.cut);
+}
+
+test "a read that fails is its own failure, not a framing defect" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n"});
+    defer harness.deinit();
+    harness.failReadAt(1);
+    try testing.expectError(error.InputFailed, harness.run());
+}
+
+test "a host that stopped reading ends the serve instead of being retried forever" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n"});
+    defer harness.deinit();
+    try testing.expectError(error.OutputStalled, harness.runRefusingWrites());
+    try testing.expectEqual(@as(usize, 0), harness.backing.recorder.lines.items.len);
 }
 
 test "a final line the host never terminated is a framing defect, not a dropped request" {

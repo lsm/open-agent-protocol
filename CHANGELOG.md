@@ -272,6 +272,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only ever *polls* a pipe in this job had never read one, which is why nothing
   had hit it before. The double is scripted, so the loop, the framing, the defect
   path and end of stream are all still covered and the job terminates.
+- A request line that never arrives no longer buffers without bound. The frame
+  limit was only consulted once a newline turned up, so a host that never sent one
+  could grow the daemon's buffer until it ran out of memory; the buffered bytes are
+  now bounded by the limit and a line over it is a framing defect naming what was
+  buffered.
+- A host that stopped reading now ends the serve. A failed write propagated out of
+  the op but was caught as if it were an unreadable request, so the loop kept
+  reading a host that was no longer there, once per cycle, for as long as the
+  process ran.
+- The three reasons a hub's stdio serve can stop are reported as themselves: a
+  framing defect names the line and says so, a failed read says the request stream
+  failed, and a failed write says the host stopped reading. All three exit
+  non-zero. A read failure was reported as a framing defect, which is a thing that
+  did not happen.
 - The hub's stdio serve loop no longer stops driving the hub after the first
   request. It read until end-of-stream inside one cycle, so a host that stayed
   connected and had nothing more to say left every session undriven for as long
