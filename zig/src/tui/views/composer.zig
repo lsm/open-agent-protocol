@@ -32,7 +32,7 @@ pub fn adjustScroll(allocator: std.mem.Allocator, state: *tui_state.AppState, wi
     const content_width = contentWidth(width);
     const rows = try tui_text.layoutRows(allocator, composer.text(), content_width);
     defer allocator.free(rows);
-    const pos = tui_text.cursorPos(rows, composer.text(), composer.cursor);
+    const pos = tui_text.cursorPos(rows, composer.text(), composer.cursor, content_width);
     const cap = rowCap(height);
     if (composer.scroll_row > pos.row) composer.scroll_row = pos.row;
     if (pos.row >= composer.scroll_row + cap) composer.scroll_row = pos.row + 1 - cap;
@@ -115,7 +115,7 @@ fn renderInput(allocator: std.mem.Allocator, state: *const tui_state.AppState, i
     const text = state.composer.text();
     const rows = try tui_text.layoutRows(allocator, text, content_width);
     defer allocator.free(rows);
-    const pos = tui_text.cursorPos(rows, text, state.composer.cursor);
+    const pos = tui_text.cursorPos(rows, text, state.composer.cursor, content_width);
     const cap = @max(max_rows, 1);
     const max_scroll = rows.len -| cap;
     const scroll = @min(state.composer.scroll_row, max_scroll);
@@ -130,7 +130,7 @@ fn renderInput(allocator: std.mem.Allocator, state: *const tui_state.AppState, i
         if (k == 0) try writePrompt(writer, promptFor(state)) else try writer.writeAll("  ");
         const r = rows[row_index];
         if (row_index == pos.row) {
-            const cursor = @min(state.composer.cursor, text.len);
+            const cursor = tui_text.byteOffsetAtColumn(rows, text, pos.row, pos.col);
             try tui_text.writeDisplayEscaped(writer, text[r.start..cursor]);
             try writeCursorAt(writer, text, cursor);
             if (cursor < r.end and text[cursor] != '\n') {
@@ -473,6 +473,20 @@ test "composer keeps a block cursor on a newline boundary" {
 
     try std.testing.expect(std.mem.indexOf(u8, block.text, "first\x1b[7m \x1b[27m\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, block.text, "second") != null);
+}
+
+test "composer renders a cursor on a full row newline on the next row" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.replaceComposerBuffer("abcd\nXY");
+    state.composer.cursor = 4;
+
+    const block = try renderInput(std.testing.allocator, &state, 6, 6);
+    defer std.testing.allocator.free(block.text);
+
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "abcd\n  \x1b[7mX\x1b[27mY") != null);
+    var lines = std.mem.splitScalar(u8, block.text, '\n');
+    while (lines.next()) |line| try std.testing.expect(tui_text.visibleWidth(line) <= 6);
 }
 
 test "composer masks secret login input" {

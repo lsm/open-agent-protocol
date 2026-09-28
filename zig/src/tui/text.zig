@@ -52,14 +52,18 @@ pub fn layoutRows(allocator: std.mem.Allocator, text: []const u8, width: usize) 
     return rows.toOwnedSlice(allocator);
 }
 
-pub fn cursorPos(rows: []const RowRange, text: []const u8, cursor: usize) CursorPos {
+pub fn cursorPos(rows: []const RowRange, text: []const u8, cursor: usize, width: usize) CursorPos {
     if (rows.len == 0) return .{ .row = 0, .col = 0 };
     const at = boundaryAtOrBefore(text, @min(cursor, text.len));
     var row: usize = 0;
     for (rows, 0..) |r, i| {
         if (r.start <= at) row = i else break;
     }
-    return .{ .row = row, .col = displayWidthOf(text[rows[row].start..at]) };
+    const col = displayWidthOf(text[rows[row].start..at]);
+    if (col == @max(width, 1) and at == rows[row].end and at < text.len and text[at] == '\n' and row + 1 < rows.len) {
+        return .{ .row = row + 1, .col = 0 };
+    }
+    return .{ .row = row, .col = col };
 }
 
 pub fn byteOffsetAtColumn(rows: []const RowRange, text: []const u8, row: usize, col: usize) usize {
@@ -477,27 +481,35 @@ test "cursorPos maps byte offsets to rows and columns" {
     const text = "abcdefgh\nij";
     const rows = try layoutRows(std.testing.allocator, text, 4);
     defer std.testing.allocator.free(rows);
-    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 0 }, cursorPos(rows, text, 0));
-    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4));
-    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 4 }, cursorPos(rows, text, 8));
-    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 9));
-    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 1 }, cursorPos(rows, text, 10));
+    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 0 }, cursorPos(rows, text, 0, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 8, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 9, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 1 }, cursorPos(rows, text, 10, 4));
 }
 
 test "cursorPos puts the cursor on its own row after a full final row" {
     const text = "abcdefgh";
     const rows = try layoutRows(std.testing.allocator, text, 4);
     defer std.testing.allocator.free(rows);
-    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 8));
-    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 8, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4, 4));
+}
+
+test "cursorPos moves the cursor to the next row on a full newline-terminated row" {
+    const text = "abcd\nXY";
+    const rows = try layoutRows(std.testing.allocator, text, 4);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 4 }, cursorPos(rows, text, 4, 8));
 }
 
 test "cursorPos keeps the cursor on the row when it sits on a newline" {
     const text = "ab\ncd";
     const rows = try layoutRows(std.testing.allocator, text, 8);
     defer std.testing.allocator.free(rows);
-    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 2 }, cursorPos(rows, text, 2));
-    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 3));
+    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 2 }, cursorPos(rows, text, 2, 8));
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 3, 8));
 }
 
 test "byteOffsetAtColumn snaps a wide codepoint to its start" {

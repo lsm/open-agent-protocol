@@ -1668,7 +1668,7 @@ pub const App = struct {
         const content_width = composer_view.contentWidth(width);
         const rows = try tui_text.layoutRows(self.allocator, composer.text(), content_width);
         defer self.allocator.free(rows);
-        const pos = tui_text.cursorPos(rows, composer.text(), composer.cursor);
+        const pos = tui_text.cursorPos(rows, composer.text(), composer.cursor, content_width);
         const target = @as(isize, @intCast(pos.row)) + delta;
         if (target < 0 or target >= @as(isize, @intCast(rows.len))) return false;
         const goal = composer.goal_column orelse pos.col;

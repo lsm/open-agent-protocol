@@ -105,7 +105,6 @@ code paths; add a transcript row instead.
   growing it covers transcript rows instead of flushing them and shrinking it later
   leaves no blank rows behind —
   and never from active entries (assistant, thinking, tool summary, tool result, user
-  and never from active entries (assistant, thinking, tool summary, tool result, user
   echo). Quitting flushes everything, including active entries.
 - The live frame is the **tail of the unflushed stream** that fits above the chrome,
   followed by a blank row, the modal panel (approval, picker, command palette) if any,
@@ -173,7 +172,8 @@ code paths; add a transcript row instead.
   streaming pulse, approval warning, login magenta). Typing `/` opens a command palette
   above it; `Tab` completes the first match. The raw draft is laid out into visual rows
   at the content width by `tui_text.layoutRows` (wide codepoints never split; a cursor
-  past the last cell of a full row lands on the next row), and the panel grows with the
+  past the last cell of a full row — or on the newline ending one — lands on the next
+  row), and the panel grows with the
   draft up to `min(12, height/3)` content rows, floor 1. Beyond that the window follows
   the cursor and muted `▲ N` / `▼ N` markers in the top/bottom border count the hidden
   rows. Tab renders as `→`, other C0 bytes and DEL as caret notation (`^G`, `^?`), C1
