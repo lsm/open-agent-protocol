@@ -361,8 +361,7 @@ the source at this pin's own commit
 there (`git hash-object` on each) — and the last paragraph says what that
 does and does not establish.
 
-**Hermes has a real reload, and it is the one harness of the seven whose
-not-found is already typed.** `session.resume` takes a target that may be a
+**Hermes has a real reload, and its not-found is typed on the wire.** `session.resume` takes a target that may be a
 session id *or* a title, and its common payload (`_resume_response` in
 `tui_gateway/methods_session.py`) answers `session_id`, `resumed`,
 `message_count`, the `messages` (or `messages_omitted` / `hydrating` when the
@@ -415,12 +414,13 @@ database — pending messages are appended to `HERMES_HOME/sessions/<id>.jsonl`
 when `state.db` was replaced under a live process — so a transcript can exist
 for a session the database no longer has.
 
-**Whether a typed not-found has to be manufactured: not here, which is why
-this row is the model for 0039's reopen.** `4007` is a typed absence on the
-wire, so `unknown_session` can be carried from it rather than inferred from a
-null or from silence. The harnesses that force the inference are the ones the
-pi and ACP ledgers record: discovery returning `null`, and a spec that says
-nothing at all.
+**Whether a typed not-found has to be manufactured: not here.** `4007` is a
+typed absence on the wire, so `unknown_session` can be carried from it rather
+than inferred from a null or from silence. Among the harnesses read at their
+pins, OpenCode's is typed too (`SessionNotFoundError`) and DeepSeek's
+(`SessionPersistenceNotFoundError`), while pi's discovery answers `null` and
+the ACP spec says nothing at all — so the typed rows are the majority and the
+inference is what the minority needs, not the rule.
 
 **What the Go adapter does with all of it: it never asks.** `Open` in
 `go/adapter/hermes/adapter.go` always calls `Factory.Start`, which creates a
