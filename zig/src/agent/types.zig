@@ -134,12 +134,30 @@ pub const AgentEvent = union(enum) {
     tool_execution_update: ToolExecutionUpdatePayload,
     tool_execution_end: ToolExecutionEndPayload,
 
+    run_failed: AgentFailurePayload,
+
     pub fn deinit(self: *AgentEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .message_update => |*payload| payload.deinit(allocator),
+            .run_failed => |*payload| payload.deinit(allocator),
             else => {},
         }
         self.* = undefined;
+    }
+
+    pub fn isTerminal(self: AgentEvent) bool {
+        return switch (self) {
+            .agent_end, .run_failed => true,
+            else => false,
+        };
+    }
+};
+
+pub const AgentFailurePayload = struct {
+    reason: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+
+    pub fn deinit(self: *AgentFailurePayload, allocator: std.mem.Allocator) void {
+        self.reason.deinit(allocator);
     }
 };
 
@@ -428,6 +446,7 @@ pub const AgentState = struct {
     tools: []const AgentTool = &.{},
     messages: std.ArrayList(ai_types.Message),
     is_streaming: bool = false,
+    terminal_sent: bool = false,
     stream_message: ?ai_types.Message = null,
     pending_tool_calls: std.StringHashMap(void),
     error_message: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
