@@ -43,8 +43,8 @@ func TestBackendsMatchOapx(t *testing.T) {
 			if missing, extra := lineDifference(wantOut, gotOut); len(missing)+len(extra) > 0 {
 				t.Errorf("oapx answers differently\n--- only goap\n%s\n--- only oapx\n%s", strings.Join(missing, "\n"), strings.Join(extra, "\n"))
 			}
-			if wantChild != gotChild {
-				t.Errorf("oapx writes the child differently\n--- goap\n%s\n--- oapx\n%s", wantChild, gotChild)
+			if missing, extra := childLineDifference(t, wantChild, gotChild); len(missing)+len(extra) > 0 {
+				t.Errorf("oapx writes different data to its child\n--- only goap\n%s\n--- only oapx\n%s", strings.Join(missing, "\n"), strings.Join(extra, "\n"))
 			}
 		})
 	}
@@ -319,6 +319,53 @@ func scrubbed(value any) any {
 		return typed
 	}
 	return value
+}
+
+func TestChildLinesCompareDataNotBytes(t *testing.T) {
+	escaped := "{\"id\":\"req_1\",\"params\":{\"text\":\"a<b>c&d\u2028e\"}}"
+	plain := "{\"params\":{\"text\":\"a\u003cb\u003ec\u0026d\u2028e\"},\"id\":\"req_1\"}"
+	missing, extra := childLineDifference(t, escaped+"\n", plain+"\n")
+	if len(missing)+len(extra) != 0 {
+		t.Fatalf("the same data in different bytes compared unequal: only goap %v, only oapx %v", missing, extra)
+	}
+	changed := "{\"id\":\"req_1\",\"params\":{\"text\":\"a<b>c&d\u2028f\"}}"
+	missing, extra = childLineDifference(t, escaped+"\n", changed+"\n")
+	if len(missing) != 1 || len(extra) != 1 {
+		t.Fatalf("different data compared equal: only goap %v, only oapx %v", missing, extra)
+	}
+	if _, extra := childLineDifference(t, "--- GET\n", "--- GET\n/api/session/ses_1/event\n"); len(extra) != 1 {
+		t.Fatalf("a request the other tree never made compared equal: %v", extra)
+	}
+}
+
+func childLineDifference(t *testing.T, want, got string) ([]string, []string) {
+	t.Helper()
+	return lineDifference(childLines(t, want), childLines(t, got))
+}
+
+func childLines(t *testing.T, text string) []string {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			continue
+		}
+		lines = append(lines, parsedChildLine(t, line))
+	}
+	return lines
+}
+
+func parsedChildLine(t *testing.T, line string) string {
+	t.Helper()
+	at := strings.IndexByte(line, '{')
+	if at < 0 {
+		return line
+	}
+	prefix, body := line[:at], line[at:]
+	if !json.Valid([]byte(body)) {
+		return line
+	}
+	return prefix + normalizedLine(t, body)
 }
 
 func lineDifference(want, got []string) ([]string, []string) {
