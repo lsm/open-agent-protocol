@@ -14,9 +14,6 @@ type ProviderAuthInfo struct {
 
 	Name string
 
-	// AuthKinds says how this provider accepts a credential, in preference
-	// order. It is empty when the runtime predates the field, which is not the
-	// same as a provider that needs no credential: that one says CredentialKindNone.
 	AuthKinds []protocol.CredentialKind
 
 	Status AuthStatus

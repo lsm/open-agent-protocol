@@ -10,10 +10,6 @@ type AuthProvider struct {
 	LastError  string           `json:"last_error,omitempty"`
 }
 
-// CredentialKind is how a provider accepts a credential. Named for the
-// credential rather than the auth because AuthKind in this repository's SDK
-// surface already means a kind of auth error, and a reader holding both would
-// have two unrelated meanings of the same word.
 type CredentialKind string
 
 const (

@@ -813,7 +813,10 @@ mod tests {
         assert_eq!(providers.len(), 2);
         assert_eq!(providers[0].auth_status, AuthStatus::LoginRequired);
         assert_eq!(providers[1].auth_status, AuthStatus::Authenticated);
-        assert_eq!(providers[0].auth_kinds, vec![AuthKind::OAuth, AuthKind::ApiKey]);
+        assert_eq!(
+            providers[0].auth_kinds,
+            vec![AuthKind::OAuth, AuthKind::ApiKey]
+        );
         assert_eq!(providers[1].auth_kinds, vec![AuthKind::OAuth]);
         assert_eq!(providers[0].last_error, None);
     }

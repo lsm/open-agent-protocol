@@ -62,6 +62,7 @@ from .types import (
     AssistantMessage,
     AuthErrorEvent,
     AuthEvent,
+    AuthKind,
     AuthEventHandler,
     AuthFlowHandlers,
     AuthProgressEvent,
@@ -181,6 +182,7 @@ __all__ = [
     "ModelCapability",
     "ModelLifecycle",
     "ModelSource",
+    "AuthKind",
     "AuthStatus",
     # Auth
     "ProviderAuthInfo",
