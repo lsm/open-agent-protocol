@@ -317,7 +317,7 @@ func TestOneActivePromptAndCancellationRaces(t *testing.T) {
 		})
 	}
 }
-func TestACancelThatSettlesTheRunInsideTheNotifyStillAnswersCancelling(t *testing.T) {
+func TestACancelWhoseNotifyCompletesTheTurnAnswersCancellingAndTheCompletionFollows(t *testing.T) {
 	s, f := openTest(t, 64)
 	admission, stream := submit(t, s)
 	<-f.promptStarted
@@ -343,7 +343,7 @@ func TestACancelThatSettlesTheRunInsideTheNotifyStillAnswersCancelling(t *testin
 		t.Fatalf("terminal=%s, want the natural completion to win the stream", got)
 	}
 	if !cancel.Accepted || cancel.Status != protocol.RunCancelling {
-		t.Fatalf("cancel=%+v, want accepted cancelling: the turn was live when the cancel was accepted, and it settled on the stream behind the answer", cancel)
+		t.Fatalf("cancel=%+v, want the acceptance", cancel)
 	}
 	assertValidTrace(t, admission, events)
 }
