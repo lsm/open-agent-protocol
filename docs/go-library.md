@@ -18,9 +18,10 @@ scalar range through `strconv.IsPrint` and writes the printable spans into
 `zig/src/adapter/goquote_table.zig`, which the Zig adapter's codec
 binary-searches for `strconv.Quote`-faithful quoting — a generator for the other
 tree, recorded in the ACP v1.7.0 ledger — and `nocomment` is the zero-comment
-checker this repository gates itself with. Both are run by `go run`, and
-`goap check` counts them as binaries rather than checking them against the
-public set, so neither row above can drift.
+checker this repository gates itself with. Neither is in the table above:
+`publicset.Public` returns false for each, `goap check` counts them as binaries
+rather than checking them against the public set, and a program runs them with
+`go run` rather than importing them.
 
 It is not a tutorial. The three runnable examples are the tutorial, and they
 are compiled and run by `go test`:
@@ -72,7 +73,7 @@ being one.
 | `go/providercatalog` | Provider and model facts, and the rule that an unpublished entry is unknown. | `go/cmd/goap/providers.go` |
 | `go/serve` | The hub: sessions, runs, subscriptions, the snapshot and the close semantics, over a transport-agnostic core. | `go/cmd/goap/serve.go`, `endpoint.go` |
 | `go/serve/servehttp` | The HTTP + SSE binding of the hub, including the body gate, the allowlists and the stream endings. | `go/cmd/goap/serve.go` |
-| `go/serve/serveendpoint` | The binding that puts the hub inside another process's own HTTP server, with no listener of its own. | `go/cmd/goap/endpoint.go` |
+| `go/serve/serveendpoint` | The endpoint binding: raw OAP envelopes over a pair of streams, `Server.Run(ctx, io.Reader, io.Writer)`, with no listener and no HTTP — the stdio form the endpoint profile specifies. The embeddable **HTTP** handler is `servehttp.Server.Handler()`. | `go/cmd/goap/endpoint.go` |
 | `go/serve/servestdio` | The stdio binding: twelve ops over a pipe, with its own op set rather than the endpoint's raw envelopes. | `go/cmd/goap/serve.go` |
 | `go/client` | A Go client for the hub's HTTP + SSE wire. Also the far-side proof that the wire is implementable from outside this module. | — |
 | `harnesses` | The embedded harness pin catalogue, so a consumer reads the same pins the repository does. | `go/cmd/goap/harnesses.go` |
