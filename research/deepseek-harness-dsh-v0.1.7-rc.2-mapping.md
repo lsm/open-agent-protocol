@@ -289,3 +289,70 @@ refused by name rather than routed on a protocol it does not speak. A built-in p
 from the installed catalog even when its base URL points at a gateway, so
 routing through a gateway needs a *custom* provider entry rather than an
 override of a shipped one.
+
+## Session reload at dsh-v0.1.7-rc.2
+
+Decision 0039's evidence table cites this ledger for the DeepSeek row. Every
+line below is read from the source at this pin's own commit
+`477b4f420553e8a52c2fbccc464d7561b239c443` — the same commit and tree as
+*Provenance* above — and the last paragraph says what that does and does not
+establish, including the one place where this row contradicts the expectation
+it was filed under.
+
+**There is a store, and it is the harness's own shipped backend.**
+`packages/session/session-persistence-jsonl` ("the shipped JSONL
+session-persistence backend for deployments and maintainers choosing,
+configuring, or operating it") stores each session in a current append-only
+JSONL log and retains immutable historical generations. It is *mounted* by a
+composition rather than always present: the package's configuration is a
+single `root` ("an absolute path to session-logs"), and the README's own
+wording is conditional — mount this backend when a composition needs durable
+sessions. Around it sit `session-format-catalog` (the current format plus its
+historical ones), `session-format-v0-to-v1` (the migration),
+`session-checkpoint-policy`, and the package's own `lease.ts`, `generation.ts`
+and `catalog-migration.ts`. So "does the harness have a store" and "is a store
+mounted in the deployment an adapter is talking to" are two different
+questions, and only the first is answered by the version.
+
+**A reload is implemented: `open(id, 'read')` plus `readStoredLog`.**
+`open` takes a `SessionId` and a `SessionAccess`; on a read it resolves the
+stored log and hands back a `JsonlSessionHandle` over a
+`{cursor, materialized}` state, retrying once if a generation's source changed
+underneath it (`JsonlGenerationSourceChangedError`). `list` and `stat`
+enumerate, `resolveCurrentLog` answers the current file's path, and the write
+side is `persistHeader` / `persistBatch` / `truncateTornTail`. What a load
+restores is the stored `SessionHeader` — which carries `revision` and
+`inheritedEventCount` — plus the events in the current log: that is, a
+*transcript*, not a configuration record. Codex's reload answers the thread's
+six configuration members; nothing in this header answers a model, an agent or
+a working directory, and this ledger does not claim where the harness keeps
+those.
+
+**The not-found is typed, and so is the one case that is not an absence.**
+`requireStoredLog` throws `SessionPersistenceNotFoundError(id)` when
+`findLog` answers `undefined` (both the `open` path and the `stat` path), and
+`resolveCurrentLog` answers `undefined` for the same miss while throwing
+`SessionFormatUnsupportedError` — naming the raw log's path — for a log whose
+`sourceVersion` is older than `SESSION_FORMAT_VERSION`. So unlike pi's `null`
+from discovery or ACP's silence, `unknown_session` *could* be carried from this
+store's own error. Torn writes are a first-class case rather than an accident:
+the handle carries `tornTruncateTo` and `recoveredTail`, and
+`truncateTornTail` is the repair — the same "a torn write is detected, never
+read" rule #447's binding record has to hold to.
+
+**What the adapter does with it: declines, and the reason is the wire rather
+than the harness.** The DeepSeek backend is a *composition mount* chosen by
+configuration, and the wire the Go adapter drives is the pinned SDK wire,
+which has no request to load or resume a session: the support table in
+`go/adapter/deepseek/adapter.go` records `session.open` as `emulated` — "one
+process and native session per OAP session" — and `run.resume` as `degraded`
+because the "selected SDK wire has no resume request", with `run.cancel`,
+`session.message.delivery.steer` and `action.permissions` all `unavailable`
+for the same reason. `Open` takes the caller's OAP id verbatim, starts a fresh
+process and native session, and records no binding. So the correct reading of
+this row is narrow and worth stating precisely: **the harness has a store with
+a typed absence and a real reload, and the adapter cannot reach it over the
+wire it speaks, so it declines rather than reading the files behind the
+harness's back.** Reaching it would take a new SDK request first and an
+adapter change second, and until the first exists, #448's DeepSeek step has
+nothing to bind to.
