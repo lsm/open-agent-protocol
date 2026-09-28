@@ -32,7 +32,7 @@ Run the combined endpoint with:
 oapx serve agent,provider --stdio
 ```
 
-The four SDKs in `sdk/` use this OAP mode by default. The agent's selected
+The three SDKs in `sdk/` — Python, Rust and TypeScript — and the Go one at `go/sdk/` use this OAP mode by default. The agent's selected
 model can be changed mid-session with `session.model.switch`, and local
 authentication flows use the optional `+auth` unit. Dynamic provider
 attachment is specified but optional; a remote HTTP provider binding is
@@ -93,6 +93,7 @@ Current drafts:
 Protocol artifacts:
 
 - [Illustrative protocol envelopes](examples/README.md)
+- [The system map](docs/oap-system-map.html) — what the pieces are and where the port stands, as one page. Open it in a browser; GitHub serves an `.html` file as source.
 - `fixtures/`: normative executable conformance traces
 - `fixtures/packs/`: extension packs, loadable with `go run ./go/cmd/goap validate -pack`
 - `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles

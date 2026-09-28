@@ -236,8 +236,8 @@
     <h1>One wire between a control layer and an agent loop</h1>
     <p class="lede">OAP is a CC0 draft protocol plus an executable core that proves it. Everything in the tree serves one invariant: an adapter over somebody else's agent harness must emit event traces the shared validator accepts.</p>
     <div class="binaries">
-      <div class="bin"><b>goap</b><span>Go · peer implementation, run from the repository with <code>go run ./go/cmd/goap</code></span></div>
-      <div class="bin"><b>oapx</b><span>Zig · the product binary · port in progress</span></div>
+      <div class="bin"><b>oapx</b><span>Zig · the released binary</span></div>
+      <div class="bin"><b>goap</b><span>Go · this repository's tool, run with <code>go run ./go/cmd/goap</code> and never installed</span></div>
     </div>
   </header>
 
@@ -309,7 +309,7 @@
         <g>
           <rect x="750" y="48" width="188" height="184" rx="9" fill="var(--surface)" stroke="var(--rule)"/>
           <text class="svg-title" x="766" y="74">agent harnesses</text>
-          <text class="svg-sub" x="766" y="94">each pinned to one commit</text>
+          <text class="svg-sub" x="766" y="94">pinned per the catalog</text>
           <text class="svg-mono" x="766" y="120">claude</text>
           <text class="svg-mono" x="766" y="138">codex</text>
           <text class="svg-mono" x="766" y="156">acp</text>
@@ -320,6 +320,7 @@
         <g>
           <rect x="750" y="374" width="188" height="96" rx="9" fill="var(--surface)" stroke="var(--rule)"/>
           <text class="svg-title" x="766" y="400">inference vendors</text>
+          <text class="svg-sub" x="766" y="418">four of 23 catalogued</text>
           <text class="svg-mono" x="766" y="424">anthropic</text>
           <text class="svg-mono" x="766" y="442">openai</text>
           <text class="svg-mono" x="766" y="460">ollama · zai</text>
@@ -392,17 +393,17 @@
       <div class="phase">
         <span class="n">PHASE 02</span>
         <h3>schema</h3>
-        <p>JSON Schema 2020-12 over twelve bundled documents. Envelope types are a discriminated union; extension packs compose new branches into it.</p>
+        <p>JSON Schema 2020-12 over the bundled documents in <code>schema/v0.1/</code> — one per envelope group, plus the two that describe the bundle and its packs. Envelope types are a discriminated union; extension packs compose new branches into it.</p>
         <span class="out">schema_invalid</span>
       </div>
       <div class="phase">
         <span class="n">PHASE 03</span>
         <h3>semantic</h3>
         <p>A state machine over the whole trace: admission, sequence, terminals, interactions, capability claims, queue bounds.</p>
-        <span class="out">53 typed diagnostic codes</span>
+        <span class="out">complete &mdash; 57 typed diagnostic codes</span>
       </div>
     </div>
-    <p class="fine">Fixtures are normative. <code>fixtures/manifest.json</code> lists 546 traces — positive ones plus invalid ones carrying the exact codes the validator must emit. Change validator behaviour, add a fixture.</p>
+    <p class="fine">Fixtures are normative. <code>fixtures/manifest.json</code> lists over 570 traces — positive ones plus invalid ones carrying the exact codes the validator must emit. Change validator behaviour, add a fixture.</p>
   </section>
 
   <section>
@@ -589,7 +590,7 @@ goap: validation failed           <span class="cmt">(on stderr; exit status 1)</
     <div class="sec-head">
       <p class="eyebrow">Using it</p>
       <h2>Commands</h2>
-      <p>The Go binary is what you can run today. The Zig one keeps the same verbs and adds a TUI and a one-shot loop.</p>
+      <p><code>oapx</code> is the released binary and the source of the <code>oapx</code> rows below. <code>goap</code> is this repository's own tool, run with <code>go run ./go/cmd/goap</code> and never installed.</p>
     </div>
     <div class="tablewrap">
       <table>
@@ -602,8 +603,10 @@ goap: validation failed           <span class="cmt">(on stderr; exit status 1)</
           <tr><td class="cmdcell">go run ./go/cmd/goap serve agent</td><td class="note">One agent loop, raw OAP envelopes, one per line. The shape a harness implementing OAP natively takes.</td></tr>
           <tr><td class="cmdcell">go run ./go/cmd/goap conformance --command "…"</td><td class="note">Spawn somebody's endpoint binary, drive a scripted session, assemble the exchange and run it through the real validator.</td></tr>
           <tr><td class="cmdcell">oapx</td><td class="note">The TUI.</td></tr>
-          <tr><td class="cmdcell">oapx run "fix the failing test"</td><td class="note">One shot, same loop, no server.</td></tr>
-          <tr><td class="cmdcell">oapx serve agent provider</td><td class="note">Both profiles in one process.</td></tr>
+          <tr><td class="cmdcell">oapx run "fix the failing test"</td><td class="note">One shot, no server. Add <code>--agent</code> to run the full agent loop rather than a single print-mode call.</td></tr>
+          <tr><td class="cmdcell">oapx serve agent,provider --stdio</td><td class="note">Both profiles on one pipe.</td></tr>
+          <tr><td class="cmdcell">oapx hub --stdio</td><td class="note">The multi-session daemon over newline JSON. It serves <code>adapters</code>, <code>sessions</code>, <code>capabilities</code>, <code>state</code> and <code>close</code>; any other op answers <code>unknown_op</code>.</td></tr>
+          <tr><td class="cmdcell">oapx validate trace.json</td><td class="note">Judge a trace: decode, schema, then the ported semantic rules. <code>--format human|json</code>.</td></tr>
         </tbody>
       </table>
     </div>
@@ -625,6 +628,7 @@ goap: validation failed           <span class="cmt">(on stderr; exit status 1)</
       <span class="chip">+tool-sources</span>
       <span class="chip">+control-tools</span>
       <span class="chip">+models</span>
+      <span class="chip">+provider-attach</span>
       <span class="chip">+queue</span>
       <span class="chip">+compound-open</span>
       <span class="chip">+steer</span>
@@ -637,14 +641,15 @@ goap: validation failed           <span class="cmt">(on stderr; exit status 1)</
     <div class="sec-head">
       <p class="eyebrow">Where the port stands</p>
       <h2>Go and Zig are peers; the specification decides</h2>
-      <p>Both implementations run side by side against the same corpus &mdash; 546 fixtures at the time of writing. Neither tree is the answer key: a disagreement is settled by the decisions, drafts, schema, fixtures and corpora (Decision 0032). Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>zig/src/validation/semantic_gate.zig</code> names each declared exception.</p>
+      <p>Both implementations run side by side against the same corpus &mdash; over 570 fixtures at the time of writing. Neither tree is the answer key: a disagreement is settled by the decisions, drafts, schema, fixtures and corpora (Decision 0032). Counts move with every merge, so for the live figures run <code>zig build test</code>: the gate prints what it judged and what still disagrees, and <code>zig/src/validation/semantic_gate.zig</code> names each declared exception.</p>
     </div>
     <div class="status">
       <div class="stage done"><span class="st">complete</span><b>1 · Types</b><span>Wire model and strict decode.</span></div>
       <div class="stage done"><span class="st">complete</span><b>2 · Schema</b><span>Interpreted, not generated. Every fixture judged or explicitly accounted for.</span></div>
-      <div class="stage now"><span class="st">in progress</span><b>3 · Semantic</b><span>Landing unit by unit. The gate names every fixture still disagreeing, so the remainder is always in the tree.</span></div>
-      <div class="stage next"><span class="st">next</span><b>4 · Adapters</b><span>Seven harnesses, ~24k lines, one corpus each.</span></div>
-      <div class="stage next"><span class="st">always</span><b>5 · Differential</b><span>Runs both ways. Nothing retires.</span></div>
+      <div class="stage done"><span class="st">complete</span><b>3 · Semantic</b><span>Every unit has landed: the gate’s list of fixtures still disagreeing, <code>nothing_outstanding</code> in <code>zig/src/validation/semantic_gate.zig</code>, is empty, so the remainder is always in the tree.</span></div>
+      <div class="stage done"><span class="st">complete</span><b>4 · Adapters</b><span>Seven harnesses, one corpus each, all seven reachable behind <code>oapx serve agent --backend</code>.</span></div>
+      <div class="stage now"><span class="st">in progress</span><b>5 · Hub</b><span><code>oapx hub --stdio</code> serves five ops; the rest answer <code>unknown_op</code>. A hub-driven parity job runs on every change.</span></div>
+      <div class="stage next"><span class="st">always</span><b>6 · Differential</b><span>Runs both ways, and #496 runs the two stdio hubs against each other on every change. Nothing retires.</span></div>
     </div>
     <p class="fine">There is never a moment without a working product: each stage adds a capability to a binary that already ships. The names stay apart on purpose — differential execution needs both on one <code>PATH</code>, and two executables cannot both be <code>oap</code>.</p>
   </section>
