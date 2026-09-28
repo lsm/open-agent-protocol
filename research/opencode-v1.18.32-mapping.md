@@ -176,7 +176,7 @@ becoming `opencode-<channel>.db` for a non-default installation channel;
 `DatabaseMigration`'s migration list against a `migration` bookkeeping table
 created `IF NOT EXISTS`, so an empty store appears on demand — a reattach
 against a deleted database and one against a session that never existed are
-the same answer, exactly as for Hermes.
+the same answer.
 
 **A reload restores the messages *and* the configuration, from two routes.**
 `GET /api/session/:sessionID` returns the record and
@@ -198,26 +198,34 @@ is a single `select … where id = ?` and answers `undefined`; the server
 handler turns that into `SessionNotFoundError` (tag `Session.NotFoundError`),
 and a message that is not there into `Session.MessageNotFoundError`. An
 adapter can therefore carry `unknown_session` from the wire rather than infer
-it. This is the second harness of the seven to say so, with Hermes; the ones
-that force the inference are in the pi ledger (discovery returns `null`) and
-the ACP ledger (the spec says nothing).
+it. Hermes' own store is typed the same way — `tui_gateway/methods_session.py`
+at the Hermes pin answers `4007 session not found` from `_resume_locate`, read
+at that pin for the Hermes ledger — so two of the seven harnesses say so. The
+ones that force the inference are in the pi ledger (discovery returns `null`)
+and the ACP ledger (the spec says nothing).
 
 **What a reattach would call, and what the adapter calls instead.** The session
-group (`packages/protocol/src/groups/session.ts`) carries `session.list`
-(`GET /api/session`, cursor-paged, default limit 50), `session.create`
-(`POST /api/session`), `session.active`, `session.get`, `session.context`,
-`session.history`, `session.events` (`GET /api/session/:sessionID/event`),
-`session.message`, `session.switchAgent`, `session.switchModel`,
-`session.prompt`, `session.compact`, `session.wait`, `session.interrupt` and
-three `session.revert.*` stages. The Go adapter uses exactly one of them:
-`Open` calls `client.CreateSession` — the `POST /api/session` this ledger
-already recorded — and keeps the returned id in memory. It writes no binding,
-and `Resume` in `go/adapter/opencode/session.go` is keyed on the adapter's own
+group (`packages/protocol/src/groups/session.ts`) carries sixteen routes:
+`session.list` (`GET /api/session`, cursor-paged, default limit 50),
+`session.create` (`POST /api/session`), `session.active`, `session.get`,
+`session.context`, `session.history`, `session.events`
+(`GET /api/session/:sessionID/event`), `session.message`, `session.switchAgent`,
+`session.switchModel`, `session.prompt`, `session.compact`, `session.wait`,
+`session.interrupt` and three `session.revert.*` stages. The Go adapter uses
+seven of them, and the port goldens in
+`go/adapter/opencode/testdata/port-goldens.json` name every request it makes:
+`POST /api/session`, `POST /api/session/:id/prompt`, `POST
+/api/session/:id/interrupt`, `GET /api/session/active`,
+`GET /api/session/:id/history?after=&limit=`, `GET /api/session/:id/event` and
+`GET /api/session/:id/event?after=`. So it already reads a live session's
+history and its event stream — a reload *of a session the server still holds* —
+and what it never calls is the part a reopen needs: `session.list`,
+`session.get` (the record that carries the model, the agent and the directory)
+and `session.context`. It writes no binding, and `Resume` in
+`go/adapter/opencode/session.go` is keyed on the adapter's own
 `s.runs[RunID]`, so it replays a run *this process* still holds and is not a
-reattach at all. So the list route, the record route and the context route a
-reopen needs are all present and none of them is called; a reopen after a
-restart would come back empty rather than refusing, which is the same gap the
-Hermes ledger records and the case 0039's binding record has to close.
+reattach at all. A reopen after a restart would therefore come back empty
+rather than refusing, which is the gap 0039's binding record has to close.
 
 **Two answers a reattach must be ready for, both already recorded above from
 the wire.** `POST /api/session/:sessionID/wait` on an idle session answers
