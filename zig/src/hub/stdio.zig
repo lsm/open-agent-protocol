@@ -554,20 +554,18 @@ fn trim(arena: std.mem.Allocator, message: []const u8) Error![]const u8 {
 
 fn timestamp(arena: std.mem.Allocator, milliseconds: i64) ![]const u8 {
     const seconds: u64 = @intCast(@divFloor(milliseconds, 1000));
-    const rest: u64 = @intCast(@mod(milliseconds, 1000));
     const epoch = std.time.epoch.EpochSeconds{ .secs = seconds };
     const day = epoch.getEpochDay().calculateYearDay();
     const month = day.calculateMonthDay();
     const clock = epoch.getDaySeconds();
-    var buffer: [40]u8 = undefined;
-    const written = try std.fmt.bufPrint(&buffer, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}Z", .{
+    var buffer: [32]u8 = undefined;
+    const written = try std.fmt.bufPrint(&buffer, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
         day.year,
         @intFromEnum(month.month),
         @as(u16, month.day_index) + 1,
         clock.getHoursIntoDay(),
         clock.getMinutesIntoHour(),
         clock.getSecondsIntoMinute(),
-        rest,
     });
     return arena.dupe(u8, written);
 }
@@ -963,6 +961,16 @@ test "an op the frontend does not serve is a correlated refusal, not a defect" {
     try testing.expect(!harness.frontend.stopped);
 }
 
+test "a timestamp is RFC 3339 at second precision in UTC, and drops the fraction" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try testing.expectEqualStrings("1970-01-01T00:00:00Z", try timestamp(arena, 0));
+    try testing.expectEqualStrings("2023-11-14T22:15:23Z", try timestamp(arena, 1_700_000_123_456));
+    try testing.expectEqualStrings("2023-11-14T22:15:23Z", try timestamp(arena, 1_700_000_123_000));
+    try testing.expectEqualStrings("2023-11-14T22:15:23Z", try timestamp(arena, 1_700_000_123_999));
+}
+
 test "the adapters listing answers every registered adapter, sorted, with its revision" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
@@ -1012,7 +1020,7 @@ test "the sessions listing is sorted by session id and reports the adapter" {
     try testing.expectEqualStrings("reference", try textMember(harness.arena(), sessions.items[0], "adapter"));
     try testing.expectEqualStrings("zulu", try textMember(harness.arena(), sessions.items[1], "session_id"));
     try testing.expectEqualStrings("idle", try textMember(harness.arena(), sessions.items[0], "status"));
-    try testing.expectEqualStrings("1970-01-01T00:00:00.000Z", try textMember(harness.arena(), sessions.items[0], "created_at"));
+    try testing.expectEqualStrings("1970-01-01T00:00:00Z", try textMember(harness.arena(), sessions.items[0], "created_at"));
 }
 
 test "capabilities answers a probed descriptor as an envelope, and refuses an unknown one" {

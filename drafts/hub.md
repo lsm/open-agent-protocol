@@ -675,7 +675,10 @@ flight.
 - **params:** none.
 - **answer:** `{"sessions":[{"session_id":…,"adapter":…,"status":…,"active_run_id":…,"active_runs":[…],"created_at":…}]}`,
   sorted by session id. Only live sessions are listed: a closed session is
-  released.
+  released. `created_at` is **RFC 3339 in UTC at whole-second precision**, with a
+  trailing `Z` and no fractional part — `2023-11-14T22:15:23Z`, which is what Go's
+  `time.RFC3339` writes. A sub-second remainder is truncated, not rounded, so two
+  trees listing the same session at the same instant write the same byte.
 - **errors:** `invalid_request` (a parameter was supplied).
 - **pinned by:** `TestSessionsOpListsTrackedSessions`, `TestSessionsListingAcrossLifecycle`,
   `TestListingsMatchHTTP`, `TestHubSessionsListingAcrossAdapters`. The release is

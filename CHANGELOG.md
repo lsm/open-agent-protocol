@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   They still differ in the order the members are written: Go's envelope struct
   puts `payload` straight after `id` and this tree's serializer writes it last,
   which the hub draft's divergence ledger records.
+  A session's `created_at` is now RFC 3339 in UTC at whole-second precision with
+  a trailing `Z` and no fractional part, which is what Go's `time.RFC3339` writes.
+  It carried milliseconds, so the two trees wrote the same session differently in
+  every listing and the difference was not in the divergence ledger. A sub-second
+  remainder is truncated rather than rounded, as Go does, and the format is stated
+  in the hub draft's `sessions` row.
   The module is now compiled for the Windows cross-compile targets, which the
   cross-compile never reached while it was outside the `oapx` binary.
 - `contract.Session` grows an optional `readable` slot, so the hub's loop waits on
