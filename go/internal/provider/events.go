@@ -157,8 +157,22 @@ func (t *toolTracker) completeCall(apiIndex int) (ToolCall, bool) {
 	}, true
 }
 
+type streamClock struct {
+	now        func() int64
+	pingMillis int64
+	lastPing   int64
+}
+
+func (c *streamClock) millis() int64 {
+	if c.now == nil {
+		return 0
+	}
+	return c.now()
+}
+
 type streamState struct {
 	model         Model
+	clock         *streamClock
 	usage         Usage
 	stopReason    string
 	thinking      string
@@ -175,7 +189,7 @@ type streamState struct {
 }
 
 func newStreamState(model Model) *streamState {
-	return &streamState{model: model, stopReason: "stop", tracker: newToolTracker()}
+	return &streamState{model: model, stopReason: "stop", tracker: newToolTracker(), clock: &streamClock{}}
 }
 
 func (s *streamState) partial(content []AssistantBlock) PartialMessage {
@@ -186,6 +200,7 @@ func (s *streamState) partial(content []AssistantBlock) PartialMessage {
 		Model:      s.model.ID,
 		Usage:      s.usage,
 		StopReason: s.stopReason,
+		Timestamp:  s.clock.millis(),
 	}
 }
 
@@ -204,12 +219,13 @@ type reasoningDetail struct {
 }
 
 type chunkResult struct {
-	usage          *Usage
-	stopReason     string
-	hasStop        bool
-	toolCalls      []toolCallEvent
-	details        []reasoningDetail
-	textDelta      string
-	thinkDelta     string
-	signatureField string
+	usage           *Usage
+	stopReason      string
+	hasStop         bool
+	toolCalls       []toolCallEvent
+	details         []reasoningDetail
+	hasToolCallsKey bool
+	textDelta       string
+	thinkDelta      string
+	signatureField  string
 }

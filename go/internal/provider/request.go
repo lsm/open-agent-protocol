@@ -403,11 +403,29 @@ func messagesValue(ctx Context, model Model, merged MergedCompat) jsonArray {
 
 func IsKimiModel(model Model) bool { return model.Provider == "kimi" }
 
+func maxToolIDLen(model Model) int {
+	if IsOpenAIHost(model.BaseURL, model.HasBaseURL) || IsTransparentOpenAIProxy(model) {
+		return 40
+	}
+	return 0
+}
+
 func BuildRequestBody(model Model, ctx Context, options StreamOptions) []byte {
 	merged := MergeCompat(model)
+	transformed := PreTransform(ctx.Messages, TransformConfig{
+		TargetAPI:             model.API,
+		TargetProvider:        model.Provider,
+		TargetModelID:         model.ID,
+		MaxToolIDLen:          maxToolIDLen(model),
+		MistralToolIDs:        merged.RequiresMistralToolIDs,
+		InsertSyntheticResult: true,
+		Tools:                 ctx.Tools,
+	})
+	prepared := ctx
+	prepared.Messages = transformed
 	body := jsonObject{
 		member("model", jsonString(model.ID)),
-		member("messages", messagesValue(ctx, model, merged)),
+		member("messages", messagesValue(prepared, model, merged)),
 		member("stream", jsonBool(true)),
 	}
 	if merged.SupportsUsageInStreaming {

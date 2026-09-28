@@ -33,11 +33,11 @@ func keysOf(m map[string]any) []string {
 }
 
 func openAIModel() Model {
-	return Model{ID: "gpt-4o", Provider: "openai", BaseURL: "https://api.openai.com", HasBaseURL: true, MaxTokens: 100, HasCompat: true}
+	return Model{ID: "gpt-4o", API: "openai-completions", Provider: "openai", BaseURL: "https://api.openai.com", HasBaseURL: true, MaxTokens: 100, HasCompat: true}
 }
 
 func loopbackModel() Model {
-	return Model{ID: "local-model", Provider: "local", BaseURL: "http://127.0.0.1:8080/v1", HasBaseURL: true, MaxTokens: 100, HasCompat: true}
+	return Model{ID: "local-model", API: "openai-completions", Provider: "local", BaseURL: "http://127.0.0.1:8080/v1", HasBaseURL: true, MaxTokens: 100, HasCompat: true}
 }
 
 func TestTheBodyWritesItsMembersInZigsOrder(t *testing.T) {
@@ -222,7 +222,7 @@ func TestTheThinkingMemberIsNamedReasoningContentOrTheSignatureThatCameBack(t *t
 		return []ContentPart{{Text: &TextPart{Text: "the answer"}}, {Thinking: &ThinkingPart{Thinking: "step one", Signature: sig}}}
 	}
 	ctx := func(sig string) Context {
-		return Context{Messages: []Message{{Assistant: &AssistantContent{Parts: thinking(sig)}}}}
+		return Context{Messages: []Message{{Assistant: &AssistantContent{Parts: thinking(sig), API: "openai-completions", Provider: "local", Model: "local-model"}}}}
 	}
 	plain := messages(t, BuildRequestBody(loopbackModel(), ctx(""), StreamOptions{}))[0].(map[string]any)
 	if plain["reasoning_content"] != "step one" {
@@ -244,7 +244,7 @@ func TestThinkingBlocksAreJoinedWithANewlineAndBlankOnesSkipped(t *testing.T) {
 		{Thinking: &ThinkingPart{Thinking: "   "}},
 		{Thinking: &ThinkingPart{Thinking: "second"}},
 	}
-	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{Parts: parts}}}}
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{Parts: parts, API: "openai-completions", Provider: "local", Model: "local-model"}}}}
 	got := messages(t, BuildRequestBody(loopbackModel(), ctx, StreamOptions{}))[0].(map[string]any)
 	if got["reasoning_content"] != "first\nsecond" {
 		t.Errorf("thinking = %q, want the two visible blocks joined and the blank one skipped", got["reasoning_content"])
@@ -414,7 +414,7 @@ func TestARequestToolCallCarriesItsIdTypeAndFunction(t *testing.T) {
 }
 
 func TestReasoningDetailsRideAlongWhenAToolCallCarriesOne(t *testing.T) {
-	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{Parts: []ContentPart{
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
 		{ToolCall: &ToolCall{ID: "c1", Name: "read", Arguments: "{}", ThoughtSig: `{"k":1}`, HasThought: true}},
 	}}}}}
 	withIt := messages(t, BuildRequestBody(loopbackModel(), ctx, StreamOptions{}))[0].(map[string]any)
@@ -494,7 +494,7 @@ func TestTextOnlyPartsAreJoinedWithANewlineWhenThereAreNoImages(t *testing.T) {
 func TestAnAssistantWithThinkingAsTextWritesItInsideTheContentArray(t *testing.T) {
 	model := loopbackModel()
 	model.BaseURL = "https://api.deepseek.com"
-	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{Parts: []ContentPart{
+	ctx := Context{Messages: []Message{{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", Parts: []ContentPart{
 		{Thinking: &ThinkingPart{Thinking: "step"}},
 		{Text: &TextPart{Text: "answer"}},
 	}}}}}

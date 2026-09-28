@@ -73,6 +73,9 @@ type UserContent struct {
 type AssistantContent struct {
 	Parts      []ContentPart
 	StopReason StopReason
+	API        string
+	Provider   string
+	Model      string
 }
 
 type AssistantBlock struct {
@@ -85,6 +88,7 @@ type ToolResult struct {
 	ToolCallID string
 	ToolName   string
 	Parts      []ContentPart
+	IsError    bool
 }
 
 type Message struct {
@@ -107,6 +111,8 @@ type Context struct {
 }
 
 type StreamOptions struct {
+	Now             func() int64
+	PingMillis      int64
 	MaxTokens       int
 	HasMaxTokens    bool
 	Temperature     float64

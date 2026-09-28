@@ -33,11 +33,7 @@ func asInt(v any) (int, bool) {
 	return int(number), true
 }
 
-func parseUsage(root map[string]any, usage *Usage) {
-	container, ok := asObject(root["usage"])
-	if !ok {
-		return
-	}
+func parseUsageInto(container map[string]any, usage *Usage) {
 	if value, ok := asInt(container["prompt_tokens"]); ok {
 		usage.InputTokens = value
 	}
@@ -49,17 +45,16 @@ func parseUsage(root map[string]any, usage *Usage) {
 			}
 		}
 	}
-	completion := 0
-	if value, ok := asInt(container["completion_tokens"]); ok {
-		completion = value
-	}
+	completion, hasCompletion := asInt(container["completion_tokens"])
 	reasoning := 0
 	if details, ok := asObject(container["completion_tokens_details"]); ok {
 		if value, ok := asInt(details["reasoning_tokens"]); ok {
 			reasoning = value
 		}
 	}
-	usage.OutputTokens = completion + reasoning
+	if hasCompletion || reasoning != 0 {
+		usage.OutputTokens = completion + reasoning
+	}
 	if value, ok := asInt(container["total_tokens"]); ok {
 		usage.TotalTokens = value
 	}
@@ -142,6 +137,10 @@ func parseReasoningDetails(delta map[string]any) []reasoningDetail {
 }
 
 func ParseChunk(data string) chunkResult {
+	return parseChunkWithUsage(data, Usage{})
+}
+
+func parseChunkWithUsage(data string, current Usage) chunkResult {
 	result := chunkResult{}
 	if data == "[DONE]" {
 		return result
@@ -150,9 +149,9 @@ func ParseChunk(data string) chunkResult {
 	if err := json.Unmarshal([]byte(data), &root); err != nil {
 		return result
 	}
-	if _, present := root["usage"]; present {
-		usage := Usage{}
-		parseUsage(root, &usage)
+	if container, ok := asObject(root["usage"]); ok {
+		usage := current
+		parseUsageInto(container, &usage)
 		result.usage = &usage
 	}
 	choices, ok := root["choices"].([]any)
@@ -171,9 +170,10 @@ func ParseChunk(data string) chunkResult {
 	if !ok {
 		return result
 	}
+	_, result.hasToolCallsKey = delta["tool_calls"]
 	result.toolCalls = parseToolCallEvents(delta)
 	result.details = parseReasoningDetails(delta)
-	if len(result.toolCalls) == 0 {
+	if !result.hasToolCallsKey {
 		if field, value, found := findReasoningField(delta); found {
 			result.signatureField = field
 			result.thinkDelta = value
@@ -187,7 +187,7 @@ func ParseChunk(data string) chunkResult {
 func (r chunkResult) hasThinking() bool { return r.thinkDelta != "" }
 
 func (s *streamState) applyData(data string) {
-	result := ParseChunk(data)
+	result := parseChunkWithUsage(data, s.usage)
 	if result.usage != nil {
 		s.usage = *result.usage
 	}
@@ -253,7 +253,7 @@ func (s *streamState) finish(sink *EventSink) {
 	if !hasThinking && !hasText && s.toolCalls == 0 {
 		sink.emit(Event{
 			Kind:    EventDone,
-			Message: &AssistantMessage{Content: []AssistantBlock{{Text: &TextPart{}}}, API: s.model.API, Provider: s.model.Provider, Model: s.model.ID, Usage: s.usage, StopReason: s.stopReason},
+			Message: &AssistantMessage{Content: []AssistantBlock{{Text: &TextPart{}}}, API: s.model.API, Provider: s.model.Provider, Model: s.model.ID, Usage: s.usage, StopReason: s.stopReason, Timestamp: s.clock.millis()},
 		})
 		return
 	}
@@ -292,6 +292,7 @@ func (s *streamState) finish(sink *EventSink) {
 			Model:      s.model.ID,
 			Usage:      s.usage,
 			StopReason: s.stopReason,
+			Timestamp:  s.clock.millis(),
 		},
 	})
 }
@@ -304,6 +305,7 @@ func (s *streamState) startEvent() Event {
 			Provider:   s.model.Provider,
 			Model:      s.model.ID,
 			StopReason: "stop",
+			Timestamp:  s.clock.millis(),
 		},
 	}
 }
@@ -329,9 +331,17 @@ type CancelledFunc func() bool
 
 func Stream(sink *EventSink, model Model, ctx Context, options StreamOptions, read ReadChunkFunc, cancelled CancelledFunc) {
 	state := newStreamState(model)
+	state.clock = &streamClock{now: options.Now, pingMillis: options.PingMillis}
 	sink.emit(state.startEvent())
 	parser := NewSSEParser()
 	for {
+		if state.clock.pingMillis > 0 {
+			now := state.clock.millis()
+			if now-state.clock.lastPing >= state.clock.pingMillis {
+				sink.emit(Event{Kind: EventKeepalive})
+				state.clock.lastPing = now
+			}
+		}
 		if cancelled != nil && cancelled() {
 			sink.fail("request cancelled")
 			return

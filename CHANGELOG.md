@@ -92,24 +92,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     through rather than winning. A variable that is set but empty is therefore not
     an anonymous grant. The client takes an explicit key; the wider stored and
     oauth lookup stays with the caller, which is what step 4's discovery needs.
-  - **The stream emits thirteen event kinds** — `start`, `text_start`,
-    `text_delta`, `text_end`, `thinking_start`, `thinking_delta`,
-    `thinking_end`, `toolcall_start`, `toolcall_delta`, `toolcall_end`, `done`,
-    `error`, `keepalive` — each carrying a content index and a partial, because
-    the Go SDK's six `ProviderEvent`s cannot express the starts and the ends, and
-    a serving layer cannot map what is not there. The SDK types are untouched: they
-    remain the client API over the profile's envelopes.
+  - **The request runs the pre-transform before writing anything.** An unanswered
+    tool call grows a synthetic `"No result provided"` result marked as an error,
+    flushed before the next turn; a tool-call id is stripped at its `|`, truncated
+    and sanitized to 40 characters on an OpenAI host, or hashed to nine characters
+    for a Mistral host, with the matching result remapped so the pair still lines
+    up; an aborted or errored assistant is dropped; and a thinking block from a
+    **different** model becomes text while one from the same model keeps its
+    signature. Without this an unanswered call goes out dangling and a long id goes
+    out unnormalized.
+  - **The event stream's thirteen kinds are the union, and this client emits nine
+    of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
+    `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
+    carrying a content index and a partial. The four `text_start`/`text_end`/
+    `thinking_start`/`thinking_end` kinds are the **anthropic-messages** client's,
+    which has a wire that carries them; this one's does not, so nothing here emits
+    them. The union is thirteen because the Go SDK's six `ProviderEvent`s cannot
+    express the starts and the ends, and a serving layer cannot map what is not
+    there. The SDK types are untouched: they remain the client API over the
+    profile's envelopes.
+  - **A keepalive is emitted on the ping interval, and every event is stamped.**
+    The first one always fires when pinging is on, because the last-ping time
+    starts at zero.
   - **`toolcall_end` carries a different content index than its `toolcall_start`
     did.** The start counts tool calls alone; the end is the position in the final
     array, which also holds the thinking and the text. The partial on that event is
     the content accumulated *so far*, so it grows with each one.
 
-  Two behaviours are transcribed because Zig has them, and both are pinned by tests
-  so a later reader knows they are deliberate rather than accidents: the orphan
-  check on a tool result runs only on the **first** of a run, so an orphan
-  following an answered one is still written; and a malformed chunk is
-  **swallowed** rather than failing the stream, which is why the partial-text rule
-  has no reachable caller here.
+  Three behaviours are transcribed because Zig has them, and all three are pinned by
+  tests so a later reader knows they are deliberate rather than accidents. The orphan
+  check on a tool result runs only on the **first** of a run, so an orphan following
+  an answered one is still written. A malformed chunk is **swallowed** rather than
+  failing the stream, which is why the partial-text rule has no reachable caller here.
+  And a `usage` member that is present but is not an object leaves the accumulated
+  totals alone, which is the opposite of what a fresh struct per chunk would do. All
+  three are filed as **#513**; none is fixed here.
 - **The contested settlement has a fixture: `pi-two-open-calls`.** A terminal
   event sweeping several open calls at once had no fixture, and #433 step 4 was
   parked waiting for a hub that could serve one. The memory backend structurally
