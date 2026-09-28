@@ -546,7 +546,7 @@ fn loadCatalogModelsWithRows(
 
 fn appendCatalogTargetModels(
     allocator: std.mem.Allocator,
-    models: *std.ArrayList(ai_types.Model),
+    out: *std.ArrayList(ai_types.Model),
     target: CatalogEndpoint,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
@@ -557,32 +557,34 @@ fn appendCatalogTargetModels(
     var credential = (try provider_credential.lookup(allocator, environment, storage, target.id)) orelse return;
     defer credential.deinit(allocator);
 
-    const discovered = try discoverCatalogModelIds(allocator, target, credential.key, mode);
-    defer if (discovered) |ids| freeModelIds(allocator, ids);
+    const discovered = try discoverCatalogModels(allocator, target, credential.key, mode);
+    defer if (discovered) |models| freeDiscoveredModels(allocator, models);
 
-    if (discovered) |ids| {
-        if (ids.len > 0) {
-            for (ids) |model_id| {
-                var model = try catalogModel(allocator, target, model_id);
-                errdefer model.deinit(allocator);
-                try models.append(allocator, model);
+    if (discovered) |models| {
+        if (models.len > 0) {
+            for (models) |model| {
+                var built = try catalogModel(allocator, target, model);
+                errdefer built.deinit(allocator);
+                try out.append(allocator, built);
             }
             return;
         }
     }
 
     for (provider_catalog.modelsFor(target.id)) |declared| {
-        var model = try catalogModel(allocator, target, declared.id);
-        errdefer model.deinit(allocator);
-        try models.append(allocator, model);
+        const model = try allocator.dupe(u8, declared.id);
+        var built = try catalogModel(allocator, target, .{ .id = model });
+        allocator.free(model);
+        errdefer built.deinit(allocator);
+        try out.append(allocator, built);
     }
 }
 
-fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, id_text: []const u8) !ai_types.Model {
-    const wire = provider_catalog.wireForModel(target.id, id_text) orelse return error.UnsupportedCatalogWire;
-    const id = try allocator.dupe(u8, id_text);
+fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, model: DiscoveredModel) !ai_types.Model {
+    const wire = provider_catalog.wireForModel(target.id, model.id) orelse return error.UnsupportedCatalogWire;
+    const id = try allocator.dupe(u8, model.id);
     errdefer allocator.free(id);
-    const name = try allocator.dupe(u8, displayNameFor(target.id, id_text));
+    const name = try allocator.dupe(u8, displayNameFor(target.id, model));
     errdefer allocator.free(name);
     const api = try allocator.dupe(u8, wire.id);
     errdefer allocator.free(api);
@@ -590,9 +592,16 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, id_text: 
     errdefer allocator.free(provider_id);
     const base_url = try allocator.dupe(u8, target.base_url);
     errdefer allocator.free(base_url);
-    const input = try allocator.alloc([]const u8, 1);
+    const image = model.image_input orelse false;
+    const input = try allocator.alloc([]const u8, if (image) 2 else 1);
     errdefer allocator.free(input);
     input[0] = try allocator.dupe(u8, "text");
+    var filled: usize = 1;
+    errdefer for (input[0..filled]) |value| allocator.free(value);
+    if (image) {
+        input[1] = try allocator.dupe(u8, "image");
+        filled = 2;
+    }
 
     return .{
         .id = id,
@@ -600,29 +609,32 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, id_text: 
         .api = api,
         .provider = provider_id,
         .base_url = base_url,
-        .reasoning = false,
+        .reasoning = model.reasoning orelse false,
         .input = input,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = contextWindowFor(target.id, id_text),
-        .max_tokens = maxTokensFor(target.id, id_text),
+        .context_window = contextWindowFor(target.id, model),
+        .max_tokens = maxTokensFor(target.id, model),
         .is_owned = true,
     };
 }
 
-fn displayNameFor(id: []const u8, model_id: []const u8) []const u8 {
-    const declared = provider_catalog.declaredModel(id, model_id) orelse return model_id;
-    return declared.name orelse model_id;
+fn displayNameFor(id: []const u8, model: DiscoveredModel) []const u8 {
+    if (model.name) |reported| return reported;
+    const declared = provider_catalog.declaredModel(id, model.id) orelse return model.id;
+    return declared.name orelse model.id;
 }
 
-fn contextWindowFor(id: []const u8, model_id: []const u8) u32 {
-    if (provider_catalog.declaredModel(id, model_id)) |declared| {
+fn contextWindowFor(id: []const u8, model: DiscoveredModel) u32 {
+    if (model.context_window) |reported| return reported;
+    if (provider_catalog.declaredModel(id, model.id)) |declared| {
         if (declared.context_window) |window| return window;
     }
     return provider_catalog.rowContextWindow(id) orelse catalog_context_window;
 }
 
-fn maxTokensFor(id: []const u8, model_id: []const u8) u32 {
-    if (provider_catalog.declaredModel(id, model_id)) |declared| {
+fn maxTokensFor(id: []const u8, model: DiscoveredModel) u32 {
+    if (model.max_tokens) |reported| return reported;
+    if (provider_catalog.declaredModel(id, model.id)) |declared| {
         if (declared.max_tokens) |tokens| return tokens;
     }
     return provider_catalog.rowMaxTokens(id) orelse catalog_max_output_tokens;
@@ -664,48 +676,48 @@ fn freeEnvironment(allocator: std.mem.Allocator, values: []provider_credential.E
     allocator.free(values);
 }
 
-fn discoverCatalogModelIds(
+fn discoverCatalogModels(
     allocator: std.mem.Allocator,
     target: CatalogEndpoint,
     token: []const u8,
     mode: CatalogLoadMode,
-) !?[][]const u8 {
-    if (builtin.is_test) return testCatalogModelIds(allocator, target.id, target.models_url);
+) !?[]DiscoveredModel {
+    if (builtin.is_test) return testCatalogModels(allocator, target.id, target.models_url);
 
     const name = try catalogRowCacheName(allocator, target.id, target.region);
     defer allocator.free(name);
 
     if (mode == .allow_cache) {
-        if (try loadCachedModelIds(allocator, name, anthropic_catalog_max_age_ms)) |ids| return ids;
+        if (try loadCachedCatalogModels(allocator, name, anthropic_catalog_max_age_ms)) |models| return models;
     }
 
     if (fetchCatalogModelsCatalog(allocator, target, token)) |body| {
         defer allocator.free(body);
-        if (parseModelIds(allocator, body)) |ids| {
-            if (ids.len > 0) {
+        if (parseCatalogModels(allocator, body)) |models| {
+            if (models.len > 0) {
                 saveMakaiCatalog(allocator, name, body) catch {};
-                return ids;
+                return models;
             }
-            freeModelIds(allocator, ids);
+            freeDiscoveredModels(allocator, models);
         } else |_| {}
     } else |_| {}
 
-    return loadCachedModelIds(allocator, name, null);
+    return loadCachedCatalogModels(allocator, name, null);
 }
 
-fn testCatalogModelIds(allocator: std.mem.Allocator, id: []const u8, models_url: []const u8) !?[][]const u8 {
+fn testCatalogModels(allocator: std.mem.Allocator, id: []const u8, models_url: []const u8) !?[]DiscoveredModel {
     const rows = test_catalog_discovery orelse return null;
     for (rows) |row| {
         if (!std.mem.eql(u8, row.id, id)) continue;
         if (!std.mem.eql(u8, row.models_url, models_url)) continue;
-        const out = try allocator.alloc([]const u8, row.model_ids.len);
+        const out = try allocator.alloc(DiscoveredModel, row.model_ids.len);
         var filled: usize = 0;
         errdefer {
-            for (out[0..filled]) |value| allocator.free(value);
+            for (out[0..filled]) |value| value.deinit(allocator);
             allocator.free(out);
         }
         for (row.model_ids, 0..) |model_id, i| {
-            out[i] = try allocator.dupe(u8, model_id);
+            out[i] = .{ .id = try allocator.dupe(u8, model_id) };
             filled = i + 1;
         }
         return out;
@@ -815,6 +827,21 @@ fn loadCachedModelIds(allocator: std.mem.Allocator, name: []const u8, max_age_ms
     return null;
 }
 
+fn loadCachedCatalogModels(allocator: std.mem.Allocator, name: []const u8, max_age_ms: ?i64) !?[]DiscoveredModel {
+    const path = makaiCatalogPath(allocator, name) catch return null;
+    defer allocator.free(path);
+    if (max_age_ms) |max_age| {
+        const modified = compat.fs.modifiedMillis(compat.fs.getCwd(), path) catch return null;
+        if (!catalogIsFresh(modified, compat.time.nowMillis(), max_age)) return null;
+    }
+    const data = compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, max_catalog_bytes) catch return null;
+    defer allocator.free(data);
+    const models = parseCatalogModels(allocator, data) catch return null;
+    if (models.len > 0) return models;
+    freeDiscoveredModels(allocator, models);
+    return null;
+}
+
 fn customCredential(
     allocator: std.mem.Allocator,
     provider: *const custom_providers.CustomProvider,
@@ -835,6 +862,82 @@ fn customCredential(
         } else |_| {}
     }
     return null;
+}
+
+const DiscoveredModel = struct {
+    id: []const u8,
+    name: ?[]const u8 = null,
+    context_window: ?u32 = null,
+    max_tokens: ?u32 = null,
+    reasoning: ?bool = null,
+    image_input: ?bool = null,
+
+    fn deinit(self: DiscoveredModel, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.name) |value| allocator.free(value);
+    }
+};
+
+fn freeDiscoveredModels(allocator: std.mem.Allocator, models: []DiscoveredModel) void {
+    for (models) |model| model.deinit(allocator);
+    allocator.free(models);
+}
+
+fn parseCatalogModels(allocator: std.mem.Allocator, data: []const u8) ![]DiscoveredModel {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidModelCatalog;
+    const list = parsed.value.object.get("data") orelse return error.InvalidModelCatalog;
+    if (list != .array) return error.InvalidModelCatalog;
+
+    var models = std.ArrayList(DiscoveredModel).empty;
+    errdefer {
+        for (models.items) |model| model.deinit(allocator);
+        models.deinit(allocator);
+    }
+    for (list.array.items) |item| {
+        if (item != .object) continue;
+        const id = objectString(&item.object, "id") orelse continue;
+        if (id.len == 0) continue;
+        var model = DiscoveredModel{ .id = try allocator.dupe(u8, id) };
+        errdefer model.deinit(allocator);
+        if (objectString(&item.object, "display_name")) |name| {
+            if (name.len > 0) model.name = try allocator.dupe(u8, name);
+        }
+        if (model.context_window == null) {
+            model.context_window = objectU32(&item.object, "context_length") orelse
+                objectU32(&item.object, "context_window");
+        }
+        if (model.max_tokens == null) {
+            model.max_tokens = objectU32(&item.object, "max_output_tokens") orelse
+                objectU32(&item.object, "max_tokens");
+        }
+        if (model.reasoning == null) {
+            model.reasoning = objectBool(&item.object, "supports_reasoning") orelse
+                objectBool(&item.object, "reasoning");
+        }
+        if (model.image_input == null) {
+            model.image_input = objectBool(&item.object, "supports_image_in") orelse
+                objectBool(&item.object, "vision");
+        }
+        if (model.image_input == null) {
+            if (listNamesImage(&item.object, "modalities") or listNamesImage(&item.object, "input_modalities")) {
+                model.image_input = true;
+            }
+        }
+        try models.append(allocator, model);
+    }
+    return models.toOwnedSlice(allocator);
+}
+
+fn listNamesImage(obj: *const std.json.ObjectMap, key: []const u8) bool {
+    const value = obj.get(key) orelse return false;
+    if (value != .array) return false;
+    for (value.array.items) |entry| {
+        if (entry != .string) continue;
+        if (std.ascii.eqlIgnoreCase(entry.string, "image")) return true;
+    }
+    return false;
 }
 
 fn parseModelIds(allocator: std.mem.Allocator, data: []const u8) ![][]const u8 {
@@ -2937,6 +3040,89 @@ test "a row that declares models still serves them when its own listing answers 
     try std.testing.expectEqualStrings("https://api.kimi.com/coding", models[0].base_url);
     try std.testing.expectEqual(@as(u32, 262_144), models[0].context_window);
     try std.testing.expectEqual(@as(u32, 16_384), models[0].max_tokens);
+}
+
+test "a provider's own listing speaks for its models, and a row's figures are only the default" {
+    const allocator = std.testing.allocator;
+    const body =
+        \\{"data":[
+        \\  {"id":"kimi-for-coding","display_name":"Kimi For Coding","context_length":1048576,"max_output_tokens":32768,"supports_reasoning":true,"supports_image_in":true},
+        \\  {"id":"kimi-k2-turbo-preview","context_window":262144,"max_tokens":16384,"reasoning":false,"modalities":["text","image"]},
+        \\  {"id":"plain-model"}
+        \\]}
+    ;
+
+    const parsed = try parseCatalogModels(allocator, body);
+    defer freeDiscoveredModels(allocator, parsed);
+    try std.testing.expectEqual(@as(usize, 3), parsed.len);
+
+    try std.testing.expectEqualStrings("kimi-for-coding", parsed[0].id);
+    try std.testing.expectEqualStrings("Kimi For Coding", parsed[0].name orelse "<none>");
+    try std.testing.expectEqual(@as(?u32, 1_048_576), parsed[0].context_window);
+    try std.testing.expectEqual(@as(?u32, 32_768), parsed[0].max_tokens);
+    try std.testing.expectEqual(@as(?bool, true), parsed[0].reasoning);
+    try std.testing.expectEqual(@as(?bool, true), parsed[0].image_input);
+
+    try std.testing.expectEqualStrings("kimi-k2-turbo-preview", parsed[1].id);
+    try std.testing.expect(parsed[1].name == null);
+    try std.testing.expectEqual(@as(?u32, 262_144), parsed[1].context_window);
+    try std.testing.expectEqual(@as(?u32, 16_384), parsed[1].max_tokens);
+    try std.testing.expectEqual(@as(?bool, false), parsed[1].reasoning);
+    try std.testing.expectEqual(@as(?bool, true), parsed[1].image_input);
+
+    try std.testing.expectEqualStrings("plain-model", parsed[2].id);
+    try std.testing.expect(parsed[2].name == null);
+    try std.testing.expect(parsed[2].context_window == null);
+    try std.testing.expect(parsed[2].max_tokens == null);
+    try std.testing.expect(parsed[2].reasoning == null);
+    try std.testing.expect(parsed[2].image_input == null);
+}
+
+test "a discovered model's own figures outrank the row's, which outrank the generic guess" {
+    const allocator = std.testing.allocator;
+    const target = catalogTargetInRegion("kimi", "global") orelse return error.TestExpectedTarget;
+
+    var reported = try catalogModel(allocator, target, .{
+        .id = "kimi-for-coding",
+        .name = "Kimi For Coding",
+        .context_window = 1_048_576,
+        .max_tokens = 32_768,
+        .reasoning = true,
+        .image_input = true,
+    });
+    defer reported.deinit(allocator);
+
+    try std.testing.expectEqualStrings("Kimi For Coding", reported.name);
+    try std.testing.expectEqual(@as(u32, 1_048_576), reported.context_window);
+    try std.testing.expectEqual(@as(u32, 32_768), reported.max_tokens);
+    try std.testing.expect(reported.reasoning);
+    try std.testing.expectEqual(@as(usize, 2), reported.input.len);
+    try std.testing.expectEqualStrings("text", reported.input[0]);
+    try std.testing.expectEqualStrings("image", reported.input[1]);
+
+    var undeclared = try catalogModel(allocator, target, .{ .id = "kimi-something-new" });
+    defer undeclared.deinit(allocator);
+
+    try std.testing.expectEqualStrings("kimi-something-new", undeclared.name);
+    try std.testing.expectEqual(@as(u32, 262_144), undeclared.context_window);
+    try std.testing.expectEqual(@as(u32, 16_384), undeclared.max_tokens);
+    try std.testing.expect(!undeclared.reasoning);
+    try std.testing.expectEqual(@as(usize, 1), undeclared.input.len);
+
+    var declared = try catalogModel(allocator, target, .{ .id = "kimi-k2.7-code" });
+    defer declared.deinit(allocator);
+    try std.testing.expectEqualStrings("Kimi K2.7 Code", declared.name);
+
+    var plain = try catalogModel(allocator, target, .{
+        .id = "plain-model",
+    });
+    defer plain.deinit(allocator);
+    const deepseek = catalogTargetInRegion("deepseek", null) orelse return error.TestExpectedTarget;
+    var generic = try catalogModel(allocator, deepseek, .{ .id = "deepseek-chat" });
+    defer generic.deinit(allocator);
+    try std.testing.expectEqual(@as(u32, catalog_context_window), generic.context_window);
+    try std.testing.expectEqual(@as(u32, catalog_max_output_tokens), generic.max_tokens);
+    try std.testing.expectEqual(@as(u32, 262_144), plain.context_window);
 }
 
 test "loadProductionModels carries a catalog row's discovered models" {

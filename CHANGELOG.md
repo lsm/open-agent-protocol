@@ -45,6 +45,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   none. `goap check` refuses a row that declares one model id twice, since the two
   entries would then disagree about which name and limits win. No row but `kimi`
   uses any of this yet.
+  **A provider's own listing speaks for its models, and the row's numbers are only
+  the default** — which is what `docs/custom-endpoints.md` has always said about
+  the same two fields on a custom provider. The generic loader did not ask, and
+  stamped its own guess on every model of every row, so a model whose listing
+  reports a 1048576-token context and a 32768 output cap was served a quarter of
+  the context and half the output. A model object is now read for its display
+  name, its context window, its output cap, whether it reasons, and whether it
+  takes images — under the names Kimi's listing used (`context_length`,
+  `supports_reasoning`, `supports_image_in`) and the ones this repository would
+  use, with a row's `models` entry, then the row's figures, then the generic
+  default behind them. Reasoning and image input are what a TUI shows and what a
+  request sends; no row's listing is asked for them today, because only Kimi's
+  parser read them and that parser went with the bespoke loader.
   **A Kimi login made in the TUI keeps working, which it very nearly did not.**
   The TUI stores an API key with its region as an *oauth* entry, because the
   api-key entry has nowhere to put a region. The old Kimi code accepted either
