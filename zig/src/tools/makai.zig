@@ -7262,7 +7262,7 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
     }
 }
 
-const OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS: i64 = 120_000;
+const OAP_PROVIDER_STREAM_IDLE_TTL_DEFAULT_MS: i64 = 600_000;
 
 fn oapProviderStreamIdleTtlMs(allocator: std.mem.Allocator) i64 {
     const raw = provider_base_url.envOwnedOrNull(allocator, "OAPX_OAP_PROVIDER_STREAM_IDLE_TTL_MS") catch
