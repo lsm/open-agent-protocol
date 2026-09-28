@@ -1156,7 +1156,7 @@ rather than with the adapter’s descriptor revision, and refuses an empty one �
 is Go’s own rule, `an adapter served a model catalog with no capability revision`.
 `catalog_unlabelled` is the core’s name for the condition and has **no wire code
 of its own**: both trees answer `internal`, so they do not disagree by disagreeing
-about the name.
+about the name. A lister that served a catalog under one revision
 while its descriptor claimed another is now visible to the hub rather than
 silently restamped.
 
