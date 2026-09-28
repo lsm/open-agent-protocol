@@ -44,6 +44,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The coding plans, Xiaomi's rows and OpenAI are separate steps. Xiaomi waits for
   #352, because a pay-as-you-go key must not surface a token plan it cannot use.
 
+- An opt-in live smoke gate per catalogued row, so a row can earn `status:
+  current` against recorded evidence instead of against a probe that only
+  checked a path exists. `zig build test-e2e-provider-smoke` runs the four cases
+  the issue names — one completion, a streamed completion asserted to arrive as
+  more than one delta, one tool call, and one unknown model that must be refused
+  — for a single row named by `OAP_PROVIDER_SMOKE`. DeepSeek is the row wired up
+  as the worked example; the gate's own table is the seven `current` rows, and a
+  hermetic test pins that table against the catalog so a row's promotion or
+  demotion moves the gate with it.
+  **The gate is opt-in twice over, and neither opt-in is a credential.** A
+  credential's presence alone does not run it, which is the rule the harness
+  gates keep and which the existing provider E2E tests do *not* keep — they skip
+  on the key and nothing else, so a developer with `OPENAI_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN` exported runs them by accident. This one reads no key
+  until `OAP_PROVIDER_SMOKE` names a
+  row it knows, and it refuses outright when `CI` is set, so a misconfigured
+  runner cannot start spending a key. Both properties are exercised by running
+  the step with a key exported and no opt-in, and again with the opt-in under
+  `CI=true`.
+  Nothing about a key reaches the output. The credential is resolved through
+  `provider_credential.lookup`, so the row's environment variable wins over a
+  stored one and neither is printed; a failure reports the row, the case and the
+  error name. The base URL and wire are read from the catalog, so the gate
+  cannot drift onto a base the catalog no longer pins, and a regional row — Kimi
+  is the one `current` row that is regional — resolves through its `region_env`
+  rather than a default the gate invents.
+  The step is wired into neither `test` nor any `test-unit-*` group for the four
+  live cases — it runs only when a person names a row — while the module itself
+  is wired into both `test` and `test-unit-providers`, so the two hermetic tests
+  that pin the gate's table run in CI and in a full local run alike. The pin is
+  two-way: every listed row must be `current`, and every `current` row must be
+  listed, so a promotion cannot reach the catalog without reaching the gate.
+  **Redirect `HOME` as well as the keychain service.** `OAPX_KEYCHAIN_SERVICE`
+  redirects the store but not `~/.oapx/auth.json`, so a run with only the
+  service overridden falls back to the real file and spends a real key. I did
+  exactly that while checking this and four live calls went out against a
+  DeepSeek key; with `HOME` redirected the same invocation skips, which is the
+  fourth gap in the keychain notes and the reason the command on the issue
+  redirects both.
+  No evidence is recorded here and no row is promoted: the live runs need the
+  owner's keys, so the ledger, the per-row script results and the `goap check`
+  rule requiring a ledger reference for every `current` row all land in the
+  change that records the first reading.
+
 - `auth.providers` is answered from `providers/catalog.json` rather than from a
   four-row literal. `zig/src/auth/providers.zig` hardcoded Anthropic, GitHub
   Copilot, OpenAI Codex and a CI fixture, so `listProviders()` never showed the
@@ -152,6 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalise CRLF to LF, tabs render as `→`, and other control bytes render as caret
   notation so pasted escape sequences can never reach the terminal raw.
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
+- `go/binding` records what a host needs to reopen a session it opened, and `goap hub --bindings <path>` writes one record per open. A binding says which harness ran which session, under which pin, with which model and tool sources, in which home and — the directory the **adapter entry was configured with**, omitted when the hub does not know one, never the daemon's own — and it never holds a credential or a resolved environment value; a hub test opens a session and asserts the written bytes carry neither. The store is an interface the host supplies, with a file implementation beside it: an append-only log created `0o600` where **history is appended rather than replaced**, and **a torn write is detected and never read** — a partial line or a record whose bytes do not match its checksum is refused as `binding.ErrTorn` rather than half believed, because half a binding would reopen the wrong session. The repair keeps the longest prefix of records that decode, so a crash — or an edit of the host-owned file — cannot leave the log permanently unreadable, and it walks only the bytes it has not already validated, so appends stay linear in what they read; because a validated prefix cannot be re-checked for free, **a read that meets a record it cannot decode forgets the cached prefix**, so an edit the walk missed is noticed by the first read of that record and the next append repairs the log from zero rather than writing after it **Every record is written in the same critical section as the registry transition it records, and none is written for a transition that did not happen**: a registration records its open, a deregistration its close, a rollback records the close even when the adapter's close failed before `markClosed`, and a duplicate that never ran records **one `refusal` and nothing else** — so `binding.State`, which reads the last entry that claims to be a state, never reports a running session as closed. The store is read at reopen; the wire member that asks for one arrives with the reopen unit, so the read side is the store's own `Latest`/`History` for now.
 
 - `zig/src/model_catalog.zig` grows a generic catalog loader, so a row in
   `providers/catalog.json` reaches `/model` and the TUI picker by being
