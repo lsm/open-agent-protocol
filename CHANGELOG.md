@@ -132,6 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check on a tool result runs only on the **first** of a run, so an orphan following
   an answered one is still written. A malformed chunk is **swallowed** rather than
   failing the stream, which is why the partial-text rule has no reachable caller here.
+  And a `reasoning_details` blob is **escaped** where oapx splices it raw, which
+  keeps the body valid JSON when a signature carries a quote or a backslash —
+  recorded as **#515**, with what step 5's parity run has to do about it.
   And a `usage` member that is present but is not an object leaves the accumulated
   totals alone, which is the opposite of what a fresh struct per chunk would do. The
   first two are filed as **#513**; neither is fixed here. A fourth quirk, an
