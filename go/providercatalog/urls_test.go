@@ -8,6 +8,32 @@ import (
 	"github.com/lsm/open-agent-protocol/providers"
 )
 
+func TestEveryEndpointsRecordedVersionFactEqualsTheInferenceItReplaces(t *testing.T) {
+	catalog, err := Load(providers.Files)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	recorded, inferred := 0, 0
+	for _, provider := range catalog.Providers {
+		for _, endpoint := range provider.Endpoints {
+			path, joined := wirePaths[endpoint.Wire]
+			want := joined && path.dedupVersion && pathHasVersion(endpoint.BaseURL)
+			if endpoint.CarriesVersion != want {
+				t.Errorf("%s on %s in %s records carries_version=%v, the inference it replaces says %v",
+					provider.ID, endpoint.Wire, endpoint.BaseURL, endpoint.CarriesVersion, want)
+			}
+			if endpoint.CarriesVersion {
+				recorded++
+			} else {
+				inferred++
+			}
+		}
+	}
+	if recorded == 0 || inferred == 0 {
+		t.Fatalf("recorded %d and inferred %d, want both recorded and inferred", recorded, inferred)
+	}
+}
+
 func TestResolveMatchesTheURLsTheSharedFilePins(t *testing.T) {
 	catalog, err := Load(providers.Files)
 	if err != nil {

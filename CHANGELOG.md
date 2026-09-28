@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- `providers/catalog.json` records, per endpoint, whether its `base_url` already
+  carries the API version, so a request path stops depending on a guess about a
+  path segment. Today the join reads the base URL looking for any segment shaped
+  `v<digits>` and, if one is there, drops the wire's own leading `/v1`. That is
+  right for all 22 catalogued endpoints, which is why nothing here moves a URL —
+  `providers/resolved_urls.json` regenerates byte-identical — and wrong for any
+  base a user names, since only the endpoint's owner knows which it is. A proxy
+  mirroring Anthropic under `https://proxy.example/api/v1/anthropic` serves
+  `…/anthropic/v1/messages`, and the guess sends it `…/anthropic/messages`.
+  A wire fixes its tail — `/chat/completions`, `/messages` — and across the
+  catalog the only thing that varies is whether the base already includes the
+  version, so that is the one bit recorded. The path stays in `wire_paths`, which
+  is where it is one entry per wire rather than twenty-two; `models_endpoint`
+  stays a literal because no wire defines a models path.
+  The 14 endpoints that deduplicate today carry `carries_version: true` — the
+  gateways and plans whose bases end in `/v1`, plus Z.AI's `/paas/v4`, the three
+  Tencent and Volcengine `/coding/v3` plans, and Deep Infra's `/v1/openai`, where
+  the version is not the last segment. The other 8 say nothing, which means the
+  wire's full path is appended. Absent means absent: no endpoint is asked to
+  repeat a default, so adding a wire with a versioned path needs no catalog edit.
+  Two loaders carry the member, `Endpoint.CarriesVersion` in `go/providercatalog`
+  and the generated `Endpoint.carries_version` in the Zig tree, and two refuse it
+  where the fact cannot mean anything: `goap check` reports
+  `provider_carries_version_without_versioned_path`, and the Zig generator panics
+  naming the row and the wire, both for an endpoint on `openai-codex-responses`,
+  `ollama` or `google-generative-ai`, whose wires append no leading `/v1`. A Zig
+  test checks the same rule against the wire table rather than against a copy of
+  it, so a wire added with a versioned path cannot drift past it.
+  Nothing reads the fact yet. One test per tree asserts it equals the inference it
+  replaces, so the 14 are recorded before the inference goes, and both are
+  deleted when it does.
+
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
 
 

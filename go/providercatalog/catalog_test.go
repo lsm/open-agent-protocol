@@ -99,6 +99,42 @@ func TestCheckNamesARowWithNoID(t *testing.T) {
 	}
 }
 
+func TestCheckNamesCarriesVersionOnAWireWithNoVersionedPath(t *testing.T) {
+	for _, wire := range []string{"openai-codex-responses", "ollama", "google-generative-ai", "no-such-wire"} {
+		findings := Check(Catalog{Providers: []Provider{{ID: "kimi", Endpoints: []Endpoint{
+			{Wire: wire, BaseURL: "https://kimi.example.com", CarriesVersion: true},
+		}}}})
+		if len(findings) != 1 || findings[0].Code != CodeCarriesOn {
+			t.Fatalf("%s: findings = %v, want one %s", wire, findings, CodeCarriesOn)
+		}
+		if !strings.Contains(findings[0].Detail, "/v1/") {
+			t.Fatalf("%s: finding does not explain the rule: %s", wire, findings[0].Detail)
+		}
+	}
+}
+
+func TestCheckAcceptsCarriesVersionOnEveryVersionedWire(t *testing.T) {
+	for _, wire := range []string{"openai-completions", "openai-responses", "anthropic-messages"} {
+		findings := Check(Catalog{Providers: []Provider{{ID: "kimi", Endpoints: []Endpoint{
+			{Wire: wire, BaseURL: "https://kimi.example.com/v1", CarriesVersion: true},
+		}}}})
+		if len(findings) != 0 {
+			t.Fatalf("%s: findings = %v, want none", wire, findings)
+		}
+	}
+}
+
+func TestCheckAcceptsAnEndpointThatRecordsNoVersionFact(t *testing.T) {
+	for _, wire := range []string{"openai-codex-responses", "ollama", "google-generative-ai"} {
+		findings := Check(Catalog{Providers: []Provider{{ID: "kimi", Endpoints: []Endpoint{
+			{Wire: wire, BaseURL: "https://kimi.example.com"},
+		}}}})
+		if len(findings) != 0 {
+			t.Fatalf("%s: findings = %v, want none", wire, findings)
+		}
+	}
+}
+
 func TestCheckLiteralsNamesACataloguedBaseURLOutsideTestCode(t *testing.T) {
 	catalog := Catalog{Providers: []Provider{{
 		ID:        "kimi",

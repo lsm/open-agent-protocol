@@ -422,6 +422,39 @@ test "a models listing is an absolute path appended to a base that does not end 
     }
 }
 
+pub fn wireTakesVersionedPath(wire: []const u8) bool {
+    const path = wirePath(wire) orelse return false;
+    return std.mem.startsWith(u8, path.suffix, "/v1/");
+}
+
+test "no endpoint records carries_version for a wire whose path has no leading /v1/" {
+    for (all) |row| {
+        for (row.endpoints) |endpoint| {
+            if (!endpoint.carries_version) continue;
+            if (wirePath(endpoint.wire) == null) return error.TestWireClaimNotInCatalog;
+            try std.testing.expect(wireTakesVersionedPath(endpoint.wire));
+        }
+    }
+    for (wire_paths) |wire| {
+        try std.testing.expectEqual(std.mem.startsWith(u8, wire.suffix, "/v1/"), wireTakesVersionedPath(wire.id));
+    }
+}
+
+test "the recorded version fact equals the inference it replaces" {
+    var recorded: usize = 0;
+    var inferred: usize = 0;
+    for (all) |row| {
+        for (row.endpoints) |endpoint| {
+            const path = wirePath(endpoint.wire) orelse return error.TestWireClaimNotInCatalog;
+            const want = path.dedup_version and pathHasVersion(endpoint.base_url);
+            try std.testing.expectEqual(want, endpoint.carries_version);
+            if (endpoint.carries_version) recorded += 1 else inferred += 1;
+        }
+    }
+    try std.testing.expect(recorded > 0);
+    try std.testing.expect(inferred > 0);
+}
+
 test "every wire a row names is a wire this file joins, or is model-scoped" {
     for (all) |row| {
         for (row.wires) |wire| {
