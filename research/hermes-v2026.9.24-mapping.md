@@ -37,8 +37,10 @@ Normative source blobs at the release commit:
 - `hermes_state_sessions.py` — `1c775a358f3193cbe2d8aa53abbaae625500bc17`
 - `hermes_state_common.py` — `3d36055e763bef26de9e67e12e4c3af2a67e8514`
 
-The last two are the store itself, added when the session-reload section below was
-written; everything above them was recorded when the pin moved.
+The last three are the store itself — the two `hermes_state*` modules and
+`hermes_state_common`, which carries the schema they apply — added when the
+session-reload section below was written; everything above them was recorded
+when the pin moved.
 
 The release ships no binary artifact, so the catalog records no digest; the
 interpreter is whatever the operator provisions, bound per run by
@@ -421,11 +423,14 @@ for a session the database no longer has.
 
 **Whether a typed not-found has to be manufactured: not here.** `4007` is a
 typed absence on the wire, so `unknown_session` can be carried from it rather
-than inferred from a null or from silence. Among the harnesses read at their
-pins, OpenCode's is typed too (`SessionNotFoundError`) and DeepSeek's
-(`SessionPersistenceNotFoundError`), while pi's discovery answers `null` and
-the ACP spec says nothing at all — so the typed rows are the majority and the
-inference is what the minority needs, not the rule.
+than inferred from a null or from silence. Of the seven harnesses read at their
+pins, three type theirs — this one, OpenCode (`SessionNotFoundError`) and
+DeepSeek (`SessionPersistenceNotFoundError`) — and four do not: pi's discovery
+answers `null`, the ACP spec says nothing at all, Codex's reload ledger records
+`-32602 invalid_request` and calls it "not a not-found code", and Claude Code's
+answer is unrecorded. So the typed rows are three of seven, not a majority, and
+the four that do not type one are where a refusal has to be manufactured or
+where a fixture is missing. That is the count #448's design has to work from.
 
 **What the Go adapter does with all of it: it never asks.** `Open` in
 `go/adapter/hermes/adapter.go` always calls `Factory.Start`, which creates a
