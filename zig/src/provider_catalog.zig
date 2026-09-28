@@ -1,6 +1,7 @@
 const std = @import("std");
 const data = @import("data");
 const ai_types = @import("ai_types");
+const compat = @import("compat");
 
 pub const AuthKind = data.AuthKind;
 pub const Offering = data.Offering;
@@ -86,6 +87,45 @@ pub fn baseUrlEnv(id: []const u8) []const []const u8 {
     return row.base_url_env;
 }
 
+pub const EnvReader = *const fn (std.mem.Allocator, []const u8, ?*anyopaque) anyerror!?[]u8;
+
+fn readOwnEnv(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+    _ = ctx;
+    const value = compat.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableMissing => return null,
+        else => return err,
+    };
+    return value;
+}
+
+pub fn apiKeyFromNames(
+    allocator: std.mem.Allocator,
+    names: []const []const u8,
+    reader: EnvReader,
+    ctx: ?*anyopaque,
+) ?[]const u8 {
+    for (names) |name| {
+        const maybe = reader(allocator, name, ctx) catch continue;
+        const value = maybe orelse continue;
+        if (value.len > 0) return value;
+        allocator.free(value);
+    }
+    return null;
+}
+
+pub fn apiKeyForProvider(
+    allocator: std.mem.Allocator,
+    provider_id: []const u8,
+    reader: EnvReader,
+    ctx: ?*anyopaque,
+) ?[]const u8 {
+    return apiKeyFromNames(allocator, credentialEnv(provider_id), reader, ctx);
+}
+
+pub fn apiKeyFromEnv(allocator: std.mem.Allocator, provider_id: []const u8) ?[]const u8 {
+    return apiKeyForProvider(allocator, provider_id, readOwnEnv, null);
+}
+
 pub fn regionEnv(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     return row.region_env;
@@ -160,6 +200,31 @@ pub fn wirePath(wire: []const u8) ?Wire {
         if (std.mem.eql(u8, path.id, wire)) return path;
     }
     return null;
+}
+
+pub fn firstImplementedWire(row: Provider) ?Wire {
+    for (row.wires) |id| {
+        if (wirePath(id)) |wire| return wire;
+    }
+    return null;
+}
+
+pub fn isResponsesOnlyModel(model_id: []const u8) bool {
+    return std.mem.startsWith(u8, model_id, "o1-pro") or
+        std.mem.startsWith(u8, model_id, "o3-pro") or
+        std.mem.startsWith(u8, model_id, "gpt-5-pro") or
+        std.mem.startsWith(u8, model_id, "gpt-5-codex") or
+        std.mem.startsWith(u8, model_id, "gpt-5.1-codex-max") or
+        std.mem.indexOf(u8, model_id, "deep-research") != null or
+        std.mem.startsWith(u8, model_id, "computer-use-preview");
+}
+
+pub fn wireForModel(provider_id: []const u8, model_id: []const u8) ?Wire {
+    const row = provider(provider_id) orelse return null;
+    if (std.mem.eql(u8, provider_id, "openai") and isResponsesOnlyModel(model_id)) {
+        if (wirePath("openai-responses")) |wire| return wire;
+    }
+    return firstImplementedWire(row);
 }
 
 pub fn endpointCarriesVersion(provider_id: []const u8, base_url: []const u8) bool {
@@ -841,4 +906,80 @@ test "a model's unstated fact resolves from its own row, and a wire-supplied bas
     const denied = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("openrouter", "https://openrouter.ai/api/v1", false), completions);
     defer std.testing.allocator.free(denied);
     try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/v1/chat/completions", denied);
+}
+
+const RecordedEnv = struct {
+    asked: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *RecordedEnv, allocator: std.mem.Allocator) void {
+        for (self.asked.items) |name| allocator.free(name);
+        self.asked.deinit(allocator);
+    }
+
+    fn read(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+        const self: *RecordedEnv = @ptrCast(@alignCast(ctx orelse return null));
+        try self.asked.append(allocator, try allocator.dupe(u8, name));
+        return try allocator.dupe(u8, "row-key");
+    }
+};
+
+test "a request consults exactly the names the row records, for every row that records any" {
+    for (all) |row| {
+        var recorded = RecordedEnv{};
+        defer recorded.deinit(std.testing.allocator);
+        const found = apiKeyForProvider(std.testing.allocator, row.id, RecordedEnv.read, &recorded);
+        defer if (found) |value| std.testing.allocator.free(value);
+
+        if (row.credential_env.len == 0) {
+            try std.testing.expect(found == null);
+            try std.testing.expectEqual(@as(usize, 0), recorded.asked.items.len);
+            continue;
+        }
+        if (found == null) {
+            std.debug.print("\n{s} records {s} but a request would find no key\n", .{ row.id, row.credential_env[0] });
+            return error.TestRowKeyNotFound;
+        }
+        try std.testing.expectEqualStrings("row-key", found.?);
+        try std.testing.expectEqual(@as(usize, 1), recorded.asked.items.len);
+        try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
+    }
+    try std.testing.expect(apiKeyForProvider(std.testing.allocator, "no-such-provider", RecordedEnv.read, null) == null);
+}
+
+test "anthropic's row keeps the auth token ahead of the api key, and the anthropic wire uses it" {
+    try std.testing.expectEqualStrings("ANTHROPIC_AUTH_TOKEN", credentialEnv("anthropic")[0]);
+    try std.testing.expectEqualStrings("ANTHROPIC_API_KEY", credentialEnv("anthropic")[1]);
+    const seen = struct {
+        names: std.ArrayList([]const u8) = .empty,
+        fn read(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+            const self: *@This() = @ptrCast(@alignCast(ctx orelse return null));
+            try self.names.append(allocator, try allocator.dupe(u8, name));
+            if (std.mem.eql(u8, name, "ANTHROPIC_AUTH_TOKEN")) return null;
+            return try allocator.dupe(u8, "from-the-second-name");
+        }
+    };
+    var probe = seen{};
+    defer {
+        for (probe.names.items) |name| std.testing.allocator.free(name);
+        probe.names.deinit(std.testing.allocator);
+    }
+    const found = apiKeyForProvider(std.testing.allocator, "anthropic", seen.read, &probe);
+    defer std.testing.allocator.free(found.?);
+    try std.testing.expectEqualStrings("from-the-second-name", found.?);
+    try std.testing.expectEqual(@as(usize, 2), probe.names.items.len);
+}
+
+test "a set but empty variable is skipped for the next name the row records" {
+    const EmptyFirst = struct {
+        fn read(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+            _ = ctx;
+            if (std.mem.eql(u8, name, "FIRST")) return try allocator.dupe(u8, "");
+            return try allocator.dupe(u8, "second");
+        }
+    };
+    const names = [_][]const u8{ "FIRST", "SECOND" };
+    const found = apiKeyFromNames(std.testing.allocator, &names, EmptyFirst.read, null);
+    defer std.testing.allocator.free(found.?);
+    try std.testing.expectEqualStrings("second", found.?);
+    try std.testing.expect(apiKeyFromNames(std.testing.allocator, &.{}, EmptyFirst.read, null) == null);
 }

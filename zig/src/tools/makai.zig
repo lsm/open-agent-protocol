@@ -1131,13 +1131,7 @@ const envOrEmpty = provider_base_url.envOwnedOrNull;
 const isReasoningModelRef = provider_base_url.isReasoningModelRef;
 
 fn isResponsesOnlyModel(model_id: []const u8) bool {
-    return std.mem.startsWith(u8, model_id, "o1-pro") or
-        std.mem.startsWith(u8, model_id, "o3-pro") or
-        std.mem.startsWith(u8, model_id, "gpt-5-pro") or
-        std.mem.startsWith(u8, model_id, "gpt-5-codex") or
-        std.mem.startsWith(u8, model_id, "gpt-5.1-codex-max") or
-        std.mem.indexOf(u8, model_id, "deep-research") != null or
-        std.mem.startsWith(u8, model_id, "computer-use-preview");
+    return provider_catalog.isResponsesOnlyModel(model_id);
 }
 
 const transparentProxyCompat = provider_base_url.transparentProxyCompat;

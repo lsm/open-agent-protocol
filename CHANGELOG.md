@@ -15,6 +15,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Every Go decoder that reads bytes from outside the process now has a fuzz target, and a scheduled job runs them.** The class is the rule: not the two decoders an issue happens to name, but every function that turns bytes another program wrote into a value. That is `validation.Validator.Validate` (a whole envelope trace), the hand-rolled duplicate-key JSON walk in six places, the adapters' native entry points (`DecodeNotification` for hermes and deepseek, `DecodeServerRequest`, `DecodeObservation` and `DecodeControlRequest` for claude, `DecodeEvent` for opencode, `DecodeStrict` for pi, hermes and deepseek), and the limit-bounded frame reader in the codex app-server codec. Each target asserts a property rather than merely returning: a refusal carries no value, an admission implies the invariant it was admitted for (an opencode event with a valid id, a supported type and a durable position; a codex frame that is a request, a result or an error and nothing else), a method the decoder does not serve is refused whatever the data says, and a decoder never hands back bytes that are not one whole JSON document. **A scheduled leg that names no target, and a target nothing schedules, both fail a test** (`go/internal/fuzzseed/matrix_test.go`): the matrix and the tree are checked against each other in both directions, and a leg is named by its package as well as its target so a failing job is identifiable. It earned its place immediately -- it found that `go/validation` already carried `FuzzValidateNeverPanics` and `FuzzApplyEnvelopeNeverPanics` and nothing ran them, and it found that two targets this change had added were later edited out of the tree while the matrix still listed them. **Seeds come from the corpus, through the catalog**: `fuzzseed.Corpus(harnessID)` resolves the current corpus of a harness from `harnesses/*.json`, so no version pin is spelled in the tree (the `pin_literal` gate would refuse it) and a new corpus version re-seeds the targets without a code change; `fuzzseed.Manifest` does the same for the 573 conformance fixtures, spread evenly across the corpus rather than taken from its head. The seeds are bounded and deduplicated, because a seed corpus runs on every ordinary `go test`. `.github/workflows/fuzz.yml` runs each target for 45 s on a weekly schedule and on demand, six at a time inside a 20-minute ceiling, and uploads the input that failed so it can become a fixture.
 
 
+- The catalog loader serves the five coding-plan rows and OpenAI, each reachable
+  by exporting its own key and nothing else: `ZHIPU_API_KEY`,
+  `ALIBABA_CODING_PLAN_API_KEY`, `MINIMAX_API_KEY`, `TENCENT_CODING_PLAN_API_KEY`,
+  `ARK_CODING_PLAN_API_KEY` and `OPENAI_API_KEY`. Twelve of the sixteen rows the
+  loader could serve now are, with the gateways and DeepSeek. MiniMax is served on
+  `anthropic-messages` and the rest on `openai-completions`, each the wire its
+  catalog row records rather than a shape the loader assumed.
+  All five coding plans are the `carries_version` shape in the hardest form: the
+  base ends in a version segment *and* the `models_endpoint` is `/models`, so the
+  version sits in the middle of the path. A listing that appended a second `/v1`
+  — as the override path does for a versioned base — would ask
+  `…/api/coding/paas/v4/v1/models` and get a 404, so the override test now walks
+  all ten versioned rows rather than the six it did, and a new one pins the
+  versioned base under an override exactly.
+- **OpenAI's wire is chosen per model, and the reason is that the row has two
+  wires and the product already knew which one each model needs.** The catalog
+  lists `openai-completions` first, so a loader that took the row's first wire
+  would serve every OpenAI model as a chat completion — but the built-in OpenAI
+  descriptor has always served OpenAI on `openai-responses`, and the
+  responses-only models (`o1-pro`, `o3-pro`, `gpt-5-pro`, `gpt-5-codex`,
+  `gpt-5.1-codex-max`, `deep-research`, `computer-use-preview`) exist only on
+  that wire. Discovery sees the whole listing at once, so the wire is decided per
+  model id: responses for the models that need it, chat completions for the rest.
+  That list was a private function in `makai.zig`; it now lives in
+  `provider_catalog.zig` as `isResponsesOnlyModel` and `makai` calls it, so there
+  is one list of which models are responses-only rather than two that could
+  drift. A test asserts a single-wire row keeps its wire whatever the model is
+  called, and another asserts the loader and the per-model rule choose the same
+  wire for every row the loader can serve.
+- **MiniMax's coding plan could list its models but not use them.** Its row is
+  `anthropic-messages`, and that wire resolved a key only for `anthropic` — it
+  named `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` literally and returned
+  null for every other provider — so a discovered MiniMax model reached
+  `error.MissingApiKey` on every run. A row's credential is now read from the
+  names that row records, on every wire, in one place: the resolution lives in
+  `provider_catalog.zig` beside `credentialEnv`, so the two request paths that
+  need it share one implementation instead of each holding a list of vendor
+  names to drift. `anthropic`'s own order is unchanged, because the catalog
+  records `ANTHROPIC_AUTH_TOKEN` ahead of `ANTHROPIC_API_KEY`.
+- **The override test now reads the URLs the product computes, not ones it does
+  not.** It joined the overridden request with the version fact hardcoded and
+  asserted `…/api/chat/completions`, but a model discovered under an override
+  resolves the fact to false — the override base matches no catalogued endpoint
+  and carries no trailing `/v1` — so the product requests
+  `…/api/v1/chat/completions`. The test had blessed a listing and request
+  disagreeing with each other that does not happen, which would have hidden one
+  that does. It drives the loader's own resolution now and reads both URLs back
+  off the model it builds, and a second test pins that an override base which
+  *does* arrive versioned is normalised before the listing sees it, which is
+  what keeps the two in step.
 - The catalog loader serves the five gateway rows beside DeepSeek: OpenRouter,
   OpenCode Zen, Vercel AI Gateway, ZenMux and Deep Infra. Each is reachable by
   exporting its own key — `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`,
