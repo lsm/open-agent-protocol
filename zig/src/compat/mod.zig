@@ -8,7 +8,7 @@ pub const stdio = @import("stdio.zig");
 pub const http = @import("http.zig");
 pub const net = @import("net.zig");
 
-fn runtimeEnviron() std.process.Environ {
+pub fn runtimeEnviron() std.process.Environ {
     const builtin = @import("builtin");
     if (builtin.is_test) {
         return std.testing.environ;
@@ -70,6 +70,10 @@ pub fn clearTestEnv() void {
 fn testEnvValue(name: []const u8) ?[]const u8 {
     const held = test_env orelse return null;
     return held.get(name);
+}
+
+pub fn getEnvVarOwnedFrom(environ: std.process.Environ, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return std.process.Environ.getAlloc(environ, allocator, name);
 }
 
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {

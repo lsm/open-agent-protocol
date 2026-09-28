@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("compat");
 const auth_types = @import("auth_types");
 const auth_server = @import("auth_server");
+const auth_providers = @import("auth/providers");
 const json_writer = @import("json_writer");
 const oap_types = @import("oap_types");
 
@@ -459,6 +460,8 @@ test "OAP auth adapter fails a manual prompt without carrying an answer" {
         .enable_real_oauth = false,
     });
     defer native.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
     adapter.setCapabilityRevision("current-revision");
@@ -522,6 +525,8 @@ test "auth adapter repeats the admitted revision on providers and cancel respons
         .enable_real_oauth = false,
     });
     defer native.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
     adapter.setCapabilityRevision("current-revision");
@@ -579,6 +584,8 @@ test "auth adapter rejects undeclared secret fields without reflecting them" {
         .enable_real_oauth = false,
     });
     defer native.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
 
@@ -605,6 +612,8 @@ test "auth adapter cancels local login on disconnect and ignores other profiles"
         .enable_real_oauth = false,
     });
     defer native.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
 
@@ -766,6 +775,8 @@ fn authFlowAllocationProbe(allocator: std.mem.Allocator) !void {
         .enable_real_oauth = false,
     });
     defer native.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     var adapter = Adapter.init(allocator, &native);
     defer adapter.deinit();
     adapter.setCapabilityRevision("current-revision");

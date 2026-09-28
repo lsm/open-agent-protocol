@@ -395,7 +395,8 @@ pub const AuthProtocolServer = struct {
     }
 
     fn buildProvidersResponse(self: *Self) !auth_types.AuthProvidersResponse {
-        const providers = try self.allocator.alloc(auth_types.AuthProviderInfo, auth_providers.ALL_DEFINITIONS.len);
+        const served = auth_providers.servedDefinitions();
+        const providers = try self.allocator.alloc(auth_types.AuthProviderInfo, served.len);
         errdefer {
             for (providers) |*provider| provider.deinit(self.allocator);
             self.allocator.free(providers);
@@ -406,7 +407,7 @@ pub const AuthProtocolServer = struct {
 
         const now_ms = compat.time.nowMillis();
 
-        for (auth_providers.ALL_DEFINITIONS, 0..) |definition, index| {
+        for (served, 0..) |definition, index| {
             var status: auth_types.AuthStatus = .login_required;
             if (storage) |*auth_storage| {
                 if (auth_storage.providers.get(definition.id)) |provider_auth| {
@@ -535,7 +536,8 @@ pub const AuthProtocolServer = struct {
     }
 
     fn executeProviderLogin(self: *Self, flow: *FlowState) !oauth_storage.Credentials {
-        if (std.mem.eql(u8, flow.provider_id, "test-fixture")) {
+        if (std.mem.eql(u8, flow.provider_id, auth_providers.fixture_provider_id)) {
+            if (!auth_providers.fixtureRequested()) return error.UnknownProvider;
             return try self.loginTestFixture(flow);
         }
 
@@ -970,6 +972,67 @@ fn waitForAuthOutbound(server: *AuthProtocolServer, comptime predicate: anytype,
     }
 }
 
+test "AuthProtocolServer refuses the fixture login when the opt-in is not set" {
+    const allocator = std.testing.allocator;
+    var server = AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer server.deinit();
+
+    const start_payload = auth_types.AuthLoginStartRequest{
+        .provider_id = OwnedSlice(u8).initOwned(try allocator.dupe(u8, auth_providers.fixture_provider_id)),
+    };
+    const flow_id = auth_types.generateUlid();
+    var start_env = auth_types.Envelope{
+        .stream_id = flow_id,
+        .message_id = auth_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .auth_login_start = start_payload },
+    };
+    defer start_env.deinit(allocator);
+
+    const IsFailure = struct {
+        fn check(env: auth_types.Envelope) bool {
+            return env.payload == .auth_event and env.payload.auth_event == .@"error";
+        }
+    }.check;
+    const IsPrompt = struct {
+        fn check(env: auth_types.Envelope) bool {
+            return env.payload == .auth_event and env.payload.auth_event == .prompt;
+        }
+    }.check;
+
+    try std.testing.expect((try server.handleEnvelope(start_env)).?.payload == .ack);
+    var refused = try waitForAuthOutbound(&server, IsFailure, 2_000);
+    refused.deinit(allocator);
+    while (server.popOutbound()) |rest| {
+        try std.testing.expect(rest.payload != .auth_event or rest.payload.auth_event != .prompt);
+        var owned = rest;
+        owned.deinit(allocator);
+    }
+
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
+    const second_payload = auth_types.AuthLoginStartRequest{
+        .provider_id = OwnedSlice(u8).initOwned(try allocator.dupe(u8, auth_providers.fixture_provider_id)),
+    };
+    var second_env = auth_types.Envelope{
+        .stream_id = auth_types.generateUlid(),
+        .message_id = auth_types.generateUlid(),
+        .sequence = 1,
+        .timestamp = compat.time.nowMillis(),
+        .payload = .{ .auth_login_start = second_payload },
+    };
+    defer second_env.deinit(allocator);
+
+    try std.testing.expect((try server.handleEnvelope(second_env)).?.payload == .ack);
+    var prompt = try waitForAuthOutbound(&server, IsPrompt, 2_000);
+    defer prompt.deinit(allocator);
+    try std.testing.expectEqualStrings("Enter fixture code:", prompt.payload.auth_event.prompt.message.slice());
+}
+
 test "AuthProtocolServer fixture login waits for prompt response" {
     const allocator = std.testing.allocator;
     var server = AuthProtocolServer.init(allocator, .{
@@ -977,6 +1040,8 @@ test "AuthProtocolServer fixture login waits for prompt response" {
         .enable_real_oauth = false,
     });
     defer server.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
 
     const flow_id = auth_types.generateUlid();
     const start_id = auth_types.generateUlid();
@@ -1044,6 +1109,8 @@ test "AuthProtocolServer without login workers keeps a login silent until cancel
         .spawn_login_workers = false,
     });
     defer server.deinit();
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
 
     const flow_id = auth_types.generateUlid();
     var start_env = auth_types.Envelope{
