@@ -246,6 +246,34 @@ jobs:
           OAP_OAPX_BIN: /tmp/oapx-parity/bin/oapx
         run: go test ./go/cmd/goap/ -run TestBackendsMatchOapx -v
 
+  pi-parity-repeat:
+    name: Parity - the pi scenario twenty times over
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build oapx
+        run: zig build --build-file zig/build.zig install --prefix /tmp/oapx-repeat
+
+      - name: The pi scenario must not depend on goroutine scheduling
+        env:
+          OAP_OAPX_BIN: /tmp/oapx-repeat/bin/oapx
+        run: go test ./go/cmd/goap/ -run 'TestBackendsMatchOapx/pi$' -count=20
+
   memory-conformance:
     name: Conformance and parity - oapx memory backend
     needs: [unit-tests]

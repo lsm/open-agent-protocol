@@ -155,3 +155,90 @@ rather than this pin.
 So a row's key can be delivered either as the environment variable the provider
 documents or through the stored file, and the two are the same setting read from
 two places.
+
+## Session reload at v1.18.32
+
+Decision 0039's evidence table cites this ledger for the OpenCode row. Every
+line below is read from the source at this pin's own commit
+`545f51d26cc39a907d2867492d498d9607ea5fa4` — the same commit and tree as
+*Provenance* above, and the blobs cited here hash to the values recorded there
+(`git hash-object` on each: `handlers/session.ts` `5b7d354b04fc…`,
+`groups/session.ts` `8ce85ef79686…`) — and the last paragraph says what that
+does and does not establish.
+
+**The store is one SQLite file, and a missing one is not an absence.**
+`Database.path()` (`packages/core/src/database/database.ts`) is
+`join(Global.Path.data, Flag.OPENCODE_DB)`, defaulting to `opencode.db` and
+becoming `opencode-<channel>.db` for a non-default installation channel;
+`Global.Path.data` is `xdgData/opencode` from `xdg-basedir`
+(`packages/core/src/global.ts`), with the home overridable by
+`OPENCODE_TEST_HOME`. Opening a store that is not there applies
+`DatabaseMigration`'s migration list against a `migration` bookkeeping table
+created `IF NOT EXISTS`, so an empty store appears on demand — a reattach
+against a deleted database and one against a session that never existed are
+the same answer.
+
+**A reload restores the messages *and* the configuration, from two routes.**
+`GET /api/session/:sessionID` returns the record and
+`GET /api/session/:sessionID/context` returns the messages
+(`SessionStore.context` → `SessionHistory.load`), with
+`GET /api/session/:sessionID/history` alongside and
+`GET /api/session/:sessionID/message/:messageID` for one message. The record
+(`SessionSchema.Info`, built by `fromRow` in
+`packages/core/src/session/info.ts`) carries `id`, `projectID`, `title`,
+`parentID`, `agent`, `model {id, providerID, variant}`, `cost`, a token
+breakdown, `location {directory, workspaceID}`, `subpath`, `revert` and
+`time {created, updated, archived}`. So a reattach learns the model and its
+provider, the agent, and the working directory the session actually ran under
+— not the resumed process's defaults — which is what 0039's reopen reply has
+to declare as `recovery.recovered`.
+
+**The not-found is typed, so nothing has to be manufactured.** `SessionStore.get`
+is a single `select … where id = ?` and answers `undefined`; the server
+handler turns that into `SessionNotFoundError` (tag `Session.NotFoundError`),
+and a message that is not there into `Session.MessageNotFoundError`. An
+adapter can therefore carry `unknown_session` from the wire rather than infer
+it. Hermes' own store is typed the same way: `_resume_locate` answers `4007
+session not found` for a profile that holds neither the row nor a stranded
+donor (`research/hermes-v2026.9.24-mapping.md`, "Session reload at v2026.9.24",
+the store's not-found paragraph). Of the seven harnesses read at their pins,
+three type their own absence — that one, this one, and DeepSeek's
+(`SessionPersistenceNotFoundError`) — and four do not: pi's discovery answers
+`null`, the ACP spec says nothing, Codex's reload ledger records `-32602
+invalid_request` and calls that "not a not-found code", and Claude Code's answer
+is unrecorded. The inference is what those four need, and two of them need a
+fixture before it can be said either way.
+
+**What a reattach would call, and what the adapter calls instead.** The session
+group (`packages/protocol/src/groups/session.ts`) carries seventeen routes:
+`session.list` (`GET /api/session`, cursor-paged, default limit 50),
+`session.create` (`POST /api/session`), `session.active`, `session.get`,
+`session.context`, `session.history`, `session.events`
+(`GET /api/session/:sessionID/event`), `session.message`, `session.switchAgent`,
+`session.switchModel`, `session.prompt`, `session.compact`, `session.wait`,
+`session.interrupt` and the three `session.revert.*` stages — seventeen
+`HttpApiEndpoint`s in the group, counted rather than estimated. The
+Go adapter uses **six** of them, and the port goldens in
+`go/adapter/opencode/testdata/port-goldens.json` name every request it makes:
+`POST /api/session`, `POST /api/session/:id/prompt`, `POST
+/api/session/:id/interrupt`, `GET /api/session/active`,
+`GET /api/session/:id/history?after=&limit=`, and `GET
+/api/session/:id/event` — with and without `?after=`, which is the seventh
+URL in the goldens but the same route. So it already reads a live session's
+history and its event stream — a reload *of a session the server still holds* —
+and what it never calls is the part a reopen needs: `session.list`,
+`session.get` (the record that carries the model, the agent and the directory)
+and `session.context`. It writes no binding, and `Resume` in
+`go/adapter/opencode/session.go` is keyed on the adapter's own
+`s.runs[RunID]`, so it replays a run *this process* still holds and is not a
+reattach at all. A reopen after a restart would therefore come back empty
+rather than refusing, which is the gap 0039's binding record has to close.
+
+**Two answers a reattach must be ready for, both already recorded above from
+the wire.** `POST /api/session/:sessionID/wait` on an idle session answers
+`503` (`session.wait not yet`), and `GET /api/session/:sessionID/event` on a
+silent session produces no status line within three seconds — so "the session
+exists but is not running" is a state this store expresses without a run, and
+a reopen that waited for a status line would hang on it. Nothing above was
+observed on a running server beyond the probes this ledger already records;
+the rest is read from the source at the pin.

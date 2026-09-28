@@ -630,8 +630,7 @@ pub const Session = struct {
             };
         }
         try self.recordTerminal();
-        const status: oap_types.RunStatus = if (self.statuses.get(run_id)) |settled| std.meta.stringToEnum(oap_types.RunStatus, settled) orelse .cancelling else .cancelling;
-        return .{ .session_id = self.id, .run_id = try arena.dupe(u8, run_id), .accepted = true, .status = status };
+        return .{ .session_id = self.id, .run_id = try arena.dupe(u8, run_id), .accepted = true, .status = .cancelling };
     }
 
     fn readable(ptr: *anyopaque) ?std.Io.File.Handle {
@@ -1000,6 +999,27 @@ test "a cancel sends abort once and answers cancelling" {
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, written, "\"type\":\"abort\""));
     try testing.expectError(error.RunNotFound, probe.handle.?.cancel(probe.arena.allocator(), "run-unknown", &refusal));
+}
+
+test "a cancel that settles the run inside the abort still answers cancelling" {
+    var probe: Probe = undefined;
+    try probe.init(fake_prelude ++ fake_prompt_accepted ++
+        "take; printf '%s\\n' '{\"type\":\"message_end\",\"message\":" ++ assistant_hello ++ "}'\n" ++
+        "printf '%s\\n' '{\"type\":\"agent_end\",\"messages\":[" ++ assistant_hello ++ "],\"willRetry\":false}'\n" ++
+        "printf '{\"type\":\"agent_settled\"}\\n'\n" ++
+        "printf '{\"type\":\"response\",\"id\":\"req_3\",\"command\":\"abort\",\"success\":true}\\n'\n" ++
+        "while take; do :; done\n");
+    defer probe.deinit();
+    var refusal = contract.Refusal{};
+    _ = try probe.open(&refusal);
+    const admitted = try probe.submit("long", &refusal);
+    var seen = std.ArrayList(contract.Event).empty;
+    _ = try probe.pumpUntil("run.started", &seen);
+
+    const cancelled = try probe.handle.?.cancel(probe.arena.allocator(), admitted.run_id.?, &refusal);
+    try testing.expect(cancelled.accepted);
+    try testing.expectEqual(oap_types.RunStatus.cancelling, cancelled.status);
+    _ = try probe.pumpUntil("run.completed", &seen);
 }
 
 test "a Pi agent already streaming at open refuses the session" {

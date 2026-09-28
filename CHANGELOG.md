@@ -8,7 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- `providers/catalog.json` records, per endpoint, whether its `base_url` already
+  carries the API version, so a request path stops depending on a guess about a
+  path segment. Today the join reads the base URL looking for any segment shaped
+  `v<digits>` and, if one is there, drops the wire's own leading `/v1`. That is
+  right for all 22 catalogued endpoints, which is why nothing here moves a URL —
+  `providers/resolved_urls.json` regenerates byte-identical — and wrong for any
+  base a user names, since only the endpoint's owner knows which it is. A proxy
+  mirroring Anthropic under `https://proxy.example/api/v1/anthropic` serves
+  `…/anthropic/v1/messages`, and the guess sends it `…/anthropic/messages`.
+  A wire fixes its tail — `/chat/completions`, `/messages` — and across the
+  catalog the only thing that varies is whether the base already includes the
+  version, so that is the one bit recorded. The path stays in `wire_paths`, which
+  is where it is one entry per wire rather than twenty-two; `models_endpoint`
+  stays a literal because no wire defines a models path.
+  The 14 endpoints that deduplicate today carry `carries_version: true`: the ten
+  whose base ends in `/v1` — OpenRouter, OpenCode Zen, Alibaba's, MiniMax's, the
+  three Xiaomi plans and Xiaomi, Vercel and ZenMux — and the four whose version is
+  not the last segment, Z.AI's `/paas/v4`, Tencent's and Volcengine's
+  `/coding/v3`, and Deep Infra's `/v1/openai`. The other 8 say nothing, which
+  means the wire's full path is appended. Absent means absent: no endpoint is
+  asked to repeat a default, so adding a wire with a versioned path needs no
+  catalog edit.
+  Two loaders carry the member, `Endpoint.CarriesVersion` in `go/providercatalog`
+  and the generated `Endpoint.carries_version` in the Zig tree, and two refuse it
+  where the fact cannot mean anything: `goap check` reports
+  `provider_carries_version_without_versioned_path`, and the Zig generator panics
+  naming the row and the wire, both for an endpoint on `openai-codex-responses`,
+  `ollama` or `google-generative-ai`, whose wires append no leading `/v1`. Those
+  two hold the generator's own list of versioned wires, so a Zig test re-checks
+  every recorded fact against `wire_paths` as well: a fact the generator let
+  through is still caught where the wire table lives.
+  Nothing reads the fact yet. One test per tree asserts it equals the inference it
+  replaces, so the 14 are recorded before the inference goes, and both are
+  deleted when it does.
+
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
+
+- [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) (proposed) amends 0001's "Cancellation intent is not settlement" on two clauses, and both validators change with it. **Acceptance is judged when the cancel is checked**, which a trace shows as the request's position against the run's terminal: an accepted `run.cancel.response` is illegal only when the request it answers (`in_reply_to`) arrived after the run's non-`run.cancelled` terminal, and a request that arrived while the run was live may be answered accepted after a natural completion. **A cancel response is unordered against the run's stream** — it carries no `sequence` and 0001 makes it not a terminal — so its position is never what makes it legal. A late cancel is a *legal request* with 0001's typed answer, so neither validator refuses the request itself; Go used to, and does no longer, which is what lets the two trees judge the same trace the same way. Three fixtures carry it: `core-cancel-accepted-after-natural-completion` (valid), `cancel-accepted-after-late-request` (semantic-invalid, `illegal_run_transition`) and `core-cancel-late-request-refused` (valid, the answer is `run_already_terminal`). The pi announcement order is explicitly *not* settled by this record and is not policed by it: both orders are legal, and the two trees differ in output order only.
+
+- [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed) answers T7's two open questions for `session-reattach`. A reopen is `reopen: true` on `session.open.request` — the unused `recovery` object is not reused — and it answers the session's state document with `recovery.recovered: true` and the model and settings the session actually runs under, which is the harness's recorded configuration rather than the loader's: Codex's `ThreadResumeResponse` requires six such members and the Go adapter dropped all six (#458). A create naming a bound id is `session_exists`, a reopen with no binding is `unknown_session`, and a harness that cannot load is `unsupported_feature`. A store the harness can no longer honour answers `unsupported_feature`, as 0039 already rules, and **no new code is proposed**: the code has to come from the binding rather than the harness's reply, because two of the ledgers record a harness creating a missing store before looking in it (Hermes mode `0o600` plus the schema, OpenCode's migration runner) and pi's discovery answers `null` either way, so for those a deleted database, a moved home and a session that never existed are one answer on the wire. Of the seven harnesses read at their pins, three type their own absence — Hermes `4007`, OpenCode `SessionNotFoundError`, DeepSeek `SessionPersistenceNotFoundError` — and four do not: pi's `null`, ACP's silence, Codex's `-32602 invalid_request` (its own ledger calls that "not a not-found code"), and Claude Code, whose answer is unrecorded. The binding is the host's record — never a credential, never a resolved environment value — written atomically, with a torn write detected and never read, and appended rather than replaced. No wire changes with a proposed record.
 
 
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
@@ -145,6 +184,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   success — and a success is what drains the user's queued follow-ups, so a failed
   run discarded them. The reason is passed by the caller that knows it now, the same
   way compaction takes it from the outcome.
+- Five adapters across both trees answer a `run.cancel` accepted on a live run with `cancelling` and no longer re-read the run's terminal after the native round-trip, so the answer depends on the acceptance rather than on how far the reader goroutine has got: `go/adapter/pi`, `go/adapter/codex/appserver` and `go/adapter/acp`, and Zig's `codex` and `pi`. Decision 0001 is the rule, and the pi parity scenario had flaked on the alternative at least five times (#10); it now runs twenty times over in CI. A run that is already terminal when the cancel is checked is still refused `run_already_terminal` — except a run that already settled `cancelled`, which is idempotent and still answers accepted `cancelled` where it did before (ACP and OpenCode in both trees, and codex in both trees by its own path) — and a settled run's recorded status is still not rewritten, so a run that settles *during* the round-trip no longer changes what the cancel answers. Zig ACP, Claude Code, Hermes, OpenCode and DeepSeek were read in both trees and needed no change: Zig ACP's status branch is the *pre-check*, so an already-terminal run is still refused before anything is sent, and DeepSeek's `run.cancel` is `unavailable` because its selected SDK wire has no cancel request at all.
 - A long reply in the TUI is no longer cut off at two minutes with `Provider protocol
   stream timed out`. The in-process provider bridge counted its 120-second limit from
   the request, so a response still streaming at two minutes was ended mid-sentence. The

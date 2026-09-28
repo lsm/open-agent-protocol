@@ -56,6 +56,7 @@ type fakeClient struct {
 	prompt        chan promptOutcome
 	notifies      []string
 	notifyErr     error
+	notifyHook    func()
 	closed        bool
 	sessionNew    native.SessionNewParams
 }
@@ -89,11 +90,16 @@ func (f *fakeClient) CallStarted(ctx context.Context, m string, p, r any, starte
 }
 func (f *fakeClient) Notify(_ context.Context, m string, _ any) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.notifyErr != nil {
+		f.mu.Unlock()
 		return f.notifyErr
 	}
 	f.notifies = append(f.notifies, m)
+	hook := f.notifyHook
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return nil
 }
 func (f *fakeClient) Requests() <-chan *rpc.IncomingRequest         { return f.requests }
@@ -311,6 +317,37 @@ func TestOneActivePromptAndCancellationRaces(t *testing.T) {
 		})
 	}
 }
+func TestACancelWhoseNotifyCompletesTheTurnAnswersCancellingAndTheCompletionFollows(t *testing.T) {
+	s, f := openTest(t, 64)
+	admission, stream := submit(t, s)
+	<-f.promptStarted
+	f.mu.Lock()
+	f.notifyHook = func() {
+		f.prompt <- promptOutcome{result: native.PromptResult{StopReason: "end_turn"}}
+	}
+	f.mu.Unlock()
+
+	var cancel protocol.RunCancelResponse
+	var cancelErr error
+	done := make(chan struct{})
+	go func() {
+		cancel, cancelErr = s.Cancel(context.Background(), admission.RunID)
+		close(done)
+	}()
+	events := collect(t, stream)
+	<-done
+	if cancelErr != nil {
+		t.Fatal(cancelErr)
+	}
+	if got := events[len(events)-1].Type; got != protocol.TypeRunCompleted {
+		t.Fatalf("terminal=%s, want the natural completion to win the stream", got)
+	}
+	if !cancel.Accepted || cancel.Status != protocol.RunCancelling {
+		t.Fatalf("cancel=%+v, want the acceptance", cancel)
+	}
+	assertValidTrace(t, admission, events)
+}
+
 func TestArbitraryPostCancelErrorIsFailure(t *testing.T) {
 	s, f := openTest(t, 64)
 	a, stream := submit(t, s)

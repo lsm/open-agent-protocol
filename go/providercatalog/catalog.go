@@ -40,9 +40,10 @@ type Provider struct {
 }
 
 type Endpoint struct {
-	Wire    string `json:"wire"`
-	BaseURL string `json:"base_url"`
-	Region  string `json:"region,omitempty"`
+	Wire           string `json:"wire"`
+	BaseURL        string `json:"base_url"`
+	Region         string `json:"region,omitempty"`
+	CarriesVersion bool   `json:"carries_version,omitempty"`
 }
 
 type OAuthOrigin struct {
