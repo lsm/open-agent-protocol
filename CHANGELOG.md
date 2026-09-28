@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The catalog loader serves the five gateway rows beside DeepSeek: OpenRouter,
+  OpenCode Zen, Vercel AI Gateway, ZenMux and Deep Infra. Each is reachable by
+  exporting its own key — `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`,
+  `AI_GATEWAY_API_KEY`, `ZENMUX_API_KEY`, `DEEPINFRA_API_KEY` — and nothing
+  else, so five of the sixteen rows the loader could serve are now served. They
+  are the first rows whose base already carries the API version, so they are the
+  first to exercise `carries_version` end to end rather than in a unit test: the
+  row's recorded fact decides the request path, and under an override the models
+  listing is built the way the request is, so `OAPX_BASE_URL=https://proxy.example`
+  sends OpenCode Zen to `…/v1/models` and `…/v1/chat/completions` rather than one
+  of each.
+  A gateway that advertises hundreds of models now appears in `/model` and the
+  TUI picker in full. That is the honest outcome of discovery — the runtime does
+  not second-guess what a gateway says it serves — and `providers.json` remains
+  the way to narrow it, through the allowlist the custom-provider path already
+  has. No row is filtered here, because a curated catalog has no opinion about a
+  user's aggregator.
+  **A listed model also has to be requestable**, which listing alone did not
+  prove. Discovery read the credential through the catalog, so the models
+  appeared; the request path's own env fallback named DeepSeek, OpenAI and Kimi
+  literally, so all five new rows reached `error.MissingApiKey` and only DeepSeek
+  worked end to end — for the wrong reason. That fallback now reads the names the
+  row records, which is the same lookup discovery uses, so "export this row's key
+  and it works" is true of the request and not only of the listing.
+  Each row has its own test rather than one shared assertion: the set the
+  production loader enables, each row's wire and version fact, and one that
+  drives `loadProductionModels` with two rows' fakes and reads both models back,
+  so "the row is enabled" and "the row's models appear" are separate claims with
+  separate failures. I checked that second claim by removing OpenRouter from the
+  loader and confirming two tests fail — the first version of these tests called
+  the row loader directly and passed with the row absent, which proved nothing
+  about what the product actually serves.
+  The coding plans, Xiaomi's rows and OpenAI are separate steps. Xiaomi waits for
+  #352, because a pay-as-you-go key must not surface a token plan it cannot use.
+
 - An opt-in live smoke gate per catalogued row, so a row can earn `status:
   current` against recorded evidence instead of against a probe that only
   checked a path exists. `zig build test-e2e-provider-smoke` runs the four cases
