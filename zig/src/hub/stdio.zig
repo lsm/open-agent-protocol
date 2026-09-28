@@ -183,13 +183,17 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
     if (request.supplied.request) request.payload = member(root, "request");
     if (request.supplied.allow_degraded_features) {
         const degraded = member(root, "allow_degraded_features").?;
-        if (degraded != .array) return Error.MalformedLine;
-        const keys = try arena.alloc([]const u8, degraded.array.items.len);
-        for (degraded.array.items, keys) |item, *slot| {
-            if (item != .string) return Error.MalformedLine;
-            slot.* = item.string;
+        if (degraded == .null) {
+            request.allow_degraded_features = &.{};
+        } else {
+            if (degraded != .array) return Error.MalformedLine;
+            const keys = try arena.alloc([]const u8, degraded.array.items.len);
+            for (degraded.array.items, keys) |item, *slot| {
+                if (item != .string) return Error.MalformedLine;
+                slot.* = item.string;
+            }
+            request.allow_degraded_features = keys;
         }
-        request.allow_degraded_features = keys;
     }
     return request;
 }
@@ -1100,6 +1104,10 @@ test "a null parameter is supplied and refused, and a wrongly typed one is a def
     try harness.send("{\"id\":1,\"op\":\"adapters\",\"adapter\":null}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
     try harness.send("{\"id\":2,\"op\":\"sessions\",\"session_id\":null}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":7,\"op\":\"adapters\",\"allow_degraded_features\":null}");
+    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try harness.send("{\"id\":8,\"op\":\"adapters\",\"after\":null}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
 
     for ([_][]const u8{
