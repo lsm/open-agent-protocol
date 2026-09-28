@@ -166,7 +166,7 @@ func newFrameReader(r io.Reader) *frameReader {
 	return &frameReader{reader: newBufferedLineReader(r, maxFrameBytes)}
 }
 
-var errMalformedFrame = errors.New("makai: malformed JSON frame")
+var errMalformedFrame = errors.New("oap sdk: malformed JSON frame")
 
 func (fr *frameReader) next() (*frame, error) {
 	line, err := fr.reader.readLine()

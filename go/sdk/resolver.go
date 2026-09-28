@@ -35,12 +35,12 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 	if explicit := firstNonEmpty(os.Getenv(EnvBinaryPath), opts.BinaryPath); explicit != "" {
 		resolved, err := filepath.Abs(explicit)
 		if err != nil {
-			return "", fmt.Errorf("makai: cannot resolve binary path %q: %w", explicit, err)
+			return "", fmt.Errorf("oap sdk: cannot resolve binary path %q: %w", explicit, err)
 		}
 		if err := checkExecutable(resolved); err != nil {
 			return "", err
 		}
-		logger.Debug("makai: binary resolved from explicit path", "path", resolved)
+		logger.Debug("oap sdk: binary resolved from explicit path", "path", resolved)
 		return resolved, nil
 	}
 
@@ -55,7 +55,7 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 
 	for _, candidate := range localCandidates() {
 		if err := checkExecutable(candidate); err == nil {
-			logger.Debug("makai: binary resolved from local build", "path", candidate)
+			logger.Debug("oap sdk: binary resolved from local build", "path", candidate)
 			return candidate, nil
 		}
 	}
@@ -63,7 +63,7 @@ func ResolveBinary(ctx context.Context, opts *Options) (string, error) {
 	name := binaryName()
 	found, err := exec.LookPath(name)
 	if err == nil {
-		logger.Debug("makai: binary resolved from PATH", "path", found)
+		logger.Debug("oap sdk: binary resolved from PATH", "path", found)
 		return found, nil
 	}
 	return "", fmt.Errorf("%w: no %s on PATH and no local build under %s",
@@ -92,7 +92,7 @@ func binaryName() string {
 func resolveFromURL(ctx context.Context, rawURL, checksum, cacheDir string, logger *slog.Logger) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return "", fmt.Errorf("makai: invalid binary URL %q: %w", rawURL, err)
+		return "", fmt.Errorf("oap sdk: invalid binary URL %q: %w", rawURL, err)
 	}
 	if cacheDir == "" {
 		cacheDir, err = defaultCacheDir()
@@ -108,47 +108,47 @@ func resolveFromURL(ctx context.Context, rawURL, checksum, cacheDir string, logg
 
 	if _, err := os.Stat(cachePath); err == nil {
 		if verifyErr := verifyChecksum(cachePath, checksum); verifyErr == nil {
-			logger.Debug("makai: cached binary checksum verified", "path", cachePath)
+			logger.Debug("oap sdk: cached binary checksum verified", "path", cachePath)
 			return cachePath, nil
 		} else if !errors.Is(verifyErr, ErrChecksumMismatch) {
 			return "", verifyErr
 		}
-		logger.Warn("makai: cached binary checksum mismatch, re-downloading", "path", cachePath)
+		logger.Warn("oap sdk: cached binary checksum mismatch, re-downloading", "path", cachePath)
 		if err := os.Remove(cachePath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("makai: cannot evict cached binary %q: %w", cachePath, err)
+			return "", fmt.Errorf("oap sdk: cannot evict cached binary %q: %w", cachePath, err)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("makai: cannot inspect cached binary %q: %w", cachePath, err)
+		return "", fmt.Errorf("oap sdk: cannot inspect cached binary %q: %w", cachePath, err)
 	}
 
-	logger.Debug("makai: downloading binary", "url", rawURL, "target", cachePath)
+	logger.Debug("oap sdk: downloading binary", "url", rawURL, "target", cachePath)
 	if err := downloadToCache(ctx, rawURL, cachePath, checksum); err != nil {
 		return "", err
 	}
-	logger.Info("makai: binary download complete", "path", cachePath, "sha256", checksum)
+	logger.Info("oap sdk: binary download complete", "path", cachePath, "sha256", checksum)
 	return cachePath, nil
 }
 
 func downloadToCache(ctx context.Context, rawURL, targetPath, checksum string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return fmt.Errorf("makai: cannot build binary download request: %w", err)
+		return fmt.Errorf("oap sdk: cannot build binary download request: %w", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("makai: cannot download binary from %s: %w", rawURL, err)
+		return fmt.Errorf("oap sdk: cannot download binary from %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("makai: cannot download binary from %s: %s", rawURL, resp.Status)
+		return fmt.Errorf("oap sdk: cannot download binary from %s: %s", rawURL, resp.Status)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return fmt.Errorf("makai: cannot create binary cache directory: %w", err)
+		return fmt.Errorf("oap sdk: cannot create binary cache directory: %w", err)
 	}
 	temp, err := os.CreateTemp(filepath.Dir(targetPath), filepath.Base(targetPath)+".*.partial")
 	if err != nil {
-		return fmt.Errorf("makai: cannot create temporary download file: %w", err)
+		return fmt.Errorf("oap sdk: cannot create temporary download file: %w", err)
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
@@ -156,10 +156,10 @@ func downloadToCache(ctx context.Context, rawURL, targetPath, checksum string) e
 	digest := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(temp, digest), resp.Body); err != nil {
 		temp.Close()
-		return fmt.Errorf("makai: binary download failed: %w", err)
+		return fmt.Errorf("oap sdk: binary download failed: %w", err)
 	}
 	if err := temp.Close(); err != nil {
-		return fmt.Errorf("makai: binary download failed: %w", err)
+		return fmt.Errorf("oap sdk: binary download failed: %w", err)
 	}
 
 	actual := hex.EncodeToString(digest.Sum(nil))
@@ -168,11 +168,11 @@ func downloadToCache(ctx context.Context, rawURL, targetPath, checksum string) e
 	}
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(tempPath, 0o755); err != nil {
-			return fmt.Errorf("makai: cannot make downloaded binary executable: %w", err)
+			return fmt.Errorf("oap sdk: cannot make downloaded binary executable: %w", err)
 		}
 	}
 	if err := os.Rename(tempPath, targetPath); err != nil {
-		return fmt.Errorf("makai: cannot install downloaded binary: %w", err)
+		return fmt.Errorf("oap sdk: cannot install downloaded binary: %w", err)
 	}
 	return nil
 }
@@ -180,13 +180,13 @@ func downloadToCache(ctx context.Context, rawURL, targetPath, checksum string) e
 func verifyChecksum(path, checksum string) error {
 	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("makai: cannot read binary %q: %w", path, err)
+		return fmt.Errorf("oap sdk: cannot read binary %q: %w", path, err)
 	}
 	defer file.Close()
 
 	digest := sha256.New()
 	if _, err := io.Copy(digest, file); err != nil {
-		return fmt.Errorf("makai: cannot read binary %q: %w", path, err)
+		return fmt.Errorf("oap sdk: cannot read binary %q: %w", path, err)
 	}
 	actual := hex.EncodeToString(digest.Sum(nil))
 	if actual != checksum {
@@ -201,7 +201,7 @@ func checkExecutable(path string) error {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("%w: %s", ErrBinaryNotFound, path)
 		}
-		return fmt.Errorf("makai: cannot inspect binary %q: %w", path, err)
+		return fmt.Errorf("oap sdk: cannot inspect binary %q: %w", path, err)
 	}
 	if info.IsDir() {
 		return fmt.Errorf("%w: %s is a directory", ErrBinaryNotFound, path)
@@ -212,9 +212,9 @@ func checkExecutable(path string) error {
 func defaultCacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
-		return "", fmt.Errorf("makai: cannot determine a binary cache directory: %w", err)
+		return "", fmt.Errorf("oap sdk: cannot determine a binary cache directory: %w", err)
 	}
-	return filepath.Join(base, "makai", "bin"), nil
+	return filepath.Join(base, "oapx", "bin"), nil
 }
 
 func firstNonEmpty(values ...string) string {

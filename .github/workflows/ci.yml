@@ -48,6 +48,9 @@ jobs:
         env:
           OAP_SDK_BINARY_PATH: /tmp/oapx-go-sdk/bin/oapx
         run: go test -race ./go/sdk/...
+      - name: Tests leave no credential store in the checkout
+        if: always()
+        run: ./scripts/check-no-test-litter.sh
 
   compatibility:
     runs-on: ubuntu-latest

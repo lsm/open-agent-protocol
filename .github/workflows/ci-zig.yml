@@ -163,10 +163,6 @@ jobs:
         run: ./scripts/check-no-test-litter.sh
 
 
-      - name: Tests leave no credential store in the checkout
-        if: always()
-        run: ./scripts/check-no-test-litter.sh
-
   backend-parity:
     name: Parity - oapx served backends against goap
     needs: [unit-tests]

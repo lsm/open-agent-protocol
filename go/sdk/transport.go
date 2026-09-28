@@ -99,7 +99,7 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	if err := cmd.Start(); err != nil {
 		return nil, transportErrorf(err, "cannot start runtime %q: %v", command, err)
 	}
-	t.logger.Debug("makai: runtime started", "command", command, "args", opts.args(), "pid", cmd.Process.Pid)
+	t.logger.Debug("oap sdk: runtime started", "command", command, "args", opts.args(), "pid", cmd.Process.Pid)
 
 	handshake := make(chan *frame, 1)
 	go t.readLoop(stdout, handshake)
@@ -198,13 +198,13 @@ func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *frame) {
 	for {
 		f, err := reader.next()
 		if errors.Is(err, errMalformedFrame) {
-			t.logger.Warn("makai: discarding malformed frame from runtime")
+			t.logger.Warn("oap sdk: discarding malformed frame from runtime")
 			continue
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) && !isPipeClosed(err) {
 				t.readErr.Store(&err)
-				t.logger.Error("makai: runtime read failed", "error", err)
+				t.logger.Error("oap sdk: runtime read failed", "error", err)
 			}
 			return
 		}
@@ -219,7 +219,7 @@ func (t *transport) readLoop(stdout io.ReadCloser, handshake chan<- *frame) {
 }
 
 func (t *transport) dispatch(f *frame) {
-	t.logger.Debug("makai: frame received",
+	t.logger.Debug("oap sdk: frame received",
 		"type", f.Type, "stream_id", f.StreamID, "session_id", f.SessionID,
 		"sequence", f.Sequence, "in_reply_to", f.InReplyTo)
 
@@ -259,7 +259,7 @@ func (t *transport) dispatch(f *frame) {
 	t.mu.Unlock()
 
 	if target == nil {
-		t.logger.Debug("makai: dropping unroutable frame", "type", f.Type,
+		t.logger.Debug("oap sdk: dropping unroutable frame", "type", f.Type,
 			"stream_id", f.StreamID, "session_id", f.SessionID, "in_reply_to", f.InReplyTo)
 		return
 	}
@@ -301,7 +301,7 @@ func (t *transport) send(f *frame) error {
 		return t.terminalError("send")
 	}
 
-	t.logger.Debug("makai: frame sent",
+	t.logger.Debug("oap sdk: frame sent",
 		"type", f.Type, "stream_id", f.StreamID, "session_id", f.SessionID, "sequence", f.Sequence)
 	if _, err := t.stdin.Write(line); err != nil {
 		if terminal := t.terminalErrorIfDown(); terminal != nil {
@@ -314,7 +314,7 @@ func (t *transport) send(f *frame) error {
 
 func (t *transport) sendBestEffort(f *frame) {
 	if err := t.send(f); err != nil {
-		t.logger.Debug("makai: best-effort frame not sent", "type", f.Type, "error", err)
+		t.logger.Debug("oap sdk: best-effort frame not sent", "type", f.Type, "error", err)
 	}
 }
 
@@ -428,7 +428,7 @@ func (t *transport) terminalErrorIfDown() error {
 func (t *transport) close() error {
 	t.closeOnce.Do(func() {
 		t.closing.Store(true)
-		t.logger.Debug("makai: closing transport")
+		t.logger.Debug("oap sdk: closing transport")
 
 		closeErr := t.stdin.Close()
 
@@ -443,7 +443,7 @@ func (t *transport) close() error {
 		select {
 		case <-t.exited:
 		case <-timer.C:
-			t.logger.Debug("makai: runtime did not exit in time, killing")
+			t.logger.Debug("oap sdk: runtime did not exit in time, killing")
 			if t.cmd.Process != nil {
 				killed = true
 				_ = t.cmd.Process.Kill()
@@ -502,7 +502,7 @@ func (s *subscription) deliver(f *frame) {
 	default:
 		s.overflow.Store(true)
 		s.signal()
-		s.transport.logger.Error("makai: route queue overflowed, frame dropped",
+		s.transport.logger.Error("oap sdk: route queue overflowed, frame dropped",
 			"route", s.kind.String(), "id", s.id, "type", f.Type)
 	}
 }
