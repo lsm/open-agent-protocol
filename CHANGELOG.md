@@ -8,6 +8,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+
+- An opt-in live smoke gate per catalogued row, so a row can earn `status:
+  current` against recorded evidence instead of against a probe that only
+  checked a path exists. `zig build test-e2e-provider-smoke` runs the four cases
+  the issue names — one completion, a streamed completion asserted to arrive as
+  more than one delta, one tool call, and one unknown model that must be refused
+  — for a single row named by `OAP_PROVIDER_SMOKE`. DeepSeek is the row wired up
+  as the worked example; the gate's own table is the seven `current` rows, and a
+  hermetic test pins that table against the catalog so a row's promotion or
+  demotion moves the gate with it.
+  **The gate is opt-in twice over, and neither opt-in is a credential.** A
+  credential's presence alone does not run it, which is the rule the harness
+  gates keep and which the existing provider E2E tests do *not* keep — they skip
+  on the key and nothing else, so a developer with `DEEPSEEK_API_KEY` exported
+  runs them by accident. This one reads no key until `OAP_PROVIDER_SMOKE` names a
+  row it knows, and it refuses outright when `CI` is set, so a misconfigured
+  runner cannot start spending a key. Both properties are exercised by running
+  the step with a key exported and no opt-in, and again with the opt-in under
+  `CI=true`.
+  Nothing about a key reaches the output. The credential is resolved through
+  `provider_credential.lookup`, so the row's environment variable wins over a
+  stored one and neither is printed; a failure reports the row, the case and the
+  error name. The base URL and wire are read from the catalog, so the gate
+  cannot drift onto a base the catalog no longer pins, and a regional row — Kimi
+  is the one `current` row that is regional — resolves through its `region_env`
+  rather than a default the gate invents.
+  The step is wired into neither `test` nor any `test-unit-*` group, so it runs
+  only when a person names a row. The live runs need the owner's keys, so no
+  evidence is recorded here and no row is promoted: the ledger, the per-row
+  script results and the `goap check` rule requiring a ledger reference for every
+  `current` row all land in the change that records the first reading.
+
 - `providers/catalog.json` records, per endpoint, whether its `base_url` already
   carries the API version, so a request path stops depending on a guess about a
   path segment. Today the join reads the base URL looking for any segment shaped
