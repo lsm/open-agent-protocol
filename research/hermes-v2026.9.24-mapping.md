@@ -357,9 +357,12 @@ Decision 0039's Hermes row cites the v2026.8.31 ledger, so this section is
 the reload at the pin the catalog now names. Every line below is read from
 the source at this pin's own commit
 `f97608f178d1ffeca59860195ab7da295f7c8e5f` — the same commit and tree as
-*Provenance* above, and each blob cited here hashes to the value recorded
-there (`git hash-object` on each) — and the last paragraph says what that
-does and does not establish.
+*Provenance* above, and the three files cited here are the ones that list
+records their own hashes — `methods_session.py`, `hermes_state.py` and
+`hermes_state_sessions.py` — each checked with `git hash-object` against the
+value recorded there; anything under `tui_gateway/contracts/` is covered by
+that directory's tree hash rather than listed per file. The last paragraph
+says what all of this does and does not establish.
 
 **Hermes has a real reload, and its not-found is typed on the wire.** `session.resume` takes a target that may be a
 session id *or* a title, and its common payload (`_resume_response` in
