@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Nothing a user reads suggests installing `goap` any more.** The README's `hub`, `validate` and `conformance` examples run the Go tree's command as `go run ./go/cmd/goap`, and the daemon sections say up front that `oapx hub` is the released command while `goap` is this repository's own tool. `drafts/cli.md` no longer frames two binaries: its title is *One Verb Set*, it states Decision 0038 inline — one released binary per language, a library for every other one — and the `goap` column is now labelled *repository tool* and records what the Go tree carries so the trees can be compared, rather than presenting a second product. `CLAUDE.md` says the Go command is internal to the repository.
+
 
 - `auth.providers` is answered from `providers/catalog.json` rather than from a
   four-row literal. `zig/src/auth/providers.zig` hardcoded Anthropic, GitHub

@@ -1,21 +1,25 @@
-# OAP Command Line: One Verb Set, Two Binaries
+# OAP Command Line: One Verb Set
 
 Status: proposed design
-Governs: the `oapx` (Zig) and `goap` (Go) command lines
+Governs: the `oapx` command line
 Follows: [Decision 0032](../decisions/0032-go-and-zig-are-peers.md)
 Amended by: [Decision 0038](../decisions/0038-one-released-binary-and-a-library-for-every-language.md),
-under which only `oapx` is released and `goap` is a repository tool, so a rule
-below that binds both binaries binds `oapx` alone, and `oapx` gains `hub` too
+which is folded in here: **one binary is released per language, and every other
+language gets a library.** `oapx` is the released Zig binary. The Go tree
+carries the same verbs as `goap` and is run from the repository with
+`go run ./go/cmd/goap`; it is not installed and nothing a user reads should
+suggest installing it. So a rule below binds `oapx`, and where the Go tree
+carries the verb it means the same thing there.
 
-Two binaries implement OAP: `oapx`, the product, and `goap`, its Go peer. Until
-now each grew its own verbs, and the same word meant different things: `oap
-serve` started a multi-session daemon, while `oapx serve agent` served one
-agent loop. This draft fixes one verb set. Where both binaries carry a verb, it
-means the same thing in both.
+The two trees once grew different verbs, and the same word meant different
+things: `goap serve` started a multi-session daemon, while `oapx serve agent`
+served one agent loop. This draft fixes one verb set. The `goap` column records
+what the repository's Go tool carries, so the two trees can be compared; it is
+not a second product.
 
 ## Verbs
 
-| verb | meaning | `oapx` | `goap` |
+| verb | meaning | `oapx` (released) | `goap` (repository tool) |
 |---|---|---|---|
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
@@ -26,15 +30,16 @@ means the same thing in both.
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
-The hub is its own verb in both binaries: `goap hub` today, and `oapx hub` once
+The hub is its own verb: `goap hub` in the Go tree today, and `oapx hub` once
 the port Decision 0038 records lands. It is a layer above an endpoint, not a
 different spelling of one, and giving it its own verb is what lets `serve agent`
 mean one thing.
 
-## Rules both binaries follow
+## Rules the verb set follows
 
-- **A backend or verb a binary does not carry answers `unavailable`**, naming
-  it, and exits non-zero. It never falls back to something else silently.
+- **A backend or verb an implementation does not carry answers `unavailable`**,
+  naming it, and exits non-zero. It never falls back to something else
+  silently.
 - **`--config` is one schema** (`examples/oap-serve.json`), decoded with the same
   strictness in both: unknown members refused, the `environment` list an
   allowlist, and an optional harness `version` resolved against the harness
