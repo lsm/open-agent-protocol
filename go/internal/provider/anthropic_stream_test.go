@@ -457,3 +457,27 @@ func TestTheAnthropicKeepaliveFiresOnThePingInterval(t *testing.T) {
 		t.Error("want a keepalive once the interval elapsed")
 	}
 }
+
+func TestCancellationIsRecheckedBetweenBufferedEvents(t *testing.T) {
+	sink := &EventSink{}
+	seen := 0
+	StreamAnthropic(sink, anthropicStreamModel(), Context{}, AnthropicOptions{},
+		func() ([]byte, error) {
+			frames := sseFrame(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`) +
+				sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}`) +
+				sseFrame(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"b"}}`) +
+				sseFrame(`{"type":"content_block_stop","index":0}`)
+			return []byte(frames), nil
+		}, func() bool {
+			seen++
+			return seen > 2
+		}, nil)
+	events := sink.take()
+	last := events[len(events)-1]
+	if last.Kind != EventError || last.Reason != "request cancelled" {
+		t.Errorf("the terminal = %+v, want the cancel reason: one buffered chunk carries several events", last)
+	}
+	if countKind(events, EventTextDelta) > 1 {
+		t.Errorf("got %d text deltas, want the drain to stop at the cancel rather than applying the rest", countKind(events, EventTextDelta))
+	}
+}

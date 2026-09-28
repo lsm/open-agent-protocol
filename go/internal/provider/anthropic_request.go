@@ -171,11 +171,12 @@ type AnthropicTool struct {
 	InputSchema json.RawMessage
 }
 
-func BuildAnthropicRequestBody(model Model, ctx Context, options AnthropicOptions) ([]byte, bool) {
-	isOAuth := false
+func BuildAnthropicRequestBody(model Model, ctx Context, options AnthropicOptions, apiKey string) ([]byte, bool) {
+	isOAuth := IsOAuthToken(apiKey)
 	merged := MergeCompat(model)
+	supportsLongTTL := model.HasCompat && model.Compat.SupportsAnthropicCacheTTL != nil && *model.Compat.SupportsAnthropicCacheTTL
+	cc := getCacheControl(model.BaseURL, model.HasBaseURL, options.CacheRetention, options.HasCacheRetention, supportsLongTTL)
 	_ = merged
-	cc := getCacheControl(model.BaseURL, model.HasBaseURL, options.CacheRetention, options.HasCacheRetention, false)
 
 	transformed := PreTransform(ctx.Messages, TransformConfig{
 		TargetAPI:             model.API,
@@ -237,10 +238,10 @@ func BuildAnthropicRequestBody(model Model, ctx Context, options AnthropicOption
 			})
 		}
 		body = body.with(member("tools", defs))
-		if options.HasToolChoice {
-			if value, ok := anthropicToolChoice(options); ok {
-				body = body.with(member("tool_choice", value))
-			}
+	}
+	if options.HasToolChoice {
+		if value, ok := anthropicToolChoice(options); ok {
+			body = body.with(member("tool_choice", value))
 		}
 	}
 	if options.HasUserID {
@@ -248,13 +249,28 @@ func BuildAnthropicRequestBody(model Model, ctx Context, options AnthropicOption
 	}
 	if options.ThinkingEnabled && model.Reasoning {
 		if supportsAdaptiveThinking(model.ID) {
+			body = body.with(member("thinking", jsonObject{member("type", jsonString("adaptive"))}))
 			if options.ThinkingEffort != "" {
 				body = body.with(member("output_config", jsonObject{member("effort", jsonString(options.ThinkingEffort))}))
 			}
-		} else if options.HasThinkingBudget {
+		} else if requestedMax > 1024 {
+			budget := 1024
+			if options.HasThinkingBudget {
+				budget = options.ThinkingBudgetTokens
+			}
+			ceiling := 0
+			if requestedMax > 0 {
+				ceiling = requestedMax - 1
+			}
+			if budget > ceiling {
+				budget = ceiling
+			}
+			if budget < 1024 {
+				budget = 1024
+			}
 			body = body.with(member("thinking", jsonObject{
 				member("type", jsonString("enabled")),
-				member("budget_tokens", jsonInt(options.ThinkingBudgetTokens)),
+				member("budget_tokens", jsonInt(budget)),
 			}))
 		}
 	}
@@ -265,11 +281,15 @@ func anthropicTools(tools []Tool) []Tool { return tools }
 
 func anthropicToolChoice(options AnthropicOptions) (jsonValue, bool) {
 	switch options.ToolChoiceType {
-	case "auto", "any":
-		return jsonObject{
-			member("type", jsonString(options.ToolChoiceType)),
-		}, true
-	case "tool":
+	case ToolChoiceAuto, ToolChoiceNone, ToolChoiceRequired, "any":
+		wire := map[string]string{
+			ToolChoiceAuto:     "auto",
+			ToolChoiceNone:     "none",
+			ToolChoiceRequired: "any",
+			"any":              "any",
+		}[options.ToolChoiceType]
+		return jsonObject{member("type", jsonString(wire))}, true
+	case ToolChoiceFunction, "tool":
 		return jsonObject{
 			member("type", jsonString("tool")),
 			member("name", jsonString(options.ToolChoiceName)),
@@ -330,7 +350,9 @@ func assistantBlocks(parts []ContentPart, withTools bool) jsonArray {
 		case part.Thinking != nil:
 			blocks = append(blocks, thinkingBlock(part))
 		case part.Image != nil:
-			blocks = append(blocks, imageBlock(part.Image))
+			if withTools {
+				blocks = append(blocks, imageBlock(part.Image))
+			}
 		case part.ToolCall != nil && withTools:
 			arguments := strings.TrimSpace(part.ToolCall.Arguments)
 			if arguments == "" {
@@ -436,6 +458,10 @@ func anthropicMessages(ctx Context, cc *cacheControl) jsonArray {
 		}
 
 		isLastUser := i == lastUser
+		if msg.Assistant == nil && msg.User == nil {
+			i++
+			continue
+		}
 		switch {
 		case msg.Assistant != nil:
 			out = append(out, jsonObject{

@@ -327,7 +327,7 @@ func (s *anthropicState) apply(event anthropicEvent, sink *EventSink) bool {
 	return true
 }
 
-func (s *anthropicState) finish(sink *EventSink) {
+func (s *anthropicState) emitStart(sink *EventSink) {
 	sink.emit(Event{
 		Kind: EventStart,
 		Partial: PartialMessage{
@@ -363,11 +363,15 @@ func itoa(n int) string {
 func StreamAnthropic(sink *EventSink, model Model, ctx Context, options AnthropicOptions, read ReadChunkFunc, cancelled CancelledFunc, rawBody func() string) {
 	state := newAnthropicState(model)
 	state.clock = &streamClock{now: options.Now, pingMillis: options.PingMillis}
-	state.finish(sink)
+	state.emitStart(sink)
 
 	parser := NewSSEParser()
 	handle := func(events []SSEEvent) bool {
 		for _, event := range events {
+			if cancelled != nil && cancelled() {
+				sink.fail("request cancelled")
+				return false
+			}
 			parsed := parseAnthropicEvent(event.Data)
 			if parsed.kind == anthropicAPIError {
 				sink.fail(parsed.errMsg)

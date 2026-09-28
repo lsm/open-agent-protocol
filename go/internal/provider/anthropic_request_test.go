@@ -191,7 +191,7 @@ func TestCacheControlNeedsALongRetentionAndAnAnthropicHost(t *testing.T) {
 
 func anthropicBody(t *testing.T, model Model, ctx Context, options AnthropicOptions) map[string]any {
 	t.Helper()
-	raw, _ := BuildAnthropicRequestBody(model, ctx, options)
+	raw, _ := BuildAnthropicRequestBody(model, ctx, options, "")
 	var out map[string]any
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("the body is not json: %v\n%s", err, raw)
@@ -200,7 +200,7 @@ func anthropicBody(t *testing.T, model Model, ctx Context, options AnthropicOpti
 }
 
 func TestTheBodyOrderIsModelThenMaxTokensThenStream(t *testing.T) {
-	raw, _ := BuildAnthropicRequestBody(anthropicModel(), Context{}, AnthropicOptions{})
+	raw, _ := BuildAnthropicRequestBody(anthropicModel(), Context{}, AnthropicOptions{}, "")
 	order := []string{"\"model\":", "\"max_tokens\":", "\"stream\":"}
 	at := func(name string) int { return strings.Index(string(raw), name) }
 	for i := 1; i < len(order); i++ {
@@ -402,5 +402,209 @@ func TestTheAnonymityRuleExcludesOneVendorNotFour(t *testing.T) {
 	}
 	if !AllowsAnonymousWith(blocked, OpenAIAnonymousBlocked) {
 		t.Error("the openai list does not name anthropic, so reusing it here would let an anthropic model through anonymously: the two lists are separate on purpose")
+	}
+}
+
+func TestAnOAuthKeyChangesTheBodyAsWellAsTheHeaders(t *testing.T) {
+	ctx := Context{HasSystem: true, SystemPrompt: "be terse"}
+	plain, isOAuth := BuildAnthropicRequestBody(anthropicModel(), ctx, AnthropicOptions{}, "sk-ant-ordinary")
+	if isOAuth {
+		t.Error("an ordinary key is not oauth")
+	}
+	if strings.Contains(string(plain), "be terse") == false {
+		t.Errorf("the caller's prompt should survive on the ordinary path:\n%s", plain)
+	}
+	oauth, isOAuth := BuildAnthropicRequestBody(anthropicModel(), ctx, AnthropicOptions{}, "sk-ant-oat01-x")
+	if !isOAuth {
+		t.Fatal("a key containing sk-ant-oat is oauth")
+	}
+	if strings.Contains(string(oauth), "be terse") {
+		t.Errorf("the oauth path replaces the system prompt outright:\n%s", oauth)
+	}
+	if !strings.Contains(string(oauth), "Claude Code") {
+		t.Errorf("the oauth system text is missing:\n%s", oauth)
+	}
+	noPrompt, _ := BuildAnthropicRequestBody(anthropicModel(), Context{}, AnthropicOptions{}, "sk-ant-oat01-x")
+	if !strings.Contains(string(noPrompt), "Claude Code") {
+		t.Errorf("with no system prompt the oauth text is written anyway:\n%s", noPrompt)
+	}
+}
+
+func TestTheOAuthPathCanonicalizesTheToolNameInTheBody(t *testing.T) {
+	ctx := Context{Tools: []Tool{{Name: "Bash"}}, Messages: []Message{
+		{Assistant: &AssistantContent{API: AnthropicWire, Provider: "anthropic", Model: "claude-sonnet-4-5", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "t1", Name: "bash", Arguments: "{}"}},
+		}}},
+		{ToolResult: &ToolResult{ToolCallID: "t1", Parts: []ContentPart{{Text: &TextPart{Text: "ok"}}}}},
+	}}
+	oauth, _ := BuildAnthropicRequestBody(anthropicModel(), ctx, AnthropicOptions{}, "sk-ant-oat01")
+	if !strings.Contains(string(oauth), `"name":"Bash"`) {
+		t.Errorf("the oauth path should canonicalise the name to the tool's own spelling:\n%s", oauth)
+	}
+	plain, _ := BuildAnthropicRequestBody(anthropicModel(), ctx, AnthropicOptions{}, "sk-ant-ordinary")
+	if !strings.Contains(string(plain), `"name":"bash"`) {
+		t.Errorf("without oauth the caller's spelling stands:\n%s", plain)
+	}
+}
+
+func TestTheLongCacheTTLRidesTheModelsCompatFlagOffHost(t *testing.T) {
+	model := anthropicModel()
+	model.BaseURL = "https://gateway.test"
+	model.Compat = CompatOptions{SupportsAnthropicCacheTTL: boolPtr(true)}
+	raw, _ := BuildAnthropicRequestBody(model, Context{HasSystem: true, SystemPrompt: "s"},
+		AnthropicOptions{CacheRetention: CacheLong, HasCacheRetention: true}, "")
+	if !strings.Contains(string(raw), `"ttl":"1h"`) {
+		t.Errorf("a gateway with the compat flag and a long retention = %s\nwant the ttl", raw)
+	}
+	off := anthropicModel()
+	off.BaseURL = "https://gateway.test"
+	off.Compat = CompatOptions{}
+	plain, _ := BuildAnthropicRequestBody(off, Context{HasSystem: true, SystemPrompt: "s"},
+		AnthropicOptions{CacheRetention: CacheLong, HasCacheRetention: true}, "")
+	if strings.Contains(string(plain), `"ttl":"1h"`) {
+		t.Errorf("without the flag off-host = %s\nwant no ttl", plain)
+	}
+}
+
+func TestAnAdaptiveModelDeclaresAdaptiveThinking(t *testing.T) {
+	model := anthropicModel()
+	model.Reasoning = true
+	model.ID = "claude-opus-4-6"
+	raw, _ := BuildAnthropicRequestBody(model, Context{}, AnthropicOptions{
+		ThinkingEnabled: true, ThinkingEffort: "high",
+	}, "")
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "adaptive" {
+		t.Errorf("thinking = %v, want the adaptive member: the effort rides a body that must declare it", body["thinking"])
+	}
+	if effort := body["output_config"].(map[string]any)["effort"]; effort != "high" {
+		t.Errorf("effort = %v, want high", effort)
+	}
+}
+
+func TestTheBudgetIsGuardedDefaultedAndClamped(t *testing.T) {
+	model := anthropicModel()
+	model.Reasoning = true
+	budget := func(max int, tokens int, has bool) (map[string]any, bool) {
+		raw, _ := BuildAnthropicRequestBody(model, Context{}, AnthropicOptions{
+			ThinkingEnabled: true, ThinkingBudgetTokens: tokens, HasThinkingBudget: has,
+			MaxTokens: max, HasMaxTokens: true,
+		}, "")
+		var body map[string]any
+		json.Unmarshal(raw, &body)
+		thinking, ok := body["thinking"].(map[string]any)
+		return thinking, ok
+	}
+	if _, ok := budget(1000, 2048, true); ok {
+		t.Error("at a max of 1000 the branch is guarded off, so no thinking member at all")
+	}
+	thinking, ok := budget(8000, 2048, true)
+	if !ok || thinking["budget_tokens"] != float64(2048) {
+		t.Errorf("thinking = %v, want the explicit budget inside the clamp", thinking)
+	}
+	thinking, ok = budget(8000, 0, false)
+	if !ok || thinking["budget_tokens"] != float64(1024) {
+		t.Errorf("thinking = %v, want the 1024 default when no budget is given", thinking)
+	}
+	thinking, ok = budget(8000, 10, true)
+	if !ok || thinking["budget_tokens"] != float64(1024) {
+		t.Errorf("thinking = %v, want a small budget lifted to the 1024 floor", thinking)
+	}
+	thinking, ok = budget(1200, 4096, true)
+	if !ok || thinking["budget_tokens"] != float64(1199) {
+		t.Errorf("thinking = %v, want the budget capped at one under the max", thinking)
+	}
+}
+
+func TestToolChoiceTakesTheSharedVocabulary(t *testing.T) {
+	cases := map[string]string{
+		ToolChoiceAuto:     "auto",
+		ToolChoiceNone:     "none",
+		ToolChoiceRequired: "any",
+	}
+	for mode, wire := range cases {
+		raw, _ := BuildAnthropicRequestBody(anthropicModel(), Context{}, AnthropicOptions{
+			ToolChoiceType: mode, HasToolChoice: true,
+		}, "")
+		if !strings.Contains(string(raw), `"tool_choice":{"type":"`+wire+`"}`) {
+			t.Errorf("%q = %s\nwant the wire spelling %q", mode, raw, wire)
+		}
+	}
+	none := anthropicBodyWithChoice(t, ToolChoiceNone)
+	if _, ok := none["tool_choice"]; !ok {
+		t.Error("none must be written, not dropped: never calling tools is a choice the caller made")
+	}
+}
+
+func anthropicBodyWithChoice(t *testing.T, mode string) map[string]any {
+	t.Helper()
+	raw, _ := BuildAnthropicRequestBody(anthropicModel(), Context{}, AnthropicOptions{
+		ToolChoiceType: mode, HasToolChoice: true,
+	}, "")
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	return body
+}
+
+func TestToolChoiceIsWrittenEvenWithNoTools(t *testing.T) {
+	body := anthropicBodyWithChoice(t, ToolChoiceAuto)
+	if _, ok := body["tool_choice"]; !ok {
+		t.Error("here it is written outside the tools branch, the opposite of the openai path")
+	}
+}
+
+func TestAMessageWithNoKindAtAllIsSkipped(t *testing.T) {
+	ctx := Context{Messages: []Message{
+		{},
+		{User: &UserContent{Text: "after", HasText: true}},
+	}}
+	raw, _ := BuildAnthropicRequestBody(anthropicModel(), ctx, AnthropicOptions{}, "")
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	if len(body["messages"].([]any)) != 1 {
+		t.Errorf("got %v, want the empty message skipped", body["messages"])
+	}
+}
+
+func TestAnAssistantImageIsDroppedWhereTheOracleDropsIt(t *testing.T) {
+	ctx := func() Context {
+		return Context{Messages: []Message{{Assistant: &AssistantContent{
+			API: AnthropicWire, Provider: "anthropic", Model: "claude-sonnet-4-5",
+			Parts: []ContentPart{
+				{Text: &TextPart{Text: "hi"}},
+				{Image: &ImagePart{URL: "aGk=", Detail: "image/png"}},
+			},
+		}}}}
+	}
+	plain := anthropicBody(t, anthropicModel(), ctx(), AnthropicOptions{})["messages"].([]any)[0].(map[string]any)
+	for _, block := range plain["content"].([]any) {
+		if block.(map[string]any)["type"] == "image" {
+			t.Errorf("the plain assistant branch drops images, got %v", plain["content"])
+		}
+	}
+	withTools := Context{Messages: []Message{{Assistant: &AssistantContent{
+		API: AnthropicWire, Provider: "anthropic", Model: "claude-sonnet-4-5", StopReason: "tool_use",
+		Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "t", Name: "f", Arguments: "{}"}},
+			{Image: &ImagePart{URL: "aGk=", Detail: "image/png"}},
+		},
+	}}}}
+	kept := anthropicBody(t, anthropicModel(), withTools, AnthropicOptions{})["messages"].([]any)[0].(map[string]any)
+	sawImage := false
+	for _, block := range kept["content"].([]any) {
+		if block.(map[string]any)["type"] == "image" {
+			sawImage = true
+		}
+	}
+	if !sawImage {
+		t.Errorf("the branch carrying a tool use keeps its images, got %v", kept["content"])
 	}
 }
