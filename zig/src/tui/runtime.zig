@@ -22,6 +22,8 @@ pub const ToolApprovalCallback = session.ToolApprovalCallback;
 pub const ToolApprovalDecision = session.ToolApprovalDecision;
 pub const ToolApprovalRequest = session.ToolApprovalRequest;
 
+const output_limit_warning = "The model's reply hit its output token limit, so the run stopped. Send a message to continue.";
+
 const ApprovalDecisionState = struct {
     tool_call_id: []u8 = &.{},
     decision: ?ToolApprovalDecision = null,
@@ -812,7 +814,11 @@ pub const TuiRuntime = struct {
     }
 
     fn handleAgentEndEvent(self: *TuiRuntime) anyerror!void {
-        const reason: TuiEndReason = if (self.cancelled.load(.acquire)) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
+        const cancelled = self.cancelled.load(.acquire);
+        if (!cancelled and self.last_turn_stop_reason == .length) {
+            self.push(.{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(output_limit_warning) } });
+        }
+        const reason: TuiEndReason = if (cancelled) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
         return self.endRun(reason);
     }
     fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
@@ -2773,4 +2779,53 @@ test "TuiRuntime replaceMessages clears stale backpressure counters" {
     const bp = runtime.backpressureState();
     try std.testing.expect(!bp.active);
     try std.testing.expectEqual(@as(u64, 0), bp.dropped_count);
+}
+
+fn drainEndOfRun(runtime: *TuiRuntime) !struct { warning: ?[]u8, reason: ?TuiEndReason } {
+    var warning: ?[]u8 = null;
+    errdefer if (warning) |text| std.testing.allocator.free(text);
+    var reason: ?TuiEndReason = null;
+    while (runtime.event_stream.poll()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        switch (ev) {
+            .system_warning => |payload| {
+                try std.testing.expect(reason == null);
+                warning = try std.testing.allocator.dupe(u8, payload.message.slice());
+            },
+            .agent_end => |payload| reason = payload.reason,
+            else => {},
+        }
+    }
+    return .{ .warning = warning, .reason = reason };
+}
+
+fn replyEndingWith(stop_reason: ai_types.StopReason) ai_types.AssistantMessage {
+    return .{ .content = &.{}, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = stop_reason, .timestamp = 0 };
+}
+
+test "runtime warns before ending a run whose last reply hit the output token limit" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+
+    try runtime.handleAgentEvent(.{ .turn_end = .{ .message = replyEndingWith(.length) } });
+    try runtime.handleAgentEvent(.{ .agent_end = .{} });
+
+    const ended = try drainEndOfRun(&runtime);
+    defer if (ended.warning) |text| std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings(output_limit_warning, ended.warning.?);
+    try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
+}
+
+test "runtime ends a run whose last reply finished without an output-limit warning" {
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
+    defer runtime.deinit();
+
+    try runtime.handleAgentEvent(.{ .turn_end = .{ .message = replyEndingWith(.stop) } });
+    try runtime.handleAgentEvent(.{ .agent_end = .{} });
+
+    const ended = try drainEndOfRun(&runtime);
+    defer if (ended.warning) |text| std.testing.allocator.free(text);
+    try std.testing.expect(ended.warning == null);
+    try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
 }

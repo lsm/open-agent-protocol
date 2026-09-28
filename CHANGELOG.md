@@ -7,14 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **The CI fixture auth provider is served only when a test asks for it by
+  name.** `oapx auth providers` returns the catalog's rows and nothing else
+  unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running
+  the binary is no longer offered a row called `Test Fixture (CI)` that cannot
+  log in against anything. `1` and `true` opt in; `0`, an empty value, any other
+  string, and a variable that is merely similar in name do not.
+  The gate covers the **login** as well as the listing, which the first cut of
+  this did not: the fixture's flow was hardcoded into the auth server and never
+  consulted the provider table, so `oapx auth login --provider test-fixture`
+  still started the fixture's prompt with the variable unset. It now answers
+  `UnknownProvider`, and the opt-in is visible in every call site rather than
+  hidden in a list.
+  The SDKs' real-binary tests set the variable where they log into the fixture —
+  the Rust suite through a new `real_builder_with_fixture` beside the existing
+  `real_builder`, so a test that wants a plain user keeps exercising what a plain
+  user sees. **A test that asked for the fixture and did not get it now fails.**
+  That is the point of the change: in #486 the fixture was removed from the
+  served list and `sdk/go/binary_smoke_test.go:185` *skipped*, so the loss of
+  coverage looked like a pass. A skip is only acceptable for a precondition the
+  test did not choose; here the test chose it, so its absence is a failure.
+  The Rust and TypeScript suites each gained the other half — a test that asks
+  for nothing and asserts the fixture is *not* offered — so the default is
+  pinned from the consumer's side as well as the runtime's. Python's real-binary
+  test iterates whatever providers it is given and never named the fixture, so
+  it needs no variable and loses nothing.
+  The Go suite lands with the others now that #492 has moved it: its
+  `requireFixtureAuthProvider` is a `t.Fatalf` rather than a skip, and
+  `TestSmokeAuthListProviders` asserts the row too, so "asked and got it" is a
+  claim in Go as well as in Rust. Each SDK that names the fixture sets the
+  variable, and each was found by running the suite rather than by reading it —
+  the TypeScript demo test drives the login through the demo server, which
+  spawns the runtime with its own environment, so the variable had to go in
+  *that* spawn rather than in the test process.
+  The decision is recorded on #354, where the owner chose this shape over
+  serving the row always or removing it and changing what four SDKs assert.
+- **The fixture opt-in is read portably.** The gate read the environment
+  through a POSIX-only accessor, so `zig build -Dtarget=x86_64-windows` and
+  `aarch64-windows` failed to compile — caught by CI's cross-compile matrix,
+  and by running the same two targets locally before pushing the fix. The read
+  goes through the same cross-platform path the rest of the tree uses, taking
+  the environment as a value, which is also what lets a test drive it with a
+  literal rather than by mutating the process.
+
 ### Added
 - **The parity job now watches a run settle.** A new fixture, `testdata/parity/memory`, subscribes at open and drives the reference script through both of its interactions — the permission gate and the user input — so the run reaches `run.completed` inside the compared output: twelve envelopes under one `run_id`, each with a `sequence`, which is exactly the group `TestBackendsMatchOapx` compares in order since #475. The content comparison is a multiset and stays; the ordered comparison now has a run to look at, and the fixture is the first thing in the suite that would notice the two trees settling a run differently. The decision #433 asked to be recorded: **the run is observed over the endpoint's stdio binding, not over the hub's op set** — and the reason is one tree, not both. `goap hub --stdio` serves the whole op set the draft specifies, `open`, `submit`, `events`, `resolve` and `cancel` included, and a streaming driver against it carries a run to `run.completed`. `oapx hub --stdio` serves `adapters`, `sessions`, `capabilities`, `state` and `close` and answers `unknown_op` for the other five, so the hub cannot carry a run in both trees until the Zig side grows them. The endpoint's binding serves `session.open.subscribe` for any adapter that advertises it, and the reference adapter does, so a fixed scenario is enough and no new driver is needed. `exchangeWithChild` now starts its fake OpenCode server only when a fixture's registry asks for one with `@URL@`, so a fixture with no child script does not get one it will never talk to.
+
+- **Nothing a user reads suggests installing `goap` any more.** Every run instruction now goes through `go run ./go/cmd/goap` — the README's `hub`, `hub --stdio`, `validate` and `conformance` examples, its `fixtures/packs/` line, `examples/README.md`'s pack invocation and `docs/go-library.md`'s check-you-work line, and the eight runnable-looking commands in `docs/oap-system-map.html` — an orphan page nothing links to, which is how it drifted, and which I swept rather than deleted, because whether it should exist is the owner's call — and the daemon section says up front that `goap` is this repository's own command, run with `go run`, and what the released `oapx hub` carries today (the stdio transport; `unavailable` for `--addr` and `--config`, naming which). `drafts/cli.md` no longer frames two binaries: its title is *One Verb Set*, it states Decision 0038 inline in the decision's own words — one released binary, and a library for every language — and the `goap` column is labelled *repository tool* and records what the Go tree carries so the trees can be compared, rather than presenting a second product. `CLAUDE.md` says the Go command is internal to the repository.
 
 - **Go has one library.** The Go SDK moves from its own module at `sdk/go` into the main module as `go/sdk`, so a Go program that wants a client for a running endpoint imports the same module as everything else rather than a second one with its own `go.mod` and its own wire types. The exported surface is unchanged — `Client` with its `Auth`, `Models`, `Provider` and `Agent` namespaces, the same request and response types, the same typed errors — and the package name is `sdk`, because `makai` is the runtime's old name and nothing outside this repository imported it. Every caller-visible literal follows (`oap sdk: `, in the errors, the resolver and the transport's log lines), and the binary cache directory is `…/oapx/bin` rather than `…/makai/bin`, so a package that says the old name is retired is retired in its messages and on disk. **The zero-comment rule now has no exceptions at all**: the 31 files of `sdk/go` were the entire Go allowlist, and folding them in took the last entry with it, so `go/tools/nocomment`'s allowlist and its stale-entry check are gone and the floor for Go is zero like Zig's and TypeScript's. The documentation those comments carried did not go with them: everything a caller of the API needs — the four namespaces, per-call cancellation versus `Client.Close`, opaque `ModelRef` and session ids, what an endpoint refuses with `unsupported_feature`, and the typed error set — is now a section in `docs/go-library.md`, which is prose the policy does not reach. CI's separate `go-sdk` job, which ran its own Go 1.23 toolchain against `sdk/go`, is replaced by a `go-sdk-smoke` job in the main workflow that builds `oapx` and runs the SDK's real-binary tests, the only place the Go SDK talks to a real runtime. The SDK's private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is deliberately a separate change.
 
 - **Every Go decoder that reads bytes from outside the process now has a fuzz target, and a scheduled job runs them.** The class is the rule: not the two decoders an issue happens to name, but every function that turns bytes another program wrote into a value. That is `validation.Validator.Validate` (a whole envelope trace), the hand-rolled duplicate-key JSON walk in six places, the adapters' native entry points (`DecodeNotification` for hermes and deepseek, `DecodeServerRequest`, `DecodeObservation` and `DecodeControlRequest` for claude, `DecodeEvent` for opencode, `DecodeStrict` for pi, hermes and deepseek), and the limit-bounded frame reader in the codex app-server codec. Each target asserts a property rather than merely returning: a refusal carries no value, an admission implies the invariant it was admitted for (an opencode event with a valid id, a supported type and a durable position; a codex frame that is a request, a result or an error and nothing else), a method the decoder does not serve is refused whatever the data says, and a decoder never hands back bytes that are not one whole JSON document. **A scheduled leg that names no target, and a target nothing schedules, both fail a test** (`go/internal/fuzzseed/matrix_test.go`): the matrix and the tree are checked against each other in both directions, and a leg is named by its package as well as its target so a failing job is identifiable. It earned its place immediately -- it found that `go/validation` already carried `FuzzValidateNeverPanics` and `FuzzApplyEnvelopeNeverPanics` and nothing ran them, and it found that two targets this change had added were later edited out of the tree while the matrix still listed them. **Seeds come from the corpus, through the catalog**: `fuzzseed.Corpus(harnessID)` resolves the current corpus of a harness from `harnesses/*.json`, so no version pin is spelled in the tree (the `pin_literal` gate would refuse it) and a new corpus version re-seeds the targets without a code change; `fuzzseed.Manifest` does the same for the 573 conformance fixtures, spread evenly across the corpus rather than taken from its head. The seeds are bounded and deduplicated, because a seed corpus runs on every ordinary `go test`. `.github/workflows/fuzz.yml` runs each target for 45 s on a weekly schedule and on demand, six at a time inside a 20-minute ceiling, and uploads the input that failed so it can become a fixture.
 
 
+- The catalog loader serves the five coding-plan rows and OpenAI, each reachable
+  by exporting its own key and nothing else: `ZHIPU_API_KEY`,
+  `ALIBABA_CODING_PLAN_API_KEY`, `MINIMAX_API_KEY`, `TENCENT_CODING_PLAN_API_KEY`,
+  `ARK_CODING_PLAN_API_KEY` and `OPENAI_API_KEY`. Twelve of the sixteen rows the
+  loader could serve now are, with the gateways and DeepSeek. MiniMax is served on
+  `anthropic-messages` and the rest on `openai-completions`, each the wire its
+  catalog row records rather than a shape the loader assumed.
+  All five coding plans are the `carries_version` shape in the hardest form: the
+  base ends in a version segment *and* the `models_endpoint` is `/models`, so the
+  version sits in the middle of the path. A listing that appended a second `/v1`
+  — as the override path does for a versioned base — would ask
+  `…/api/coding/paas/v4/v1/models` and get a 404, so the override test now walks
+  all ten versioned rows rather than the six it did, and a new one pins the
+  versioned base under an override exactly.
+- **OpenAI's wire is chosen per model, and the reason is that the row has two
+  wires and the product already knew which one each model needs.** The catalog
+  lists `openai-completions` first, so a loader that took the row's first wire
+  would serve every OpenAI model as a chat completion — but the built-in OpenAI
+  descriptor has always served OpenAI on `openai-responses`, and the
+  responses-only models (`o1-pro`, `o3-pro`, `gpt-5-pro`, `gpt-5-codex`,
+  `gpt-5.1-codex-max`, `deep-research`, `computer-use-preview`) exist only on
+  that wire. Discovery sees the whole listing at once, so the wire is decided per
+  model id: responses for the models that need it, chat completions for the rest.
+  That list was a private function in `makai.zig`; it now lives in
+  `provider_catalog.zig` as `isResponsesOnlyModel` and `makai` calls it, so there
+  is one list of which models are responses-only rather than two that could
+  drift. A test asserts a single-wire row keeps its wire whatever the model is
+  called, and another asserts the loader and the per-model rule choose the same
+  wire for every row the loader can serve.
+- **MiniMax's coding plan could list its models but not use them.** Its row is
+  `anthropic-messages`, and that wire resolved a key only for `anthropic` — it
+  named `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` literally and returned
+  null for every other provider — so a discovered MiniMax model reached
+  `error.MissingApiKey` on every run. A row's credential is now read from the
+  names that row records, on every wire, in one place: the resolution lives in
+  `provider_catalog.zig` beside `credentialEnv`, so the two request paths that
+  need it share one implementation instead of each holding a list of vendor
+  names to drift. `anthropic`'s own order is unchanged, because the catalog
+  records `ANTHROPIC_AUTH_TOKEN` ahead of `ANTHROPIC_API_KEY`.
+- **The override test now reads the URLs the product computes, not ones it does
+  not.** It joined the overridden request with the version fact hardcoded and
+  asserted `…/api/chat/completions`, but a model discovered under an override
+  resolves the fact to false — the override base matches no catalogued endpoint
+  and carries no trailing `/v1` — so the product requests
+  `…/api/v1/chat/completions`. The test had blessed a listing and request
+  disagreeing with each other that does not happen, which would have hidden one
+  that does. It drives the loader's own resolution now and reads both URLs back
+  off the model it builds, and a second test pins that an override base which
+  *does* arrive versioned is normalised before the listing sees it, which is
+  what keeps the two in step.
 - The catalog loader serves the five gateway rows beside DeepSeek: OpenRouter,
   OpenCode Zen, Vercel AI Gateway, ZenMux and Deep Infra. Each is reachable by
   exporting its own key — `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`,
@@ -420,6 +517,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+- **A run no longer stops by itself after 100 turns.** The agent loop capped a run at 100 model turns when its caller set no limit, and the TUI never sets one, so a long task ended right after a tool call, with no reply and no message. A run now goes on until the model answers without calling a tool or you cancel it, as pi-mono's loop does. `max_iterations` still sets a limit for a caller that wants one.
+
+- **The agent loop runs the tool calls a reply carries, whatever stop reason it reports.** It used to act on the stop reason alone, and the OpenAI Responses and Google providers never report `tool_use`, so a reply calling a tool through them ended the run without running it. A reply reporting `tool_use` with no tool call now ends the run instead of asking again. A tool call cut off at the output token limit is not run: the model gets an error asking it to call the tool again with complete arguments, and the run goes on. A fourth cut-off reply in a row ends the run, and the TUI now says when a run ends on a reply cut off at the output token limit.
+
 - **The duplicate-key JSON walk no longer refuses a valid message because of a number it cannot hold.** The walk exists to catch a wire that disagrees with itself, and `encoding/json`'s token reader turns a number into a `float64` by default — so a well-formed integer literal longer than a `float64` can represent (`1e999`, or 400 digits) made the walk return a range error and the adapter reject a message that is perfectly valid. The deepseek copies already asked for `UseNumber()`; acp, claude, codex, hermes, pi and opencode did not, so six adapters refused valid traffic in six slightly different ways, and opencode's copy is exported as `native.RejectDuplicateKeys`. All of them ask now, and the copies that remain are [#489](https://github.com/lsm/open-agent-protocol/issues/489)'s to collapse.
 
 - The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.
