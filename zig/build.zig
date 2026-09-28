@@ -679,6 +679,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/auth/providers.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
+        },
     });
 
     const provider_caps_mod = b.createModule(.{

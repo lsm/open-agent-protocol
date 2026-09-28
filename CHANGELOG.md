@@ -10,6 +10,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Every Go decoder that reads bytes from outside the process now has a fuzz target, and a scheduled job runs them.** The class is the rule: not the two decoders an issue happens to name, but every function that turns bytes another program wrote into a value. That is `validation.Validator.Validate` (a whole envelope trace), the hand-rolled duplicate-key JSON walk in six places, the adapters' native entry points (`DecodeNotification` for hermes and deepseek, `DecodeServerRequest`, `DecodeObservation` and `DecodeControlRequest` for claude, `DecodeEvent` for opencode, `DecodeStrict` for pi, hermes and deepseek), and the limit-bounded frame reader in the codex app-server codec. Each target asserts a property rather than merely returning: a refusal carries no value, an admission implies the invariant it was admitted for (an opencode event with a valid id, a supported type and a durable position; a codex frame that is a request, a result or an error and nothing else), a method the decoder does not serve is refused whatever the data says, and a decoder never hands back bytes that are not one whole JSON document. **Seeds come from the corpus, through the catalog**: `fuzzseed.Corpus(harnessID)` resolves the current corpus of a harness from `harnesses/*.json`, so no version pin is spelled in the tree (the `pin_literal` gate would refuse it) and a new corpus version re-seeds the targets without a code change; `fuzzseed.Manifest` does the same for the 573 conformance fixtures, spread evenly across the corpus rather than taken from its head. The seeds are bounded and deduplicated, because a seed corpus runs on every ordinary `go test`. `.github/workflows/fuzz.yml` runs each target for 45 s on a weekly schedule and on demand, six at a time inside a 20-minute ceiling, and uploads the input that failed so it can become a fixture.
 
+
+- `auth.providers` is answered from `providers/catalog.json` rather than from a
+  four-row literal. `zig/src/auth/providers.zig` hardcoded Anthropic, GitHub
+  Copilot, OpenAI Codex and a CI fixture, so `listProviders()` never showed the
+  other nineteen rows — OpenRouter, DeepSeek, Vercel, the coding plans, the
+  gateways — and a caller could not learn they existed without reading the
+  catalog by hand. The definitions are now the catalog's rows in catalog order,
+  each carrying the row's id, its display name and its `auth` kinds, so an
+  SDK can tell an API-key-only provider from one that also offers OAuth, and can
+  tell a row needing no credential (Ollama) from one that needs a key. The
+  values are read through `provider_catalog`, so a row that is added, renamed or
+  re-authed appears without a second edit and `goap check`'s literal rule keeps
+  a catalogued name out of code.
+  A row the runtime cannot load yet is listed rather than hidden. Google and
+  Azure have no models listing the loader can discover and no endpoint the
+  catalog resolves, and Ollama's base is a local default; all three appear with
+  whatever status their credential has, which is `login_required` until one is
+  set. Listing a provider the runtime cannot yet serve is a fact an SDK needs —
+  hiding it would make the list look complete when it is not.
+  The CI fixture row keeps its place, last, after the catalog's rows rather than
+  among them. I first removed it from the served list, on the grounds that
+  `oapx auth providers` should not advertise "Test Fixture (CI)" to anyone
+  running the binary — and that silently disabled real coverage: the Go SDK's
+  binary smoke test skips when the fixture is absent, so the only
+  CI-exercisable interactive login across the four SDKs would have stopped
+  running without failing anywhere, and the Rust SDK's end-to-end login test
+  failed outright. A fixture is a test affordance, but the served list is also
+  the only channel a test has for reading a login back, so removing the row
+  removes the test rather than the fixture. It stays a constant that is not a
+  catalog row and has no credential path of its own.
+  The auth kinds are carried on the definition here and travel on the wire in the
+  next step: Decision 0029's `auth.providers.response` entry has only `id`,
+  `name`, `auth_status` and `last_error`, so expressing an API-key-only provider
+  needs that payload amended rather than approximated.
+
 - `providers/catalog.json` records, per endpoint, whether its `base_url` already
   carries the API version, so a request path stops depending on a guess about a
   path segment. Today the join reads the base URL looking for any segment shaped
@@ -96,6 +131,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed) answers T7's two open questions for `session-reattach`. A reopen is `reopen: true` on `session.open.request` — the unused `recovery` object is not reused — and it answers the session's state document with `recovery.recovered: true` and the model and settings the session actually runs under, which is the harness's recorded configuration rather than the loader's: Codex's `ThreadResumeResponse` requires six such members and the Go adapter dropped all six (#458). A create naming a bound id is `session_exists`, a reopen with no binding is `unknown_session`, and a harness that cannot load is `unsupported_feature`. A store the harness can no longer honour answers `unsupported_feature`, as 0039 already rules, and **no new code is proposed**: the code has to come from the binding rather than the harness's reply, because two of the ledgers record a harness creating a missing store before looking in it (Hermes mode `0o600` plus the schema, OpenCode's migration runner) and pi's discovery answers `null` either way, so for those a deleted database, a moved home and a session that never existed are one answer on the wire. Of the seven harnesses read at their pins, three type their own absence — Hermes `4007`, OpenCode `SessionNotFoundError`, DeepSeek `SessionPersistenceNotFoundError` — and four do not: pi's `null`, ACP's silence, Codex's `-32602 invalid_request` (its own ledger calls that "not a not-found code"), and Claude Code, whose answer is unrecorded. The binding is the host's record — never a credential, never a resolved environment value — written atomically, with a torn write detected and never read, and appended rather than replaced. No wire changes with a proposed record.
 
 
+- The TUI shows the working directory on a muted, right-aligned row under the status
+  line. The path is sanitised, collapsed to `~` on a home-directory component
+  boundary, left-truncated with `…` when it is wider than the terminal, and hidden on
+  terminals shorter than 12 rows.
+- `/help` now lists the full key map (send, newline, history, word and line edits,
+  scrolling, abort and quit gestures) after the command list, and the empty-session
+  welcome names what `!` does and points at `/help`.
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
   and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
   `close` and `state` — over the transport objects the draft specifies. Framing is
@@ -212,8 +254,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The TUI queues a follow-up with Tab while a turn runs; Enter still steers the running turn. A queued message waits above the composer and is sent when the turn stops, and the hint line and placeholder name both keys. Shell tool rows show the command they run under the description, highlighted and wrapped to the width, and the model picker filters as you type.
 - `oapx serve agent --backend claude` mints ids in `goap`'s order (turn, message, run) with the message id as `submission_id`, suffixes control request ids with four random bytes as `goap` does, and reports `claude_native_session_id` metadata and the last run sequence as `transcript_cursor` in session state. The Claude parity fixture covers a permission gate answered allow.
 
+### Changed
+
+- The TUI status line drops the `perm:` and `think:` labels in favour of bare values
+  (`bypass`, `low`, …), hides the thinking segment while thinking is `off`, and moves
+  the idle/streaming state to the tail. The context gauge and its percentage are
+  coloured by usage band (green below 60%, yellow 60–75, orange 75–85, red 85+); when
+  the row overflows, the context segment shrinks to the coloured percentage first,
+  then segments drop whole by priority (turns, thinking, cost, hint, `ask`
+  permission, queue, drops, model, backpressure, context) with the state segment —
+  and `bypass`/`pending` — never dropped. The post-backpressure drop counter no
+  longer renders as `drops:drops:N`.
+
 ### Fixed
 - **The duplicate-key JSON walk no longer refuses a valid message because of a number it cannot hold.** The walk exists to catch a wire that disagrees with itself, and `encoding/json`'s token reader turns a number into a `float64` by default — so a well-formed integer literal longer than a `float64` can represent (`1e999`, or 400 digits) made the walk return a range error and the adapter reject a message that is perfectly valid. The deepseek copies already asked for `UseNumber()`; acp, claude, codex, hermes and pi did not, so five adapters refused valid traffic in five slightly different ways. All of them ask now, and the copies that remain are [#489](https://github.com/lsm/open-agent-protocol/issues/489)'s to collapse.
+
+- The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.
 
 
 - An agent run now always ends with exactly one event that ends it. A run that

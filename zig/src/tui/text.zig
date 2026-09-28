@@ -114,6 +114,52 @@ pub fn truncateLinesToWidth(allocator: std.mem.Allocator, text: []const u8, line
     return out.toOwnedSlice();
 }
 
+pub fn takeTrailingWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]u8 {
+    if (width == 0 or text.len == 0) return allocator.dupe(u8, "");
+    if (visibleWidth(text) <= width and std.mem.indexOfScalar(u8, text, '\n') == null) return allocator.dupe(u8, text);
+    var start = text.len;
+    var visible: usize = 0;
+    while (start > 0 and visible < width -| 1) {
+        const cp_start = previousCodepointStart(text, start);
+        const cp = text[cp_start..start];
+        if (cp.len == 1 and cp[0] == '\n') break;
+        visible += visibleWidth(cp);
+        if (visible > width -| 1) break;
+        start = cp_start;
+    }
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ ellipsis, text[start..] });
+}
+
+fn previousCodepointStart(text: []const u8, cursor: usize) usize {
+    if (cursor == 0) return 0;
+    var idx = @min(cursor, text.len) - 1;
+    while (idx > 0 and (text[idx] & 0b1100_0000) == 0b1000_0000) idx -= 1;
+    return idx;
+}
+
+test "takeTrailingWidth keeps the tail and marks the cut" {
+    const kept = try takeTrailingWidth(std.testing.allocator, "/Users/lsm/focus/open-agent-protocol", 20);
+    defer std.testing.allocator.free(kept);
+    try std.testing.expect(visibleWidth(kept) <= 20);
+    try std.testing.expect(std.mem.startsWith(u8, kept, ellipsis));
+    try std.testing.expect(std.mem.endsWith(u8, kept, "protocol"));
+}
+
+test "takeTrailingWidth returns the input when it fits" {
+    const kept = try takeTrailingWidth(std.testing.allocator, "~/repo", 20);
+    defer std.testing.allocator.free(kept);
+    try std.testing.expectEqualStrings("~/repo", kept);
+}
+
+fn takeTrailingWidthProbe(allocator: std.mem.Allocator) !void {
+    const kept = try takeTrailingWidth(allocator, "/Users/lsm/focus/open-agent-protocol", 20);
+    allocator.free(kept);
+}
+
+test "takeTrailingWidth survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, takeTrailingWidthProbe, .{});
+}
+
 pub fn wrapTextWithAnsi(allocator: std.mem.Allocator, text: []const u8, max_width: usize) ![]u8 {
     if (max_width == 0 or text.len == 0) return allocator.dupe(u8, text);
 
