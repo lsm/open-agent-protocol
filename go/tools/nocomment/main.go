@@ -10,10 +10,8 @@ import (
 	"strings"
 )
 
-const allowlistPath = "go/tools/nocomment/allowlist.txt"
-
 func main() {
-	check := flag.Bool("check", false, "exit 1 for comments outside the allowlist")
+	check := flag.Bool("check", false, "exit 1 for any comment in a Go file")
 	write := flag.Bool("write", false, "strip comments in place")
 	stats := flag.Bool("stats", false, "print per-file comment counts")
 	flag.Parse()
@@ -44,7 +42,7 @@ func main() {
 	case *write:
 		os.Exit(stripFiles(files))
 	default:
-		os.Exit(checkAllowlist(files, allowlistPath))
+		os.Exit(checkComments(files))
 	}
 }
 
@@ -70,29 +68,9 @@ func commentsIn(path string) ([]span, error) {
 	return scan(src), nil
 }
 
-func loadAllowlist(path string) (map[string]bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	allowed := map[string]bool{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && !strings.HasPrefix(line, "#") {
-			allowed[line] = true
-		}
-	}
-	return allowed, nil
-}
-
-func checkAllowlist(files []string, allowPath string) int {
-	allowed, err := loadAllowlist(allowPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "nocomment:", err)
-		return 2
-	}
-	commented := map[string]bool{}
-	outside := 0
+func checkComments(files []string) int {
+	commented := 0
+	comments := 0
 	for _, path := range files {
 		spans, err := commentsIn(path)
 		if err != nil {
@@ -102,21 +80,12 @@ func checkAllowlist(files []string, allowPath string) int {
 		if len(spans) == 0 {
 			continue
 		}
-		commented[path] = true
-		if !allowed[path] {
-			fmt.Println(path)
-			outside++
-		}
+		commented++
+		comments += len(spans)
+		fmt.Printf("%s: %d\n", path, len(spans))
 	}
-	stale := 0
-	for path := range allowed {
-		if !commented[path] {
-			fmt.Fprintf(os.Stderr, "nocomment: stale allowlist entry: %s\n", path)
-			stale++
-		}
-	}
-	fmt.Fprintf(os.Stderr, "nocomment: %d commented file(s) outside the allowlist, %d stale entry(ies)\n", outside, stale)
-	if outside > 0 || stale > 0 {
+	fmt.Fprintf(os.Stderr, "nocomment: %d comment(s) in %d file(s)\n", comments, commented)
+	if commented > 0 {
 		return 1
 	}
 	return 0

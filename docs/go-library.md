@@ -76,6 +76,7 @@ being one.
 | `go/serve/serveendpoint` | The endpoint binding: raw OAP envelopes over a pair of streams, `Server.Run(ctx, io.Reader, io.Writer)`, with no listener and no HTTP — the stdio form the endpoint profile specifies. The embeddable **HTTP** handler is `servehttp.Server.Handler()`. | `go/cmd/goap/endpoint.go` |
 | `go/serve/servestdio` | The stdio binding: twelve ops over a pipe, with its own op set rather than the endpoint's raw envelopes. | `go/cmd/goap/serve.go` |
 | `go/client` | A Go client for the hub's HTTP + SSE wire. Also the far-side proof that the wire is implementable from outside this module. | — |
+| `go/sdk` | A client for a **running endpoint**: it spawns `oapx serve agent,provider --stdio` and exposes four namespaces over profiled newline-delimited OAP envelopes — `Auth`, `Models`, `Provider` and `Agent`. Where `go/client` speaks the hub's HTTP + SSE wire to a daemon you started, this speaks the stdio wire to a process it owns. | `go/cmd/goap` does not use it; it is the library a Go program embeds |
 | `harnesses` | The embedded harness pin catalogue, so a consumer reads the same pins the repository does. | `go/cmd/goap/harnesses.go` |
 | `providers` | The embedded provider catalogue. | `go/cmd/goap/providers.go` |
 | `schema` | The embedded JSON Schema bytes for `v0.1`, which `go/validation` loads. | — (via `go/validation`) |
@@ -83,6 +84,71 @@ being one.
 Everything else — `go/internal/...`, and every `internal/` directory under a
 harness package, which holds that harness's native types and its client — is
 internal, and the set is enforced the same way.
+
+## `go/sdk`: a client for a running endpoint
+
+`go/client` drives the hub over HTTP + SSE. `go/sdk` drives an *endpoint* over
+stdio, and by default it owns the process: `sdk.New(ctx, nil)` spawns
+`oapx serve agent,provider --stdio`, and the four namespaces hang off the
+client.
+
+| namespace | what it is for |
+| --- | --- |
+| `Client.Auth` | lists auth providers and drives interactive login flows |
+| `Client.Models` | lists and resolves models |
+| `Client.Provider` | runs direct provider completions, buffered or streamed |
+| `Client.Agent` | opens sessions, switches models, and runs the agent loop |
+
+A minimal provider call:
+
+```go
+client, err := sdk.New(ctx, nil)
+if err != nil {
+	return err
+}
+defer client.Close()
+
+model, err := client.Models.Resolve(ctx, sdk.ResolveModelRequest{
+	ProviderID: "anthropic",
+	API:        "anthropic-messages",
+	ModelID:    "claude-sonnet-4-5",
+})
+if err != nil {
+	return err
+}
+
+resp, err := client.Provider.Complete(ctx, sdk.CompletionRequest{
+	ModelRef: model.ModelRef,
+	Messages: []sdk.Message{sdk.UserMessage("Write a haiku about streams.")},
+})
+```
+
+Four things a caller has to know, and the reason each is a rule rather than a
+convention:
+
+- **Cancellation is per call.** Every call that performs I/O takes a
+  `context.Context` first. Cancelling it stops the call promptly, sends a
+  best-effort cancellation frame, and releases that call's frame route. It does
+  **not** tear down the client: `Client.Close` owns the child process lifetime.
+- **`ModelRef` is server-issued and opaque.** Do not parse it, do not build one
+  by hand, and do not derive provider or model identity from its text. Obtain it
+  from `Models.List` or `Models.Resolve`.
+- **Session IDs are opaque nonempty strings.** `Agent.SwitchModel` changes the
+  session's default model for future runs, and `Agent.AttachProvider` sends the
+  optional provider-attachment request — which an endpoint that does not support
+  refuses explicitly. Client-executed agent tools and per-run sampling or token
+  options are **not** in the current OAP endpoint and are refused with
+  `unsupported_feature` rather than silently ignored.
+- **Failures are typed and reachable through `errors.As`.** `StreamError` for
+  provider, transport and abort failures on provider and agent calls,
+  `AuthRequiredError` (which unwraps to `StreamError`) when a provider needs a
+  login, `ProtocolError` for model-discovery protocol failures, and `AuthError`
+  for auth listing and login-flow failures. Errors caused by a cancelled context
+  wrap the context error, so `errors.Is` against `context.Canceled` and
+  `context.DeadlineExceeded` works.
+
+`Options.LegacyWire` connects to an old Makai V1 runtime. There is no automatic
+fallback from OAP to the legacy wire — set it deliberately or not at all.
 
 ## `goap` is the worked example
 

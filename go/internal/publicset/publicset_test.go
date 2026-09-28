@@ -37,6 +37,7 @@ func TestThePackagesAGoProgramNeedsArePublic(t *testing.T) {
 		"go/serve",
 		"go/serve/servehttp",
 		"go/serve/servestdio",
+		"go/sdk",
 		"go/validation",
 		"harnesses",
 		"providers",
