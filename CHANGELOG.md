@@ -129,6 +129,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed) answers T7's two open questions for `session-reattach`. A reopen is `reopen: true` on `session.open.request` — the unused `recovery` object is not reused — and it answers the session's state document with `recovery.recovered: true` and the model and settings the session actually runs under, which is the harness's recorded configuration rather than the loader's: Codex's `ThreadResumeResponse` requires six such members and the Go adapter dropped all six (#458). A create naming a bound id is `session_exists`, a reopen with no binding is `unknown_session`, and a harness that cannot load is `unsupported_feature`. A store the harness can no longer honour answers `unsupported_feature`, as 0039 already rules, and **no new code is proposed**: the code has to come from the binding rather than the harness's reply, because two of the ledgers record a harness creating a missing store before looking in it (Hermes mode `0o600` plus the schema, OpenCode's migration runner) and pi's discovery answers `null` either way, so for those a deleted database, a moved home and a session that never existed are one answer on the wire. Of the seven harnesses read at their pins, three type their own absence — Hermes `4007`, OpenCode `SessionNotFoundError`, DeepSeek `SessionPersistenceNotFoundError` — and four do not: pi's `null`, ACP's silence, Codex's `-32602 invalid_request` (its own ledger calls that "not a not-found code"), and Claude Code, whose answer is unrecorded. The binding is the host's record — never a credential, never a resolved environment value — written atomically, with a torn write detected and never read, and appended rather than replaced. No wire changes with a proposed record.
 
 
+- The TUI shows the working directory on a muted, right-aligned row under the status
+  line. The path is sanitised, collapsed to `~` on a home-directory component
+  boundary, left-truncated with `…` when it is wider than the terminal, and hidden on
+  terminals shorter than 12 rows.
+- `/help` now lists the full key map (send, newline, history, word and line edits,
+  scrolling, abort and quit gestures) after the command list, and the empty-session
+  welcome names what `!` does and points at `/help`.
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
   and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
   `close` and `state` — over the transport objects the draft specifies. Framing is
@@ -244,6 +251,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Its state reports the last run sequence as `transcript_cursor`. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
 - The TUI queues a follow-up with Tab while a turn runs; Enter still steers the running turn. A queued message waits above the composer and is sent when the turn stops, and the hint line and placeholder name both keys. Shell tool rows show the command they run under the description, highlighted and wrapped to the width, and the model picker filters as you type.
 - `oapx serve agent --backend claude` mints ids in `goap`'s order (turn, message, run) with the message id as `submission_id`, suffixes control request ids with four random bytes as `goap` does, and reports `claude_native_session_id` metadata and the last run sequence as `transcript_cursor` in session state. The Claude parity fixture covers a permission gate answered allow.
+
+### Changed
+
+- The TUI status line drops the `perm:` and `think:` labels in favour of bare values
+  (`bypass`, `low`, …), hides the thinking segment while thinking is `off`, and moves
+  the idle/streaming state to the tail. The context gauge and its percentage are
+  coloured by usage band (green below 60%, yellow 60–75, orange 75–85, red 85+); when
+  the row overflows, the context segment shrinks to the coloured percentage first,
+  then segments drop whole by priority (turns, thinking, cost, hint, `ask`
+  permission, queue, drops, model, backpressure, context) with the state segment —
+  and `bypass`/`pending` — never dropped. The post-backpressure drop counter no
+  longer renders as `drops:drops:N`.
 
 ### Fixed
 

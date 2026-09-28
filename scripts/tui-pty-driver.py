@@ -793,13 +793,12 @@ TOOL_FAILED_GLYPH = "\u2717".encode()
 STATUS_BAR_ELLIPSIS = b"\xe2\x80\xa6"
 STATUS_BAR_CUT_MARKER = b" \xe2\x94\x82 " + STATUS_BAR_ELLIPSIS
 STATUS_BAR_PARTIAL_SEGMENTS = (
-    b"ctx:" + STATUS_BAR_ELLIPSIS,
-    b"perm:" + STATUS_BAR_ELLIPSIS,
-    b"perm:bypas" + STATUS_BAR_ELLIPSIS,
-    b"think:" + STATUS_BAR_ELLIPSIS,
-    b"think:medi" + STATUS_BAR_ELLIPSIS,
-    b"think:mediu" + STATUS_BAR_ELLIPSIS,
+    b"bypa" + STATUS_BAR_ELLIPSIS,
+    b"pend" + STATUS_BAR_ELLIPSIS,
+    b"medi" + STATUS_BAR_ELLIPSIS,
+    b"stre" + STATUS_BAR_ELLIPSIS,
     b"turns:" + STATUS_BAR_ELLIPSIS,
+    b"queue:" + STATUS_BAR_ELLIPSIS,
 )
 
 
@@ -999,7 +998,7 @@ def scenario_commands(args):
 
 def scenario_keys(args):
     run = SweepRun(args, "keys", "keys-fixture-reply", width=100, height=15)
-    run.note("status bar truncates on whole-segment boundaries at 100 columns (#268): trailing segments drop cleanly behind an ellipsis marker and no segment renders half-word; think/turns sit at the tail, so the Shift+Tab level cycle itself is covered by unit tests rather than a visible marker")
+    run.note("status bar drops whole segments by priority at 100 columns (#268): lower-priority segments drop cleanly behind an ellipsis marker and no segment renders half-word; thinking shows as a bare value and the state segment sits at the tail, so the Shift+Tab level cycle itself is covered by unit tests rather than a visible marker")
     try:
         run.session.wait_for(WELCOME_MARKER, args.startup_timeout, "welcome banner")
         run.settle()

@@ -464,6 +464,7 @@ pub const AppState = struct {
     menu_index: usize = 0,
     menu_scroll: usize = 0,
     picker_kind: PickerKind = .model,
+    cwd_display: []u8 = &.{},
     active_user_entry: ?usize = null,
     active_assistant_entry: ?usize = null,
     active_thinking_entry: ?usize = null,
@@ -511,7 +512,14 @@ pub const AppState = struct {
         self.pending_follow_ups.deinit(self.allocator);
         self.picker_filter.deinit(self.allocator);
         if (self.last_tool_calls_json.len > 0) self.allocator.free(self.last_tool_calls_json);
+        if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
         self.* = undefined;
+    }
+
+    pub fn setCwdDisplay(self: *AppState, allocator: std.mem.Allocator, display: []const u8) !void {
+        const owned = try allocator.dupe(u8, display);
+        if (self.cwd_display.len > 0) self.allocator.free(self.cwd_display);
+        self.cwd_display = owned;
     }
 
     pub fn appendTranscript(self: *AppState, kind: TranscriptKind, text: []const u8) !void {
