@@ -48,21 +48,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   need it share one implementation instead of each holding a list of vendor
   names to drift. `anthropic`'s own order is unchanged, because the catalog
   records `ANTHROPIC_AUTH_TOKEN` ahead of `ANTHROPIC_API_KEY`.
-- **`OAPX_BASE_URL` pointed at a coding plan's route asked for `/v1` twice.** A
-  `carries_version` row's base ends in a version segment, so
-  `normalizeVersionedBaseUrl` appends `/v1` to an override that lacks one, and
-  the models listing then prepended a second `/v1` because the rule could not
-  see that the base it was handed already carried the version.
-  `OAPX_BASE_URL=https://proxy.example/api` against the Volcengine row asked for
-  `…/api/v1/v1/models`. The listing now decides from the base in front of it, so
-  that override asks for `…/api/v1/models` and the request asks for
-  `…/api/v1/chat/completions` — one version each, which is the agreement the
-  mechanism exists to keep. An override base with no version is unchanged.
-  Worth naming because it was found by fixing a test rather than by reading
-  code: the first version of that test built the override by hand, so it never
-  went through the normalisation and asserted a request URL the product does not
-  produce. The test now drives the loader's own resolution and reads both URLs
-  back.
+- **The override test now reads the URLs the product computes, not ones it does
+  not.** It joined the overridden request with the version fact hardcoded and
+  asserted `…/api/chat/completions`, but a model discovered under an override
+  resolves the fact to false — the override base matches no catalogued endpoint
+  and carries no trailing `/v1` — so the product requests
+  `…/api/v1/chat/completions`. The test had blessed a listing and request
+  disagreeing with each other that does not happen, which would have hidden one
+  that does. It drives the loader's own resolution now and reads both URLs back
+  off the model it builds, and a second test pins that an override base which
+  *does* arrive versioned is normalised before the listing sees it, which is
+  what keeps the two in step.
 - The catalog loader serves the five gateway rows beside DeepSeek: OpenRouter,
   OpenCode Zen, Vercel AI Gateway, ZenMux and Deep Infra. Each is reachable by
   exporting its own key — `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`,

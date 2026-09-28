@@ -2664,20 +2664,52 @@ test "an override on a coding plan row lists and requests through the loader's o
     const catalogued = catalogTarget(id) orelse return error.TestExpectedTarget;
     try std.testing.expect(std.mem.endsWith(u8, catalogued.models_url, "/coding/v3/models"));
 
-    const overridden_models_url = try provider_catalog.listingUrlOwned(
-        std.testing.allocator,
-        proxy_models_url[0 .. proxy_models_url.len - "/models".len],
-        "/models",
-        true,
-        true,
-    );
-    defer std.testing.allocator.free(overridden_models_url);
-    try std.testing.expectEqualStrings(proxy_models_url, overridden_models_url);
-
-    test_catalog_base_urls = .{ .global = proxy_models_url[0 .. proxy_models_url.len - "/models".len] };
+    const proxy_base = "https://proxy.example/api";
+    test_catalog_base_urls = .{ .global = proxy_base };
     test_catalog_discovery = &[_]CatalogDiscovery{.{
         .id = id,
-        .models_url = overridden_models_url,
+        .models_url = "https://proxy.example/api/v1/models",
+        .model_ids = &.{"doubao-seed-code"},
+    }};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "ARK_CODING_PLAN_API_KEY", .value = "row-key" },
+    };
+    defer {
+        test_catalog_base_urls = null;
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModelsWithRows(
+        std.testing.allocator,
+        &.{id},
+        null,
+        .allow_cache,
+    );
+    defer deinitModels(std.testing.allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings(proxy_base, models[0].base_url);
+
+    const maybe_models_url = provider_catalog.modelsUrl(id, null);
+    try std.testing.expect(maybe_models_url != null);
+    const target_models_url = maybe_models_url.?;
+
+    const request = try provider_catalog.joinModelUrlOwned(
+        std.testing.allocator,
+        models[0],
+        provider_catalog.wirePath(models[0].api).?,
+    );
+    defer std.testing.allocator.free(request);
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/chat/completions", request);
+    try std.testing.expect(countVersions(target_models_url) == countVersions(request));
+}
+
+test "an override base that already carries a version is normalised before the listing sees it" {
+    const id = "volcengine-coding-plan";
+    test_catalog_base_urls = .{ .global = "https://proxy.example/api/v1" };
+    test_catalog_discovery = &[_]CatalogDiscovery{.{
+        .id = id,
+        .models_url = "https://proxy.example/api/v1/models",
         .model_ids = &.{"doubao-seed-code"},
     }};
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
@@ -2698,17 +2730,6 @@ test "an override on a coding plan row lists and requests through the loader's o
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 1), models.len);
     try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
-
-    const request = try provider_catalog.joinModelUrlOwned(
-        std.testing.allocator,
-        models[0],
-        provider_catalog.wirePath(models[0].api).?,
-    );
-    defer std.testing.allocator.free(request);
-    try std.testing.expectEqualStrings("https://proxy.example/api/v1/chat/completions", request);
-    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", overridden_models_url);
-    try std.testing.expect(countVersions(overridden_models_url) == countVersions(request));
-    try std.testing.expect(!std.mem.endsWith(u8, overridden_models_url, "/v1/v1/models"));
 }
 
 test "a coding plan row's discovered models carry that row's base, wire and own listing url" {

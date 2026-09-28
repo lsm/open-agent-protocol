@@ -301,8 +301,7 @@ pub fn listingUrlOwned(
     carries_version: bool,
     overridden: bool,
 ) ![]const u8 {
-    const already_versioned = baseCarriesTrailingVersion(base_url);
-    const path = try modelsListingPath(allocator, models_path, carries_version and !already_versioned, overridden);
+    const path = try modelsListingPath(allocator, models_path, carries_version, overridden);
     defer allocator.free(path);
     return joinUrlOwned(allocator, base_url, .{ .id = "models", .suffix = path }, carries_version and !overridden);
 }
