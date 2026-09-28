@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the way to narrow it, through the allowlist the custom-provider path already
   has. No row is filtered here, because a curated catalog has no opinion about a
   user's aggregator.
+  **A listed model also has to be requestable**, which listing alone did not
+  prove. Discovery read the credential through the catalog, so the models
+  appeared; the request path's own env fallback named DeepSeek, OpenAI and Kimi
+  literally, so all five new rows reached `error.MissingApiKey` and only DeepSeek
+  worked end to end — for the wrong reason. That fallback now reads the names the
+  row records, which is the same lookup discovery uses, so "export this row's key
+  and it works" is true of the request and not only of the listing.
   Each row has its own test rather than one shared assertion: the set the
   production loader enables, each row's wire and version fact, and one that
   drives `loadProductionModels` with two rows' fakes and reads both models back,

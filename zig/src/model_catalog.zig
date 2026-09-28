@@ -473,11 +473,6 @@ const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
 const proxy_models_url = "https://proxy.example/api/v1/models";
 const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
 
-fn catalogModelsUrlForTest(id: []const u8) ?[]const u8 {
-    const target = catalogTarget(id) orelse return null;
-    return target.models_url;
-}
-
 fn loadCatalogModels(
     allocator: std.mem.Allocator,
     storage: ?*oauth_storage.AuthStorage,
