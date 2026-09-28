@@ -288,8 +288,11 @@ model gate already enforces.
 
 ### Local daemon (`goap hub`)
 
-`oapx hub` is the released command. In this repository the Go tree carries the
-same verb as `goap`, which is **not installed**: run it with `go run`.
+`goap hub` is this repository's own command and is **not installed**: run it
+with `go run`. `oapx hub` is the released spelling of the same verb, and
+[Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
+records it as work that has not landed — `oapx` answers `unknown argument: hub`
+today, and carries `serve`, `validate`, `run` and `auth`.
 
 `goap hub` exposes the adapter registry over HTTP + Server-Sent Events so any
 client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
@@ -300,10 +303,8 @@ wire behavior is the contract the `client` package proves:
 go run ./go/cmd/goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
 
-The same verb on the released binary is `oapx hub`; see
-[Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md),
-under which one binary is released per language and every other language gets a
-library.
+Decision 0038 is why there is one released binary per language and a library
+for every other one; it is also what schedules `oapx hub`.
 
 Without `--config` the daemon serves the built-in memory reference adapter
 only. The registry document maps names to in-repo adapter configurations
@@ -763,7 +764,8 @@ go run ./go/cmd/goap conformance                  # drive that reference endpoin
 go run ./go/cmd/goap conformance --command "some-agent --oap" # drive somebody else's
 ```
 
-`oapx` carries the same two verbs; `goap` is this repository's own tool.
+`oapx` carries `serve agent` today; `oapx conformance` is product work under
+Decision 0038. `goap` is this repository's own tool.
 
 The binding carries cursor replay as a transport control frame — the same
 place the HTTP binding puts it, where `?after=` and `Last-Event-ID` are not
