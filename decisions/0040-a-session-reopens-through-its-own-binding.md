@@ -116,14 +116,13 @@ points at, which is the second case and not the first. A moved home, a moved
 project and a store the operator deleted are all that case.
 
 What the ledgers add is **why the code cannot come from the harness's answer**,
-and it is the reason this paragraph exists. A missing Hermes database is created
-empty before the lookup (`_secure_state_db_files(create_main=True)`, then
-`_init_schema`); OpenCode's migration runner turns a missing database into a
-working empty one; pi's discovery answers `null` either way; and ACP's
-specification does not reach the case. So in every one of them **the harness
-answers a store-gone reopen exactly as it answers a session that never
-existed** — and the host is the only party that knows which happened, because it
-is the party that holds the binding. The code therefore comes from the binding's
+and it is the reason this paragraph exists. Two of them create a missing store
+before looking in it — Hermes in `_secure_state_db_files(create_main=True)`
+followed by `_init_schema`, OpenCode in its migration runner — and pi's
+discovery answers `null` either way; ACP's specification does not reach the
+case at all. So for those harnesses **a store-gone reopen is answered exactly as
+a session that never existed is**, and the host is the only party that knows
+which happened, because the host is the party that holds the binding. The code therefore comes from the binding's
 existence, not from the harness's reply: a binding whose harness cannot load is
 `unsupported_feature`, and no binding at all is `unknown_session`, whatever the
 harness said. That also settles the "retry, it may be a transient mount"

@@ -4243,10 +4243,13 @@ session id, the home and working directory the open ran in, and the model and
 settings the open asked for — never a credential, and never a resolved
 environment value. It is written atomically, a torn write is detected and never
 read, and history is appended rather than replaced. What a reopen answers when
-the store is no longer where the binding says: `unknown_session`, the same
-answer as a session that never existed, because every pinned harness creates a
-missing store before looking in it — so the harness cannot tell the two apart
-and a distinct code would tell the host to.
+the store is no longer where the binding says: `unsupported_feature`, as
+Decision 0039 already rules — the host had the binding and the harness cannot
+load what it points at. **The code comes from the binding, not from the
+harness's reply**, because the ledgers record that two harnesses (Hermes and
+OpenCode) create a missing store before looking in it, so those two cannot tell
+a gone store from a session that never existed, and pi's discovery answers
+`null` either way.
 
 ## T8. Session list
 
