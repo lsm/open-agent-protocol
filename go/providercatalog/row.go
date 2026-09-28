@@ -103,6 +103,9 @@ func DefaultBaseURL(catalog Catalog, id, region string) (string, bool) {
 	if !known {
 		return "", false
 	}
+	if provider.BaseURLSource == "" {
+		return "", false
+	}
 	for _, endpoint := range provider.Endpoints {
 		if !servesRegion(endpoint, region) {
 			continue

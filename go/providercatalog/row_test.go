@@ -108,6 +108,37 @@ func TestTheDefaultBaseSkipsTheWire(t *testing.T) {
 	}
 }
 
+func TestTheDefaultBaseIsTheRowsOwnOnlyWhenItRecordsWhereItComesFrom(t *testing.T) {
+	row := Provider{
+		ID:            "row",
+		BaseURLSource: "static",
+		Endpoints:     []Endpoint{{Wire: "openai-completions", BaseURL: "https://api.example.com"}},
+	}
+	if got, ok := DefaultBaseURL(Catalog{Providers: []Provider{row}}, "row", ""); !ok || got != "https://api.example.com" {
+		t.Errorf("a row recording where its base comes from resolves that base: got %q, %v", got, ok)
+	}
+	unrecorded := row
+	unrecorded.BaseURLSource = ""
+	if got, ok := DefaultBaseURL(Catalog{Providers: []Provider{unrecorded}}, "row", ""); ok || got != "" {
+		t.Errorf("a row recording no base url source resolves no default base: got %q", got)
+	}
+	if got, ok := BaseURL(Catalog{Providers: []Provider{unrecorded}}, "row", "openai-completions", ""); !ok || got != "https://api.example.com" {
+		t.Errorf("the gate is on the default base only: the row's own endpoint resolves %q, %v", got, ok)
+	}
+}
+
+func TestEveryRowWithAnEndpointRecordsWhereItsBaseComesFrom(t *testing.T) {
+	catalog := heldCatalog(t)
+	for _, provider := range catalog.Providers {
+		if len(provider.Endpoints) == 0 {
+			continue
+		}
+		if provider.BaseURLSource == "" {
+			t.Errorf("%s has %d endpoints and records no base url source, so no default base resolves", provider.ID, len(provider.Endpoints))
+		}
+	}
+}
+
 func TestARowWithNoEndpointsResolvesNoBase(t *testing.T) {
 	catalog := heldCatalog(t)
 	var checked int

@@ -72,7 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ModelsEndpoint`, `OAuthOriginFor`, `Wires`, `Endpoints`. `BaseURL` and
   `DefaultBaseURL` pick the row's own endpoint for a wire and a region, with the
   rule that a region answers only an endpoint declaring that region and no region
-  answers only an endpoint declaring none, and `WireForModel` sends a model only
+  answers only an endpoint declaring none, and the default answering nothing at
+  all for a row that records no `base_url_source` — the gate Zig's
+  `defaultBaseUrlOf` puts there, which no live row currently trips but which a
+  future row would, silently and in one tree only, and `WireForModel` sends a model only
   the responses wire serves — `gpt-5-pro`, `o1-pro`, `computer-use-preview` and
   the rest — to `openai-responses` while every other openai model takes the row's
   first implemented wire. The URL half was already pinned by
