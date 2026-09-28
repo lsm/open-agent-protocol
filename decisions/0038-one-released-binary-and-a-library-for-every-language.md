@@ -74,6 +74,13 @@ quirk is not a protocol. The same reasoning decides the one place bytes *are*
 normative: a ledger that records a harness reading them is evidence, and a
 Go habit is not.
 
+At this amendment no ledger records that, at any pin: the two that discuss
+byte-exactness say the opposite — a gate "must be structural, never
+byte-exact" — and no pinned harness is recorded parsing the raw text of what
+an adapter writes. So the differential suite compares parsed data throughout,
+and a case that earns byte equality is named in this record and in the test
+that keeps it, when there is one.
+
 ### Each language gets a library, in one of two shapes
 
 The shape follows what the language's users ship.
