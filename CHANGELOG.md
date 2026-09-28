@@ -22,8 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `close` answers a bare `null`, and a repeated `close` is `unknown_session` rather
   than a second success — Decision 0039's close releases the session, so there is
   nothing left to close. The envelopes it mints carry the ids Go's stdio frontend
-  mints, `oap-response-N` and an `oap-request-N` in reply to, so the two trees
-  serialise the same answer byte for byte rather than merely the same shape.
+  mints, `oap-response-N` and an `oap-request-N` in reply to, spending the counter
+  in Go's per-op order, so the two trees number the same answers the same way.
+  They still differ in the order the members are written: Go's envelope struct
+  puts `payload` straight after `id` and this tree's serializer writes it last,
+  which the hub draft's divergence ledger records.
   The module is now compiled for the Windows cross-compile targets, which the
   cross-compile never reached while it was outside the `oapx` binary.
 - `contract.Session` grows an optional `readable` slot, so the hub's loop waits on

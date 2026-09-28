@@ -1163,8 +1163,18 @@ Go change, queued in
 
 ### Recorded, and not divergences
 
-Two places where the two trees will *look* different and neither is wrong. A
-differential test compares the members, not the prose, at both.
+Three places where the two trees will *look* different and none of them is a
+wrong answer. A differential test compares the members, not the prose, at the
+first two; the third is about bytes and is named here so nobody reads the
+member comparison as a byte comparison.
+
+- **An envelope's member order.** Go's `protocol.Envelope` struct writes
+  `payload` straight after `id`; `zig/src/protocol/oap/envelope.zig` writes it
+  last. Same members, same values, different bytes. The ids, the codes, the
+  wording and every member agree, and the zig stdio frontend mints the same
+  `oap-request-N` and `oap-response-N` in the same per-op order Go spends its
+  counter in — so a differential test that compares members is satisfied, and one
+  that compares bytes is not, and the two are not the same test.
 
 - **A signal's wording.** The stdio `oap-overflow` message says `resume with a
   cursor after this sequence`; the SSE one says `reconnect with a cursor after
