@@ -59,6 +59,8 @@ const deepseek_adapter = @import("deepseek_adapter");
 const opencode_adapter = @import("opencode_adapter");
 const hermes_adapter = @import("hermes_adapter");
 const memory_adapter = @import("memory_adapter");
+const hub = @import("hub");
+const hub_stdio = @import("hub_stdio");
 const bounded_output = @import("bounded_output");
 const endpoint_signals = @import("endpoint_signals");
 
@@ -2344,6 +2346,114 @@ fn runStdioMode(allocator: std.mem.Allocator, stdin: std.Io.File, stdout: std.Io
     if (drained > 0) {
         try writeOwnedLinesAndClear(stdout, allocator, &outbound_lines);
     }
+}
+
+const StdoutSink = struct {
+    file: std.Io.File,
+    io: std.Io,
+
+    fn write(context: *anyopaque, line: []const u8) anyerror!void {
+        const self: *StdoutSink = @ptrCast(@alignCast(context));
+        try self.file.writeStreamingAll(self.io, line);
+        try self.file.writeStreamingAll(self.io, "\n");
+    }
+};
+
+fn wallClockMilliseconds() u64 {
+    return @intCast(compat.time.nowMillis());
+}
+
+fn unavailable(
+    arena: std.mem.Allocator,
+    stderr: std.Io.File,
+    verb: []const u8,
+    reason: []const u8,
+) error{Unavailable}!void {
+    _ = arena;
+    var buffer: [512]u8 = undefined;
+    const message = std.fmt.bufPrint(&buffer, "oapx hub: {s}: unavailable: {s}\n", .{ verb, reason }) catch "oapx hub: unavailable\n";
+    compat.stdio.writeAll(stderr, message) catch {};
+    return error.Unavailable;
+}
+
+fn runHub(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    stdin: std.Io.File,
+    stdout: std.Io.File,
+    stderr: std.Io.File,
+) !void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var over_stdio = false;
+    var config: ?[]const u8 = null;
+    var addr: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const argument = args[index];
+        if (std.mem.eql(u8, argument, "--stdio")) {
+            over_stdio = true;
+        } else if (std.mem.eql(u8, argument, "--config")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidHubOption;
+            config = args[index];
+        } else if (std.mem.startsWith(u8, argument, "--config=")) {
+            config = argument["--config=".len..];
+        } else if (std.mem.eql(u8, argument, "--addr")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidHubOption;
+            addr = args[index];
+        } else if (std.mem.startsWith(u8, argument, "--addr=")) {
+            addr = argument["--addr=".len..];
+        } else {
+            try compat.stdio.writeAll(stderr, "oapx hub: unknown flag\n\n");
+            return error.InvalidHubOption;
+        }
+    }
+    if (over_stdio and addr != null) {
+        try compat.stdio.writeAll(stderr, "oapx hub: --stdio takes no listen address; --addr and --stdio are mutually exclusive\n");
+        return error.InvalidHubOption;
+    }
+    if (config != null) return unavailable(arena, stderr, "--config", "the hub's registry config lands with #389");
+    if (!over_stdio) {
+        if (addr != null) return unavailable(arena, stderr, "--addr", "the HTTP and SSE transport lands with #388");
+        return unavailable(arena, stderr, "--stdio", "a hub with no transport has nothing to serve");
+    }
+
+    var memory: memory_adapter.Adapter = undefined;
+    memory = memory_adapter.Adapter.init(allocator);
+    var core = hub.Hub.init(allocator, wallClockMilliseconds, .{});
+    defer core.deinit();
+    try core.register("memory", memory.adapter());
+
+    var sink = StdoutSink{ .file = stdout, .io = hubIo() };
+    var frontend = try hub_stdio.Frontend.init(allocator, &core, .{ .context = &sink, .write = StdoutSink.write }, .{});
+    defer frontend.deinit();
+
+    try compat.stdio.writeAll(stderr, "oapx: serving adapters over stdio: memory (exit kills all sessions)\n");
+    var input = stdin;
+    hub_stdio.serve(allocator, &frontend, .{
+        .read = readStdin,
+        .context = &input,
+        .readable = if (@import("builtin").os.tag == .windows) null else input.handle,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.StdinFailed => {},
+        else => return err,
+    };
+    core.closeSessions();
+    try compat.stdio.writeAll(stderr, "oapx: stopped\n");
+}
+
+fn hubIo() std.Io {
+    return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
+}
+
+fn readStdin(context: *anyopaque, buffer: []u8) anyerror!usize {
+    const file: *std.Io.File = @ptrCast(@alignCast(context));
+    return file.readStreaming(hubIo(), &.{buffer});
 }
 
 fn runServe(
@@ -6777,6 +6887,17 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, args[1], "--version")) {
         try compat.stdio.writeAll(stdout, VERSION ++ "\n");
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "hub")) {
+        runHub(allocator, args[2..], stdin, stdout, stderr) catch |err| {
+            if (err == error.InvalidHubOption) {
+                try printUsage(stderr);
+                return error.InvalidArgument;
+            }
+            return err;
+        };
         return;
     }
 

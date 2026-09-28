@@ -1384,6 +1384,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
             .{ .name = "hub", .module = hub_mod },
+            .{ .name = "compat", .module = compat_mod },
         },
     });
     const hub_stdio_test = b.addTest(.{ .root_module = hub_stdio_mod });
@@ -2594,6 +2595,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
             .{ .name = "memory_adapter", .module = memory_adapter_mod },
+            .{ .name = "hub", .module = hub_mod },
+            .{ .name = "hub_stdio", .module = hub_stdio_mod },
             .{ .name = "bounded_output", .module = bounded_output_mod },
             .{ .name = "endpoint_signals", .module = endpoint_signals_mod },
         },

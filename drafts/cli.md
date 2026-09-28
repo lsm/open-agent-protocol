@@ -20,16 +20,21 @@ means the same thing in both.
 | `serve agent [--backend B] [--config F] [--stdio]` | one agent loop over `agent-control-core`, raw envelopes per [endpoint-stdio](endpoint-stdio.md); no `--backend` means the binary's own loop | native loop; harness backends as they are wired | the Go adapters (today `goap endpoint --adapter`) |
 | `serve provider [--stdio \| --http ADDR] [--specimens]` | `model-provider-core` | yes | answers `unavailable` |
 | `serve agent,provider --stdio` | both profiles on one pipe (Decision 0027) | yes | answers `unavailable` |
-| `hub [--config F] [--addr ADDR \| --stdio]` | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | not yet | yes |
+| `hub [--config F] [--addr ADDR \| --stdio]` | the multi-session daemon: an adapter registry, fan-out, cursor replay, HTTP+SSE or the stdio transport-object wire, per [hub](hub.md) | yes (stdio) | yes |
 | `validate [--format human\|json] [--mode strict\|tolerant] [--pack DIR]... [--provider] TRACE...` | judge traces: decode, schema, semantic | yes (packs, modes and some semantic rules still porting) | yes |
 | `conformance [--command CMD] [--format text\|json]` | drive an endpoint and judge what crossed the pipe | not yet | yes |
 | `check` | the repository's own schemas, fixtures and reference path | not yet | yes |
 | `run`, `auth`, the TUI (bare invocation) | the product's own loop and credentials | yes | — |
 
-The hub is its own verb in both binaries: `goap hub` today, and `oapx hub` once
-the port Decision 0038 records lands. It is a layer above an endpoint, not a
-different spelling of one, and giving it its own verb is what lets `serve agent`
-mean one thing.
+The hub is its own verb in both binaries: `goap hub` and `oapx hub`. It is a layer
+above an endpoint, not a different spelling of one, and giving it its own verb is
+what lets `serve agent` mean one thing.
+
+`oapx hub` carries the stdio transport today and answers `unavailable` for the
+other two, naming which: `--addr` with the HTTP and SSE transport, and `--config`
+with the hub's registry. Nothing silently falls back — a host that asked for a
+transport this build does not serve is told so rather than handed a pipe, because
+a pipe answers the requests that fit it and is silent about the rest.
 
 ## Rules both binaries follow
 

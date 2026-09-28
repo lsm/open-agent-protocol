@@ -4,6 +4,7 @@ const oap_envelope = @import("oap_envelope");
 const json_encode = @import("json_encode");
 const contract = @import("contract");
 const hubmod = @import("hub");
+const compat = @import("compat");
 
 pub const Hub = hubmod.Hub;
 
@@ -83,11 +84,11 @@ pub const Request = struct {
         unreachable;
     }
 
-    fn only(self: Request, parameters: []const []const u8) ?Refusal {
+    fn only(self: Request, arena: std.mem.Allocator, parameters: []const []const u8) !?Refusal {
         for (all_parameters) |parameter| {
-            const declared = declares(parameters, parameter);
-            if (declared == self.takes(parameter)) continue;
-            return .{ .code = "invalid_request", .message = "this op does not define that parameter" };
+            if (declares(parameters, parameter) or !self.takes(parameter)) continue;
+            const message = try std.fmt.allocPrint(arena, "op \"{s}\" accepts no {s} parameter", .{ self.op, parameter });
+            return Refusal{ .code = "invalid_request", .message = message };
         }
         return null;
     }
@@ -281,29 +282,32 @@ pub const Frontend = struct {
 
     fn dispatch(self: *Frontend, arena: std.mem.Allocator, request: Request) Error!Outcome {
         if (std.mem.eql(u8, request.op, op_adapters)) {
-            if (request.only(no_parameters)) |refusal| return .{ .refused = refusal };
+            if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
             return .{ .answer = try self.adapters(arena) };
         }
         if (std.mem.eql(u8, request.op, op_sessions)) {
-            if (request.only(no_parameters)) |refusal| return .{ .refused = refusal };
+            if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
             return .{ .answer = try self.sessions(arena) };
         }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
-            if (request.only(adapter_parameter)) |refusal| return .{ .refused = refusal };
-            const name = request.adapter orelse return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
+            if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
+            const name = request.adapter orelse "";
+            if (name.len == 0) {
+                return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
+            }
             return self.capabilities(arena, name);
         }
         if (std.mem.eql(u8, request.op, op_close)) {
-            if (request.only(session_parameter)) |refusal| return .{ .refused = refusal };
-            const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+            if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
+            const session_id = request.session_id orelse "";
             return self.closeSession(arena, session_id);
         }
         if (std.mem.eql(u8, request.op, op_state)) {
-            if (request.only(session_parameter)) |refusal| return .{ .refused = refusal };
-            const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+            if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
+            const session_id = request.session_id orelse "";
             return self.state(arena, session_id);
         }
-        return .{ .refused = .{ .code = "unknown_op", .message = "this frontend does not serve that op" } };
+        return .{ .refused = .{ .code = "unknown_op", .message = try std.fmt.allocPrint(arena, "no op \"{s}\"", .{request.op}) } };
     }
 
     fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
@@ -674,6 +678,70 @@ var frozen_ns: u64 = 0;
 
 fn wallClock() u64 {
     return frozen_ns;
+}
+
+pub const cycle_budget_ns: u64 = 50 * std.time.ns_per_ms;
+
+pub const Stream = struct {
+    read: *const fn (context: *anyopaque, buffer: []u8) anyerror!usize,
+    context: *anyopaque,
+    readable: ?std.Io.File.Handle = null,
+};
+
+const ReadFailure = error{StdinFailed};
+
+pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) Error!void {
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(allocator);
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    while (!frontend.stopped) {
+        const awoken = try waitOn(frontend, stream, scratch.allocator(), cycle_budget_ns);
+        try frontend.hub.pump(allocator, 0);
+        if (!awoken) continue;
+        while (true) {
+            const more = try readAvailable(allocator, stream, &pending);
+            while (std.mem.indexOfScalar(u8, pending.items, '\n')) |cut| {
+                const line = pending.items[0..cut];
+                const rest = pending.items[cut + 1 ..];
+                frontend.handleLine(line) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => break,
+                };
+                std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
+                pending.items.len = rest.len;
+                if (frontend.stopped) return error.StdinFailed;
+            }
+            if (!more) return;
+        }
+    }
+}
+
+fn readAvailable(allocator: std.mem.Allocator, stream: Stream, pending: *std.ArrayList(u8)) !bool {
+    var buffer: [4096]u8 = undefined;
+    const read = stream.read(stream.context, &buffer) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.EndOfStream => return false,
+        else => return ReadFailure.StdinFailed,
+    };
+    if (read == 0) return false;
+    try pending.ensureUnusedCapacity(allocator, read);
+    pending.appendSliceAssumeCapacity(buffer[0..read]);
+    return true;
+}
+
+const pollable = @import("builtin").os.tag != .windows;
+
+fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns: u64) !bool {
+    if (comptime !pollable) return true;
+    const children = try frontend.hub.readableHandles(arena);
+    const input = stream.readable orelse return children.len > 0;
+    var watched: std.ArrayList(std.posix.pollfd) = .empty;
+    for (children) |handle| try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
+    try watched.append(arena, .{ .fd = input, .events = std.posix.POLL.IN, .revents = 0 });
+    const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
+    return (std.posix.poll(watched.items, budget) catch 0) > 0;
 }
 
 const Recorder = struct {
@@ -1059,7 +1127,7 @@ test "a close answers a bare null, and its refusals name the code the draft pins
     try harness.send("{\"id\":2,\"op\":\"close\",\"session_id\":\"closing\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":3,\"op\":\"close\"}");
-    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":4,\"op\":\"close\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
 }
@@ -1095,7 +1163,96 @@ test "state answers a daemon-minted envelope and refuses an unknown session" {
     try harness.send("{\"id\":2,\"op\":\"state\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":3,\"op\":\"state\"}");
-    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+const PipeStream = struct {
+    read_end: compat.stdio.File = undefined,
+    write_end: compat.stdio.File = undefined,
+
+    fn read(context: *anyopaque, buffer: []u8) anyerror!usize {
+        const self: *PipeStream = @ptrCast(@alignCast(context));
+        return compat.stdio.read(self.read_end, buffer);
+    }
+
+    fn write(context: *anyopaque, bytes: []const u8) anyerror!void {
+        const self: *PipeStream = @ptrCast(@alignCast(context));
+        try compat.stdio.writeAll(self.write_end, bytes);
+    }
+};
+
+/// `compat.stdio.pipe` is POSIX-only — it returns void on Windows, where the loop
+/// takes its fallback path instead and #460 replaces that — so the harness and the
+/// tests that need a real pipe are compiled only where a pipe exists.
+const has_pipe = @import("builtin").os.tag != .windows;
+
+const PipeHarness = struct {
+    allocator: std.mem.Allocator,
+    backing: *Harness,
+    stream: PipeStream,
+    pipes: compat.stdio.Pipe,
+
+    fn init(allocator: std.mem.Allocator, hub_options: hubmod.Options, options: Options) !*PipeHarness {
+        const self = try allocator.create(PipeHarness);
+        self.* = .{
+            .allocator = allocator,
+            .backing = try Harness.init(allocator, hub_options, options),
+            .stream = .{ .read_end = undefined },
+            .pipes = undefined,
+        };
+        self.pipes = try compat.stdio.pipe();
+        self.stream.read_end = self.pipes[0];
+        self.stream.write_end = self.pipes[1];
+        return self;
+    }
+
+    fn send(self: *PipeHarness, bytes: []const u8) !void {
+        try PipeStream.write(&self.stream, bytes);
+    }
+
+    fn run(self: *PipeHarness) !void {
+        var frontend = try Frontend.init(self.allocator, &self.backing.hub, self.backing.recorder.sink(), .{});
+        defer frontend.deinit();
+        try serve(self.allocator, &frontend, .{
+            .read = PipeStream.read,
+            .context = &self.stream,
+            .readable = self.pipes[0].handle,
+        });
+    }
+
+    fn closeInput(self: *PipeHarness) void {
+        compat.stdio.close(self.stream.write_end);
+    }
+
+    fn deinit(self: *PipeHarness) void {
+        compat.stdio.close(self.stream.read_end);
+        self.backing.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
+test "the serve loop reads a frame split across two writes, and answers both" {
+    if (!has_pipe) return error.SkipZigTest;
+    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"adap");
+    try harness.send("ters\"}\n");
+    try harness.send("{\"id\":2,\"op\":\"sessions\"}\n");
+    harness.closeInput();
+    try harness.run();
+    try testing.expectEqual(@as(usize, 2), harness.backing.recorder.lines.items.len);
+    try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[1], "\"sessions\"") != null);
+}
+
+test "the serve loop stops at a framing defect rather than answering the rest" {
+    if (!has_pipe) return error.SkipZigTest;
+    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"adapters\"}\nnot json\n{\"id\":2,\"op\":\"sessions\"}\n");
+    harness.closeInput();
+    try testing.expectError(error.StdinFailed, harness.run());
+    try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
 }
 
 test "a null parameter is supplied and refused, and a wrongly typed one is a defect" {
@@ -1104,7 +1261,9 @@ test "a null parameter is supplied and refused, and a wrongly typed one is a def
     try harness.send("{\"id\":1,\"op\":\"adapters\",\"adapter\":null}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
     try harness.send("{\"id\":2,\"op\":\"sessions\",\"session_id\":null}");
-    try testing.expectEqualStrings("invalid_request", try harness.code());
+    const refused = (try harness.lastValue()).object.get("error").?.object;
+    try testing.expectEqualStrings("invalid_request", refused.get("code").?.string);
+    try testing.expectEqualStrings("op \"sessions\" accepts no session_id parameter", refused.get("message").?.string);
     try harness.send("{\"id\":7,\"op\":\"adapters\",\"allow_degraded_features\":null}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
     try harness.send("{\"id\":8,\"op\":\"adapters\",\"after\":null}");

@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `oapx hub` is the multi-session hub in the Zig binary, and `--stdio` serves it
+  over the same transport objects `goap hub --stdio` serves. The hub and its wire
+  are in the `oapx` binary for the first time, which is what the cross-compile
+  check in the previous release could not reach.
+  One loop owns the hub and waits on the readiest of everything it holds — the
+  host's request stream and every open session's child — so a session and a
+  request compete for the same cycle rather than for a share of it, per §8.6. A
+  cycle that read a request drives the hub afterwards, so a child that went quiet
+  during the read is not held back by the next one. On Windows, where there is no
+  `poll` to wait on, the loop falls back to a blocking read of the request stream;
+  that is a wait per input rather than a wait on readiness, and #460 replaces it.
+  `--addr` and `--config` answer `unavailable` and exit non-zero, naming what is
+  missing, because a host that asked for a transport this build does not serve is
+  better told than handed a pipe that answers the requests that fit it.
+  A host that closes the request stream ends the serve, and the serve *succeeded* —
+  treating end-of-stream as an error would make every well-behaved host look like
+  a broken one.
+  A differential test drives one script through `goap hub --stdio` and
+  `oapx hub --stdio` and compares the answers as parsed JSON, keyed by the
+  request's `id` rather than by position, normalising only the envelope ids and
+  timestamps the daemon mints. Four scenarios cover the five ops this wire serves,
+  the refusals and their wording, a null parameter against a wrongly typed one,
+  and a framing defect stopping the wire. It found four divergences the day it
+  was written, all now fixed: the refusal for an undeclared parameter named
+  neither the op nor the parameter, an unknown op said so without naming it, a
+  missing `adapter` was refused as an undefined parameter rather than as
+  `adapter is required`, and a missing `session_id` was refused at all where Go
+  looks the empty id up and answers `unknown_session`.
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
   and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
   `close` and `state` — over the transport objects the draft specifies. Framing is
