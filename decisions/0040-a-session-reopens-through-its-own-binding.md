@@ -38,10 +38,15 @@ reading changed is worth stating first, because it decides the second question:
   persistence layer throws `SessionPersistenceNotFoundError(id)`. Codex answers
   a missing rollout with an invalid-request code rather than a method-not-found
   one. So for those, `unknown_session` is *carried* from the wire.
-- **Two cannot answer at all.** pi's discovery returns `null` — an absence with
-  no name — and the ACP specification says nothing about a load of an unknown
-  id, so `unsupported_feature` has to be manufactured rather than read. This is
-  the minority, and it is the reason a rule is needed at all.
+- **Two cannot be read for a code, and they are not the same case.** pi *can*
+  load a session natively — a `switch_session` is its first explicit session
+  command, and the adapter sends none — but its discovery answers `null` for an
+  id that is not there, so `unknown_session` has to be manufactured rather than
+  read. ACP is different again: `session/load` is gated by `loadSession`, so a
+  harness that does not advertise it is `unsupported_feature` outright, and one
+  that does leaves the unknown-id case to a manufactured `unknown_session`,
+  because the specification says nothing about it. Two manufactured codes, two
+  different reasons, and neither is the rule.
 - **One has a store the adapter cannot reach.** The DeepSeek harness ships a
   real JSONL session backend with a typed absence and a working reload
   (`packages/session/session-persistence-jsonl`), and the pinned SDK wire the Go
@@ -98,27 +103,38 @@ resume, not event replay.
   reopen something it never opened, which is an absence the host can see;
 - a **reopen** the harness cannot load is `unsupported_feature`, and the
   capabilities say so before the host tries. A harness with no native load is in
-  this class permanently, which is why pi and ACP need a manufactured answer
-  and why the DeepSeek adapter is in this class until its wire grows a request.
+  this class permanently, which is why the DeepSeek adapter is in it until its
+  wire grows a request, and why an ACP harness that does not advertise
+  `loadSession` is in it too.
 
-### A store that is gone answers `unknown_session`, and that is the whole answer
+### A store that is gone answers `unsupported_feature`, and the code comes from the binding
 
-A reopen whose binding names a store the harness no longer has answers
-`unknown_session` — the same answer as a session that never existed, and
-deliberately so. The ledgers leave no alternative: a missing Hermes database is
-created empty before the lookup, so the harness cannot distinguish it from an
-empty one; OpenCode migrates a missing database into a working empty one; pi's
-discovery answers `null` either way; and ACP's specification does not reach the
-case. The host is therefore in the same position in all four, and a distinct
-code would tell it to distinguish something the wire cannot distinguish — the
-"retry, it may be a transient mount" reading is exactly the wrong advice for a
-home directory that moved.
+A reopen whose binding names a store the harness can no longer honour is
+`unsupported_feature`, as [Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)
+already rules: the host *had* the binding and the harness cannot load what it
+points at, which is the second case and not the first. A moved home, a moved
+project and a store the operator deleted are all that case.
+
+What the ledgers add is **why the code cannot come from the harness's answer**,
+and it is the reason this paragraph exists. A missing Hermes database is created
+empty before the lookup (`_secure_state_db_files(create_main=True)`, then
+`_init_schema`); OpenCode's migration runner turns a missing database into a
+working empty one; pi's discovery answers `null` either way; and ACP's
+specification does not reach the case. So in every one of them **the harness
+answers a store-gone reopen exactly as it answers a session that never
+existed** — and the host is the only party that knows which happened, because it
+is the party that holds the binding. The code therefore comes from the binding's
+existence, not from the harness's reply: a binding whose harness cannot load is
+`unsupported_feature`, and no binding at all is `unknown_session`, whatever the
+harness said. That also settles the "retry, it may be a transient mount"
+worry, because the host is not told to retry a load it already knows it cannot
+do.
 
 **No new refusal code is proposed, and the question is answered rather than
-deferred.** If the owner wants the distinction anyway, the candidate is
-`session_store_gone` beside `unknown_session`, with the same 404; this record
-recommends against it, for the reason in the paragraph above, and the ledgers
-give no case that needs it.
+deferred.** A distinct `session_store_gone` would be a fourth code for a
+distinction only the host can make, and the host makes it from the binding
+already. This record recommends against it, and the ledgers give no case that
+needs it.
 
 ### The binding is the host's, and it says where the session was opened
 
