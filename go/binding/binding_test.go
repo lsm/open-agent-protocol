@@ -165,6 +165,21 @@ func TestARecordWhoseBytesDoNotMatchItsChecksumIsRefused(t *testing.T) {
 	}
 }
 
+func TestLiveReadsTheEntryThatClaimsToOpenTheSession(t *testing.T) {
+	if !Live(Opened(sample(), 1)) {
+		t.Fatal("an open does not read as live")
+	}
+	if !Live(Reopened(sample(), "native-7", 2)) {
+		t.Fatal("a reopen does not read as live")
+	}
+	if Live(Closed(sample(), 3)) {
+		t.Fatal("a close reads as live")
+	}
+	if Live(Entry{Action: ActionRefused, TimeMS: 4, Record: sample()}) {
+		t.Fatal("a refusal reads as live, and a refusal is not a state")
+	}
+}
+
 func TestOneSessionsRecordsAreNotAnotherSessions(t *testing.T) {
 	ctx := context.Background()
 	store := fileStoreIn(t)

@@ -128,10 +128,23 @@ func TestARefusedDuplicateOpenIsRecordedAsOpenedAndThenClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(history) != 3 {
-		t.Fatalf("history has %d entries, want opened, then the refused open's opened and closed", len(history))
+		t.Fatalf("history has %d entries, want the first open, then the refused open's opened and refusal", len(history))
 	}
-	if history[2].Action != binding.ActionClosed {
-		t.Fatalf("the last action is %q, so a host reading the binding sees an open that was refused", history[2].Action)
+	if history[2].Action != binding.ActionRefused {
+		t.Fatalf("the last action is %q, want a refusal rather than a close: the first session is still running", history[2].Action)
+	}
+	if binding.Live(history[2]) {
+		t.Fatal("a refusal reads as a live session, so a host would reopen one the hub already holds")
+	}
+	if history[0].Action != binding.ActionOpened {
+		t.Fatalf("the first entry is %q, want the open that published the session", history[0].Action)
+	}
+	state, found := binding.State(history)
+	if !found || state.Action != binding.ActionOpened {
+		t.Fatalf("the last state of this session is %+v, want the open that is still running", state)
+	}
+	if !binding.Live(state) {
+		t.Fatal("the running session does not read as live")
 	}
 }
 

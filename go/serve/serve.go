@@ -99,7 +99,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
 	if err := h.sessions.add(entry); err != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
-		h.recordBinding(ctx, opened, binding.ActionClosed, h.now())
+		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
 	return entry, state, nil
