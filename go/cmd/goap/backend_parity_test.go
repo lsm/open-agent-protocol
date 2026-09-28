@@ -336,6 +336,11 @@ func TestChildLinesCompareDataNotBytes(t *testing.T) {
 	if _, extra := childLineDifference(t, "--- GET\n", "--- GET\n/api/session/ses_1/event\n"); len(extra) != 1 {
 		t.Fatalf("a request the other tree never made compared equal: %v", extra)
 	}
+	withID := "{\"id\":\"msg_oap0000000000000001\",\"params\":{\"text\":\"a<b>c&d\"}}"
+	otherID := "{\"id\":\"msg_oap0000000000000002\",\"params\":{\"text\":\"a<b>c&d\"}}"
+	if missing, extra := childLineDifference(t, withID+"\n", otherID+"\n"); len(missing) != 1 || len(extra) != 1 {
+		t.Fatalf("two trees minting different ids compared equal: only goap %v, only oapx %v", missing, extra)
+	}
 }
 
 func childLineDifference(t *testing.T, want, got string) ([]string, []string) {
@@ -365,7 +370,20 @@ func parsedChildLine(t *testing.T, line string) string {
 	if !json.Valid([]byte(body)) {
 		return line
 	}
-	return prefix + normalizedLine(t, body)
+	return prefix + canonicalJSON(t, body)
+}
+
+func canonicalJSON(t *testing.T, line string) string {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal([]byte(line), &value); err != nil {
+		t.Fatalf("not JSON: %q", line)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
 }
 
 func lineDifference(want, got []string) ([]string, []string) {
