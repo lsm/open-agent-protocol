@@ -32,6 +32,7 @@ func TestThePackagesAGoProgramNeedsArePublic(t *testing.T) {
 		"go/adapter/opencode",
 		"go/adapter/pi",
 		"go/client",
+		"go/binding",
 		"go/harness",
 		"go/providercatalog",
 		"go/serve",

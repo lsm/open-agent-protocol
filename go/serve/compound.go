@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"github.com/lsm/open-agent-protocol/go/binding"
 
 	base "github.com/lsm/open-agent-protocol/go/adapter"
 	"github.com/lsm/open-agent-protocol/go/protocol"
@@ -78,7 +79,12 @@ func OpenCompound(ctx context.Context, hub *Hub, name string, open base.OpenRequ
 
 func Rollback(ctx context.Context, hub *Hub, entry *Session) error {
 	err := entry.Close(ctx)
+	hub.bindingMu.Lock()
+	defer hub.bindingMu.Unlock()
 	hub.sessions.remove(entry.ID(), entry)
+	if err != nil {
+		hub.recordBinding(ctx, entry.binding, binding.ActionClosed, hub.now())
+	}
 	return err
 }
 
