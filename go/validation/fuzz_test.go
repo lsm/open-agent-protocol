@@ -58,6 +58,10 @@ func FuzzTheValidatorIsTotalOverARepeatedEnvelopeWithoutGrowingItsVerdictWithout
 		if once.Valid() != twice.Valid() || len(once.Diagnostics) != len(twice.Diagnostics) {
 			t.Fatalf("two verdicts over the same bytes disagree: %+v and %+v", once, twice)
 		}
+		lines := strings.Count(trace, "\n") + 1
+		if len(once.Diagnostics) > lines {
+			t.Fatalf("%d lines produced %d diagnostics, so one line is reported more than once: %q", lines, len(once.Diagnostics), trace)
+		}
 	})
 }
 

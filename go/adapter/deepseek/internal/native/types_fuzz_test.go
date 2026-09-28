@@ -38,7 +38,7 @@ func FuzzTheJSONWalkRefusesOnlyDuplicatesAndMalformedJSON(f *testing.F) {
 }
 
 func FuzzANotificationIsRefusedForAMethodItDoesNotServeWhateverTheDataSays(f *testing.F) {
-	for _, method := range []string{NotifySessionEvent, NotifySubagentFinished, "session.other", "", "session.event "} {
+	for _, method := range []string{NotifySessionEvent, NotifySessionStatus, NotifySubagentStarted, NotifySubagentFinished, "session.other", "", "session.event "} {
 		for _, data := range []string{`{}`, `not json`, `{"a":1}`, `null`} {
 			f.Add(method, data)
 		}
@@ -51,7 +51,9 @@ func FuzzANotificationIsRefusedForAMethodItDoesNotServeWhateverTheDataSays(f *te
 			}
 			return
 		}
-		if method != NotifySessionEvent && method != NotifySubagentFinished {
+		switch method {
+		case NotifySessionEvent, NotifySessionStatus, NotifySubagentStarted, NotifySubagentFinished:
+		default:
 			t.Fatalf("the unserved method %q was admitted: %q", method, data)
 		}
 	})

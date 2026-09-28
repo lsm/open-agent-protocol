@@ -532,6 +532,7 @@ func decodeStrict(data []byte, dst any, unknown bool) error {
 
 func RejectDuplicateKeys(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	var walk func() error
 	walk = func() error {
 		token, err := dec.Token()

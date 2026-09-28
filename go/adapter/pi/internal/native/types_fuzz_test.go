@@ -54,3 +54,18 @@ func walkSeeds(f *testing.F, id string) []string {
 	}
 	return seeds
 }
+
+func FuzzAStrictDecodeAdmitsOnlyOneWholeJSONDocument(f *testing.F) {
+	for _, seed := range walkSeeds(f, "pi") {
+		f.Add(seed)
+	}
+	for _, seed := range []string{`{}`, `{"a":1}`, `{"a":1} {"b":2}`, `{"a":1,"a":2}`, `{"unknown":1}`, `null`, `[]`, `1e700`} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		var value map[string]any
+		if err := DecodeStrict([]byte(raw), &value); err == nil && !json.Valid([]byte(raw)) {
+			t.Fatalf("the strict decode admitted bytes that are not one whole JSON document: %q", raw)
+		}
+	})
+}

@@ -2,6 +2,7 @@ package native
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
@@ -70,4 +71,26 @@ func corpusSeeds(f *testing.F) []string {
 		}
 		return seeds
 	}
+}
+
+func FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey(f *testing.F) {
+	for _, seed := range corpusSeeds(f) {
+		f.Add(seed)
+	}
+	for _, seed := range []string{`{"a":1,"a":2}`, `{"a":{"b":1,"b":2}}`, `{"a":1}`, `{}`, `[]`, `null`, `1e700`, `{"ts":1e999}`} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		if !json.Valid([]byte(raw)) {
+			return
+		}
+		err := RejectDuplicateKeys([]byte(raw))
+		if err == nil {
+			return
+		}
+		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "UseNumber") {
+			return
+		}
+		t.Fatalf("the walk refused well-formed JSON for another reason: %q: %v", raw, err)
+	})
 }

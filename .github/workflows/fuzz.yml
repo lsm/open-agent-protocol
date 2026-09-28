@@ -25,6 +25,10 @@ jobs:
             target: FuzzTheValidatorReachesAVerdictForAnyBytesAtAll
           - package: ./go/validation
             target: FuzzTheValidatorIsTotalOverARepeatedEnvelopeWithoutGrowingItsVerdictWithoutEnd
+          - package: ./go/validation
+            target: FuzzValidateNeverPanics
+          - package: ./go/validation
+            target: FuzzApplyEnvelopeNeverPanics
           - package: ./go/adapter/acp/internal/rpc
             target: FuzzTheJSONWalkAdmitsOnlyBytesJSONAdmits
           - package: ./go/adapter/acp/internal/rpc
@@ -75,7 +79,7 @@ jobs:
             target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
           - package: ./go/adapter/pi/internal/native
             target: FuzzAStrictDecodeAdmitsOnlyOneWholeJSONDocument
-    name: ${{ matrix.target }}
+    name: ${{ matrix.package }} ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

@@ -7,7 +7,7 @@ import (
 )
 
 func FuzzAnObservationIsRefusedForAFrameTypeItDoesNotServeWhateverTheRawSays(f *testing.F) {
-	for _, frameType := range []string{TypeUser, TypeResult, TypeCommandLifecycle, "assistant", "", "USER"} {
+	for _, frameType := range []string{TypeUser, TypeResult, TypeCommandLifecycle, TypeStreamEvent, TypeToolProgress, TypeConversation, TypeKeepAlive, "assistant", "", "USER"} {
 		for _, subtype := range []string{"", ResultErrorMaxTurns, "some_subtype"} {
 			for _, raw := range []string{`{}`, `not json`, `{"message":{"content":[]}}`, `[]`} {
 				f.Add(frameType, subtype, raw)
@@ -70,7 +70,7 @@ func FuzzAControlRequestIsRefusedForASubtypeItDoesNotServeWhateverTheRawSays(f *
 
 func servedObservationFrame(frameType string) bool {
 	switch frameType {
-	case TypeUser, TypeAssistant, TypeResult, TypeSystem, TypeCommandLifecycle, TypeKeepAlive:
+	case TypeUser, TypeAssistant, TypeResult, TypeSystem, TypeCommandLifecycle, TypeKeepAlive, TypeStreamEvent, TypeToolProgress, TypeConversation:
 		return true
 	default:
 		return false
@@ -107,4 +107,21 @@ func claudeSeeds(f *testing.F) []string {
 		}
 		return seeds
 	}
+}
+
+func FuzzAnObservationOfARecordedFrameDecodesWithoutPanicking(f *testing.F) {
+	for _, seed := range claudeSeeds(f) {
+		f.Add(TypeUser, "", seed)
+		f.Add(TypeResult, ResultErrorMaxTurns, seed)
+		f.Add(TypeCommandLifecycle, "", seed)
+	}
+	f.Fuzz(func(t *testing.T, frameType, subtype, raw string) {
+		observation, err := DecodeObservation(frameType, subtype, []byte(raw))
+		if err != nil {
+			return
+		}
+		if observation == nil {
+			t.Fatalf("an admitted observation is nothing: %q", raw)
+		}
+	})
 }
