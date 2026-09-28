@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/protocol"
 	"strings"
 	"time"
 )
@@ -15,34 +16,61 @@ const (
 	oapProvider = "open-agent-protocol.model-provider-core"
 )
 
-func oapFrame(profile, kind string, payload any) *frame {
-	return &frame{Protocol: oapProtocol, Version: oapVersion, Profile: profile,
-		Type: kind, ID: newULID(), Payload: mustMarshal(payload)}
+func oapFrame(profile, kind string, payload any) protocol.Envelope {
+	return protocol.Envelope{Protocol: oapProtocol, Version: oapVersion, Profile: profile,
+		Type: protocol.EnvelopeType(kind), ID: protocol.EnvelopeID(newULID()), Payload: mustMarshal(payload)}
 }
 
-func oapRequest(ctx context.Context, t *transport, sub *subscription, timeout time.Duration, f *frame) (*frame, error) {
-	sub.correlate(f.ID)
-	defer sub.uncorrelate(f.ID)
-	if err := t.send(f); err != nil {
-		return nil, err
+func oapRequest(ctx context.Context, t *transport, sub *subscription, timeout time.Duration, request protocol.Envelope) (protocol.Envelope, error) {
+	sub.correlate(string(request.ID))
+	defer sub.uncorrelate(string(request.ID))
+	if err := t.sendEnvelope(request); err != nil {
+		return protocol.Envelope{}, err
 	}
 	for {
-		result, err := sub.next(ctx, timeout, f.Type)
+		result, err := sub.next(ctx, timeout, string(request.Type))
 		if err != nil {
-			return nil, err
+			return protocol.Envelope{}, err
 		}
-		if result.InReplyTo != f.ID {
+		envelope := asEnvelope(result)
+		if envelope.InReplyTo != request.ID {
 			continue
 		}
-		if result.Type == "error" || result.Type == "error.response" {
-			return nil, oapFailure(result, "")
+		if envelope.Type == "error" || envelope.Type == "error.response" {
+			return protocol.Envelope{}, oapFailure(envelope, "")
 		}
-		return result, nil
+		return envelope, nil
 	}
 }
 
-func oapFailure(f *frame, providerID string) error {
-	payload := f.payload()
+func asEnvelope(f *frame) protocol.Envelope {
+	envelope := protocol.Envelope{
+		Protocol: f.Protocol, Version: oapVersion, Profile: f.Profile,
+		Type: protocol.EnvelopeType(f.Type), ID: protocol.EnvelopeID(f.ID),
+		Payload: f.Payload, InReplyTo: protocol.EnvelopeID(f.InReplyTo),
+		SessionID: protocol.SessionID(f.SessionID), RunID: protocol.RunID(f.RunID),
+		CapabilityRevision: f.CapabilityRevision,
+	}
+	if text, isText := f.Version.(string); isText {
+		envelope.Version = text
+	}
+	if f.Sequence != 0 {
+		sequence := uint64(f.Sequence)
+		envelope.Sequence = &sequence
+	}
+	return envelope
+}
+
+func envelopePayload(env protocol.Envelope) jsonObject {
+	payload, _ := decodeObject(env.Payload)
+	if payload == nil {
+		return jsonObject{}
+	}
+	return payload
+}
+
+func oapFailure(env protocol.Envelope, providerID string) error {
+	payload := envelopePayload(env)
 	if nested := payload.obj("error"); nested != nil {
 		payload = nested
 	}
@@ -277,7 +305,7 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 	if req.ProviderID != "" {
 		request.Payload = mustMarshal(map[string]any{"provider_id": req.ProviderID})
 	}
-	sub := s.transport.subscribeStream(request.ID)
+	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
 	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
 	if err != nil {
@@ -287,7 +315,7 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "expected provider.models.list.response"}
 	}
 	result := &ListModelsResponse{Models: []ModelDescriptor{}, FetchedAt: time.Now()}
-	for _, raw := range response.payload().arr("models") {
+	for _, raw := range envelopePayload(response).arr("models") {
 		entry, ok := raw.(map[string]any)
 		if !ok {
 			return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "model entry is not an object"}
@@ -356,13 +384,13 @@ func (s *ProviderService) oapStream(ctx context.Context, req CompletionRequest) 
 		}
 	}
 	request := oapFrame(oapProvider, "inference.create.request", payload)
-	sub := s.transport.subscribeStream(request.ID)
-	sub.correlate(request.ID)
-	if err := s.transport.send(request); err != nil {
+	sub := s.transport.subscribeStream(string(request.ID))
+	sub.correlate(string(request.ID))
+	if err := s.transport.sendEnvelope(request); err != nil {
 		sub.close()
 		return nil, err
 	}
-	return &ProviderStream{ctx: ctx, transport: s.transport, sub: sub, streamID: request.ID,
+	return &ProviderStream{ctx: ctx, transport: s.transport, sub: sub, streamID: string(request.ID),
 		timeout: s.timeout, fallbackProvider: providerIDFromRef(req.ModelRef),
 		oap: true, oapModelRef: req.ModelRef, oapPartKinds: make(map[int]string)}, nil
 }
@@ -398,7 +426,7 @@ func (s *ProviderStream) oapNext() bool {
 		switch f.Type {
 		case "inference.create.response":
 			if accepted, _ := p.boolean("accepted"); !accepted {
-				s.fail(oapFailure(f, s.fallbackProvider))
+				s.fail(oapFailure(asEnvelope(f), s.fallbackProvider))
 				return false
 			}
 			s.oapInferenceID = f.InferenceID
@@ -441,7 +469,7 @@ func (s *ProviderStream) oapNext() bool {
 			s.finished = true
 			return true
 		case "inference.failed", "error":
-			s.fail(oapFailure(f, s.fallbackProvider))
+			s.fail(oapFailure(asEnvelope(f), s.fallbackProvider))
 			return false
 		default:
 			s.fail(&StreamError{Kind: KindTransportError, Message: fmt.Sprintf("unexpected OAP inference event %q", f.Type)})
@@ -472,9 +500,9 @@ func (s *AgentService) OpenSession(ctx context.Context, sessionID string) (strin
 	}
 	request := oapFrame(oapAgent, "session.open.request", payload)
 	if sessionID != "" {
-		request.SessionID = sessionID
+		request.SessionID = protocol.SessionID(sessionID)
 	}
-	sub := s.transport.subscribeStream(request.ID)
+	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
 	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
 	if err != nil {
@@ -483,7 +511,7 @@ func (s *AgentService) OpenSession(ctx context.Context, sessionID string) (strin
 	if response.Type != "session.open.response" {
 		return "", &ProtocolError{Code: CodeMalformedResponse, Message: "expected session.open.response"}
 	}
-	id := response.payload().str("session_id")
+	id := envelopePayload(response).str("session_id")
 	if id == "" {
 		return "", &ProtocolError{Code: CodeMalformedResponse, Message: "session.open.response omitted session_id"}
 	}
@@ -505,8 +533,8 @@ func (s *AgentService) ListSessionModels(ctx context.Context, sessionID string) 
 		return nil, "", &ProtocolError{Code: CodeInvalidRequest, Message: "session_id is required"}
 	}
 	request := oapFrame(oapAgent, "models.request", map[string]any{"session_id": sessionID})
-	request.SessionID = sessionID
-	sub := s.transport.subscribeStream(request.ID)
+	request.SessionID = protocol.SessionID(sessionID)
+	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
 	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
 	if err != nil {
@@ -515,7 +543,7 @@ func (s *AgentService) ListSessionModels(ctx context.Context, sessionID string) 
 	if response.Type != "models.response" {
 		return nil, "", &ProtocolError{Code: CodeMalformedResponse, Message: "expected models.response"}
 	}
-	p := response.payload()
+	p := envelopePayload(response)
 	models := make([]SessionModel, 0, len(p.arr("models")))
 	for _, raw := range p.arr("models") {
 		entry, ok := raw.(map[string]any)
@@ -553,8 +581,8 @@ func (s *AgentService) AttachProvider(ctx context.Context, sessionID string, pro
 		binding["service_id"] = provider.ServiceID
 	}
 	request := oapFrame(oapAgent, "session.provider.attach.request", map[string]any{"session_id": sessionID, "provider": binding})
-	request.SessionID = sessionID
-	sub := s.transport.subscribeStream(request.ID)
+	request.SessionID = protocol.SessionID(sessionID)
+	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
 	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
 	if err != nil {
@@ -563,7 +591,7 @@ func (s *AgentService) AttachProvider(ctx context.Context, sessionID string, pro
 	if response.Type != "session.provider.attach.response" {
 		return "", &ProtocolError{Code: CodeMalformedResponse, Message: "expected session.provider.attach.response"}
 	}
-	return response.payload().str("provider_id"), nil
+	return envelopePayload(response).str("provider_id"), nil
 }
 
 func (s *AgentService) SwitchModel(ctx context.Context, sessionID, modelRef string) (*ModelSwitchResult, error) {
@@ -575,8 +603,8 @@ func (s *AgentService) SwitchModel(ctx context.Context, sessionID, modelRef stri
 	}
 	request := oapFrame(oapAgent, "session.model.switch.request", map[string]any{
 		"session_id": sessionID, "model_id": modelRef})
-	request.SessionID = sessionID
-	sub := s.transport.subscribeStream(request.ID)
+	request.SessionID = protocol.SessionID(sessionID)
+	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
 	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
 	if err != nil {
@@ -585,7 +613,7 @@ func (s *AgentService) SwitchModel(ctx context.Context, sessionID, modelRef stri
 	if response.Type != "session.model.switch.response" {
 		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "expected session.model.switch.response"}
 	}
-	p := response.payload()
+	p := envelopePayload(response)
 	return &ModelSwitchResult{SessionID: p.str("session_id"), ModelID: p.str("model_id"), PreviousModelID: p.str("previous_model_id")}, nil
 }
 
@@ -619,7 +647,7 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 		}
 	}()
 	open := oapFrame(oapAgent, "session.open.request", map[string]any{"session_id": sessionID})
-	open.SessionID = sessionID
+	open.SessionID = protocol.SessionID(sessionID)
 	opened, err := oapRequest(ctx, s.transport, sub, s.timeout, open)
 	if err != nil {
 		return nil, err
@@ -635,7 +663,7 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 		payload["model_id"] = req.ModelRef
 	}
 	submit := oapFrame(oapAgent, "session.message.submit.request", payload)
-	submit.SessionID = sessionID
+	submit.SessionID = protocol.SessionID(sessionID)
 	admission, err := oapRequest(ctx, s.transport, sub, s.timeout, submit)
 	if err != nil {
 		return nil, err
@@ -643,14 +671,14 @@ func (s *AgentService) oapBegin(ctx context.Context, req AgentRequest) (*oapAgen
 	if admission.Type != "session.message.submit.response" {
 		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "expected session.message.submit.response"}
 	}
-	runID := admission.payload().str("run_id")
+	runID := envelopePayload(admission).str("run_id")
 	if runID == "" {
 		return nil, &ProtocolError{Code: CodeMalformedResponse, Message: "admission omitted run_id"}
 	}
 	cleanup = false
 	selectedModelRef := req.ModelRef
 	if selectedModelRef == "" {
-		selectedModelRef = admission.payload().str("model_id")
+		selectedModelRef = envelopePayload(admission).str("model_id")
 	}
 	return &oapAgentState{ctx: ctx, transport: s.transport, sub: sub, timeout: s.timeout,
 		sessionID: sessionID, runID: runID, modelRef: selectedModelRef}, nil
@@ -731,7 +759,7 @@ func (s *AgentStream) oapNext() bool {
 			return true
 		case "run.failed", "run.cancelled", "error.response":
 			state.settled = true
-			s.fail(oapFailure(f, providerIDFromRef(state.modelRef)))
+			s.fail(oapFailure(asEnvelope(f), providerIDFromRef(state.modelRef)))
 			return false
 		case "session.state.updated", "run.status.updated":
 			continue
@@ -750,9 +778,9 @@ func (s *AgentStream) oapClose() error {
 	if !state.settled {
 		cancel := oapFrame(oapAgent, "run.cancel.request", map[string]any{
 			"session_id": state.sessionID, "run_id": state.runID, "reason": "caller_closed"})
-		cancel.SessionID = state.sessionID
-		cancel.RunID = state.runID
-		state.transport.sendBestEffort(cancel)
+		cancel.SessionID = protocol.SessionID(state.sessionID)
+		cancel.RunID = protocol.RunID(state.runID)
+		state.transport.sendEnvelopeBestEffort(cancel)
 	}
 	state.sub.close()
 	s.oapState = nil
@@ -762,7 +790,7 @@ func (s *AgentStream) oapClose() error {
 
 func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo, error) {
 	request := oapFrame(oapAgent, "auth.providers.request", map[string]any{})
-	sub := s.transport.subscribeStream(request.ID)
+	sub := s.transport.subscribeStream(string(request.ID))
 	defer sub.close()
 	response, err := oapRequest(ctx, s.transport, sub, s.timeout, request)
 	if err != nil {
@@ -774,8 +802,8 @@ func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo,
 	if response.Type != "auth.providers.response" {
 		return nil, &AuthError{Kind: AuthKindTransportError, Message: "expected auth.providers.response"}
 	}
-	result := make([]ProviderAuthInfo, 0, len(response.payload().arr("providers")))
-	for _, raw := range response.payload().arr("providers") {
+	result := make([]ProviderAuthInfo, 0, len(envelopePayload(response).arr("providers")))
+	for _, raw := range envelopePayload(response).arr("providers") {
 		entry, ok := raw.(map[string]any)
 		if !ok {
 			return nil, &AuthError{Kind: AuthKindTransportError, Message: "auth provider entry is not an object"}
@@ -790,7 +818,7 @@ func (s *AuthService) oapCancelFlow(flowID string) {
 	if flowID == "" {
 		return
 	}
-	s.transport.sendBestEffort(oapFrame(oapAgent, "auth.login.cancel.request", map[string]any{"flow_id": flowID}))
+	s.transport.sendEnvelopeBestEffort(oapFrame(oapAgent, "auth.login.cancel.request", map[string]any{"flow_id": flowID}))
 }
 
 func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers LoginHandlers) error {
@@ -798,7 +826,7 @@ func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers 
 		return &AuthError{Kind: AuthKindProviderError, Code: CodeInvalidRequest, Message: "login requires a provider id"}
 	}
 	start := oapFrame(oapAgent, "auth.login.start.request", map[string]any{"provider_id": providerID})
-	sub := s.transport.subscribeStream(start.ID)
+	sub := s.transport.subscribeStream(string(start.ID))
 	defer sub.close()
 	response, err := oapRequest(ctx, s.transport, sub, s.timeout, start)
 	if err != nil {
@@ -810,7 +838,7 @@ func (s *AuthService) oapLogin(ctx context.Context, providerID string, handlers 
 	if response.Type != "auth.login.start.response" {
 		return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, Message: "expected auth.login.start.response"}
 	}
-	flowID := response.payload().str("flow_id")
+	flowID := envelopePayload(response).str("flow_id")
 	if flowID == "" {
 		return &AuthError{Kind: AuthKindTransportError, ProviderID: providerID, Message: "auth login start omitted flow_id"}
 	}
