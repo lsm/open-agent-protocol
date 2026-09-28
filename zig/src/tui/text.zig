@@ -7,6 +7,139 @@ pub fn visibleWidth(text: []const u8) usize {
     return zz.width(text);
 }
 
+pub const RowRange = struct {
+    start: usize,
+    end: usize,
+    width: usize,
+};
+
+pub const CursorPos = struct {
+    row: usize,
+    col: usize,
+};
+
+pub fn layoutRows(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]RowRange {
+    const limit = @max(width, 1);
+    var rows: std.ArrayList(RowRange) = .empty;
+    errdefer rows.deinit(allocator);
+    var row_start: usize = 0;
+    var row_width: usize = 0;
+    var i: usize = 0;
+    while (i < text.len) {
+        if (text[i] == '\n') {
+            try rows.append(allocator, .{ .start = row_start, .end = i, .width = row_width });
+            i += 1;
+            row_start = i;
+            row_width = 0;
+            continue;
+        }
+        const len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        const end = @min(text.len, i + len);
+        const cell = displayCellWidth(text[i..end]);
+        if (row_width > 0 and row_width + cell > limit) {
+            try rows.append(allocator, .{ .start = row_start, .end = i, .width = row_width });
+            row_start = i;
+            row_width = 0;
+            continue;
+        }
+        row_width += cell;
+        i = end;
+    }
+    try rows.append(allocator, .{ .start = row_start, .end = text.len, .width = row_width });
+    if (row_width == limit and text.len > 0 and text[text.len - 1] != '\n') {
+        try rows.append(allocator, .{ .start = text.len, .end = text.len, .width = 0 });
+    }
+    return rows.toOwnedSlice(allocator);
+}
+
+pub fn cursorPos(rows: []const RowRange, text: []const u8, cursor: usize, width: usize) CursorPos {
+    if (rows.len == 0) return .{ .row = 0, .col = 0 };
+    const at = boundaryAtOrBefore(text, @min(cursor, text.len));
+    var row: usize = 0;
+    for (rows, 0..) |r, i| {
+        if (r.start <= at) row = i else break;
+    }
+    const col = displayWidthOf(text[rows[row].start..at]);
+    if (col == @max(width, 1) and at == rows[row].end and at < text.len and text[at] == '\n' and row + 1 < rows.len) {
+        return .{ .row = row + 1, .col = 0 };
+    }
+    return .{ .row = row, .col = col };
+}
+
+pub fn byteOffsetAtColumn(rows: []const RowRange, text: []const u8, row: usize, col: usize) usize {
+    if (rows.len == 0) return 0;
+    const r = rows[@min(row, rows.len - 1)];
+    var acc: usize = 0;
+    var i = r.start;
+    while (i < r.end) {
+        const len = std.unicode.utf8ByteSequenceLength(text[i]) catch 1;
+        const end = @min(r.end, i + len);
+        const cell = displayCellWidth(text[i..end]);
+        if (acc + cell > col) break;
+        acc += cell;
+        i = end;
+    }
+    return i;
+}
+
+pub fn writeDisplayEscaped(writer: *std.Io.Writer, bytes: []const u8) !void {
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch 1;
+        const end = @min(bytes.len, i + len);
+        try writeDisplayCodepoint(writer, bytes[i..end]);
+        i = end;
+    }
+}
+
+fn writeDisplayCodepoint(writer: *std.Io.Writer, bytes: []const u8) !void {
+    if (bytes.len == 1) {
+        const b = bytes[0];
+        if (b == '\t') return writer.writeAll("\u{2192}");
+        if (b == 0x7f) return writer.writeAll("^?");
+        if (b < 0x20) {
+            try writer.writeByte('^');
+            return writer.writeByte(b + 0x40);
+        }
+        if (b < 0x80) return writer.writeByte(b);
+        return writer.writeByte('?');
+    }
+    const cp = std.unicode.utf8Decode(bytes) catch return writer.writeByte('?');
+    if (cp >= 0x80 and cp <= 0x9f) return writer.writeByte('?');
+    return writer.writeAll(bytes);
+}
+
+fn displayCellWidth(bytes: []const u8) usize {
+    if (bytes.len == 1) {
+        const b = bytes[0];
+        if (b == '\t') return 1;
+        if (b < 0x20 or b == 0x7f) return 2;
+        return 1;
+    }
+    const cp = std.unicode.utf8Decode(bytes) catch return 1;
+    if (cp >= 0x80 and cp <= 0x9f) return 1;
+    return zz.measure.charWidth(cp);
+}
+
+fn displayWidthOf(bytes: []const u8) usize {
+    var total: usize = 0;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        if (bytes[i] == '\n') break;
+        const len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch 1;
+        const end = @min(bytes.len, i + len);
+        total += displayCellWidth(bytes[i..end]);
+        i = end;
+    }
+    return total;
+}
+
+fn boundaryAtOrBefore(text: []const u8, index: usize) usize {
+    var idx = @min(index, text.len);
+    while (idx > 0 and idx < text.len and (text[idx] & 0b1100_0000) == 0b1000_0000) idx -= 1;
+    return idx;
+}
+
 pub fn lineCount(text: []const u8) usize {
     if (text.len == 0) return 0;
     var count: usize = 1;
@@ -338,4 +471,113 @@ test "wrapTextWithAnsi wraps words" {
     const text = try wrapTextWithAnsi(std.testing.allocator, "alpha beta gamma", 10);
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("alpha beta\ngamma", text);
+}
+
+test "layoutRows wraps at the width and breaks on newlines" {
+    const rows = try layoutRows(std.testing.allocator, "abcdefgh\nij", 4);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(@as(usize, 3), rows.len);
+    try std.testing.expectEqual(RowRange{ .start = 0, .end = 4, .width = 4 }, rows[0]);
+    try std.testing.expectEqual(RowRange{ .start = 4, .end = 8, .width = 4 }, rows[1]);
+    try std.testing.expectEqual(RowRange{ .start = 9, .end = 11, .width = 2 }, rows[2]);
+}
+
+test "layoutRows appends an empty row after a full final row" {
+    const rows = try layoutRows(std.testing.allocator, "abcdefgh", 4);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(@as(usize, 3), rows.len);
+    try std.testing.expectEqual(RowRange{ .start = 8, .end = 8, .width = 0 }, rows[2]);
+}
+
+test "layoutRows keeps one empty row for empty text" {
+    const rows = try layoutRows(std.testing.allocator, "", 8);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    try std.testing.expectEqual(RowRange{ .start = 0, .end = 0, .width = 0 }, rows[0]);
+}
+
+test "layoutRows never splits a wide codepoint" {
+    const rows = try layoutRows(std.testing.allocator, "ab日本c", 3);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(@as(usize, 4), rows.len);
+    try std.testing.expectEqual(RowRange{ .start = 0, .end = 2, .width = 2 }, rows[0]);
+    try std.testing.expectEqual(RowRange{ .start = 2, .end = 5, .width = 2 }, rows[1]);
+    try std.testing.expectEqual(RowRange{ .start = 5, .end = 9, .width = 3 }, rows[2]);
+    try std.testing.expectEqual(RowRange{ .start = 9, .end = 9, .width = 0 }, rows[3]);
+}
+
+test "layoutRows counts control bytes by their visible form" {
+    const rows = try layoutRows(std.testing.allocator, "a\tb\x01\x7fc", 9);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(@as(usize, 1), rows.len);
+    try std.testing.expectEqual(@as(usize, 8), rows[0].width);
+}
+
+test "layoutRows survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const rows = try layoutRows(allocator, "ab\ncdef\n\ngh", 3);
+            defer allocator.free(rows);
+            try std.testing.expect(rows.len >= 4);
+        }
+    }.run, .{});
+}
+
+test "cursorPos maps byte offsets to rows and columns" {
+    const text = "abcdefgh\nij";
+    const rows = try layoutRows(std.testing.allocator, text, 4);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 0 }, cursorPos(rows, text, 0, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 8, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 9, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 1 }, cursorPos(rows, text, 10, 4));
+}
+
+test "cursorPos puts the cursor on its own row after a full final row" {
+    const text = "abcdefgh";
+    const rows = try layoutRows(std.testing.allocator, text, 4);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(CursorPos{ .row = 2, .col = 0 }, cursorPos(rows, text, 8, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4, 4));
+}
+
+test "cursorPos moves the cursor to the next row on a full newline-terminated row" {
+    const text = "abcd\nXY";
+    const rows = try layoutRows(std.testing.allocator, text, 4);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 4, 4));
+    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 4 }, cursorPos(rows, text, 4, 8));
+}
+
+test "cursorPos keeps the cursor on the row when it sits on a newline" {
+    const text = "ab\ncd";
+    const rows = try layoutRows(std.testing.allocator, text, 8);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(CursorPos{ .row = 0, .col = 2 }, cursorPos(rows, text, 2, 8));
+    try std.testing.expectEqual(CursorPos{ .row = 1, .col = 0 }, cursorPos(rows, text, 3, 8));
+}
+
+test "byteOffsetAtColumn snaps a wide codepoint to its start" {
+    const text = "ab日cd";
+    const rows = try layoutRows(std.testing.allocator, text, 10);
+    defer std.testing.allocator.free(rows);
+    try std.testing.expectEqual(@as(usize, 0), byteOffsetAtColumn(rows, text, 0, 0));
+    try std.testing.expectEqual(@as(usize, 2), byteOffsetAtColumn(rows, text, 0, 3));
+    try std.testing.expectEqual(@as(usize, 5), byteOffsetAtColumn(rows, text, 0, 4));
+    try std.testing.expectEqual(@as(usize, 7), byteOffsetAtColumn(rows, text, 0, 99));
+}
+
+test "writeDisplayEscaped renders control bytes visibly" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeDisplayEscaped(&out.writer, "a\tb\x01\x1b\x7fc");
+    try std.testing.expectEqualStrings("a\u{2192}b^A^[^?c", out.written());
+}
+
+test "writeDisplayEscaped replaces invalid UTF-8 and C1 codepoints" {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeDisplayEscaped(&out.writer, "a\x80b\xc2\x85c");
+    try std.testing.expectEqualStrings("a?b?c", out.written());
 }

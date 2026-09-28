@@ -78,6 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaces, so the 14 are recorded before the inference goes, and both are
   deleted when it does.
 
+- The TUI composer grows with the draft up to `min(12, height/3)` content rows
+  instead of windowing a long draft with `…`; past that the window follows the cursor
+  and muted `▲ N` / `▼ N` markers in the panel border count the hidden rows. Up/Down
+  move the cursor one visual row inside the draft (keeping the goal column) and only
+  walk history at the first/last row, while a recalled entry showing unedited still
+  walks on any press. Home/End and Ctrl+A/E jump within the current line. Pastes
+  normalise CRLF to LF, tabs render as `→`, and other control bytes render as caret
+  notation so pasted escape sequences can never reach the terminal raw.
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
 
 - `zig/src/model_catalog.zig` grows a generic catalog loader, so a row in
@@ -263,6 +271,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permission, queue, drops, model, backpressure, context) with the state segment —
   and `bypass`/`pending` — never dropped. The post-backpressure drop counter no
   longer renders as `drops:drops:N`.
+- The inline flush budget counts the composer at its one-row minimum (like a modal),
+  so a growing composer covers transcript rows instead of flushing them and a
+  shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
 - The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.
