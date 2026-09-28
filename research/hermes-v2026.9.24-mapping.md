@@ -30,6 +30,11 @@ Normative source blobs at the release commit:
 - `tui_gateway/rpc_dispatch.py` — `17bb684f1371a3089a4d4814ef7f0ce376fd50ae`
 - `tui_gateway/prompt_turn.py` — `32cad0497ea2794dc706a21be6d4e14ceffc3bc6`
 - `tui_gateway/contracts/` (tree) — `1eceb85deeeb499c3f00231c6fdedd91a1631753`
+- `hermes_state.py` — `8ecc3b5c266a2d01185f70f23d1b6f43e9081ed2`
+- `hermes_state_sessions.py` — `1c775a358f3193cbe2d8aa53abbaae625500bc17`
+
+The last two are the store itself, added when the session-reload section below was
+written; everything above them was recorded when the pin moved.
 
 The release ships no binary artifact, so the catalog records no digest; the
 interpreter is whatever the operator provisions, bound per run by
@@ -345,13 +350,13 @@ pair. `model.base_url` is a secondary override under a provider that exists.
 
 ## Session reload at v2026.9.24
 
-Decision 0039's evidence table cites this ledger for the Hermes row. Every
-line below is read from the source at this pin's own commit
+Decision 0039's Hermes row cites the v2026.8.31 ledger, so this section is
+the reload at the pin the catalog now names. Every line below is read from
+the source at this pin's own commit
 `f97608f178d1ffeca59860195ab7da295f7c8e5f` — the same commit and tree as
-*Provenance* above, and the blobs cited here hash to the values recorded
-there (`git hash-object` on each: `methods_session.py` `a41aeff7b731f99a69dfc8556b5ade04d30a83f7`,
-`hermes_state_sessions.py` `1c775a35…`) — and the last paragraph says what
-that does and does not establish.
+*Provenance* above, and each blob cited here hashes to the value recorded
+there (`git hash-object` on each) — and the last paragraph says what that
+does and does not establish.
 
 **Hermes has a real reload, and it is the one harness of the seven whose
 not-found is already typed.** `session.resume` takes a target that may be a
