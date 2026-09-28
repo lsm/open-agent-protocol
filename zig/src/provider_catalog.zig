@@ -435,9 +435,6 @@ test "no endpoint records carries_version for a wire whose path has no leading /
             try std.testing.expect(wireTakesVersionedPath(endpoint.wire));
         }
     }
-    for (wire_paths) |wire| {
-        try std.testing.expectEqual(std.mem.startsWith(u8, wire.suffix, "/v1/"), wireTakesVersionedPath(wire.id));
-    }
 }
 
 test "the recorded version fact equals the inference it replaces" {

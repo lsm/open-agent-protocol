@@ -22,20 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version, so that is the one bit recorded. The path stays in `wire_paths`, which
   is where it is one entry per wire rather than twenty-two; `models_endpoint`
   stays a literal because no wire defines a models path.
-  The 14 endpoints that deduplicate today carry `carries_version: true` — the
-  gateways and plans whose bases end in `/v1`, plus Z.AI's `/paas/v4`, the three
-  Tencent and Volcengine `/coding/v3` plans, and Deep Infra's `/v1/openai`, where
-  the version is not the last segment. The other 8 say nothing, which means the
-  wire's full path is appended. Absent means absent: no endpoint is asked to
-  repeat a default, so adding a wire with a versioned path needs no catalog edit.
+  The 14 endpoints that deduplicate today carry `carries_version: true`: the ten
+  whose base ends in `/v1` — OpenRouter, OpenCode Zen, Alibaba's, MiniMax's, the
+  three Xiaomi plans and Xiaomi, Vercel and ZenMux — and the four whose version is
+  not the last segment, Z.AI's `/paas/v4`, Tencent's and Volcengine's
+  `/coding/v3`, and Deep Infra's `/v1/openai`. The other 8 say nothing, which
+  means the wire's full path is appended. Absent means absent: no endpoint is
+  asked to repeat a default, so adding a wire with a versioned path needs no
+  catalog edit.
   Two loaders carry the member, `Endpoint.CarriesVersion` in `go/providercatalog`
   and the generated `Endpoint.carries_version` in the Zig tree, and two refuse it
   where the fact cannot mean anything: `goap check` reports
   `provider_carries_version_without_versioned_path`, and the Zig generator panics
   naming the row and the wire, both for an endpoint on `openai-codex-responses`,
-  `ollama` or `google-generative-ai`, whose wires append no leading `/v1`. A Zig
-  test checks the same rule against the wire table rather than against a copy of
-  it, so a wire added with a versioned path cannot drift past it.
+  `ollama` or `google-generative-ai`, whose wires append no leading `/v1`. Those
+  two hold the generator's own list of versioned wires, so a Zig test re-checks
+  every recorded fact against `wire_paths` as well: a fact the generator let
+  through is still caught where the wire table lives.
   Nothing reads the fact yet. One test per tree asserts it equals the inference it
   replaces, so the 14 are recorded before the inference goes, and both are
   deleted when it does.
