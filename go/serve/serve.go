@@ -121,9 +121,6 @@ func (h *Hub) recordOpen(ctx context.Context, adapterName string, implementation
 	_ = h.bindings.Append(context.WithoutCancel(ctx), binding.Opened(record, state.UpdatedAtMS))
 }
 
-// Binding returns the store the hub records bindings in, or nil when the host
-// supplied none. A reopen reads it; the wire member that asks for one arrives
-// with the reopen unit.
 func (h *Hub) Binding() binding.Store {
 	return h.bindings
 }
