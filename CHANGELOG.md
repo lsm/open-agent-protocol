@@ -155,6 +155,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The hub's stdio serve loop no longer stops driving the hub after the first
+  request. It read until end-of-stream inside one cycle, so a host that stayed
+  connected and had nothing more to say left every session undriven for as long
+  as it held the pipe open — the sessions' children produced nothing, the journal
+  did not move, and nothing timed out. One readiness, one read, then drive the
+  hub, so a session's output is never held back by a request stream that is idle.
+  End of stream is still the end of the serve, and a framing defect still stops
+  it, so the two are still told apart.
+- A refusal for parameters an op does not define now names all of them, in the
+  order the wire declares them, rather than the first one found. A host that sent
+  three it should not have is told about three.
 - A closed session now leaves the Zig hub entirely, and every operation naming it is
   refused `unknown_session`. The core kept a closed session's entry, its journal and
   a cursor for every run it had, listed it as closed, and answered later operations

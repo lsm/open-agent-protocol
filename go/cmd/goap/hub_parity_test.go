@@ -12,21 +12,6 @@ import (
 	"time"
 )
 
-// The hub's stdio wire, driven the same way through both trees.
-//
-// One script goes to `goap hub --stdio` and to `oapx hub --stdio`, and the two
-// answers are compared as parsed JSON rather than as bytes. Bytes would compare
-// things this is not about: the two trees order an envelope's members
-// differently, which the hub draft records under "recorded, and not
-// divergences", and only the ids and timestamps the daemon mints are normalised
-// away. Everything else — every member, every code, every word of a message —
-// has to be the same, or this fails.
-//
-// Answers are keyed by the request's `id` rather than by position, because the
-// two trees do not answer in the same order: Go's frontend serves ops
-// concurrently and writes each as it completes, while the Zig frontend serves
-// one line at a time in the order it read them. The id is the correlation the
-// host chose, and comparing by it is what makes the two comparable at all.
 var hubParityScenarios = map[string][]string{
 	"the five ops this wire serves": {
 		`{"id":1,"op":"adapters"}`,
@@ -73,13 +58,6 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 	}
 }
 
-// TestHubStdioAnswersUnavailableForATransportItDoesNotCarry is not a
-// differential case. `drafts/cli.md` says a verb or flag a binary does not carry
-// answers `unavailable`, names what is missing, and exits non-zero — and never
-// falls back to something else that looks like it worked. `oapx hub` carries only
-// the stdio transport today, so the other two are the rule's own cases: a host
-// that asked for HTTP deserves to be told it is not here yet rather than handed
-// a pipe.
 func TestHubStdioAnswersUnavailableForATransportItDoesNotCarry(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
@@ -103,10 +81,6 @@ func TestHubStdioAnswersUnavailableForATransportItDoesNotCarry(t *testing.T) {
 	}
 }
 
-// TestHubStdioEndsCleanlyWhenTheHostClosesThePipe pins the other half: a host
-// that says it is done is a serve that succeeded, not a failure. Both trees exit
-// zero, and treating end-of-stream as an error would make every well-behaved host
-// look like a broken one.
 func TestHubStdioEndsCleanlyWhenTheHostClosesThePipe(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
@@ -126,8 +100,6 @@ func hubCommand(t *testing.T, binary string) *exec.Cmd {
 	return command
 }
 
-// runHubScript feeds `lines` to one binary's stdio hub and returns its answers
-// keyed by request id, with the daemon's own ids and timestamps normalised away.
 func runHubScript(t *testing.T, binary string, lines []string) map[string]map[string]any {
 	t.Helper()
 	command := hubCommand(t, binary)
@@ -169,11 +141,6 @@ func runHubScript(t *testing.T, binary string, lines []string) map[string]map[st
 	return answers
 }
 
-// normaliseHubAnswer replaces the two things a daemon is free to choose — the
-// envelope ids it mints and the timestamps it stamps — with a fixed marker, and
-// leaves everything else exactly as it arrived. The ids are still compared
-// *relationally*: `in_reply_to` is checked against the minted id it replies to,
-// so a wire that correlated wrongly still fails.
 func normaliseHubAnswer(answer map[string]any) {
 	result, isObject := answer["result"].(map[string]any)
 	if !isObject {

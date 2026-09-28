@@ -85,12 +85,17 @@ pub const Request = struct {
     }
 
     fn only(self: Request, arena: std.mem.Allocator, parameters: []const []const u8) !?Refusal {
+        var extra: std.ArrayList([]const u8) = .empty;
         for (all_parameters) |parameter| {
             if (declares(parameters, parameter) or !self.takes(parameter)) continue;
-            const message = try std.fmt.allocPrint(arena, "op \"{s}\" accepts no {s} parameter", .{ self.op, parameter });
-            return Refusal{ .code = "invalid_request", .message = message };
+            try extra.append(arena, parameter);
         }
-        return null;
+        if (extra.items.len == 0) return null;
+        const message = try std.fmt.allocPrint(arena, "op \"{s}\" accepts no {s} parameter", .{
+            self.op,
+            try std.mem.join(arena, ", ", extra.items),
+        });
+        return Refusal{ .code = "invalid_request", .message = message };
     }
 };
 
@@ -698,10 +703,9 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
 
     while (!frontend.stopped) {
         const awoken = try waitOn(frontend, stream, scratch.allocator(), cycle_budget_ns);
-        try frontend.hub.pump(allocator, 0);
-        if (!awoken) continue;
-        while (true) {
-            const more = try readAvailable(allocator, stream, &pending);
+        var more = false;
+        if (awoken) {
+            more = try readAvailable(allocator, stream, &pending);
             while (std.mem.indexOfScalar(u8, pending.items, '\n')) |cut| {
                 const line = pending.items[0..cut];
                 const rest = pending.items[cut + 1 ..];
@@ -711,10 +715,11 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
                 };
                 std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
                 pending.items.len = rest.len;
-                if (frontend.stopped) return error.StdinFailed;
             }
-            if (!more) return;
+            if (frontend.stopped) return error.StdinFailed;
         }
+        try frontend.hub.pump(allocator, 0);
+        if (awoken and !more) return;
     }
 }
 
@@ -1181,9 +1186,6 @@ const PipeStream = struct {
     }
 };
 
-/// `compat.stdio.pipe` is POSIX-only — it returns void on Windows, where the loop
-/// takes its fallback path instead and #460 replaces that — so the harness and the
-/// tests that need a real pipe are compiled only where a pipe exists.
 const has_pipe = @import("builtin").os.tag != .windows;
 
 const PipeHarness = struct {
