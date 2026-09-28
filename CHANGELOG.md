@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The TUI shows the working directory on a muted, right-aligned row under the status
+  line. The path is sanitised, collapsed to `~` on a home-directory component
+  boundary, left-truncated with `…` when it is wider than the terminal, and hidden on
+  terminals shorter than 12 rows.
+- `/help` now lists the full key map (send, newline, history, word and line edits,
+  scrolling, abort and quit gestures) after the command list, and the empty-session
+  welcome names what `!` does and points at `/help`.
+
+### Changed
+
+- The TUI status line drops the `perm:` and `think:` labels in favour of bare values
+  (`bypass`, `low`, …), hides the thinking segment while thinking is `off`, and moves
+  the idle/streaming state to the tail. The context gauge and its percentage are
+  coloured by usage band (green below 60%, yellow 60–75, orange 75–85, red 85+); when
+  the row overflows, the context segment shrinks to the coloured percentage first,
+  then segments drop whole by priority (turns, thinking, cost, hint, `ask`
+  permission, queue, drops, model, backpressure, context) with the state segment —
+  and `bypass`/`pending` — never dropped. The post-backpressure drop counter no
+  longer renders as `drops:drops:N`.
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
   and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
   `close` and `state` — over the transport objects the draft specifies. Framing is
