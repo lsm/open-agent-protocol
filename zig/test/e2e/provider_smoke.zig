@@ -40,9 +40,6 @@ fn rowFor(id: []const u8) ?Row {
     return null;
 }
 
-/// The gate is opt-in twice over: a named row, and never inside CI. A credential
-/// being present is never enough, which is the rule the harness gates keep and the
-/// reason this does not read a key before the opt-in is answered.
 fn optedIn() ?Row {
     if (envOwned(testing.allocator, "CI") != null) {
         std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: the provider smoke gate never runs in CI\n", .{});
@@ -161,9 +158,6 @@ fn prepare(allocator: std.mem.Allocator) !?Fixture {
 
 const CatalogTarget = struct { wire: []const u8, base_url: []const u8 };
 
-/// A regional row answers no endpoint without naming its region, and Kimi is the
-/// one current row that is regional. Its `region_env` decides, defaulting to the
-/// first endpoint the catalog records, which is the same default the runtime uses.
 fn regionFor(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
     const row = provider_catalog.provider(id) orelse return null;
     if (row.endpoints.len == 0) return null;
