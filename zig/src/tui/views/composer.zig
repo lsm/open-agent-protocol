@@ -3,23 +3,60 @@ const zz = @import("zigzag");
 const tui_state = @import("tui_state");
 const tui_theme = @import("tui_theme");
 const tui_text = @import("tui_text");
-const tui_render = @import("tui_render");
 
 pub const Options = struct {
     width: usize = 80,
+    max_rows: usize = max_content_rows,
 };
 
+pub const max_content_rows: usize = 12;
+pub const min_panel_rows: usize = 3;
+const prompt_width: usize = 2;
 const cursor_blank = " ";
-const cursor_cell_width = 1;
-const max_draft_rows = 6;
 const placeholder_text = "Ask Makai…";
 
+pub fn contentWidth(width: usize) usize {
+    return @max(width, 20) -| 4 -| prompt_width;
+}
+
+pub fn rowCap(height: usize) usize {
+    return @max(1, @min(max_content_rows, height / 3));
+}
+
+pub fn adjustScroll(allocator: std.mem.Allocator, state: *tui_state.AppState, width: usize, height: usize) !void {
+    const composer = &state.composer;
+    if (composer.text().len == 0 or (state.mode == .login_input and state.login_input_secret)) {
+        composer.scroll_row = 0;
+        return;
+    }
+    const content_width = contentWidth(width);
+    const rows = try tui_text.layoutRows(allocator, composer.text(), content_width);
+    defer allocator.free(rows);
+    const pos = tui_text.cursorPos(rows, composer.text(), composer.cursor, content_width);
+    const cap = rowCap(height);
+    if (composer.scroll_row > pos.row) composer.scroll_row = pos.row;
+    if (pos.row >= composer.scroll_row + cap) composer.scroll_row = pos.row + 1 - cap;
+    composer.scroll_row = @min(composer.scroll_row, rows.len -| cap);
+}
+
 pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, options: Options) ![]const u8 {
-    const inner_width = options.width -| 4;
-    const input = try renderInput(allocator, state, inner_width);
-    defer allocator.free(input);
+    const width = @max(options.width, 20);
+    const inner = width - 4;
+    const block = try renderInput(allocator, state, inner, options.max_rows);
+    defer allocator.free(block.text);
     const border = borderColor(state);
-    return tui_theme.panelWith(border).width(@intCast(@min(inner_width, std.math.maxInt(u16)))).render(allocator, input);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
+    try writeBorderRow(writer, border, width, true, block.hidden_above);
+    var lines = std.mem.splitScalar(u8, block.text, '\n');
+    while (lines.next()) |line| {
+        try writer.writeByte('\n');
+        try writeBodyRow(writer, border, line, inner);
+    }
+    try writer.writeByte('\n');
+    try writeBorderRow(writer, border, width, false, block.hidden_below);
+    return out.toOwnedSlice();
 }
 
 pub fn borderColor(state: *const tui_state.AppState) zz.Color {
@@ -54,35 +91,97 @@ pub fn hintText(allocator: std.mem.Allocator, state: *const tui_state.AppState) 
     return std.fmt.allocPrint(allocator, "{s} send · {s}{s} newline · / commands · {s}C quit", .{ k.enter, k.shift, k.enter, k.ctrl });
 }
 
-fn renderInput(allocator: std.mem.Allocator, state: *const tui_state.AppState, width: usize) ![]u8 {
-    const prompt = try tui_theme.composerPrompt().render(allocator, promptFor(state));
-    defer allocator.free(prompt);
-    const content_width = width -| tui_text.visibleWidth(promptFor(state));
-    if (content_width == 0) return prefixFirstLine(allocator, prompt, "");
+const InputBlock = struct {
+    text: []u8,
+    hidden_above: usize = 0,
+    hidden_below: usize = 0,
+};
+
+fn renderInput(allocator: std.mem.Allocator, state: *const tui_state.AppState, inner_width: usize, max_rows: usize) !InputBlock {
+    const content_width = inner_width -| prompt_width;
+    if (content_width == 0) return .{ .text = try allocator.dupe(u8, promptFor(state)) };
     if (state.mode == .login_input and state.login_input_secret and state.composer.text().len > 0) {
         const masked = try maskedSecretInput(allocator, state.composer.text());
         defer allocator.free(masked);
-        const draft = try renderDraftWithCursor(allocator, masked, masked.len, content_width);
-        defer allocator.free(draft);
-        return prefixFirstLine(allocator, prompt, draft);
+        const row = try renderMaskedRow(allocator, masked, content_width);
+        defer allocator.free(row);
+        return .{ .text = try prefixRow(allocator, state, row) };
     }
     if (state.composer.text().len == 0) {
-        const draft_width = content_width -| cursor_cell_width;
-        const placeholder_source = try placeholderFor(allocator, state);
-        defer allocator.free(placeholder_source);
-        const placeholder = try tui_text.truncateLineToWidth(allocator, placeholder_source, draft_width);
-        defer allocator.free(placeholder);
-        const styled_placeholder = try tui_theme.composerPlaceholder().render(allocator, placeholder);
-        defer allocator.free(styled_placeholder);
-        const cursor = try renderCursorCell(allocator, cursor_blank);
-        defer allocator.free(cursor);
-        const content = try std.fmt.allocPrint(allocator, "{s}{s}", .{ cursor, styled_placeholder });
-        defer allocator.free(content);
-        return prefixFirstLine(allocator, prompt, content);
+        const row = try renderPlaceholderRow(allocator, state, content_width);
+        defer allocator.free(row);
+        return .{ .text = try prefixRow(allocator, state, row) };
     }
-    const draft = try renderDraftWithCursor(allocator, state.composer.text(), state.composer.cursor, content_width);
-    defer allocator.free(draft);
-    return prefixFirstLine(allocator, prompt, draft);
+    const text = state.composer.text();
+    const rows = try tui_text.layoutRows(allocator, text, content_width);
+    defer allocator.free(rows);
+    const pos = tui_text.cursorPos(rows, text, state.composer.cursor, content_width);
+    const cap = @max(max_rows, 1);
+    const max_scroll = rows.len -| cap;
+    const scroll = @min(state.composer.scroll_row, max_scroll);
+    const shown = @min(rows.len - scroll, cap);
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
+    var k: usize = 0;
+    while (k < shown) : (k += 1) {
+        const row_index = scroll + k;
+        if (k > 0) try writer.writeByte('\n');
+        if (k == 0) try writePrompt(writer, promptFor(state)) else try writer.writeAll("  ");
+        const r = rows[row_index];
+        if (row_index == pos.row) {
+            const cursor = tui_text.byteOffsetAtColumn(rows, text, pos.row, pos.col);
+            try tui_text.writeDisplayEscaped(writer, text[r.start..cursor]);
+            try writeCursorAt(writer, text, cursor);
+            if (cursor < r.end and text[cursor] != '\n') {
+                const len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
+                try tui_text.writeDisplayEscaped(writer, text[@min(r.end, cursor + len)..r.end]);
+            }
+        } else {
+            try tui_text.writeDisplayEscaped(writer, text[r.start..r.end]);
+        }
+    }
+    return .{
+        .text = try out.toOwnedSlice(),
+        .hidden_above = scroll,
+        .hidden_below = rows.len - (scroll + shown),
+    };
+}
+
+fn prefixRow(allocator: std.mem.Allocator, state: *const tui_state.AppState, row: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    try writePrompt(&out.writer, promptFor(state));
+    try out.writer.writeAll(row);
+    return out.toOwnedSlice();
+}
+
+fn renderPlaceholderRow(allocator: std.mem.Allocator, state: *const tui_state.AppState, content_width: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
+    try writeCursorCell(writer, cursor_blank);
+    const source = try placeholderFor(allocator, state);
+    defer allocator.free(source);
+    const clipped = try tui_text.truncateLineToWidth(allocator, source, content_width -| cursor_blank.len);
+    defer allocator.free(clipped);
+    try writeMuted(writer, clipped);
+    return out.toOwnedSlice();
+}
+
+fn renderMaskedRow(allocator: std.mem.Allocator, masked: []const u8, width: usize) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
+    if (tui_text.visibleWidth(masked) + cursor_blank.len <= width) {
+        try writer.writeAll(masked);
+    } else {
+        const before = try tui_text.takeTrailingWidth(allocator, masked, width -| cursor_blank.len);
+        defer allocator.free(before);
+        try writer.writeAll(before);
+    }
+    try writeCursorCell(writer, cursor_blank);
+    return out.toOwnedSlice();
 }
 
 fn placeholderFor(allocator: std.mem.Allocator, state: *const tui_state.AppState) ![]u8 {
@@ -108,64 +207,6 @@ fn maskedSecretInput(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     return mask;
 }
 
-fn renderDraftWithCursor(allocator: std.mem.Allocator, text: []const u8, cursor: usize, width: usize) ![]u8 {
-    if (width == 0) return allocator.dupe(u8, "");
-    const normalized_cursor = utf8BoundaryAtOrBefore(text, @min(cursor, text.len));
-    const before = text[0..normalized_cursor];
-    const after = text[normalized_cursor..];
-    const plain = try appendCursorBlock(allocator, before, after);
-    defer allocator.free(plain);
-    if (tui_text.lineCount(plain) <= max_draft_rows and maxLineWidth(plain) <= width) return allocator.dupe(u8, plain);
-
-    const visible_after_budget = @min(width / 3, width -| cursor_cell_width);
-    const after_preview = try takeLeadingWidth(allocator, after, visible_after_budget);
-    defer allocator.free(after_preview);
-    const before_budget = width -| cursor_cell_width -| tui_text.visibleWidth(after_preview);
-    const before_preview = try tui_text.takeTrailingWidth(allocator, before, before_budget);
-    defer allocator.free(before_preview);
-    const windowed = try appendCursorBlock(allocator, before_preview, after_preview);
-    defer allocator.free(windowed);
-    return tui_text.truncateLinesToWidth(allocator, windowed, width, max_draft_rows);
-}
-
-fn maxLineWidth(text: []const u8) usize {
-    var widest: usize = 0;
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |line| widest = @max(widest, tui_text.visibleWidth(line));
-    return widest;
-}
-
-fn appendCursorBlock(allocator: std.mem.Allocator, before: []const u8, after: []const u8) ![]u8 {
-    const cell_end = if (after.len == 0) 0 else nextCodepointEnd(after, 0);
-    const cursor_cell = if (cell_end == 0 or after[0] == '\n') cursor_blank else after[0..cell_end];
-    const cursor = try renderCursorCell(allocator, cursor_cell);
-    defer allocator.free(cursor);
-    const rest = if (cell_end == 0 or after[0] == '\n') after else after[cell_end..];
-    return std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ before, cursor, rest });
-}
-
-fn renderCursorCell(allocator: std.mem.Allocator, cell: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "\x1b[7m{s}\x1b[27m", .{cell});
-}
-
-fn takeLeadingWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]u8 {
-    if (width == 0 or text.len == 0) return allocator.dupe(u8, "");
-    return tui_text.truncateLineToWidth(allocator, text, width);
-}
-
-fn nextCodepointEnd(text: []const u8, cursor: usize) usize {
-    const idx = utf8BoundaryAtOrBefore(text, @min(cursor, text.len));
-    if (idx >= text.len) return text.len;
-    const len = std.unicode.utf8ByteSequenceLength(text[idx]) catch 1;
-    return @min(text.len, idx + len);
-}
-
-fn utf8BoundaryAtOrBefore(text: []const u8, index: usize) usize {
-    var idx = @min(index, text.len);
-    while (idx > 0 and idx < text.len and (text[idx] & 0b1100_0000) == 0b1000_0000) idx -= 1;
-    return idx;
-}
-
 fn promptFor(state: *const tui_state.AppState) []const u8 {
     const text = state.composer.text();
     if (std.mem.startsWith(u8, text, "!")) return "! ";
@@ -173,19 +214,72 @@ fn promptFor(state: *const tui_state.AppState) []const u8 {
     return tui_theme.glyph.prompt ++ " ";
 }
 
-fn prefixFirstLine(allocator: std.mem.Allocator, prompt: []const u8, content: []const u8) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    errdefer out.deinit();
-    const writer = &out.writer;
+fn writePrompt(writer: *std.Io.Writer, prompt: []const u8) !void {
+    try tui_theme.palette.accent.writeFg(writer);
+    try zz.ansi.sgr(writer, "1");
     try writer.writeAll(prompt);
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    if (lines.next()) |first| try writer.writeAll(first);
-    while (lines.next()) |line| {
-        try writer.writeByte('\n');
-        try writer.writeAll("  ");
-        try writer.writeAll(line);
+    try writer.writeAll(zz.ansi.reset);
+}
+
+fn writeMuted(writer: *std.Io.Writer, text: []const u8) !void {
+    try tui_theme.palette.muted.writeFg(writer);
+    try zz.ansi.sgr(writer, "2");
+    try writer.writeAll(text);
+    try writer.writeAll(zz.ansi.reset);
+}
+
+fn writeCursorCell(writer: *std.Io.Writer, cell: []const u8) !void {
+    try writer.writeAll("\x1b[7m");
+    try writer.writeAll(cell);
+    try writer.writeAll("\x1b[27m");
+}
+
+fn writeCursorAt(writer: *std.Io.Writer, text: []const u8, cursor: usize) !void {
+    if (cursor >= text.len or text[cursor] == '\n') return writeCursorCell(writer, cursor_blank);
+    const len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
+    try writer.writeAll("\x1b[7m");
+    try tui_text.writeDisplayEscaped(writer, text[cursor..@min(text.len, cursor + len)]);
+    try writer.writeAll("\x1b[27m");
+}
+
+fn writeBodyRow(writer: *std.Io.Writer, border: zz.Color, content: []const u8, inner: usize) !void {
+    try border.writeFg(writer);
+    try writer.writeAll(zz.Border.rounded.vertical);
+    try writer.writeAll(zz.ansi.reset);
+    try writer.writeByte(' ');
+    try writer.writeAll(content);
+    const pad = inner -| tui_text.visibleWidth(content);
+    for (0..pad) |_| try writer.writeByte(' ');
+    try writer.writeByte(' ');
+    try border.writeFg(writer);
+    try writer.writeAll(zz.Border.rounded.vertical);
+    try writer.writeAll(zz.ansi.reset);
+}
+
+fn writeBorderRow(writer: *std.Io.Writer, border: zz.Color, width: usize, top: bool, hidden: usize) !void {
+    const glyphs = zz.Border.rounded;
+    const left = if (top) glyphs.top_left else glyphs.bottom_left;
+    const right = if (top) glyphs.top_right else glyphs.bottom_right;
+    const arrow: []const u8 = if (top) "\u{25b2}" else "\u{25bc}";
+    var marker_buf: [24]u8 = undefined;
+    const marker = if (hidden > 0) std.fmt.bufPrint(&marker_buf, "{s} {d}", .{ arrow, hidden }) catch arrow else "";
+    const marker_width = tui_text.visibleWidth(marker);
+    try border.writeFg(writer);
+    try writer.writeAll(left);
+    if (marker_width == 0 or width < marker_width + 7) {
+        for (0..width -| 2) |_| try writer.writeAll(glyphs.horizontal);
+        try writer.writeAll(right);
+        return writer.writeAll(zz.ansi.reset);
     }
-    return out.toOwnedSlice();
+    try writer.writeAll(glyphs.horizontal);
+    try writer.writeAll(zz.ansi.reset);
+    try writer.writeByte(' ');
+    try writeMuted(writer, marker);
+    try border.writeFg(writer);
+    try writer.writeByte(' ');
+    for (0..width - 5 - marker_width) |_| try writer.writeAll(glyphs.horizontal);
+    try writer.writeAll(right);
+    try writer.writeAll(zz.ansi.reset);
 }
 
 test "composer renders placeholder and text" {
@@ -351,10 +445,25 @@ test "composer keeps a block cursor on a newline boundary" {
     try state.composer.buffer.appendSlice(std.testing.allocator, "first\nsecond");
     state.composer.cursor = 5;
 
-    const input = try renderInput(std.testing.allocator, &state, 30);
-    defer std.testing.allocator.free(input);
-    try std.testing.expect(std.mem.indexOf(u8, input, "first\x1b[7m \x1b[27m\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, input, "second") != null);
+    const block = try renderInput(std.testing.allocator, &state, 30, 6);
+    defer std.testing.allocator.free(block.text);
+
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "first\x1b[7m \x1b[27m\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "second") != null);
+}
+
+test "composer renders a cursor on a full row newline on the next row" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.replaceComposerBuffer("abcd\nXY");
+    state.composer.cursor = 4;
+
+    const block = try renderInput(std.testing.allocator, &state, 6, 6);
+    defer std.testing.allocator.free(block.text);
+
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "abcd\n  \x1b[7mX\x1b[27mY") != null);
+    var lines = std.mem.splitScalar(u8, block.text, '\n');
+    while (lines.next()) |line| try std.testing.expect(tui_text.visibleWidth(line) <= 6);
 }
 
 test "composer masks secret login input" {
@@ -372,16 +481,16 @@ test "composer masks secret login input" {
     try std.testing.expect(std.mem.indexOf(u8, text, "***************") != null);
 }
 
-test "composer accounts for prompt width when truncating text" {
+test "composer accounts for prompt width when wrapping text" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
     try state.composer.buffer.appendSlice(std.testing.allocator, "1234567890");
     state.composer.cursor = state.composer.buffer.items.len;
 
-    const input = try renderInput(std.testing.allocator, &state, 8);
-    defer std.testing.allocator.free(input);
+    const block = try renderInput(std.testing.allocator, &state, 8, 6);
+    defer std.testing.allocator.free(block.text);
 
-    var lines = std.mem.splitScalar(u8, input, '\n');
+    var lines = std.mem.splitScalar(u8, block.text, '\n');
     while (lines.next()) |line| {
         try std.testing.expect(tui_text.visibleWidth(line) <= 8);
     }
@@ -393,9 +502,77 @@ test "composer renders block cursor at current position" {
     try state.replaceComposerBuffer("abc");
     state.composer.cursor = 1;
 
-    const input = try renderInput(std.testing.allocator, &state, 20);
-    defer std.testing.allocator.free(input);
+    const block = try renderInput(std.testing.allocator, &state, 20, 6);
+    defer std.testing.allocator.free(block.text);
 
-    try std.testing.expect(std.mem.indexOf(u8, input, "a\x1b[7mb\x1b[27mc") != null);
-    try std.testing.expect(std.mem.indexOf(u8, input, "\u{2588}") == null);
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "a\x1b[7mb\x1b[27mc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "\u{2588}") == null);
+}
+
+test "composer puts the cursor on its own row after a full row" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.replaceComposerBuffer("123456");
+    state.composer.cursor = 6;
+
+    const block = try renderInput(std.testing.allocator, &state, 8, 6);
+    defer std.testing.allocator.free(block.text);
+
+    try std.testing.expectEqual(@as(usize, 2), tui_text.lineCount(block.text));
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "123456\n  \x1b[7m \x1b[27m") != null);
+}
+
+test "composer renders control bytes visibly instead of leaking them" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.replaceComposerBuffer("a\x1b[Hb\x07c\td");
+
+    const block = try renderInput(std.testing.allocator, &state, 40, 6);
+    defer std.testing.allocator.free(block.text);
+
+    try std.testing.expect(std.mem.indexOf(u8, block.text, "a^[[Hb^Gc\u{2192}d\x1b[7m \x1b[27m") != null);
+}
+
+test "composer windows a long draft around the scroll row with border markers" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.replaceComposerBuffer("aaaa\nbbbb\ncccc\ndddd\neeee");
+    state.composer.cursor = 0;
+    state.composer.scroll_row = 1;
+
+    const text = try render(std.testing.allocator, &state, .{ .width = 20, .max_rows = 2 });
+    defer std.testing.allocator.free(text);
+
+    try std.testing.expectEqual(@as(usize, 4), tui_text.lineCount(text));
+    try std.testing.expect(std.mem.indexOf(u8, text, "\u{25b2} 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\u{25bc} 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "bbbb") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "cccc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "dddd") == null);
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| try std.testing.expectEqual(@as(usize, 20), tui_text.visibleWidth(line));
+}
+
+test "adjustScroll keeps the cursor row inside the window" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.replaceComposerBuffer("aaaa\nbbbb\ncccc\ndddd\neeee");
+
+    try adjustScroll(std.testing.allocator, &state, 20, 12);
+    try std.testing.expectEqual(@as(usize, 1), state.composer.scroll_row);
+
+    state.composer.cursor = 0;
+    try adjustScroll(std.testing.allocator, &state, 20, 12);
+    try std.testing.expectEqual(@as(usize, 0), state.composer.scroll_row);
+
+    state.composer.clear();
+    try adjustScroll(std.testing.allocator, &state, 20, 12);
+    try std.testing.expectEqual(@as(usize, 0), state.composer.scroll_row);
+}
+
+test "rowCap follows the terminal height with a floor of one" {
+    try std.testing.expectEqual(@as(usize, 1), rowCap(0));
+    try std.testing.expectEqual(@as(usize, 1), rowCap(5));
+    try std.testing.expectEqual(@as(usize, 8), rowCap(24));
+    try std.testing.expectEqual(@as(usize, 12), rowCap(60));
 }

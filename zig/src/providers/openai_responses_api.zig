@@ -418,11 +418,14 @@ fn responsesWireForModel(model: ai_types.Model) provider_catalog.Wire {
     return responses_wire;
 }
 
-test "the responses wire does not dedup a version segment, which is what #410 records" {
-    const url = try provider_catalog.joinUrlOwned(std.testing.allocator, "https://api.openai.com/v1", responses_wire);
-    defer std.testing.allocator.free(url);
-    try std.testing.expectEqualStrings("https://api.openai.com/v1/v1/responses", url);
-    const codex = try provider_catalog.joinUrlOwned(std.testing.allocator, "https://chatgpt.com/backend-api/codex/v1", codex_responses_wire);
+test "the responses wire drops its version when the fact says the base has one, and its codex suffix never has one" {
+    const dropped = try provider_catalog.joinUrlOwned(std.testing.allocator, "https://api.openai.com/v1", responses_wire, true);
+    defer std.testing.allocator.free(dropped);
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/responses", dropped);
+    const kept = try provider_catalog.joinUrlOwned(std.testing.allocator, "https://api.openai.com/v1", responses_wire, false);
+    defer std.testing.allocator.free(kept);
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/v1/responses", kept);
+    const codex = try provider_catalog.joinUrlOwned(std.testing.allocator, "https://chatgpt.com/backend-api/codex/v1", codex_responses_wire, true);
     defer std.testing.allocator.free(codex);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/codex/v1/responses", codex);
 }
@@ -440,7 +443,7 @@ test "the responses request urls drop a trailing slash and keep a suffix already
         .{ .base = "https://chatgpt.com/backend-api/codex/responses/", .wire = codex_responses_wire, .want = "https://chatgpt.com/backend-api/codex/responses" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, case.wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, case.wire, false);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
@@ -847,7 +850,7 @@ fn runThread(ctx: *ThreadCtx) void {
     var client = compat.http.HttpClient.init(allocator);
     defer client.deinit();
 
-    const url = provider_catalog.joinUrlOwned(allocator, model.base_url, responsesWireForModel(model)) catch {
+    const url = provider_catalog.joinModelUrlOwned(allocator, model, responsesWireForModel(model)) catch {
         ctx.deinit();
         stream.completeWithError("oom url");
         stream.markThreadDone();

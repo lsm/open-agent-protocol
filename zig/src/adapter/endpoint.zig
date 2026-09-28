@@ -439,6 +439,10 @@ pub const Endpoint = struct {
         const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const acknowledged = try entry.session.cancel(arena, payload.run_id, refusal);
+        self.drainEntry(entry) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        };
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),
@@ -1567,7 +1571,7 @@ test "events already produced are written before the next answer" {
     try testing.expectEqualStrings("running", field(answered[1], &.{ "payload", "status" }));
 }
 
-test "a cancel is acknowledged before the terminal it leads to" {
+test "a cancel answers after everything the adapter emitted for it" {
     var harness: Harness = undefined;
     harness.init(testing.allocator, .{});
     defer harness.deinit();
@@ -1576,9 +1580,9 @@ test "a cancel is acknowledged before the terminal it leads to" {
 
     const answered = try harness.send(framed("run.cancel.request", "cancel-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"run_id\":\"run-1\"}"));
     try testing.expectEqual(@as(usize, 2), answered.len);
-    try testing.expectEqualStrings("run.cancel.response", field(answered[0], &.{"type"}));
-    try testing.expectEqualStrings("cancelling", field(answered[0], &.{ "payload", "status" }));
-    try testing.expectEqualStrings("run.cancelled", field(answered[1], &.{"type"}));
+    try testing.expectEqualStrings("run.cancelled", field(answered[0], &.{"type"}));
+    try testing.expectEqualStrings("run.cancel.response", field(answered[1], &.{"type"}));
+    try testing.expectEqualStrings("cancelling", field(answered[1], &.{ "payload", "status" }));
 
     const late = try harness.send(framed("run.cancel.request", "cancel-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"run_id\":\"run-1\"}"));
     try testing.expectEqualStrings("run_not_found", field(late[0], &.{ "payload", "error", "code" }));

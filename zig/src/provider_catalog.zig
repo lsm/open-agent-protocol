@@ -1,5 +1,6 @@
 const std = @import("std");
 const data = @import("data");
+const ai_types = @import("ai_types");
 
 pub const AuthKind = data.AuthKind;
 pub const Offering = data.Offering;
@@ -142,15 +143,14 @@ pub fn oauthOrigin(id: []const u8) ?OAuthOrigin {
 pub const Wire = struct {
     id: []const u8,
     suffix: []const u8,
-    dedup_version: bool = false,
     model_scoped: bool = false,
 };
 
 pub const wire_paths = [_]Wire{
-    .{ .id = "openai-completions", .suffix = "/v1/chat/completions", .dedup_version = true },
+    .{ .id = "openai-completions", .suffix = "/v1/chat/completions" },
     .{ .id = "openai-responses", .suffix = "/v1/responses" },
     .{ .id = "openai-codex-responses", .suffix = "/responses" },
-    .{ .id = "anthropic-messages", .suffix = "/v1/messages", .dedup_version = true },
+    .{ .id = "anthropic-messages", .suffix = "/v1/messages" },
     .{ .id = "ollama", .suffix = "/api/chat" },
     .{ .id = "google-generative-ai", .suffix = "", .model_scoped = true },
 };
@@ -162,25 +162,25 @@ pub fn wirePath(wire: []const u8) ?Wire {
     return null;
 }
 
-fn isVersionSegment(segment: []const u8) bool {
-    if (segment.len < 2 or segment[0] != 'v') return false;
-    for (segment[1..]) |digit| {
-        if (digit < '0' or digit > '9') return false;
-    }
-    return true;
-}
-
-fn pathHasVersion(base_url: []const u8) bool {
-    @setEvalBranchQuota(4000);
-    const scheme = std.mem.indexOf(u8, base_url, "://") orelse return false;
-    var rest: []const u8 = base_url[scheme + 3 ..];
-    const cut = std.mem.indexOfScalar(u8, rest, '/') orelse return false;
-    rest = rest[cut + 1 ..];
-    var segments = std.mem.tokenizeScalar(u8, rest, '/');
-    while (segments.next()) |segment| {
-        if (isVersionSegment(segment)) return true;
+pub fn endpointCarriesVersion(provider_id: []const u8, base_url: []const u8) bool {
+    const row = provider(provider_id) orelse return false;
+    const wanted = std.mem.trimEnd(u8, base_url, "/");
+    for (row.endpoints) |endpoint| {
+        if (!std.mem.eql(u8, std.mem.trimEnd(u8, endpoint.base_url, "/"), wanted)) continue;
+        return endpoint.carries_version;
     }
     return false;
+}
+
+pub fn carriesVersionFor(provider_id: []const u8, base_url: []const u8, stated: ?bool) bool {
+    if (stated) |given| return given;
+    if (endpointCarriesVersion(provider_id, base_url)) return true;
+    return baseCarriesTrailingVersion(base_url);
+}
+
+pub fn baseCarriesTrailingVersion(base_url: []const u8) bool {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    return std.mem.endsWith(u8, trimmed, "/v1");
 }
 
 pub const UrlParts = struct {
@@ -188,31 +188,57 @@ pub const UrlParts = struct {
     tail: []const u8,
 };
 
-pub fn urlParts(base: []const u8, wire: Wire) UrlParts {
+pub fn urlParts(base: []const u8, wire: Wire, carries_version: bool) UrlParts {
     const head = std.mem.trimEnd(u8, base, "/");
     if (wire.suffix.len == 0) return .{ .head = head, .tail = "" };
     if (std.mem.endsWith(u8, head, wire.suffix)) return .{ .head = head, .tail = "" };
-    const tail = if (wire.dedup_version and pathHasVersion(head) and std.mem.startsWith(u8, wire.suffix, "/v1/"))
+    const tail = if (carries_version and std.mem.startsWith(u8, wire.suffix, "/v1/"))
         wire.suffix["/v1".len..]
     else
         wire.suffix;
     return .{ .head = head, .tail = tail };
 }
 
-pub fn joinUrl(comptime base: []const u8, comptime wire: Wire) []const u8 {
-    const parts = comptime urlParts(base, wire);
+pub fn joinUrl(comptime base: []const u8, comptime wire: Wire, comptime carries_version: bool) []const u8 {
+    const parts = comptime urlParts(base, wire, carries_version);
     if (parts.tail.len == 0) return base[0..parts.head.len];
     return base[0..parts.head.len] ++ parts.tail;
 }
 
-pub fn joinUrlOwned(allocator: std.mem.Allocator, base: []const u8, wire: Wire) ![]const u8 {
-    const parts = urlParts(base, wire);
+pub fn joinUrlOwned(allocator: std.mem.Allocator, base: []const u8, wire: Wire, carries_version: bool) ![]const u8 {
+    const parts = urlParts(base, wire, carries_version);
     if (parts.tail.len == 0) return allocator.dupe(u8, parts.head);
     return std.mem.concat(allocator, u8, &.{ parts.head, parts.tail });
 }
 
-pub fn joinModelsUrl(comptime base: []const u8, comptime path: []const u8) []const u8 {
-    return joinUrl(base, .{ .id = "models", .suffix = path });
+pub fn joinModelUrlOwned(allocator: std.mem.Allocator, model: ai_types.Model, wire: Wire) ![]const u8 {
+    return joinUrlOwned(
+        allocator,
+        model.base_url,
+        wire,
+        carriesVersionFor(model.provider, model.base_url, model.carries_version),
+    );
+}
+
+pub fn joinModelsUrl(comptime base: []const u8, comptime path: []const u8, comptime carries_version: bool) []const u8 {
+    return joinUrl(base, .{ .id = "models", .suffix = path }, carries_version);
+}
+
+pub fn modelsListingPath(allocator: std.mem.Allocator, models_path: []const u8, carries_version: bool, overridden: bool) ![]u8 {
+    if (carries_version and overridden) return std.fmt.allocPrint(allocator, "/v1{s}", .{models_path});
+    return allocator.dupe(u8, models_path);
+}
+
+pub fn listingUrlOwned(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    models_path: []const u8,
+    carries_version: bool,
+    overridden: bool,
+) ![]const u8 {
+    const path = try modelsListingPath(allocator, models_path, carries_version, overridden);
+    defer allocator.free(path);
+    return joinUrlOwned(allocator, base_url, .{ .id = "models", .suffix = path }, carries_version and !overridden);
 }
 
 pub const Resolved = struct {
@@ -237,8 +263,8 @@ pub const resolved = blk: {
                 .wire = endpoint.wire,
                 .region = endpoint.region,
                 .base_url = endpoint.base_url,
-                .models_url = if (row.models_endpoint) |models_path| joinModelsUrl(endpoint.base_url, models_path) else null,
-                .request_url = if (path) |known| if (known.model_scoped) null else joinUrl(endpoint.base_url, known) else null,
+                .models_url = if (row.models_endpoint) |models_path| joinModelsUrl(endpoint.base_url, models_path, endpoint.carries_version) else null,
+                .request_url = if (path) |known| if (known.model_scoped) null else joinUrl(endpoint.base_url, known, endpoint.carries_version) else null,
             };
             index += 1;
         }
@@ -437,21 +463,6 @@ test "no endpoint records carries_version for a wire whose path has no leading /
     }
 }
 
-test "the recorded version fact equals the inference it replaces" {
-    var recorded: usize = 0;
-    var inferred: usize = 0;
-    for (all) |row| {
-        for (row.endpoints) |endpoint| {
-            const path = wirePath(endpoint.wire) orelse return error.TestWireClaimNotInCatalog;
-            const want = path.dedup_version and pathHasVersion(endpoint.base_url);
-            try std.testing.expectEqual(want, endpoint.carries_version);
-            if (endpoint.carries_version) recorded += 1 else inferred += 1;
-        }
-    }
-    try std.testing.expect(recorded > 0);
-    try std.testing.expect(inferred > 0);
-}
-
 test "every wire a row names is a wire this file joins, or is model-scoped" {
     for (all) |row| {
         for (row.wires) |wire| {
@@ -477,13 +488,21 @@ test "a request URL is the row's base and its wire's path, joined as the wire's 
     try std.testing.expectEqualStrings("https://api.deepinfra.com/v1/openai/chat/completions", requestUrl("deepinfra", "openai-completions", null).?);
 }
 
-test "a base ending in a version segment gains no second one on the wire that dedups it" {
+fn looksLikeVersion(segment: []const u8) bool {
+    if (segment.len < 2 or segment[0] != 'v') return false;
+    for (segment[1..]) |digit| {
+        if (digit < '0' or digit > '9') return false;
+    }
+    return true;
+}
+
+test "a base recorded as carrying the version gains no second one on its wire" {
     for (resolved) |entry| {
         const url = entry.request_url orelse continue;
         var versions: usize = 0;
         var segments = std.mem.tokenizeScalar(u8, url, '/');
         while (segments.next()) |segment| {
-            if (isVersionSegment(segment)) versions += 1;
+            if (looksLikeVersion(segment)) versions += 1;
         }
         try std.testing.expect(versions <= 1);
     }
@@ -492,6 +511,82 @@ test "a base ending in a version segment gains no second one on the wire that de
     try std.testing.expectEqualStrings("https://api.z.ai/api/coding/paas/v4/chat/completions", requestUrl("zai-coding-plan", "openai-completions", null).?);
     try std.testing.expectEqualStrings("https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions", requestUrl("tencent-coding-plan", "openai-completions", null).?);
     try std.testing.expectEqualStrings("https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions", requestUrl("volcengine-coding-plan", "openai-completions", null).?);
+}
+
+test "an endpoint recorded as carrying the version holds one in its base, and one that does not holds none" {
+    for (all) |row| {
+        for (row.endpoints) |endpoint| {
+            var found = false;
+            var segments = std.mem.tokenizeScalar(u8, endpoint.base_url, '/');
+            while (segments.next()) |segment| {
+                if (looksLikeVersion(segment)) found = true;
+            }
+            try std.testing.expectEqual(found, endpoint.carries_version);
+        }
+    }
+}
+
+test "an unstated fact resolves from the row's own endpoint, else from a trailing v1" {
+    try std.testing.expect(carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", null));
+    try std.testing.expect(!carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", false));
+    try std.testing.expect(carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", true));
+
+    try std.testing.expect(!carriesVersionFor("deepseek", "https://api.deepseek.com", null));
+    try std.testing.expect(carriesVersionFor("deepseek", "https://api.deepseek.com", true));
+
+    try std.testing.expect(!carriesVersionFor("kimi", "https://api.kimi.com/coding", null));
+    try std.testing.expect(!carriesVersionFor("no-such-provider", "https://api.openai.com", null));
+
+    try std.testing.expect(endpointCarriesVersion("openrouter", "https://openrouter.ai/api/v1/"));
+    try std.testing.expect(!endpointCarriesVersion("kimi", "https://api.kimi.com/coding"));
+    try std.testing.expect(endpointCarriesVersion("deepinfra", "https://api.deepinfra.com/v1/openai"));
+    try std.testing.expect(endpointCarriesVersion("deepinfra", "https://api.deepinfra.com/v1/openai/"));
+}
+
+test "a wire drops its leading version only when the fact says the base has one" {
+    const completions = comptime wirePath("openai-completions").?;
+    const messages = comptime wirePath("anthropic-messages").?;
+    const responses = comptime wirePath("openai-responses").?;
+    const codex = comptime wirePath("openai-codex-responses").?;
+    const ollama = comptime wirePath("ollama").?;
+
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example", completions, false));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example/v1", completions, true));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/messages", joinUrl("https://proxy.example/v1", messages, true));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/messages", joinUrl("https://proxy.example", messages, false));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/responses", joinUrl("https://proxy.example/v1", responses, true));
+    try std.testing.expectEqualStrings("https://chatgpt.example/responses", joinUrl("https://chatgpt.example", codex, true));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/api/chat", joinUrl("https://proxy.example/v1", ollama, true));
+    try std.testing.expectEqualStrings("https://proxy.example/api/chat", joinUrl("https://proxy.example", ollama, false));
+}
+
+test "an unstated fact keeps the documented trailing v1 and appends the full path to anything else" {
+    const completions = comptime wirePath("openai-completions").?;
+    const messages = comptime wirePath("anthropic-messages").?;
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example/v1", completions, carriesVersionFor("gateway", "https://proxy.example/v1", null)));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/messages", joinUrl("https://proxy.example/v1", messages, carriesVersionFor("gateway", "https://proxy.example/v1", null)));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example", completions, carriesVersionFor("gateway", "https://proxy.example", null)));
+    try std.testing.expectEqualStrings("https://gw.test/api/coding/paas/v4/v1/chat/completions", joinUrl("https://gw.test/api/coding/paas/v4", completions, carriesVersionFor("gateway", "https://gw.test/api/coding/paas/v4", null)));
+    try std.testing.expectEqualStrings("https://gw.test/api/coding/paas/v4/chat/completions", joinUrl("https://gw.test/api/coding/paas/v4", completions, carriesVersionFor("gateway", "https://gw.test/api/coding/paas/v4", true)));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/v1/chat/completions", joinUrl("https://proxy.example/v1", completions, false));
+}
+
+test "a base the catalog does not hold reads the trailing v1 a client or an override supplies" {
+    try std.testing.expect(baseCarriesTrailingVersion("http://host:8000/v1"));
+    try std.testing.expect(baseCarriesTrailingVersion("https://proxy.example/v1/"));
+    try std.testing.expect(!baseCarriesTrailingVersion("https://proxy.example"));
+    try std.testing.expect(!baseCarriesTrailingVersion("https://gw.test/api/coding/paas/v4"));
+    try std.testing.expect(!baseCarriesTrailingVersion("https://api.deepinfra.com/v1/openai"));
+    try std.testing.expect(!baseCarriesTrailingVersion(""));
+    try std.testing.expect(carriesVersionFor("gateway", "http://host:8000/v1", null));
+    try std.testing.expect(!carriesVersionFor("gateway", "http://host:8000/v1", false));
+    try std.testing.expect(carriesVersionFor("openrouter", "https://openrouter.ai/api/v1", null));
+}
+
+test "a base that already ends with its wire's path is used whole, whatever the fact" {
+    const completions = comptime wirePath("openai-completions").?;
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example/v1/chat/completions", completions, false));
+    try std.testing.expectEqualStrings("https://proxy.example/v1/chat/completions", joinUrl("https://proxy.example/v1/chat/completions", completions, true));
 }
 
 test "a models URL is the row's own base and the path it records" {
@@ -617,16 +712,87 @@ test "every catalogued endpoint resolves the two URLs providers/resolved_urls.js
 
 const google_wire = wirePath("google-generative-ai") orelse unreachable;
 
+test "a listing and its request agree about the version, under an override and without one" {
+    const rows = [_]struct { id: []const u8, wire: []const u8 }{
+        .{ .id = "openrouter", .wire = "openai-completions" },
+        .{ .id = "vercel", .wire = "openai-completions" },
+        .{ .id = "zenmux", .wire = "openai-completions" },
+        .{ .id = "opencode", .wire = "openai-completions" },
+        .{ .id = "deepinfra", .wire = "openai-completions" },
+        .{ .id = "deepseek", .wire = "openai-completions" },
+        .{ .id = "anthropic", .wire = "anthropic-messages" },
+    };
+    const override_base = "https://proxy.example";
+    for (rows) |row| {
+        const target = catalogTargetForTest(row.id, row.wire) orelse return error.TestUnexpectedResult;
+        const models_path = modelsEndpoint(row.id) orelse continue;
+        const carries = target.carries_version;
+
+        const own_listing = try listingUrlOwned(std.testing.allocator, target.base_url, models_path, carries, false);
+        defer std.testing.allocator.free(own_listing);
+        try std.testing.expectEqualStrings(target.models_url, own_listing);
+
+        const own_request = try joinUrlOwned(std.testing.allocator, target.base_url, target.wire, carries);
+        defer std.testing.allocator.free(own_request);
+        try std.testing.expectEqualStrings(target.request_url, own_request);
+
+        const proxied_listing = try listingUrlOwned(std.testing.allocator, override_base, models_path, carries, true);
+        defer std.testing.allocator.free(proxied_listing);
+        const proxied_request = try joinUrlOwned(std.testing.allocator, override_base, target.wire, false);
+        defer std.testing.allocator.free(proxied_request);
+
+        if (carries) {
+            var expected_prefix: [64]u8 = undefined;
+            const prefix = try std.fmt.bufPrint(&expected_prefix, "{s}/v1/", .{override_base});
+            try std.testing.expect(std.mem.startsWith(u8, proxied_listing, prefix));
+        }
+        try std.testing.expect(countVersions(proxied_listing) == countVersions(proxied_request));
+    }
+}
+
+fn countVersions(url: []const u8) usize {
+    var versions: usize = 0;
+    var segments = std.mem.tokenizeScalar(u8, url, '/');
+    while (segments.next()) |segment| {
+        if (looksLikeVersion(segment)) versions += 1;
+    }
+    return versions;
+}
+
+const CatalogTargetForTest = struct {
+    base_url: []const u8,
+    models_url: []const u8,
+    request_url: []const u8,
+    wire: Wire,
+    carries_version: bool,
+};
+
+fn catalogTargetForTest(id: []const u8, wire_id: []const u8) ?CatalogTargetForTest {
+    const row = provider(id) orelse return null;
+    const wire = wirePath(wire_id) orelse return null;
+    for (row.endpoints) |endpoint| {
+        if (!std.mem.eql(u8, endpoint.wire, wire_id)) continue;
+        return .{
+            .base_url = endpoint.base_url,
+            .models_url = modelsUrl(id, endpoint.region) orelse return null,
+            .request_url = requestUrl(id, wire_id, endpoint.region) orelse return null,
+            .wire = wire,
+            .carries_version = endpoint.carries_version,
+        };
+    }
+    return null;
+}
+
 test "a wire with no path joins to the base, trailing slash dropped" {
-    try std.testing.expectEqualStrings("https://generativelanguage.example", joinUrl("https://generativelanguage.example/", google_wire));
-    const owned = try joinUrlOwned(std.testing.allocator, "https://generativelanguage.example///", google_wire);
+    try std.testing.expectEqualStrings("https://generativelanguage.example", joinUrl("https://generativelanguage.example/", google_wire, false));
+    const owned = try joinUrlOwned(std.testing.allocator, "https://generativelanguage.example///", google_wire, false);
     defer std.testing.allocator.free(owned);
     try std.testing.expectEqualStrings("https://generativelanguage.example", owned);
 }
 
 test "the models path is joined by the same rule as a wire path" {
     const wire = Wire{ .id = "models", .suffix = "/v1/models" };
-    try std.testing.expectEqualStrings("https://api.openai.com/v1/models", joinModelsUrl("https://api.openai.com/", "/v1/models"));
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/models", joinModelsUrl("https://api.openai.com/", "/v1/models", false));
     const cases = [_]struct { base: []const u8, want: []const u8 }{
         .{ .base = "https://api.openai.com", .want = "https://api.openai.com/v1/models" },
         .{ .base = "https://api.openai.com/", .want = "https://api.openai.com/v1/models" },
@@ -635,8 +801,44 @@ test "the models path is joined by the same rule as a wire path" {
         .{ .base = "https://api.openai.com/v1/models/", .want = "https://api.openai.com/v1/models" },
     };
     for (cases) |case| {
-        const owned = try joinUrlOwned(std.testing.allocator, case.base, wire);
+        const owned = try joinUrlOwned(std.testing.allocator, case.base, wire, false);
         defer std.testing.allocator.free(owned);
         try std.testing.expectEqualStrings(case.want, owned);
     }
+}
+
+fn joinProbeModel(provider_id: []const u8, base_url: []const u8, carries_version: ?bool) ai_types.Model {
+    return .{
+        .id = "x",
+        .name = "x",
+        .api = "openai-completions",
+        .provider = provider_id,
+        .base_url = base_url,
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 0,
+        .max_tokens = 0,
+        .carries_version = carries_version,
+    };
+}
+
+test "a model's unstated fact resolves from its own row, and a wire-supplied base keeps its trailing v1" {
+    const completions = comptime wirePath("openai-completions").?;
+
+    const openrouter = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("openrouter", "https://openrouter.ai/api/v1", null), completions);
+    defer std.testing.allocator.free(openrouter);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/chat/completions", openrouter);
+
+    const supplied = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("gateway", "http://host:8000/v1", null), completions);
+    defer std.testing.allocator.free(supplied);
+    try std.testing.expectEqualStrings("http://host:8000/v1/chat/completions", supplied);
+
+    const stated = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("openrouter", "https://proxy.example/api/v1", true), completions);
+    defer std.testing.allocator.free(stated);
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/chat/completions", stated);
+
+    const denied = try joinModelUrlOwned(std.testing.allocator, joinProbeModel("openrouter", "https://openrouter.ai/api/v1", false), completions);
+    defer std.testing.allocator.free(denied);
+    try std.testing.expectEqualStrings("https://openrouter.ai/api/v1/v1/chat/completions", denied);
 }
