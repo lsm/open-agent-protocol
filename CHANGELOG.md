@@ -181,8 +181,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent run now always ends with exactly one event that ends it. A run that
+  failed — at any point, including the two paths that returned before the run
+  started — used to simply stop, so a consumer waiting for the run to end waited
+  forever and had a second channel to remember to check for why. `AgentEvent`
+  gains a `run_failed` variant and an `isTerminal` that names the two events that
+  end a run; `runLoopThread` emits exactly one of them from its `defer`, so a
+  failure after the run has already ended does not end it twice, and a second run
+  on the same agent is not silenced by the first run's terminal. A provider that
+  refuses is unchanged: it is a run that got far enough to end, so it ends with a
+  normal `agent_end`.
+  A run that failed also ends the TUI's stream as an error rather than as a
+  completion. That reason was inferred from the last turn's stop reason, and a run
+  that fails before a turn ends never set one, so the inference read a failure as a
+  success — and a success is what drains the user's queued follow-ups, so a failed
+  run discarded them. The reason is passed by the caller that knows it now, the same
+  way compaction takes it from the outcome.
 - Five adapters across both trees answer a `run.cancel` accepted on a live run with `cancelling` and no longer re-read the run's terminal after the native round-trip, so the answer depends on the acceptance rather than on how far the reader goroutine has got: `go/adapter/pi`, `go/adapter/codex/appserver` and `go/adapter/acp`, and Zig's `codex` and `pi`. Decision 0001 is the rule, and the pi parity scenario had flaked on the alternative at least five times (#10); it now runs twenty times over in CI. A run that is already terminal when the cancel is checked is still refused `run_already_terminal` — except a run that already settled `cancelled`, which is idempotent and still answers accepted `cancelled` where it did before (ACP and OpenCode in both trees, and codex in both trees by its own path) — and a settled run's recorded status is still not rewritten, so a run that settles *during* the round-trip no longer changes what the cancel answers. Zig ACP, Claude Code, Hermes, OpenCode and DeepSeek were read in both trees and needed no change: Zig ACP's status branch is the *pre-check*, so an already-terminal run is still refused before anything is sent, and DeepSeek's `run.cancel` is `unavailable` because its selected SDK wire has no cancel request at all.
-
 - A long reply in the TUI is no longer cut off at two minutes with `Provider protocol
   stream timed out`. The in-process provider bridge counted its 120-second limit from
   the request, so a response still streaming at two minutes was ended mid-sentence. The
