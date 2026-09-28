@@ -40,12 +40,24 @@ and the fix is cheaper there.
 The seven harness fixtures share one shape: a fixed `scenario.jsonl` and a
 `registry.json` naming the adapter. Six drive a `child.sh` that answers
 deterministically; `opencode` has none and answers the in-test fake HTTP server
-the harness starts for it when its registry carries `@URL@`. None of them
-subscribes, so none of them can stream a run — which is why the ordered
-comparison had nothing to walk until `memory` landed. `memory` is the one that
-can: its script is in-process, so it is identical in both trees by
-construction, it answers both of its interactions, and its twelve envelopes
-are what the ordered comparison reads.
+the harness starts for it when its registry carries `@URL@`.
+
+**Every fixture that submits streams that run's envelopes**, so the ordered
+comparison has always had runs to walk — #475 caught the `pi` fixture announcing
+`run.status.updated{status:cancelling}` and then answering, where oapx answers
+and then announces. What subscribes is the submit handler
+(`go/serve/serveendpoint`), not the session-open `subscribe` member: `memory` is
+the only fixture that asks for it, and asking is not what makes the run
+visible.
+
+What `memory` adds is the only run with **two open interactions** at once —
+`permission-2` and `input-3`, both resolved against `run-1` — so the ordered
+comparison reads a settlement order there and nowhere else; every other fixture
+resolves at most one interaction per run. Its script is in-process, with no child
+process mediating the exchange. It is not, however, identical in both trees by
+construction: `go/adapter/memory.go` and `zig/src/adapter/memory/adapter.zig` are
+separate implementations, which is why the comparison scrubs `id` and every
+`*_ms` member before it compares anything.
 
 **Two tests, and only one of them looks at order.** `TestBackendsMatchOapx`
 runs the eight fixtures with a content diff **and** the ordered comparison.
@@ -75,10 +87,11 @@ OAP_OAPX_BIN=/tmp/oapx/bin/oapx go test ./go/cmd/goap/ \
 ```
 
 Both tests, or you have run one of the two halves. Without `OAP_OAPX_BIN` they
-skip, so an ordinary `go test ./...` stays fast and the jobs are the only thing
-that pays for it. CI builds `oapx` and runs them on every change, in two jobs:
-`backend-parity` for the fixtures and `memory-conformance` for the memory
-backend.
+skip, so an ordinary `go test ./go/...` stays fast and the jobs are the only
+things that pay for it. CI builds `oapx` and runs them on every change in three
+jobs: `backend-parity` for the fixtures, `memory-conformance` for the memory
+backend, and `pi-parity-repeat`, which runs the `pi` fixture twenty times
+because that scenario must not depend on goroutine scheduling.
 
 ## When it fails
 
