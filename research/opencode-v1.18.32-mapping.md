@@ -213,12 +213,13 @@ group (`packages/protocol/src/groups/session.ts`) carries seventeen routes:
 `session.switchModel`, `session.prompt`, `session.compact`, `session.wait`,
 `session.interrupt` and the three `session.revert.*` stages — seventeen
 `HttpApiEndpoint`s in the group, counted rather than estimated. The
-Go adapter uses seven of them, and the port goldens in
+Go adapter uses **six** of them, and the port goldens in
 `go/adapter/opencode/testdata/port-goldens.json` name every request it makes:
 `POST /api/session`, `POST /api/session/:id/prompt`, `POST
 /api/session/:id/interrupt`, `GET /api/session/active`,
-`GET /api/session/:id/history?after=&limit=`, `GET /api/session/:id/event` and
-`GET /api/session/:id/event?after=`. So it already reads a live session's
+`GET /api/session/:id/history?after=&limit=`, and `GET
+/api/session/:id/event` — with and without `?after=`, which is the seventh
+URL in the goldens but the same route. So it already reads a live session's
 history and its event stream — a reload *of a session the server still holds* —
 and what it never calls is the part a reopen needs: `session.list`,
 `session.get` (the record that carries the model, the agent and the directory)
