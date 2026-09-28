@@ -385,6 +385,7 @@ const CatalogEndpoint = struct {
     wire: []const u8,
     base_url: []const u8,
     models_url: []const u8,
+    region: ?[]const u8 = null,
     owned_base_url: ?[]u8 = null,
     owned_models_url: ?[]u8 = null,
 
@@ -411,7 +412,7 @@ fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) ?CatalogEndpoint {
     const wire = chosen orelse return null;
     const base_url = provider_catalog.baseUrl(id, wire, region) orelse return null;
     const models_url = provider_catalog.modelsUrl(id, region) orelse return null;
-    return .{ .id = row.id, .wire = wire, .base_url = base_url, .models_url = models_url };
+    return .{ .id = row.id, .wire = wire, .base_url = base_url, .models_url = models_url, .region = region };
 }
 
 fn catalogEndpointWithBase(
@@ -425,6 +426,7 @@ fn catalogEndpointWithBase(
             .wire = catalog.wire,
             .base_url = catalog.base_url,
             .models_url = catalog.models_url,
+            .region = catalog.region,
         };
     }
     const models_path = provider_catalog.modelsEndpoint(catalog.id) orelse unreachable;
@@ -441,6 +443,7 @@ fn catalogEndpointWithBase(
         .wire = catalog.wire,
         .base_url = base_url,
         .models_url = models_url,
+        .region = catalog.region,
         .owned_base_url = @constCast(base_url),
         .owned_models_url = @constCast(models_url),
     };
@@ -625,7 +628,8 @@ fn maxTokensFor(id: []const u8, model_id: []const u8) u32 {
     return provider_catalog.rowMaxTokens(id) orelse catalog_max_output_tokens;
 }
 
-fn catalogRowCacheName(allocator: std.mem.Allocator, id: []const u8) ![]u8 {
+fn catalogRowCacheName(allocator: std.mem.Allocator, id: []const u8, region: ?[]const u8) ![]u8 {
+    if (region) |resolved| return std.fmt.allocPrint(allocator, "catalog-{s}-{s}.json", .{ id, resolved });
     return std.fmt.allocPrint(allocator, "catalog-{s}.json", .{id});
 }
 
@@ -668,7 +672,7 @@ fn discoverCatalogModelIds(
 ) !?[][]const u8 {
     if (builtin.is_test) return testCatalogModelIds(allocator, target.id, target.models_url);
 
-    const name = try catalogRowCacheName(allocator, target.id);
+    const name = try catalogRowCacheName(allocator, target.id, target.region);
     defer allocator.free(name);
 
     if (mode == .allow_cache) {
@@ -3039,11 +3043,27 @@ test "the row environment names every credential variable the catalog records, i
 }
 
 test "a models cache name is the row's own, apart from any custom row of the same id" {
-    const name = try catalogRowCacheName(std.testing.allocator, "deepseek");
+    const name = try catalogRowCacheName(std.testing.allocator, "deepseek", null);
     defer std.testing.allocator.free(name);
     try std.testing.expectEqualStrings("catalog-deepseek.json", name);
 
     const custom = try customCatalogName(std.testing.allocator, "deepseek");
     defer std.testing.allocator.free(custom);
     try std.testing.expectEqualStrings("custom-deepseek.json", custom);
+}
+
+test "a row that ships an endpoint per region caches each region's models apart" {
+    const china = try catalogRowCacheName(std.testing.allocator, "kimi", "china");
+    defer std.testing.allocator.free(china);
+    try std.testing.expectEqualStrings("catalog-kimi-china.json", china);
+
+    const global = try catalogRowCacheName(std.testing.allocator, "kimi", "global");
+    defer std.testing.allocator.free(global);
+    try std.testing.expectEqualStrings("catalog-kimi-global.json", global);
+    try std.testing.expect(!std.mem.eql(u8, china, global));
+
+    const resolved = catalogTargetInRegion("kimi", "global") orelse return error.TestExpectedTarget;
+    const from_target = try catalogRowCacheName(std.testing.allocator, resolved.id, resolved.region);
+    defer std.testing.allocator.free(from_target);
+    try std.testing.expectEqualStrings("catalog-kimi-global.json", from_target);
 }

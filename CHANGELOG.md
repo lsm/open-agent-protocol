@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovery to the China models endpoint while the models themselves carried the
   moonshot base. A region value is trimmed before it is matched, and a value
   written into `auth.json` by hand is read by the same rules as one typed into
-  the environment, synonyms and all.
+  the environment, synonyms and all. A row that ships one endpoint per region now
+  also caches each region's discovered models under its own name, so a
+  `KIMI_REGION` switch cannot serve the models one region listed against the other
+  region's base for a day.
   **Kimi's real limits, its display name and its offline fallback come back.**
   The generic loader stamped every discovered row with a 128000-token context, an
   8192-token output cap and the model id as its name, so a Kimi run in the TUI
