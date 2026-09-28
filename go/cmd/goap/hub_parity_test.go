@@ -142,26 +142,29 @@ func runHubScript(t *testing.T, binary string, lines []string) map[string]map[st
 }
 
 func normaliseHubAnswer(answer map[string]any) {
-	result, isObject := answer["result"].(map[string]any)
-	if !isObject {
-		return
-	}
-	if id, minted := result["id"].(string); minted {
-		result["id"] = "<minted>"
-		_ = id
-	}
-	if _, present := result["in_reply_to"]; present {
-		result["in_reply_to"] = "<minted>"
-	}
-	if created, present := result["created_at"]; present {
-		_ = created
-		result["created_at"] = "<minted>"
-	}
-	payload, isObject := result["payload"].(map[string]any)
-	if isObject {
-		if created, present := payload["created_at"]; present {
-			_ = created
-			payload["created_at"] = "<minted>"
+	normaliseMinted(answer)
+}
+func normaliseMinted(node any) {
+	switch value := node.(type) {
+	case map[string]any:
+		for key, child := range value {
+			switch key {
+			case "id", "in_reply_to", "created_at", "as_of":
+				if _, isText := child.(string); isText {
+					value[key] = "<minted>"
+					continue
+				}
+			case "timestamp", "sequence":
+				if _, isNumber := child.(float64); isNumber {
+					value[key] = float64(0)
+					continue
+				}
+			}
+			normaliseMinted(child)
+		}
+	case []any:
+		for _, child := range value {
+			normaliseMinted(child)
 		}
 	}
 }

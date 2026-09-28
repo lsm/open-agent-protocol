@@ -167,7 +167,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed) answers T7's two open questions for `session-reattach`. A reopen is `reopen: true` on `session.open.request` — the unused `recovery` object is not reused — and it answers the session's state document with `recovery.recovered: true` and the model and settings the session actually runs under, which is the harness's recorded configuration rather than the loader's: Codex's `ThreadResumeResponse` requires six such members and the Go adapter dropped all six (#458). A create naming a bound id is `session_exists`, a reopen with no binding is `unknown_session`, and a harness that cannot load is `unsupported_feature`. A store the harness can no longer honour answers `unsupported_feature`, as 0039 already rules, and **no new code is proposed**: the code has to come from the binding rather than the harness's reply, because two of the ledgers record a harness creating a missing store before looking in it (Hermes mode `0o600` plus the schema, OpenCode's migration runner) and pi's discovery answers `null` either way, so for those a deleted database, a moved home and a session that never existed are one answer on the wire. Of the seven harnesses read at their pins, three type their own absence — Hermes `4007`, OpenCode `SessionNotFoundError`, DeepSeek `SessionPersistenceNotFoundError` — and four do not: pi's `null`, ACP's silence, Codex's `-32602 invalid_request` (its own ledger calls that "not a not-found code"), and Claude Code, whose answer is unrecorded. The binding is the host's record — never a credential, never a resolved environment value — written atomically, with a torn write detected and never read, and appended rather than replaced. No wire changes with a proposed record.
 
 
-<<<<<<< HEAD
 - `oapx hub` is the multi-session hub in the Zig binary, and `--stdio` serves it
   over the same transport objects `goap hub --stdio` serves. The hub and its wire
   are in the `oapx` binary for the first time, which is what the cross-compile
@@ -196,7 +195,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing `adapter` was refused as an undefined parameter rather than as
   `adapter is required`, and a missing `session_id` was refused at all where Go
   looks the empty id up and answers `unknown_session`.
-=======
 - The TUI shows the working directory on a muted, right-aligned row under the status
   line. The path is sanitised, collapsed to `~` on a home-directory component
   boundary, left-truncated with `…` when it is wider than the terminal, and hidden on
@@ -204,7 +202,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/help` now lists the full key map (send, newline, history, word and line edits,
   scrolling, abort and quit gestures) after the command list, and the empty-session
   welcome names what `!` does and points at `/help`.
->>>>>>> origin/main
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
   and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
   `close` and `state` — over the transport objects the draft specifies. Framing is
@@ -384,6 +381,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counts as ready. This one only shows on the platform whose `poll` says it that
   way, which is why the differential job that would have caught it is not wired
   into CI yet: it needs an `oapx` binary, and that is #390.
+- The hub's differential test normalises what the daemon mints wherever it appears,
+  rather than at the paths it appeared when the test was written. It reached into
+  `result` and `result.payload`, and the sessions listing puts a timestamp inside an
+  array instead, so a listing compared the two trees' clocks against each other.
 - A host that stopped reading now ends the serve. A failed write propagated out of
   the op but was caught as if it were an unreadable request, so the loop kept
   reading a host that was no longer there, once per cycle, for as long as the
