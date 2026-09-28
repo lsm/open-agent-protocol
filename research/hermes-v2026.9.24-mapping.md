@@ -35,6 +35,7 @@ Normative source blobs at the release commit:
 - `tui_gateway/contracts/` (tree) — `1eceb85deeeb499c3f00231c6fdedd91a1631753`
 - `hermes_state.py` — `8ecc3b5c266a2d01185f70f23d1b6f43e9081ed2`
 - `hermes_state_sessions.py` — `1c775a358f3193cbe2d8aa53abbaae625500bc17`
+- `hermes_state_common.py` — `3d36055e763bef26de9e67e12e4c3af2a67e8514`
 
 The last two are the store itself, added when the session-reload section below was
 written; everything above them was recorded when the pin moved.
@@ -357,12 +358,13 @@ Decision 0039's Hermes row cites the v2026.8.31 ledger, so this section is
 the reload at the pin the catalog now names. Every line below is read from
 the source at this pin's own commit
 `f97608f178d1ffeca59860195ab7da295f7c8e5f` — the same commit and tree as
-*Provenance* above, and the three files cited here are the ones that list
-records their own hashes — `methods_session.py`, `hermes_state.py` and
-`hermes_state_sessions.py` — each checked with `git hash-object` against the
-value recorded there; anything under `tui_gateway/contracts/` is covered by
-that directory's tree hash rather than listed per file. The last paragraph
-says what all of this does and does not establish.
+*Provenance* above, and the four files cited here are the ones that list
+their own hashes — `methods_session.py`, `hermes_state.py`,
+`hermes_state_sessions.py` and `hermes_state_common.py` — each checked with
+`git hash-object` against the value recorded there; anything under
+`tui_gateway/contracts/` is covered by that directory's tree hash rather than
+listed per file. The last paragraph says what all of this does and does not
+establish.
 
 **Hermes has a real reload, and its not-found is typed on the wire.** `session.resume` takes a target that may be a
 session id *or* a title, and its common payload (`_resume_response` in
