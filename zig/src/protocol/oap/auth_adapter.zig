@@ -380,6 +380,12 @@ pub const Adapter = struct {
             try writer.beginObject();
             try writer.writeStringField("id", provider.id.slice());
             try writer.writeStringField("name", provider.name.slice());
+            try writer.writeKey("auth_kinds");
+            try writer.beginArray();
+            for (provider.auth_kinds) |kind| {
+                try writer.writeString(@tagName(kind));
+            }
+            try writer.endArray();
             try writer.writeStringField("auth_status", @tagName(provider.auth_status));
             if (provider.last_error.slice().len > 0) try writer.writeStringField("last_error", provider.last_error.slice());
             try writer.endObject();

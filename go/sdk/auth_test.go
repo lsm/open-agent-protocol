@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 func TestAuthListProviders(t *testing.T) {
@@ -25,6 +27,14 @@ func TestAuthListProviders(t *testing.T) {
 	}
 	if providers[1].Status != AuthAuthenticated {
 		t.Errorf("second provider status = %q", providers[1].Status)
+	}
+	if len(providers[0].AuthKinds) != 2 ||
+		providers[0].AuthKinds[0] != protocol.CredentialKindOAuth ||
+		providers[0].AuthKinds[1] != protocol.CredentialKindAPIKey {
+		t.Errorf("anthropic auth kinds = %v, want [oauth api_key]", providers[0].AuthKinds)
+	}
+	if len(providers[1].AuthKinds) != 1 || providers[1].AuthKinds[0] != protocol.CredentialKindAPIKey {
+		t.Errorf("test-fixture auth kinds = %v, want [api_key]", providers[1].AuthKinds)
 	}
 
 	requests := framesOfType(readLog(), "auth_providers_request")
@@ -49,6 +59,22 @@ func TestAuthListProvidersNormalizesUnknownStatus(t *testing.T) {
 	}
 	if providers[0].LastError != "boom" {
 		t.Errorf("LastError = %q", providers[0].LastError)
+	}
+}
+
+func TestAuthListProvidersAcceptsARuntimeWithoutAuthKinds(t *testing.T) {
+	client := newTestClient(t, scenarioProtocol,
+		envAuthProviders+`={"providers":[{"id":"p","name":"P","auth_status":"login_required"}]}`)
+
+	providers, err := client.Auth.ListProviders(testContext(t))
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("got %d providers, want 1", len(providers))
+	}
+	if len(providers[0].AuthKinds) != 0 {
+		t.Errorf("AuthKinds = %v, want empty for a runtime that predates the field", providers[0].AuthKinds)
 	}
 }
 

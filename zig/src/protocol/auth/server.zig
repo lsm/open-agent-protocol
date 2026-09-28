@@ -422,6 +422,7 @@ pub const AuthProtocolServer = struct {
             providers[index] = .{
                 .id = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.id)),
                 .name = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.name)),
+                .auth_kinds = definition.auth_kinds,
                 .auth_status = status,
             };
         }
@@ -918,6 +919,34 @@ fn saveOAuthCredentials(provider_id: []const u8, credentials: oauth_storage.Cred
         },
     });
     try storage.persist();
+}
+
+test "the providers response carries each row's own credential kinds, in the catalog's order" {
+    const allocator = std.testing.allocator;
+    var server = AuthProtocolServer.init(allocator, .{
+        .persist_credentials = false,
+        .enable_real_oauth = false,
+    });
+    defer server.deinit();
+
+    const response = try server.buildProvidersResponse();
+    var owned = response;
+    defer owned.providers.deinit(allocator);
+
+    const served = response.providers.slice();
+    try std.testing.expectEqual(auth_providers.ALL_DEFINITIONS.len, served.len);
+    for (served, 0..) |info, index| {
+        const definition = auth_providers.ALL_DEFINITIONS[index];
+        try std.testing.expectEqualStrings(definition.id, info.id.slice());
+        try std.testing.expect(info.auth_kinds.len > 0);
+        for (info.auth_kinds, definition.auth_kinds) |got, want| {
+            try std.testing.expectEqual(want, got);
+        }
+    }
+
+    const ollama = auth_providers.findProvider("ollama") orelse return error.TestExpectedProvider;
+    try std.testing.expect(ollama.auth_kinds.len > 0);
+    try std.testing.expect(ollama.auth_kinds[0] == .none);
 }
 
 test "AuthProtocolServer type is available" {

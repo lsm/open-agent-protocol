@@ -83,6 +83,12 @@ fn serializePayload(writer: *json_writer.JsonWriter, payload: auth_types.Payload
                 try writer.beginObject();
                 try writer.writeStringField("id", provider.id.slice());
                 try writer.writeStringField("name", provider.name.slice());
+                try writer.writeKey("auth_kinds");
+                try writer.beginArray();
+                for (provider.auth_kinds) |kind| {
+                    try writer.writeString(@tagName(kind));
+                }
+                try writer.endArray();
                 try writer.writeStringField("auth_status", @tagName(provider.auth_status));
                 if (provider.last_error.slice().len > 0) {
                     try writer.writeStringField("last_error", provider.last_error.slice());
@@ -216,6 +222,25 @@ fn parseUlidRequired(value: []const u8) !auth_types.Ulid {
     return auth_types.parseUlid(value) orelse error.InvalidUlid;
 }
 
+fn parseAuthKinds(allocator: std.mem.Allocator, provider_obj: std.json.ObjectMap) ![]auth_types.AuthKind {
+    const raw = provider_obj.get("auth_kinds") orelse return error.MissingAuthKinds;
+    if (raw != .array) return error.InvalidAuthKinds;
+    if (raw.array.items.len == 0) return error.InvalidAuthKinds;
+    const kinds = try allocator.alloc(auth_types.AuthKind, raw.array.items.len);
+    errdefer allocator.free(kinds);
+    for (raw.array.items, 0..) |item, index| {
+        if (item != .string) {
+            allocator.free(kinds);
+            return error.InvalidAuthKinds;
+        }
+        kinds[index] = auth_types.parseAuthKind(item.string) orelse {
+            allocator.free(kinds);
+            return error.InvalidAuthKinds;
+        };
+    }
+    return kinds;
+}
+
 fn deserializePayload(type_str: []const u8, payload: std.json.ObjectMap, allocator: std.mem.Allocator) !auth_types.Payload {
     if (std.mem.eql(u8, type_str, "auth_providers_request")) {
         return .{ .auth_providers_request = .{} };
@@ -287,6 +312,8 @@ fn deserializePayload(type_str: []const u8, payload: std.json.ObjectMap, allocat
             var name = OwnedSlice(u8).initOwned(try allocator.dupe(u8, try fields.requiredString(provider_obj, "name")));
             errdefer name.deinit(allocator);
             const auth_status = std.meta.stringToEnum(auth_types.AuthStatus, try fields.requiredString(provider_obj, "auth_status")) orelse .unknown;
+            const auth_kinds = try parseAuthKinds(allocator, provider_obj);
+            defer allocator.free(auth_kinds);
 
             var last_error = OwnedSlice(u8).initBorrowed("");
             if (try fields.optionalString(provider_obj, "last_error")) |value| {
@@ -296,6 +323,7 @@ fn deserializePayload(type_str: []const u8, payload: std.json.ObjectMap, allocat
             providers[i] = .{
                 .id = id,
                 .name = name,
+                .auth_kinds = auth_kinds,
                 .auth_status = auth_status,
                 .last_error = last_error,
             };
@@ -553,7 +581,7 @@ test "auth envelope rejects malformed payload fields without leaking" {
 
 fn authProvidersResponseProbe(allocator: std.mem.Allocator) !void {
     const json =
-        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_status":"authenticated","last_error":"none"},{"id":"openai","name":"OpenAI","auth_status":"unknown","last_error":"expired"}]}}
+        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_kinds":["oauth","api_key"],"auth_status":"authenticated","last_error":"none"},{"id":"openai","name":"OpenAI","auth_kinds":["api_key"],"auth_status":"unknown","last_error":"expired"}]}}
     ;
     var parsed = try deserializeEnvelope(json, allocator);
     parsed.deinit(allocator);
@@ -566,13 +594,13 @@ test "auth_providers_response survives an allocation failure at every step" {
 test "a malformed provider entry after a good one is rejected without leaking" {
     const allocator = std.testing.allocator;
     const cases = [_][]const u8{
-        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_status":"authenticated"},{"id":"openai"}]}}
+        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_kinds":["oauth","api_key"],"auth_status":"authenticated"},{"id":"openai"}]}}
         ,
-        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_status":"authenticated"},{"id":"openai","name":7,"auth_status":"unknown"}]}}
+        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_kinds":["oauth","api_key"],"auth_status":"authenticated"},{"id":"openai","name":7,"auth_status":"unknown"}]}}
         ,
-        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_status":"authenticated"},{"id":"openai","name":"OpenAI","auth_status":"unknown","last_error":7}]}}
+        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_kinds":["oauth","api_key"],"auth_status":"authenticated"},{"id":"openai","name":"OpenAI","auth_kinds":["api_key"],"auth_status":"unknown","last_error":7}]}}
         ,
-        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_status":"authenticated"},7]}}
+        \\{"type":"auth_providers_response","stream_id":"01M2MYK69FX2M3DY769FEHK3M0","message_id":"01M2MYK69FX2M3DY769FEHK3M1","sequence":1,"timestamp":1,"version":1,"payload":{"providers":[{"id":"anthropic","name":"Anthropic","auth_kinds":["oauth","api_key"],"auth_status":"authenticated"},7]}}
         ,
     };
 

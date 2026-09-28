@@ -1,6 +1,10 @@
 # Decision 0029: Authentication Over Agent Control
 
-Status: proposed
+Status: proposed (the `auth.providers.response` row amended by
+[Decision 0043](0043-auth-providers-carry-how-they-accept-a-credential.md),
+which adds each row's credential kinds, because a payload of id, name,
+status and an optional error cannot express a provider that takes an API
+key rather than an OAuth flow)
 Date: 2026-09-22
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -29,7 +33,7 @@ to begin a human flow, but does not receive a usable token.
 
 | Request or event | Response or effect |
 | --- | --- |
-| `auth.providers.request` | `auth.providers.response` with provider ID, name, status, and optional last error |
+| `auth.providers.request` | `auth.providers.response` with provider ID, name, credential kinds, status, and optional last error |
 | `auth.login.start.request` with `provider_id` | `auth.login.start.response` with a new `flow_id` |
 | `auth.login.event` | URL or progress for one flow |
 | `auth.login.cancel.request` with `flow_id` | `auth.login.cancel.response` acknowledging cancellation |
@@ -55,6 +59,20 @@ Its status vocabulary shares `common.authStatus` with provider model entries.
 an active transition from a missing credential. A successful login does not
 return a token; a subsequent status or model-catalog read observes whether the
 provider became usable.
+
+Each row also carries `auth_kinds`, a non-empty ordered list drawn from
+`common.authKind` — `api_key`, `oauth` or `none` — saying how that provider
+accepts a credential. Without it the response describes a row's *state* but not
+its *means*, so a caller cannot tell an API-key-only provider from an OAuth one
+and has no way to ask for the right kind of login. The list is ordered by
+preference, so a provider that takes both offers OAuth first. `none` is how a
+provider that needs no credential says so, which is why the field is required
+and why the schema's `minItems` is one: an empty list would be ambiguous between
+"needs nothing" and "did not say", and a runtime predating the field is
+indistinguishable from a broken one unless emptiness is reserved. The SDKs read
+a missing or unrecognised list as empty rather than failing the whole listing,
+because V1 evolution is additive-only and a new client must stay usable against
+an older runtime.
 
 ### Credential boundary
 

@@ -29,7 +29,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send(request, "capabilities.response", { endpoint: { id: "fixture" }, features: { "auth.providers": true, "auth.login": true } }, { capability_revision: "r1" });
       break;
     case `${agent}:auth.providers.request`:
-      send(request, "auth.providers.response", { providers: [{ id: "fixture", name: "Fixture", auth_status: authenticated ? "authenticated" : "login_required" }] });
+      send(request, "auth.providers.response", { providers: [{ id: "fixture", name: "Fixture", auth_kinds: ["api_key"], auth_status: authenticated ? "authenticated" : "login_required" }] });
       break;
     case `${agent}:auth.login.start.request`:
       send(request, "auth.login.start.response", { flow_id: "flow-1" });

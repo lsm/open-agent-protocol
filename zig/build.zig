@@ -1612,6 +1612,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "protocol_types", .module = protocol_types_mod },
             .{ .name = "owned_slice", .module = owned_slice_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
         },
     });
 

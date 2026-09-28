@@ -5,12 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/lsm/open-agent-protocol/go/protocol"
 )
 
 type ProviderAuthInfo struct {
 	ID string
 
 	Name string
+
+	// AuthKinds says how this provider accepts a credential, in preference
+	// order. It is empty when the runtime predates the field, which is not the
+	// same as a provider that needs no credential: that one says CredentialKindNone.
+	AuthKinds []protocol.CredentialKind
 
 	Status AuthStatus
 
@@ -287,10 +294,11 @@ func parseAuthEvent(f *frame, providerID, flowID string) (AuthEvent, error) {
 }
 
 type wireProviderAuthInfo struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	AuthStatus string `json:"auth_status"`
-	LastError  string `json:"last_error"`
+	ID         string                   `json:"id"`
+	Name       string                   `json:"name"`
+	AuthKinds  []protocol.CredentialKind `json:"auth_kinds"`
+	AuthStatus string                   `json:"auth_status"`
+	LastError  string                   `json:"last_error"`
 }
 
 func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
@@ -312,7 +320,7 @@ func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
 			status = AuthUnknown
 		}
 		providers = append(providers, ProviderAuthInfo{
-			ID: raw.ID, Name: raw.Name, Status: status, LastError: raw.LastError,
+			ID: raw.ID, Name: raw.Name, AuthKinds: raw.AuthKinds, Status: status, LastError: raw.LastError,
 		})
 	}
 	return providers, nil

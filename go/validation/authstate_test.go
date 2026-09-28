@@ -25,7 +25,7 @@ func authTrace() []map[string]any {
 	return []map[string]any{
 		authEnvelope("auth.providers.request", "providers-req", "", 0, map[string]any{}),
 		authEnvelope("auth.providers.response", "providers-resp", "providers-req", 0, map[string]any{
-			"providers": []map[string]any{{"id": "anthropic", "name": "Anthropic", "auth_status": "login_required"}},
+			"providers": []map[string]any{{"id": "anthropic", "name": "Anthropic", "auth_kinds": []string{"oauth", "api_key"}, "auth_status": "login_required"}},
 		}),
 		authEnvelope("auth.login.start.request", "start-req", "", 0, map[string]any{"provider_id": "anthropic"}),
 		authEnvelope("auth.login.start.response", "start-resp", "start-req", 0, map[string]any{"flow_id": "flow-1"}),

@@ -3,7 +3,7 @@ import { createInterface, type Interface as ReadlineInterface } from "node:readl
 import { ulid } from "ulid";
 import { resolveMakaiBinary } from "./binary_resolver";
 import { isAbortError, raceWithAbort } from "./abort_signal";
-import { AUTH_STATUSES, MakaiAuthError, type AuthFlowHandlers, type MakaiAuthApi, type MakaiAuthEvent, type ProviderAuthInfo } from "./auth_protocol";
+import { AUTH_KINDS, AUTH_STATUSES, MakaiAuthError, type AuthFlowHandlers, type AuthKind, type MakaiAuthApi, type MakaiAuthEvent, type ProviderAuthInfo } from "./auth_protocol";
 import { MakaiAuthRequiredError, MakaiStreamError, type AgentRunRequest, type AgentRunResponse, type AgentStreamEvent, type ChatMessage, type CompletionResponse, type ContentPart, type MakaiProviderApi, type ProviderCompleteRequest, type ProviderStreamEvent, type UsageSummary } from "./execution_types";
 import { MakaiProtocolError, type ListModelsRequest, type ListModelsResponse, type MakaiModelsApi, type ModelDescriptor, type ResolveModelRequest, type ResolveModelResponse } from "./models_types";
 import type { CreateMakaiClientOptions, MakaiAgentModelsApi, MakaiClient } from "./execution_client";
@@ -431,8 +431,14 @@ class OapAuthApi implements MakaiAuthApi {
       if (!isRecord(raw) || !str(raw.id) || !str(raw.name) || !AUTH_STATUSES.some((status) => status === raw.auth_status)) {
         throw new MakaiProtocolError("invalid auth provider descriptor", "malformed_response");
       }
+      const kinds = raw.auth_kinds;
       return {
-        id: str(raw.id), name: str(raw.name), auth_status: raw.auth_status as ProviderAuthInfo["auth_status"],
+        id: str(raw.id), name: str(raw.name),
+        auth_kinds:
+          Array.isArray(kinds) && kinds.every((kind) => AUTH_KINDS.includes(kind as AuthKind))
+            ? (kinds as AuthKind[])
+            : [],
+        auth_status: raw.auth_status as ProviderAuthInfo["auth_status"],
         ...(typeof raw.last_error === "string" ? { last_error: raw.last_error } : {}),
       };
     });

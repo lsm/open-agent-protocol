@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+
+- **`auth.providers.response` says how each provider accepts a credential.** The
+  row carried an id, a name, a status and an optional last error, which
+  describes a provider's *state* and not its *means*: an API-key-only provider
+  and an OAuth provider are both `login_required` before anything has been
+  entered, so a caller had no way to know which kind of login to start. Each row
+  now carries `auth_kinds`, a non-empty ordered list of `api_key`, `oauth` and
+  `none`. The first entry a caller can perform is the one to drive, and `none`
+  is how a provider that needs no credential — Ollama — says so rather than
+  omitting itself.
+  The values come from the catalog's own `auth` array, so a row's kinds cannot
+  disagree with the row it came from; the runtime reads one and sends it.
+  The field is **required** with a `minItems` of one, which reserves emptiness:
+  a conforming runtime never sends an empty list, so an empty one can only mean
+  a runtime predating the field, and never "needs no credential". All four SDKs
+  read a missing or unrecognised list as empty rather than failing the listing,
+  because V1 evolution is additive-only and a new client has to stay usable
+  against an older runtime — which is also what lets the two cases be told apart.
+  Decision 0029's `auth.providers.response` row is amended, with the reasoning in
+  [Decision 0043](decisions/0043-auth-providers-carry-how-they-accept-a-credential.md).
+  This is a wire change, so it is the kind that breaks a client paired with an
+  older binary. Each SDK was checked rather than assumed: the new field is
+  absent-tolerant on read, and the fixture manifest gained a schema-invalid
+  case so a runtime that omits it is caught at the boundary rather than in a
+  user's terminal.
+
 - **Nothing a user reads suggests installing `goap` any more.** Every run instruction now goes through `go run ./go/cmd/goap` — the README's `hub`, `hub --stdio`, `validate` and `conformance` examples, its `fixtures/packs/` line, `examples/README.md`'s pack invocation and `docs/go-library.md`'s check-you-work line, and the eight runnable-looking commands in `docs/oap-system-map.html` — an orphan page nothing links to, which is how it drifted, and which I swept rather than deleted, because whether it should exist is the owner's call — and the daemon section says up front that `goap` is this repository's own command, run with `go run`, and what the released `oapx hub` carries today (the stdio transport; `unavailable` for `--addr` and `--config`, naming which). `drafts/cli.md` no longer frames two binaries: its title is *One Verb Set*, it states Decision 0038 inline in the decision's own words — one released binary, and a library for every language — and the `goap` column is labelled *repository tool* and records what the Go tree carries so the trees can be compared, rather than presenting a second product. `CLAUDE.md` says the Go command is internal to the repository.
 
 - **Go has one library.** The Go SDK moves from its own module at `sdk/go` into the main module as `go/sdk`, so a Go program that wants a client for a running endpoint imports the same module as everything else rather than a second one with its own `go.mod` and its own wire types. The exported surface is unchanged — `Client` with its `Auth`, `Models`, `Provider` and `Agent` namespaces, the same request and response types, the same typed errors — and the package name is `sdk`, because `makai` is the runtime's old name and nothing outside this repository imported it. Every caller-visible literal follows (`oap sdk: `, in the errors, the resolver and the transport's log lines), and the binary cache directory is `…/oapx/bin` rather than `…/makai/bin`, so a package that says the old name is retired is retired in its messages and on disk. **The zero-comment rule now has no exceptions at all**: the 31 files of `sdk/go` were the entire Go allowlist, and folding them in took the last entry with it, so `go/tools/nocomment`'s allowlist and its stale-entry check are gone and the floor for Go is zero like Zig's and TypeScript's. The documentation those comments carried did not go with them: everything a caller of the API needs — the four namespaces, per-call cancellation versus `Client.Close`, opaque `ModelRef` and session ids, what an endpoint refuses with `unsupported_feature`, and the typed error set — is now a section in `docs/go-library.md`, which is prose the policy does not reach. CI's separate `go-sdk` job, which ran its own Go 1.23 toolchain against `sdk/go`, is replaced by a `go-sdk-smoke` job in the main workflow that builds `oapx` and runs the SDK's real-binary tests, the only place the Go SDK talks to a real runtime. The SDK's private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is deliberately a separate change.

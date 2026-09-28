@@ -58,11 +58,12 @@ rl.on("line", (line) => {
         version: 1,
         payload: {
           providers: [
-            { id: "anthropic", name: "Anthropic", auth_status: "login_required" },
-            { id: "github-copilot", name: "GitHub Copilot", auth_status: "authenticated" },
+            { id: "anthropic", name: "Anthropic", auth_kinds: ["oauth", "api_key"], auth_status: "login_required" },
+            { id: "github-copilot", name: "GitHub Copilot", auth_kinds: ["oauth"], auth_status: "authenticated" },
             {
               id: "test-fixture",
               name: "Test Fixture (CI)",
+              auth_kinds: ["api_key"],
               auth_status: "failed",
               last_error: "previous attempt rejected",
             },

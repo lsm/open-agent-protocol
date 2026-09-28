@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   createMakaiClient,
   MakaiAuthRequiredError,
+  type AuthKind,
   type CreateMakaiClientOptions,
   type MakaiAuthEvent,
   type ProviderAuthInfo,
@@ -14,6 +15,7 @@ import {
 type DemoOAuthProvider = {
   id: string;
   name: string;
+  auth_kinds: AuthKind[];
 };
 
 type ChatProviderId = "test-fixture" | "github-copilot" | "anthropic";
@@ -77,9 +79,9 @@ const CHAT_PROVIDERS: ChatProviderConfig[] = [
 ];
 
 const FALLBACK_AUTH_PROVIDERS: DemoOAuthProvider[] = [
-  { id: "test-fixture", name: "Test Fixture (CI)" },
-  { id: "github-copilot", name: "GitHub Copilot" },
-  { id: "anthropic", name: "Anthropic" },
+  { id: "test-fixture", name: "Test Fixture (CI)", auth_kinds: ["api_key"] },
+  { id: "github-copilot", name: "GitHub Copilot", auth_kinds: ["oauth"] },
+  { id: "anthropic", name: "Anthropic", auth_kinds: ["oauth", "api_key"] },
 ];
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
