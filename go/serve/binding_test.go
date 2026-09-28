@@ -269,3 +269,67 @@ func boundHub(t *testing.T, options serve.Options) *serve.Hub {
 func openRequestFor(id protocol.SessionID) base.OpenRequest {
 	return base.OpenRequest{SessionID: id, Metadata: map[string]any{"note": "a title"}}
 }
+
+type closedAtOpenAdapter struct {
+	base.Adapter
+}
+
+type closedAtOpenSession struct {
+	base.Session
+}
+
+func (a *closedAtOpenAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	session, err := a.Adapter.Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return closedAtOpenSession{Session: session}, nil
+}
+
+func (s closedAtOpenSession) State(ctx context.Context) (protocol.SessionState, error) {
+	state, err := s.Session.State(ctx)
+	if err != nil {
+		return state, err
+	}
+	state.Status = protocol.SessionClosed
+	return state, nil
+}
+
+func TestASessionThatSettlesAtOpenRecordsBothEndsInOneGo(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", base.NewMemory(base.Config{JournalCapacity: 8})); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{Bindings: store, StreamQueue: 8})
+	ctx := context.Background()
+	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-live"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("settling", &closedAtOpenAdapter{Adapter: base.NewMemory(base.Config{JournalCapacity: 8})}); err != nil {
+		t.Fatal(err)
+	}
+	entry, _, err := hub.Open(ctx, "settling", base.OpenRequest{SessionID: "session-settled"})
+	if err == nil {
+		t.Fatal("the open of a session that settles at open was admitted, so nothing was recorded")
+	}
+	if err := entry.Close(ctx); err != nil {
+		t.Fatalf("closing a session that settled at open: %v", err)
+	}
+	history, err := store.History(ctx, "session-settled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history has %d entries, want the open and the one close that ended it, with the release writing none of its own: %+v", len(history), history)
+	}
+	if history[0].Action != binding.ActionOpened || history[1].Action != binding.ActionClosed {
+		t.Fatalf("history = %+v, want opened then closed", history[:2])
+	}
+	if state, found := binding.State(history); !found || state.Action != binding.ActionClosed {
+		t.Fatalf("the last state is %+v, want the close", state)
+	}
+}

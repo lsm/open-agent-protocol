@@ -96,7 +96,9 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	h.bindingMu.Lock()
 	var added error
 	if settled {
+		entry.binding = binding.Record{}
 		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+		h.recordBinding(ctx, opened, binding.ActionClosed, h.now())
 	} else if added = h.sessions.add(entry); added == nil {
 		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
 	} else {

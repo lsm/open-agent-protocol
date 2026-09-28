@@ -382,3 +382,50 @@ func TestASameLengthEditOfAValidatedRecordIsFoundAndThenRepaired(t *testing.T) {
 		t.Fatalf("the repaired log holds %d entries, want the records the walk kept: %+v", len(history), history)
 	}
 }
+
+func fromALongRecord() Record {
+	first := FromOpen("session-longer-than-the-cached-offset", "memory", "memory-oap-v1", "a-model", "/home/op", "/work", []string{"fs"})
+	first.Model = strings.Repeat("m", 200)
+	return first
+}
+
+func TestAHostThatEmptiesTheStoreDoesNotLeaveTheCachePointingIntoNothing(t *testing.T) {
+	ctx := context.Background()
+	store := fileStoreIn(t)
+	if err := store.Append(ctx, Opened(sample(), 1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, Opened(sample(), 2)); err != nil {
+		t.Fatal(err)
+	}
+	editor := store.(*fileStore)
+	if !editor.confirmed || editor.lastStart != 0 || editor.validated == 0 {
+		t.Fatalf("the store cached validated=%d confirmed=%t lastStart=%d, so the stale-offset case this test needs is not the one it built",
+			editor.validated, editor.confirmed, editor.lastStart)
+	}
+	if err := os.WriteFile(editor.path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	long := Entry{Action: ActionOpened, TimeMS: 9, Record: fromALongRecord()}
+	encoded, err := encode(long)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(encoded)) <= editor.validated {
+		t.Fatalf("the record written into the emptied store is %d bytes and the cached offset is %d, so the repair cannot truncate into it",
+			len(encoded), editor.validated)
+	}
+	if err := store.Append(ctx, long); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, long); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.History(ctx, long.Record.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("the store holds %d records after a host emptied it, want the two appended since: %+v", len(history), history)
+	}
+}

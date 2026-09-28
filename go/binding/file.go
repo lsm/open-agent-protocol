@@ -57,8 +57,12 @@ func (s *fileStore) repair() error {
 
 func (s *fileStore) repairLocked() error {
 	info, err := os.Stat(s.path)
-	if err != nil || info.Size() == 0 {
+	if err != nil {
 		return err
+	}
+	if info.Size() == 0 {
+		s.forget()
+		return nil
 	}
 	if s.confirmed && info.Size() == s.validated {
 		return nil
