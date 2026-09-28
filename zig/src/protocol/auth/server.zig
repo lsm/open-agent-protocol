@@ -935,7 +935,15 @@ test "the providers response carries each row's own credential kinds, in the cat
     var owned = response;
     defer owned.providers.deinit(allocator);
 
-    const served = response.providers.slice();
+    try std.testing.expectEqual(auth_providers.servedDefinitions().len, owned.providers.slice().len);
+
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
+    const with_fixture = try server.buildProvidersResponse();
+    var fixture_owned = with_fixture;
+    defer fixture_owned.providers.deinit(allocator);
+
+    const served = fixture_owned.providers.slice();
     try std.testing.expectEqual(auth_providers.ALL_DEFINITIONS.len, served.len);
     for (served, 0..) |info, index| {
         const definition = auth_providers.ALL_DEFINITIONS[index];
