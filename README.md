@@ -94,7 +94,7 @@ Protocol artifacts:
 
 - [Illustrative protocol envelopes](examples/README.md)
 - `fixtures/`: normative executable conformance traces
-- `fixtures/packs/`: extension packs, loadable with `goap validate -pack`
+- `fixtures/packs/`: extension packs, loadable with `go run ./go/cmd/goap validate -pack`
 - `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles
 
 Executable core (Go 1.26 or later, the `go.mod` floor; CI runs 1.27.x):
@@ -303,8 +303,8 @@ wire behavior is the contract the `client` package proves:
 go run ./go/cmd/goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
 
-Decision 0038 is why there is one released binary per language and a library
-for every other one; it is also what schedules `oapx hub`.
+Decision 0038 is why there is one released binary, and a library for every
+language; it is also what schedules `oapx hub`.
 
 Without `--config` the daemon serves the built-in memory reference adapter
 only. The registry document maps names to in-repo adapter configurations

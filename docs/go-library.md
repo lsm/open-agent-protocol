@@ -106,5 +106,5 @@ CI builds `goap` and runs it, so neither can drift from the library.
   (close, the snapshot, a subscription's ending) and then one binding.
 - To **know what a harness can do**, read its ledger under `research/`, which
   records the wire at the pinned version — the catalog entry names which.
-- To **check your work**, run `goap check`, `goap validate` and the adapter
+- To **check your work**, run `go run ./go/cmd/goap check`, `go run ./go/cmd/goap validate` and the adapter
   corpora; `go/adapter/adaptertest` is what they run under.

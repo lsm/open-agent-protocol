@@ -5,8 +5,8 @@ control layer and an agent loop, with two peer implementations: the Zig runtime
 `oapx`, which is the product, and a Go tree that serves Go users natively. The
 Go tree's command is `goap`, and it is **internal to this repository**: it is
 run with `go run ./go/cmd/goap`, it is never installed, and it is not a second
-product (Decision 0038: one released binary per language, a library for every
-other one). One invariant holds everywhere:
+product (Decision 0038: one released binary, and a library for every
+language). One invariant holds everywhere:
 an adapter over a third-party harness must emit traces the shared validator
 accepts. Neither tree is the oracle (Decision 0032): when Zig and Go disagree,
 the decisions, drafts, schema, fixtures and corpora decide, the wrong side is
