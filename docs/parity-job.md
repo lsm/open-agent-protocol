@@ -35,12 +35,16 @@ and the fix is cheaper there.
 | fixture | the divergence it is the last check on |
 | --- | --- |
 | `acp`, `claude`, `codex`, `deepseek`, `hermes`, `opencode`, `pi` | that tree's adapter translates this harness's frames the same way the other tree's does |
+| `pi-two-open-calls` | that two calls open **at once** are closed in the same order in both trees — the contested settlement, the one case `memory` structurally cannot reach |
 | `memory` | that a whole run's event stream — from the permission gate through the tool call and the input gate to the terminal, both interactions in sequence — comes out identical and in the same order |
 
-The seven harness fixtures share one shape: a fixed `scenario.jsonl` and a
-`registry.json` naming the adapter. Six drive a `child.sh` that answers
-deterministically; `opencode` has none and answers the in-test fake HTTP server
-the harness starts for it when its registry carries `@URL@`.
+The eight harness fixtures share one shape: a fixed `scenario.jsonl`, a
+`registry.json` naming the adapter, and a `child.sh` that answers
+deterministically. (`opencode` has no `child.sh` and answers the in-test fake
+HTTP server the harness starts for it when its registry carries `@URL@`.) A
+fixture's directory name is the backend it serves, unless it carries a
+`backend` file naming one: `pi-two-open-calls` serves `pi`, and the directory
+name is free to say what the fixture is *for*.
 
 **Every fixture that submits streams that run's envelopes**, so the ordered
 comparison has always had runs to walk — #475 caught the `pi` fixture announcing
@@ -63,8 +67,22 @@ construction: `go/adapter/memory.go` and `zig/src/adapter/memory/adapter.zig` ar
 separate implementations, which is why the comparison scrubs `id` and every
 `*_ms` member before it compares anything.
 
+**`pi-two-open-calls` is the contested settlement `memory` cannot be.** The
+memory backend holds one pending interaction, so no memory fixture can open two;
+`pi` has no such ceiling, and its script can start a second tool call while the
+first is still running. The scenario therefore drives one `pi` run in which
+`read a` and `read b` both start, `a` finishes, and `b` never does — so when the
+run settles, two calls are open at once and each tree has to close them in the
+same order. It is the case #433 asked for, and it is the one the ordered
+comparison exists to catch: in both trees the run emits
+`action.call.requested`/`started` for both calls before either closes, then
+`completed` for `a` and `failed` for `b`. The settlement order is read out of
+`settleRun` (`go/adapter/pi/session.go`), which sweeps the open children in
+`order`, and out of its Zig counterpart.
+
 **Two tests, and only one of them looks at order.** `TestBackendsMatchOapx`
-runs the eight fixtures with a content diff **and** the ordered comparison.
+runs the eight harness fixtures and `memory` with a content diff **and** the
+ordered comparison.
 `TestMemoryBackendMatchesOapx` compares the memory backend's output as a
 *sorted* set, so it is order-blind by construction: it answers "do the two
 trees emit the same envelopes", not "in what order". The order claim belongs to
@@ -99,7 +117,9 @@ skip, so an ordinary `go test ./go/...` stays fast and the jobs are the only
 things that pay for it. CI builds `oapx` and runs them on every change in three
 jobs: `backend-parity` for the fixtures, `memory-conformance` for the memory
 backend, and `pi-parity-repeat`, which runs the `pi` fixture twenty times
-because that scenario must not depend on goroutine scheduling.
+because that scenario must not depend on goroutine scheduling. It selects that
+one fixture by its directory name, which is what a subtest is called, so
+`pi-two-open-calls` is not swept into it.
 
 ## When it fails
 

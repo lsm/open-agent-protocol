@@ -33,8 +33,8 @@ func TestBackendsMatchOapx(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, dir := range cases {
-		backend := filepath.Base(dir)
-		t.Run(backend, func(t *testing.T) {
+		backend := fixtureBackend(t, dir)
+		t.Run(filepath.Base(dir), func(t *testing.T) {
 			scenario := readLines(t, filepath.Join(dir, "scenario.jsonl"))
 			wantOut, wantChild := exchangeWithChild(t, dir, backend, scenario, goap, "serve", "agent")
 			gotOut, gotChild := exchangeWithChild(t, dir, backend, scenario, oapx, "serve", "agent")
@@ -52,6 +52,22 @@ func TestBackendsMatchOapx(t *testing.T) {
 			}
 		})
 	}
+}
+
+func fixtureBackend(t *testing.T, dir string) string {
+	t.Helper()
+	held, err := os.ReadFile(filepath.Join(dir, "backend"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filepath.Base(dir)
+		}
+		t.Fatalf("read the backend of %s: %v", dir, err)
+	}
+	backend := strings.TrimSpace(string(held))
+	if backend == "" {
+		t.Fatalf("%s/backend is empty: it names the backend the fixture serves", dir)
+	}
+	return backend
 }
 
 func readLines(t *testing.T, path string) []string {
@@ -324,6 +340,40 @@ func scrubbed(value any) any {
 		return typed
 	}
 	return value
+}
+
+func TestAFixtureMayNameTheBackendItServes(t *testing.T) {
+	dir := t.TempDir()
+	if got, want := fixtureBackend(t, dir), filepath.Base(dir); got != want {
+		t.Errorf("a fixture with no backend file is served by its directory: got %q, want %q", got, want)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "backend"), []byte("pi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := fixtureBackend(t, dir); got != "pi" {
+		t.Errorf("a fixture may name a backend other than its directory: got %q, want %q", got, "pi")
+	}
+}
+
+func TestTwoFixtureDirectoryNamesOneBackend(t *testing.T) {
+	dir := filepath.Join("testdata", "parity", "pi-two-open-calls")
+	held, err := os.ReadFile(filepath.Join(dir, "backend"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(held)), "pi"; got != want {
+		t.Fatalf("the fixture names the backend it serves: got %q, want %q", got, want)
+	}
+	if got := fixtureBackend(t, dir); got == filepath.Base(dir) {
+		t.Fatalf("the fixture's directory and the backend it serves differ, so the name comes from the file: both are %q", got)
+	}
+	registry, err := os.ReadFile(filepath.Join(dir, "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(registry), `"pi"`) {
+		t.Fatalf("the fixture's registry holds the backend it names: %s", registry)
+	}
 }
 
 func TestChildLinesCompareDataNotBytes(t *testing.T) {
