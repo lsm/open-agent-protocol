@@ -6,7 +6,10 @@ Status: the implementation contract for the Hermes adapter pinned to
 the base for everything not named here: boundary selection, process lifecycle,
 framing and codec strictness, sequencing and replay, dual session identity,
 the admission model, the side channels, and settlement arbitration. Each claim
-below was checked by running the pinned gateway, not only by reading it.
+below was checked by running the pinned gateway, not only by reading it — with
+one exception, stated where it applies: **Session reload at v2026.9.24** at the
+end of this ledger is read from the source at this pin's commit and observed
+nowhere, and says so in its own first paragraph.
 
 ## Provenance
 
