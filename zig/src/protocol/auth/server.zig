@@ -420,10 +420,12 @@ pub const AuthProtocolServer = struct {
                 }
             }
 
+            const kinds = try self.allocator.dupe(auth_types.AuthKind, definition.auth_kinds);
+            errdefer self.allocator.free(kinds);
             providers[index] = .{
                 .id = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.id)),
                 .name = OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, definition.name)),
-                .auth_kinds = try self.allocator.dupe(auth_types.AuthKind, definition.auth_kinds),
+                .auth_kinds = kinds,
                 .auth_status = status,
             };
         }

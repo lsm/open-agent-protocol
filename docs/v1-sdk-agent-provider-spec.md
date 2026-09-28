@@ -535,9 +535,12 @@ Add payload variants:
 Add request/response structs (`ULID` is the 26-character Crockford's Base32 protocol ID type):
 
 ```zig
+pub const AuthKind = enum { api_key, oauth, none };
+
 pub const AuthProviderInfo = struct {
     id: OwnedSlice(u8),
     name: OwnedSlice(u8),
+    auth_kinds: []const AuthKind = &.{},
     auth_status: enum { authenticated, login_required, expired, refreshing, login_in_progress, failed, unknown },
     last_error: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
 };

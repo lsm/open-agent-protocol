@@ -519,6 +519,7 @@ def _parse_provider(entry: Any, index: int) -> ProviderAuthInfo:
     return ProviderAuthInfo(
         id=identifier,
         name=name,
+        auth_kinds=_auth_kinds(entry.get("auth_kinds")),
         auth_status=auth_status,
         last_error=last_error if isinstance(last_error, str) and last_error else None,
     )
