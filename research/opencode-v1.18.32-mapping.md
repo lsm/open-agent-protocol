@@ -198,11 +198,12 @@ is a single `select … where id = ?` and answers `undefined`; the server
 handler turns that into `SessionNotFoundError` (tag `Session.NotFoundError`),
 and a message that is not there into `Session.MessageNotFoundError`. An
 adapter can therefore carry `unknown_session` from the wire rather than infer
-it. Hermes' own store is typed the same way — `tui_gateway/methods_session.py`
-at the Hermes pin answers `4007 session not found` from `_resume_locate`, read
-at that pin for the Hermes ledger — so two of the seven harnesses say so. The
-ones that force the inference are in the pi ledger (discovery returns `null`)
-and the ACP ledger (the spec says nothing).
+it. Hermes' own store is typed the same way: `_resume_locate` answers `4007
+session not found` for a profile that holds neither the row nor a stranded
+donor (`research/hermes-v2026.9.24-mapping.md`, "Session reload at v2026.9.24",
+the store's not-found paragraph). So two of the seven harnesses read at their
+pins say so. The ones that force the inference are in the pi ledger (discovery
+returns `null`) and the ACP ledger (the spec says nothing).
 
 **What a reattach would call, and what the adapter calls instead.** The session
 group (`packages/protocol/src/groups/session.ts`) carries seventeen routes:
