@@ -735,8 +735,11 @@ func TestAbortSettlementCancelsWhenNoNaturalCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := adaptertest.Drain(t, stream, time.Second)
-	if events[len(events)-1].Type != protocol.TypeRunCancelled || (cancel.Status != protocol.RunCancelled && cancel.Status != protocol.RunCancelling) {
+	if events[len(events)-1].Type != protocol.TypeRunCancelled {
 		t.Fatalf("events=%v cancel=%+v", eventTypes(events), cancel)
+	}
+	if cancel.Status != protocol.RunCancelling {
+		t.Fatalf("cancel status %q, want %q: the answer is the acceptance, and the run settled on the stream behind it", cancel.Status, protocol.RunCancelling)
 	}
 	assertCancelledTrace(t, response, append([]protocol.Envelope{started}, events...))
 }
