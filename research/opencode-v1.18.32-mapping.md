@@ -201,9 +201,13 @@ adapter can therefore carry `unknown_session` from the wire rather than infer
 it. Hermes' own store is typed the same way: `_resume_locate` answers `4007
 session not found` for a profile that holds neither the row nor a stranded
 donor (`research/hermes-v2026.9.24-mapping.md`, "Session reload at v2026.9.24",
-the store's not-found paragraph). So two of the seven harnesses read at their
-pins say so. The ones that force the inference are in the pi ledger (discovery
-returns `null`) and the ACP ledger (the spec says nothing).
+the store's not-found paragraph). Of the seven harnesses read at their pins,
+three type their own absence — that one, this one, and DeepSeek's
+(`SessionPersistenceNotFoundError`) — and four do not: pi's discovery answers
+`null`, the ACP spec says nothing, Codex's reload ledger records `-32602
+invalid_request` and calls that "not a not-found code", and Claude Code's answer
+is unrecorded. The inference is what those four need, and two of them need a
+fixture before it can be said either way.
 
 **What a reattach would call, and what the adapter calls instead.** The session
 group (`packages/protocol/src/groups/session.ts`) carries seventeen routes:
