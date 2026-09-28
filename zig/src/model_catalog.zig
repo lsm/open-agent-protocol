@@ -557,9 +557,19 @@ fn appendCatalogTargetModels(
     const discovered = try discoverCatalogModelIds(allocator, target, credential.key, mode);
     defer if (discovered) |ids| freeModelIds(allocator, ids);
 
-    const ids = discovered orelse return;
-    for (ids) |model_id| {
-        var model = try catalogModel(allocator, target, model_id);
+    if (discovered) |ids| {
+        if (ids.len > 0) {
+            for (ids) |model_id| {
+                var model = try catalogModel(allocator, target, model_id);
+                errdefer model.deinit(allocator);
+                try models.append(allocator, model);
+            }
+            return;
+        }
+    }
+
+    for (provider_catalog.modelsFor(target.id)) |declared| {
+        var model = try catalogModel(allocator, target, declared.id);
         errdefer model.deinit(allocator);
         try models.append(allocator, model);
     }
@@ -569,7 +579,7 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, id_text: 
     const wire = provider_catalog.wireForModel(target.id, id_text) orelse return error.UnsupportedCatalogWire;
     const id = try allocator.dupe(u8, id_text);
     errdefer allocator.free(id);
-    const name = try allocator.dupe(u8, id_text);
+    const name = try allocator.dupe(u8, displayNameFor(target.id, id_text));
     errdefer allocator.free(name);
     const api = try allocator.dupe(u8, wire.id);
     errdefer allocator.free(api);
@@ -590,10 +600,29 @@ fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, id_text: 
         .reasoning = false,
         .input = input,
         .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
-        .context_window = catalog_context_window,
-        .max_tokens = catalog_max_output_tokens,
+        .context_window = contextWindowFor(target.id, id_text),
+        .max_tokens = maxTokensFor(target.id, id_text),
         .is_owned = true,
     };
+}
+
+fn displayNameFor(id: []const u8, model_id: []const u8) []const u8 {
+    const declared = provider_catalog.declaredModel(id, model_id) orelse return model_id;
+    return declared.name orelse model_id;
+}
+
+fn contextWindowFor(id: []const u8, model_id: []const u8) u32 {
+    if (provider_catalog.declaredModel(id, model_id)) |declared| {
+        if (declared.context_window) |window| return window;
+    }
+    return provider_catalog.rowContextWindow(id) orelse catalog_context_window;
+}
+
+fn maxTokensFor(id: []const u8, model_id: []const u8) u32 {
+    if (provider_catalog.declaredModel(id, model_id)) |declared| {
+        if (declared.max_tokens) |tokens| return tokens;
+    }
+    return provider_catalog.rowMaxTokens(id) orelse catalog_max_output_tokens;
 }
 
 fn catalogRowCacheName(allocator: std.mem.Allocator, id: []const u8) ![]u8 {
@@ -835,7 +864,6 @@ fn parseModelIds(allocator: std.mem.Allocator, data: []const u8) ![][]const u8 {
 
 
 
-var test_force_kimi_model: bool = false;
 var test_force_codex_refresh_error: bool = false;
 var test_force_anthropic_models: bool = false;
 
@@ -1944,6 +1972,8 @@ test "parseCodexModelsCache maps visible supported Codex models" {
 }
 
 test "loadProductionModels includes the Kimi model, discovered like any other row" {
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    defer compat.clearTestEnv();
     const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
     test_catalog_discovery = &[_]CatalogDiscovery{.{
         .id = "kimi",
@@ -1966,9 +1996,14 @@ test "loadProductionModels includes the Kimi model, discovered like any other ro
     try std.testing.expectEqualStrings(kimi_provider_id, models[0].provider);
     try std.testing.expectEqualStrings(kimi_api_id, models[0].api);
     try std.testing.expectEqualStrings(kimi_base_url, models[0].base_url);
+    try std.testing.expectEqualStrings("Kimi K2.7 Code", models[0].name);
+    try std.testing.expectEqual(@as(u32, 262_144), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 16_384), models[0].max_tokens);
 }
 
 test "the Kimi row serves the China base by default and the global base when the region says so" {
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    defer compat.clearTestEnv();
     const china = catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("china", china.?);
     const china_target = catalogTargetInRegion("kimi", china) orelse return error.TestExpectedTarget;
@@ -2107,6 +2142,8 @@ test "a stored OAuth credential's region picks the row's endpoint, and an unusab
 
 
 test "refreshProductionModels keeps Kimi when Codex refresh fails" {
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    defer compat.clearTestEnv();
     const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
     test_catalog_discovery = &[_]CatalogDiscovery{.{
         .id = "kimi",
@@ -2826,6 +2863,76 @@ test "a catalog row with discovery but no model id contributes nothing" {
     const models = try loadCatalogModels(std.testing.allocator, null, .allow_cache);
     defer deinitModels(std.testing.allocator, models);
     try std.testing.expectEqual(@as(usize, 0), models.len);
+}
+
+test "a row's own limits reach a model it does not declare, and a row that declares none keeps the generic ones" {
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    defer compat.clearTestEnv();
+    const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "kimi", .models_url = target.models_url, .model_ids = &.{"kimi-k2-turbo-preview"} },
+        .{ .id = "deepseek", .models_url = deepseek_catalog_models_url, .model_ids = &.{"deepseek-chat"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = kimi_env_key, .value = "kimi-key" },
+        .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModels(std.testing.allocator, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    var kimi_seen = false;
+    var deepseek_seen = false;
+    for (models) |model| {
+        if (std.mem.eql(u8, "kimi", model.provider)) {
+            kimi_seen = true;
+            try std.testing.expectEqualStrings("kimi-k2-turbo-preview", model.name);
+            try std.testing.expectEqual(@as(u32, 262_144), model.context_window);
+            try std.testing.expectEqual(@as(u32, 16_384), model.max_tokens);
+        }
+        if (std.mem.eql(u8, "deepseek", model.provider)) {
+            deepseek_seen = true;
+            try std.testing.expectEqualStrings("deepseek-chat", model.name);
+            try std.testing.expectEqual(@as(u32, catalog_context_window), model.context_window);
+            try std.testing.expectEqual(@as(u32, catalog_max_output_tokens), model.max_tokens);
+        }
+    }
+    try std.testing.expect(kimi_seen);
+    try std.testing.expect(deepseek_seen);
+}
+
+test "a row that declares models still serves them when its own listing answers with none" {
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env, "");
+    defer compat.clearTestEnv();
+    const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
+    test_catalog_discovery = &[_]CatalogDiscovery{.{
+        .id = "kimi",
+        .models_url = target.models_url,
+        .model_ids = &.{},
+    }};
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = kimi_env_key, .value = "kimi-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModels(std.testing.allocator, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("kimi-k2.7-code", models[0].id);
+    try std.testing.expectEqualStrings("Kimi K2.7 Code", models[0].name);
+    try std.testing.expectEqualStrings("kimi", models[0].provider);
+    try std.testing.expectEqualStrings("openai-completions", models[0].api);
+    try std.testing.expectEqualStrings("https://api.kimi.com/coding", models[0].base_url);
+    try std.testing.expectEqual(@as(u32, 262_144), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 16_384), models[0].max_tokens);
 }
 
 test "loadProductionModels carries a catalog row's discovered models" {

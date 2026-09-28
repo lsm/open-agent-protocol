@@ -198,6 +198,14 @@
         }
       ],
       "models_endpoint": "/v1/models",
+      "context_window": 262144,
+      "max_tokens": 16384,
+      "models": [
+        {
+          "id": "kimi-k2.7-code",
+          "name": "Kimi K2.7 Code"
+        }
+      ],
       "docs": "https://www.kimi.com/code/docs"
     },
     {

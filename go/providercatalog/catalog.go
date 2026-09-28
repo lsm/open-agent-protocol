@@ -36,8 +36,18 @@ type Provider struct {
 	BaseURLSource string       `json:"base_url_source,omitempty"`
 	Endpoints     []Endpoint   `json:"endpoints,omitempty"`
 	ModelsPath    string       `json:"models_endpoint,omitempty"`
+	ContextWindow int          `json:"context_window,omitempty"`
+	MaxTokens     int          `json:"max_tokens,omitempty"`
+	Models        []Model      `json:"models,omitempty"`
 	OAuthOrigin   *OAuthOrigin `json:"oauth_origin,omitempty"`
 	Docs          string       `json:"docs,omitempty"`
+}
+
+type Model struct {
+	ID            string `json:"id"`
+	Name          string `json:"name,omitempty"`
+	ContextWindow int    `json:"context_window,omitempty"`
+	MaxTokens     int    `json:"max_tokens,omitempty"`
 }
 
 type Endpoint struct {

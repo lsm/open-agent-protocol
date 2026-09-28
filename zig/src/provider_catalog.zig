@@ -7,6 +7,7 @@ pub const AuthKind = data.AuthKind;
 pub const Offering = data.Offering;
 pub const Status = data.Status;
 pub const Endpoint = data.Endpoint;
+pub const Model = data.Model;
 pub const OAuthOrigin = data.OAuthOrigin;
 pub const Provider = data.Provider;
 pub const Pinned = data.Pinned;
@@ -134,6 +135,28 @@ pub fn regionEnv(id: []const u8) ?[]const u8 {
 pub fn defaultRegion(id: []const u8) ?[]const u8 {
     const row = provider(id) orelse return null;
     return row.default_region;
+}
+
+pub fn modelsFor(id: []const u8) []const Model {
+    const row = provider(id) orelse return &.{};
+    return row.models;
+}
+
+pub fn declaredModel(id: []const u8, model_id: []const u8) ?Model {
+    for (modelsFor(id)) |model| {
+        if (std.mem.eql(u8, model.id, model_id)) return model;
+    }
+    return null;
+}
+
+pub fn rowContextWindow(id: []const u8) ?u32 {
+    const row = provider(id) orelse return null;
+    return row.context_window;
+}
+
+pub fn rowMaxTokens(id: []const u8) ?u32 {
+    const row = provider(id) orelse return null;
+    return row.max_tokens;
 }
 
 pub fn regionFromValue(id: []const u8, value: []const u8) ?[]const u8 {

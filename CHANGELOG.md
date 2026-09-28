@@ -28,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moonshot base. A region value is trimmed before it is matched, and a value
   written into `auth.json` by hand is read by the same rules as one typed into
   the environment, synonyms and all.
+  **Kimi's real limits, its display name and its offline fallback come back.**
+  The generic loader stamped every discovered row with a 128000-token context, an
+  8192-token output cap and the model id as its name, so a Kimi run in the TUI
+  silently asked for half the context it had and half the output it was allowed.
+  Kimi is 262144 and 16384, its model is called `Kimi K2.7 Code`, and when its
+  models endpoint could not be reached it served nothing at all where it used to
+  serve one known model. A catalog row may now record `context_window`,
+  `max_tokens` and a `models` list, with the same meaning a custom provider's
+  fields have had all along: the row's two numbers are the defaults for its
+  models, a `models` entry overrides them for one model and names how to show it,
+  and a row that lists models still serves them when its own listing answers with
+  none. `goap check` refuses a row that declares one model id twice, since the two
+  entries would then disagree about which name and limits win. No row but `kimi`
+  uses any of this yet.
   **A Kimi login made in the TUI keeps working, which it very nearly did not.**
   The TUI stores an API key with its region as an *oauth* entry, because the
   api-key entry has nowhere to put a region. The old Kimi code accepted either

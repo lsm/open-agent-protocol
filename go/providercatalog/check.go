@@ -13,15 +13,16 @@ import (
 )
 
 const (
-	CodeDuplicateID   = "provider_duplicate_id"
-	CodeMissingID     = "provider_missing_id"
-	CodeEndpointLone  = "provider_endpoint_without_wire"
-	CodeBaseURLText   = "provider_base_url_literal"
-	CodeOffering      = "provider_offering_unknown"
-	CodeStatus        = "provider_status_unknown"
-	CodeStaleURLs     = "provider_resolved_urls_stale"
-	CodeCarriesOn     = "provider_carries_version_without_versioned_path"
-	CodeDefaultRegion = "provider_default_region_unknown"
+	CodeDuplicateID    = "provider_duplicate_id"
+	CodeMissingID      = "provider_missing_id"
+	CodeEndpointLone   = "provider_endpoint_without_wire"
+	CodeBaseURLText    = "provider_base_url_literal"
+	CodeOffering       = "provider_offering_unknown"
+	CodeStatus         = "provider_status_unknown"
+	CodeStaleURLs      = "provider_resolved_urls_stale"
+	CodeCarriesOn      = "provider_carries_version_without_versioned_path"
+	CodeDefaultRegion  = "provider_default_region_unknown"
+	CodeDuplicateModel = "provider_duplicate_model"
 )
 
 var LiteralRoots = []string{"go", "zig/src", "zig/build.zig"}
@@ -56,6 +57,13 @@ func Check(catalog Catalog) []Finding {
 		}
 		if provider.DefaultRegion != "" && !rowHasRegion(provider, provider.DefaultRegion) {
 			findings = append(findings, Finding{Provider: provider.ID, Code: CodeDefaultRegion, Detail: fmt.Sprintf("provider %q names default_region %q, which is not the region of any of its endpoints", provider.ID, provider.DefaultRegion)})
+		}
+		modelsSeen := map[string]struct{}{}
+		for _, model := range provider.Models {
+			if _, repeated := modelsSeen[model.ID]; repeated {
+				findings = append(findings, Finding{Provider: provider.ID, Code: CodeDuplicateModel, Detail: fmt.Sprintf("provider %q declares model %q twice, and the two entries would disagree about which name and limits win", provider.ID, model.ID)})
+			}
+			modelsSeen[model.ID] = struct{}{}
 		}
 		switch provider.Offering {
 		case "coding_plan", "subscription", "api_key", "":
