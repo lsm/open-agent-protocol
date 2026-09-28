@@ -572,9 +572,7 @@ fn appendCatalogTargetModels(
     }
 
     for (provider_catalog.modelsFor(target.id)) |declared| {
-        const model = try allocator.dupe(u8, declared.id);
-        var built = try catalogModel(allocator, target, .{ .id = model });
-        allocator.free(model);
+        var built = try catalogModel(allocator, target, .{ .id = declared.id });
         errdefer built.deinit(allocator);
         try out.append(allocator, built);
     }
@@ -3163,6 +3161,34 @@ fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
     defer deinitModels(allocator, models);
     try std.testing.expectEqual(@as(usize, 4), models.len);
     try std.testing.expectEqualStrings("openai-responses", models[3].api);
+}
+
+fn declaredModelsFallbackProbe(allocator: std.mem.Allocator) !void {
+    defer compat.clearTestEnv();
+    try compat.setTestEnv(allocator, kimi_region_env, "");
+    const target = catalogTargetInRegion("kimi", "china") orelse return error.TestExpectedTarget;
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "kimi", .models_url = target.models_url, .model_ids = &.{} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = kimi_env_key, .value = "kimi-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+    const models = try loadCatalogModels(allocator, null, .allow_cache);
+    defer deinitModels(allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("kimi-k2.7-code", models[0].id);
+    try std.testing.expectEqualStrings("Kimi K2.7 Code", models[0].name);
+    try std.testing.expectEqual(@as(u32, 262_144), models[0].context_window);
+    try std.testing.expectEqual(@as(u32, 16_384), models[0].max_tokens);
+}
+
+test "a row's declared models free every allocation when one fails midway" {
+    try declaredModelsFallbackProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, declaredModelsFallbackProbe, .{});
 }
 
 fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
