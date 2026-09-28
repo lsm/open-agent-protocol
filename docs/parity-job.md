@@ -18,9 +18,9 @@ trees emit the same answer, in the same order, with the same refusals?**
 | --- | --- | --- |
 | a payload the two trees decode into different values | the content diff, per envelope | the ordered diff, which sees order |
 | an answer one tree refuses and the other admits | the content diff | — |
-| **the order of a run's events** | the ordered comparison within a run, since #475 | anything in the corpus or the unit tests |
-| a refund code, reason or detail that differs | the content diff | — |
-| a **settlement order** — which of two open interactions ends the run, and in what order the calls close | the ordered comparison, given a fixture that opens more than one | the corpora, which record one interaction at a time |
+| **the order of a run's events** | `runOrderDifference` within `TestBackendsMatchOapx`, since #475 | anything in the corpus or the unit tests |
+| a refusal's code, reason or detail that differs | the content diff | — |
+| a **settlement order** — which of two open interactions ends the run, and in what order the calls close | the ordered comparison, given a fixture that opens more than one. `memory` is the only fixture that opens two interactions, and it is not a harness | the corpora, which record one interaction at a time |
 
 Everything else a divergence can be is covered cheaper elsewhere, and the
 parity job is deliberately not where it is duplicated: the fixtures are the
@@ -36,12 +36,22 @@ and the fix is cheaper there.
 | `acp`, `claude`, `codex`, `deepseek`, `hermes`, `opencode`, `pi` | that tree's adapter translates this harness's frames the same way the other tree's does |
 | `memory` | that a run's whole event stream — including both of its interactions and its terminal — comes out identical and in the same order |
 
-The seven harness fixtures share one shape: a fixed `scenario.jsonl`, a
-`child.sh` that answers deterministically, and a `registry.json` naming the
-adapter. They are request/response only, so until `memory` landed they could
-not see a run settle. `memory` is the one that can, because its script is
-in-process and therefore identical in both trees by construction, and it is
-the fixture that makes the ordered comparison mean anything.
+The seven harness fixtures share one shape: a fixed `scenario.jsonl` and a
+`registry.json` naming the adapter. Six drive a `child.sh` that answers
+deterministically; `opencode` has none and answers the in-test fake HTTP server
+the harness starts for it when its registry carries `@URL@`. None of them
+subscribes, so none of them can stream a run — which is why the ordered
+comparison had nothing to walk until `memory` landed. `memory` is the one that
+can: its script is in-process, so it is identical in both trees by
+construction, it answers both of its interactions, and its twelve envelopes
+are what the ordered comparison reads.
+
+**Two tests, and only one of them looks at order.** `TestBackendsMatchOapx`
+runs the eight fixtures with a content diff **and** the ordered comparison.
+`TestMemoryBackendMatchesOapx` compares the memory backend's output as a
+*sorted* set, so it is order-blind by construction: it answers "do the two
+trees emit the same envelopes", not "in what order". The order claim belongs to
+the fixture, not to the backend test.
 
 ## What it is not for
 
@@ -59,12 +69,15 @@ the fixture that makes the ordered comparison mean anything.
 
 ```sh
 zig build --build-file zig/build.zig install --prefix /tmp/oapx
-OAP_OAPX_BIN=/tmp/oapx/bin/oapx go test ./go/cmd/goap/ -run TestBackendsMatchOapx
+OAP_OAPX_BIN=/tmp/oapx/bin/oapx go test ./go/cmd/goap/ \
+  -run 'TestBackendsMatchOapx|TestMemoryBackendMatchesOapx'
 ```
 
-Without `OAP_OAPX_BIN` the comparison skips, so an ordinary `go test ./...`
-stays fast and the job is the only thing that pays for it. CI's
-`backend-parity` job builds `oapx` and runs it on every change.
+Both tests, or you have run one of the two halves. Without `OAP_OAPX_BIN` they
+skip, so an ordinary `go test ./...` stays fast and the jobs are the only thing
+that pays for it. CI builds `oapx` and runs them on every change, in two jobs:
+`backend-parity` for the fixtures and `memory-conformance` for the memory
+backend.
 
 ## When it fails
 
