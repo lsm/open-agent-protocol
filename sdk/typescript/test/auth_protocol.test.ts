@@ -110,11 +110,14 @@ test("client.auth.listProviders parses providers payload", async () => {
     assert.deepEqual(providers[0], {
       id: "anthropic",
       name: "Anthropic",
+      auth_kinds: ["api_key", "oauth"],
       auth_status: "login_required",
     });
     assert.equal(providers[1]?.id, "github-copilot");
+    assert.deepEqual(providers[1]?.auth_kinds, ["oauth"]);
     assert.equal(providers[1]?.auth_status, "authenticated");
     assert.equal(providers[2]?.auth_status, "failed");
+    assert.deepEqual(providers[2]?.auth_kinds, ["api_key"]);
     assert.equal(providers[2]?.last_error, "previous attempt rejected");
   } finally {
     await client.close();

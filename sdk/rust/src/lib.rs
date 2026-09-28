@@ -106,7 +106,7 @@ pub use error::{AuthErrorKind, Error, Result, StreamErrorKind};
 pub use events::{AgentEvent, ProviderEvent};
 pub use execution::ExecutionRequest;
 pub use models::{
-    AuthStatus, ListModelsRequest, ListModelsResponse, ModelCapability, ModelDescriptor,
+    AuthKind, AuthStatus, ListModelsRequest, ListModelsResponse, ModelCapability, ModelDescriptor,
     ModelLifecycle, ModelSource, ModelsApi, ReasoningLevel,
 };
 pub use provider::ProviderApi;

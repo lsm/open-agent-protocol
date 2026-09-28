@@ -133,9 +133,11 @@ func runOAPHost() {
 				fakeEmit(event)
 			}
 		case "auth.providers.request":
-			fakeEmit(oapFakeReply(request, "auth.providers.response", map[string]any{"providers": []map[string]any{{
-				"id": "fixture", "name": "Fixture", "auth_status": "login_required",
-			}}}))
+			fakeEmit(oapFakeReply(request, "auth.providers.response", map[string]any{"providers": []map[string]any{
+				{"id": "fixture", "name": "Fixture", "auth_kinds": []string{"api_key", "oauth"}, "auth_status": "login_required"},
+				{"id": "weird", "name": "Weird", "auth_kinds": []string{"api_key", "passkey"}, "auth_status": "login_required"},
+				{"id": "old", "name": "Old", "auth_status": "login_required"},
+			}}))
 		case "auth.login.start.request":
 			fakeEmit(oapFakeReply(request, "auth.login.start.response", map[string]any{"flow_id": "flow-1"}))
 			providerID := request.payload().str("provider_id")
@@ -262,7 +264,7 @@ func TestOAPCombinedFakeHost(t *testing.T) {
 		t.Fatalf("expected typed agent auth failure, got %v", err)
 	}
 	providers, err := client.Auth.ListProviders(ctx)
-	if err != nil || len(providers) != 1 {
+	if err != nil || len(providers) != 3 {
 		t.Fatalf("auth providers: %v, %+v", err, providers)
 	}
 	var events []AuthEventType

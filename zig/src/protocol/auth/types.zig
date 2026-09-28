@@ -1,6 +1,13 @@
 const std = @import("std");
 const provider_types = @import("protocol_types");
+const provider_catalog = @import("provider_catalog");
 pub const OwnedSlice = @import("owned_slice").OwnedSlice;
+
+pub const AuthKind = provider_catalog.AuthKind;
+
+pub fn parseAuthKind(name: []const u8) ?AuthKind {
+    return std.meta.stringToEnum(AuthKind, name);
+}
 
 pub const Ulid = provider_types.Ulid;
 pub const generateUlid = provider_types.generateUlid;
@@ -22,6 +29,7 @@ pub const AuthStatus = enum {
 pub const AuthProviderInfo = struct {
     id: OwnedSlice(u8),
     name: OwnedSlice(u8),
+    auth_kinds: []const AuthKind = &.{},
     auth_status: AuthStatus,
     last_error: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
 
@@ -29,6 +37,7 @@ pub const AuthProviderInfo = struct {
         self.id.deinit(allocator);
         self.name.deinit(allocator);
         self.last_error.deinit(allocator);
+        allocator.free(self.auth_kinds);
         self.* = undefined;
     }
 };

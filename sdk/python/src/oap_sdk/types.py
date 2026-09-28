@@ -20,6 +20,7 @@ from typing import (
     NotRequired,
     Optional,
     Sequence,
+    Tuple,
     TypedDict,
     Union,
     cast,
@@ -60,6 +61,7 @@ __all__ = [
     "ToolExecutionStart",
     "ToolExecutionEnd",
     "AgentStreamEvent",
+    "AuthKind",
     "AuthStatus",
     "ModelLifecycle",
     "ModelCapability",
@@ -91,6 +93,7 @@ AuthStatus = Literal[
     "failed",
     "unknown",
 ]
+AuthKind = Literal["api_key", "oauth", "none"]
 ModelLifecycle = Literal["stable", "preview", "deprecated"]
 ModelCapability = Literal[
     "chat",
@@ -370,7 +373,8 @@ class ProviderAuthInfo:
 
     id: str
     name: str
-    auth_status: AuthStatus
+    auth_kinds: Tuple[AuthKind, ...] = ()
+    auth_status: AuthStatus = "unknown"
     last_error: Optional[str] = None
 
 

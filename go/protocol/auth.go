@@ -3,11 +3,20 @@ package protocol
 type AuthFlowID string
 
 type AuthProvider struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	AuthStatus string `json:"auth_status"`
-	LastError  string `json:"last_error,omitempty"`
+	ID         string           `json:"id"`
+	Name       string           `json:"name"`
+	AuthKinds  []CredentialKind `json:"auth_kinds"`
+	AuthStatus string           `json:"auth_status"`
+	LastError  string           `json:"last_error,omitempty"`
 }
+
+type CredentialKind string
+
+const (
+	CredentialKindAPIKey CredentialKind = "api_key"
+	CredentialKindOAuth  CredentialKind = "oauth"
+	CredentialKindNone   CredentialKind = "none"
+)
 
 type AuthProvidersRequest struct{}
 type AuthProvidersResponse struct {

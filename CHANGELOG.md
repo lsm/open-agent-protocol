@@ -53,6 +53,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal rather than by mutating the process.
 
 ### Added
+
+- **`auth.providers.response` says how each provider accepts a credential.** The
+  row carried an id, a name, a status and an optional last error, which
+  describes a provider's *state* and not its *means*: an API-key-only provider
+  and an OAuth provider are both `login_required` before anything has been
+  entered, so a caller had no way to know which kind of login to start. Each row
+  now carries `auth_kinds`, a non-empty ordered list of `api_key`, `oauth` and
+  `none`. The first entry a caller can perform is the one to drive, and `none`
+  is how a provider that needs no credential — Ollama — says so rather than
+  omitting itself.
+  The values come from the catalog's own `auth` array, so a row's kinds cannot
+  disagree with the row it came from; the runtime reads one and sends it.
+  The field is **required** with a `minItems` of one, which reserves emptiness:
+  a conforming runtime never sends an empty list, so an empty one can only mean
+  a runtime predating the field, and never "needs no credential". All four SDKs
+  read a missing or unrecognised list as empty rather than failing the listing,
+  because V1 evolution is additive-only and a new client has to stay usable
+  against an older runtime — which is also what lets the two cases be told apart.
+  Decision 0029's `auth.providers.response` row is amended, with the reasoning in
+  [Decision 0043](decisions/0043-auth-providers-carry-how-they-accept-a-credential.md).
+  This is a wire change, so it is the kind that breaks a client paired with an
+  older binary. Each SDK was checked rather than assumed: the new field is
+  absent-tolerant on read, and the fixture manifest gained a schema-invalid
+  case so a runtime that omits it is caught at the boundary rather than in a
+  user's terminal.
+
 - **The duplicate-key JSON walk exists once.** Six adapters had their own copy — four byte-identical, two differing only in local names and where a `default` arm sat — plus a seventh call site that applied a different rule under the same name by delegating to a strict decode into a map. The walk is now `go/internal/jsonwalk.RejectDuplicateKeys`, the copies and the delegate are gone, and the **ten** call sites across nine entry points call it: each adapter's `ParseMessage` or `parseObject`, pi's and deepseek's `DecodeStrict`, opencode's event decoder and its HTTP response decoder, and deepseek's `carriesIntoATrace` — the one entry point with no wiring test of its own, because it asks whether a recorded trace is a wire the client can carry rather than whether a frame decodes. The property is tested once, in the package that owns the function, and is now **seeded from all seven harness corpora** rather than one adapter's; what each package keeps is a wiring test that its own entry point still refuses a key written twice, because a copy-paste regression would live in the call site and nowhere else. opencode's `native.RejectDuplicateKeys` export is gone with the copy — its one caller is in the same module and now calls the shared walk — and the weekly matrix runs the two shared targets in place of the thirteen that were per-adapter.
 
 - **The Go SDK's OAP path speaks `protocol.Envelope` instead of its own envelope struct.** The SDK had a private `frame` for both dialects, and the OAP half of it hand-rolled a vocabulary `go/protocol` already describes: `session.open.request`, `inference.create.request`, `models.request`, `auth.login.start.request` and the rest were built as a `frame` with string members. They are now built and read as `protocol.Envelope`, so the SDK's control-plane wire is the same type every other Go package uses and the validator can be pointed at it. **The legacy V1 wire keeps the frame**, which is the honest split rather than a compromise: a V1 envelope carries `inference_id`, `stream_id`, `message_id`, `protocol_version` and a numeric `version`, none of which `protocol.Envelope` has members for, and the SDK's streamed events read `inference_id` off the frame it receives. One request stays on the frame for the same reason — `inference.cancel.request` names its inference in a member the protocol envelope cannot carry — which is a gap in the protocol package's coverage of the provider profile rather than in the SDK. The transport's write path is now shared by both dialects, and the fake host in the wire tests emits frames while the SDK under test sends envelopes, so the asymmetry is what the suite exercises. The real-binary smoke tests pass against a freshly built `oapx`.
