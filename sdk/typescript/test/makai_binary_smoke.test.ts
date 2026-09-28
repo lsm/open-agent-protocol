@@ -95,7 +95,7 @@ test("e2e: auth login persists credentials", async (t) => {
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "makai-auth-home-"));
   const client = await createMakaiAuthClient({
     resolver: { binaryPath },
-    env: { ...process.env, HOME: tempHome },
+    env: { ...process.env, HOME: tempHome, OAPX_TEST_FIXTURE_PROVIDER: "1" },
     handshakeTimeoutMs: 1000,
   });
   try {
@@ -110,5 +110,27 @@ test("e2e: auth login persists credentials", async (t) => {
   } finally {
     await client.close();
     await fs.rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("e2e: a runtime that was not asked for the fixture does not serve it", async (t) => {
+  if (!binaryPath) {
+    t.skip("OAP_SDK_BINARY_PATH is not set");
+    return;
+  }
+
+  const client = await createMakaiAuthClient({
+    resolver: { binaryPath },
+    handshakeTimeoutMs: 1000,
+  });
+  try {
+    const providers = await client.auth.listProviders();
+    assert.ok(providers.length > 0);
+    assert.ok(
+      !providers.some((provider) => provider.id === "test-fixture"),
+      `a user who did not set the opt-in was offered the CI fixture: ${JSON.stringify(providers)}`,
+    );
+  } finally {
+    await client.close();
   }
 });

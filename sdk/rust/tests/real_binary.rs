@@ -128,7 +128,7 @@ async fn resolving_a_model_that_does_not_exist_is_an_invalid_request() {
 #[tokio::test]
 async fn the_real_runtime_lists_auth_providers() {
     let binary = require_real_binary!();
-    let client = common::real_builder(&binary)
+    let client = common::real_builder_with_fixture(&binary)
         .connect()
         .await
         .expect("connects");
@@ -143,12 +143,39 @@ async fn the_real_runtime_lists_auth_providers() {
         providers.iter().any(|provider| provider.id == "anthropic"),
         "{providers:?}"
     );
+    // The runtime serves the fixture only when `OAPX_TEST_FIXTURE_PROVIDER=1`,
+    // which this client set. So a runtime that does not offer it now is a
+    // failure, not a reason to skip: the test asked for it by name, and the
+    // skip is what hid this coverage being lost in the first place.
     assert!(
         providers
             .iter()
             .any(|provider| provider.id == "test-fixture"),
-        "the CI fixture provider should be present: {providers:?}"
+        "the CI fixture provider was asked for by name but is not served: {providers:?}"
     );
+    client.close().await;
+}
+
+#[tokio::test]
+async fn a_runtime_that_was_not_asked_does_not_serve_the_fixture() {
+    let binary = require_real_binary!();
+    let client = common::real_builder(&binary)
+        .connect()
+        .await
+        .expect("connects");
+
+    let providers = client
+        .auth()
+        .list_providers()
+        .await
+        .expect("lists providers");
+    assert!(
+        !providers
+            .iter()
+            .any(|provider| provider.id == "test-fixture"),
+        "a user who did not set the opt-in was offered the CI fixture: {providers:?}"
+    );
+    assert!(!providers.is_empty());
     client.close().await;
 }
 
@@ -159,7 +186,7 @@ async fn an_interactive_login_runs_end_to_end_against_the_real_runtime() {
     // The fixture provider's credentials are written under HOME, so give it one
     // that the test owns.
     let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder(&binary)
+    let client = common::real_builder_with_fixture(&binary)
         .env("HOME", home.path().display().to_string())
         .connect()
         .await
@@ -213,7 +240,7 @@ async fn a_wrong_code_re_prompts_against_the_real_runtime() {
     let binary = require_real_binary!();
     require_unattended_credential_store!();
     let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder(&binary)
+    let client = common::real_builder_with_fixture(&binary)
         .env("HOME", home.path().display().to_string())
         .connect()
         .await
@@ -254,7 +281,7 @@ async fn a_wrong_code_re_prompts_against_the_real_runtime() {
 async fn a_prompt_handler_that_gives_up_cancels_the_real_flow() {
     let binary = require_real_binary!();
     let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder(&binary)
+    let client = common::real_builder_with_fixture(&binary)
         .env("HOME", home.path().display().to_string())
         .frame_timeout(Duration::from_millis(3_000))
         .connect()
@@ -287,7 +314,7 @@ async fn a_prompt_handler_that_gives_up_cancels_the_real_flow() {
 async fn a_login_with_no_prompt_handler_cancels_the_real_flow() {
     let binary = require_real_binary!();
     let home = tempfile::tempdir().expect("tempdir");
-    let client = common::real_builder(&binary)
+    let client = common::real_builder_with_fixture(&binary)
         .env("HOME", home.path().display().to_string())
         .frame_timeout(Duration::from_millis(3_000))
         .connect()

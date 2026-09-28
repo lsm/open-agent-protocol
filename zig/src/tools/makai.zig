@@ -27,6 +27,7 @@ const tui_app = @import("tui_app");
 const model_catalog = @import("model_catalog");
 const provider_base_url = @import("provider_base_url");
 const provider_catalog = @import("provider_catalog");
+const auth_providers = @import("auth/providers");
 
 const kimi_china_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "china");
 const kimi_global_base_url = provider_catalog.baseUrlOrCompileError("kimi", "openai-completions", "global");
@@ -1131,13 +1132,7 @@ const envOrEmpty = provider_base_url.envOwnedOrNull;
 const isReasoningModelRef = provider_base_url.isReasoningModelRef;
 
 fn isResponsesOnlyModel(model_id: []const u8) bool {
-    return std.mem.startsWith(u8, model_id, "o1-pro") or
-        std.mem.startsWith(u8, model_id, "o3-pro") or
-        std.mem.startsWith(u8, model_id, "gpt-5-pro") or
-        std.mem.startsWith(u8, model_id, "gpt-5-codex") or
-        std.mem.startsWith(u8, model_id, "gpt-5.1-codex-max") or
-        std.mem.indexOf(u8, model_id, "deep-research") != null or
-        std.mem.startsWith(u8, model_id, "computer-use-preview");
+    return provider_catalog.isResponsesOnlyModel(model_id);
 }
 
 const transparentProxyCompat = provider_base_url.transparentProxyCompat;
@@ -3495,11 +3490,27 @@ fn fixtureToolUseStream(
     _ = options;
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.owns_events = true;
     s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+
+    const owned_id = try allocator.dupe(u8, "tooluse-call-1");
+    errdefer allocator.free(owned_id);
+    const owned_name = try allocator.dupe(u8, "lookup");
+    errdefer allocator.free(owned_name);
+    const owned_args = try allocator.dupe(u8, "{}");
+    errdefer allocator.free(owned_args);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(content);
+    content[0] = .{ .tool_call = .{
+        .id = owned_id,
+        .name = owned_name,
+        .arguments_json = owned_args,
+    } };
+
     s.complete(.{
-        .content = &.{},
+        .content = content,
         .api = "fixture-tooluse-api",
         .provider = "fixture",
         .model = "fixture-model",
@@ -3907,6 +3918,8 @@ test "stdio protocol loop decodes and dispatches auth providers request and emit
 }
 
 test "stdio auth login flow supports prompt loop terminal ordering and no secret leakage" {
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     const allocator = std.testing.allocator;
 
     var registry = api_registry.ApiRegistry.init(allocator);
@@ -4019,6 +4032,8 @@ test "stdio auth login flow supports prompt loop terminal ordering and no secret
 }
 
 test "stdio auth login flow cancellation emits cancelled result and ignores late prompt responses" {
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     const allocator = std.testing.allocator;
 
     var registry = api_registry.ApiRegistry.init(allocator);
@@ -6851,6 +6866,8 @@ test "handleAuth providers --json end-to-end emits backward-compatible shape" {
 }
 
 test "handleAuth login end-to-end drives prompt loop through CLI wrapper" {
+    auth_providers.test_fixture_opt_in = true;
+    defer auth_providers.test_fixture_opt_in = null;
     const allocator = std.testing.allocator;
 
     var harness = try AuthCliHarness.init(allocator, &.{ "login", "--provider", "test-fixture" });
