@@ -46,9 +46,7 @@ def _auth_kinds(value: object) -> Tuple[AuthKind, ...]:
     """
     if not isinstance(value, list):
         return ()
-    if not value or not all(isinstance(kind, str) and kind in _VALID_AUTH_KINDS for kind in value):
-        return ()
-    return tuple(cast(AuthKind, kind) for kind in value)
+    return tuple(cast(AuthKind, kind) for kind in value if isinstance(kind, str) and kind in _VALID_AUTH_KINDS)
 
 logger = logging.getLogger("oap_sdk.auth")
 

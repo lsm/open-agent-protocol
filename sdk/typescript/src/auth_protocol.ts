@@ -40,6 +40,11 @@ const VALID_AUTH_KINDS = new Set<string>(AUTH_KINDS);
 
 export { AUTH_KINDS };
 
+const knownKinds = (value: unknown): AuthKind[] =>
+  Array.isArray(value)
+    ? value.filter((kind): kind is AuthKind => typeof kind === "string" && VALID_AUTH_KINDS.has(kind))
+    : [];
+
 export interface ProviderAuthInfo {
   id: ProviderId;
   name: string;
@@ -531,10 +536,7 @@ function parseProvider(entry: unknown, index: number): ProviderAuthInfo {
   const provider: ProviderAuthInfo = {
     id,
     name,
-    auth_kinds:
-      Array.isArray(rawKinds) && rawKinds.every((kind) => typeof kind === "string" && VALID_AUTH_KINDS.has(kind))
-        ? (rawKinds as AuthKind[])
-        : [],
+    auth_kinds: knownKinds(rawKinds),
     auth_status:
       typeof status === "string" && VALID_AUTH_STATUSES.has(status)
         ? (status as AuthStatus)

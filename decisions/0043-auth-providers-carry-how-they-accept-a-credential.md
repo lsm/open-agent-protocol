@@ -52,17 +52,36 @@ ordered list drawn from `common.authKind` — `api_key`, `oauth`, `none`.
 - **`none` is a real answer.** Ollama needs no credential, and a row that said so
   is more useful than one that omits itself.
 - **The SDKs tolerate what they do not recognise.** Rust, TypeScript, Go and
-  Python read a missing list as empty and drop kinds they do not have a name
-  for, rather than failing the whole listing. Decision 0029's own additive-only
-  rule requires it in both directions: a new client must stay usable against a
-  runtime that has not shipped the field, and against one that has shipped a
-  kind this build predates. A partly-new list is still useful, so what survives
-  is the entries that parse. A caller that needs the kinds can tell the two
-  cases apart, because only an older runtime produces a wholly empty list.
+  Python all do the same two things: a missing list reads as empty, and a kind
+  this build has no name for is **dropped while the rest of the list survives**.
+  Decision 0029's own additive-only rule requires it in both directions: a new
+  client must stay usable against a runtime that has not shipped the field, and
+  against one that has shipped a kind this build predates. Keeping the entries
+  that parse is the useful half — `["api_key", "passkey"]` still tells the
+  caller the provider takes an API key — and it is why the rule is per entry
+  rather than all-or-nothing, since discarding the whole list over one unknown
+  entry throws away the part that is understood.
+  The consequence is that a **wholly** unrecognised list also reads as empty, so
+  emptiness means "this build cannot tell you how to authenticate" rather than
+  "there is nothing to authenticate with". That is the right trade: `none` is a
+  *known* kind, so a provider that genuinely needs no credential always arrives
+  as `["none"]` and is never confused with an unusable field.
 
 The values come from the catalog's own `auth` array rather than a second list, so
 a row's kinds cannot disagree with the row's `auth_kinds` — the runtime reads
 one and sends it.
+
+**The list is required and non-empty on the wire, and the SDKs filter it on
+read.** Each of the four reads a missing list as empty and drops kinds it has no
+name for, keeping the rest: one unrecognised entry costs the caller only that
+entry, not the list, and a list that is wholly unrecognised reads as empty.
+Discarding a whole list over one unknown entry would throw away the part the
+build does understand, and `["api_key", "passkey"]` from a newer runtime still
+says something true and useful. The four must agree on this, because a caller
+comparing two SDKs' output for the same runtime should not see the field parsed
+differently; that they once did not — Rust filtering, TypeScript and Python
+all-or-nothing, Go verbatim — is why the rule is written here rather than left
+to each implementation.
 
 ## Consequences
 

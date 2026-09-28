@@ -298,6 +298,17 @@ type wireProviderAuthInfo struct {
 	LastError  string                    `json:"last_error"`
 }
 
+func knownCredentialKinds(kinds []protocol.CredentialKind) []protocol.CredentialKind {
+	kept := make([]protocol.CredentialKind, 0, len(kinds))
+	for _, kind := range kinds {
+		switch kind {
+		case protocol.CredentialKindAPIKey, protocol.CredentialKindOAuth, protocol.CredentialKindNone:
+			kept = append(kept, kind)
+		}
+	}
+	return kept
+}
+
 func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
 	var payload struct {
 		Providers *[]wireProviderAuthInfo `json:"providers"`
@@ -317,7 +328,7 @@ func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
 			status = AuthUnknown
 		}
 		providers = append(providers, ProviderAuthInfo{
-			ID: raw.ID, Name: raw.Name, AuthKinds: raw.AuthKinds, Status: status, LastError: raw.LastError,
+			ID: raw.ID, Name: raw.Name, AuthKinds: knownCredentialKinds(raw.AuthKinds), Status: status, LastError: raw.LastError,
 		})
 	}
 	return providers, nil

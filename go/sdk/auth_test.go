@@ -62,6 +62,22 @@ func TestAuthListProvidersNormalizesUnknownStatus(t *testing.T) {
 	}
 }
 
+func TestAuthListProvidersDropsAnUnknownKindRatherThanTheList(t *testing.T) {
+	client := newTestClient(t, scenarioProtocol,
+		envAuthProviders+`={"providers":[{"id":"p","name":"P","auth_kinds":["api_key","passkey"],"auth_status":"login_required"}]}`)
+
+	providers, err := client.Auth.ListProviders(testContext(t))
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("got %d providers, want 1", len(providers))
+	}
+	if len(providers[0].AuthKinds) != 1 || providers[0].AuthKinds[0] != protocol.CredentialKindAPIKey {
+		t.Errorf("AuthKinds = %v, want [api_key] -- a known kind survives an unknown one beside it", providers[0].AuthKinds)
+	}
+}
+
 func TestAuthListProvidersAcceptsARuntimeWithoutAuthKinds(t *testing.T) {
 	client := newTestClient(t, scenarioProtocol,
 		envAuthProviders+`={"providers":[{"id":"p","name":"P","auth_status":"login_required"}]}`)

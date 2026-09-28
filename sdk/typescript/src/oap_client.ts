@@ -434,10 +434,9 @@ class OapAuthApi implements MakaiAuthApi {
       const kinds = raw.auth_kinds;
       return {
         id: str(raw.id), name: str(raw.name),
-        auth_kinds:
-          Array.isArray(kinds) && kinds.every((kind) => AUTH_KINDS.includes(kind as AuthKind))
-            ? (kinds as AuthKind[])
-            : [],
+        auth_kinds: Array.isArray(kinds)
+          ? kinds.filter((kind): kind is AuthKind => AUTH_KINDS.includes(kind as AuthKind))
+          : [],
         auth_status: raw.auth_status as ProviderAuthInfo["auth_status"],
         ...(typeof raw.last_error === "string" ? { last_error: raw.last_error } : {}),
       };

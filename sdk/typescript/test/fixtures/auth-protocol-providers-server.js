@@ -63,7 +63,7 @@ rl.on("line", (line) => {
             {
               id: "test-fixture",
               name: "Test Fixture (CI)",
-              auth_kinds: ["api_key"],
+              auth_kinds: ["api_key", "passkey"],
               auth_status: "failed",
               last_error: "previous attempt rejected",
             },
