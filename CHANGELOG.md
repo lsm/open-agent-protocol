@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or removing it and changing what four SDKs assert.
 
 ### Added
+- **Go has one library.** The Go SDK moves from its own module at `sdk/go` into the main module as `go/sdk`, so a Go program that wants a client for a running endpoint imports the same module as everything else rather than a second one with its own `go.mod` and its own wire types. The exported surface is unchanged — `Client` with its `Auth`, `Models`, `Provider` and `Agent` namespaces, the same request and response types, the same typed errors — and the package name is `sdk`, because `makai` is the runtime's old name and nothing outside this repository imported it. Every caller-visible literal follows (`oap sdk: `, in the errors, the resolver and the transport's log lines), and the binary cache directory is `…/oapx/bin` rather than `…/makai/bin`, so a package that says the old name is retired is retired in its messages and on disk. **The zero-comment rule now has no exceptions at all**: the 31 files of `sdk/go` were the entire Go allowlist, and folding them in took the last entry with it, so `go/tools/nocomment`'s allowlist and its stale-entry check are gone and the floor for Go is zero like Zig's and TypeScript's. The documentation those comments carried did not go with them: everything a caller of the API needs — the four namespaces, per-call cancellation versus `Client.Close`, opaque `ModelRef` and session ids, what an endpoint refuses with `unsupported_feature`, and the typed error set — is now a section in `docs/go-library.md`, which is prose the policy does not reach. CI's separate `go-sdk` job, which ran its own Go 1.23 toolchain against `sdk/go`, is replaced by a `go-sdk-smoke` job in the main workflow that builds `oapx` and runs the SDK's real-binary tests, the only place the Go SDK talks to a real runtime. The SDK's private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is deliberately a separate change.
+
 - **Every Go decoder that reads bytes from outside the process now has a fuzz target, and a scheduled job runs them.** The class is the rule: not the two decoders an issue happens to name, but every function that turns bytes another program wrote into a value. That is `validation.Validator.Validate` (a whole envelope trace), the hand-rolled duplicate-key JSON walk in six places, the adapters' native entry points (`DecodeNotification` for hermes and deepseek, `DecodeServerRequest`, `DecodeObservation` and `DecodeControlRequest` for claude, `DecodeEvent` for opencode, `DecodeStrict` for pi, hermes and deepseek), and the limit-bounded frame reader in the codex app-server codec. Each target asserts a property rather than merely returning: a refusal carries no value, an admission implies the invariant it was admitted for (an opencode event with a valid id, a supported type and a durable position; a codex frame that is a request, a result or an error and nothing else), a method the decoder does not serve is refused whatever the data says, and a decoder never hands back bytes that are not one whole JSON document. **A scheduled leg that names no target, and a target nothing schedules, both fail a test** (`go/internal/fuzzseed/matrix_test.go`): the matrix and the tree are checked against each other in both directions, and a leg is named by its package as well as its target so a failing job is identifiable. It earned its place immediately -- it found that `go/validation` already carried `FuzzValidateNeverPanics` and `FuzzApplyEnvelopeNeverPanics` and nothing ran them, and it found that two targets this change had added were later edited out of the tree while the matrix still listed them. **Seeds come from the corpus, through the catalog**: `fuzzseed.Corpus(harnessID)` resolves the current corpus of a harness from `harnesses/*.json`, so no version pin is spelled in the tree (the `pin_literal` gate would refuse it) and a new corpus version re-seeds the targets without a code change; `fuzzseed.Manifest` does the same for the 573 conformance fixtures, spread evenly across the corpus rather than taken from its head. The seeds are bounded and deduplicated, because a seed corpus runs on every ordinary `go test`. `.github/workflows/fuzz.yml` runs each target for 45 s on a weekly schedule and on demand, six at a time inside a 20-minute ceiling, and uploads the input that failed so it can become a fixture.
 
 
@@ -283,6 +285,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed) answers T7's two open questions for `session-reattach`. A reopen is `reopen: true` on `session.open.request` — the unused `recovery` object is not reused — and it answers the session's state document with `recovery.recovered: true` and the model and settings the session actually runs under, which is the harness's recorded configuration rather than the loader's: Codex's `ThreadResumeResponse` requires six such members and the Go adapter dropped all six (#458). A create naming a bound id is `session_exists`, a reopen with no binding is `unknown_session`, and a harness that cannot load is `unsupported_feature`. A store the harness can no longer honour answers `unsupported_feature`, as 0039 already rules, and **no new code is proposed**: the code has to come from the binding rather than the harness's reply, because two of the ledgers record a harness creating a missing store before looking in it (Hermes mode `0o600` plus the schema, OpenCode's migration runner) and pi's discovery answers `null` either way, so for those a deleted database, a moved home and a session that never existed are one answer on the wire. Of the seven harnesses read at their pins, three type their own absence — Hermes `4007`, OpenCode `SessionNotFoundError`, DeepSeek `SessionPersistenceNotFoundError` — and four do not: pi's `null`, ACP's silence, Codex's `-32602 invalid_request` (its own ledger calls that "not a not-found code"), and Claude Code, whose answer is unrecorded. The binding is the host's record — never a credential, never a resolved environment value — written atomically, with a torn write detected and never read, and appended rather than replaced. No wire changes with a proposed record.
 
 
+- `oapx hub` is the multi-session hub in the Zig binary, and `--stdio` serves it
+  over the same transport objects `goap hub --stdio` serves. The hub and its wire
+  are in the `oapx` binary for the first time, which is what the cross-compile
+  check in the previous release could not reach.
+  One loop owns the hub and waits on the readiest of everything it holds — the
+  host's request stream and every open session's child — so a session and a
+  request compete for the same cycle rather than for a share of it, per §8.6. A
+  cycle that read a request drives the hub afterwards, so a child that went quiet
+  during the read is not held back by the next one. On Windows, where there is no
+  `poll` to wait on, the loop falls back to a blocking read of the request stream;
+  that is a wait per input rather than a wait on readiness, and #460 replaces it.
+  `--addr` and `--config` answer `unavailable` and exit non-zero, naming what is
+  missing, because a host that asked for a transport this build does not serve is
+  better told than handed a pipe that answers the requests that fit it.
+  A host that closes the request stream ends the serve, and the serve *succeeded* —
+  treating end-of-stream as an error would make every well-behaved host look like
+  a broken one.
+  A differential test drives one script through `goap hub --stdio` and
+  `oapx hub --stdio` and compares the answers as parsed JSON, keyed by the
+  request's `id` rather than by position, normalising only the envelope ids and
+  timestamps the daemon mints. Four scenarios cover the five ops this wire serves,
+  the refusals and their wording, a null parameter against a wrongly typed one,
+  and a framing defect stopping the wire. It found four divergences the day it
+  was written, all now fixed: the refusal for an undeclared parameter named
+  neither the op nor the parameter, an unknown op said so without naming it, a
+  missing `adapter` was refused as an undefined parameter rather than as
+  `adapter is required`, and a missing `session_id` was refused at all where Go
+  looks the empty id up and answers `unknown_session`.
 - The TUI shows the working directory on a muted, right-aligned row under the status
   line. The path is sanitised, collapsed to `~` on a home-directory component
   boundary, left-truncated with `…` when it is wider than the terminal, and hidden on
@@ -427,6 +457,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.
 
 
+- `oapx hub --stdio` now passes the hub a clock in **nanoseconds**, which is the
+  unit the hub's contract is in and the one it divides to build a session's
+  `created_at`. It was being passed milliseconds, so every session opened through
+  the verb was stamped 1970 — a plausible timestamp rather than an obvious failure.
+- The hub's stdio serve loop no longer reads the host's pipe when a *session* woke
+  it. The wait collapsed the whole polled set into "did anything wake", so a
+  session producing output also woke the cycle into a blocking read of an idle
+  host's pipe, which is the stall the loop exists to avoid. It now answers one
+  question — is the input ready — and drives the hub either way.
+- The serve loop's per-cycle poll arrays are freed again. The scratch arena was
+  handed to each cycle and never reset, so a daemon accumulated a poll's worth of
+  arrays every cycle for the life of the process.
+- A framing defect exits **non-zero** and names the line that caused it, bounded to
+  512 bytes and marked as cut beyond that: a defect report is not the place to
+  reproduce the defect at whatever length the host chose. A final line the host
+  never terminated is reported as a framing defect rather than dropped, so a host
+  that sent half a request is told rather than left wondering.
+- A caller that cannot give the loop a handle to wait on now gets a read of its
+  input per cycle. It used to be told nothing was ready, and with no sessions open
+  that was forever: a loop that waits for input it never reads.
+- `oapx`'s usage text now names the `hub` verb.
+- `compat.stdio.pipe` now refuses on Windows instead of failing to compile there.
+  It has never been compiled for a Windows target until the hub's stdio module
+  imported `compat`, and the `compile-hub` step has been reporting it since — I read
+  my own measurement of that step as clean and carried on, which is the failure the
+  step was built to prevent.
+- The hub's serve-loop tests read a scripted request stream rather than a real pipe.
+  A blocking read of an OS pipe under the test runner's I/O passes on macOS and
+  hangs on Linux, so `Unit Tests - hub` was killed after six minutes — a test that
+  only ever *polls* a pipe in this job had never read one, which is why nothing
+  had hit it before. The double is scripted, so the loop, the framing, the defect
+  path and end of stream are all still covered and the job terminates.
+- A request line that never arrives no longer buffers without bound. The frame
+  limit was only consulted once a newline turned up, so a host that never sent one
+  could grow the daemon's buffer until it ran out of memory; the buffered bytes are
+  now bounded by the limit and a line over it is a framing defect naming what was
+  buffered.
+- `oapx hub --stdio` now notices a host that closed its pipe on Linux. An empty
+  pipe whose writer has closed polls as `POLLHUP` without `POLLIN`, so the wait saw
+  "no input" and the daemon never learned the request stream had ended — it ran
+  until it was killed. A hangup means a read will return end-of-stream, so it
+  counts as ready. This one only shows on the platform whose `poll` says it that
+  way, which is why the differential job that would have caught it is not wired
+  into CI yet: it needs an `oapx` binary, and that is #390.
+- The hub's differential test normalises what the daemon mints wherever it appears,
+  rather than at the paths it appeared when the test was written. It reached into
+  `result` and `result.payload`, and the sessions listing puts a timestamp inside an
+  array instead, so a listing compared the two trees' clocks against each other.
+- A host that stopped reading now ends the serve. A failed write propagated out of
+  the op but was caught as if it were an unreadable request, so the loop kept
+  reading a host that was no longer there, once per cycle, for as long as the
+  process ran.
+- The three reasons a hub's stdio serve can stop are reported as themselves: a
+  framing defect names the line and says so, a failed read says the request stream
+  failed, and a failed write says the host stopped reading. All three exit
+  non-zero. A read failure was reported as a framing defect, which is a thing that
+  did not happen.
+- The hub's stdio serve loop no longer stops driving the hub after the first
+  request. It read until end-of-stream inside one cycle, so a host that stayed
+  connected and had nothing more to say left every session undriven for as long
+  as it held the pipe open — the sessions' children produced nothing, the journal
+  did not move, and nothing timed out. One readiness, one read, then drive the
+  hub, so a session's output is never held back by a request stream that is idle.
+  End of stream is still the end of the serve, and a framing defect still stops
+  it, so the two are still told apart.
+- A refusal for parameters an op does not define now names all of them, in the
+  order the wire declares them, rather than the first one found. A host that sent
+  three it should not have is told about three.
 - An agent run now always ends with exactly one event that ends it. A run that
   failed — at any point, including the two paths that returned before the run
   started — used to simply stop, so a consumer waiting for the run to end waited

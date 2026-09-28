@@ -12,6 +12,7 @@ var public = map[string]bool{
 	"go/serve/serveendpoint": true,
 	"go/serve/servehttp":     true,
 	"go/serve/servestdio":    true,
+	"go/sdk":                 true,
 	"go/validation":          true,
 	"harnesses":              true,
 	"providers":              true,

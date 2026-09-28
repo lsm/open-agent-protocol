@@ -2628,6 +2628,8 @@ pub fn build(b: *std.Build) void {
             .{ .name = "opencode_adapter", .module = opencode_adapter_mod },
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
             .{ .name = "memory_adapter", .module = memory_adapter_mod },
+            .{ .name = "hub", .module = hub_mod },
+            .{ .name = "hub_stdio", .module = hub_stdio_mod },
             .{ .name = "bounded_output", .module = bounded_output_mod },
             .{ .name = "endpoint_signals", .module = endpoint_signals_mod },
         },

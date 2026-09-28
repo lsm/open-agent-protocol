@@ -31,6 +31,7 @@ pub const Error = error{
     FrameLimitTooSmall,
     OutputStalled,
     StdinFailed,
+    InputFailed,
     BackendRefused,
     ResponseTooLarge,
     NoSpaceLeft,
@@ -83,13 +84,18 @@ pub const Request = struct {
         unreachable;
     }
 
-    fn only(self: Request, parameters: []const []const u8) ?Refusal {
+    fn only(self: Request, arena: std.mem.Allocator, parameters: []const []const u8) !?Refusal {
+        var extra: std.ArrayList([]const u8) = .empty;
         for (all_parameters) |parameter| {
-            const declared = declares(parameters, parameter);
-            if (declared == self.takes(parameter)) continue;
-            return .{ .code = "invalid_request", .message = "this op does not define that parameter" };
+            if (declares(parameters, parameter) or !self.takes(parameter)) continue;
+            try extra.append(arena, parameter);
         }
-        return null;
+        if (extra.items.len == 0) return null;
+        const message = try std.fmt.allocPrint(arena, "op \"{s}\" accepts no {s} parameter", .{
+            self.op,
+            try std.mem.join(arena, ", ", extra.items),
+        });
+        return Refusal{ .code = "invalid_request", .message = message };
     }
 };
 
@@ -211,6 +217,15 @@ pub const Options = struct {
     max_ops: usize = default_max_ops,
     max_subscriptions: usize = default_max_subscriptions,
 };
+pub const Defect = struct {
+    line: [512]u8 = undefined,
+    len: usize = 0,
+    cut: bool = false,
+
+    pub fn text(self: *const Defect) []const u8 {
+        return self.line[0..self.len];
+    }
+};
 
 pub const Frontend = struct {
     hub: *Hub,
@@ -220,6 +235,7 @@ pub const Frontend = struct {
     max_ops: usize,
     max_subscriptions: usize,
     in_flight: usize = 0,
+    recorded: Defect = .{},
     next_envelope: u64 = 0,
     subscriptions: std.ArrayList(*hubmod.Subscription) = .empty,
     stopped: bool = false,
@@ -241,10 +257,23 @@ pub const Frontend = struct {
         self.* = undefined;
     }
 
+    pub fn noteDefect(self: *Frontend, line: []const u8) void {
+        const kept = @min(line.len, self.recorded.line.len);
+        @memcpy(self.recorded.line[0..kept], line[0..kept]);
+        self.recorded.len = kept;
+        self.recorded.cut = line.len > kept;
+    }
+    pub fn defect(self: *const Frontend) ?[]const u8 {
+        if (self.recorded.len == 0) return null;
+        return self.recorded.text();
+    }
+
     pub fn handleLine(self: *Frontend, line: []const u8) Error!void {
         if (self.stopped) return;
+        self.recorded = .{};
         if (line.len > self.frame_limit) {
             self.stopped = true;
+            self.noteDefect(line);
             return Error.FrameLimitTooSmall;
         }
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
@@ -254,6 +283,7 @@ pub const Frontend = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 self.stopped = true;
+                self.noteDefect(line);
                 return Error.MalformedLine;
             },
         };
@@ -281,29 +311,32 @@ pub const Frontend = struct {
 
     fn dispatch(self: *Frontend, arena: std.mem.Allocator, request: Request) Error!Outcome {
         if (std.mem.eql(u8, request.op, op_adapters)) {
-            if (request.only(no_parameters)) |refusal| return .{ .refused = refusal };
+            if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
             return .{ .answer = try self.adapters(arena) };
         }
         if (std.mem.eql(u8, request.op, op_sessions)) {
-            if (request.only(no_parameters)) |refusal| return .{ .refused = refusal };
+            if (try request.only(arena, no_parameters)) |refusal| return .{ .refused = refusal };
             return .{ .answer = try self.sessions(arena) };
         }
         if (std.mem.eql(u8, request.op, op_capabilities)) {
-            if (request.only(adapter_parameter)) |refusal| return .{ .refused = refusal };
-            const name = request.adapter orelse return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
+            if (try request.only(arena, adapter_parameter)) |refusal| return .{ .refused = refusal };
+            const name = request.adapter orelse "";
+            if (name.len == 0) {
+                return .{ .refused = .{ .code = "invalid_request", .message = "adapter is required" } };
+            }
             return self.capabilities(arena, name);
         }
         if (std.mem.eql(u8, request.op, op_close)) {
-            if (request.only(session_parameter)) |refusal| return .{ .refused = refusal };
-            const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+            if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
+            const session_id = request.session_id orelse "";
             return self.closeSession(arena, session_id);
         }
         if (std.mem.eql(u8, request.op, op_state)) {
-            if (request.only(session_parameter)) |refusal| return .{ .refused = refusal };
-            const session_id = request.session_id orelse return .{ .refused = .{ .code = "invalid_request", .message = "session_id is required" } };
+            if (try request.only(arena, session_parameter)) |refusal| return .{ .refused = refusal };
+            const session_id = request.session_id orelse "";
             return self.state(arena, session_id);
         }
-        return .{ .refused = .{ .code = "unknown_op", .message = "this frontend does not serve that op" } };
+        return .{ .refused = .{ .code = "unknown_op", .message = try std.fmt.allocPrint(arena, "no op \"{s}\"", .{request.op}) } };
     }
 
     fn adapters(self: *Frontend, arena: std.mem.Allocator) !std.json.Value {
@@ -674,6 +707,88 @@ var frozen_ns: u64 = 0;
 
 fn wallClock() u64 {
     return frozen_ns;
+}
+
+pub const cycle_budget_ns: u64 = 50 * std.time.ns_per_ms;
+
+pub const Stream = struct {
+    read: *const fn (context: *anyopaque, buffer: []u8) anyerror!usize,
+    context: *anyopaque,
+    readable: ?std.Io.File.Handle = null,
+};
+
+const ReadFailure = error{InputFailed};
+
+pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) Error!void {
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(allocator);
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    while (!frontend.stopped) {
+        _ = scratch.reset(.retain_capacity);
+        const arena = scratch.allocator();
+        const input_ready = try waitOn(frontend, stream, arena, cycle_budget_ns);
+        var more = false;
+        if (input_ready) {
+            more = try readAvailable(allocator, stream, &pending);
+            if (pending.items.len > pending_bound(frontend.frame_limit)) {
+                frontend.noteDefect(pending.items);
+                return Error.FrameLimitTooSmall;
+            }
+            while (std.mem.indexOfScalar(u8, pending.items, '\n')) |cut| {
+                const line = pending.items[0..cut];
+                const rest = pending.items[cut + 1 ..];
+                frontend.handleLine(line) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    Error.OutputStalled => return Error.OutputStalled,
+                    else => break,
+                };
+                std.mem.copyForwards(u8, pending.items[0..rest.len], rest);
+                pending.items.len = rest.len;
+            }
+            if (frontend.stopped) return error.StdinFailed;
+        }
+        try frontend.hub.pump(allocator, 0);
+        if (input_ready and !more) {
+            if (pending.items.len > 0) {
+                frontend.noteDefect(pending.items);
+                return error.StdinFailed;
+            }
+            return;
+        }
+    }
+}
+
+fn readAvailable(allocator: std.mem.Allocator, stream: Stream, pending: *std.ArrayList(u8)) !bool {
+    var buffer: [4096]u8 = undefined;
+    const read = stream.read(stream.context, &buffer) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.EndOfStream => return false,
+        else => return ReadFailure.InputFailed,
+    };
+    if (read == 0) return false;
+    try pending.ensureUnusedCapacity(allocator, read);
+    pending.appendSliceAssumeCapacity(buffer[0..read]);
+    return true;
+}
+fn pending_bound(limit: usize) usize {
+    return limit + 1;
+}
+
+const pollable = @import("builtin").os.tag != .windows;
+fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns: u64) !bool {
+    if (comptime !pollable) return true;
+    const input = stream.readable orelse return true;
+    const children = try frontend.hub.readableHandles(arena);
+    var watched: std.ArrayList(std.posix.pollfd) = .empty;
+    for (children) |handle| try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
+    try watched.append(arena, .{ .fd = input, .events = std.posix.POLL.IN, .revents = 0 });
+    const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
+    const awoken = std.posix.poll(watched.items, budget) catch 0;
+    if (awoken == 0) return false;
+    const input_events = watched.items[watched.items.len - 1].revents;
+    return (input_events & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0;
 }
 
 const Recorder = struct {
@@ -1059,7 +1174,7 @@ test "a close answers a bare null, and its refusals name the code the draft pins
     try harness.send("{\"id\":2,\"op\":\"close\",\"session_id\":\"closing\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":3,\"op\":\"close\"}");
-    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":4,\"op\":\"close\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
 }
@@ -1095,7 +1210,155 @@ test "state answers a daemon-minted envelope and refuses an unknown session" {
     try harness.send("{\"id\":2,\"op\":\"state\",\"session_id\":\"absent\"}");
     try testing.expectEqualStrings("unknown_session", try harness.code());
     try harness.send("{\"id\":3,\"op\":\"state\"}");
-    try testing.expectEqualStrings("invalid_request", try harness.code());
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+}
+
+const Scripted = struct {
+    chunks: []const []const u8,
+    at: usize = 0,
+    fail_at: ?usize = null,
+
+    fn read(context: *anyopaque, buffer: []u8) anyerror!usize {
+        const self: *Scripted = @ptrCast(@alignCast(context));
+        if (self.fail_at != null and self.at == self.fail_at.?) return error.BrokenPipe;
+        if (self.at >= self.chunks.len) return 0;
+        const chunk = self.chunks[self.at];
+        self.at += 1;
+        if (chunk.len > buffer.len) return error.FrameTooLarge;
+        @memcpy(buffer[0..chunk.len], chunk);
+        return chunk.len;
+    }
+};
+
+const RefusesWrites = struct {
+    fn write(_: *anyopaque, _: []const u8) anyerror!void {
+        return Error.OutputStalled;
+    }
+};
+
+const ScriptedHarness = struct {
+    allocator: std.mem.Allocator,
+    backing: *Harness,
+    scripted: Scripted,
+
+    fn init(allocator: std.mem.Allocator, hub_options: hubmod.Options, options: Options, chunks: []const []const u8) !*ScriptedHarness {
+        const self = try allocator.create(ScriptedHarness);
+        self.* = .{
+            .allocator = allocator,
+            .backing = try Harness.init(allocator, hub_options, options),
+            .scripted = .{ .chunks = chunks },
+        };
+        return self;
+    }
+
+    fn run(self: *ScriptedHarness) !void {
+        return self.serveWithHandle(null);
+    }
+
+    fn runRefusingWrites(self: *ScriptedHarness) !void {
+        var frontend = try Frontend.init(self.allocator, &self.backing.hub, .{
+            .context = undefined,
+            .write = RefusesWrites.write,
+        }, .{});
+        defer frontend.deinit();
+        return serve(self.allocator, &frontend, .{
+            .read = Scripted.read,
+            .context = &self.scripted,
+            .readable = null,
+        });
+    }
+
+    fn failReadAt(self: *ScriptedHarness, index: usize) void {
+        self.scripted.fail_at = index;
+    }
+
+    fn runWithHandle(self: *ScriptedHarness, handle: ?std.Io.File.Handle) !void {
+        return self.serveWithHandle(handle);
+    }
+
+    fn serveWithHandle(self: *ScriptedHarness, handle: ?std.Io.File.Handle) !void {
+        var frontend = try Frontend.init(self.allocator, &self.backing.hub, self.backing.recorder.sink(), .{});
+        defer frontend.deinit();
+        try serve(self.allocator, &frontend, .{
+            .read = Scripted.read,
+            .context = &self.scripted,
+            .readable = handle,
+        });
+    }
+
+    fn deinit(self: *ScriptedHarness) void {
+        const allocator = self.allocator;
+        self.backing.deinit();
+        allocator.destroy(self);
+    }
+};
+
+test "the serve loop reads even when it has no handle to wait on" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n"});
+    defer harness.deinit();
+    try harness.run();
+    try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
+    try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
+}
+
+test "a request stream that never ends its line is a framing defect, bounded" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{ .frame_limit = 256 }, &.{"q" ** 400});
+    defer harness.deinit();
+    var frontend = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{ .frame_limit = 256 });
+    defer frontend.deinit();
+    try testing.expectError(error.FrameLimitTooSmall, serve(testing.allocator, &frontend, .{
+        .read = Scripted.read,
+        .context = &harness.scripted,
+        .readable = null,
+    }));
+    try testing.expectEqual(@as(usize, 0), harness.backing.recorder.lines.items.len);
+    try testing.expectEqualStrings("q" ** 400, frontend.defect().?);
+    try testing.expect(!frontend.recorded.cut);
+}
+
+test "a read that fails is its own failure, not a framing defect" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n"});
+    defer harness.deinit();
+    harness.failReadAt(1);
+    try testing.expectError(error.InputFailed, harness.run());
+}
+
+test "a host that stopped reading ends the serve instead of being retried forever" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n"});
+    defer harness.deinit();
+    try testing.expectError(error.OutputStalled, harness.runRefusingWrites());
+    try testing.expectEqual(@as(usize, 0), harness.backing.recorder.lines.items.len);
+}
+
+test "a final line the host never terminated is a framing defect, not a dropped request" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{"{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"adap"});
+    defer harness.deinit();
+    try testing.expectError(error.StdinFailed, harness.run());
+    try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
+}
+
+test "a framing defect names the line that caused it, bounded" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{});
+    defer harness.deinit();
+    var short = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{});
+    defer short.deinit();
+    try testing.expect(short.defect() == null);
+    try testing.expectError(error.MalformedLine, short.handleLine("not json"));
+    try testing.expectEqualStrings("not json", short.defect().?);
+    var long = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{});
+    defer long.deinit();
+    try testing.expectError(error.MalformedLine, long.handleLine("q" ** 900));
+    try testing.expectEqual(@as(usize, 512), long.defect().?.len);
+    try testing.expect(long.recorded.cut);
+}
+
+test "the serve loop stops at a framing defect rather than answering the rest" {
+    const harness = try ScriptedHarness.init(testing.allocator, .{}, .{}, &.{
+        "{\"id\":1,\"op\":\"adapters\"}\nnot json\n{\"id\":2,\"op\":\"sessions\"}\n",
+    });
+    defer harness.deinit();
+    try testing.expectError(error.StdinFailed, harness.run());
+    try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
 }
 
 test "a null parameter is supplied and refused, and a wrongly typed one is a defect" {
@@ -1104,7 +1367,9 @@ test "a null parameter is supplied and refused, and a wrongly typed one is a def
     try harness.send("{\"id\":1,\"op\":\"adapters\",\"adapter\":null}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
     try harness.send("{\"id\":2,\"op\":\"sessions\",\"session_id\":null}");
-    try testing.expectEqualStrings("invalid_request", try harness.code());
+    const refused = (try harness.lastValue()).object.get("error").?.object;
+    try testing.expectEqualStrings("invalid_request", refused.get("code").?.string);
+    try testing.expectEqualStrings("op \"sessions\" accepts no session_id parameter", refused.get("message").?.string);
     try harness.send("{\"id\":7,\"op\":\"adapters\",\"allow_degraded_features\":null}");
     try testing.expectEqualStrings("invalid_request", try harness.code());
     try harness.send("{\"id\":8,\"op\":\"adapters\",\"after\":null}");
