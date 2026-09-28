@@ -57,18 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/help` now lists the full key map (send, newline, history, word and line edits,
   scrolling, abort and quit gestures) after the command list, and the empty-session
   welcome names what `!` does and points at `/help`.
-
-### Changed
-
-- The TUI status line drops the `perm:` and `think:` labels in favour of bare values
-  (`bypass`, `low`, …), hides the thinking segment while thinking is `off`, and moves
-  the idle/streaming state to the tail. The context gauge and its percentage are
-  coloured by usage band (green below 60%, yellow 60–75, orange 75–85, red 85+); when
-  the row overflows, the context segment shrinks to the coloured percentage first,
-  then segments drop whole by priority (turns, thinking, cost, hint, `ask`
-  permission, queue, drops, model, backpressure, context) with the state segment —
-  and `bypass`/`pending` — never dropped. The post-backpressure drop counter no
-  longer renders as `drops:drops:N`.
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
   and the five operations it serves today — `adapters`, `sessions`, `capabilities`,
   `close` and `state` — over the transport objects the draft specifies. Framing is
@@ -184,6 +172,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oapx serve agent --backend pi` reads Pi's `get_state` on every state request, as the Go adapter does, and closes the session when it names another native session. Its state reports the last run sequence as `transcript_cursor`. Like Go, it refuses a `get_state` with no session, a negative count, an unknown queue mode or an unknown thinking level. Its `session.state` and `run.reconciliation` reasons now match Go's.
 - The TUI queues a follow-up with Tab while a turn runs; Enter still steers the running turn. A queued message waits above the composer and is sent when the turn stops, and the hint line and placeholder name both keys. Shell tool rows show the command they run under the description, highlighted and wrapped to the width, and the model picker filters as you type.
 - `oapx serve agent --backend claude` mints ids in `goap`'s order (turn, message, run) with the message id as `submission_id`, suffixes control request ids with four random bytes as `goap` does, and reports `claude_native_session_id` metadata and the last run sequence as `transcript_cursor` in session state. The Claude parity fixture covers a permission gate answered allow.
+
+### Changed
+
+- The TUI status line drops the `perm:` and `think:` labels in favour of bare values
+  (`bypass`, `low`, …), hides the thinking segment while thinking is `off`, and moves
+  the idle/streaming state to the tail. The context gauge and its percentage are
+  coloured by usage band (green below 60%, yellow 60–75, orange 75–85, red 85+); when
+  the row overflows, the context segment shrinks to the coloured percentage first,
+  then segments drop whole by priority (turns, thinking, cost, hint, `ask`
+  permission, queue, drops, model, backpressure, context) with the state segment —
+  and `bypass`/`pending` — never dropped. The post-backpressure drop counter no
+  longer renders as `drops:drops:N`.
 
 ### Fixed
 

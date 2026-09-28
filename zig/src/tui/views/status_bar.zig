@@ -163,6 +163,7 @@ fn fitLayout(allocator: std.mem.Allocator, segments: []const Segment, mask: []co
     var cut = false;
     for (mask) |dropped| cut = cut or dropped;
     const left = try layoutKept(allocator, segments, mask, cut);
+    errdefer allocator.free(left);
     if (hint.len > 0) {
         if (tui_text.visibleWidth(left) + hint_gap + tui_text.visibleWidth(hint) <= width) {
             const with_hint = try appendHint(allocator, left, hint, width);
@@ -717,4 +718,20 @@ fn renderCwdRowProbe(allocator: std.mem.Allocator) !void {
 
 test "renderCwdRow survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, renderCwdRowProbe, .{});
+}
+
+fn renderProbe(allocator: std.mem.Allocator) !void {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    try state.status.setModelWithContext(std.testing.allocator, "claude-sonnet-4-5", "anthropic", 200_000);
+    state.thinking_level = .medium;
+    state.status.turn_count = 13;
+    state.status.context_used = 90_000;
+
+    const text = try render(allocator, &state, .{ .width = 60, .hint = "? help" });
+    allocator.free(text);
+}
+
+test "status bar render survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, renderProbe, .{});
 }
