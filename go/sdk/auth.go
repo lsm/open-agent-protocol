@@ -294,11 +294,11 @@ func parseAuthEvent(f *frame, providerID, flowID string) (AuthEvent, error) {
 }
 
 type wireProviderAuthInfo struct {
-	ID         string                   `json:"id"`
-	Name       string                   `json:"name"`
+	ID         string                    `json:"id"`
+	Name       string                    `json:"name"`
 	AuthKinds  []protocol.CredentialKind `json:"auth_kinds"`
-	AuthStatus string                   `json:"auth_status"`
-	LastError  string                   `json:"last_error"`
+	AuthStatus string                    `json:"auth_status"`
+	LastError  string                    `json:"last_error"`
 }
 
 func parseProviders(f *frame, streamID string) ([]ProviderAuthInfo, error) {
