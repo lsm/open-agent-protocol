@@ -254,15 +254,24 @@ func IsTransparentOpenAIProxy(model Model) bool {
 		compat.SupportsReasoningEffort != nil && *compat.SupportsReasoningEffort
 }
 
-func AllowsAnonymous(model Model) bool {
+var OpenAIAnonymousBlocked = []string{"openai", "deepseek", "kimi", "github-copilot"}
+
+var AnthropicAnonymousBlocked = []string{"anthropic"}
+
+func AllowsAnonymousWith(model Model, blocked []string) bool {
 	if !model.AllowsAnonymous {
 		return false
 	}
-	switch model.Provider {
-	case "openai", "deepseek", "kimi", "github-copilot":
-		return false
+	for _, vendor := range blocked {
+		if model.Provider == vendor {
+			return false
+		}
 	}
 	return true
+}
+
+func AllowsAnonymous(model Model) bool {
+	return AllowsAnonymousWith(model, OpenAIAnonymousBlocked)
 }
 
 func MergeCompat(model Model) MergedCompat {
