@@ -4231,11 +4231,12 @@ conversation half of the resume Decision 0001 names, not replay: the events of
 runs before the close are answered with a replay gap.
 
 The evidence is in the order table: Claude, Codex, ACP and pi load a session
-natively today. The unit's decision must answer which request member carries
-the intent (the `recovery` object `session.open.request` already carries is
-the first candidate), how a host records a binding and where, and what a
-reopen answers when the harness's store is no longer where the binding says —
-a different home or working directory.
+natively today. The intent is a `reopen: true` member on
+`session.open.request`, and the reopened state document reports the model and
+settings the session actually runs under (owner, 2026-09-27, #446). The unit's
+decision must answer how a host records a binding and where, and what a reopen
+answers when the harness's store is no longer where the binding says — a
+different home or working directory.
 
 ## T8. Session list
 

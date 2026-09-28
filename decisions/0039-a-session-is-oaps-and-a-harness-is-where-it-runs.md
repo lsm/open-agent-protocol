@@ -1,8 +1,10 @@
 # Decision 0039: A Session Is OAP's, and a Harness Is Where It Runs
 
-Status: proposed (the owner agreed its direction on 2026-09-27; it is accepted
-under [Decision 0003](0003-staged-unit-graduation.md) once #443 and #444 make
-its close executable on `main`. Its work is tracked in #442)
+Status: accepted 2026-09-27 (the owner agreed its direction on 2026-09-27, and
+its close is executable on `main` in both trees: #452 releases a session in
+`go/serve` and #455 in the Zig hub. Its three units graduate through their own
+gates under [Decision 0003](0003-staged-unit-graduation.md). Its work is
+tracked in #442)
 Date: 2026-09-27
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
@@ -100,9 +102,9 @@ says which. Each fails closed:
   refused `unsupported_feature`. Neither is ever answered with a fresh, empty
   session.
 
-The member carrying the intent is chosen when the unit graduates. The first
-candidate is the `recovery` object `session.open.request` already carries,
-which no rule gives a meaning today.
+The intent is a `reopen: true` member on `session.open.request` (owner,
+2026-09-27, #446). The `recovery` object the request already carries is not
+reused.
 
 A reopen is for a session with no live process. A session still open on the
 endpoint is reattached through `events` and its cursor, as Decision 0009
@@ -110,10 +112,13 @@ says; a reopen naming it is refused `session_exists`.
 
 The endpoint loads the conversation through the binding's native mechanism
 and answers with the session's state document, declaring
-`recovery.recovered: true`. No run is under way — close was refused while one
-was — so the document lists none. The conversation comes back, as the harness
-holds it. The OAP events of earlier runs do not: reattach is resume, not
-replay, and a cursor from before the close is answered with a replay gap.
+`recovery.recovered: true`. The document reports the model and settings the
+session actually runs under, which a harness can change on reload: Codex's
+`thread/resume` answers with its own. No run is under way — close was refused
+while one was — so the document lists none. The conversation comes back, as
+the harness holds it. The OAP events of earlier runs do not: reattach is
+resume, not replay, and a cursor from before the close is answered with a
+replay gap.
 
 A harness that cannot load a session declines with `unsupported_feature`, and
 its capabilities say so, as they report every other effective fidelity.
@@ -165,11 +170,10 @@ transcript entry is OAP's vocabulary.
 
 - **The hub draft changes.** Close releases the session; the rule that a
   closed session stays listed with its final state goes; `sessions` lists live
-  sessions. D2 changes from a Zig divergence into one both hubs share until
-  #443 and #444 land: the Zig contract's destructive close is the specified
-  shape, and the entries both trees keep are what they drop. #408 is
-  superseded. The trust model's "a restart ends every session" becomes "a
-  restart ends every harness process", and a session reopens once
+  sessions. D2 is resolved: #452 and #455 make both hubs release a session at
+  close, which is the shape the Zig contract's destructive close already had.
+  #408 is superseded. The trust model's "a restart ends every session" becomes
+  "a restart ends every harness process", and a session reopens once
   `session-reattach` lands.
 - **A host keeps binding records, and only those.** `oapx` keeps them in its
   state directory. The Go library takes them from an interface the embedding

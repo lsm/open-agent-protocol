@@ -2,7 +2,10 @@
 
 Status: accepted (admission clause amended by
 [Decision 0002](0002-admission-before-start.md); the one-run-per-invocation
-clause amended by [Decision 0010](0010-terminal-provenance.md))
+clause amended by [Decision 0010](0010-terminal-provenance.md); the
+"no cross-process persistence" clause amended by
+[Decision 0039](0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md), which
+lets a closed session be reopened through its harness)
 Date: 2026-09-06
 Protocol: `open-agent-protocol` version `0.1`
 Profile: `open-agent-protocol.agent-control-core`
