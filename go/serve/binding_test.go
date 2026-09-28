@@ -111,7 +111,38 @@ func TestAClosedSessionIsRecordedAsClosed(t *testing.T) {
 	}
 }
 
-func TestARefusedDuplicateOpenIsRecordedAsOpenedAndThenRefused(t *testing.T) {
+func TestTheRecordsDirectoryIsTheAdaptersOwnAndIsOmittedWhenUnknown(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	configured := boundHub(t, serve.Options{Bindings: store})
+	configured.SetWorkingDirectory("memory", "/work/repo")
+	if _, _, err := configured.Open(ctx, "memory", base.OpenRequest{SessionID: "session-configured"}); err != nil {
+		t.Fatal(err)
+	}
+	entry, found, err := store.Latest(ctx, "session-configured")
+	if err != nil || !found {
+		t.Fatalf("latest found=%v err=%v", found, err)
+	}
+	if entry.Record.Directory != "/work/repo" {
+		t.Fatalf("the record names %q, want the directory the adapter was configured with", entry.Record.Directory)
+	}
+	plain := boundHub(t, serve.Options{Bindings: store})
+	if _, _, err := plain.Open(ctx, "memory", base.OpenRequest{SessionID: "session-unknown-dir"}); err != nil {
+		t.Fatal(err)
+	}
+	other, found, err := store.Latest(ctx, "session-unknown-dir")
+	if err != nil || !found {
+		t.Fatalf("latest found=%v err=%v", found, err)
+	}
+	if other.Record.Directory != "" {
+		t.Fatalf("the record names %q, want nothing rather than the daemon's working directory", other.Record.Directory)
+	}
+}
+
+func TestARefusedDuplicateOpenIsRecordedAsARefusalAndNothingElse(t *testing.T) {
 	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -128,27 +159,20 @@ func TestARefusedDuplicateOpenIsRecordedAsOpenedAndThenRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 3 {
-		t.Fatalf("history has %d entries, want the first open, then the refused open's opened and refusal", len(history))
+	if len(history) != 2 {
+		t.Fatalf("history has %d entries, want the open that published the session and one refusal: a duplicate that never ran is not an open", len(history))
 	}
-	if history[2].Action != binding.ActionRefused {
-		t.Fatalf("the last action is %q, want a refusal rather than a close: the first session is still running", history[2].Action)
+	if history[0].Action != binding.ActionOpened || history[1].Action != binding.ActionRefused {
+		t.Fatalf("history = %+v, want opened then refused", history[:2])
 	}
-	if binding.Live(history[2]) {
+	if binding.Live(history[1]) {
 		t.Fatal("a refusal reads as a live session, so a host would reopen one the hub already holds")
 	}
-	if history[0].Action != binding.ActionOpened {
-		t.Fatalf("the first entry is %q, want the open that published the session", history[0].Action)
-	}
 	state, found := binding.State(history)
-	if !found || state.Action != binding.ActionOpened {
+	if !found || state.Action != binding.ActionOpened || !binding.Live(state) {
 		t.Fatalf("the last state of this session is %+v, want the open that is still running", state)
 	}
-	if !binding.Live(state) {
-		t.Fatal("the running session does not read as live")
-	}
 }
-
 func TestACloseAndADuplicateOpenCannotInterleaveTheirRecords(t *testing.T) {
 	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
 	if err != nil {

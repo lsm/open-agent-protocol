@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"os"
 	"sync"
 
 	"context"
@@ -95,10 +94,13 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	entry.binding = opened
 	settled := err != nil || state.Status == protocol.SessionClosed
 	h.bindingMu.Lock()
-	h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
 	var added error
-	if !settled {
-		added = h.sessions.add(entry)
+	if settled {
+		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+	} else if added = h.sessions.add(entry); added == nil {
+		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+	} else {
+		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())
 	}
 	h.bindingMu.Unlock()
 	if settled {
@@ -107,10 +109,13 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	}
 	if added != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
-		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
 	return entry, state, nil
+}
+
+func (h *Hub) SetWorkingDirectory(adapter, directory string) {
+	h.registry.SetWorkingDirectory(adapter, directory)
 }
 
 func (h *Hub) now() int64 {
@@ -129,11 +134,7 @@ func (h *Hub) openRecord(ctx context.Context, adapterName string, implementation
 	for _, source := range request.ToolSources {
 		sources = append(sources, string(source.ID))
 	}
-	directory := ""
-	if wd, err := os.Getwd(); err == nil {
-		directory = wd
-	}
-	return binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, directory, sources)
+	return binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, h.registry.WorkingDirectory(adapterName), sources)
 }
 
 func (h *Hub) recordBinding(ctx context.Context, record binding.Record, action binding.Action, timeMS int64) {

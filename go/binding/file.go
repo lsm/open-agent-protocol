@@ -15,8 +15,11 @@ import (
 )
 
 type fileStore struct {
-	mu   sync.Mutex
-	path string
+	mu        sync.Mutex
+	path      string
+	validated int64
+	confirmed bool
+	lastStart int64
 }
 
 func File(path string) (Store, error) {
@@ -57,23 +60,7 @@ func (s *fileStore) repairLocked() error {
 	if err != nil || info.Size() == 0 {
 		return err
 	}
-	whole, err := os.ReadFile(s.path)
-	if err != nil {
-		return err
-	}
-	keep := 0
-	for offset := 0; offset < len(whole); {
-		line, _, found := strings.Cut(string(whole[offset:]), "\n")
-		if !found {
-			break
-		}
-		if _, err := decode(line + "\n"); err != nil {
-			break
-		}
-		offset += len(line) + 1
-		keep = offset
-	}
-	if keep == len(whole) {
+	if s.confirmed && info.Size() == s.validated {
 		return nil
 	}
 	file, err := os.OpenFile(s.path, os.O_RDWR, 0o600)
@@ -81,7 +68,98 @@ func (s *fileStore) repairLocked() error {
 		return err
 	}
 	defer file.Close()
-	return file.Truncate(int64(keep))
+	from := int64(0)
+	if s.confirmed && info.Size() >= s.lastStart {
+		if line, readErr := readLineAt(file, s.lastStart, info.Size()); readErr == nil {
+			if _, decodeErr := decode(line); decodeErr == nil {
+				from = s.validated
+			}
+		}
+	}
+	keep, err := s.validatedThrough(file, from, info.Size())
+	if err != nil {
+		return err
+	}
+	if keep != info.Size() {
+		if err := file.Truncate(keep); err != nil {
+			return err
+		}
+	}
+	s.validated = keep
+	s.confirmed = true
+	s.lastStart = lastRecordStart(file, keep)
+	return nil
+}
+
+func readLineAt(file *os.File, start, size int64) (string, error) {
+	if start >= size {
+		return "", errors.New("binding: no record at that offset")
+	}
+	buffer := make([]byte, 0, 512)
+	chunk := make([]byte, 512)
+	for offset := start; offset < size; {
+		read, err := file.ReadAt(chunk, offset)
+		if read > 0 {
+			offset += int64(read)
+			for _, b := range chunk[:read] {
+				buffer = append(buffer, b)
+				if b == '\n' {
+					return string(buffer), nil
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return "", errors.New("binding: a record with no line end")
+}
+
+func (s *fileStore) validatedThrough(file *os.File, from, size int64) (int64, error) {
+	if from >= size {
+		return size, nil
+	}
+	tail := make([]byte, size-from)
+	read, err := file.ReadAt(tail, from)
+	if read == 0 {
+		return from, err
+	}
+	tail = tail[:read]
+	keep := from
+	start := 0
+	for index, b := range tail {
+		if b != '\n' {
+			continue
+		}
+		if _, err := decode(string(tail[start : index+1])); err != nil {
+			return keep, nil
+		}
+		keep = from + int64(index+1)
+		start = index + 1
+	}
+	return keep, nil
+}
+
+func lastRecordStart(file *os.File, size int64) int64 {
+	if size == 0 {
+		return 0
+	}
+	window := int64(4096)
+	if size < window {
+		window = size
+	}
+	buffer := make([]byte, window)
+	read, err := file.ReadAt(buffer, size-window)
+	if read == 0 && err != nil {
+		return 0
+	}
+	buffer = buffer[:read]
+	for index := len(buffer) - 1; index > 0; index-- {
+		if buffer[index-1] == '\n' {
+			return size - window + int64(index)
+		}
+	}
+	return 0
 }
 
 func (s *fileStore) Append(_ context.Context, entry Entry) error {

@@ -25,9 +25,6 @@ func State(history []Entry) (Entry, bool) {
 		if history[i].Action == ActionRefused {
 			continue
 		}
-		if history[i].Action == ActionOpened && i+1 < len(history) && history[i+1].Action == ActionRefused {
-			continue
-		}
 		return history[i], true
 	}
 	return Entry{}, false

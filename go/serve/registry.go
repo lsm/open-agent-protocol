@@ -155,11 +155,27 @@ func (file *configFile) UnmarshalJSON(data []byte) error {
 
 type Registry struct {
 	adapters    map[string]base.Adapter
+	directories map[string]string
 	toolSources map[string]protocol.ToolSourceAttachment
 }
 
 func NewRegistry() *Registry {
-	return &Registry{adapters: make(map[string]base.Adapter), toolSources: make(map[string]protocol.ToolSourceAttachment)}
+	return &Registry{adapters: make(map[string]base.Adapter), directories: make(map[string]string), toolSources: make(map[string]protocol.ToolSourceAttachment)}
+}
+
+func (r *Registry) SetWorkingDirectory(name, directory string) {
+	if r.directories == nil {
+		r.directories = make(map[string]string)
+	}
+	if directory == "" {
+		delete(r.directories, name)
+		return
+	}
+	r.directories[name] = directory
+}
+
+func (r *Registry) WorkingDirectory(name string) string {
+	return r.directories[name]
 }
 
 func (r *Registry) RegisterToolSource(id string, source protocol.ToolSourceAttachment) error {
@@ -266,6 +282,7 @@ func LoadRegistry(path string, environ func(string) (string, bool)) (*Registry, 
 		if err := registry.Register(name, implementation); err != nil {
 			return nil, err
 		}
+		registry.SetWorkingDirectory(name, file.Adapters[name].WorkingDirectory)
 	}
 	for _, id := range sortedKeys(file.ToolSources) {
 		entry := file.ToolSources[id]

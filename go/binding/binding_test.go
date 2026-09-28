@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fileStoreIn(t *testing.T) Store {
@@ -230,13 +231,12 @@ func TestLiveReadsTheEntryThatClaimsToOpenTheSession(t *testing.T) {
 	}
 }
 
-func TestStateSkipsAnOpenTheNextEntryRefused(t *testing.T) {
+func TestStateIgnoresARefusalForADuplicateThatNeverRan(t *testing.T) {
 	first := FromOpen("session-1", "memory", "memory-oap-v1", "a-model", "/home/op", "/work", []string{"fs"})
 	second := FromOpen("session-1", "memory", "memory-oap-v1", "another-model", "/home/op", "/work", []string{"git"})
 	history := []Entry{
 		Opened(first, 1),
-		Opened(second, 2),
-		{Action: ActionRefused, TimeMS: 3, Record: second},
+		{Action: ActionRefused, TimeMS: 2, Record: second},
 	}
 	state, found := State(history)
 	if !found {
@@ -245,14 +245,10 @@ func TestStateSkipsAnOpenTheNextEntryRefused(t *testing.T) {
 	if state.Action != ActionOpened || state.Record.Model != "a-model" {
 		t.Fatalf("state = %+v, want the open that is actually running", state)
 	}
-	if !Live(state) {
-		t.Fatal("the running session does not read as live")
-	}
 	if len(state.Record.ToolSourceIDs) != 1 || state.Record.ToolSourceIDs[0] != "fs" {
 		t.Fatalf("state carries the refused request's tool sources: %+v", state.Record.ToolSourceIDs)
 	}
 }
-
 func TestStateOfOnlyRefusalsIsUnknown(t *testing.T) {
 	if _, found := State([]Entry{{Action: ActionRefused, TimeMS: 1, Record: sample()}}); found {
 		t.Fatal("a history of refusals reported a state")
@@ -298,6 +294,32 @@ func readFile(t *testing.T, store Store) []byte {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func TestManyAppendsStayLinearInWhatTheyRead(t *testing.T) {
+	ctx := context.Background()
+	store := fileStoreIn(t)
+	for i := 0; i < 200; i++ {
+		if err := store.Append(ctx, Opened(sample(), int64(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.(*fileStore).validated = 0
+	store.(*fileStore).confirmed = false
+	started := time.Now()
+	if err := store.Append(ctx, Opened(sample(), 201)); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("one append over 200 records took %v, so the repair is reading the whole log every time", elapsed)
+	}
+	history, err := store.History(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 201 {
+		t.Fatalf("history has %d entries, want 201", len(history))
+	}
 }
 
 func TestTheStoreFileIsNotWorldReadable(t *testing.T) {
