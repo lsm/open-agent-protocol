@@ -335,3 +335,50 @@ func TestTheStoreFileIsNotWorldReadable(t *testing.T) {
 		t.Fatalf("the store file is %v, want no group or other access", info.Mode().Perm())
 	}
 }
+
+func TestASameLengthEditOfAValidatedRecordIsFoundAndThenRepaired(t *testing.T) {
+	ctx := context.Background()
+	store := fileStoreIn(t)
+	first := Opened(sample(), 1)
+	second := Opened(sample(), 2)
+	if err := store.Append(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	editor := store.(*fileStore)
+	before, err := os.ReadFile(editor.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupted := make([]byte, len(before))
+	copy(corrupted, before)
+	corrupted[0] ^= 'a' ^ 'z'
+	if string(corrupted) == string(before) {
+		t.Fatal("the edit changed nothing, so the test proves nothing")
+	}
+	if len(corrupted) != len(before) {
+		t.Fatal("the edit changed the length, so this is not the same-length case")
+	}
+	if err := os.WriteFile(editor.path, corrupted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.History(ctx, "session-1"); !errors.Is(err, ErrTorn) {
+		t.Fatalf("the read reported %v, so the edit was not noticed", err)
+	}
+	third := Opened(sample(), 3)
+	if err := store.Append(ctx, third); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.History(ctx, "session-1"); err != nil {
+		t.Fatalf("the read after the repair reported %v", err)
+	}
+	history, err := store.History(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("the repaired log holds %d entries, want the records the walk kept: %+v", len(history), history)
+	}
+}

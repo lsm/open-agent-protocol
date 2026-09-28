@@ -91,6 +91,12 @@ func (s *fileStore) repairLocked() error {
 	return nil
 }
 
+func (s *fileStore) forget() {
+	s.validated = 0
+	s.confirmed = false
+	s.lastStart = 0
+}
+
 func readLineAt(file *os.File, start, size int64) (string, error) {
 	if start >= size {
 		return "", errors.New("binding: no record at that offset")
@@ -226,10 +232,12 @@ func (s *fileStore) read(ctx context.Context, sessionID string) ([]Entry, error)
 			if len(line) == 0 && errors.Is(err, io.EOF) {
 				return entries, nil
 			}
+			s.forget()
 			return nil, fmt.Errorf("%w: %d bytes of a record with no line end", ErrTorn, len(line))
 		}
 		entry, err := decode(line)
 		if err != nil {
+			s.forget()
 			return nil, err
 		}
 		if entry.Record.SessionID == sessionID {
