@@ -100,7 +100,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     up; an aborted or errored assistant is dropped; and a thinking block from a
     **different** model becomes text while one from the same model keeps its
     signature. Without this an unanswered call goes out dangling and a long id goes
-    out unnormalized.
+    out unnormalized. It also carries a defect of its own, **#514**: the pending
+    calls are keyed by the normalized id and the answered ones by the original, so
+    on a Mistral host — where every id is re-hashed — an answered call grows a
+    second, spurious error result. Transcribed rather than corrected, and pinned.
   - **The event stream's thirteen kinds are the union, and this client emits nine
     of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
     `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
@@ -113,7 +116,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     profile's envelopes.
   - **A keepalive is emitted on the ping interval, and every event is stamped.**
     The first one always fires when pinging is on, because the last-ping time
-    starts at zero.
+    starts at zero. The terminal message's usage also carries a **cost**, computed
+    from the model's own per-million rates.
+  - **A `usage` member that is present but is not an object leaves the accumulated
+    prompt and cache totals alone**, while `output` is still reassigned, because
+    that is the asymmetry in the source. Reading `usage` as a fresh struct per
+    chunk would drop the totals a server already reported.
   - **`toolcall_end` carries a different content index than its `toolcall_start`
     did.** The start counts tool calls alone; the end is the position in the final
     array, which also holds the thinking and the text. The partial on that event is
@@ -125,8 +133,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an answered one is still written. A malformed chunk is **swallowed** rather than
   failing the stream, which is why the partial-text rule has no reachable caller here.
   And a `usage` member that is present but is not an object leaves the accumulated
-  totals alone, which is the opposite of what a fresh struct per chunk would do. All
-  three are filed as **#513**; none is fixed here.
+  totals alone, which is the opposite of what a fresh struct per chunk would do. The
+  first two are filed as **#513**; neither is fixed here. A fourth quirk, an
+  answered tool call growing a duplicate error result once its id is normalized, is
+  **#514** — transcribed and pinned there rather than corrected here.
 - **The contested settlement has a fixture: `pi-two-open-calls`.** A terminal
   event sweeping several open calls at once had no fixture, and #433 step 4 was
   parked waiting for a hub that could serve one. The memory backend structurally

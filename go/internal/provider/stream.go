@@ -16,6 +16,20 @@ func findReasoningField(delta map[string]any) (string, string, bool) {
 	return "", "", false
 }
 
+func calculateCost(usage Usage, rates Cost) Cost {
+	perMillion := func(tokens int, rate float64) float64 {
+		return float64(tokens) / 1_000_000.0 * rate
+	}
+	cost := Cost{
+		Input:      perMillion(usage.InputTokens, rates.Input),
+		Output:     perMillion(usage.OutputTokens, rates.Output),
+		CacheRead:  perMillion(usage.CacheReadTokens, rates.CacheRead),
+		CacheWrite: perMillion(usage.CacheWriteTokens, rates.CacheWrite),
+	}
+	cost.Total = cost.Input + cost.Output + cost.CacheRead + cost.CacheWrite
+	return cost
+}
+
 func CanCompletePartialTextOnStreamError(textLen, thinkingLen, toolCallCount int) bool {
 	return toolCallCount == 0 && (textLen > 0 || thinkingLen > 0)
 }
@@ -45,16 +59,14 @@ func parseUsageInto(container map[string]any, usage *Usage) {
 			}
 		}
 	}
-	completion, hasCompletion := asInt(container["completion_tokens"])
+	completion, _ := asInt(container["completion_tokens"])
 	reasoning := 0
 	if details, ok := asObject(container["completion_tokens_details"]); ok {
 		if value, ok := asInt(details["reasoning_tokens"]); ok {
 			reasoning = value
 		}
 	}
-	if hasCompletion || reasoning != 0 {
-		usage.OutputTokens = completion + reasoning
-	}
+	usage.OutputTokens = completion + reasoning
 	if value, ok := asInt(container["total_tokens"]); ok {
 		usage.TotalTokens = value
 	}
@@ -248,6 +260,7 @@ func (s *streamState) finish(sink *EventSink) {
 	if s.usage.TotalTokens == 0 {
 		s.usage.TotalTokens = s.usage.InputTokens + s.usage.OutputTokens + s.usage.CacheReadTokens + s.usage.CacheWriteTokens
 	}
+	s.usage.Cost = calculateCost(s.usage, s.model.Cost)
 	hasThinking := s.thinking != ""
 	hasText := s.text != ""
 	if !hasThinking && !hasText && s.toolCalls == 0 {

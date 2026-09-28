@@ -26,6 +26,7 @@ type Usage struct {
 	TotalTokens      int
 	CacheReadTokens  int
 	CacheWriteTokens int
+	Cost             Cost
 }
 
 type Cost struct {
@@ -33,6 +34,7 @@ type Cost struct {
 	Output     float64
 	CacheRead  float64
 	CacheWrite float64
+	Total      float64
 }
 
 type PartialMessage struct {

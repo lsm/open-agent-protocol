@@ -87,6 +87,7 @@ type Model struct {
 	AllowsAnonymous bool
 	Reasoning       bool
 	MaxTokens       int
+	Cost            Cost
 }
 
 func holdsURL(baseURL string, hasBaseURL bool, needle string) bool {
@@ -192,7 +193,7 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 func DetectCapabilities(baseURL string, hasBaseURL bool) Capabilities {
 	switch DetectProviderType(baseURL, hasBaseURL) {
 	case ProviderUnknown:
-		return Capabilities{MaxTokensField: MaxTokensPlain, ThinkingFormat: ThinkingOpenAI, ProviderType: ProviderUnknown}
+		return Capabilities{FunctionCalling: true, MaxTokensField: MaxTokensPlain, ThinkingFormat: ThinkingOpenAI, ProviderType: ProviderUnknown}
 	case ProviderAnthropic, ProviderGoogle, ProviderBedrock, ProviderAzure:
 		return Capabilities{
 			ExtendedThinking: true, PromptCaching: true, Vision: true, FunctionCalling: true,

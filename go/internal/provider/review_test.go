@@ -48,8 +48,11 @@ func TestANullUsageLeavesTheAccumulatedTotalsAlone(t *testing.T) {
 		sseFrame(`{"usage":{}}`),
 	)
 	gotEmpty := findEvent(t, empty, EventDone)
-	if gotEmpty.Message.Usage.InputTokens != 10 || gotEmpty.Message.Usage.OutputTokens != 4 {
-		t.Errorf("usage = %+v, want an empty object read but carrying no members, so the totals stand", gotEmpty.Message.Usage)
+	if gotEmpty.Message.Usage.InputTokens != 10 {
+		t.Errorf("usage = %+v, want prompt_tokens kept: zig reads a member only when it is present", gotEmpty.Message.Usage)
+	}
+	if gotEmpty.Message.Usage.OutputTokens != 0 {
+		t.Errorf("usage = %+v, want output zeroed: zig assigns output = completion + reasoning unconditionally inside the usage branch", gotEmpty.Message.Usage)
 	}
 }
 
@@ -61,8 +64,8 @@ func TestAnAbsentBaseURLGetsZigsEmptyCaps(t *testing.T) {
 	if caps.ProviderType != ProviderUnknown {
 		t.Errorf("provider type = %q, want unknown", caps.ProviderType)
 	}
-	if caps.ExtendedThinking || caps.PromptCaching || caps.FunctionCalling {
-		t.Errorf("caps = %+v, want every default left alone", caps)
+	if caps.ExtendedThinking || caps.PromptCaching {
+		t.Errorf("caps = %+v, want every non-default field left alone", caps)
 	}
 }
 
@@ -167,5 +170,79 @@ func TestTheBodyTruncatesALongToolIDForAnOpenAIHost(t *testing.T) {
 		if parsed["role"] == "tool" && parsed["tool_call_id"] != want {
 			t.Errorf("the result's id = %v, want the truncated %q", parsed["tool_call_id"], want)
 		}
+	}
+}
+
+func TestAnAnsweredCallStillGrowsASyntheticResultOnceItsIDIsNormalized(t *testing.T) {
+	model := loopbackModel()
+	model.BaseURL = "https://api.mistral.ai"
+	messages := []Message{
+		{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "call_original", Name: "bash", Arguments: "{}"}},
+		}}},
+		{ToolResult: &ToolResult{ToolCallID: "call_original", Parts: []ContentPart{{Text: &TextPart{Text: "ok"}}}}},
+		{User: &UserContent{Text: "next", HasText: true}},
+	}
+	out := PreTransform(messages, TransformConfig{
+		TargetAPI: "openai-completions", TargetProvider: "local", TargetModelID: "local-model",
+		MistralToolIDs: true, InsertSyntheticResult: true,
+	})
+	results := 0
+	for _, m := range out {
+		if m.ToolResult != nil {
+			results++
+		}
+	}
+	if results != 2 {
+		t.Errorf("got %d tool results, want 2: zig keys the answered set by the original id and the pending set by the normalized one, so an answered call still grows a synthetic result", results)
+	}
+}
+
+func TestAnAnsweredCallWithAnUnchangedIDGrowsNoSyntheticResult(t *testing.T) {
+	messages := []Message{
+		{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "call_1", Name: "bash", Arguments: "{}"}},
+		}}},
+		{ToolResult: &ToolResult{ToolCallID: "call_1", Parts: []ContentPart{{Text: &TextPart{Text: "ok"}}}}},
+		{User: &UserContent{Text: "next", HasText: true}},
+	}
+	out := PreTransform(messages, TransformConfig{
+		TargetAPI: "openai-completions", TargetProvider: "local", TargetModelID: "local-model",
+		InsertSyntheticResult: true,
+	})
+	results := 0
+	for _, m := range out {
+		if m.ToolResult != nil {
+			results++
+		}
+	}
+	if results != 1 {
+		t.Errorf("got %d tool results, want 1: an id that normalization leaves alone lines the two sets up", results)
+	}
+}
+
+func TestTheCostIsCalculatedFromTheModelsOwnRates(t *testing.T) {
+	model := streamModel()
+	model.Cost = Cost{Input: 2, Output: 8, CacheRead: 0.5, CacheWrite: 1}
+	events := runStream(t, model,
+		sseFrame(`{"usage":{"prompt_tokens":1000000,"completion_tokens":500000}}`),
+	)
+	done := findEvent(t, events, EventDone)
+	cost := done.Message.Usage.Cost
+	if cost.Input != 2 || cost.Output != 4 {
+		t.Errorf("cost = %+v, want 2 in and 4 out at a million and a half million tokens", cost)
+	}
+	if cost.Total != 6 {
+		t.Errorf("total = %v, want the four parts summed", cost.Total)
+	}
+}
+
+func TestTheUnknownCapsKeepZigsFunctionCallingDefault(t *testing.T) {
+	caps := DetectCapabilities("", false)
+	if !caps.FunctionCalling {
+		t.Error("zig's ProviderCapabilities defaults function_calling to true, so even the empty caps struct reports it")
+	}
+	if caps.Vision {
+		t.Error("vision is not a default, so the empty caps struct leaves it false")
 	}
 }
