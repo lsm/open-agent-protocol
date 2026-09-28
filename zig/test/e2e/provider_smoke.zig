@@ -33,6 +33,12 @@ fn envOwned(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
     return compat.getEnvVarOwned(allocator, name) catch null;
 }
 
+fn envPresent(allocator: std.mem.Allocator, name: []const u8) bool {
+    const value = envOwned(allocator, name) orelse return false;
+    defer allocator.free(value);
+    return value.len > 0;
+}
+
 fn rowFor(id: []const u8) ?Row {
     for (rows) |row| {
         if (std.mem.eql(u8, row.id, id)) return row;
@@ -40,16 +46,16 @@ fn rowFor(id: []const u8) ?Row {
     return null;
 }
 
-fn optedIn() ?Row {
-    if (envOwned(testing.allocator, "CI") != null) {
+fn optedIn(allocator: std.mem.Allocator) ?Row {
+    if (envPresent(allocator, "CI")) {
         std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: the provider smoke gate never runs in CI\n", .{});
         return null;
     }
-    const id = envOwned(testing.allocator, opt_in_env) orelse {
+    const id = envOwned(allocator, opt_in_env) orelse {
         std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: set {s}=<row> to run a row's smoke gate\n", .{opt_in_env});
         return null;
     };
-    defer testing.allocator.free(id);
+    defer allocator.free(id);
     if (id.len == 0) {
         std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: {s} is set but names no row\n", .{opt_in_env});
         return null;
@@ -59,29 +65,36 @@ fn optedIn() ?Row {
         for (rows) |known| std.debug.print("  {s}\n", .{known.id});
         return null;
     };
-    if (envOwned(testing.allocator, "OAPX_KEYCHAIN_SERVICE") == null and
-        envOwned(testing.allocator, "HOME") == null)
-    {
-        return null;
-    }
     return row;
 }
 
 const Fixture = struct {
     row: Row,
-    key: []const u8,
+    key: []u8,
     model: ai_types.Model,
     registry: api_registry.ApiRegistry,
+    allocator: std.mem.Allocator,
 
-    fn deinit(self: *Fixture, allocator: std.mem.Allocator) void {
+    fn deinit(self: *Fixture) void {
+        std.crypto.secureZero(u8, self.key);
+        self.allocator.free(self.key);
         var owned = self.model;
-        owned.deinit(allocator);
+        owned.deinit(self.allocator);
         self.registry.deinit();
+        self.* = undefined;
+    }
+
+    fn options(self: *const Fixture, max_tokens: u32) ai_types.StreamOptions {
+        return .{
+            .api_key = ai_types.OwnedSlice(u8).initBorrowed(self.key),
+            .max_tokens = max_tokens,
+            .temperature = 0.0,
+        };
     }
 };
 
 fn prepare(allocator: std.mem.Allocator) !?Fixture {
-    const row = optedIn() orelse return null;
+    const row = optedIn(allocator) orelse return null;
     const target = (try catalogTargetInRegion(row.id, regionFor(allocator, row.id))) orelse {
         std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: {s} has no endpoint the catalog resolves\n", .{row.id});
         return null;
@@ -92,9 +105,8 @@ fn prepare(allocator: std.mem.Allocator) !?Fixture {
         for (environment.items) |held| allocator.free(held.value);
         environment.deinit(allocator);
     }
-    const names = provider_catalog.credentialEnv(row.id);
-    for (names) |name| {
-        const value = try compat.getEnvVarOwned(allocator, name);
+    for (provider_catalog.credentialEnv(row.id)) |name| {
+        const value = envOwned(allocator, name) orelse continue;
         if (value.len == 0) {
             allocator.free(value);
             continue;
@@ -106,21 +118,20 @@ fn prepare(allocator: std.mem.Allocator) !?Fixture {
     defer if (loaded) |*held| held.deinit();
     const storage: ?*provider_credential.AuthStorage = if (loaded) |*held| held else null;
 
-    var credential = (try provider_credential.lookup(allocator, environment.items, storage, row.id)) orelse {
-        std.debug.print(
-            "\n\x1b[90mSKIPPED\x1b[0m: {s} has no credential; set {s} or log in first\n",
-            .{ row.id, opt_in_env },
-        );
+    const found = try provider_credential.lookup(allocator, environment.items, storage, row.id);
+    if (found == null) {
+        std.debug.print("\n\x1b[90mSKIPPED\x1b[0m: {s} has no credential; set one of ", .{row.id});
+        for (provider_catalog.credentialEnv(row.id)) |name| std.debug.print("{s} ", .{name});
+        std.debug.print("or log in first\n", .{});
         return null;
-    };
+    }
+    var credential = found.?;
     defer credential.deinit(allocator);
 
     const model_id = envOwned(allocator, opt_in_model_env) orelse try allocator.dupe(u8, row.model);
     defer allocator.free(model_id);
 
-    var registry = api_registry.ApiRegistry.init(allocator);
-    errdefer registry.deinit();
-    try register_builtins.registerBuiltInApiProviders(&registry);
+    const owned_key = try allocator.dupe(u8, credential.key);
 
     const id = try allocator.dupe(u8, model_id);
     errdefer allocator.free(id);
@@ -136,9 +147,13 @@ fn prepare(allocator: std.mem.Allocator) !?Fixture {
     errdefer allocator.free(input);
     input[0] = try allocator.dupe(u8, "text");
 
+    var registry = api_registry.ApiRegistry.init(allocator);
+    errdefer registry.deinit();
+    try register_builtins.registerBuiltInApiProviders(&registry);
+
     return .{
         .row = row,
-        .key = credential.key,
+        .key = owned_key,
         .model = .{
             .id = id,
             .name = name,
@@ -153,6 +168,7 @@ fn prepare(allocator: std.mem.Allocator) !?Fixture {
             .is_owned = true,
         },
         .registry = registry,
+        .allocator = allocator,
     };
 }
 
@@ -160,8 +176,7 @@ const CatalogTarget = struct { wire: []const u8, base_url: []const u8 };
 
 fn regionFor(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
     const row = provider_catalog.provider(id) orelse return null;
-    if (row.endpoints.len == 0) return null;
-    if (row.endpoints[0].region == null) return null;
+    if (row.endpoints.len == 0 or row.endpoints[0].region == null) return null;
     const name = provider_catalog.regionEnv(id) orelse return row.endpoints[0].region;
     const value = envOwned(allocator, name) orelse return row.endpoints[0].region;
     defer allocator.free(value);
@@ -169,10 +184,6 @@ fn regionFor(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
     if (std.ascii.eqlIgnoreCase(trimmed, "global") or std.ascii.eqlIgnoreCase(trimmed, "moonshot")) return "global";
     if (std.ascii.eqlIgnoreCase(trimmed, "china") or std.ascii.eqlIgnoreCase(trimmed, "cn")) return "china";
     return row.endpoints[0].region;
-}
-
-fn catalogTargetFor(id: []const u8) ?CatalogTarget {
-    return catalogTargetInRegion(id, regionFor(testing.allocator, id)) catch null;
 }
 
 fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) !?CatalogTarget {
@@ -186,30 +197,8 @@ fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) !?CatalogTarget {
     return null;
 }
 
-fn waitResult(
-    allocator: std.mem.Allocator,
-    row_id: []const u8,
-    stream: *event_stream.AssistantMessageEventStream,
-) !ai_types.AssistantMessage {
-    const deadline = test_helpers.createDeadline(test_helpers.DEFAULT_E2E_TIMEOUT_MS);
-    while (!stream.isDone()) {
-        if (test_helpers.isDeadlineExceeded(deadline)) return error.TimeoutExceeded;
-        _ = stream.poll();
-        compat.time.sleepNs(10 * std.time.ns_per_ms);
-    }
-    if (stream.getError()) |err| {
-        std.debug.print("\n\x1b[91mFAILED\x1b[0m {s}: stream error {s}\n", .{ row_id, err });
-        return error.TestFailed;
-    }
-    return ai_types.cloneAssistantMessage(allocator, stream.getResult() orelse return error.NoResult);
-}
-
-fn prompt(text: []const u8) ai_types.Context {
-    const user = ai_types.Message{ .user = .{
-        .content = .{ .text = text },
-        .timestamp = compat.time.nowSeconds(),
-    } };
-    return .{ .messages = &[_]ai_types.Message{user} };
+fn catalogTargetFor(id: []const u8) ?CatalogTarget {
+    return catalogTargetInRegion(id, regionFor(testing.allocator, id)) catch null;
 }
 
 fn report(row: []const u8, case: []const u8, ok: bool) void {
@@ -220,48 +209,71 @@ fn report(row: []const u8, case: []const u8, ok: bool) void {
     }
 }
 
-test "provider smoke: one completion" {
-    var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
-    defer fixture.deinit(testing.allocator);
-
-    const ctx = prompt("Reply with: ok");
-    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, .{
-        .api_key = ai_types.OwnedSlice(u8).initBorrowed(fixture.key),
-        .max_tokens = 32,
-        .temperature = 0.0,
-    }, testing.allocator);
-    defer _ = stream.deinitAndDestroy();
-
-    var result = try waitResult(testing.allocator, fixture.row.id, stream);
-    defer ai_types.deinitAssistantMessageOwned(testing.allocator, &result);
-
-    var saw_text = false;
-    for (result.content) |part| {
+fn textOf(message: ai_types.AssistantMessage) []const u8 {
+    for (message.content) |part| {
         switch (part) {
             .text => |t| {
-                if (t.text.len > 0) saw_text = true;
+                if (t.text.len > 0) return t.text;
             },
             else => {},
         }
     }
+    return "";
+}
+
+fn toolNameIn(message: ai_types.AssistantMessage, wanted: []const u8) bool {
+    for (message.content) |part| {
+        switch (part) {
+            .tool_call => |call| {
+                if (std.mem.eql(u8, call.name, wanted)) return true;
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+test "provider smoke: one completion" {
+    var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
+    defer fixture.deinit();
+
+    const messages = [_]ai_types.Message{.{ .user = .{
+        .content = .{ .text = "Reply with: ok" },
+        .timestamp = compat.time.nowSeconds(),
+    } }};
+    const ctx = ai_types.Context{ .messages = &messages };
+
+    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(32), testing.allocator);
+    defer _ = stream.deinitAndDestroy();
+
+    var result = try test_helpers.waitForResult(testing.allocator, stream, fixture.row.id);
+    defer ai_types.deinitAssistantMessageOwned(testing.allocator, &result);
+
+    const saw_text = textOf(result).len > 0;
     report(fixture.row.id, "completion", saw_text);
     try testing.expect(saw_text);
 }
 
 test "provider smoke: a streamed completion arrives as deltas" {
     var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
-    defer fixture.deinit(testing.allocator);
+    defer fixture.deinit();
 
-    const ctx = prompt("Count from one to twenty, one number per line, and nothing else.");
-    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, .{
-        .api_key = ai_types.OwnedSlice(u8).initBorrowed(fixture.key),
-        .max_tokens = 128,
-        .temperature = 0.0,
-    }, testing.allocator);
+    const messages = [_]ai_types.Message{.{ .user = .{
+        .content = .{ .text = "Count from one to twenty, one number per line, and nothing else." },
+        .timestamp = compat.time.nowSeconds(),
+    } }};
+    const ctx = ai_types.Context{ .messages = &messages };
+
+    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(128), testing.allocator);
     defer _ = stream.deinitAndDestroy();
 
     var deltas: usize = 0;
+    const deadline = test_helpers.createDeadline(test_helpers.DEFAULT_E2E_TIMEOUT_MS);
     while (!stream.isDone()) {
+        if (test_helpers.isDeadlineExceeded(deadline)) {
+            report(fixture.row.id, "streamed deltas", false);
+            return error.TimeoutExceeded;
+        }
         while (stream.poll()) |event| {
             switch (event) {
                 .text_delta, .thinking_delta => deltas += 1,
@@ -270,6 +282,11 @@ test "provider smoke: a streamed completion arrives as deltas" {
         }
         compat.time.sleepNs(5 * std.time.ns_per_ms);
     }
+    if (stream.getError()) |err| {
+        report(fixture.row.id, "streamed deltas", false);
+        std.debug.print("\n\x1b[91mFAILED\x1b[0m {s}: stream error {s}\n", .{ fixture.row.id, err });
+        return error.TestFailed;
+    }
 
     report(fixture.row.id, "streamed deltas", deltas > 1);
     try testing.expect(deltas > 1);
@@ -277,97 +294,81 @@ test "provider smoke: a streamed completion arrives as deltas" {
 
 test "provider smoke: one tool call" {
     var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
-    defer fixture.deinit(testing.allocator);
+    defer fixture.deinit();
 
     const tools = [_]ai_types.Tool{.{
         .name = "record_quirk",
         .description = "Record one provider quirk",
         .parameters_schema_json = "{\"type\":\"object\",\"properties\":{\"quirk\":{\"type\":\"string\"}},\"required\":[\"quirk\"]}",
     }};
-    const ctx = ai_types.Context{
-        .messages = &[_]ai_types.Message{.{ .user = .{
-            .content = .{ .text = "Call record_quirk with quirk set to whatever you notice first." },
-            .timestamp = compat.time.nowSeconds(),
-        } }},
-        .tools = &tools,
-    };
+    const messages = [_]ai_types.Message{.{ .user = .{
+        .content = .{ .text = "Call record_quirk with quirk set to whatever you notice first." },
+        .timestamp = compat.time.nowSeconds(),
+    } }};
+    const ctx = ai_types.Context{ .messages = &messages, .tools = &tools };
 
-    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, .{
-        .api_key = ai_types.OwnedSlice(u8).initBorrowed(fixture.key),
-        .max_tokens = 128,
-        .temperature = 0.0,
-    }, testing.allocator);
+    const stream = try stream_mod.stream(&fixture.registry, fixture.model, ctx, fixture.options(128), testing.allocator);
     defer _ = stream.deinitAndDestroy();
 
-    var result = try waitResult(testing.allocator, fixture.row.id, stream);
+    var result = try test_helpers.waitForResult(testing.allocator, stream, fixture.row.id);
     defer ai_types.deinitAssistantMessageOwned(testing.allocator, &result);
 
-    var saw_tool = false;
-    for (result.content) |part| {
-        switch (part) {
-            .tool_call => |call| {
-                if (std.mem.eql(u8, call.name, "record_quirk")) saw_tool = true;
-            },
-            else => {},
-        }
-    }
+    const saw_tool = toolNameIn(result, "record_quirk");
     report(fixture.row.id, "tool call", saw_tool);
     try testing.expect(saw_tool);
 }
 
-fn modelWithId(allocator: std.mem.Allocator, source: ai_types.Model, id_text: []const u8) !ai_types.Model {
-    const id = try allocator.dupe(u8, id_text);
-    errdefer allocator.free(id);
-    const name = try allocator.dupe(u8, id_text);
-    errdefer allocator.free(name);
-    const api = try allocator.dupe(u8, source.api);
-    errdefer allocator.free(api);
-    const provider = try allocator.dupe(u8, source.provider);
-    errdefer allocator.free(provider);
-    const base_url = try allocator.dupe(u8, source.base_url);
-    errdefer allocator.free(base_url);
-    const input = try allocator.alloc([]const u8, 1);
-    errdefer allocator.free(input);
-    input[0] = try allocator.dupe(u8, "text");
-    return .{
-        .id = id,
-        .name = name,
+test "provider smoke: an unknown model is refused" {
+    var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
+    defer fixture.deinit();
+
+    const unknown_id = try testing.allocator.dupe(u8, "oapx-provider-smoke-no-such-model");
+    const unknown_name = try testing.allocator.dupe(u8, "oapx-provider-smoke-no-such-model");
+    const api = try testing.allocator.dupe(u8, fixture.model.api);
+    const provider = try testing.allocator.dupe(u8, fixture.model.provider);
+    const base_url = try testing.allocator.dupe(u8, fixture.model.base_url);
+    const input = try testing.allocator.alloc([]const u8, 1);
+    input[0] = try testing.allocator.dupe(u8, "text");
+    var refused = ai_types.Model{
+        .id = unknown_id,
+        .name = unknown_name,
         .api = api,
         .provider = provider,
         .base_url = base_url,
         .reasoning = false,
         .input = input,
-        .cost = source.cost,
-        .context_window = source.context_window,
-        .max_tokens = source.max_tokens,
+        .cost = fixture.model.cost,
+        .context_window = fixture.model.context_window,
+        .max_tokens = 16,
         .is_owned = true,
     };
-}
-
-test "provider smoke: an unknown model is refused" {
-    var fixture = (try prepare(testing.allocator)) orelse return error.SkipZigTest;
-    defer fixture.deinit(testing.allocator);
-
-    var refused = try modelWithId(testing.allocator, fixture.model, "oapx-provider-smoke-no-such-model");
     defer refused.deinit(testing.allocator);
 
-    const ctx = prompt("Reply with: ok");
-    const stream = stream_mod.stream(&fixture.registry, refused, ctx, .{
-        .api_key = ai_types.OwnedSlice(u8).initBorrowed(fixture.key),
-        .max_tokens = 16,
-        .temperature = 0.0,
-    }, testing.allocator) catch {
+    const messages = [_]ai_types.Message{.{ .user = .{
+        .content = .{ .text = "Reply with: ok" },
+        .timestamp = compat.time.nowSeconds(),
+    } }};
+    const ctx = ai_types.Context{ .messages = &messages };
+
+    const stream = stream_mod.stream(&fixture.registry, refused, ctx, fixture.options(16), testing.allocator) catch {
         report(fixture.row.id, "unknown model refused", true);
         return;
     };
     defer _ = stream.deinitAndDestroy();
 
-    var result = try waitResult(testing.allocator, fixture.row.id, stream);
-    defer ai_types.deinitAssistantMessageOwned(testing.allocator, &result);
+    const deadline = test_helpers.createDeadline(test_helpers.DEFAULT_E2E_TIMEOUT_MS);
+    while (!stream.isDone()) {
+        if (test_helpers.isDeadlineExceeded(deadline)) {
+            report(fixture.row.id, "unknown model refused", false);
+            return error.TimeoutExceeded;
+        }
+        _ = stream.poll();
+        compat.time.sleepNs(10 * std.time.ns_per_ms);
+    }
 
-    const served = result.content.len > 0;
-    report(fixture.row.id, "unknown model refused", !served);
-    try testing.expect(!served);
+    const refused_it = stream.getError() != null;
+    report(fixture.row.id, "unknown model refused", refused_it);
+    try testing.expect(refused_it);
 }
 
 test "the smoke gate knows the current rows and nothing else" {

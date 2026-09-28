@@ -11,6 +11,25 @@ pub fn isDeadlineExceeded(deadline: i64) bool {
     return compat.time.nowMillis() > deadline;
 }
 
+pub fn waitForResult(
+    allocator: std.mem.Allocator,
+    stream: anytype,
+    description: []const u8,
+) !@import("ai_types").AssistantMessage {
+    const deadline = createDeadline(DEFAULT_E2E_TIMEOUT_MS);
+    while (!stream.isDone()) {
+        if (isDeadlineExceeded(deadline)) return error.TimeoutExceeded;
+        _ = stream.poll();
+        compat.time.sleepNs(10 * std.time.ns_per_ms);
+    }
+    compat.time.sleepNs(50 * std.time.ns_per_ms);
+    if (stream.getError()) |err| {
+        std.debug.print("\n\x1b[91mFAILED\x1b[0m {s}: stream error {s}\n", .{ description, err });
+        return error.TestFailed;
+    }
+    return @import("ai_types").cloneAssistantMessage(allocator, stream.getResult() orelse return error.NoResult);
+}
+
 pub fn testStart(test_name: []const u8) void {
     std.debug.print("\n\x1b[36m[TEST START]\x1b[0m {s}\n", .{test_name});
 }

@@ -735,6 +735,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
         },
     });
 
@@ -3108,6 +3109,7 @@ pub fn build(b: *std.Build) void {
 
     const test_e2e_provider_smoke_step = b.step("test-e2e-provider-smoke", "Run one catalogued row's live smoke gate (opt-in, never in CI)");
     test_e2e_provider_smoke_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
+    test_unit_providers_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
 
     const test_e2e_azure_step = b.step("test-e2e-azure", "Run Azure E2E tests");
     test_e2e_azure_step.dependOn(&b.addRunArtifact(e2e_azure_test).step);

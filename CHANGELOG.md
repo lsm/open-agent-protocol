@@ -34,11 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot drift onto a base the catalog no longer pins, and a regional row — Kimi
   is the one `current` row that is regional — resolves through its `region_env`
   rather than a default the gate invents.
-  The step is wired into neither `test` nor any `test-unit-*` group, so it runs
-  only when a person names a row. The live runs need the owner's keys, so no
-  evidence is recorded here and no row is promoted: the ledger, the per-row
-  script results and the `goap check` rule requiring a ledger reference for every
-  `current` row all land in the change that records the first reading.
+  The step is wired into neither `test` nor any `test-unit-*` group for the four
+  live cases — it runs only when a person names a row — while the two hermetic
+  tests that pin the gate's table against the catalog are wired into
+  `test-unit-providers`, so a row's promotion or demotion moves the gate in CI
+  rather than stranding it.
+  **Redirect `HOME` as well as the keychain service.** `OAPX_KEYCHAIN_SERVICE`
+  redirects the store but not `~/.oapx/auth.json`, so a run with only the
+  service overridden falls back to the real file and spends a real key. I did
+  exactly that while checking this and four live calls went out against a
+  DeepSeek key; with `HOME` redirected the same invocation skips, which is the
+  fourth gap in the keychain notes and the reason the command on the issue
+  redirects both.
+  No evidence is recorded here and no row is promoted: the live runs need the
+  owner's keys, so the ledger, the per-row script results and the `goap check`
+  rule requiring a ledger reference for every `current` row all land in the
+  change that records the first reading.
 
 - `providers/catalog.json` records, per endpoint, whether its `base_url` already
   carries the API version, so a request path stops depending on a guess about a
