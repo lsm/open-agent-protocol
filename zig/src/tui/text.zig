@@ -449,10 +449,11 @@ test "layoutRows keeps one empty row for empty text" {
 test "layoutRows never splits a wide codepoint" {
     const rows = try layoutRows(std.testing.allocator, "ab日本c", 3);
     defer std.testing.allocator.free(rows);
-    try std.testing.expectEqual(@as(usize, 3), rows.len);
+    try std.testing.expectEqual(@as(usize, 4), rows.len);
     try std.testing.expectEqual(RowRange{ .start = 0, .end = 2, .width = 2 }, rows[0]);
     try std.testing.expectEqual(RowRange{ .start = 2, .end = 5, .width = 2 }, rows[1]);
     try std.testing.expectEqual(RowRange{ .start = 5, .end = 9, .width = 3 }, rows[2]);
+    try std.testing.expectEqual(RowRange{ .start = 9, .end = 9, .width = 0 }, rows[3]);
 }
 
 test "layoutRows counts control bytes by their visible form" {
