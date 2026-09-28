@@ -777,3 +777,53 @@ test "agentLoop: a tool call cut off at the output limit is answered with an err
     try testing.expectEqual(@as(u32, 2), result.iterations);
     try testing.expect(result.final_message.stop_reason == .stop);
 }
+
+test "agentLoop: a run whose tool calls keep getting cut off ends after three error answers" {
+    const allocator = testing.allocator;
+
+    var state = MockProtocolState{ .mode = .done, .tool_turns = std.math.maxInt(usize), .tool_turn_stop_reason = .length };
+    var probe = ProbeTool{};
+    const tools = [_]agent_types.AgentTool{.{
+        .label = "Probe",
+        .name = "probe",
+        .description = "Probe",
+        .parameters_schema_json = "{\"type\":\"object\"}",
+        .execute = undefined,
+    }};
+    var ctx = AgentContext.init(allocator);
+    defer ctx.deinit();
+
+    const prompt_text = try allocator.dupe(u8, "write the whole file");
+    const prompt = ai_types.Message{ .user = .{
+        .content = .{ .text = prompt_text },
+        .timestamp = compat.time.nowMillis(),
+    } };
+
+    const config = AgentLoopConfig{
+        .model = createModel(),
+        .protocol = createMockProtocol(&state),
+        .tools = &tools,
+        .execute_tool_via_protocol_fn = runProbeTool,
+        .execute_tool_via_protocol_ctx = &probe,
+    };
+
+    const stream = try agent_loop.agentLoop(allocator, &.{prompt}, &ctx, config);
+    defer {
+        stream.deinit();
+        allocator.destroy(stream);
+    }
+    while (stream.wait()) |_| {}
+
+    const result = stream.getResult().?;
+    var answers: usize = 0;
+    for (result.messages.slice()) |message| {
+        if (message != .tool_result) continue;
+        try testing.expect(message.tool_result.is_error);
+        answers += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), answers);
+    try testing.expectEqual(@as(usize, 0), probe.runs);
+    try testing.expectEqual(@as(usize, 4), state.call_count);
+    try testing.expect(result.final_message.stop_reason == .length);
+    try testing.expectEqual(@as(?agent_types.AgentTermination, null), result.termination);
+}

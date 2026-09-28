@@ -660,6 +660,10 @@ fn executeToolCalls(
     }
 
     var results: std.ArrayList(ai_types.ToolResultMessage) = .empty;
+    errdefer {
+        for (results.items) |*result| result.deinit(allocator);
+        results.deinit(allocator);
+    }
     var compact_args: std.ArrayList([]u8) = .empty;
     errdefer {
         for (compact_args.items) |args| allocator.free(args);
@@ -667,6 +671,11 @@ fn executeToolCalls(
     }
     var has_steering = false;
     var steering_messages: ?[]const ai_types.Message = null;
+    errdefer if (steering_messages) |msgs| {
+        const mut_msgs: []ai_types.Message = @constCast(msgs);
+        for (mut_msgs) |*msg| msg.deinit(allocator);
+        allocator.free(mut_msgs);
+    };
 
     for (tool_calls.items, 0..) |tool_call, index| {
         const tool = findTool(config.tools, tool_call.name);
@@ -810,9 +819,15 @@ fn executeToolCalls(
         }
     }
 
+    const tool_results = try results.toOwnedSlice(allocator);
+    errdefer {
+        for (tool_results) |*result| result.deinit(allocator);
+        allocator.free(tool_results);
+    }
+    const owned_compact_args = try compact_args.toOwnedSlice(allocator);
     return .{
-        .tool_results = try results.toOwnedSlice(allocator),
-        .compact_args = try compact_args.toOwnedSlice(allocator),
+        .tool_results = tool_results,
+        .compact_args = owned_compact_args,
         .has_steering = has_steering,
         .steering_messages = steering_messages,
     };
@@ -1050,11 +1065,14 @@ fn withinTurnLimit(iterations: u32, max_iterations: ?u32) bool {
 
 const TurnOutcome = enum { failed, answered, called_tools };
 
-fn turnOutcome(message: ai_types.AssistantMessage) TurnOutcome {
+const max_cut_off_tool_turns: u32 = 3;
+
+fn turnOutcome(message: ai_types.AssistantMessage, cut_off_tool_turns: u32) TurnOutcome {
     switch (message.stop_reason) {
         .@"error", .aborted => return .failed,
         .content_filter => return .answered,
-        .stop, .length, .tool_use => {},
+        .length => if (cut_off_tool_turns >= max_cut_off_tool_turns) return .answered,
+        .stop, .tool_use => {},
     }
     for (message.content) |block| {
         if (block == .tool_call) return .called_tools;
@@ -1069,7 +1087,7 @@ test "withinTurnLimit stops at a set limit and never without one" {
     try std.testing.expect(!withinTurnLimit(0, 0));
 }
 
-fn outcomeOf(stop_reason: ai_types.StopReason, content: []const ai_types.AssistantContent) TurnOutcome {
+fn outcomeOf(stop_reason: ai_types.StopReason, content: []const ai_types.AssistantContent, cut_off_tool_turns: u32) TurnOutcome {
     return turnOutcome(.{
         .content = content,
         .api = "test-api",
@@ -1078,7 +1096,7 @@ fn outcomeOf(stop_reason: ai_types.StopReason, content: []const ai_types.Assista
         .usage = .{},
         .stop_reason = stop_reason,
         .timestamp = 0,
-    });
+    }, cut_off_tool_turns);
 }
 
 test "turnOutcome runs a reply's tool calls whatever stop reason it reports" {
@@ -1086,25 +1104,34 @@ test "turnOutcome runs a reply's tool calls whatever stop reason it reports" {
         .{ .text = .{ .text = "reading" } },
         .{ .tool_call = .{ .id = "call_1", .name = "read", .arguments_json = "{}" } },
     };
-    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.tool_use, &calls));
-    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.stop, &calls));
-    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.length, &calls));
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.tool_use, &calls, 0));
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.stop, &calls, 0));
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.length, &calls, 0));
 }
 
 test "turnOutcome ends the run on a reply without tool calls, even one reporting tool_use" {
     const text = [_]ai_types.AssistantContent{.{ .text = .{ .text = "done" } }};
-    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.tool_use, &text));
-    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &text));
-    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &.{}));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.tool_use, &text, 0));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.stop, &text, 0));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &.{}, 0));
 }
 
 test "turnOutcome never runs the tool calls of a failed, aborted or filtered reply" {
     const calls = [_]ai_types.AssistantContent{
         .{ .tool_call = .{ .id = "call_1", .name = "read", .arguments_json = "{}" } },
     };
-    try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.@"error", &calls));
-    try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.aborted, &calls));
-    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.content_filter, &calls));
+    try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.@"error", &calls, 0));
+    try std.testing.expectEqual(TurnOutcome.failed, outcomeOf(.aborted, &calls, 0));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.content_filter, &calls, 0));
+}
+
+test "turnOutcome ends the run on a cut-off tool call once three in a row were answered" {
+    const calls = [_]ai_types.AssistantContent{
+        .{ .tool_call = .{ .id = "call_1", .name = "write", .arguments_json = "{\"text\":\"cut" } },
+    };
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.length, &calls, 2));
+    try std.testing.expectEqual(TurnOutcome.answered, outcomeOf(.length, &calls, 3));
+    try std.testing.expectEqual(TurnOutcome.called_tools, outcomeOf(.tool_use, &calls, 3));
 }
 
 fn runLoop(
@@ -1140,6 +1167,7 @@ fn runLoop(
 
     var ended_before_cap = false;
     var cancelled_run = false;
+    var cut_off_tool_turns: u32 = 0;
 
     outer: while (withinTurnLimit(state.iterations, config.max_iterations)) {
         if (config.cancel_token) |token| {
@@ -1213,7 +1241,9 @@ fn runLoop(
             try setFinalMessage(&state, allocator, assistant_message);
             try appendClonedStateMessage(&state.messages, allocator, .{ .assistant = assistant_message });
 
-            switch (turnOutcome(assistant_message)) {
+            const outcome = turnOutcome(assistant_message, cut_off_tool_turns);
+            cut_off_tool_turns = if (outcome == .called_tools and assistant_message.stop_reason == .length) cut_off_tool_turns + 1 else 0;
+            switch (outcome) {
                 .failed => {
                     const final_error_msg = state.final_message orelse assistant_message;
                     try pushAgentEvent(event_stream, .{ .turn_end = .{
@@ -2232,4 +2262,73 @@ test "executeToolCalls emits terminal events on protocol cancellation" {
 
     try std.testing.expectEqual(@as(usize, 1), start_count);
     try std.testing.expectEqual(@as(usize, 1), end_count);
+}
+
+fn unavailableSteering(ctx: ?*anyopaque, allocator: std.mem.Allocator) anyerror!?[]const ai_types.Message {
+    _ = ctx;
+    _ = allocator;
+    return error.SteeringUnavailable;
+}
+
+test "executeToolCalls frees the results it built when a later step fails" {
+    const allocator = std.testing.allocator;
+
+    const tools = [_]AgentTool{
+        .{
+            .label = "Remote Tool",
+            .name = "remote_tool",
+            .description = "Remote tool",
+            .parameters_schema_json = "{}",
+            .execute = undefined,
+        },
+    };
+
+    const assistant_content = [_]ai_types.AssistantContent{
+        .{ .tool_call = .{
+            .id = "call_1",
+            .name = "remote_tool",
+            .arguments_json = "{\"q\":\"x\"}",
+        } },
+    };
+    const assistant_message = ai_types.AssistantMessage{
+        .content = &assistant_content,
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .tool_use,
+        .timestamp = 0,
+    };
+
+    const model = ai_types.Model{
+        .id = "test-model",
+        .name = "Test",
+        .api = "test-api",
+        .provider = "test-provider",
+        .base_url = "",
+        .reasoning = false,
+        .input = &.{"text"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 1024,
+        .max_tokens = 256,
+    };
+
+    var protocol_ctx = MockProtocolToolContext{};
+    var agent_events = AgentEventStream.init(allocator);
+    defer agent_events.deinit();
+
+    try std.testing.expectError(error.SteeringUnavailable, executeToolCalls(
+        allocator,
+        assistant_message,
+        .{
+            .model = model,
+            .protocol = .{ .stream_fn = undefined },
+            .tools = &tools,
+            .execute_tool_via_protocol_fn = mockProtocolExecute,
+            .execute_tool_via_protocol_ctx = &protocol_ctx,
+            .get_steering_messages_fn = unavailableSteering,
+        },
+        &agent_events,
+    ));
+    try std.testing.expectEqual(@as(usize, 1), protocol_ctx.call_count);
 }

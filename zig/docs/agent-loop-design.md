@@ -467,7 +467,8 @@ pub fn agentLoopContinue(
            - content_filter, or no tool calls in the reply: continue to outer loop
            - tool calls in the reply, whatever else it reports: execute tools
            - after a length stop, answer each tool call with an error instead
-             of running it, since its arguments may be cut off
+             of running it, since its arguments may be cut off; a fourth
+             length stop with tool calls in a row ends the run instead
       iv. If tool calls:
           - For each tool call (sequential):
             a. Emit tool_execution_start

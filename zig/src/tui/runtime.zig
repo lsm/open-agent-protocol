@@ -22,6 +22,8 @@ pub const ToolApprovalCallback = session.ToolApprovalCallback;
 pub const ToolApprovalDecision = session.ToolApprovalDecision;
 pub const ToolApprovalRequest = session.ToolApprovalRequest;
 
+const output_limit_warning = "The model's reply hit its output token limit, so the run stopped. Send a message to continue.";
+
 const ApprovalDecisionState = struct {
     tool_call_id: []u8 = &.{},
     decision: ?ToolApprovalDecision = null,
@@ -811,11 +813,12 @@ pub const TuiRuntime = struct {
         return OwnedSlice(u8).initOwned(try self.allocator.dupe(u8, value));
     }
 
-    fn handleAgentEndEvent(self: *TuiRuntime, termination: ?agent_types.AgentTermination) anyerror!void {
-        if (termination == .max_turns) {
-            self.push(.{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed("Stopped at this run's turn limit. Send a message to continue.") } });
+    fn handleAgentEndEvent(self: *TuiRuntime) anyerror!void {
+        const cancelled = self.cancelled.load(.acquire);
+        if (!cancelled and self.last_turn_stop_reason == .length) {
+            self.push(.{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(output_limit_warning) } });
         }
-        const reason: TuiEndReason = if (self.cancelled.load(.acquire)) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
+        const reason: TuiEndReason = if (cancelled) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
         return self.endRun(reason);
     }
     fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
@@ -1079,7 +1082,7 @@ pub const TuiRuntime = struct {
                 }
                 self.pushTerminal(.{ .turn_end = .{ .stop_reason = payload.message.stop_reason } });
             },
-            .agent_end => |payload| try self.handleAgentEndEvent(payload.termination),
+            .agent_end => try self.handleAgentEndEvent(),
             .run_failed => |payload| {
                 self.push(.{ .@"error" = .{ .message = self.dupeOwned(payload.reason.slice()) catch OwnedSlice(u8).initBorrowed(payload.reason.slice()) } });
                 try self.endRun(.@"error");
@@ -2797,22 +2800,28 @@ fn drainEndOfRun(runtime: *TuiRuntime) !struct { warning: ?[]u8, reason: ?TuiEnd
     return .{ .warning = warning, .reason = reason };
 }
 
-test "runtime warns before ending a run that stopped at its turn limit" {
+fn replyEndingWith(stop_reason: ai_types.StopReason) ai_types.AssistantMessage {
+    return .{ .content = &.{}, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = stop_reason, .timestamp = 0 };
+}
+
+test "runtime warns before ending a run whose last reply hit the output token limit" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
 
-    try runtime.handleAgentEvent(.{ .agent_end = .{ .termination = .max_turns } });
+    try runtime.handleAgentEvent(.{ .turn_end = .{ .message = replyEndingWith(.length) } });
+    try runtime.handleAgentEvent(.{ .agent_end = .{} });
 
     const ended = try drainEndOfRun(&runtime);
     defer if (ended.warning) |text| std.testing.allocator.free(text);
-    try std.testing.expectEqualStrings("Stopped at this run's turn limit. Send a message to continue.", ended.warning.?);
+    try std.testing.expectEqualStrings(output_limit_warning, ended.warning.?);
     try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
 }
 
-test "runtime ends a run that finished on its own without a turn-limit warning" {
+test "runtime ends a run whose last reply finished without an output-limit warning" {
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model_a}, .run_async = false });
     defer runtime.deinit();
 
+    try runtime.handleAgentEvent(.{ .turn_end = .{ .message = replyEndingWith(.stop) } });
     try runtime.handleAgentEvent(.{ .agent_end = .{} });
 
     const ended = try drainEndOfRun(&runtime);
