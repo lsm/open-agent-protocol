@@ -73,16 +73,18 @@ func exchangeWithChild(t *testing.T, fixture, backend string, scenario []string,
 	t.Helper()
 	work := t.TempDir()
 	var server *fakeOpenCode
-	if child, err := os.ReadFile(filepath.Join(fixture, "child.sh")); err == nil {
-		if err := os.WriteFile(filepath.Join(work, "child.sh"), child, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		server = startFakeOpenCode(t)
-	}
+	child, childErr := os.ReadFile(filepath.Join(fixture, "child.sh"))
 	registry, err := os.ReadFile(filepath.Join(fixture, "registry.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	switch {
+	case childErr == nil:
+		if err := os.WriteFile(filepath.Join(work, "child.sh"), child, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	case strings.Contains(string(registry), "@URL@"):
+		server = startFakeOpenCode(t)
 	}
 	resolved := strings.ReplaceAll(string(registry), "@DIR@", work)
 	if server != nil {
