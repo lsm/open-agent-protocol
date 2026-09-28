@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"io"
 	"unicode/utf8"
-
-	"github.com/lsm/open-agent-protocol/go/adapter/deepseek/internal/native"
 )
 
 const DefaultFrameLimit = 8 << 20
@@ -19,11 +17,6 @@ var ErrFrameTooLarge = errors.New("deepseek rpc: frame exceeds configured limit"
 type Decoder struct {
 	reader *bufio.Reader
 	limit  int
-}
-
-func rejectDuplicateKeys(data []byte) error {
-	var object map[string]json.RawMessage
-	return native.DecodeStrict(data, &object)
 }
 
 func NewDecoder(reader io.Reader, limit int) *Decoder {

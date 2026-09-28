@@ -29,14 +29,6 @@ jobs:
             target: FuzzValidateNeverPanics
           - package: ./go/validation
             target: FuzzApplyEnvelopeNeverPanics
-          - package: ./go/adapter/acp/internal/rpc
-            target: FuzzTheJSONWalkAdmitsOnlyBytesJSONAdmits
-          - package: ./go/adapter/acp/internal/rpc
-            target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
-          - package: ./go/adapter/claude/internal/rpc
-            target: FuzzTheJSONWalkAdmitsOnlyBytesJSONAdmits
-          - package: ./go/adapter/claude/internal/rpc
-            target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
           - package: ./go/adapter/claude/internal/native
             target: FuzzAnObservationIsRefusedForAFrameTypeItDoesNotServeWhateverTheRawSays
           - package: ./go/adapter/claude/internal/native
@@ -44,25 +36,13 @@ jobs:
           - package: ./go/adapter/claude/internal/native
             target: FuzzAnObservationOfARecordedFrameDecodesWithoutPanicking
           - package: ./go/adapter/codex/appserver/internal/rpc
-            target: FuzzTheJSONWalkAdmitsOnlyBytesJSONAdmits
-          - package: ./go/adapter/codex/appserver/internal/rpc
-            target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
-          - package: ./go/adapter/codex/appserver/internal/rpc
             target: FuzzAFrameIsEitherWithinTheLimitOrRefusedAndNeverAHalfMessage
           - package: ./go/adapter/codex/appserver/internal/rpc
             target: FuzzTheWalkRefusesADuplicateKeyInAnyFrameOfAMessage
           - package: ./go/adapter/deepseek/internal/native
-            target: FuzzTheJSONWalkAdmitsOnlyValidJSON
-          - package: ./go/adapter/deepseek/internal/native
-            target: FuzzTheJSONWalkRefusesOnlyDuplicatesAndMalformedJSON
-          - package: ./go/adapter/deepseek/internal/native
             target: FuzzANotificationIsRefusedForAMethodItDoesNotServeWhateverTheDataSays
           - package: ./go/adapter/deepseek/internal/native
             target: FuzzAStrictDecodeAdmitsOnlyOneWholeJSONDocument
-          - package: ./go/adapter/hermes/internal/rpc
-            target: FuzzTheJSONWalkAdmitsOnlyBytesJSONAdmits
-          - package: ./go/adapter/hermes/internal/rpc
-            target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
           - package: ./go/adapter/hermes/internal/native
             target: FuzzANotificationIsRefusedForAMethodItDoesNotServeWhateverTheDataSays
           - package: ./go/adapter/hermes/internal/native
@@ -73,14 +53,12 @@ jobs:
             target: FuzzAnEventIsAdmittedOnlyWithAValidIDTypeAndDurablePosition
           - package: ./go/adapter/opencode/internal/native
             target: FuzzAnAdmittedEventsDataIsAWholeJSONValueOrNothing
-          - package: ./go/adapter/opencode/internal/native
-            target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
-          - package: ./go/adapter/pi/internal/native
-            target: FuzzTheJSONWalkAdmitsOnlyBytesJSONAdmits
-          - package: ./go/adapter/pi/internal/native
-            target: FuzzTheJSONWalkRefusesWellFormedJSONOnlyForADuplicateKey
           - package: ./go/adapter/pi/internal/native
             target: FuzzAStrictDecodeAdmitsOnlyOneWholeJSONDocument
+          - package: ./go/internal/jsonwalk
+            target: FuzzTheWalkAdmitsOnlyBytesJSONAdmits
+          - package: ./go/internal/jsonwalk
+            target: FuzzTheWalkRefusesWellFormedJSONOnlyForADuplicateKey
     name: ${{ matrix.package }} ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
