@@ -3685,7 +3685,7 @@ test "multi-line /help output renders all lines into transcript view" {
     defer app.deinit();
     try app.submit("/help");
 
-    const rendered = try transcript_view.render(std.testing.allocator, &app.state, .{ .width = 100, .height = 30 });
+    const rendered = try transcript_view.render(std.testing.allocator, &app.state, .{ .width = 100, .height = 44 });
     defer std.testing.allocator.free(rendered);
 
     const expect = [_][]const u8{

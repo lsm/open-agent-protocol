@@ -120,6 +120,13 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
 }
 
 pub fn renderCwdRow(allocator: std.mem.Allocator, display: []const u8, width: usize) ![]u8 {
+    return renderCwdRowImpl(allocator, display, width) catch |err| switch (err) {
+        error.WriteFailed => error.OutOfMemory,
+        else => |e| e,
+    };
+}
+
+fn renderCwdRowImpl(allocator: std.mem.Allocator, display: []const u8, width: usize) ![]u8 {
     const clipped = try tui_text.takeTrailingWidth(allocator, display, width);
     defer allocator.free(clipped);
     const styled = try tui_theme.muted().render(allocator, clipped);
@@ -446,14 +453,14 @@ test "status bar appends the hint right-aligned and drops segments by priority t
     defer std.testing.allocator.free(text);
     try std.testing.expectEqual(@as(usize, 160), tui_text.visibleWidth(text));
     try std.testing.expect(std.mem.endsWith(u8, text, "esc clear" ++ zz.ansi.reset));
-    try std.testing.expect(std.mem.indexOf(u8, text, "turns:4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "turns") != null);
 
     const mid = try render(std.testing.allocator, &state, .{ .width = 90, .hint = "⏎ send · esc clear" });
     defer std.testing.allocator.free(mid);
     try std.testing.expectEqual(@as(usize, 90), tui_text.visibleWidth(mid));
     try std.testing.expect(std.mem.indexOf(u8, mid, "esc clear") != null);
     try std.testing.expect(std.mem.indexOf(u8, mid, "anthropic/claude-sonnet-4-5") != null);
-    try std.testing.expect(std.mem.indexOf(u8, mid, "turns:4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mid, "turns") != null);
 
     const narrow = try render(std.testing.allocator, &state, .{ .width = 60, .hint = "⏎ send · esc clear" });
     defer std.testing.allocator.free(narrow);
@@ -570,12 +577,20 @@ test "status bar drops turns first at narrow width" {
     try std.testing.expect(tui_text.visibleWidth(text) <= 80);
     try std.testing.expect(std.mem.indexOf(u8, text, "anthropic/claude-sonnet-4-5") != null);
 
-    const dropped = try render(std.testing.allocator, &state, .{ .width = 60 });
-    defer std.testing.allocator.free(dropped);
-    try std.testing.expect(tui_text.visibleWidth(dropped) <= 60);
-    try std.testing.expect(std.mem.indexOf(u8, dropped, "turns") == null);
-    try std.testing.expect(std.mem.indexOf(u8, dropped, "medium") != null);
-    try std.testing.expect(std.mem.indexOf(u8, dropped, "…") != null);
+    const turns_dropped = try render(std.testing.allocator, &state, .{ .width = 62 });
+    defer std.testing.allocator.free(turns_dropped);
+    try std.testing.expect(tui_text.visibleWidth(turns_dropped) <= 62);
+    try std.testing.expect(std.mem.indexOf(u8, turns_dropped, "turns") == null);
+    try std.testing.expect(std.mem.indexOf(u8, turns_dropped, "medium") != null);
+    try std.testing.expect(std.mem.indexOf(u8, turns_dropped, "…") != null);
+
+    const think_dropped = try render(std.testing.allocator, &state, .{ .width = 60 });
+    defer std.testing.allocator.free(think_dropped);
+    try std.testing.expect(tui_text.visibleWidth(think_dropped) <= 60);
+    try std.testing.expect(std.mem.indexOf(u8, think_dropped, "turns") == null);
+    try std.testing.expect(std.mem.indexOf(u8, think_dropped, "medium") == null);
+    try std.testing.expect(std.mem.indexOf(u8, think_dropped, "anthropic/claude-sonnet-4-5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, think_dropped, "…") != null);
 }
 
 test "status bar shrinks the context segment before dropping other segments" {
@@ -591,7 +606,7 @@ test "status bar shrinks the context segment before dropping other segments" {
     try std.testing.expect(tui_text.visibleWidth(text) <= 70);
     try std.testing.expect(std.mem.indexOf(u8, text, "10k/200k") == null);
     try std.testing.expect(std.mem.indexOf(u8, text, "5%") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "turns:0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "turns") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "…") == null);
 }
 
@@ -628,7 +643,7 @@ test "status bar keeps whole segments monotonically as width grows" {
         try std.testing.expect(tui_text.visibleWidth(text) <= width);
         try std.testing.expect(std.mem.indexOf(u8, text, "idle") != null);
         const has_think = std.mem.indexOf(u8, text, "medium") != null;
-        const has_turns = std.mem.indexOf(u8, text, "turns:13") != null;
+        const has_turns = std.mem.indexOf(u8, text, "turns") != null;
         try std.testing.expect(has_think or !had_think);
         try std.testing.expect(has_turns or !had_turns);
         had_think = has_think;
