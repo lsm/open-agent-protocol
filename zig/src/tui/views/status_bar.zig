@@ -129,14 +129,14 @@ pub fn renderCwdRow(allocator: std.mem.Allocator, display: []const u8, width: us
 fn renderCwdRowImpl(allocator: std.mem.Allocator, display: []const u8, width: usize) ![]u8 {
     const clipped = try tui_text.takeTrailingWidth(allocator, display, width);
     defer allocator.free(clipped);
-    const styled = try tui_theme.muted().render(allocator, clipped);
-    defer allocator.free(styled);
-    const pad = width -| tui_text.visibleWidth(clipped);
-    if (pad == 0) return allocator.dupe(u8, styled);
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
+    const pad = width -| tui_text.visibleWidth(clipped);
     for (0..pad) |_| try out.writer.writeByte(' ');
-    try out.writer.writeAll(styled);
+    try tui_theme.palette.muted.writeFg(&out.writer);
+    try zz.ansi.sgr(&out.writer, "2");
+    try out.writer.writeAll(clipped);
+    try out.writer.writeAll(zz.ansi.reset);
     return out.toOwnedSlice();
 }
 
