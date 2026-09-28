@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/protocol"
 	"io"
 	"log/slog"
 	"os"
@@ -104,7 +105,7 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	handshake := make(chan *frame, 1)
 	go t.readLoop(stdout, handshake)
 	if !opts.LegacyWire {
-		if err := t.send(oapFrame("open-agent-protocol.agent-control-core", "protocol.initialize.request", map[string]any{
+		if err := t.sendEnvelope(oapFrame(oapAgent, "protocol.initialize.request", map[string]any{
 			"protocol_versions": []string{"0.1"},
 			"profiles":          []string{"open-agent-protocol.agent-control-core"},
 		})); err != nil {
@@ -119,7 +120,7 @@ func startTransport(ctx context.Context, command string, opts *Options) (*transp
 	}
 	if !opts.LegacyWire {
 		request := oapFrame(oapAgent, "capabilities.request", map[string]any{})
-		sub := t.subscribeStream(request.ID)
+		sub := t.subscribeStream(string(request.ID))
 		response, err := oapRequest(ctx, t, sub, opts.handshakeTimeout(), request)
 		sub.close()
 		if err != nil || response.Type != "capabilities.response" || response.CapabilityRevision == "" {
@@ -284,7 +285,17 @@ func (t *transport) send(f *frame) error {
 	if f.Profile == oapAgent && f.Type != "protocol.initialize.request" && f.Type != "capabilities.request" {
 		f.CapabilityRevision = t.agentRevision
 	}
-	encoded := mustMarshal(f)
+	return t.write(mustMarshal(f), f.Type, f.StreamID, f.SessionID, f.Sequence)
+}
+
+func (t *transport) sendEnvelope(env protocol.Envelope) error {
+	if env.Profile == oapAgent && env.Type != protocol.TypeProtocolInitializeRequest && env.Type != protocol.TypeCapabilitiesRequest {
+		env.CapabilityRevision = t.agentRevision
+	}
+	return t.write(mustMarshal(env), env.Type, "", string(env.SessionID), 0)
+}
+
+func (t *transport) write(encoded []byte, frameType any, streamID, sessionID string, sequence int64) error {
 	line := make([]byte, 0, len(encoded)+1)
 	line = append(line, encoded...)
 	line = append(line, '\n')
@@ -302,12 +313,12 @@ func (t *transport) send(f *frame) error {
 	}
 
 	t.logger.Debug("oap sdk: frame sent",
-		"type", f.Type, "stream_id", f.StreamID, "session_id", f.SessionID, "sequence", f.Sequence)
+		"type", frameType, "stream_id", streamID, "session_id", sessionID, "sequence", sequence)
 	if _, err := t.stdin.Write(line); err != nil {
 		if terminal := t.terminalErrorIfDown(); terminal != nil {
 			return terminal
 		}
-		return transportErrorf(err, "cannot write %s frame to the runtime: %v", f.Type, err)
+		return transportErrorf(err, "cannot write %s frame to the runtime: %v", frameType, err)
 	}
 	return nil
 }
@@ -315,6 +326,12 @@ func (t *transport) send(f *frame) error {
 func (t *transport) sendBestEffort(f *frame) {
 	if err := t.send(f); err != nil {
 		t.logger.Debug("oap sdk: best-effort frame not sent", "type", f.Type, "error", err)
+	}
+}
+
+func (t *transport) sendEnvelopeBestEffort(env protocol.Envelope) {
+	if err := t.sendEnvelope(env); err != nil {
+		t.logger.Debug("oap sdk: best-effort envelope not sent", "type", env.Type, "error", err)
 	}
 }
 
