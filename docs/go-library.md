@@ -6,9 +6,21 @@ it — so a reader can go from a question to the code, without doc comments,
 which the repository's zero-comment rule forbids.
 
 Every cell in the last column is a grep over `go/cmd/goap`'s own imports, and
-the three that read `—` are read that way on purpose: nothing under
-`go/cmd/goap` imports `go/client`, `tools/goprintable` or `tools/nocomment`, and
-`schema` is reached through `go/validation` rather than directly.
+the cells that read `—` are read that way on purpose: nothing under
+`go/cmd/goap` imports `go/client`, and `schema` is reached through
+`go/validation` rather than directly.
+
+## The tools are not libraries
+
+Two `package main` programs live under `go/tools` and are **not** in the public
+set, because a program cannot import them: `goprintable` walks the Unicode
+scalar range through `strconv.IsPrint` and writes the printable spans into
+`zig/src/adapter/goquote_table.zig`, which the Zig adapter's codec
+binary-searches for `strconv.Quote`-faithful quoting — a generator for the other
+tree, recorded in the ACP v1.7.0 ledger — and `nocomment` is the zero-comment
+checker this repository gates itself with. Both are run by `go run`, and
+`goap check` counts them as binaries rather than checking them against the
+public set, so neither row above can drift.
 
 It is not a tutorial. The three runnable examples are the tutorial, and they
 are compiled and run by `go test`:
@@ -63,8 +75,6 @@ being one.
 | `go/serve/serveendpoint` | The binding that puts the hub inside another process's own HTTP server, with no listener of its own. | `go/cmd/goap/endpoint.go` |
 | `go/serve/servestdio` | The stdio binding: twelve ops over a pipe, with its own op set rather than the endpoint's raw envelopes. | `go/cmd/goap/serve.go` |
 | `go/client` | A Go client for the hub's HTTP + SSE wire. Also the far-side proof that the wire is implementable from outside this module. | — |
-| `go/tools/goprintable` | The rule that decides what may be printed, used by the provider paths. | — |
-| `go/tools/nocomment` | The zero-comment checker itself, so a program can run the same gate the repository runs. | — |
 | `harnesses` | The embedded harness pin catalogue, so a consumer reads the same pins the repository does. | `go/cmd/goap/harnesses.go` |
 | `providers` | The embedded provider catalogue. | `go/cmd/goap/providers.go` |
 | `schema` | The embedded JSON Schema bytes for `v0.1`, which `go/validation` loads. | — (via `go/validation`) |
