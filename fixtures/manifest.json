@@ -40,6 +40,50 @@
       "provenance": []
     },
     {
+      "id": "core-cancel-accepted-after-natural-completion",
+      "path": "valid/core-cancel-accepted-after-natural-completion.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md"
+      ]
+    },
+    {
+      "id": "cancel-accepted-after-late-request",
+      "path": "semantic-invalid/cancel-accepted-after-late-request.json",
+      "kind": "semantic-invalid",
+      "valid": false,
+      "phase": "semantic",
+      "codes": [
+        "illegal_run_transition"
+      ],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md"
+      ]
+    },
+    {
+      "id": "core-cancel-late-request-refused",
+      "path": "valid/core-cancel-late-request-refused.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "core"
+      ],
+      "provenance": [
+        "decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md"
+      ]
+    },
+    {
       "id": "core-cancel-race-completed",
       "path": "valid/core-cancel-race-completed.json",
       "kind": "positive",

@@ -813,6 +813,9 @@ pub const TuiRuntime = struct {
 
     fn handleAgentEndEvent(self: *TuiRuntime) anyerror!void {
         const reason: TuiEndReason = if (self.cancelled.load(.acquire)) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
+        return self.endRun(reason);
+    }
+    fn endRun(self: *TuiRuntime, reason: TuiEndReason) anyerror!void {
         self.completed = true;
         self.pushTerminal(.{ .agent_end = .{ .reason = reason } });
         self.event_stream.complete(.{ .reason = reason });
@@ -1074,6 +1077,10 @@ pub const TuiRuntime = struct {
                 self.pushTerminal(.{ .turn_end = .{ .stop_reason = payload.message.stop_reason } });
             },
             .agent_end => try self.handleAgentEndEvent(),
+            .run_failed => |payload| {
+                self.push(.{ .@"error" = .{ .message = self.dupeOwned(payload.reason.slice()) catch OwnedSlice(u8).initBorrowed(payload.reason.slice()) } });
+                try self.endRun(.@"error");
+            },
             .context_usage => |payload| self.push(.{ .context_usage = .{
                 .system_prompt_bytes = payload.system_prompt_bytes,
                 .message_bytes = payload.message_bytes,

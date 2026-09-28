@@ -77,6 +77,11 @@ func joinModels(base, path string) string {
 	return joinRequest(base, wirePath{suffix: path})
 }
 
+func wireTakesVersionedPath(wire string) bool {
+	path, joined := wirePaths[wire]
+	return joined && strings.HasPrefix(path.suffix, "/v1/")
+}
+
 func findProvider(catalog Catalog, id string) (Provider, bool) {
 	for _, provider := range catalog.Providers {
 		if provider.ID == id {
