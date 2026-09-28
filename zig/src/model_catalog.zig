@@ -483,15 +483,11 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
 
 fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]const u8 {
     const stored = storage orelse return null;
-    const auth = stored.providers.get(id) orelse return null;
+    const auth = stored.resolvedCredential(id) orelse return null;
     if (auth != .oauth) return null;
     const provider_data = auth.oauth.provider_data orelse return null;
     if (!std.mem.startsWith(u8, provider_data, "region:")) return null;
-    const wanted = provider_data["region:".len..];
-    for (provider_catalog.regionsFor(id)) |region| {
-        if (std.ascii.eqlIgnoreCase(region, wanted)) return region;
-    }
-    return null;
+    return provider_catalog.regionFromValue(id, provider_data["region:".len..]);
 }
 
 const catalog_loader_ids = [_][]const u8{
@@ -2076,7 +2072,8 @@ test "a stored OAuth credential's region picks the row's endpoint, and an unusab
     const allocator = std.testing.allocator;
     const cases = [_]struct { provider_data: ?[]const u8, want: ?[]const u8, label: []const u8 }{
         .{ .provider_data = "region:global", .want = "global", .label = "the stored region" },
-        .{ .provider_data = "region:moonshot", .want = null, .label = "a synonym the variable accepts but the row does not name" },
+        .{ .provider_data = "region:moonshot", .want = "global", .label = "a synonym, read the same way the variable is" },
+        .{ .provider_data = "region: global ", .want = "global", .label = "a padded value" },
         .{ .provider_data = "region:mars", .want = null, .label = "a region no endpoint has" },
         .{ .provider_data = null, .want = null, .label = "no region stored" },
     };

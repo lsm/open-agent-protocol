@@ -21,7 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   discovered against, and sent to, `api.moonshot.ai`. `KIMI_REGION=moonshot`,
   `cn` and `coding` still mean what they meant, because those are the words
   people type and matching the catalog's own names would have dropped all three
-  quietly.
+  quietly. The region is now resolved **once**, in one place, and every path that
+  needs one asks for it: it used to be read and normalised three times over, and
+  `KIMI_REGION="global "` — with a trailing space, from a `.env` file — sent
+  discovery to the China models endpoint while the models themselves carried the
+  moonshot base. A region value is trimmed before it is matched, and a value
+  written into `auth.json` by hand is read by the same rules as one typed into
+  the environment, synonyms and all.
   **A Kimi login made in the TUI keeps working, which it very nearly did not.**
   The TUI stores an API key with its region as an *oauth* entry, because the
   api-key entry has nowhere to put a region. The old Kimi code accepted either

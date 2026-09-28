@@ -12,7 +12,7 @@ pub fn defaultBaseUrlForRefWithRegion(
     allocator: std.mem.Allocator,
     provider_id: []const u8,
     api: []const u8,
-    resolved_kimi_region: ?[]const u8,
+    stored_kimi_region: ?[]const u8,
 ) ![]const u8 {
     const global = try envOwnedOrNull(allocator, "OAPX_BASE_URL");
     defer if (global) |g| allocator.free(g);
@@ -23,8 +23,7 @@ pub fn defaultBaseUrlForRefWithRegion(
     const deepseek = try envOwnedOrNull(allocator, deepseek_base_url_env);
     defer if (deepseek) |v| allocator.free(v);
 
-    const kimi_region: []const u8 = resolved_kimi_region orelse
-        (provider_catalog.defaultRegion("kimi") orelse "china");
+    const kimi_region = resolveKimiRegion(allocator, stored_kimi_region);
 
     return baseUrlWithOverrides(allocator, provider_id, api, .{
         .global = global orelse "",
@@ -67,6 +66,21 @@ pub fn usesVersionedRoute(provider_id: []const u8, api: []const u8) bool {
     return std.mem.eql(u8, api, "anthropic-messages") or
         std.mem.eql(u8, api, "openai-completions") or
         std.mem.eql(u8, api, "openai-responses");
+}
+
+const kimi_region_env_name = provider_catalog.regionEnv("kimi") orelse
+    @compileError("providers/catalog.json records no region_env for kimi");
+
+fn resolveKimiRegion(allocator: std.mem.Allocator, stored_region: ?[]const u8) []const u8 {
+    const fallback = provider_catalog.defaultRegion("kimi") orelse "china";
+    if (envOwnedOrNull(allocator, kimi_region_env_name) catch null) |value| {
+        defer allocator.free(value);
+        if (provider_catalog.regionFromValue("kimi", value)) |resolved| return resolved;
+    }
+    if (stored_region) |stored| {
+        if (provider_catalog.regionFromValue("kimi", stored)) |resolved| return resolved;
+    }
+    return fallback;
 }
 
 pub fn baseUrlWithOverrides(allocator: std.mem.Allocator, provider_id: []const u8, api: []const u8, ov: BaseUrlOverrides) ![]const u8 {
@@ -331,6 +345,31 @@ pub fn defaultMaxTokensForRef(provider_id: []const u8, api: []const u8) u32 {
         return 16_384;
     }
     return 4_096;
+}
+
+test "KIMI_REGION still decides the region for a caller that resolves nothing itself" {
+    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, null));
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "global"));
+    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, "china"));
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, " global "));
+    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, "mars"));
+
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, "global");
+    defer compat.clearTestEnv();
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, null));
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "china"));
+
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, " global ");
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, null));
+
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, "mars");
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "global"));
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
+
+    try compat.setTestEnv(std.testing.allocator, kimi_region_env_name, "");
+    try std.testing.expectEqualStrings("global", resolveKimiRegion(std.testing.allocator, "moonshot"));
+    try std.testing.expectEqualStrings("china", resolveKimiRegion(std.testing.allocator, null));
 }
 
 test "baseUrlWithOverrides resolves canonical provider defaults" {
