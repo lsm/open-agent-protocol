@@ -5,6 +5,7 @@ const tool_local_runtime = @import("tool_local_runtime");
 const event_stream_mod = @import("event_stream");
 const types = @import("agent_types");
 const agent_loop = @import("agent_loop");
+const compaction = @import("compaction.zig");
 
 fn defaultIo() std.Io {
     return if (@import("builtin").is_test)
@@ -302,8 +303,210 @@ pub const Agent = struct {
         }
     }
 
-    pub fn compactMessages(self: *Agent) !ai_types.CompactMessagesResult {
-        return try ai_types.compactMessageHistory(self._allocator, &self._state.messages);
+    pub fn ensureCompactable(self: *Agent) !void {
+        self._mutex.lockUncancelable(defaultIo());
+        defer self._mutex.unlock(defaultIo());
+        try self.ensureCompactableLocked();
+    }
+
+    fn ensureCompactableLocked(self: *Agent) !void {
+        if (self._state.is_streaming or self._thread != null) return error.AgentAlreadyStreaming;
+        if (self._state.model == null) return error.NoModelConfigured;
+        const messages = self._state.messages.items;
+        if (messages.len == 0 or compaction.isCompacted(messages)) return error.NothingToCompact;
+    }
+
+    pub fn compactAsync(self: *Agent, options: compaction.Options, ctx: ?*anyopaque, callback: compaction.Callback) !void {
+        self._mutex.lockUncancelable(defaultIo());
+        defer self._mutex.unlock(defaultIo());
+        try self.ensureCompactableLocked();
+
+        const job = try self._allocator.create(CompactJob);
+        errdefer self._allocator.destroy(job);
+        var owned = try compaction.OwnedOptions.init(self._allocator, options);
+        errdefer owned.deinit(self._allocator);
+        job.* = .{ .options = owned, .ctx = ctx, .callback = callback };
+
+        self._pending_cancel.store(false, .release);
+        self._cancel_token = .{ .cancelled = &self._pending_cancel };
+        self._done_event.reset();
+        self._state.is_streaming = true;
+        errdefer {
+            self._state.is_streaming = false;
+            self._cancel_token = null;
+        }
+        self._thread = try std.Thread.spawn(.{}, compactThread, .{ self, job });
+    }
+
+    const CompactJob = struct {
+        options: compaction.OwnedOptions,
+        ctx: ?*anyopaque,
+        callback: compaction.Callback,
+    };
+
+    fn compactThread(self: *Agent, job: *CompactJob) void {
+        var result = self.summarizeHistory(job.options.view()) catch |err| blk: {
+            if (self._pending_cancel.load(.acquire)) break :blk compaction.Result{ .cancelled = {} };
+            break :blk compaction.failure(self._allocator, @errorName(err));
+        };
+        defer {
+            result.deinit(self._allocator);
+            job.options.deinit(self._allocator);
+            self._allocator.destroy(job);
+            self._mutex.lockUncancelable(defaultIo());
+            self._state.is_streaming = false;
+            self._cancel_token = null;
+            self._mutex.unlock(defaultIo());
+            self._pending_cancel.store(false, .release);
+            self._done_event.set(defaultIo());
+        }
+        job.callback(job.ctx, &result);
+    }
+
+    fn compactionTools(self: *Agent) !?[]ai_types.Tool {
+        const tools = self._state.tools;
+        if (tools.len == 0) return null;
+        const converted = try self._allocator.alloc(ai_types.Tool, tools.len);
+        errdefer self._allocator.free(converted);
+        for (tools, 0..) |tool, i| converted[i] = try tool.toTool(self._allocator);
+        return converted;
+    }
+
+    const SummaryReply = union(enum) {
+        text: []u8,
+        cancelled,
+        failed: []u8,
+    };
+
+    fn summarizeHistory(self: *Agent, options: compaction.Options) !compaction.Result {
+        const allocator = self._allocator;
+        const model = self._state.model orelse return error.NoModelConfigured;
+        const history = self._state.messages.items;
+
+        const tools = try self.compactionTools();
+        defer if (tools) |converted| allocator.free(converted);
+
+        const request_text = try compaction.requestText(allocator, options.focus);
+        defer allocator.free(request_text);
+        const request = ai_types.Message{ .user = .{ .content = .{ .text = request_text }, .timestamp = compat.time.nowMillis() } };
+
+        const system_prompt = ai_types.OwnedSlice(u8).initBorrowed(self._state.system_prompt);
+        const max_output = compaction.maxOutputTokens(model);
+        const fixed_tokens = agent_loop.estimatePromptTokens(.{ .system_prompt = system_prompt, .messages = &.{request}, .tools = tools });
+        var budget = compaction.historyBudget(model.context_window, fixed_tokens, max_output);
+
+        var start: usize = 0;
+        var reply_text: []u8 = &.{};
+        var attempts: usize = 0;
+        while (true) {
+            start = compaction.firstIncluded(history, budget) orelse
+                return compaction.failure(allocator, "the latest turn alone does not fit in the model's context window");
+            switch (try self.requestSummary(model, history[start..], request, tools, max_output)) {
+                .text => |text| {
+                    reply_text = text;
+                    break;
+                },
+                .cancelled => return .cancelled,
+                .failed => |message| {
+                    attempts += 1;
+                    if (attempts >= compaction.max_attempts or !compaction.isContextOverflow(message)) return .{ .failed = message };
+                    allocator.free(message);
+                    budget = compaction.shrunkBudget(history[start..]);
+                },
+            }
+        }
+        defer allocator.free(reply_text);
+
+        const summary = compaction.extractSummary(reply_text);
+        if (summary.len == 0) return compaction.failure(allocator, "the model returned an empty summary");
+
+        const text = try compaction.installedText(allocator, summary, options.transcripts, start > 0);
+        errdefer allocator.free(text);
+        var replacement = try compaction.historyMessages(allocator, text, .{ .api = model.api, .provider = model.provider, .model = model.id });
+        errdefer for (&replacement) |*message| message.deinit(allocator);
+
+        const messages_before = history.len;
+        const tokens_before = agent_loop.estimatePromptTokens(.{ .system_prompt = system_prompt, .messages = history, .tools = tools });
+        const tokens_after = agent_loop.estimatePromptTokens(.{ .system_prompt = system_prompt, .messages = &replacement, .tools = tools });
+
+        try self._state.messages.ensureTotalCapacity(allocator, replacement.len);
+        for (self._state.messages.items) |*message| message.deinit(allocator);
+        self._state.messages.clearRetainingCapacity();
+        self._state.messages.appendSliceAssumeCapacity(&replacement);
+        return .{ .completed = .{
+            .text = text,
+            .messages_before = messages_before,
+            .tokens_before = tokens_before,
+            .tokens_after = tokens_after,
+            .head_truncated = start > 0,
+        } };
+    }
+
+    fn requestSummary(self: *Agent, model: ai_types.Model, included: []const ai_types.Message, request: ai_types.Message, tools: ?[]ai_types.Tool, max_output: u32) !SummaryReply {
+        const allocator = self._allocator;
+        const request_messages = try allocator.alloc(ai_types.Message, included.len + 1);
+        defer allocator.free(request_messages);
+        @memcpy(request_messages[0..included.len], included);
+        request_messages[included.len] = request;
+
+        var messages: []const ai_types.Message = request_messages;
+        var transformed: ?[]const ai_types.Message = null;
+        defer if (transformed) |slice| allocator.free(slice);
+        if (self._transform_context_fn) |transform| {
+            transformed = try transform(self._transform_context_ctx, messages, allocator);
+            messages = transformed.?;
+        }
+        var converted: ?[]const ai_types.Message = null;
+        defer if (converted) |slice| allocator.free(slice);
+        if (self._convert_to_llm_fn) |convert| {
+            converted = try convert(self._convert_to_llm_ctx, messages, allocator);
+            messages = converted.?;
+        }
+
+        const stream = try self._protocol.stream(model, .{
+            .system_prompt = ai_types.OwnedSlice(u8).initBorrowed(self._state.system_prompt),
+            .messages = messages,
+            .tools = tools,
+        }, .{
+            .session_id = self._session_id,
+            .cancel_token = self._cancel_token,
+            .thinking_level = self._state.thinking_level,
+            .thinking_budgets = self._thinking_budgets,
+            .max_retry_delay_ms = self._max_retry_delay_ms orelse 60_000,
+            .max_tokens = max_output,
+        }, allocator);
+        defer _ = stream.deinitAndDestroy();
+
+        var reply: ?ai_types.AssistantMessage = null;
+        defer if (reply) |*message| message.deinit(allocator);
+        while (stream.wait()) |event| {
+            var owned_event = event;
+            switch (owned_event) {
+                .done => |done| {
+                    if (reply) |*previous| previous.deinit(allocator);
+                    reply = done.message;
+                    continue;
+                },
+                .@"error" => |failed| {
+                    if (reply) |*previous| previous.deinit(allocator);
+                    reply = failed.err;
+                    continue;
+                },
+                else => {},
+            }
+            if (stream.owns_events) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
+        }
+
+        if (self._pending_cancel.load(.acquire)) return .cancelled;
+        if (reply == null) reply = try stream.cloneResult(allocator);
+        const final = reply orelse return .{ .failed = try allocator.dupe(u8, stream.getError() orelse "the model returned no summary") };
+        return switch (final.stop_reason) {
+            .aborted => .cancelled,
+            .@"error" => .{ .failed = try allocator.dupe(u8, final.getErrorMessage() orelse "the summary request failed") },
+            .length => .{ .failed = try allocator.dupe(u8, "the summary hit the output limit; try /compact with a narrower focus") },
+            .content_filter => .{ .failed = try allocator.dupe(u8, "the provider filtered the summary") },
+            .stop, .tool_use => .{ .text = try compaction.replyText(allocator, final.content) },
+        };
     }
 
     pub fn appendMessage(self: *Agent, message: ai_types.Message) !void {
@@ -1388,4 +1591,224 @@ test "Agent cloneMessage preserves assistant signatures" {
     try std.testing.expectEqualStrings("text-sig", cloned.assistant.content[0].text.text_signature.?);
     try std.testing.expectEqualStrings("thinking-sig", cloned.assistant.content[1].thinking.thinking_signature.?);
     try std.testing.expectEqualStrings("thought-sig", cloned.assistant.content[2].tool_call.thought_signature.?);
+}
+
+const SummaryMock = struct {
+    reply: []const u8 = "<analysis>notes</analysis>\n<summary>\nstate of work\n</summary>",
+    fail: bool = false,
+    overflow_first: bool = false,
+    wait_for_cancel: bool = false,
+    calls: usize = 0,
+    message_count: usize = 0,
+    max_tokens: ?u32 = null,
+    request_has_focus: bool = false,
+};
+
+fn summaryStreamFn(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_mod.AssistantMessageEventStream {
+    const mock: *SummaryMock = @ptrCast(@alignCast(ctx.?));
+    mock.calls += 1;
+    mock.message_count = context.messages.len;
+    mock.max_tokens = options.max_tokens;
+    const last = context.messages[context.messages.len - 1];
+    if (last == .user and last.user.content == .text) mock.request_has_focus = std.mem.indexOf(u8, last.user.content.text, "the parser") != null;
+
+    const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
+    stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
+    errdefer _ = stream.deinitAndDestroy();
+    if (mock.wait_for_cancel) {
+        var waits: usize = 0;
+        while (!options.cancel_token.?.isCancelled() and waits < 1000) : (waits += 1) {
+            defaultIo().sleep(.fromNanoseconds(1 * std.time.ns_per_ms), .boot) catch {};
+        }
+        stream.complete(.{ .content = &.{}, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .aborted, .timestamp = 0 });
+        return stream;
+    }
+    if (mock.fail) {
+        stream.completeWithError("provider unavailable");
+        return stream;
+    }
+    if (mock.overflow_first and mock.calls == 1) {
+        stream.complete(.{
+            .content = &.{},
+            .api = model.api,
+            .provider = model.provider,
+            .model = model.id,
+            .usage = .{},
+            .stop_reason = .@"error",
+            .error_message = ai_types.OwnedSlice(u8).initBorrowed("prompt is too long: 9000 tokens > 8192 maximum"),
+            .timestamp = 0,
+        });
+        return stream;
+    }
+    const text = try allocator.dupe(u8, mock.reply);
+    errdefer allocator.free(text);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    content[0] = .{ .text = .{ .text = text } };
+    stream.complete(.{ .content = content, .api = model.api, .provider = model.provider, .model = model.id, .usage = .{}, .stop_reason = .stop, .timestamp = 0 });
+    return stream;
+}
+
+const CompactionCapture = struct {
+    outcome: ?std.meta.Tag(compaction.Result) = null,
+    text: []u8 = &.{},
+    failure: []u8 = &.{},
+    messages_before: usize = 0,
+
+    fn record(ctx: ?*anyopaque, result: *const compaction.Result) void {
+        const self: *CompactionCapture = @ptrCast(@alignCast(ctx.?));
+        self.outcome = std.meta.activeTag(result.*);
+        switch (result.*) {
+            .completed => |completed| {
+                self.text = std.testing.allocator.dupe(u8, completed.text) catch &.{};
+                self.messages_before = completed.messages_before;
+            },
+            .failed => |message| self.failure = std.testing.allocator.dupe(u8, message) catch &.{},
+            .cancelled => {},
+        }
+    }
+
+    fn deinit(self: *CompactionCapture) void {
+        std.testing.allocator.free(self.text);
+        std.testing.allocator.free(self.failure);
+    }
+};
+
+fn appendExchange(agent: *Agent, question: []const u8, answer: []const u8) !void {
+    const allocator = agent._allocator;
+    const question_text = try allocator.dupe(u8, question);
+    {
+        errdefer allocator.free(question_text);
+        try agent.appendMessage(.{ .user = .{ .content = .{ .text = question_text }, .timestamp = 0 } });
+    }
+    const text = try allocator.dupe(u8, answer);
+    errdefer allocator.free(text);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(content);
+    content[0] = .{ .text = .{ .text = text } };
+    try agent.appendMessage(.{ .assistant = .{ .content = content, .api = "test-api", .provider = "test-provider", .model = "test-model", .usage = .{}, .stop_reason = .stop, .timestamp = 0 } });
+}
+
+fn summarizeHistoryProbe(allocator: std.mem.Allocator) !void {
+    var mock = SummaryMock{};
+    var agent = Agent.init(allocator, .{ .protocol = .{ .stream_fn = summaryStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try appendExchange(&agent, "first question", "first answer");
+    const transcripts = [_][]const u8{"/sessions/s1/compaction-1.jsonl"};
+    var result = try agent.summarizeHistory(.{ .focus = "the parser", .transcripts = &transcripts });
+    result.deinit(allocator);
+}
+
+test "summarizeHistory survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, summarizeHistoryProbe, .{});
+}
+
+test "Agent compactAsync replaces the history with the model's summary and an acknowledgement" {
+    var mock = SummaryMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = summaryStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try appendExchange(&agent, "first question", "first answer");
+
+    var capture = CompactionCapture{};
+    defer capture.deinit();
+    const transcripts = [_][]const u8{"/sessions/s1/compaction-1.jsonl"};
+    try agent.compactAsync(.{ .focus = "the parser", .transcripts = &transcripts }, &capture, CompactionCapture.record);
+    agent.waitForIdle();
+
+    try std.testing.expectEqual(@as(?std.meta.Tag(compaction.Result), .completed), capture.outcome);
+    try std.testing.expectEqual(@as(usize, 2), capture.messages_before);
+    try std.testing.expectEqual(@as(usize, 3), mock.message_count);
+    try std.testing.expect(mock.request_has_focus);
+    try std.testing.expectEqual(@as(?u32, test_model.max_tokens), mock.max_tokens);
+
+    const messages = agent._state.messages.items;
+    try std.testing.expectEqual(@as(usize, 2), messages.len);
+    const summary = messages[0].user.content.text;
+    try std.testing.expectEqualStrings(capture.text, summary);
+    try std.testing.expect(std.mem.startsWith(u8, summary, compaction.header));
+    try std.testing.expectEqualStrings("state of work", compaction.summaryOf(summary));
+    try std.testing.expect(std.mem.indexOf(u8, summary, "notes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, summary, "- /sessions/s1/compaction-1.jsonl") != null);
+    try std.testing.expectEqualStrings(compaction.acknowledgement, messages[1].assistant.content[0].text.text);
+    try std.testing.expectError(error.NothingToCompact, agent.ensureCompactable());
+    try std.testing.expect(agent.isIdle());
+}
+
+test "Agent compactAsync retries with less history when the request overflows the context" {
+    var mock = SummaryMock{ .overflow_first = true };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = summaryStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try appendExchange(&agent, "first question", "first answer");
+    try appendExchange(&agent, "second question", "second answer");
+
+    var capture = CompactionCapture{};
+    defer capture.deinit();
+    try agent.compactAsync(.{}, &capture, CompactionCapture.record);
+    agent.waitForIdle();
+
+    try std.testing.expectEqual(@as(?std.meta.Tag(compaction.Result), .completed), capture.outcome);
+    try std.testing.expectEqual(@as(usize, 2), mock.calls);
+    try std.testing.expectEqual(@as(usize, 3), mock.message_count);
+    try std.testing.expectEqual(@as(usize, 4), capture.messages_before);
+    try std.testing.expect(std.mem.indexOf(u8, capture.text, "did not fit in one request") != null);
+}
+
+test "Agent compactAsync keeps the history when the summary request fails" {
+    var mock = SummaryMock{ .fail = true };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = summaryStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try appendExchange(&agent, "first question", "first answer");
+
+    var capture = CompactionCapture{};
+    defer capture.deinit();
+    try agent.compactAsync(.{}, &capture, CompactionCapture.record);
+    agent.waitForIdle();
+
+    try std.testing.expectEqual(@as(?std.meta.Tag(compaction.Result), .failed), capture.outcome);
+    try std.testing.expectEqualStrings("provider unavailable", capture.failure);
+    try std.testing.expectEqual(@as(usize, 2), agent._state.messages.items.len);
+    try std.testing.expectEqualStrings("first question", agent._state.messages.items[0].user.content.text);
+}
+
+test "Agent compactAsync reports a cancelled request and keeps the history" {
+    var mock = SummaryMock{ .wait_for_cancel = true };
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = summaryStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try appendExchange(&agent, "first question", "first answer");
+
+    var capture = CompactionCapture{};
+    defer capture.deinit();
+    try agent.compactAsync(.{}, &capture, CompactionCapture.record);
+    agent.abort();
+    agent.waitForIdle();
+
+    try std.testing.expectEqual(@as(?std.meta.Tag(compaction.Result), .cancelled), capture.outcome);
+    try std.testing.expectEqual(@as(usize, 2), agent._state.messages.items.len);
+    try std.testing.expectEqualStrings("first answer", agent._state.messages.items[1].assistant.content[0].text.text);
+}
+
+test "Agent refuses to compact without a model or without history" {
+    var mock = SummaryMock{};
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = summaryStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+
+    try appendExchange(&agent, "first question", "first answer");
+    try std.testing.expectError(error.NoModelConfigured, agent.ensureCompactable());
+    agent.setModel(test_model);
+    agent.clearMessages();
+    var capture = CompactionCapture{};
+    defer capture.deinit();
+    try std.testing.expectError(error.NothingToCompact, agent.compactAsync(.{}, &capture, CompactionCapture.record));
+    try std.testing.expect(capture.outcome == null);
+    try std.testing.expect(!agent.isStreaming());
 }

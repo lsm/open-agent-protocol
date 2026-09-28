@@ -42,6 +42,7 @@ pub const agentLoopContinue = agent_loop_mod.agentLoopContinue;
 
 pub const Agent = @import("agent.zig").Agent;
 pub const AgentOptions = @import("agent.zig").AgentOptions;
+pub const compaction = @import("compaction.zig");
 pub const InProcessProviderProtocolBridge = @import("provider_protocol_bridge.zig").InProcessProviderProtocolBridge;
 
 pub const ai_types = @import("ai_types");
@@ -52,6 +53,7 @@ test {
     _ = types;
     _ = agent_loop_mod;
     _ = @import("agent.zig");
+    _ = @import("compaction.zig");
     _ = @import("provider_protocol_bridge.zig");
 }
 

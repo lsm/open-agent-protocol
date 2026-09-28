@@ -784,6 +784,7 @@ RATIFIED_COMMANDS = (
     "/status",
     "/abort",
     "/clear",
+    "/compact",
     "/quit",
 )
 
@@ -984,6 +985,7 @@ def scenario_commands(args):
 
         run.command("/resume", "no saved sessions")
         run.command("/abort", "Nothing to abort")
+        run.command("/compact", "Nothing to compact yet")
         run.command("/bogus", "unknown command: /bogus")
         run.command("/clear", "transcript cleared")
 

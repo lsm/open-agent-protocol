@@ -186,11 +186,12 @@ fn writeContext(list: *SegmentList, allocator: std.mem.Allocator, state: *const 
 fn writeState(list: *SegmentList, allocator: std.mem.Allocator, state: *const tui_state.AppState) !void {
     if (state.status.streaming) {
         const elapsed = state.status.streaming_elapsed_ms;
+        const activity = if (state.status.compacting) "compacting" else "streaming";
         var elapsed_buf: [12]u8 = undefined;
         const value = if (elapsed > 0)
-            try std.fmt.allocPrint(allocator, "{s} streaming {s}", .{ tui_theme.spinnerFrame(state.anim_tick), formatElapsed(&elapsed_buf, elapsed) })
+            try std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ tui_theme.spinnerFrame(state.anim_tick), activity, formatElapsed(&elapsed_buf, elapsed) })
         else
-            try std.fmt.allocPrint(allocator, "{s} streaming", .{tui_theme.spinnerFrame(state.anim_tick)});
+            try std.fmt.allocPrint(allocator, "{s} {s}", .{ tui_theme.spinnerFrame(state.anim_tick), activity });
         defer allocator.free(value);
         try pushValue(list, allocator, value, tui_theme.runningText());
     } else {

@@ -17,7 +17,7 @@ pub const TuiEvent = session.TuiEvent;
 pub const TuiEventStream = session.TuiEventStream;
 pub const TuiEndReason = session.TuiEndReason;
 pub const QueuedCounts = session.QueuedCounts;
-pub const CompactMessagesResult = session.CompactMessagesResult;
+pub const CompactOptions = session.CompactOptions;
 pub const ToolApprovalCallback = session.ToolApprovalCallback;
 pub const ToolApprovalDecision = session.ToolApprovalDecision;
 pub const ToolApprovalRequest = session.ToolApprovalRequest;
@@ -38,6 +38,8 @@ const ApprovalContext = struct {
     original_ui_callback: ?agent.ToolApprovalUiFn,
     tool_name: []const u8,
 };
+
+const CompactionEnd = @TypeOf(@as(TuiEvent, undefined).compaction_end);
 
 pub const PermissionMode = enum {
     ask,
@@ -123,6 +125,7 @@ pub const TuiRuntime = struct {
     last_turn_stop_reason: ?ai_types.StopReason = null,
     compact_output: bool = false,
     run_async: bool = true,
+    compaction_transcript: []u8 = &.{},
     dropped_event_count: u64 = 0,
     dropped_since_warning: u64 = 0,
     steering_tagged_count: u64 = 0,
@@ -245,6 +248,7 @@ pub const TuiRuntime = struct {
         self.clearPendingApproval();
         self.tool_protocol.deinit();
         self.allocator.free(self.workspace_root);
+        self.allocator.free(self.compaction_transcript);
         self.allocator.free(self.approval_contexts);
         self.allocator.free(self.wrapped_tools);
         self.allocator.free(self.original_tools);
@@ -305,7 +309,8 @@ pub const TuiRuntime = struct {
             .ops = .{
                 .start = sessionStart,
                 .resume_session = sessionResume,
-                .compact_messages = sessionCompactMessages,
+                .compact = sessionCompact,
+                .history = sessionHistory,
                 .cancel = sessionCancel,
                 .submit_turn = sessionSubmitTurn,
                 .steer = sessionSteer,
@@ -508,12 +513,48 @@ pub const TuiRuntime = struct {
         try local.replaceMessages(messages);
     }
 
-    pub fn compactMessages(self: *TuiRuntime) !CompactMessagesResult {
+    pub fn history(self: *TuiRuntime) []const ai_types.Message {
+        const local = &(self.local_agent orelse return &.{});
+        if (!local.isIdle()) return &.{};
+        local.waitForIdle();
+        return local._state.messages.items;
+    }
+
+    pub fn compact(self: *TuiRuntime, options: CompactOptions) !void {
         if (!self.started) try self.start();
         const local = &(self.local_agent orelse return error.RuntimeNotStarted);
-        if (self.run_async) local.waitForIdle();
-        local.clearAllQueues();
-        return try local.compactMessages();
+        if (self.currentModel() == null) return error.NoModelConfigured;
+        if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        local.waitForIdle();
+        try local.ensureCompactable();
+        const transcript = try self.allocator.dupe(u8, if (options.transcripts.len > 0) options.transcripts[options.transcripts.len - 1] else "");
+        self.allocator.free(self.compaction_transcript);
+        self.compaction_transcript = transcript;
+        self.resetEventStreamForTurn();
+        self.cancelled.store(false, .release);
+        self.completed = false;
+        self.push(.{ .compaction_start = .{} });
+        local.compactAsync(.{ .focus = options.focus, .transcripts = options.transcripts }, self, onCompaction) catch |err| {
+            self.finishCompaction(.{ .outcome = .failed, .message = OwnedSlice(u8).initBorrowed(@errorName(err)) });
+        };
+    }
+
+    fn onCompaction(ctx: ?*anyopaque, result: *const agent.compaction.Result) void {
+        const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+        const payload = compactionEndPayload(self.allocator, self.compaction_transcript, result) catch |err| CompactionEnd{ .outcome = .failed, .message = OwnedSlice(u8).initBorrowed(@errorName(err)) };
+        self.finishCompaction(payload);
+    }
+
+    fn finishCompaction(self: *TuiRuntime, payload: CompactionEnd) void {
+        const reason: TuiEndReason = switch (payload.outcome) {
+            .completed => .completed,
+            .cancelled => .cancelled,
+            .failed => .@"error",
+        };
+        self.completed = true;
+        self.pushTerminal(.{ .compaction_end = payload });
+        self.event_stream.complete(.{ .reason = reason });
+        self.stream_active = false;
     }
 
     pub fn resumeSession(self: *TuiRuntime) !void {
@@ -1098,6 +1139,26 @@ pub const TuiRuntime = struct {
     }
 };
 
+fn compactionEndPayload(allocator: std.mem.Allocator, transcript_path: []const u8, result: *const agent.compaction.Result) !CompactionEnd {
+    switch (result.*) {
+        .completed => |completed| {
+            const text = try allocator.dupe(u8, completed.text);
+            errdefer allocator.free(text);
+            const transcript = try allocator.dupe(u8, transcript_path);
+            return .{
+                .outcome = .completed,
+                .text = OwnedSlice(u8).initOwned(text),
+                .transcript = OwnedSlice(u8).initOwned(transcript),
+                .messages_before = completed.messages_before,
+                .tokens_before = completed.tokens_before,
+                .tokens_after = completed.tokens_after,
+            };
+        },
+        .cancelled => return .{ .outcome = .cancelled },
+        .failed => |message| return .{ .outcome = .failed, .message = OwnedSlice(u8).initOwned(try allocator.dupe(u8, message)) },
+    }
+}
+
 fn notifyToolApproval(ctx: ?*anyopaque, request: agent.ToolApprovalRequest, allocator: std.mem.Allocator) void {
     const approval_ctx: *ApprovalContext = @ptrCast(@alignCast(ctx.?));
     if (approval_ctx.original_ui_callback) |callback| {
@@ -1170,9 +1231,14 @@ fn sessionResume(ctx: ?*anyopaque) anyerror!void {
     try self.resumeSession();
 }
 
-fn sessionCompactMessages(ctx: ?*anyopaque) anyerror!CompactMessagesResult {
+fn sessionCompact(ctx: ?*anyopaque, options: CompactOptions) anyerror!void {
     const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
-    return try self.compactMessages();
+    try self.compact(options);
+}
+
+fn sessionHistory(ctx: ?*anyopaque) []const ai_types.Message {
+    const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
+    return self.history();
 }
 
 fn sessionCancel(ctx: ?*anyopaque) void {
@@ -1281,6 +1347,7 @@ const MockProtocolCtx = struct {
     tool_name: []const u8 = "demo_tool",
     force_error: bool = false,
     provider_error_message: []const u8 = "",
+    reply_text: []const u8 = "hello",
 };
 
 fn makeAssistantMessage(allocator: std.mem.Allocator, model: ai_types.Model, content: []const ai_types.AssistantContent, stop_reason: ai_types.StopReason) !ai_types.AssistantMessage {
@@ -1454,7 +1521,7 @@ fn mockStream(
         }
     }
 
-    try pushTextResponse(stream, allocator, model, "hello");
+    try pushTextResponse(stream, allocator, model, mock.reply_text);
     return stream;
 }
 
@@ -1986,6 +2053,104 @@ test "runtime follow-up runs once the turn stops and is not tagged as steering" 
     }
     try std.testing.expectEqual(@as(usize, 1), follow_up_ends);
     try std.testing.expect(!follow_up_tagged);
+}
+
+fn compactionEndPayloadProbe(allocator: std.mem.Allocator) !void {
+    const completed = agent.compaction.Result{ .completed = .{ .text = @constCast("summary"), .messages_before = 3, .tokens_before = 10, .tokens_after = 2, .head_truncated = false } };
+    var completed_event = TuiEvent{ .compaction_end = try compactionEndPayload(allocator, "/sessions/s1/compaction-1.jsonl", &completed) };
+    completed_event.deinit(allocator);
+    const failed = agent.compaction.Result{ .failed = @constCast("overloaded") };
+    var failed_event = TuiEvent{ .compaction_end = try compactionEndPayload(allocator, "", &failed) };
+    failed_event.deinit(allocator);
+}
+
+test "compactionEndPayload survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, compactionEndPayloadProbe, .{});
+}
+
+const CompactionSeen = struct {
+    started: bool = false,
+    outcome: ?TuiEvent.CompactionOutcome = null,
+    text_has_summary: bool = false,
+    transcript_matches: bool = false,
+    message_has_error: bool = false,
+    messages_before: u64 = 0,
+};
+
+fn collectCompaction(tui_session: *TuiSession, expected_transcript: []const u8) CompactionSeen {
+    var seen = CompactionSeen{};
+    while (tui_session.popEvent()) |event| {
+        var ev = event;
+        defer ev.deinit(std.testing.allocator);
+        switch (ev) {
+            .compaction_start => seen.started = true,
+            .compaction_end => |payload| {
+                seen.outcome = payload.outcome;
+                seen.text_has_summary = std.mem.indexOf(u8, payload.text.slice(), "\nkept state\n") != null;
+                seen.transcript_matches = std.mem.eql(u8, payload.transcript.slice(), expected_transcript);
+                seen.message_has_error = std.mem.indexOf(u8, payload.message.slice(), "overloaded") != null;
+                seen.messages_before = payload.messages_before;
+            },
+            else => {},
+        }
+    }
+    return seen;
+}
+
+test "runtime compaction swaps in the model's summary and reports it with its transcript" {
+    var mock = MockProtocolCtx{};
+    var wide = test_model_a;
+    wide.context_window = 200_000;
+    const models = [_]ai_types.Model{wide};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
+    defer runtime.deinit();
+
+    var tui_session = runtime.createSession();
+    try tui_session.start();
+    try tui_session.submitTurn("first");
+    if (runtime.local_agent) |*local| local.waitForIdle();
+    _ = collectCompaction(&tui_session, "");
+
+    mock.reply_text = "<summary>\nkept state\n</summary>";
+    const transcripts = [_][]const u8{ "/sessions/s1/compaction-1.jsonl", "/sessions/s1/compaction-2.jsonl" };
+    try tui_session.compact(.{ .focus = "tests", .transcripts = &transcripts });
+    if (runtime.local_agent) |*local| local.waitForIdle();
+
+    const seen = collectCompaction(&tui_session, "/sessions/s1/compaction-2.jsonl");
+    try std.testing.expect(seen.started);
+    try std.testing.expectEqual(@as(?TuiEvent.CompactionOutcome, .completed), seen.outcome);
+    try std.testing.expect(seen.text_has_summary);
+    try std.testing.expect(seen.transcript_matches);
+    try std.testing.expectEqual(@as(u64, 2), seen.messages_before);
+    try std.testing.expectEqual(@as(usize, 2), mock.call_count);
+    try std.testing.expectEqual(@as(usize, 2), runtime.history().len);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.history()[0].user.content.text, "- /sessions/s1/compaction-1.jsonl\n- /sessions/s1/compaction-2.jsonl") != null);
+    try std.testing.expectError(error.NothingToCompact, tui_session.compact(.{}));
+}
+
+test "runtime compaction reports a provider failure and keeps the history" {
+    var mock = MockProtocolCtx{};
+    var wide = test_model_a;
+    wide.context_window = 200_000;
+    const models = [_]ai_types.Model{wide};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &models, .run_async = true });
+    defer runtime.deinit();
+
+    var tui_session = runtime.createSession();
+    try tui_session.start();
+    try tui_session.submitTurn("first");
+    if (runtime.local_agent) |*local| local.waitForIdle();
+    _ = collectCompaction(&tui_session, "");
+
+    mock.provider_error_message = "overloaded";
+    try tui_session.compact(.{});
+    if (runtime.local_agent) |*local| local.waitForIdle();
+
+    const seen = collectCompaction(&tui_session, "");
+    try std.testing.expectEqual(@as(?TuiEvent.CompactionOutcome, .failed), seen.outcome);
+    try std.testing.expect(seen.message_has_error);
+    try std.testing.expectEqual(@as(usize, 2), runtime.history().len);
+    try std.testing.expectEqualStrings("first", runtime.history()[0].user.content.text);
 }
 
 test "runtime tags consumed steer message_end with steering provenance" {
