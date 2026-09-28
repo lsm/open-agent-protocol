@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+
+- `auth.providers` is answered from `providers/catalog.json` rather than from a
+  four-row literal. `zig/src/auth/providers.zig` hardcoded Anthropic, GitHub
+  Copilot, OpenAI Codex and a CI fixture, so `listProviders()` never showed the
+  other nineteen rows — OpenRouter, DeepSeek, Vercel, the coding plans, the
+  gateways — and a caller could not learn they existed without reading the
+  catalog by hand. The definitions are now the catalog's rows in catalog order,
+  each carrying the row's id, its display name and its `auth` kinds, so an
+  SDK can tell an API-key-only provider from one that also offers OAuth, and can
+  tell a row needing no credential (Ollama) from one that needs a key. The
+  values are read through `provider_catalog`, so a row that is added, renamed or
+  re-authed appears without a second edit and `goap check`'s literal rule keeps
+  a catalogued name out of code.
+  A row the runtime cannot load yet is listed rather than hidden. Google and
+  Azure have no models listing the loader can discover and no endpoint the
+  catalog resolves, and Ollama's base is a local default; all three appear with
+  whatever status their credential has, which is `login_required` until one is
+  set. Listing a provider the runtime cannot yet serve is a fact an SDK needs —
+  hiding it would make the list look complete when it is not.
+  The CI fixture row keeps its place, last, after the catalog's rows rather than
+  among them. I first removed it from the served list, on the grounds that
+  `oapx auth providers` should not advertise "Test Fixture (CI)" to anyone
+  running the binary — and that silently disabled real coverage: the Go SDK's
+  binary smoke test skips when the fixture is absent, so the only
+  CI-exercisable interactive login across the four SDKs would have stopped
+  running without failing anywhere, and the Rust SDK's end-to-end login test
+  failed outright. A fixture is a test affordance, but the served list is also
+  the only channel a test has for reading a login back, so removing the row
+  removes the test rather than the fixture. It stays a constant that is not a
+  catalog row and has no credential path of its own.
+  The auth kinds are carried on the definition here and travel on the wire in the
+  next step: Decision 0029's `auth.providers.response` entry has only `id`,
+  `name`, `auth_status` and `last_error`, so expressing an API-key-only provider
+  needs that payload amended rather than approximated.
+
 - `providers/catalog.json` records, per endpoint, whether its `base_url` already
   carries the API version, so a request path stops depending on a guess about a
   path segment. Today the join reads the base URL looking for any segment shaped
