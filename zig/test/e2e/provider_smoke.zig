@@ -181,7 +181,7 @@ fn regionFor(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
     const name = provider_catalog.regionEnv(id) orelse return row.endpoints[0].region;
     const value = envOwned(allocator, name) orelse return row.endpoints[0].region;
     defer allocator.free(value);
-    return provider_base_url.normalizeKimiRegion(value) orelse row.endpoints[0].region;
+    return provider_catalog.regionFromValue(row.id, value) orelse row.endpoints[0].region;
 }
 
 fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) !?CatalogTarget {

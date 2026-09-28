@@ -12,7 +12,7 @@ pub fn defaultBaseUrlForRefWithRegion(
     allocator: std.mem.Allocator,
     provider_id: []const u8,
     api: []const u8,
-    stored_kimi_region: ?[]const u8,
+    resolved_kimi_region: ?[]const u8,
 ) ![]const u8 {
     const global = try envOwnedOrNull(allocator, "OAPX_BASE_URL");
     defer if (global) |g| allocator.free(g);
@@ -23,16 +23,8 @@ pub fn defaultBaseUrlForRefWithRegion(
     const deepseek = try envOwnedOrNull(allocator, deepseek_base_url_env);
     defer if (deepseek) |v| allocator.free(v);
 
-    const kimi_region: []const u8 = blk: {
-        if (try envOwnedOrNull(allocator, kimi_region_env)) |env_region| {
-            defer allocator.free(env_region);
-            if (normalizeKimiRegion(env_region)) |region| break :blk region;
-        }
-        if (stored_kimi_region) |stored| {
-            if (normalizeKimiRegion(stored)) |region| break :blk region;
-        }
-        break :blk "china";
-    };
+    const kimi_region: []const u8 = resolved_kimi_region orelse
+        (provider_catalog.defaultRegion("kimi") orelse "china");
 
     return baseUrlWithOverrides(allocator, provider_id, api, .{
         .global = global orelse "",
@@ -51,8 +43,6 @@ pub const BaseUrlOverrides = struct {
     kimi_region: []const u8 = "china",
 };
 
-const kimi_region_env = provider_catalog.regionEnv("kimi") orelse
-    @compileError("providers/catalog.json records no region_env for kimi");
 const anthropic_messages_base_url = provider_catalog.baseUrlOrCompileError("anthropic", "anthropic-messages", null);
 const openai_responses_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-responses", null);
 const openai_completions_base_url = provider_catalog.baseUrlOrCompileError("openai", "openai-completions", null);
@@ -64,17 +54,7 @@ const anthropic_base_url_env = provider_catalog.baseUrlEnv("anthropic")[0];
 const openai_base_url_env = provider_catalog.baseUrlEnv("openai")[0];
 const deepseek_base_url_env = provider_catalog.baseUrlEnv("deepseek")[0];
 
-pub fn normalizeKimiRegion(value: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (std.ascii.eqlIgnoreCase(trimmed, "global") or std.ascii.eqlIgnoreCase(trimmed, "moonshot")) return "global";
-    if (std.ascii.eqlIgnoreCase(trimmed, "china") or
-        std.ascii.eqlIgnoreCase(trimmed, "cn") or
-        std.ascii.eqlIgnoreCase(trimmed, "coding"))
-    {
-        return "china";
-    }
-    return null;
-}
+
 
 pub fn normalizeVersionedBaseUrl(url: []const u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, url, "/");
@@ -635,15 +615,6 @@ test "oauthOriginAllowed lets a kimi login keep streaming" {
     try std.testing.expect(!oauthOriginAllowed(allocator, "anthropic", "https://attacker.test", "", null));
 }
 
-test "normalizeKimiRegion accepts catalog region aliases" {
-    try std.testing.expectEqualStrings("global", normalizeKimiRegion("global").?);
-    try std.testing.expectEqualStrings("global", normalizeKimiRegion(" moonshot ").?);
-    try std.testing.expectEqualStrings("china", normalizeKimiRegion("CN").?);
-    try std.testing.expectEqualStrings("china", normalizeKimiRegion("coding").?);
-    try std.testing.expectEqualStrings("china", normalizeKimiRegion("china").?);
-    try std.testing.expect(normalizeKimiRegion("mars") == null);
-    try std.testing.expect(normalizeKimiRegion("") == null);
-}
 
 test "defaultMaxTokensForRef uses catalog limits for catalog pairs" {
     try std.testing.expectEqual(@as(u32, 16_384), defaultMaxTokensForRef("kimi", "openai-completions"));

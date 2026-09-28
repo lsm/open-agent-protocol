@@ -473,25 +473,13 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
     if (provider_catalog.regionEnv(id)) |name| {
         if (compat.getEnvVarOwned(allocator, name) catch null) |value| {
             defer allocator.free(value);
-            if (value.len > 0) {
-                if (regionSynonym(id, value)) |aliased| return aliased;
-                for (provider_catalog.regionsFor(id)) |region| {
-                    if (std.ascii.eqlIgnoreCase(region, value)) return region;
-                }
-            }
+            if (provider_catalog.regionFromValue(id, value)) |resolved| return resolved;
         }
     }
     if (catalogStoredRegion(id, storage)) |stored| return stored;
     return fallback;
 }
 
-fn regionSynonym(id: []const u8, value: []const u8) ?[]const u8 {
-    if (!std.mem.eql(u8, id, kimi_provider_id)) return null;
-    const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (std.ascii.eqlIgnoreCase(trimmed, "moonshot")) return "global";
-    if (std.ascii.eqlIgnoreCase(trimmed, "cn") or std.ascii.eqlIgnoreCase(trimmed, "coding")) return "china";
-    return null;
-}
 
 fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]const u8 {
     const stored = storage orelse return null;
@@ -1999,6 +1987,9 @@ test "the Kimi row serves the China base by default and the global base when the
 test "KIMI_REGION chooses the region, and an unusable value falls back to the row's default" {
     const cases = [_]struct { set: []const u8, want: []const u8 }{
         .{ .set = "global", .want = "global" },
+        .{ .set = " global", .want = "global" },
+        .{ .set = "global ", .want = "global" },
+        .{ .set = "\tglobal\r\n", .want = "global" },
         .{ .set = "GLOBAL", .want = "global" },
         .{ .set = "moonshot", .want = "global" },
         .{ .set = "china", .want = "china" },

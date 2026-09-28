@@ -136,6 +136,23 @@ pub fn defaultRegion(id: []const u8) ?[]const u8 {
     return row.default_region;
 }
 
+pub fn regionFromValue(id: []const u8, value: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    if (regionSynonym(id, trimmed)) |aliased| return aliased;
+    for (regionsFor(id)) |region| {
+        if (std.ascii.eqlIgnoreCase(region, trimmed)) return region;
+    }
+    return null;
+}
+
+fn regionSynonym(id: []const u8, value: []const u8) ?[]const u8 {
+    if (!std.mem.eql(u8, id, "kimi")) return null;
+    if (std.ascii.eqlIgnoreCase(value, "moonshot")) return "global";
+    if (std.ascii.eqlIgnoreCase(value, "cn") or std.ascii.eqlIgnoreCase(value, "coding")) return "china";
+    return null;
+}
+
 pub fn isRegional(id: []const u8) bool {
     const row = provider(id) orelse return false;
     for (row.endpoints) |endpoint| {
