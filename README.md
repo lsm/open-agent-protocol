@@ -94,7 +94,7 @@ Protocol artifacts:
 
 - [Illustrative protocol envelopes](examples/README.md)
 - `fixtures/`: normative executable conformance traces
-- `fixtures/packs/`: extension packs, loadable with `goap validate -pack`
+- `fixtures/packs/`: extension packs, loadable with `go run ./go/cmd/goap validate -pack`
 - `schema/v0.1/`: JSON Schema bundle for agent control and model provider profiles
 
 Executable core (Go 1.26 or later, the `go.mod` floor; CI runs 1.27.x):
@@ -288,13 +288,19 @@ model gate already enforces.
 
 ### Local daemon (`goap hub`)
 
+`goap hub` is this repository's own command and is **not installed**: run it
+with `go run`. The same verb is `oapx hub` on the released binary, which today
+carries the stdio transport and answers `unavailable` for `--addr` and
+`--config`, naming which. [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
+is why there is one released binary, and a library for every language.
+
 `goap hub` exposes the adapter registry over HTTP + Server-Sent Events so any
 client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
 HTTP+SSE codec (`serve/servehttp`) over the embeddable `serve` package; its
 wire behavior is the contract the `client` package proves:
 
 ```sh
-goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
+go run ./go/cmd/goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
 
 Without `--config` the daemon serves the built-in memory reference adapter
@@ -412,7 +418,7 @@ A host that would rather spawn a child process than manage a port gets the
 same surface over newline-delimited JSON on the process's own pipes:
 
 ```sh
-goap hub --stdio [--config examples/oap-serve.json]
+go run ./go/cmd/goap hub --stdio [--config examples/oap-serve.json]
 ```
 
 Spawning the process is the authorization, so there is no port, no TLS and no
@@ -750,10 +756,13 @@ exposes a hub; an implementer should not have to build a registry, twelve ops
 and multiplexed subscriptions to be conformant.
 
 ```sh
-goap serve agent --backend memory # the reference endpoint: one adapter, raw envelopes
-goap conformance                  # drive that reference endpoint and judge it
-goap conformance --command "some-agent --oap" # drive somebody else's
+go run ./go/cmd/goap serve agent --backend memory # the reference endpoint: one adapter, raw envelopes
+go run ./go/cmd/goap conformance                  # drive that reference endpoint and judge it
+go run ./go/cmd/goap conformance --command "some-agent --oap" # drive somebody else's
 ```
+
+`oapx` carries `serve agent` today; `oapx conformance` is product work under
+Decision 0038. `goap` is this repository's own tool.
 
 The binding carries cursor replay as a transport control frame — the same
 place the HTTP binding puts it, where `?after=` and `Last-Event-ID` are not

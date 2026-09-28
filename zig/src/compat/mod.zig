@@ -31,12 +31,55 @@ pub fn runtimeEnviron() std.process.Environ {
 
 const environ_scan_has_home = @hasField(std.Io.Threaded.Environ.String, "HOME");
 
+pub var test_env: ?TestEnv = null;
+
+pub const TestEnv = struct {
+    arena: std.heap.ArenaAllocator,
+    values: std.StringHashMapUnmanaged([]const u8) = .empty,
+
+    fn deinit(self: *TestEnv) void {
+        self.arena.deinit();
+    }
+
+    fn put(self: *TestEnv, name: []const u8, value: []const u8) !void {
+        const held = self.arena.allocator();
+        try self.values.put(held, try held.dupe(u8, name), try held.dupe(u8, value));
+    }
+
+    fn get(self: *const TestEnv, name: []const u8) ?[]const u8 {
+        return self.values.get(name);
+    }
+};
+
+pub fn setTestEnv(allocator: std.mem.Allocator, name: []const u8, value: []const u8) !void {
+    const builtin = @import("builtin");
+    if (!builtin.is_test) @compileError("setTestEnv is a test-only seam");
+    if (test_env == null) {
+        test_env = .{ .arena = std.heap.ArenaAllocator.init(allocator) };
+    }
+    try test_env.?.put(name, value);
+}
+
+pub fn clearTestEnv() void {
+    if (test_env) |*held| {
+        held.deinit();
+        test_env = null;
+    }
+}
+
+fn testEnvValue(name: []const u8) ?[]const u8 {
+    const held = test_env orelse return null;
+    return held.get(name);
+
 pub fn getEnvVarOwnedFrom(environ: std.process.Environ, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     return std.process.Environ.getAlloc(environ, allocator, name);
 }
 
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     const builtin = @import("builtin");
+    if (builtin.is_test) {
+        if (testEnvValue(name)) |value| return allocator.dupe(u8, value);
+    }
     if (!builtin.is_test and std.mem.eql(u8, name, "HOME")) {
         if (comptime environ_scan_has_home) {
             if (std.Io.Threaded.global_single_threaded.environString("HOME")) |value| {
