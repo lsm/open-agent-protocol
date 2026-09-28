@@ -955,6 +955,8 @@ pub const Agent = struct {
 
     fn runLoopThread(self: *Agent, messages: []ai_types.Message, skip_steering: bool) void {
         var messages_owned = true;
+        var failed_because: ?[]const u8 = null;
+        self._state.terminal_sent = false;
         defer {
             if (messages_owned) {
                 for (messages) |*m| {
@@ -962,6 +964,12 @@ pub const Agent = struct {
                 }
             }
             self._allocator.free(messages);
+
+            if (!self._state.terminal_sent) {
+                self._state.terminal_sent = true;
+                const reason = failed_because orelse "RunEndedWithoutReason";
+                self.emit(.{ .run_failed = .{ .reason = types.OwnedSlice(u8).initBorrowed(reason) } });
+            }
 
             self._mutex.lockUncancelable(defaultIo());
             self._state.is_streaming = false;
@@ -971,18 +979,22 @@ pub const Agent = struct {
         }
 
         if (messages.len > 0 and self._state.model == null) {
+            failed_because = @errorName(error.NoModelConfigured);
             return;
         }
 
         var run_messages: ?[]const ai_types.Message = if (messages.len > 0) messages else null;
         if (messages.len == 0 and self._state.messages.items.len == 0) {
+            failed_because = "NothingToRun";
             return;
         }
 
         self.runLoopInternal(
             &run_messages,
             .{ .skip_initial_steering_poll = skip_steering },
-        ) catch {};
+        ) catch |err| {
+            failed_because = @errorName(err);
+        };
         messages_owned = run_messages != null;
     }
 
@@ -1016,6 +1028,7 @@ pub const Agent = struct {
             self._cancel_token = .{ .cancelled = &self._pending_cancel };
         }
         self._state.is_streaming = true;
+        self._state.terminal_sent = false;
         errdefer {
             self._state.is_streaming = false;
             self._cancel_token = null;
@@ -1122,6 +1135,7 @@ pub const Agent = struct {
                 },
                 .agent_end => {
                     self._state.is_streaming = false;
+                    self._state.terminal_sent = true;
                     self._state.clearStreamMessage();
                 },
                 else => {},
@@ -1507,6 +1521,81 @@ test "Agent continueFromContextAsync rejects missing model" {
     try std.testing.expectError(error.NoModelConfigured, agent.continueFromContextAsync());
     try std.testing.expect(!agent.isStreaming());
     try std.testing.expect(agent._thread == null);
+}
+
+const TerminalTally = struct {
+    terminals: usize = 0,
+    reason: []const u8 = "",
+    saw_end: bool = false,
+
+    fn onEvent(ctx: ?*anyopaque, event: AgentEvent) void {
+        const self: *TerminalTally = @ptrCast(@alignCast(ctx.?));
+        if (!event.isTerminal()) return;
+        self.terminals += 1;
+        switch (event) {
+            .agent_end => self.saw_end = true,
+            .run_failed => |payload| self.reason = payload.reason.slice(),
+            else => {},
+        }
+    }
+};
+
+fn refusingStreamFn(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: types.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream_mod.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    _ = allocator;
+    return error.BackendRefused;
+}
+
+test "a run that ends because its provider refused still ends exactly once" {
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = .{
+        .stream_fn = refusingStreamFn,
+        .ctx = null,
+    } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+
+    var tally = TerminalTally{};
+    agent.subscribeWithContext(&tally, TerminalTally.onEvent);
+    try agent.promptAsync(ai_types.Message{ .user = .{ .content = .{ .text = "hello" }, .timestamp = 0 } });
+    agent.waitForIdle();
+
+    try std.testing.expectEqual(@as(usize, 1), tally.terminals);
+    try std.testing.expect(tally.saw_end);
+}
+
+test "a run that stops before it starts still ends, and says why" {
+    var agent = Agent.init(std.testing.allocator, .{ .protocol = createMockProtocol() });
+    defer agent.deinit();
+    var tally = TerminalTally{};
+    agent.subscribeWithContext(&tally, TerminalTally.onEvent);
+
+    const empty = try std.testing.allocator.alloc(ai_types.Message, 0);
+    agent.runLoopThread(empty, false);
+    try std.testing.expectEqual(@as(usize, 1), tally.terminals);
+    try std.testing.expectEqualStrings("NothingToRun", tally.reason);
+
+    const one = try std.testing.allocator.alloc(ai_types.Message, 1);
+    one[0] = .{ .user = .{ .content = .{ .text = try std.testing.allocator.dupe(u8, "hello") }, .timestamp = 0 } };
+    agent.runLoopThread(one, false);
+    try std.testing.expectEqual(@as(usize, 2), tally.terminals);
+    try std.testing.expectEqualStrings("NoModelConfigured", tally.reason);
+    try std.testing.expect(!tally.saw_end);
+}
+
+test "isTerminal names exactly the two events that end a run" {
+    try std.testing.expect(!(AgentEvent{ .agent_start = {} }).isTerminal());
+    try std.testing.expect(!(AgentEvent{ .turn_start = {} }).isTerminal());
+    try std.testing.expect((AgentEvent{ .agent_end = .{} }).isTerminal());
+    try std.testing.expect((AgentEvent{ .run_failed = .{} }).isTerminal());
 }
 
 test "Agent continueFromContextAsync mirrors sync resume checks" {

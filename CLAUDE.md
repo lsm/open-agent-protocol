@@ -219,12 +219,17 @@ Rules the source will not tell you:
   result kept past cleanup holds freed slices. `cloneAssistantMessage` it first
   when it must outlive the call — `EventStream.cloneResult` is a different API
   and does not apply here.
-- **`AgentEvent` has no error variant, and failure does not arrive through one
-  channel.** When `runLoop` returns an error the thread calls
-  `completeWithError` *instead of* pushing `agent_end`, so no terminal event
-  ever arrives and a consumer waiting for `agent_end` hangs. Check
-  `stream.getError()` first, then `final_message.stop_reason == .@"error"` — a
-  provider failure still produces a normal `agent_end` — and treat
+- **A run ends with exactly one event that ends it, and that is a type-level
+  fact rather than a convention.** `AgentEvent.isTerminal` names them —
+  `agent_end` and `run_failed` — and `runLoopThread` emits exactly one of the
+  two from its `defer`, so every path out of the run ends it: the paths that
+  return before the run starts, a failure inside it, and a failure *after* it
+  has already ended, which must not end it twice. A failure that is only
+  readable from a second channel is a failure a consumer that has not
+  remembered to check the second channel for will wait on forever. Note the
+  thing this does not change: a provider that refuses is a run that got far
+  enough to end, so it ends with a normal `agent_end` and
+  `final_message.stop_reason == .@"error"` is still where that shows. Treat
   `AgentEndPayload.termination` as evidence of nothing: it encodes only
   `max_turns` or `cancelled`, and is null both on a clean finish and on that
   provider failure.

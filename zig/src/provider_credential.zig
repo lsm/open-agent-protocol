@@ -22,6 +22,10 @@ pub const Credential = struct {
     name: []const u8,
 
     pub fn deinit(self: *Credential, allocator: std.mem.Allocator) void {
+        if (self.key.len > 0) {
+            const writable: []u8 = @constCast(self.key);
+            std.crypto.secureZero(u8, writable);
+        }
         allocator.free(self.key);
         self.* = undefined;
     }

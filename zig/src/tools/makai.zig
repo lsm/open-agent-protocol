@@ -1889,6 +1889,10 @@ fn serializeAgentLoopEvent(
             try w.writeStringField("type", "agent_start");
             try w.writeStringField("session_id", session_text);
         },
+        .run_failed => |payload| {
+            try w.writeStringField("type", "run_failed");
+            try w.writeStringField("reason", payload.reason.slice());
+        },
         .agent_end => |payload| {
             try w.writeStringField("type", "agent_end");
             var terminal: ?ai_types.AssistantMessage = payload.final_message;

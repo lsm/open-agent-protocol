@@ -45,6 +45,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
 
+- `zig/src/model_catalog.zig` grows a generic catalog loader, so a row in
+  `providers/catalog.json` reaches `/model` and the TUI picker by being
+  discovered rather than by being spelled out in code. The four rows the runtime
+  loaded by hand — Codex, Kimi, Anthropic, Copilot — were every row it loaded.
+  Sixteen other rows had an implemented wire, an endpoint and a models listing,
+  and were still unreachable, so setting `DEEPSEEK_API_KEY` bought nothing. The
+  loader is
+  modelled on the custom-provider path in the same file, and a row is served
+  when it has three things: a credential `provider_credential.lookup` resolves
+  (an environment variable first, then the Keychain, per the order the epic
+  decided), a wire one of the built-in wire modules claims, and a models URL the
+  catalog composes. Discovery reads the models listing that URL names, caches it
+  at `~/.oapx/model_catalog/catalog-<id>.json` with the same 24-hour preference
+  and the same fetch timeout the custom path uses, and falls back to that cache
+  however old when the fetch fails, so an outage cannot empty the picker.
+  The cache name is deliberately not `custom-<id>.json`: a catalogued row and a
+  custom row can share an id, and one row's listing must never be served as the
+  other's. The built models carry the row's own id, wire and base URL, all read
+  through `provider_catalog` — the row's id and the wire id are the two facts
+  that stay literals, and everything else is data, so no base URL is written
+  twice. A row with no credential, no claimed wire, no endpoint or no models
+  listing is skipped rather than half-loaded, which is what keeps Ollama, Azure
+  and the two OAuth subscriptions out until their own shape is decided. A
+  catalogued row has no declared `models` list to fall back on, so a row whose
+  discovery yields nothing contributes nothing instead of inventing entries. One
+  row is enabled in this change, DeepSeek; the rest follow as their own steps.
+  Both the DeepSeek row and the six values it needs are asserted from the real
+  catalog, so a schema or a wire change that would quietly drop the row fails a
+  test rather than a user's `/model`.
+  A discovered model resolves its base URL through `provider_base_url`, so
+  `DEEPSEEK_BASE_URL` still points a discovered row at a proxy. What shipped is
+  the order `provider_base_url` already documents: `OAPX_BASE_URL` first, then
+  the row's `base_url_env`, then the catalog. Pinning the catalog base on the
+  model would have silently bypassed all three, which is the one thing a
+  catalog-first precedence cannot do: the model carries a base, so nothing
+  downstream consults the operator's environment again. The models URL follows
+  the resolved base, because discovery must go where the operator pointed the
+  row — otherwise a redirected row would send its key to the vendor for the
+  listing and to the proxy for the request.
+  A credential handed to a catalog row's discovery is copied once and zeroed
+  when the copy is released, as every other credential path in the tree does.
+  The bearer sent with the listing request is owned at function scope so it
+  outlives the header list it is stored in.
+
 - [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) (proposed) amends 0001's "Cancellation intent is not settlement" on two clauses, and both validators change with it. **Acceptance is judged when the cancel is checked**, which a trace shows as the request's position against the run's terminal: an accepted `run.cancel.response` is illegal only when the request it answers (`in_reply_to`) arrived after the run's non-`run.cancelled` terminal, and a request that arrived while the run was live may be answered accepted after a natural completion. **A cancel response is unordered against the run's stream** — it carries no `sequence` and 0001 makes it not a terminal — so its position is never what makes it legal. A late cancel is a *legal request* with 0001's typed answer, so neither validator refuses the request itself; Go used to, and does no longer, which is what lets the two trees judge the same trace the same way. Three fixtures carry it: `core-cancel-accepted-after-natural-completion` (valid), `cancel-accepted-after-late-request` (semantic-invalid, `illegal_run_transition`) and `core-cancel-late-request-refused` (valid, the answer is `run_already_terminal`). The pi announcement order is explicitly *not* settled by this record and is not policed by it: both orders are legal, and the two trees differ in output order only.
 
 - [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed) answers T7's two open questions for `session-reattach`. A reopen is `reopen: true` on `session.open.request` — the unused `recovery` object is not reused — and it answers the session's state document with `recovery.recovered: true` and the model and settings the session actually runs under, which is the harness's recorded configuration rather than the loader's: Codex's `ThreadResumeResponse` requires six such members and the Go adapter dropped all six (#458). A create naming a bound id is `session_exists`, a reopen with no binding is `unknown_session`, and a harness that cannot load is `unsupported_feature`. A store the harness can no longer honour answers `unsupported_feature`, as 0039 already rules, and **no new code is proposed**: the code has to come from the binding rather than the harness's reply, because two of the ledgers record a harness creating a missing store before looking in it (Hermes mode `0o600` plus the schema, OpenCode's migration runner) and pi's discovery answers `null` either way, so for those a deleted database, a moved home and a session that never existed are one answer on the wire. Of the seven harnesses read at their pins, three type their own absence — Hermes `4007`, OpenCode `SessionNotFoundError`, DeepSeek `SessionPersistenceNotFoundError` — and four do not: pi's `null`, ACP's silence, Codex's `-32602 invalid_request` (its own ledger calls that "not a not-found code"), and Claude Code, whose answer is unrecorded. The binding is the host's record — never a credential, never a resolved environment value — written atomically, with a torn write detected and never read, and appended rather than replaced. No wire changes with a proposed record.
@@ -233,6 +277,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A refusal for parameters an op does not define now names all of them, in the
   order the wire declares them, rather than the first one found. A host that sent
   three it should not have is told about three.
+- An agent run now always ends with exactly one event that ends it. A run that
+  failed — at any point, including the two paths that returned before the run
+  started — used to simply stop, so a consumer waiting for the run to end waited
+  forever and had a second channel to remember to check for why. `AgentEvent`
+  gains a `run_failed` variant and an `isTerminal` that names the two events that
+  end a run; `runLoopThread` emits exactly one of them from its `defer`, so a
+  failure after the run has already ended does not end it twice, and a second run
+  on the same agent is not silenced by the first run's terminal. A provider that
+  refuses is unchanged: it is a run that got far enough to end, so it ends with a
+  normal `agent_end`.
+  A run that failed also ends the TUI's stream as an error rather than as a
+  completion. That reason was inferred from the last turn's stop reason, and a run
+  that fails before a turn ends never set one, so the inference read a failure as a
+  success — and a success is what drains the user's queued follow-ups, so a failed
+  run discarded them. The reason is passed by the caller that knows it now, the same
+  way compaction takes it from the outcome.
 - Five adapters across both trees answer a `run.cancel` accepted on a live run with `cancelling` and no longer re-read the run's terminal after the native round-trip, so the answer depends on the acceptance rather than on how far the reader goroutine has got: `go/adapter/pi`, `go/adapter/codex/appserver` and `go/adapter/acp`, and Zig's `codex` and `pi`. Decision 0001 is the rule, and the pi parity scenario had flaked on the alternative at least five times (#10); it now runs twenty times over in CI. A run that is already terminal when the cancel is checked is still refused `run_already_terminal` — except a run that already settled `cancelled`, which is idempotent and still answers accepted `cancelled` where it did before (ACP and OpenCode in both trees, and codex in both trees by its own path) — and a settled run's recorded status is still not rewritten, so a run that settles *during* the round-trip no longer changes what the cancel answers. Zig ACP, Claude Code, Hermes, OpenCode and DeepSeek were read in both trees and needed no change: Zig ACP's status branch is the *pre-check*, so an already-terminal run is still refused before anything is sent, and DeepSeek's `run.cancel` is `unavailable` because its selected SDK wire has no cancel request at all.
 - A long reply in the TUI is no longer cut off at two minutes with `Provider protocol
   stream timed out`. The in-process provider bridge counted its 120-second limit from
