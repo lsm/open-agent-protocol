@@ -9,6 +9,7 @@ const custom_providers = @import("custom_providers");
 const github_copilot = @import("oauth/github_copilot");
 const provider_catalog = @import("provider_catalog");
 const provider_credential = @import("provider_credential");
+const provider_base_url = @import("provider_base_url");
 const anthropic_messages_api = @import("anthropic_messages_api");
 const openai_completions_api = @import("openai_completions_api");
 const openai_responses_api = @import("openai_responses_api");
@@ -361,6 +362,7 @@ const CatalogDiscovery = struct {
 
 var test_catalog_discovery: ?[]const CatalogDiscovery = null;
 var test_catalog_environment: ?[]const provider_credential.EnvironmentValue = null;
+var test_catalog_base_urls: ?provider_base_url.BaseUrlOverrides = null;
 
 const loader_wires = [_][]const []const u8{
     anthropic_messages_api.wires,
@@ -378,14 +380,22 @@ fn wireIsImplemented(wire: []const u8) bool {
     return false;
 }
 
-const CatalogTarget = struct {
+const CatalogEndpoint = struct {
     id: []const u8,
     wire: []const u8,
     base_url: []const u8,
     models_url: []const u8,
+    owned_base_url: ?[]u8 = null,
+    owned_models_url: ?[]u8 = null,
+
+    fn deinit(self: *CatalogEndpoint, allocator: std.mem.Allocator) void {
+        if (self.owned_base_url) |value| allocator.free(value);
+        if (self.owned_models_url) |value| allocator.free(value);
+        self.* = undefined;
+    }
 };
 
-fn catalogTarget(id: []const u8) ?CatalogTarget {
+fn catalogTarget(id: []const u8) ?CatalogEndpoint {
     const row = provider_catalog.provider(id) orelse return null;
     var chosen: ?[]const u8 = null;
     for (row.wires) |wire| {
@@ -398,6 +408,51 @@ fn catalogTarget(id: []const u8) ?CatalogTarget {
     const base_url = provider_catalog.baseUrl(id, wire, null) orelse return null;
     const models_url = provider_catalog.modelsUrl(id, null) orelse return null;
     return .{ .id = row.id, .wire = wire, .base_url = base_url, .models_url = models_url };
+}
+
+fn catalogEndpointWithBase(
+    allocator: std.mem.Allocator,
+    catalog: CatalogEndpoint,
+    base_url: []const u8,
+) !CatalogEndpoint {
+    if (base_url.len == 0) {
+        return .{
+            .id = catalog.id,
+            .wire = catalog.wire,
+            .base_url = catalog.base_url,
+            .models_url = catalog.models_url,
+        };
+    }
+    const models_path = provider_catalog.modelsEndpoint(catalog.id) orelse unreachable;
+    errdefer allocator.free(base_url);
+    const models_url = try provider_catalog.joinUrlOwned(allocator, base_url, .{
+        .id = "models",
+        .suffix = models_path,
+    });
+    return .{
+        .id = catalog.id,
+        .wire = catalog.wire,
+        .base_url = base_url,
+        .models_url = models_url,
+        .owned_base_url = @constCast(base_url),
+        .owned_models_url = @constCast(models_url),
+    };
+}
+
+fn catalogEndpointWithOverrides(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    overrides: provider_base_url.BaseUrlOverrides,
+) !?CatalogEndpoint {
+    const catalog = catalogTarget(id) orelse return null;
+    const base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, overrides);
+    return try catalogEndpointWithBase(allocator, catalog, base_url);
+}
+
+fn catalogEndpointFromEnvironment(allocator: std.mem.Allocator, id: []const u8) !?CatalogEndpoint {
+    const catalog = catalogTarget(id) orelse return null;
+    const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, null);
+    return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
 const catalog_loader_ids = [_][]const u8{"deepseek"};
@@ -413,8 +468,13 @@ fn loadCatalogModels(
         models.deinit(allocator);
     }
     for (catalog_loader_ids) |id| {
-        const target = catalogTarget(id) orelse continue;
-        try appendCatalogTargetModels(allocator, &models, target, storage, mode);
+        const endpoint = if (builtin.is_test)
+            try catalogEndpointWithOverrides(allocator, id, test_catalog_base_urls orelse .{})
+        else
+            try catalogEndpointFromEnvironment(allocator, id);
+        var held = endpoint orelse continue;
+        defer held.deinit(allocator);
+        try appendCatalogTargetModels(allocator, &models, held, storage, mode);
     }
     return models.toOwnedSlice(allocator);
 }
@@ -422,7 +482,7 @@ fn loadCatalogModels(
 fn appendCatalogTargetModels(
     allocator: std.mem.Allocator,
     models: *std.ArrayList(ai_types.Model),
-    target: CatalogTarget,
+    target: CatalogEndpoint,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) !void {
@@ -443,7 +503,7 @@ fn appendCatalogTargetModels(
     }
 }
 
-fn catalogModel(allocator: std.mem.Allocator, target: CatalogTarget, id_text: []const u8) !ai_types.Model {
+fn catalogModel(allocator: std.mem.Allocator, target: CatalogEndpoint, id_text: []const u8) !ai_types.Model {
     const id = try allocator.dupe(u8, id_text);
     errdefer allocator.free(id);
     const name = try allocator.dupe(u8, id_text);
@@ -510,7 +570,7 @@ fn freeEnvironment(allocator: std.mem.Allocator, values: []provider_credential.E
 
 fn discoverCatalogModelIds(
     allocator: std.mem.Allocator,
-    target: CatalogTarget,
+    target: CatalogEndpoint,
     token: []const u8,
     mode: CatalogLoadMode,
 ) !?[][]const u8 {
@@ -556,7 +616,7 @@ fn testCatalogModelIds(allocator: std.mem.Allocator, id: []const u8) !?[][]const
     return null;
 }
 
-fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogTarget, token: []const u8) ![]u8 {
+fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoint, token: []const u8) ![]u8 {
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
@@ -2206,6 +2266,95 @@ test "a catalog target names the row's own wire, base and models url" {
     try std.testing.expectEqualStrings("openai-completions", target.wire);
     try std.testing.expectEqualStrings("https://api.deepseek.com", target.base_url);
     try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", target.models_url);
+}
+
+test "a catalog target keeps the catalog base when no override is set" {
+    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{})).?;
+    defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://api.deepseek.com", endpoint.base_url);
+    try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", endpoint.models_url);
+}
+
+test "a row the override machinery does not know falls back to the catalog base" {
+    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{})).?;
+    defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(
+        catalogTarget("deepseek").?.base_url,
+        endpoint.base_url,
+    );
+    try std.testing.expectEqualStrings(
+        catalogTarget("deepseek").?.models_url,
+        endpoint.models_url,
+    );
+}
+
+test "the row's base-url override moves both the base and the models url" {
+    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
+        .deepseek = "https://proxy.example/api",
+    })).?;
+    defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", endpoint.models_url);
+}
+
+test "a versioned base-url override loses the trailing version the wire would re-add" {
+    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
+        .deepseek = "https://proxy.example/api/v1/",
+    })).?;
+    defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", endpoint.models_url);
+}
+
+test "the global base-url override outranks the row's own" {
+    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
+        .global = "https://everywhere.example",
+        .deepseek = "https://proxy.example/api",
+    })).?;
+    defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://everywhere.example", endpoint.base_url);
+    try std.testing.expectEqualStrings("https://everywhere.example/v1/models", endpoint.models_url);
+}
+
+test "a discovered model carries the overridden base rather than the catalog's" {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .model_ids = &.{"deepseek-chat"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
+    };
+    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+        test_catalog_base_urls = null;
+    }
+
+    const models = try loadCatalogModels(std.testing.allocator, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
+    try std.testing.expectEqualStrings("deepseek", models[0].provider);
+}
+
+test "an overridden row's discovery is the fake's, so the models url follows the base" {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .model_ids = &.{"deepseek-chat"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
+    };
+    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+        test_catalog_base_urls = null;
+    }
+
+    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", test_catalog_base_urls.?)).?;
+    defer endpoint.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", endpoint.models_url);
 }
 
 test "a row with no implemented wire, endpoint or models listing has no target" {

@@ -1958,6 +1958,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "provider_credential", .module = provider_credential_mod },
+            .{ .name = "provider_base_url", .module = provider_base_url_mod },
             .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
             .{ .name = "openai_completions_api", .module = openai_completions_api_mod },
             .{ .name = "openai_responses_api", .module = openai_responses_api_mod },

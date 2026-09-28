@@ -185,6 +185,15 @@ written here: nothing in this runtime spells a catalogued base URL. The two
 values discovery does not carry are the same defaults a custom provider starts
 from, 128000 and 8192, until a wire reports better ones.
 
+The base URL a discovered row uses is resolved the way every other row's is, in
+the order `provider_base_url` documents: `OAPX_BASE_URL` first, then the row's
+`base_url_env` (`DEEPSEEK_BASE_URL`, `OPENAI_BASE_URL`, …), then the catalog. So
+`DEEPSEEK_BASE_URL` points a discovered row at a proxy, and it points **discovery**
+at the proxy too — the models listing is read from the override, not from the
+vendor, so a key is never sent to an endpoint the operator redirected away from.
+A versioned override keeps the rule above: a trailing `/v1` is dropped, because
+the wire adds its own.
+
 ## Capabilities
 
 Capability detection is otherwise a hostname guess, which cannot work for an
