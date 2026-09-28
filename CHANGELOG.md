@@ -127,19 +127,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     array, which also holds the thinking and the text. The partial on that event is
     the content accumulated *so far*, so it grows with each one.
 
-  Three behaviours are transcribed because Zig has them, and all three are pinned by
+  Four behaviours are transcribed because Zig has them, and all four are pinned by
   tests so a later reader knows they are deliberate rather than accidents. The orphan
   check on a tool result runs only on the **first** of a run, so an orphan following
   an answered one is still written. A malformed chunk is **swallowed** rather than
   failing the stream, which is why the partial-text rule has no reachable caller here.
-  And a `reasoning_details` blob is **escaped** where oapx splices it raw, which
-  keeps the body valid JSON when a signature carries a quote or a backslash —
-  recorded as **#515**, with what step 5's parity run has to do about it.
-  And a `usage` member that is present but is not an object leaves the accumulated
-  totals alone, which is the opposite of what a fresh struct per chunk would do. The
-  first two are filed as **#513**; neither is fixed here. A fourth quirk, an
-  answered tool call growing a duplicate error result once its id is normalized, is
-  **#514** — transcribed and pinned there rather than corrected here.
+  A `reasoning_details` blob is **escaped** where oapx splices it raw, which keeps
+  the body valid JSON when a signature carries a quote or a backslash — recorded as
+  **#515**, with what step 5's parity run has to do about it. And an answered tool
+  call growing a duplicate error result once its id is normalized is **#514**,
+  transcribed and pinned there rather than corrected here. The first two are filed
+  as **#513**; none of the four is fixed here.
+- `oapx hub --stdio` serves the two catalog operations, `models` and `tools`, over the
+  same transport objects `goap hub --stdio` serves. Both take `session_id` and
+  `allow_degraded_features`; both answer a `models.response` or
+  `action.tools.list.response` envelope stamped with the revision the **lister**
+  served the catalog under, and both mint a response id and an `oap-request-N`
+  correlation in that order, as the other ops do.
+  A catalog refused `unsupported_feature` now names the `feature` and `reason` in
+  `details`, an unlabelled one is `internal` — the code both trees answer, since
+  `catalog_unlabelled` is the core's name and has no wire code of its own — and a
+  mis-scoped one takes that op's own fallback, because it is the lister's
+  error and not the caller's.
+  `request_cancelled` is recorded as **D8** rather than mapped: `contract` has no
+  cancellation signal and `hub.Failure` has no error for one, so a cancelled lister
+  call arrives as whatever the adapter chose. Mapping it would have been a mapping
+  the hub cannot actually reach.
+  `tools` falls back to `tools_failed` and `models` to `internal`, each as Go's
+  `toolsError` and `modelsError` do, and each names the feature it asked for —
+  `action.tools.list` or `models.list` — rather than one shared answer for both. A
+  mis-scoped or unlabelled catalog takes the op's own fallback, because it is the
+  lister's error and not the caller's.
+  A session that closes under a catalog answers `session_closed` once and is gone
+  after, as Go does: it marks the session closed and still propagates the error.
 - **The contested settlement has a fixture: `pi-two-open-calls`.** A terminal
   event sweeping several open calls at once had no fixture, and #433 step 4 was
   parked waiting for a hub that could serve one. The memory backend structurally
@@ -155,7 +175,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   named after the directory, which is what keeps two `pi` fixtures distinct.
   This supersedes the note above that no fixture opens two interactions at once:
   it was true of the tree, not of the protocol.
-
 - **`go/providercatalog` resolves a row's credentials, base and wire, the way the
   Zig tree does.** The package joined a catalog row to its two URLs and stopped
   there, so a Go provider runtime had a base and a key that each tree had to
@@ -185,7 +204,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `providers/resolved_urls.json` in both trees; these rules are code, so they are
   pinned here, each read out of the Zig function it mirrors, with the premise
   asserted before the behaviour.
-
 - **`docs/parity-job.md` says what the parity job is for.** The job drives the same requests through both trees and fails when the bytes differ, which makes it the last check before a divergence has to be settled by hand against a decision, a draft or a corpus. The note says which divergences that is the last check on — a payload the two trees decode differently, an answer one refuses and the other admits, and above all **the order of a run's events and the settlement order of two open interactions** — the latter uncovered by any fixture, and added by the entry above: the memory backend holds one pending interaction at a time, so it cannot open two, and the contested settlement #475 was written for — a terminal event sweeping several open gates, as the claude adapter's `sweepRun` does — had no fixture until `pi-two-open-calls`. What the `memory` fixture contributes instead is the only run long enough to read as a stream, through `TestBackendsMatchOapx`; `TestMemoryBackendMatchesOapx` compares a *sorted* set and is order-blind by construction — and which are covered cheaper elsewhere, because the fixtures are the oracle for the wire, the corpora for each harness, and the per-adapter tests for each adapter's own error handling. It says that every fixture which submits streams its run's envelopes, because the submit handler subscribes and pumps the run itself rather than the session-open `subscribe` member, and that `memory` is neither unique in doing that nor identical in both trees by construction — the two memory adapters are separate implementations, which is why the comparison scrubs `id` and every `*_ms` member. It has a row for the one divergence the "covered cheaper elsewhere" rule cannot place — what each tree writes to the harness, which needs a second tree to see at all — and it says which test does what — seven fixtures drive a `child.sh`, `opencode` answers the in-test fake HTTP server, and only one of the two memory tests looks at order — and it runs both tests in its own command, because running one is running half the coverage, and names the three CI jobs that run them — `backend-parity`, `memory-conformance`, and the twenty-fold `pi-parity-repeat` determinism gate. It also says what the job is *not* for: it is not conformance, not the harness's coverage, and not a race detector — one deterministic script per fixture cannot schedule a race — though a parity flake that recurs is race evidence, which is how pi's cancel divergence was found and why `pi-parity-repeat` exists. Each fixture gets a row saying which divergence it is the last check on, and `CLAUDE.md` and the README's paragraph that already promised "identical output" link to it. It lives in `docs/` rather than beside the fixtures because the parity test globs that directory and would read a README as a tenth backend.
 
 
