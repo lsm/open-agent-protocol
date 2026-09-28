@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zig/src/model_catalog.zig` grows a generic catalog loader, so a row in
   `providers/catalog.json` reaches `/model` and the TUI picker by being
   discovered rather than by being spelled out in code. The four rows the runtime
-  loaded by hand — Codex, Kimi, Anthropic, Copilot — were every row it loaded;
-  the other nineteen had implemented wires and pinned URLs and were still
-  unreachable, so setting `DEEPSEEK_API_KEY` bought nothing. The loader is
+  loaded by hand — Codex, Kimi, Anthropic, Copilot — were every row it loaded.
+  Sixteen other rows had an implemented wire, an endpoint and a models listing,
+  and were still unreachable, so setting `DEEPSEEK_API_KEY` bought nothing. The
+  loader is
   modelled on the custom-provider path in the same file, and a row is served
   when it has three things: a credential `provider_credential.lookup` resolves
   (an environment variable first, then the Keychain, per the order the epic
@@ -38,13 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both the DeepSeek row and the six values it needs are asserted from the real
   catalog, so a schema or a wire change that would quietly drop the row fails a
   test rather than a user's `/model`.
-  A discovered model resolves its base URL through `provider_base_url` in the
-  order the epic decided — the row's `base_url_env`, then the user's override,
-  then the catalog — so `DEEPSEEK_BASE_URL` still points a discovered row at a
-  proxy, for discovery as well as for the request. Pinning the catalog base on
-  the model would have silently bypassed it, which is the one thing a
+  A discovered model resolves its base URL through `provider_base_url`, so
+  `DEEPSEEK_BASE_URL` still points a discovered row at a proxy. What shipped is
+  the order `provider_base_url` already documents: `OAPX_BASE_URL` first, then
+  the row's `base_url_env`, then the catalog. Pinning the catalog base on the
+  model would have silently bypassed all three, which is the one thing a
   catalog-first precedence cannot do: the model carries a base, so nothing
-  downstream consults the operator's environment again.
+  downstream consults the operator's environment again. The models URL follows
+  the resolved base, because discovery must go where the operator pointed the
+  row — otherwise a redirected row would send its key to the vendor for the
+  listing and to the proxy for the request.
 
 - `zig/src/hub/stdio.zig` is the hub's stdio wire: strict newline-delimited framing,
   and the five operations it serves today — `adapters`, `sessions`, `capabilities`,

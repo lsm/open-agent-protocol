@@ -357,6 +357,7 @@ fn freeModelIds(allocator: std.mem.Allocator, ids: [][]const u8) void {
 
 const CatalogDiscovery = struct {
     id: []const u8,
+    models_url: []const u8,
     model_ids: []const []const u8,
 };
 
@@ -457,8 +458,21 @@ fn catalogEndpointFromEnvironment(allocator: std.mem.Allocator, id: []const u8) 
 
 const catalog_loader_ids = [_][]const u8{"deepseek"};
 
+const deepseek_catalog_models_url = "https://api.deepseek.com/v1/models";
+const proxy_models_url = "https://proxy.example/api/v1/models";
+const xiaomi_catalog_models_url = "https://token-plan-cn.xiaomimimo.com/v1/models";
+
 fn loadCatalogModels(
     allocator: std.mem.Allocator,
+    storage: ?*oauth_storage.AuthStorage,
+    mode: CatalogLoadMode,
+) ![]ai_types.Model {
+    return loadCatalogModelsWithRows(allocator, &catalog_loader_ids, storage, mode);
+}
+
+fn loadCatalogModelsWithRows(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
     storage: ?*oauth_storage.AuthStorage,
     mode: CatalogLoadMode,
 ) ![]ai_types.Model {
@@ -467,7 +481,7 @@ fn loadCatalogModels(
         for (models.items) |*model| model.deinit(allocator);
         models.deinit(allocator);
     }
-    for (catalog_loader_ids) |id| {
+    for (ids) |id| {
         const endpoint = if (builtin.is_test)
             try catalogEndpointWithOverrides(allocator, id, test_catalog_base_urls orelse .{})
         else
@@ -574,7 +588,7 @@ fn discoverCatalogModelIds(
     token: []const u8,
     mode: CatalogLoadMode,
 ) !?[][]const u8 {
-    if (builtin.is_test) return testCatalogModelIds(allocator, target.id);
+    if (builtin.is_test) return testCatalogModelIds(allocator, target.id, target.models_url);
 
     const name = try catalogRowCacheName(allocator, target.id);
     defer allocator.free(name);
@@ -597,10 +611,11 @@ fn discoverCatalogModelIds(
     return loadCachedModelIds(allocator, name, null);
 }
 
-fn testCatalogModelIds(allocator: std.mem.Allocator, id: []const u8) !?[][]const u8 {
+fn testCatalogModelIds(allocator: std.mem.Allocator, id: []const u8, models_url: []const u8) !?[][]const u8 {
     const rows = test_catalog_discovery orelse return null;
     for (rows) |row| {
         if (!std.mem.eql(u8, row.id, id)) continue;
+        if (!std.mem.eql(u8, row.models_url, models_url)) continue;
         const out = try allocator.alloc([]const u8, row.model_ids.len);
         var filled: usize = 0;
         errdefer {
@@ -2276,14 +2291,14 @@ test "a catalog target keeps the catalog base when no override is set" {
 }
 
 test "a row the override machinery does not know falls back to the catalog base" {
-    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{})).?;
+    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "xiaomi-token-plan-cn", .{})).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings(
-        catalogTarget("deepseek").?.base_url,
+        catalogTarget("xiaomi-token-plan-cn").?.base_url,
         endpoint.base_url,
     );
     try std.testing.expectEqualStrings(
-        catalogTarget("deepseek").?.models_url,
+        catalogTarget("xiaomi-token-plan-cn").?.models_url,
         endpoint.models_url,
     );
 }
@@ -2318,7 +2333,7 @@ test "the global base-url override outranks the row's own" {
 
 test "a discovered model carries the overridden base rather than the catalog's" {
     test_catalog_discovery = &[_]CatalogDiscovery{
-        .{ .id = "deepseek", .model_ids = &.{"deepseek-chat"} },
+        .{ .id = "deepseek", .models_url = proxy_models_url, .model_ids = &.{"deepseek-chat"} },
     };
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
@@ -2338,9 +2353,9 @@ test "a discovered model carries the overridden base rather than the catalog's" 
     try std.testing.expectEqualStrings("deepseek", models[0].provider);
 }
 
-test "an overridden row's discovery is the fake's, so the models url follows the base" {
+test "a row's discovery is read from its overridden models url, not the catalog's" {
     test_catalog_discovery = &[_]CatalogDiscovery{
-        .{ .id = "deepseek", .model_ids = &.{"deepseek-chat"} },
+        .{ .id = "deepseek", .models_url = proxy_models_url, .model_ids = &.{"deepseek-chat"} },
     };
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
@@ -2352,9 +2367,50 @@ test "an overridden row's discovery is the fake's, so the models url follows the
         test_catalog_base_urls = null;
     }
 
-    var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", test_catalog_base_urls.?)).?;
-    defer endpoint.deinit(std.testing.allocator);
-    try std.testing.expectEqualStrings("https://proxy.example/api/v1/models", endpoint.models_url);
+    const models = try loadCatalogModels(std.testing.allocator, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("deepseek-chat", models[0].id);
+    try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
+}
+
+test "a row whose override leaves the catalog models url reads that url's listing" {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "xiaomi-token-plan-cn", .models_url = xiaomi_catalog_models_url, .model_ids = &.{"mimo-1"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "XIAOMI_API_KEY", .value = "row-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModelsWithRows(std.testing.allocator, &.{"xiaomi-token-plan-cn"}, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("mimo-1", models[0].id);
+    try std.testing.expectEqualStrings("https://token-plan-cn.xiaomimimo.com/v1", models[0].base_url);
+}
+
+test "a discovery registered for one models url answers for no other" {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = proxy_models_url, .model_ids = &.{"deepseek-chat"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
+    };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+    }
+
+    const models = try loadCatalogModels(std.testing.allocator, null, .allow_cache);
+    defer deinitModels(std.testing.allocator, models);
+
+    try std.testing.expectEqual(@as(usize, 0), models.len);
 }
 
 test "a row with no implemented wire, endpoint or models listing has no target" {
@@ -2376,7 +2432,7 @@ test "the loader's rows are catalog rows the target answers for" {
 
 test "a discovered catalog row builds models on the row's wire and base url" {
     test_catalog_discovery = &[_]CatalogDiscovery{
-        .{ .id = "deepseek", .model_ids = &.{ "deepseek-chat", "deepseek-reasoner" } },
+        .{ .id = "deepseek", .models_url = deepseek_catalog_models_url, .model_ids = &.{ "deepseek-chat", "deepseek-reasoner" } },
     };
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
@@ -2405,7 +2461,7 @@ test "a discovered catalog row builds models on the row's wire and base url" {
 
 test "a catalog row with no credential set contributes nothing" {
     test_catalog_discovery = &[_]CatalogDiscovery{
-        .{ .id = "deepseek", .model_ids = &.{"deepseek-chat"} },
+        .{ .id = "deepseek", .models_url = deepseek_catalog_models_url, .model_ids = &.{"deepseek-chat"} },
     };
     defer test_catalog_discovery = null;
 
@@ -2424,7 +2480,7 @@ test "a catalog row with no credential set contributes nothing" {
 }
 
 test "a catalog row with discovery but no model id contributes nothing" {
-    test_catalog_discovery = &[_]CatalogDiscovery{.{ .id = "deepseek", .model_ids = &.{} }};
+    test_catalog_discovery = &[_]CatalogDiscovery{.{ .id = "deepseek", .models_url = deepseek_catalog_models_url, .model_ids = &.{} }};
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
@@ -2440,7 +2496,7 @@ test "a catalog row with discovery but no model id contributes nothing" {
 
 test "loadProductionModels carries a catalog row's discovered models" {
     test_catalog_discovery = &[_]CatalogDiscovery{
-        .{ .id = "deepseek", .model_ids = &.{"deepseek-chat"} },
+        .{ .id = "deepseek", .models_url = deepseek_catalog_models_url, .model_ids = &.{"deepseek-chat"} },
     };
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
@@ -2460,7 +2516,7 @@ test "loadProductionModels carries a catalog row's discovered models" {
 
 fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
     test_catalog_discovery = &[_]CatalogDiscovery{
-        .{ .id = "deepseek", .model_ids = &.{ "deepseek-chat", "deepseek-reasoner" } },
+        .{ .id = "deepseek", .models_url = deepseek_catalog_models_url, .model_ids = &.{ "deepseek-chat", "deepseek-reasoner" } },
     };
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
@@ -2472,6 +2528,30 @@ fn catalogLoadProbe(allocator: std.mem.Allocator) !void {
     const models = try loadCatalogModels(allocator, null, .allow_cache);
     defer deinitModels(allocator, models);
     try std.testing.expectEqual(@as(usize, 2), models.len);
+}
+
+fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
+    test_catalog_discovery = &[_]CatalogDiscovery{
+        .{ .id = "deepseek", .models_url = proxy_models_url, .model_ids = &.{"deepseek-chat"} },
+    };
+    test_catalog_environment = &[_]provider_credential.EnvironmentValue{
+        .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
+    };
+    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    defer {
+        test_catalog_discovery = null;
+        test_catalog_environment = null;
+        test_catalog_base_urls = null;
+    }
+    const models = try loadCatalogModels(allocator, null, .allow_cache);
+    defer deinitModels(allocator, models);
+    try std.testing.expectEqual(@as(usize, 1), models.len);
+    try std.testing.expectEqualStrings("https://proxy.example/api", models[0].base_url);
+}
+
+test "an overridden catalog row frees every allocation when one fails midway" {
+    try overriddenCatalogLoadProbe(std.testing.allocator);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, overriddenCatalogLoadProbe, .{});
 }
 
 test "catalog row models free every allocation when one fails midway" {
