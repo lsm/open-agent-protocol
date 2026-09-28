@@ -967,7 +967,7 @@ pub const wires: []const []const u8 = &.{"openai-completions"};
 
 const request_wire = provider_catalog.wirePath("openai-completions") orelse unreachable;
 
-const copilot_wire = provider_catalog.Wire{ .id = "github-copilot", .suffix = "/chat/completions", .dedup_version = true };
+const copilot_wire = provider_catalog.Wire{ .id = "github-copilot", .suffix = "/chat/completions" };
 
 fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
     var sb = StringBuilder{};
@@ -1040,7 +1040,7 @@ fn runThread(ctx: *ThreadCtx) void {
     defer client.deinit();
 
     const wire = if (std.mem.eql(u8, model.provider, "github-copilot")) copilot_wire else request_wire;
-    const url = provider_catalog.joinUrlOwned(allocator, model.base_url, wire) catch {
+    const url = provider_catalog.joinModelUrlOwned(allocator, model, wire) catch {
         ctx.deinit();
         stream.completeWithError("oom building url");
         stream.markThreadDone();
@@ -2883,16 +2883,16 @@ test "streamSimpleOpenAICompletions exits early when pre-cancelled" {
 }
 
 test "the openai completions request url drops a trailing slash and keeps a suffix already present" {
-    const cases = [_]struct { base: []const u8, want: []const u8 }{
-        .{ .base = "https://api.openai.com", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com/", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com///", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com/v1/chat/completions", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com/v1/chat/completions/", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.groq.com/openai/v1/", .want = "https://api.groq.com/openai/v1/chat/completions" },
+    const cases = [_]struct { base: []const u8, fact: bool, want: []const u8 }{
+        .{ .base = "https://api.openai.com", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com///", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/v1/chat/completions", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/v1/chat/completions/", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.groq.com/openai/v1/", .fact = true, .want = "https://api.groq.com/openai/v1/chat/completions" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire, case.fact);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
@@ -2906,28 +2906,29 @@ test "the copilot request url drops a trailing slash and never doubles the versi
         .{ .base = "https://gw.test/v1", .want = "https://gw.test/v1/chat/completions" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, copilot_wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, copilot_wire, false);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
 }
 
-test "the openai completions request url never doubles the version segment" {
-    const cases = [_]struct { base: []const u8, suffix: []const u8, want: []const u8 }{
-        .{ .base = "https://api.openai.com", .suffix = "/v1/chat/completions", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.groq.com/openai/v1", .suffix = "/v1/chat/completions", .want = "https://api.groq.com/openai/v1/chat/completions" },
-        .{ .base = "http://localhost:8000/v1/", .suffix = "/v1/chat/completions", .want = "http://localhost:8000/v1/chat/completions" },
-        .{ .base = "https://api.githubcopilot.com", .suffix = "/chat/completions", .want = "https://api.githubcopilot.com/chat/completions" },
-        .{ .base = "https://gw.test/v1", .suffix = "/chat/completions", .want = "https://gw.test/v1/chat/completions" },
-        .{ .base = "https://gw.test/v1/chat/completions", .suffix = "/v1/chat/completions", .want = "https://gw.test/v1/chat/completions" },
-        .{ .base = "https://api.z.ai/api/coding/paas/v4", .suffix = "/v1/chat/completions", .want = "https://api.z.ai/api/coding/paas/v4/chat/completions" },
-        .{ .base = "https://api.lkeap.cloud.tencent.com/coding/v3", .suffix = "/v1/chat/completions", .want = "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions" },
-        .{ .base = "https://api.deepinfra.com/v1/openai", .suffix = "/v1/chat/completions", .want = "https://api.deepinfra.com/v1/openai/chat/completions" },
-        .{ .base = "https://gw.test/v2", .suffix = "/v1/chat/completions", .want = "https://gw.test/v2/chat/completions" },
-        .{ .base = "https://gw.test/vercel", .suffix = "/v1/chat/completions", .want = "https://gw.test/vercel/v1/chat/completions" },
+test "the openai completions request url drops the wire's version only when the fact says the base has one" {
+    const cases = [_]struct { base: []const u8, suffix: []const u8, fact: bool, want: []const u8 }{
+        .{ .base = "https://api.openai.com", .suffix = "/v1/chat/completions", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.groq.com/openai/v1", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.groq.com/openai/v1/chat/completions" },
+        .{ .base = "http://localhost:8000/v1/", .suffix = "/v1/chat/completions", .fact = true, .want = "http://localhost:8000/v1/chat/completions" },
+        .{ .base = "https://api.githubcopilot.com", .suffix = "/chat/completions", .fact = false, .want = "https://api.githubcopilot.com/chat/completions" },
+        .{ .base = "https://gw.test/v1", .suffix = "/chat/completions", .fact = false, .want = "https://gw.test/v1/chat/completions" },
+        .{ .base = "https://gw.test/v1/chat/completions", .suffix = "/v1/chat/completions", .fact = false, .want = "https://gw.test/v1/chat/completions" },
+        .{ .base = "https://api.z.ai/api/coding/paas/v4", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.z.ai/api/coding/paas/v4/chat/completions" },
+        .{ .base = "https://api.lkeap.cloud.tencent.com/coding/v3", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions" },
+        .{ .base = "https://api.deepinfra.com/v1/openai", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.deepinfra.com/v1/openai/chat/completions" },
+        .{ .base = "https://gw.test/v2", .suffix = "/v1/chat/completions", .fact = true, .want = "https://gw.test/v2/chat/completions" },
+        .{ .base = "https://gw.test/vercel", .suffix = "/v1/chat/completions", .fact = false, .want = "https://gw.test/vercel/v1/chat/completions" },
+        .{ .base = "https://api.z.ai/api/coding/paas/v4", .suffix = "/v1/chat/completions", .fact = false, .want = "https://api.z.ai/api/coding/paas/v4/v1/chat/completions" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, .{ .id = "openai-completions", .suffix = case.suffix, .dedup_version = true });
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, .{ .id = "openai-completions", .suffix = case.suffix }, case.fact);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }

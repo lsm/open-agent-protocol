@@ -6815,7 +6815,8 @@ test "handleAuth providers end-to-end through CLI wrapper emits provider ids" {
     try std.testing.expect(harness.err == null);
     try std.testing.expect(std.mem.find(u8, stdout_bytes, "anthropic\n") != null);
     try std.testing.expect(std.mem.find(u8, stdout_bytes, "github-copilot\n") != null);
-    try std.testing.expect(std.mem.find(u8, stdout_bytes, "test-fixture\n") != null);
+    try std.testing.expect(std.mem.find(u8, stdout_bytes, "deepseek\n") != null);
+    try std.testing.expect(std.mem.find(u8, stdout_bytes, "openrouter\n") != null);
     try std.testing.expectEqual(@as(usize, 0), stderr_bytes.len);
 }
 

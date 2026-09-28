@@ -346,6 +346,7 @@ fn customModel(
         .headers = headers,
         .compat = provider.compat,
         .allows_anonymous = provider.auth_none,
+        .carries_version = provider.carries_version,
         .is_owned = true,
     };
 }
@@ -426,10 +427,13 @@ fn catalogEndpointWithBase(
     }
     const models_path = provider_catalog.modelsEndpoint(catalog.id) orelse unreachable;
     errdefer allocator.free(base_url);
-    const models_url = try provider_catalog.joinUrlOwned(allocator, base_url, .{
-        .id = "models",
-        .suffix = models_path,
-    });
+    const models_url = try provider_catalog.listingUrlOwned(
+        allocator,
+        base_url,
+        models_path,
+        provider_catalog.endpointCarriesVersion(catalog.id, catalog.base_url),
+        true,
+    );
     return .{
         .id = catalog.id,
         .wire = catalog.wire,
@@ -663,8 +667,13 @@ fn customCatalogName(allocator: std.mem.Allocator, provider_id: []const u8) ![]u
     return std.fmt.allocPrint(allocator, "custom-{s}.json", .{provider_id});
 }
 
-fn customModelsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "{s}/v1/models", .{base_url});
+fn customModelsUrl(allocator: std.mem.Allocator, provider: *const custom_providers.CustomProvider) ![]const u8 {
+    return provider_catalog.joinUrlOwned(
+        allocator,
+        provider.base_url,
+        .{ .id = "models", .suffix = "/v1/models" },
+        provider_catalog.carriesVersionFor(provider.id, provider.base_url, provider.carries_version),
+    );
 }
 
 fn discoverCustomModelIds(
@@ -1082,7 +1091,7 @@ fn fetchCustomModelsCatalog(
     provider: *const custom_providers.CustomProvider,
     token: ?[]const u8,
 ) ![]u8 {
-    const url = try customModelsUrl(allocator, provider.base_url);
+    const url = try customModelsUrl(allocator, provider);
     defer allocator.free(url);
     var bearer: ?[]u8 = null;
     defer if (bearer) |value| secureFree(allocator, value);
@@ -2283,6 +2292,75 @@ test "a catalog target names the row's own wire, base and models url" {
     try std.testing.expectEqualStrings("openai-completions", target.wire);
     try std.testing.expectEqualStrings("https://api.deepseek.com", target.base_url);
     try std.testing.expectEqualStrings("https://api.deepseek.com/v1/models", target.models_url);
+}
+
+fn countVersions(url: []const u8) usize {
+    var versions: usize = 0;
+    var segments = std.mem.tokenizeScalar(u8, url, '/');
+    while (segments.next()) |segment| {
+        if (segment.len < 2 or segment[0] != 'v') continue;
+        for (segment[1..]) |digit| {
+            if (digit < '0' or digit > '9') break;
+        } else {
+            versions += 1;
+        }
+    }
+    return versions;
+}
+
+test "a carries-version row's listing and its request agree under an override" {
+    const rows = [_][]const u8{ "opencode", "openrouter", "vercel", "zenmux", "deepinfra", "minimax-coding-plan" };
+    for (rows) |id| {
+        const target = catalogTarget(id) orelse return error.TestExpectedTarget;
+        try std.testing.expect(provider_catalog.endpointCarriesVersion(id, target.base_url));
+
+        const proxy = try std.testing.allocator.dupe(u8, "https://proxy.example");
+        var endpoint = try catalogEndpointWithBase(std.testing.allocator, target, proxy);
+        defer endpoint.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings("https://proxy.example", endpoint.base_url);
+
+        const request = try provider_catalog.joinUrlOwned(
+            std.testing.allocator,
+            endpoint.base_url,
+            provider_catalog.wirePath(target.wire).?,
+            false,
+        );
+        defer std.testing.allocator.free(request);
+        try std.testing.expect(countVersions(endpoint.models_url) == countVersions(request));
+        try std.testing.expect(countVersions(request) == 1);
+    }
+}
+
+test "a custom entry's discovery url follows its stated version fact" {
+    const bare =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test"}]}
+    ;
+    const versioned =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test/api/v1"}]}
+    ;
+    const stated_true =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test/api/v1","carries_version":true}]}
+    ;
+    const stated_false =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test/api/v1","carries_version":false}]}
+    ;
+    const non_trailing =
+        \\{"providers":[{"id":"gw","base_url":"https://gw.test/api/coding/paas/v4","carries_version":true}]}
+    ;
+    const cases = [_]struct { config: []const u8, want: []const u8 }{
+        .{ .config = bare, .want = "https://gw.test/v1/models" },
+        .{ .config = versioned, .want = "https://gw.test/api/v1/models" },
+        .{ .config = stated_true, .want = "https://gw.test/api/v1/models" },
+        .{ .config = stated_false, .want = "https://gw.test/api/v1/models" },
+        .{ .config = non_trailing, .want = "https://gw.test/api/coding/paas/v4/models" },
+    };
+    for (cases) |case| {
+        var providers = try custom_providers.parse(std.testing.allocator, case.config);
+        defer custom_providers.deinitProviders(std.testing.allocator, providers);
+        const url = try customModelsUrl(std.testing.allocator, &providers[0]);
+        defer std.testing.allocator.free(url);
+        try std.testing.expectEqualStrings(case.want, url);
+    }
 }
 
 test "a catalog target keeps the catalog base when no override is set" {

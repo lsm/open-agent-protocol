@@ -82,7 +82,7 @@ test "the request url a wire module builds matches the url the catalog pins" {
             try std.testing.expect(row.request_url == null);
             continue;
         }
-        const built = try provider_catalog.joinUrlOwned(std.testing.allocator, row.base_url, wire);
+        const built = try provider_catalog.joinUrlOwned(std.testing.allocator, row.base_url, wire, row.carries_version);
         defer std.testing.allocator.free(built);
         try std.testing.expectEqualStrings(row.request_url.?, built);
     }
