@@ -97,6 +97,7 @@ pub fn close(file: File) void {
 }
 
 pub fn pipe() !Pipe {
+    if (@import("builtin").os.tag == .windows) return error.Unsupported;
     const handles = try std.Io.Threaded.pipe2(.{});
     return .{ fileFromPipeHandle(handles[0]), fileFromPipeHandle(handles[1]) };
 }

@@ -2359,8 +2359,8 @@ const StdoutSink = struct {
     }
 };
 
-fn wallClockMilliseconds() u64 {
-    return @intCast(compat.time.nowMillis());
+fn wallClockNanoseconds() u64 {
+    return @intCast(compat.time.nowNanos());
 }
 
 fn unavailable(
@@ -2424,7 +2424,7 @@ fn runHub(
 
     var memory: memory_adapter.Adapter = undefined;
     memory = memory_adapter.Adapter.init(allocator);
-    var core = hub.Hub.init(allocator, wallClockMilliseconds, .{});
+    var core = hub.Hub.init(allocator, wallClockNanoseconds, .{});
     defer core.deinit();
     try core.register("memory", memory.adapter());
 
@@ -2440,7 +2440,20 @@ fn runHub(
         .readable = if (@import("builtin").os.tag == .windows) null else input.handle,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        error.StdinFailed => {},
+        error.StdinFailed => {
+            if (frontend.defect()) |line| {
+                var buffer: [640]u8 = undefined;
+                const message = std.fmt.bufPrint(&buffer, "oapx: framing defect, stopped serving: {s}{s}\n", .{
+                    line,
+                    if (frontend.recorded.cut) " (cut)" else "",
+                }) catch "oapx: framing defect, stopped serving\n";
+                compat.stdio.writeAll(stderr, message) catch {};
+            } else {
+                compat.stdio.writeAll(stderr, "oapx: framing defect, stopped serving\n") catch {};
+            }
+            core.closeSessions();
+            return error.FramingDefect;
+        },
         else => return err,
     };
     core.closeSessions();
@@ -2842,6 +2855,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve provider [--stdio] [--specimens]
         \\  oapx serve provider --http 127.0.0.1:<port>
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
+        \\  oapx hub --stdio
         \\  oapx validate [--format human|json] <trace.json>...
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
@@ -2849,6 +2863,8 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx --stdio
         \\
         \\Commands:
+        \\  hub              The multi-session hub: one process holding many
+        \\                   sessions over one adapter registry.
         \\  run              Non-interactive print mode: stream a prompt using
         \\                   stored credentials and print every event to stdout.
         \\                   Options may appear before or after the prompt.
@@ -3773,6 +3789,13 @@ fn pumpAndDrainStdioLoop(
 ) !void {
     _ = try stdio_loop.pumpBackground();
     _ = try stdio_loop.drainOutbound(outbound);
+}
+
+test "the hub's wall clock is in nanoseconds, which is the unit the hub divides" {
+    const nanos = wallClockNanoseconds();
+    const millis = @divTrunc(nanos, std.time.ns_per_ms);
+    try std.testing.expect(millis > 1_600_000_000_000);
+    try std.testing.expect(nanos > millis);
 }
 
 test "OAPX_AGENT_SESSION_IDLE_TTL_MS value parsing" {
@@ -6896,6 +6919,7 @@ pub fn main(init: std.process.Init) !void {
                 try printUsage(stderr);
                 return error.InvalidArgument;
             }
+            if (err == error.FramingDefect) std.process.exit(1);
             return err;
         };
         return;

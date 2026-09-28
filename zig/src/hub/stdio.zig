@@ -217,6 +217,15 @@ pub const Options = struct {
     max_ops: usize = default_max_ops,
     max_subscriptions: usize = default_max_subscriptions,
 };
+pub const Defect = struct {
+    line: [512]u8 = undefined,
+    len: usize = 0,
+    cut: bool = false,
+
+    pub fn text(self: *const Defect) []const u8 {
+        return self.line[0..self.len];
+    }
+};
 
 pub const Frontend = struct {
     hub: *Hub,
@@ -226,6 +235,7 @@ pub const Frontend = struct {
     max_ops: usize,
     max_subscriptions: usize,
     in_flight: usize = 0,
+    recorded: Defect = .{},
     next_envelope: u64 = 0,
     subscriptions: std.ArrayList(*hubmod.Subscription) = .empty,
     stopped: bool = false,
@@ -247,10 +257,23 @@ pub const Frontend = struct {
         self.* = undefined;
     }
 
+    pub fn noteDefect(self: *Frontend, line: []const u8) void {
+        const kept = @min(line.len, self.recorded.line.len);
+        @memcpy(self.recorded.line[0..kept], line[0..kept]);
+        self.recorded.len = kept;
+        self.recorded.cut = line.len > kept;
+    }
+    pub fn defect(self: *const Frontend) ?[]const u8 {
+        if (self.recorded.len == 0) return null;
+        return self.recorded.text();
+    }
+
     pub fn handleLine(self: *Frontend, line: []const u8) Error!void {
         if (self.stopped) return;
+        self.recorded = .{};
         if (line.len > self.frame_limit) {
             self.stopped = true;
+            self.noteDefect(line);
             return Error.FrameLimitTooSmall;
         }
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
@@ -260,6 +283,7 @@ pub const Frontend = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 self.stopped = true;
+                self.noteDefect(line);
                 return Error.MalformedLine;
             },
         };
@@ -702,9 +726,11 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
     defer scratch.deinit();
 
     while (!frontend.stopped) {
-        const awoken = try waitOn(frontend, stream, scratch.allocator(), cycle_budget_ns);
+        _ = scratch.reset(.retain_capacity);
+        const arena = scratch.allocator();
+        const input_ready = try waitOn(frontend, stream, arena, cycle_budget_ns);
         var more = false;
-        if (awoken) {
+        if (input_ready) {
             more = try readAvailable(allocator, stream, &pending);
             while (std.mem.indexOfScalar(u8, pending.items, '\n')) |cut| {
                 const line = pending.items[0..cut];
@@ -719,7 +745,13 @@ pub fn serve(allocator: std.mem.Allocator, frontend: *Frontend, stream: Stream) 
             if (frontend.stopped) return error.StdinFailed;
         }
         try frontend.hub.pump(allocator, 0);
-        if (awoken and !more) return;
+        if (input_ready and !more) {
+            if (pending.items.len > 0) {
+                frontend.noteDefect(pending.items);
+                return error.StdinFailed;
+            }
+            return;
+        }
     }
 }
 
@@ -737,16 +769,17 @@ fn readAvailable(allocator: std.mem.Allocator, stream: Stream, pending: *std.Arr
 }
 
 const pollable = @import("builtin").os.tag != .windows;
-
 fn waitOn(frontend: *Frontend, stream: Stream, arena: std.mem.Allocator, wait_ns: u64) !bool {
     if (comptime !pollable) return true;
+    const input = stream.readable orelse return true;
     const children = try frontend.hub.readableHandles(arena);
-    const input = stream.readable orelse return children.len > 0;
     var watched: std.ArrayList(std.posix.pollfd) = .empty;
     for (children) |handle| try watched.append(arena, .{ .fd = handle, .events = std.posix.POLL.IN, .revents = 0 });
     try watched.append(arena, .{ .fd = input, .events = std.posix.POLL.IN, .revents = 0 });
     const budget: i32 = @intCast(@min(wait_ns / std.time.ns_per_ms, std.math.maxInt(i32)));
-    return (std.posix.poll(watched.items, budget) catch 0) > 0;
+    const awoken = std.posix.poll(watched.items, budget) catch 0;
+    if (awoken == 0) return false;
+    return (watched.items[watched.items.len - 1].revents & std.posix.POLL.IN) != 0;
 }
 
 const Recorder = struct {
@@ -1213,12 +1246,20 @@ const PipeHarness = struct {
     }
 
     fn run(self: *PipeHarness) !void {
+        return self.serveWithHandle(self.pipes[0].handle);
+    }
+
+    fn runWithoutHandle(self: *PipeHarness) !void {
+        return self.serveWithHandle(null);
+    }
+
+    fn serveWithHandle(self: *PipeHarness, handle: ?std.Io.File.Handle) !void {
         var frontend = try Frontend.init(self.allocator, &self.backing.hub, self.backing.recorder.sink(), .{});
         defer frontend.deinit();
         try serve(self.allocator, &frontend, .{
             .read = PipeStream.read,
             .context = &self.stream,
-            .readable = self.pipes[0].handle,
+            .readable = handle,
         });
     }
 
@@ -1245,6 +1286,42 @@ test "the serve loop reads a frame split across two writes, and answers both" {
     try testing.expectEqual(@as(usize, 2), harness.backing.recorder.lines.items.len);
     try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
     try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[1], "\"sessions\"") != null);
+}
+
+test "the serve loop reads even when it has no handle to wait on" {
+    if (!has_pipe) return error.SkipZigTest;
+    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"adapters\"}\n");
+    harness.closeInput();
+    try harness.runWithoutHandle();
+    try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
+    try testing.expect(std.mem.indexOf(u8, harness.backing.recorder.lines.items[0], "\"ok\":true") != null);
+}
+
+test "a final line the host never terminated is a framing defect, not a dropped request" {
+    if (!has_pipe) return error.SkipZigTest;
+    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"adapters\"}\n{\"id\":2,\"op\":\"adap");
+    harness.closeInput();
+    try testing.expectError(error.StdinFailed, harness.run());
+    try testing.expectEqual(@as(usize, 1), harness.backing.recorder.lines.items.len);
+}
+
+test "a framing defect names the line that caused it, bounded" {
+    const harness = try PipeHarness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var short = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{});
+    defer short.deinit();
+    try testing.expect(short.defect() == null);
+    try testing.expectError(error.MalformedLine, short.handleLine("not json"));
+    try testing.expectEqualStrings("not json", short.defect().?);
+    var long = try Frontend.init(testing.allocator, &harness.backing.hub, harness.backing.recorder.sink(), .{});
+    defer long.deinit();
+    try testing.expectError(error.MalformedLine, long.handleLine("q" ** 900));
+    try testing.expectEqual(@as(usize, 512), long.defect().?.len);
+    try testing.expect(long.recorded.cut);
 }
 
 test "the serve loop stops at a framing defect rather than answering the rest" {

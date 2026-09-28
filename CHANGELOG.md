@@ -196,6 +196,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `oapx hub --stdio` now passes the hub a clock in **nanoseconds**, which is the
+  unit the hub's contract is in and the one it divides to build a session's
+  `created_at`. It was being passed milliseconds, so every session opened through
+  the verb was stamped 1970 — a plausible timestamp rather than an obvious failure.
+- The hub's stdio serve loop no longer reads the host's pipe when a *session* woke
+  it. The wait collapsed the whole polled set into "did anything wake", so a
+  session producing output also woke the cycle into a blocking read of an idle
+  host's pipe, which is the stall the loop exists to avoid. It now answers one
+  question — is the input ready — and drives the hub either way.
+- The serve loop's per-cycle poll arrays are freed again. The scratch arena was
+  handed to each cycle and never reset, so a daemon accumulated a poll's worth of
+  arrays every cycle for the life of the process.
+- A framing defect exits **non-zero** and names the line that caused it, bounded to
+  512 bytes and marked as cut beyond that: a defect report is not the place to
+  reproduce the defect at whatever length the host chose. A final line the host
+  never terminated is reported as a framing defect rather than dropped, so a host
+  that sent half a request is told rather than left wondering.
+- A caller that cannot give the loop a handle to wait on now gets a read of its
+  input per cycle. It used to be told nothing was ready, and with no sessions open
+  that was forever: a loop that waits for input it never reads.
+- `oapx`'s usage text now names the `hub` verb.
 - The hub's stdio serve loop no longer stops driving the hub after the first
   request. It read until end-of-stream inside one cycle, so a host that stayed
   connected and had nothing more to say left every session undriven for as long
