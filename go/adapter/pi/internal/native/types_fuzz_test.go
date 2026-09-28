@@ -2,13 +2,10 @@ package native
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/fuzzseed"
 )
-
-var huge = strings.Repeat("2", 400)
 
 func walkSeeds(f *testing.F, id string) []string {
 	bodies, err := fuzzseed.Corpus(id, fuzzseed.DefaultLimit)
