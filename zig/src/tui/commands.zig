@@ -133,6 +133,26 @@ pub fn helpText(allocator: std.mem.Allocator) ![]u8 {
     const writer = &out.writer;
     try writer.writeAll("Available commands:\n");
     for (&commands) |info| try writer.print("  {s:<18} {s}\n", .{ info.usage, info.description });
+    try writer.writeAll(
+        \\Keys:
+        \\  Enter              send (steer while streaming)
+        \\  Shift+Enter        newline
+        \\  Tab                complete slash command (queue follow-up while streaming)
+        \\  Esc                clear draft, then abort turn, then close modal (cancels compaction)
+        \\  Ctrl+C             clear draft or abort turn, again within ~1.5s to quit (quits at once when idle)
+        \\  Ctrl+D             quit when the composer is empty and idle
+        \\  Ctrl+Y             copy the last reply
+        \\  Shift+Tab          cycle thinking level
+        \\  Up/Down            palette selection while open, otherwise history
+        \\  PgUp/PgDn          scroll the transcript (mouse wheel when mouse reporting is on)
+        \\  Ctrl+A/E           jump to line start/end
+        \\  Ctrl+U/K           cut to line start/end
+        \\  Ctrl+W             delete word backward (Alt+Backspace too)
+        \\  Ctrl+Left/Right    move by word (Alt+Left/Right and Alt+B/F too)
+        \\  Delete             delete forward
+        \\Drafts starting with ! ask the agent to run a command; @ names a file path.
+        \\
+    );
     return out.toOwnedSlice();
 }
 
