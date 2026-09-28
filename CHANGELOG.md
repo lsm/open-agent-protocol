@@ -53,6 +53,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal rather than by mutating the process.
 
 ### Added
+- **`go/internal/provider`: the `openai-completions` client, part of #358 step 2.**
+  A Go program can now drive an OpenAI-compatible endpoint without a Zig binary in
+  the path. The package is `internal` on purpose: it is not yet a public surface,
+  and `goap check` refuses an importable package that is in neither the public set
+  nor `go/internal`, because every exported name in one becomes public API the day
+  a program imports the module. It moves out when the serving layer that maps its
+  events to the profile's envelopes lands.
+
+  It is a **transcription of `zig/src/providers/openai_completions_api.zig`**, and
+  the awkward parts are transcribed rather than tidied, because the point is
+  parity in step 5:
+
+  - **The SSE parser** keeps four rules the obvious implementations get wrong. A
+    blank line is the separator and a line feed alone is not; a carriage return
+    followed by a line feed is **one** delimiter, including when the two bytes
+    land in different chunks; repeated `data:` lines are joined with a newline;
+    and an `event:` line with no `data` emits nothing **but still leaves its type
+    bound**, so a later `data:` inherits it. The limits are a mebibyte per line
+    and four per event, and the event limit counts the type, the data and the
+    separators between data lines.
+  - **`isOpenAINative` and `isOpenAIHost` are two different functions** and are
+    ported as two. The first matches the substring `api.openai.com` anywhere in
+    the base URL; the second parses the URL and compares the host to `openai.com`
+    with a label boundary, case-insensitively. They disagree for
+    `https://api.openai.com.evil.example` and for a proxy carrying the name in its
+    query. **#511 records the divergence and it is not fixed here** — it is a
+    behaviour change in Zig and therefore the provider agent's to decide. What the
+    port does is keep them apart: six decisions ride on the pair, and the
+    detection gate is what discards the native caps for a URL matching the
+    substring but not the host.
+  - **The thinking member is named `reasoning_content` unless a signature comes
+    back**, in which case the signature becomes the member's name. That is a wire
+    quirk — the field name is data from the previous turn — so it is spelled out
+    and tested rather than derived.
+  - **The credential order is the caller's key, then the environment, then the
+    anonymous rule**, and an empty value at either of the first two steps falls
+    through rather than winning. A variable that is set but empty is therefore not
+    an anonymous grant. The client takes an explicit key; the wider stored and
+    oauth lookup stays with the caller, which is what step 4's discovery needs.
+  - **The request runs the pre-transform before writing anything.** An unanswered
+    tool call grows a synthetic `"No result provided"` result marked as an error,
+    flushed before the next turn; a tool-call id is stripped at its `|`, truncated
+    and sanitized to 40 characters on an OpenAI host, or hashed to nine characters
+    for a Mistral host, with the matching result remapped so the pair still lines
+    up; an aborted or errored assistant is dropped; and a thinking block from a
+    **different** model becomes text while one from the same model keeps its
+    signature. Without this an unanswered call goes out dangling and a long id goes
+    out unnormalized. It also carries a defect of its own, **#514**: the pending
+    calls are keyed by the normalized id and the answered ones by the original, so
+    on a Mistral host — where every id is re-hashed — an answered call grows a
+    second, spurious error result. Transcribed rather than corrected, and pinned.
+  - **The event stream's thirteen kinds are the union, and this client emits nine
+    of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
+    `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
+    carrying a content index and a partial. The four `text_start`/`text_end`/
+    `thinking_start`/`thinking_end` kinds are the **anthropic-messages** client's,
+    which has a wire that carries them; this one's does not, so nothing here emits
+    them. The union is thirteen because the Go SDK's six `ProviderEvent`s cannot
+    express the starts and the ends, and a serving layer cannot map what is not
+    there. The SDK types are untouched: they remain the client API over the
+    profile's envelopes.
+  - **A keepalive is emitted on the ping interval, and every event is stamped.**
+    The first one always fires when pinging is on, because the last-ping time
+    starts at zero. The terminal message's usage also carries a **cost**, computed
+    from the model's own per-million rates.
+  - **A `usage` member that is present but is not an object leaves the accumulated
+    prompt and cache totals alone**, while `output` is still reassigned, because
+    that is the asymmetry in the source. Reading `usage` as a fresh struct per
+    chunk would drop the totals a server already reported.
+  - **`toolcall_end` carries a different content index than its `toolcall_start`
+    did.** The start counts tool calls alone; the end is the position in the final
+    array, which also holds the thinking and the text. The partial on that event is
+    the content accumulated *so far*, so it grows with each one.
+
+  Four behaviours are transcribed because Zig has them, and all four are pinned by
+  tests so a later reader knows they are deliberate rather than accidents. The orphan
+  check on a tool result runs only on the **first** of a run, so an orphan following
+  an answered one is still written. A malformed chunk is **swallowed** rather than
+  failing the stream, which is why the partial-text rule has no reachable caller here.
+  A `reasoning_details` blob is **escaped** where oapx splices it raw, which keeps
+  the body valid JSON when a signature carries a quote or a backslash — recorded as
+  **#515**, with what step 5's parity run has to do about it. And an answered tool
+  call growing a duplicate error result once its id is normalized is **#514**,
+  transcribed and pinned there rather than corrected here. The first two are filed
+  as **#513**; none of the four is fixed here.
 - `oapx hub --stdio` serves the two catalog operations, `models` and `tools`, over the
   same transport objects `goap hub --stdio` serves. Both take `session_id` and
   `allow_degraded_features`; both answer a `models.response` or
