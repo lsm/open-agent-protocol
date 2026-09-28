@@ -34,12 +34,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned from the consumer's side as well as the runtime's. Python's real-binary
   test iterates whatever providers it is given and never named the fixture, so
   it needs no variable and loses nothing.
-  The Go suite is unchanged in this PR: `sdk/go` is being folded into `go/sdk` by
-  #492, and touching `binary_smoke_test.go` before that lands would conflict. Its
-  `requireFixtureAuthProvider` skip becomes a `t.Fatalf` in a follow-up commit
-  on this same PR once #492 has merged. Its decision and this constraint are
-  recorded on #354, where the owner chose this shape over serving the row always
-  or removing it and changing what four SDKs assert.
+  The Go suite lands with the others now that #492 has moved it: its
+  `requireFixtureAuthProvider` is a `t.Fatalf` rather than a skip, and
+  `TestSmokeAuthListProviders` asserts the row too, so "asked and got it" is a
+  claim in Go as well as in Rust. Each SDK that names the fixture sets the
+  variable, and each was found by running the suite rather than by reading it —
+  the TypeScript demo test drives the login through the demo server, which
+  spawns the runtime with its own environment, so the variable had to go in
+  *that* spawn rather than in the test process.
+  The decision is recorded on #354, where the owner chose this shape over
+  serving the row always or removing it and changing what four SDKs assert.
+- **The fixture opt-in is read portably.** The gate read the environment
+  through a POSIX-only accessor, so `zig build -Dtarget=x86_64-windows` and
+  `aarch64-windows` failed to compile — caught by CI's cross-compile matrix,
+  and by running the same two targets locally before pushing the fix. The read
+  goes through the same cross-platform path the rest of the tree uses, taking
+  the environment as a value, which is also what lets a test drive it with a
+  literal rather than by mutating the process.
 
 ### Added
 - **Go has one library.** The Go SDK moves from its own module at `sdk/go` into the main module as `go/sdk`, so a Go program that wants a client for a running endpoint imports the same module as everything else rather than a second one with its own `go.mod` and its own wire types. The exported surface is unchanged — `Client` with its `Auth`, `Models`, `Provider` and `Agent` namespaces, the same request and response types, the same typed errors — and the package name is `sdk`, because `makai` is the runtime's old name and nothing outside this repository imported it. Every caller-visible literal follows (`oap sdk: `, in the errors, the resolver and the transport's log lines), and the binary cache directory is `…/oapx/bin` rather than `…/makai/bin`, so a package that says the old name is retired is retired in its messages and on disk. **The zero-comment rule now has no exceptions at all**: the 31 files of `sdk/go` were the entire Go allowlist, and folding them in took the last entry with it, so `go/tools/nocomment`'s allowlist and its stale-entry check are gone and the floor for Go is zero like Zig's and TypeScript's. The documentation those comments carried did not go with them: everything a caller of the API needs — the four namespaces, per-call cancellation versus `Client.Close`, opaque `ModelRef` and session ids, what an endpoint refuses with `unsupported_feature`, and the typed error set — is now a section in `docs/go-library.md`, which is prose the policy does not reach. CI's separate `go-sdk` job, which ran its own Go 1.23 toolchain against `sdk/go`, is replaced by a `go-sdk-smoke` job in the main workflow that builds `oapx` and runs the SDK's real-binary tests, the only place the Go SDK talks to a real runtime. The SDK's private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is deliberately a separate change.

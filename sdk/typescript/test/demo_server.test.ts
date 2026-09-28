@@ -190,7 +190,7 @@ test("demo: oauth fixture flow persists auth credentials", async () => {
     port: 0,
     homeDir: tempHome,
     binaryPath,
-    env: { OAP_SDK_TEST_REQUEST_LOG: logPath },
+    env: { OAP_SDK_TEST_REQUEST_LOG: logPath, OAPX_TEST_FIXTURE_PROVIDER: "1" },
   } : {
     port: 0,
     ...fixtureServerOptions(tempHome, logPath),

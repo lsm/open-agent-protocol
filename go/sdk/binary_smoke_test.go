@@ -13,6 +13,42 @@ func newSmokeClient(t *testing.T) *Client {
 	return newSmokeClientWithClosePolicy(t, false)
 }
 
+func newFixtureSmokeClient(t *testing.T) *Client {
+	return newFixtureSmokeClientWithClosePolicy(t, false)
+}
+
+func newFixtureSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client {
+	t.Helper()
+	binary := os.Getenv(EnvBinaryPath)
+	if binary == "" {
+		t.Skip("OAP_SDK_BINARY_PATH is not set")
+	}
+
+	home := t.TempDir()
+	env := append(os.Environ(),
+		"HOME="+home,
+		"XDG_CONFIG_HOME="+home,
+		"OAPX_KEYCHAIN_SERVICE=com.makai.go-sdk-test."+newULID(),
+		"OAPX_TEST_FIXTURE_PROVIDER=1",
+	)
+
+	client, err := New(context.Background(), &Options{
+		BinaryPath:       binary,
+		Env:              env,
+		HandshakeTimeout: 15 * time.Second,
+		RequestTimeout:   30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New against the real runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil && !allowNonzeroExit {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return client
+}
+
 func newSmokeClientWithClosePolicy(t *testing.T, allowNonzeroExit bool) *Client {
 	t.Helper()
 	binary := os.Getenv(EnvBinaryPath)
@@ -136,8 +172,25 @@ func TestSmokeModelsResolveRejectsAnUnknownModel(t *testing.T) {
 	}
 }
 
-func TestSmokeAuthListProviders(t *testing.T) {
+func TestSmokeAuthListProvidersWithoutTheOptInOmitsTheFixture(t *testing.T) {
 	client := newSmokeClient(t)
+
+	providers, err := client.Auth.ListProviders(testContext(t))
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	if len(providers) == 0 {
+		t.Fatal("expected the runtime to list auth providers")
+	}
+	for _, provider := range providers {
+		if provider.ID == "test-fixture" {
+			t.Fatalf("a client that did not set the opt-in was offered the CI fixture: %+v", provider)
+		}
+	}
+}
+
+func TestSmokeAuthListProviders(t *testing.T) {
+	client := newFixtureSmokeClient(t)
 
 	providers, err := client.Auth.ListProviders(testContext(t))
 	if err != nil {
@@ -154,8 +207,18 @@ func TestSmokeAuthListProviders(t *testing.T) {
 			t.Errorf("unknown status %q on %q", provider.Status, provider.ID)
 		}
 	}
+	// This client set OAPX_TEST_FIXTURE_PROVIDER, so the runtime owes it the
+	// row. Its absence is a failure, not a reason to skip.
+	requireFixtureAuthProvider(t, client)
 }
 
+// requireFixtureAuthProvider fails unless the runtime offers its offline
+// test-fixture auth provider.
+//
+// The client passed here asked for it by setting OAPX_TEST_FIXTURE_PROVIDER, so
+// its absence is a failure and not a reason to skip. A skip reads like a pass,
+// and that is exactly how the coverage was lost once already: the row left the
+// served list in #486, this helper skipped, and nothing failed.
 func requireFixtureAuthProvider(t *testing.T, client *Client) {
 	t.Helper()
 	providers, err := client.Auth.ListProviders(testContext(t))
@@ -167,11 +230,11 @@ func requireFixtureAuthProvider(t *testing.T, client *Client) {
 			return
 		}
 	}
-	t.Skip("the runtime does not offer the test-fixture auth provider")
+	t.Fatalf("the runtime was asked for the test-fixture auth provider by name and does not offer it")
 }
 
 func TestSmokeAuthManualCodeFailsClosed(t *testing.T) {
-	client := newSmokeClient(t)
+	client := newFixtureSmokeClient(t)
 	requireFixtureAuthProvider(t, client)
 	var events []AuthEventType
 	called := false

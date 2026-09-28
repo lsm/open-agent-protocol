@@ -17,14 +17,15 @@ pub const fixture_opt_in_env = "OAPX_TEST_FIXTURE_PROVIDER";
 
 pub var test_fixture_opt_in: ?bool = null;
 
-pub fn fixtureOptInIsSet(environ: std.process.Environ) bool {
-    const raw = std.process.Environ.getPosix(environ, fixture_opt_in_env) orelse return false;
+pub fn fixtureOptInIsSet(allocator: std.mem.Allocator, environ: std.process.Environ) bool {
+    const raw = compat.getEnvVarOwnedFrom(environ, allocator, fixture_opt_in_env) catch return false;
+    defer allocator.free(raw);
     return std.mem.eql(u8, raw, "1") or std.ascii.eqlIgnoreCase(raw, "true");
 }
 
 pub fn fixtureRequested() bool {
     if (builtin.is_test) return test_fixture_opt_in orelse false;
-    return fixtureOptInIsSet(compat.runtimeEnviron());
+    return fixtureOptInIsSet(std.heap.page_allocator, compat.runtimeEnviron());
 }
 
 fn definitionOf(comptime row: anytype) ProviderDefinition {
@@ -172,7 +173,7 @@ test "the fixture is served only when the opt-in variable asks for it by name" {
         .{ .entries = &.{"OAPX_TEST_FIXTURE_PROVIDER2=1"}, .want = false, .label = "a different variable's suffix" },
     };
     for (cases) |case| {
-        const got = fixtureOptInIsSet(environOf(case.entries));
+        const got = fixtureOptInIsSet(std.testing.allocator, environOf(case.entries));
         if (got != case.want) std.debug.print("\n{s} should be {}\n", .{ case.label, case.want });
         try std.testing.expectEqual(case.want, got);
     }
@@ -180,7 +181,7 @@ test "the fixture is served only when the opt-in variable asks for it by name" {
 
 test "the opt-in is read under the name the tests are told to set" {
     try std.testing.expectEqualStrings("OAPX_TEST_FIXTURE_PROVIDER", fixture_opt_in_env);
-    try std.testing.expect(fixtureOptInIsSet(environOf(&.{"OAPX_TEST_FIXTURE_PROVIDER=1"})));
+    try std.testing.expect(fixtureOptInIsSet(std.testing.allocator, environOf(&.{"OAPX_TEST_FIXTURE_PROVIDER=1"})));
 }
 
 test "a user who did not ask for the fixture is not offered it" {
@@ -199,6 +200,7 @@ test "a user who did not ask for the fixture is not offered it" {
 
 test "a test that asked for the fixture is served it, last" {
     test_fixture_opt_in = true;
+    defer test_fixture_opt_in = null;
 
     try std.testing.expect(fixtureRequested());
     try std.testing.expectEqual(ALL_DEFINITIONS.len, servedDefinitions().len);

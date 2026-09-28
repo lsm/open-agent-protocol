@@ -31,6 +31,10 @@ pub fn runtimeEnviron() std.process.Environ {
 
 const environ_scan_has_home = @hasField(std.Io.Threaded.Environ.String, "HOME");
 
+pub fn getEnvVarOwnedFrom(environ: std.process.Environ, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    return std.process.Environ.getAlloc(environ, allocator, name);
+}
+
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     const builtin = @import("builtin");
     if (!builtin.is_test and std.mem.eql(u8, name, "HOME")) {
