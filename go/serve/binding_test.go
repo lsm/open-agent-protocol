@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,6 +146,58 @@ func TestARefusedDuplicateOpenIsRecordedAsOpenedAndThenRefused(t *testing.T) {
 	}
 	if !binding.Live(state) {
 		t.Fatal("the running session does not read as live")
+	}
+}
+
+func TestACloseAndADuplicateOpenCannotInterleaveTheirRecords(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := boundHub(t, serve.Options{Bindings: store})
+	ctx := context.Background()
+	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-race"}); err != nil {
+		t.Fatal(err)
+	}
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		_, _, _ = hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-race"})
+	}()
+	go func() {
+		defer group.Done()
+		session, err := hub.Session("session-race")
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := session.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	}()
+	group.Wait()
+	history, err := store.History(ctx, "session-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opens := 0
+	closes := 0
+	for _, entry := range history {
+		switch entry.Action {
+		case binding.ActionOpened:
+			opens++
+		case binding.ActionClosed:
+			closes++
+		}
+	}
+	if closes > opens {
+		t.Fatalf("the file has %d closes and %d opens, so a close has no open to end", closes, opens)
+	}
+	if state, found := binding.State(history); found && state.Action == binding.ActionClosed && !binding.Live(state) {
+		if _, stillOpen := hub.Session("session-race"); stillOpen == nil {
+			t.Fatal("the file says closed and the hub says running, which is the interleaving this lock prevents")
+		}
 	}
 }
 

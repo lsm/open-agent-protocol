@@ -2,7 +2,6 @@ package binding
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -58,23 +57,30 @@ func (s *fileStore) repairLocked() error {
 	if err != nil || info.Size() == 0 {
 		return err
 	}
+	whole, err := os.ReadFile(s.path)
+	if err != nil {
+		return err
+	}
+	keep := 0
+	for offset := 0; offset < len(whole); {
+		line, _, found := strings.Cut(string(whole[offset:]), "\n")
+		if !found {
+			break
+		}
+		if _, err := decode(line + "\n"); err != nil {
+			break
+		}
+		offset += len(line) + 1
+		keep = offset
+	}
+	if keep == len(whole) {
+		return nil
+	}
 	file, err := os.OpenFile(s.path, os.O_RDWR, 0o600)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	tail := make([]byte, 1)
-	if _, err := file.ReadAt(tail, info.Size()-1); err != nil {
-		return err
-	}
-	if tail[0] == '\n' {
-		return nil
-	}
-	whole, err := os.ReadFile(s.path)
-	if err != nil {
-		return err
-	}
-	keep := bytes.LastIndexByte(whole, '\n') + 1
 	return file.Truncate(int64(keep))
 }
 

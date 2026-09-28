@@ -93,19 +93,18 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	})
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
 	entry.binding = opened
+	settled := err != nil || state.Status == protocol.SessionClosed
 	h.bindingMu.Lock()
 	h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
-	h.bindingMu.Unlock()
-	if err != nil || state.Status == protocol.SessionClosed {
-		entry.markClosed()
+	var added error
+	if !settled {
+		added = h.sessions.add(entry)
 	}
-	if entry.IsClosed() {
-
+	h.bindingMu.Unlock()
+	if settled {
+		entry.markClosed()
 		return entry, state, base.ErrSessionClosed
 	}
-	h.bindingMu.Lock()
-	added := h.sessions.add(entry)
-	h.bindingMu.Unlock()
 	if added != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
 		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())

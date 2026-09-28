@@ -146,6 +146,56 @@ func TestATornTailIsTruncatedWhenTheStoreIsOpenedAgain(t *testing.T) {
 	}
 }
 
+func TestACorruptLineThatKeepsItsNewlineIsTruncatedToo(t *testing.T) {
+	ctx := context.Background()
+	store := fileStoreIn(t)
+	path := store.(*fileStore).path
+	if err := store.Append(ctx, Opened(sample(), 1)); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := "3f1a9b2c {\"action\":\"reopened\",\"record\":{\"session_id\":\"session-1\"}}\n"
+	if err := os.WriteFile(path, append(readFile(t, store), []byte(corrupt)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Latest(ctx, "session-1"); !errors.Is(err, ErrTorn) {
+		t.Fatalf("latest err = %v, want the corrupt line reported before it is repaired", err)
+	}
+	if err := store.Append(ctx, Reopened(sample(), "native-7", 2)); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.History(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[1].Action != ActionReopened {
+		t.Fatalf("history = %+v, want the whole record and the one written after the repair", history)
+	}
+}
+
+func TestACorruptLineIsTruncatedWhenTheStoreIsOpenedAgain(t *testing.T) {
+	ctx := context.Background()
+	store := fileStoreIn(t)
+	path := store.(*fileStore).path
+	if err := store.Append(ctx, Opened(sample(), 1)); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := "3f1a9b2c {\"action\":\"closed\",\"record\":{\"session_id\":\"session-1\"}}\n"
+	if err := os.WriteFile(path, append(readFile(t, store), []byte(corrupt)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := File(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := reopened.History(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Action != ActionOpened {
+		t.Fatalf("history = %+v, want the whole record the file already held", history)
+	}
+}
+
 func TestARecordWhoseBytesDoNotMatchItsChecksumIsRefused(t *testing.T) {
 	ctx := context.Background()
 	store := fileStoreIn(t)
