@@ -582,6 +582,15 @@ jobs:
           set -euo pipefail
           test -f "$RUNNER_TEMP/makai-smoke-${{ matrix.target }}/bin/${{ matrix.binary_name }}"
 
+      # The multi-session hub is not in the oapx binary yet, so the cross-compile
+      # above never reaches it: #454 would not have built on Windows and both jobs
+      # were green. Compiled here, never run — a foreign target's test binary
+      # cannot execute on this runner, and the point is that it compiles.
+      - name: Compile the multi-session hub
+        if: contains(matrix.target, 'windows')
+        shell: bash
+        run: zig build --build-file zig/build.zig compile-hub -Dtarget=${{ matrix.target }}
+
   # =============================================================================
   # E2E Tests (run in parallel)
   # Add new tests by adding a new job following the pattern below

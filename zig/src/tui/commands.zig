@@ -12,6 +12,7 @@ pub const CommandKind = enum {
     @"resume",
     permissions,
     clear,
+    compact,
     abort,
     quit,
 };
@@ -36,6 +37,7 @@ pub const CommandAction = enum {
     open_login_picker,
     open_permission_picker,
     start_login_provider,
+    compact,
 };
 
 pub const CommandResult = struct {
@@ -79,6 +81,7 @@ pub const commands = [_]CommandInfo{
     .{ .name = "permissions", .kind = .permissions, .usage = "/permissions [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "perm", .kind = .permissions, .usage = "/perm [ask|bypass]", .description = "Pick or set tool permission mode", .handler = handlePermissions },
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
+    .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
 };
@@ -291,8 +294,23 @@ fn handleClear(ctx: CommandContext, command: Command) !CommandResult {
     return .{ .action = .clear_transcript, .output = try ctx.allocator.dupe(u8, "transcript cleared") };
 }
 
+fn handleCompact(ctx: CommandContext, command: Command) !CommandResult {
+    _ = command;
+    if (ctx.state.status.compacting) return .{ .output = try ctx.allocator.dupe(u8, "Already compacting; esc cancels.") };
+    if (ctx.state.status.streaming) return .{ .output = try ctx.allocator.dupe(u8, "A turn is running; compact once it finishes, or press esc to stop it first.") };
+    return .{ .action = .compact };
+}
+
 fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
     _ = command;
+    if (ctx.state.status.compacting) {
+        if (ctx.session) |session| {
+            session.cancel();
+        } else if (ctx.runtime) |runtime| {
+            runtime.cancel();
+        }
+        return .{};
+    }
     const active = ctx.state.status.streaming or
         (ctx.runtime != null and ctx.runtime.?.stream_active);
     if (active) {
@@ -308,6 +326,7 @@ fn handleAbort(ctx: CommandContext, command: Command) !CommandResult {
         ctx.state.status.streaming = false;
         ctx.state.stream_aborted = true;
         ctx.state.clearPendingSteers();
+        ctx.state.clearPendingFollowUps();
         if (ctx.state.mode == .approval) {
             ctx.state.approval.deinit(ctx.allocator);
             ctx.state.mode = .normal;
@@ -464,6 +483,56 @@ test "runtime dependent commands dispatch to no-runtime errors" {
     const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
     try std.testing.expectError(error.NoRuntimeConfigured, dispatch(ctx, .{ .kind = .model, .arg = "model-a" }));
     try std.testing.expectError(error.NoRuntimeConfigured, dispatch(ctx, .{ .kind = .provider }));
+}
+
+test "compact takes its focus and waits for a running turn" {
+    const command = try parse("/compact  the parser rewrite ");
+    try std.testing.expectEqual(CommandKind.compact, command.kind);
+    try std.testing.expectEqualStrings("the parser rewrite", command.arg.?);
+
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const ctx = CommandContext{ .allocator = std.testing.allocator, .state = &state };
+
+    var idle = try dispatch(ctx, command);
+    defer idle.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.compact, idle.action);
+
+    state.status.streaming = true;
+    var busy = try dispatch(ctx, command);
+    defer busy.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, busy.action);
+    try std.testing.expect(std.mem.indexOf(u8, busy.output, "A turn is running") != null);
+
+    state.status.compacting = true;
+    var again = try dispatch(ctx, command);
+    defer again.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandAction.none, again.action);
+    try std.testing.expect(std.mem.indexOf(u8, again.output, "Already compacting") != null);
+}
+
+test "abort during compaction cancels it without dropping queued drafts" {
+    var state = tui_state.AppState.init(std.testing.allocator);
+    defer state.deinit();
+    state.status.streaming = true;
+    state.status.compacting = true;
+    try state.appendSteeredMessage("steered while compacting");
+    try state.appendQueuedFollowUp("queued while compacting");
+
+    var mock = MockAbortSession{};
+    defer mock.deinit();
+    var session = mock.session();
+
+    var result = try dispatch(.{ .allocator = std.testing.allocator, .state = &state, .session = &session }, .{ .kind = .abort });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), result.output.len);
+    try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.clear_count);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_steers.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_follow_ups.items.len);
+    try std.testing.expect(state.status.compacting);
+    try std.testing.expect(!state.stream_aborted);
 }
 
 test "abort when idle reports idle" {

@@ -239,6 +239,10 @@ func TestMalformedLinesFailClosed(t *testing.T) {
 		{name: "carriage return", line: "{\"id\":2,\"op\":\"adapters\"}\r"},
 		{name: "invalid utf8", line: "{\"id\":2,\"op\":\"\xff\"}"},
 		{name: "unterminated", line: `{"id":2,"op":"adapters"`, raw: true},
+		{name: "number adapter", line: `{"id":2,"op":"adapters","adapter":7}`},
+		{name: "list session id", line: `{"id":2,"op":"state","session_id":["a"]}`},
+		{name: "string degraded features", line: `{"id":2,"op":"open","allow_degraded_features":"a"}`},
+		{name: "boolean run id", line: `{"id":2,"op":"state","run_id":true}`},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

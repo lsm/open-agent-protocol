@@ -203,6 +203,7 @@ pub const StatusState = struct {
     context_limit: usize = 0,
     turn_count: usize = 0,
     streaming: bool = false,
+    compacting: bool = false,
     streaming_since_ms: i64 = 0,
     streaming_elapsed_ms: u64 = 0,
     last_error: []u8 = &.{},
@@ -480,6 +481,8 @@ pub const AppState = struct {
     backpressure_active: bool = false,
     pending_steers: std.ArrayList([]u8) = .empty,
     steers_reconciled: u64 = 0,
+    pending_follow_ups: std.ArrayList([]u8) = .empty,
+    picker_filter: std.ArrayList(u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) AppState {
         return .{ .allocator = allocator };
@@ -504,6 +507,9 @@ pub const AppState = struct {
         self.preview.deinit(self.allocator);
         self.clearPendingSteers();
         self.pending_steers.deinit(self.allocator);
+        self.clearPendingFollowUps();
+        self.pending_follow_ups.deinit(self.allocator);
+        self.picker_filter.deinit(self.allocator);
         if (self.last_tool_calls_json.len > 0) self.allocator.free(self.last_tool_calls_json);
         self.* = undefined;
     }
@@ -569,9 +575,11 @@ pub const AppState = struct {
         self.clearTools();
         self.telemetry = .{};
         self.queue = .{};
+        self.clearPendingFollowUps();
         self.status.context_used = 0;
         self.status.turn_count = 0;
         self.status.streaming = false;
+        self.status.compacting = false;
         self.stream_aborted = false;
         if (self.status.last_error.len > 0) {
             self.allocator.free(self.status.last_error);
@@ -613,6 +621,54 @@ pub const AppState = struct {
     pub fn clearPendingSteers(self: *AppState) void {
         for (self.pending_steers.items) |pending| self.allocator.free(pending);
         self.pending_steers.clearRetainingCapacity();
+    }
+
+    pub fn appendQueuedFollowUp(self: *AppState, text: []const u8) !void {
+        const owned = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(owned);
+        try self.pending_follow_ups.append(self.allocator, owned);
+    }
+
+    pub fn clearPendingFollowUps(self: *AppState) void {
+        for (self.pending_follow_ups.items) |pending| self.allocator.free(pending);
+        self.pending_follow_ups.clearRetainingCapacity();
+    }
+
+    pub fn toolById(self: *const AppState, id: []const u8) ?*const ToolEntry {
+        var i = self.tools.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, self.tools.items[i].id, id)) return &self.tools.items[i];
+        }
+        return null;
+    }
+
+    pub fn pickerFilter(self: *const AppState) []const u8 {
+        return self.picker_filter.items;
+    }
+
+    pub fn appendPickerFilter(self: *AppState, text: []const u8) !void {
+        for (text) |c| {
+            if (c < 0x20 or c == 0x7f) continue;
+            try self.picker_filter.append(self.allocator, c);
+        }
+        self.menu_index = 0;
+        self.menu_scroll = 0;
+    }
+
+    pub fn popPickerFilter(self: *AppState) bool {
+        const items = self.picker_filter.items;
+        if (items.len == 0) return false;
+        var start = items.len - 1;
+        while (start > 0 and (items[start] & 0b1100_0000) == 0b1000_0000) start -= 1;
+        self.picker_filter.shrinkRetainingCapacity(start);
+        self.menu_index = 0;
+        self.menu_scroll = 0;
+        return true;
+    }
+
+    pub fn clearPickerFilter(self: *AppState) void {
+        self.picker_filter.clearRetainingCapacity();
     }
 
     pub fn submitComposer(self: *AppState) !?[]u8 {
@@ -687,11 +743,14 @@ pub const AppState = struct {
 
     pub fn setQueuedCounts(self: *AppState, counts: tui_runtime.QueuedCounts) void {
         self.queue = counts;
+        while (self.pending_follow_ups.items.len > counts.follow_up) {
+            self.allocator.free(self.pending_follow_ups.orderedRemove(0));
+        }
     }
 
     pub fn applyEvent(self: *AppState, event: tui_runtime.TuiEvent) !void {
         if (self.stream_aborted) switch (event) {
-            .turn_end, .agent_end, .@"error", .system_warning, .backpressure_status => {},
+            .turn_end, .agent_end, .@"error", .system_warning, .backpressure_status, .compaction_end => {},
             else => return,
         };
         switch (event) {
@@ -808,6 +867,33 @@ pub const AppState = struct {
                 self.backpressure_active = payload.active;
                 self.dropped_event_count = payload.dropped_count;
             },
+            .compaction_start => {
+                self.status.streaming = true;
+                self.status.compacting = true;
+                self.markStreamingStarted();
+            },
+            .compaction_end => |payload| {
+                self.status.streaming = false;
+                self.status.compacting = false;
+                self.markStreamingStopped();
+                self.stream_aborted = false;
+                switch (payload.outcome) {
+                    .completed => {
+                        self.telemetry.estimated_tokens = payload.tokens_after;
+                        self.status.context_used = @intCast(payload.tokens_after);
+                        const notice = try compactionNotice(self.allocator, payload);
+                        defer self.allocator.free(notice);
+                        try self.appendTranscript(.system, notice);
+                    },
+                    .cancelled => try self.appendTranscript(.system, "compaction cancelled; the conversation is unchanged"),
+                    .failed => {
+                        const message = try std.fmt.allocPrint(self.allocator, "compaction failed: {s}; the conversation is unchanged", .{payload.message.slice()});
+                        defer self.allocator.free(message);
+                        try self.status.setError(self.allocator, message);
+                        try self.appendTranscript(.@"error", message);
+                    },
+                }
+            },
             .turn_end => {
                 self.status.streaming = false;
                 self.markStreamingStopped();
@@ -890,6 +976,25 @@ pub const AppState = struct {
             }
         }
         try self.preview.set(self.allocator, out.items);
+    }
+
+    fn compactionNotice(allocator: std.mem.Allocator, payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).compaction_end)) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        const writer = &out.writer;
+        try writer.print("conversation compacted · {d} messages · ~", .{payload.messages_before});
+        try writeApproxTokens(writer, payload.tokens_before);
+        try writer.writeAll(" → ~");
+        try writeApproxTokens(writer, payload.tokens_after);
+        try writer.writeAll(" tokens");
+        if (payload.transcript.slice().len > 0) try writer.print("\ntranscript: {s}", .{payload.transcript.slice()});
+        try writer.print("\n\n{s}", .{agent.compaction.summaryOf(payload.text.slice())});
+        return out.toOwnedSlice();
+    }
+
+    fn writeApproxTokens(writer: *std.Io.Writer, tokens: u64) !void {
+        if (tokens < 1000) return writer.print("{d}", .{tokens});
+        try writer.print("{d}.{d}k", .{ tokens / 1000, (tokens % 1000) / 100 });
     }
 
     fn markStreamingStarted(self: *AppState) void {
@@ -1588,13 +1693,15 @@ fn primaryToolArg(allocator: std.mem.Allocator, args_json: []const u8) !?[]u8 {
     return null;
 }
 
+const max_summary_arg_width: usize = 512;
+
 fn clipSummaryArg(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
     const writer = &out.writer;
     var width: usize = 0;
     var i: usize = 0;
-    while (i < value.len and width < 48) {
+    while (i < value.len and width < max_summary_arg_width) {
         const c = value[i];
         if (c == '\n' or c == '\r' or c == '\t') {
             try writer.writeByte(' ');
@@ -1853,6 +1960,50 @@ test "AppState reconcileSteers pops queued heads without text matching" {
     try state.appendSteeredMessage("same text steer");
     state.reconcileSteers(3);
     try std.testing.expectEqual(@as(usize, 0), state.pending_steers.items.len);
+}
+
+test "AppState tracks queued follow-ups until the agent consumes them" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.appendQueuedFollowUp("first follow-up");
+    try state.appendQueuedFollowUp("second follow-up");
+    state.setQueuedCounts(.{ .follow_up = 2 });
+    try std.testing.expectEqual(@as(usize, 2), state.pending_follow_ups.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.transcript.items.len);
+
+    state.setQueuedCounts(.{ .steering = 3, .follow_up = 1 });
+    try std.testing.expectEqual(@as(usize, 1), state.pending_follow_ups.items.len);
+    try std.testing.expectEqualStrings("second follow-up", state.pending_follow_ups.items[0]);
+
+    state.setQueuedCounts(.{});
+    try std.testing.expectEqual(@as(usize, 0), state.pending_follow_ups.items.len);
+}
+
+test "AppState picker filter drops control bytes, pops whole codepoints and resets the selection" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    state.menu_index = 4;
+    state.menu_scroll = 2;
+
+    try state.appendPickerFilter("gpt\n-é");
+    try std.testing.expectEqualStrings("gpt-é", state.pickerFilter());
+    try std.testing.expectEqual(@as(usize, 0), state.menu_index);
+    try std.testing.expectEqual(@as(usize, 0), state.menu_scroll);
+
+    state.menu_index = 3;
+    try std.testing.expect(state.popPickerFilter());
+    try std.testing.expectEqualStrings("gpt-", state.pickerFilter());
+    try std.testing.expectEqual(@as(usize, 0), state.menu_index);
+    state.clearPickerFilter();
+    try std.testing.expect(!state.popPickerFilter());
+}
+
+test "tool invocation keeps a long description whole for the row to fit" {
+    const description = "Check the Exa env var name in ~/.zshrc without exposing the value itself";
+    const summary = try toolInvocation(std.testing.allocator, "Shell Execute", "{\"description\":\"" ++ description ++ "\",\"command\":\"ls\"}");
+    defer std.testing.allocator.free(summary);
+    try std.testing.expectEqualStrings("◈ Shell Execute \"" ++ description ++ "\"", summary);
 }
 
 test "AppState reconcileSteers fast-forwards when no pending steer remains" {
