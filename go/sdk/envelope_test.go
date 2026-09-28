@@ -68,9 +68,13 @@ func TestAFrameOnTheOAPWireBecomesTheEnvelopeTheProtocolPackageDescribes(t *test
 	}
 }
 
-func TestALegacyVersionNumberSurvivesTheConversionAsTheProtocolString(t *testing.T) {
-	envelope := asEnvelope(&frame{Protocol: oapProtocol, Profile: oapAgent, Type: "ready", Version: float64(1)})
-	if envelope.Version == "" {
-		t.Fatalf("the conversion dropped a version the legacy wire sent as a number: %q", envelope.Version)
+func TestTheConversionSubstitutesTheOAPVersionForALegacyNumberAndKeepsTheOAPOne(t *testing.T) {
+	legacy := asEnvelope(&frame{Protocol: oapProtocol, Profile: oapAgent, Type: "ready", Version: float64(1)})
+	if legacy.Version != oapVersion {
+		t.Fatalf("a legacy frame carrying the number 1 became version %q, want the OAP version %q: the conversion runs on the OAP path, where a numeric version cannot be the wire's", legacy.Version, oapVersion)
+	}
+	oap := asEnvelope(&frame{Protocol: oapProtocol, Profile: oapAgent, Type: "capabilities.response", Version: "0.1"})
+	if oap.Version != oapVersion {
+		t.Fatalf("the conversion rewrote the OAP version to %q, want %q", oap.Version, oapVersion)
 	}
 }
