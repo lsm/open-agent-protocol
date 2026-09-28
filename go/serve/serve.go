@@ -2,6 +2,7 @@ package serve
 
 import (
 	"os"
+	"sync"
 
 	"context"
 	"errors"
@@ -34,13 +35,14 @@ type Options struct {
 }
 
 type Hub struct {
-	registry *Registry
-	sessions *sessionRegistry
-	queue    int
-	shutdown time.Duration
-	logger   *log.Logger
-	bindings binding.Store
-	home     string
+	registry  *Registry
+	sessions  *sessionRegistry
+	queue     int
+	shutdown  time.Duration
+	logger    *log.Logger
+	bindings  binding.Store
+	home      string
+	bindingMu sync.Mutex
 }
 
 func New(registry *Registry, options Options) *Hub {
@@ -84,12 +86,16 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	}
 
 	entry := newSession(state.SessionID, adapterName, session, func(released *Session) {
+		h.bindingMu.Lock()
+		defer h.bindingMu.Unlock()
 		h.sessions.remove(released.id, released)
 		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
 	})
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
 	entry.binding = opened
+	h.bindingMu.Lock()
 	h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+	h.bindingMu.Unlock()
 	if err != nil || state.Status == protocol.SessionClosed {
 		entry.markClosed()
 	}
@@ -97,7 +103,10 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 
 		return entry, state, base.ErrSessionClosed
 	}
-	if err := h.sessions.add(entry); err != nil {
+	h.bindingMu.Lock()
+	added := h.sessions.add(entry)
+	h.bindingMu.Unlock()
+	if added != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
 		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
