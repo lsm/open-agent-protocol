@@ -729,6 +729,7 @@ pub const App = struct {
         if (self.session) |*session| session.clearQueuedMessages();
         self.refreshQueuedCounts();
         self.state.status.streaming = false;
+        self.state.status.compacting = false;
         self.state.mode = .normal;
     }
 
@@ -4662,6 +4663,52 @@ test "resume selected session allows runtime without protocol" {
     app.store = try session_store.Store.init(std.testing.allocator, ".");
 
     try app.resumeSelectedSession();
+}
+
+fn unusedStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: agent.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    _ = allocator;
+    return error.Unexpected;
+}
+
+test "resume clears a compaction the saved session never finished" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "interrupted"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .agent_start = .{} });
+    try app.store.?.save(meta, .{ .compaction_start = .{} });
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings("interrupted", app.session_id);
+    try std.testing.expect(!app.state.status.compacting);
+    try std.testing.expect(!app.state.status.streaming);
 }
 
 test "resume selected session clears delete reset flags on success" {
