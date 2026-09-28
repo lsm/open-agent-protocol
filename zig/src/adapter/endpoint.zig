@@ -254,8 +254,8 @@ pub const Endpoint = struct {
             .user_input_resolve_request => |*payload| try self.resolveInput(arena, &request, payload, refusal),
             .permission_resolve_request => |*payload| try self.resolvePermission(arena, &request, payload, refusal),
             .call_resolve_request => |*payload| try self.resolveCall(arena, &request, payload, refusal),
-            .models_request => |*payload| try self.models(arena, &request, payload, descriptor, refusal),
-            .tools_list_request => |*payload| try self.tools(arena, &request, payload, descriptor, refusal),
+            .models_request => |*payload| try self.models(arena, &request, payload, refusal),
+            .tools_list_request => |*payload| try self.tools(arena, &request, payload, refusal),
             else => {
                 const message = try std.fmt.allocPrint(arena, "this endpoint serves no {s}", .{declared_type});
                 return self.deny("unsupported_request", message, &.{});
@@ -503,30 +503,32 @@ pub const Endpoint = struct {
         });
     }
 
-    fn models(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ModelsRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
+    fn models(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ModelsRequest, refusal: *contract.Refusal) Served!void {
         const entry = try self.entryFor(arena, request);
         try self.requireScope(arena, payload.session_id, entry);
         const lister = entry.session.vtable.models orelse
             return refusal.unsupported(contract.feature_models_list, contract.reason_unadvertised);
         const catalog = try lister(entry.session.ptr, arena, payload, refusal);
+        if (catalog.revision.len == 0) return self.deny("catalog_unlabelled", "adapter: the model catalog names no capability revision", &.{});
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),
-            .capability_revision = descriptor.capability_revision,
+            .capability_revision = catalog.revision,
             .payload = .{ .models_response = catalog.response },
         });
     }
 
-    fn tools(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ToolsListRequest, descriptor: contract.Descriptor, refusal: *contract.Refusal) Served!void {
+    fn tools(self: *Endpoint, arena: std.mem.Allocator, request: *const oap_types.Envelope, payload: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) Served!void {
         const entry = try self.entryFor(arena, request);
         if (payload.session_id) |scoped| try self.requireScope(arena, scoped, entry);
         const lister = entry.session.vtable.tools orelse
             return self.deny("tool_catalog_unavailable", "adapter: no portable tool catalog is served", &.{});
         const catalog = try lister(entry.session.ptr, arena, payload, refusal);
+        if (catalog.revision.len == 0) return self.deny("catalog_unlabelled", "adapter: the tool catalog names no capability revision", &.{});
         try self.respond(arena, request, .{
             .id = "",
             .session_id = entry.session.id(),
-            .capability_revision = descriptor.capability_revision,
+            .capability_revision = catalog.revision,
             .payload = .{ .tools_list_response = catalog.response },
         });
     }
@@ -1214,7 +1216,7 @@ const FakeSession = struct {
         _ = ptr;
         _ = refusal;
         const listed_models = try arena.dupe(oap_types.ModelDescriptor, &.{.{ .id = "fake-model", .default = true }});
-        return .{ .revision = "fake-v1", .response = .{
+        return .{ .revision = "fake-lister-v2", .response = .{
             .session_id = request.session_id,
             .current_model_id = "fake-model",
             .models = listed_models,
@@ -1235,7 +1237,7 @@ const FakeSession = struct {
         _ = ptr;
         _ = arena;
         if (!request.allowsDegraded(contract.feature_tools_list)) return refusal.degraded(contract.feature_tools_list);
-        return .{ .revision = "fake-v1", .response = .{ .session_id = request.session_id } };
+        return .{ .revision = "fake-lister-v2", .response = .{ .session_id = request.session_id } };
     }
 
     const vtable = contract.Session.VTable{
@@ -1701,7 +1703,7 @@ test "a backend that offers models, switching and tools is answered through them
 
     const models = try harness.send(framed("models.request", "models-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\"}"));
     try testing.expectEqualStrings("models.response", field(models[0], &.{"type"}));
-    try testing.expectEqualStrings("fake-v1", field(models[0], &.{"capability_revision"}));
+    try testing.expectEqualStrings("fake-lister-v2", field(models[0], &.{"capability_revision"}));
 
     const switched = try harness.send(framed("session.model.switch.request", "switch-1", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"model_id\":\"other\"}"));
     try testing.expectEqual(@as(usize, 2), switched.len);
@@ -1714,6 +1716,7 @@ test "a backend that offers models, switching and tools is answered through them
     try testing.expectEqualStrings("capability_degraded", field(degraded[0], &.{ "payload", "error", "code" }));
     const listed_tools = try harness.send(framed("action.tools.list.request", "tools-2", ",\"session_id\":\"s1\"", "{\"session_id\":\"s1\",\"allow_degraded_features\":[\"action.tools.list\"]}"));
     try testing.expectEqualStrings("action.tools.list.response", field(listed_tools[0], &.{"type"}));
+    try testing.expectEqualStrings("fake-lister-v2", field(listed_tools[0], &.{"capability_revision"}));
 }
 
 test "an event past the frame limit is reported lost once, later events are dropped, and the terminal still settles the run" {
