@@ -950,7 +950,7 @@ pub const Session = struct {
         cast(ptr).destroy();
     }
 
-    fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ToolsListResponse {
+    fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!contract.ToolSet {
         _ = refusal;
         const self = cast(ptr);
         const named = request.session_id orelse "";
@@ -959,10 +959,14 @@ pub const Session = struct {
         const definitions = try arena.alloc(oap_types.ToolDefinition, 1 + if (named.len > 0) self.provided.len else 0);
         definitions[0] = scripted_catalog[0];
         if (named.len > 0) @memcpy(definitions[1..], self.provided);
-        return .{ .session_id = request.session_id, .sources = sources, .tools = definitions };
+        return .{ .revision = capability_revision, .response = .{
+            .session_id = request.session_id,
+            .sources = sources,
+            .tools = definitions,
+        } };
     }
 
-    fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ModelsResponse {
+    fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
         _ = refusal;
         const self = cast(ptr);
         if (request.session_id.len > 0 and !std.mem.eql(u8, request.session_id, self.id)) return error.InvalidSubmission;
@@ -973,7 +977,12 @@ pub const Session = struct {
         const providers = try arena.dupe(oap_types.ProviderDescriptor, &.{
             .{ .id = "reference", .display_name = "Reference Provider", .wire = "openai-chat-completions", .kind = "direct" },
         });
-        return .{ .session_id = self.id, .current_model_id = if (self.current_model.len > 0) self.current_model else null, .models = catalog, .providers = providers };
+        return .{ .revision = capability_revision, .response = .{
+            .session_id = self.id,
+            .current_model_id = if (self.current_model.len > 0) self.current_model else null,
+            .models = catalog,
+            .providers = providers,
+        } };
     }
 
     fn switchModel(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *contract.Refusal) contract.Failure!contract.Switched {
@@ -1698,10 +1707,10 @@ test "a provided tool keeps its annotations and its features sorted by key with 
     defer probe.deinit();
     var refusal = contract.Refusal{};
     const listed_tools = try probe.session.vtable.tools.?(probe.session.ptr, probe.a(), &.{ .session_id = "s1" }, &refusal);
-    try testing.expectEqualStrings("{\"a\":{\"k\":2.50},\"z\":1}", listed_tools.tools[1].annotations_json.?);
-    try testing.expectEqual(@as(usize, 2), listed_tools.tools[1].features.len);
-    try testing.expectEqualStrings("z", listed_tools.tools[1].features[1].key);
-    const feature = listed_tools.tools[1].features[0];
+    try testing.expectEqualStrings("{\"a\":{\"k\":2.50},\"z\":1}", listed_tools.response.tools[1].annotations_json.?);
+    try testing.expectEqual(@as(usize, 2), listed_tools.response.tools[1].features.len);
+    try testing.expectEqualStrings("z", listed_tools.response.tools[1].features[1].key);
+    const feature = listed_tools.response.tools[1].features[0];
     try testing.expectEqualStrings("x", feature.key);
     try testing.expectEqual(@as(usize, 1), feature.modes.len);
     try testing.expectEqualStrings("session_open", feature.modes[0]);

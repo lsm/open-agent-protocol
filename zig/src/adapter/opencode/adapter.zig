@@ -422,7 +422,7 @@ pub const Session = struct {
         };
     }
 
-    fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ModelsResponse {
+    fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
         const self = cast(ptr);
         if (!request.allowsDegraded(contract.feature_models_list)) return refusal.degraded(contract.feature_models_list);
         const catalog = self.reducer.models(request.session_id, true) catch |err| return switch (err) {
@@ -441,9 +441,12 @@ pub const Session = struct {
         }
         const current = catalog.object.get("current_model_id");
         return .{
-            .session_id = self.id,
-            .current_model_id = if (current) |value| try arena.dupe(u8, value.string) else null,
-            .models = out,
+            .revision = capability_revision,
+            .response = .{
+                .session_id = self.id,
+                .current_model_id = if (current) |value| try arena.dupe(u8, value.string) else null,
+                .models = out,
+            },
         };
     }
 
@@ -843,9 +846,10 @@ test "the degraded models catalog is served only to a caller that opts into it" 
     try testing.expectError(error.CapabilityDegraded, lister(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1" }, &refusal));
     try testing.expectEqualStrings("models.list", refusal.feature);
     const catalog = try lister(opened.ptr, probe.arena.allocator(), &.{ .session_id = "s1", .allow_degraded_features = &.{"models.list"} }, &refusal);
-    try testing.expectEqualStrings("fixture/fixture", catalog.current_model_id.?);
-    try testing.expectEqualStrings("fixture/fixture", catalog.models[0].id);
-    try testing.expect(catalog.models[0].default);
+    try testing.expectEqualStrings("fixture/fixture", catalog.response.current_model_id.?);
+    try testing.expectEqualStrings("fixture/fixture", catalog.response.models[0].id);
+    try testing.expect(catalog.response.models[0].default);
+    try testing.expectEqualStrings(capability_revision, catalog.revision);
 }
 
 test "a submission carrying a degraded-feature consent list is admitted, as Go's is" {

@@ -513,7 +513,7 @@ pub const Endpoint = struct {
             .id = "",
             .session_id = entry.session.id(),
             .capability_revision = descriptor.capability_revision,
-            .payload = .{ .models_response = catalog },
+            .payload = .{ .models_response = catalog.response },
         });
     }
 
@@ -527,7 +527,7 @@ pub const Endpoint = struct {
             .id = "",
             .session_id = entry.session.id(),
             .capability_revision = descriptor.capability_revision,
-            .payload = .{ .tools_list_response = catalog },
+            .payload = .{ .tools_list_response = catalog.response },
         });
     }
 
@@ -1210,11 +1210,15 @@ const FakeSession = struct {
         allocator.destroy(self);
     }
 
-    fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ModelsResponse {
+    fn models(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ModelsRequest, refusal: *contract.Refusal) contract.Failure!contract.Catalog {
         _ = ptr;
         _ = refusal;
         const listed_models = try arena.dupe(oap_types.ModelDescriptor, &.{.{ .id = "fake-model", .default = true }});
-        return .{ .session_id = request.session_id, .current_model_id = "fake-model", .models = listed_models };
+        return .{ .revision = "fake-v1", .response = .{
+            .session_id = request.session_id,
+            .current_model_id = "fake-model",
+            .models = listed_models,
+        } };
     }
 
     fn switchModel(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.SessionModelSwitchRequest, refusal: *contract.Refusal) contract.Failure!contract.Switched {
@@ -1227,11 +1231,11 @@ const FakeSession = struct {
         };
     }
 
-    fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!oap_types.ToolsListResponse {
+    fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!contract.ToolSet {
         _ = ptr;
         _ = arena;
         if (!request.allowsDegraded(contract.feature_tools_list)) return refusal.degraded(contract.feature_tools_list);
-        return .{ .session_id = request.session_id };
+        return .{ .revision = "fake-v1", .response = .{ .session_id = request.session_id } };
     }
 
     const vtable = contract.Session.VTable{

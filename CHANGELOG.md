@@ -418,6 +418,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+
+- `contract.Session`'s `models` and `tools` now report the revision the lister served
+  the catalog under, beside the catalog itself, as Go's `base.Catalog` and
+  `base.ToolCatalog` do. The hub stamped the answer with the **adapter descriptor's**
+  revision and never learned what the lister thought, so a lister serving a catalog
+  under one revision while its descriptor claimed another was silently restamped
+  with the descriptor's. An empty revision is refused `catalog_unlabelled`, which is
+  Go's own rule.
 - **The duplicate-key JSON walk no longer refuses a valid message because of a number it cannot hold.** The walk exists to catch a wire that disagrees with itself, and `encoding/json`'s token reader turns a number into a `float64` by default — so a well-formed integer literal longer than a `float64` can represent (`1e999`, or 400 digits) made the walk return a range error and the adapter reject a message that is perfectly valid. The deepseek copies already asked for `UseNumber()`; acp, claude, codex, hermes, pi and opencode did not, so six adapters refused valid traffic in six slightly different ways, and opencode's copy is exported as `native.RejectDuplicateKeys`. All of them ask now, and the copies that remain are [#489](https://github.com/lsm/open-agent-protocol/issues/489)'s to collapse.
 
 - The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.

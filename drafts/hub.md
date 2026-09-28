@@ -1146,15 +1146,21 @@ same kind of gap. D4 is different in one respect: its negative-capacity half is 
 Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
-### D3 — a served catalog's revision comes from the descriptor, not the lister
+### D3 — a served catalog's revision comes from the lister
 
-| | |
-| --- | --- |
-| **The draft says** | A catalog is stamped with "the revision the lister served it under", and the hub **refuses** one that carries no revision. |
-| **Go does** | `base.Catalog` pairs the response with a `Revision` the adapter itself supplies, so a lister that served a catalog under a different revision than it probes is visible. |
-| **Zig does** | `contract`'s `models` and `tools` return the response and nothing else, so the Zig core stamps the **adapter descriptor's** revision — the same revision, unless an adapter ever serves a catalog under a revision other than the one it probes. |
-| **Why it matters** | Not wrong today, and the check the draft asks for still runs (a descriptor with no revision is refused `AdapterDescriptorUnbound` before any catalog is served). But the two trees would diverge the day an adapter served a catalog under a revision it did not probe with. |
-| **The fix** | `contract`'s two slots return a revision beside the catalog, as `base.Catalog` does. |
+**Fixed**, in the PR that carried it. `contract`'s `models` and `tools` return a
+`contract.Catalog` and a `contract.ToolSet`, each pairing the response with the
+revision the lister says it served it under, as `base.Catalog` and
+`base.ToolCatalog` do in Go. The hub stamps the answer with **that** revision
+rather than with the adapter's descriptor revision, and refuses an empty one
+`catalog_unlabelled` — which is Go's own rule, `an adapter served a model catalog
+with no capability revision`. A lister that served a catalog under one revision
+while its descriptor claimed another is now visible to the hub rather than
+silently restamped.
+
+The two rows that depended on it, `models` and `tools`, carry this: both answers
+are "stamped with the revision the lister served it under", and both name
+`unsupported_feature` for an adapter that cannot serve one at all.
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
