@@ -654,7 +654,6 @@ test "runProvidersCommand plain mode emits the catalog's provider ids, one per l
     try std.testing.expect(std.mem.find(u8, test_io.out.items, "github-copilot\n") != null);
     try std.testing.expect(std.mem.find(u8, test_io.out.items, "deepseek\n") != null);
     try std.testing.expect(std.mem.find(u8, test_io.out.items, "openrouter\n") != null);
-    try std.testing.expect(std.mem.find(u8, test_io.out.items, "test-fixture\n") == null);
     try std.testing.expectEqual(@as(usize, 0), test_io.err.items.len);
 }
 

@@ -35,13 +35,24 @@ pub const fixture_provider = ProviderDefinition{
     .auth_kinds = &fixture_auth_kinds,
 };
 
+pub const ALL_DEFINITIONS = blk: {
+    var collected: [provider_catalog.all.len + 1]ProviderDefinition = undefined;
+    for (provider_catalog.all, 0..) |row, index| collected[index] = definitionOf(row);
+    collected[provider_catalog.all.len] = .{
+        .id = fixture_provider_id,
+        .name = fixture_provider_name,
+        .auth_kinds = &fixture_auth_kinds,
+    };
+    const frozen = collected;
+    break :blk &frozen;
+};
+
 pub fn findProvider(provider_id: []const u8) ?ProviderDefinition {
-    for (CATALOG_PROVIDER_DEFINITIONS) |provider| {
+    for (ALL_DEFINITIONS) |provider| {
         if (std.mem.eql(u8, provider.id, provider_id)) {
             return provider;
         }
     }
-    if (std.mem.eql(u8, provider_id, fixture_provider_id)) return fixture_provider;
     return null;
 }
 
@@ -106,11 +117,12 @@ test "a row's auth kinds are the ones the catalog records" {
     try std.testing.expect(vercel.auth_kinds[0] == .api_key);
 }
 
-test "the CI fixture row is not a catalog row and is not in the served list" {
+test "the CI fixture row is not a catalog row and is served last, for tests only" {
     try std.testing.expect(provider_catalog.provider(fixture_provider_id) == null);
-    try std.testing.expectEqual(@as(usize, provider_catalog.all.len), CATALOG_PROVIDER_DEFINITIONS.len);
-    for (CATALOG_PROVIDER_DEFINITIONS) |definition| {
-        if (std.mem.eql(u8, definition.id, fixture_provider_id)) return error.TestFixtureInServedList;
+    try std.testing.expectEqual(@as(usize, provider_catalog.all.len + 1), ALL_DEFINITIONS.len);
+    try std.testing.expectEqualStrings(fixture_provider_id, ALL_DEFINITIONS[ALL_DEFINITIONS.len - 1].id);
+    for (ALL_DEFINITIONS[0 .. provider_catalog.all.len], 0..) |definition, index| {
+        try std.testing.expectEqualStrings(provider_catalog.all[index].id, definition.id);
     }
 
     const found = findProvider(fixture_provider_id) orelse return error.TestExpectedProvider;

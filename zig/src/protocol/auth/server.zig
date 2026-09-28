@@ -395,7 +395,7 @@ pub const AuthProtocolServer = struct {
     }
 
     fn buildProvidersResponse(self: *Self) !auth_types.AuthProvidersResponse {
-        const providers = try self.allocator.alloc(auth_types.AuthProviderInfo, auth_providers.CATALOG_PROVIDER_DEFINITIONS.len);
+        const providers = try self.allocator.alloc(auth_types.AuthProviderInfo, auth_providers.ALL_DEFINITIONS.len);
         errdefer {
             for (providers) |*provider| provider.deinit(self.allocator);
             self.allocator.free(providers);
@@ -406,7 +406,7 @@ pub const AuthProtocolServer = struct {
 
         const now_ms = compat.time.nowMillis();
 
-        for (auth_providers.CATALOG_PROVIDER_DEFINITIONS, 0..) |definition, index| {
+        for (auth_providers.ALL_DEFINITIONS, 0..) |definition, index| {
             var status: auth_types.AuthStatus = .login_required;
             if (storage) |*auth_storage| {
                 if (auth_storage.providers.get(definition.id)) |provider_auth| {

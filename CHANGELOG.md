@@ -27,11 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whatever status their credential has, which is `login_required` until one is
   set. Listing a provider the runtime cannot yet serve is a fact an SDK needs —
   hiding it would make the list look complete when it is not.
-  The CI fixture row stops being served. It was in the hardcoded list, so
-  `oapx auth providers` advertised "Test Fixture (CI)" to anyone running the
-  binary; it is now a constant the auth server's login path can still branch on
-  and nothing lists. `test-fixture` was never a catalog row and never had a
-  credential path, so nothing that used it as a login id changes.
+  The CI fixture row keeps its place, last, after the catalog's rows rather than
+  among them. I first removed it from the served list, on the grounds that
+  `oapx auth providers` should not advertise "Test Fixture (CI)" to anyone
+  running the binary — and that silently disabled real coverage: the Go SDK's
+  binary smoke test skips when the fixture is absent, so the only
+  CI-exercisable interactive login across the four SDKs would have stopped
+  running without failing anywhere, and the Rust SDK's end-to-end login test
+  failed outright. A fixture is a test affordance, but the served list is also
+  the only channel a test has for reading a login back, so removing the row
+  removes the test rather than the fixture. It stays a constant that is not a
+  catalog row and has no credential path of its own.
   The auth kinds are carried on the definition here and travel on the wire in the
   next step: Decision 0029's `auth.providers.response` entry has only `id`,
   `name`, `auth_status` and `last_error`, so expressing an API-key-only provider
