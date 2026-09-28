@@ -2199,6 +2199,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "event_stream", .module = event_stream_mod },
                 .{ .name = "provider_catalog", .module = provider_catalog_mod },
                 .{ .name = "provider_credential", .module = provider_credential_mod },
+                .{ .name = "provider_base_url", .module = provider_base_url_mod },
             },
         }),
     });
@@ -3113,6 +3114,7 @@ pub fn build(b: *std.Build) void {
     const test_e2e_provider_smoke_step = b.step("test-e2e-provider-smoke", "Run one catalogued row's live smoke gate (opt-in, never in CI)");
     test_e2e_provider_smoke_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
     test_unit_providers_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
+    test_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
 
     const test_e2e_azure_step = b.step("test-e2e-azure", "Run Azure E2E tests");
     test_e2e_azure_step.dependOn(&b.addRunArtifact(e2e_azure_test).step);

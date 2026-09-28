@@ -8,6 +8,7 @@ const stream_mod = @import("stream");
 const test_helpers = @import("test_helpers");
 const provider_catalog = @import("provider_catalog");
 const provider_credential = @import("provider_credential");
+const provider_base_url = @import("provider_base_url");
 
 const testing = std.testing;
 
@@ -180,10 +181,7 @@ fn regionFor(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
     const name = provider_catalog.regionEnv(id) orelse return row.endpoints[0].region;
     const value = envOwned(allocator, name) orelse return row.endpoints[0].region;
     defer allocator.free(value);
-    const trimmed = std.mem.trim(u8, value, " \t\r\n");
-    if (std.ascii.eqlIgnoreCase(trimmed, "global") or std.ascii.eqlIgnoreCase(trimmed, "moonshot")) return "global";
-    if (std.ascii.eqlIgnoreCase(trimmed, "china") or std.ascii.eqlIgnoreCase(trimmed, "cn")) return "china";
-    return row.endpoints[0].region;
+    return provider_base_url.normalizeKimiRegion(value) orelse row.endpoints[0].region;
 }
 
 fn catalogTargetInRegion(id: []const u8, region: ?[]const u8) !?CatalogTarget {
@@ -371,11 +369,18 @@ test "provider smoke: an unknown model is refused" {
     try testing.expect(refused_it);
 }
 
-test "the smoke gate knows the current rows and nothing else" {
+test "the smoke gate lists every current row and no other" {
+    try testing.expectEqual(provider_catalog.current_ids.len, rows.len);
     for (rows) |row| {
         try testing.expect(provider_catalog.status(row.id) == .current);
         try testing.expect(rowFor(row.id) != null);
         try testing.expect(catalogTargetFor(row.id) != null);
+    }
+    for (provider_catalog.current_ids) |id| {
+        if (rowFor(id) == null) {
+            std.debug.print("\n{s} is current and this gate does not list it\n", .{id});
+            return error.TestCurrentRowNotGated;
+        }
     }
     try testing.expect(rowFor("google") == null);
     try testing.expect(rowFor("no-such-provider") == null);

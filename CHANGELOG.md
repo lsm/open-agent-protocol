@@ -35,10 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the one `current` row that is regional — resolves through its `region_env`
   rather than a default the gate invents.
   The step is wired into neither `test` nor any `test-unit-*` group for the four
-  live cases — it runs only when a person names a row — while the two hermetic
-  tests that pin the gate's table against the catalog are wired into
-  `test-unit-providers`, so a row's promotion or demotion moves the gate in CI
-  rather than stranding it.
+  live cases — it runs only when a person names a row — while the module itself
+  is wired into both `test` and `test-unit-providers`, so the two hermetic tests
+  that pin the gate's table run in CI and in a full local run alike. The pin is
+  two-way: every listed row must be `current`, and every `current` row must be
+  listed, so a promotion cannot reach the catalog without reaching the gate.
   **Redirect `HOME` as well as the keychain service.** `OAPX_KEYCHAIN_SERVICE`
   redirects the store but not `~/.oapx/auth.json`, so a run with only the
   service overridden falls back to the real file and spends a real key. I did
