@@ -246,3 +246,42 @@ func TestTheUnknownCapsKeepZigsFunctionCallingDefault(t *testing.T) {
 		t.Error("vision is not a default, so the empty caps struct leaves it false")
 	}
 }
+
+func TestTheOAuthBranchCanonicalizesAToolNameAgainstTheTools(t *testing.T) {
+	messages := []Message{
+		{Assistant: &AssistantContent{API: "openai-completions", Provider: "local", Model: "local-model", StopReason: "tool_use", Parts: []ContentPart{
+			{ToolCall: &ToolCall{ID: "c1", Name: "bash", Arguments: "{}"}},
+		}}},
+		{ToolResult: &ToolResult{ToolCallID: "c1", ToolName: "bash", Parts: []ContentPart{{Text: &TextPart{Text: "ok"}}}}},
+	}
+	tools := []Tool{{Name: "Bash"}}
+	oauth := PreTransform(messages, TransformConfig{
+		TargetAPI: "openai-completions", TargetProvider: "local", TargetModelID: "local-model",
+		IsOAuth: true, Tools: tools,
+	})
+	if got := oauth[0].Assistant.Parts[0].ToolCall.Name; got != "Bash" {
+		t.Errorf("with oauth the name = %q, want the tool's own spelling", got)
+	}
+	plain := PreTransform(messages, TransformConfig{
+		TargetAPI: "openai-completions", TargetProvider: "local", TargetModelID: "local-model",
+		Tools: tools,
+	})
+	if got := plain[0].Assistant.Parts[0].ToolCall.Name; got != "bash" {
+		t.Errorf("without oauth the name = %q, want the caller's own spelling: the rewrite is behind the flag", got)
+	}
+}
+
+func TestTheReasoningDetailIsEscapedRatherThanSpliced(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"c1","data":"a\"b\\c"}]}}]}`),
+	)
+	end := findEvent(t, events, EventToolCallEnd)
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(end.ToolCall.ThoughtSig), &detail); err != nil {
+		t.Fatalf("the detail is not json: %v\n%s", err, end.ToolCall.ThoughtSig)
+	}
+	if detail["data"] != `a"b\c` {
+		t.Errorf("the data = %v, want it round-tripped", detail["data"])
+	}
+}

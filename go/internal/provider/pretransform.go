@@ -9,6 +9,7 @@ type TransformConfig struct {
 	MaxToolIDLen          int
 	MistralToolIDs        bool
 	InsertSyntheticResult bool
+	IsOAuth               bool
 	Tools                 []Tool
 }
 
@@ -161,6 +162,9 @@ func PreTransform(messages []Message, config TransformConfig) []Message {
 						id = mapped
 					}
 					name := part.ToolCall.Name
+					if config.IsOAuth {
+						name = fromClaudeCodeName(name, config.Tools)
+					}
 					rewritten := &ToolCall{
 						ID:        id,
 						Name:      name,
