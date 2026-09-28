@@ -288,7 +288,6 @@ func settledExchange(t *testing.T, cmd *exec.Cmd, lines []string) []string {
 	for _, line := range out {
 		normalized = append(normalized, normalizedLine(t, requestEntropy.ReplaceAllString(line, "${1}_@ENTROPY@")))
 	}
-	sort.Strings(normalized)
 	return normalized
 }
 
@@ -328,11 +327,12 @@ func scrubbed(value any) any {
 func TestRunOrderDifferenceSeesOrderWithinARun(t *testing.T) {
 	lines := func(specs ...string) []string {
 		var out []string
-		for _, spec := range specs {
-			out = append(out, `{"protocol":"open-agent-protocol","run_id":"run-1","payload":{"run_id":"run-1","status":"`+spec+`"}}`)
+		for i, spec := range specs {
+			out = append(out, `{"protocol":"open-agent-protocol","run_id":"run-1","sequence":`+strconv.Itoa(i+1)+`,"payload":{"run_id":"run-1","status":"`+spec+`"}}`)
 		}
 		return out
 	}
+	unsequenced := []string{`{"protocol":"open-agent-protocol","run_id":"run-1","type":"run.cancel.response","payload":{"run_id":"run-1","accepted":true}}`}
 	if where := runOrderDifference(t, lines("queued", "running", "completed"), lines("queued", "running", "completed")); where != "" {
 		t.Fatalf("the same order compared unequal: %s", where)
 	}
@@ -355,6 +355,10 @@ func TestRunOrderDifferenceSeesOrderWithinARun(t *testing.T) {
 	unrun := []string{`{"protocol":"open-agent-protocol","payload":{"session_id":"session"}}`}
 	if where := runOrderDifference(t, unrun, unrun); where != "" {
 		t.Fatalf("output with no run compared unequal: %s", where)
+	}
+	withResponse := append(append([]string{}, unsequenced...), lines("queued", "running")...)
+	if where := runOrderDifference(t, withResponse, lines("queued", "running")); where != "" {
+		t.Fatalf("a response with no sequence compared unequal against a stream without one: %s", where)
 	}
 }
 
@@ -385,12 +389,13 @@ func runGroups(t *testing.T, lines []string) map[string][]string {
 	groups := map[string][]string{}
 	for _, line := range lines {
 		var envelope struct {
-			RunID string `json:"run_id"`
+			RunID    string  `json:"run_id"`
+			Sequence *uint64 `json:"sequence"`
 		}
 		if err := json.Unmarshal([]byte(line), &envelope); err != nil {
 			t.Fatalf("not JSON: %q", line)
 		}
-		if envelope.RunID == "" {
+		if envelope.RunID == "" || envelope.Sequence == nil {
 			continue
 		}
 		groups[envelope.RunID] = append(groups[envelope.RunID], normalizedLine(t, line))
