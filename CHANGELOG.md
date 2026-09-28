@@ -69,6 +69,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This supersedes the note above that no fixture opens two interactions at once:
   it was true of the tree, not of the protocol.
 
+- **`go/providercatalog` resolves a row's credentials, base and wire, the way the
+  Zig tree does.** The package joined a catalog row to its two URLs and stopped
+  there, so a Go provider runtime had a base and a key that each tree had to
+  find by its own rules. `LookupCredential(catalog, env, stored, id)` now answers
+  the key a request carries and where it came from: the row's own
+  `credential_env` variables first, **in the order the row records them** —
+  `anthropic` answers from `ANTHROPIC_AUTH_TOKEN` before `ANTHROPIC_API_KEY` —
+  a variable that is set and empty counting as unset, and the first value held
+  for a name deciding that name. A stored key answers next, and only for a row
+  whose `auth` lists `api_key`; a stored OAuth access only for a row that lists
+  `oauth`, so `openai-codex` and `github-copilot` are not handed an API key and
+  `openai` is not handed a token. `NeedsNoCredential` reports the row that
+  records `none`, which is how `ollama` says it. The row accessors beside it
+  answer what the row records: `Status`, which is `supported` for a row that
+  records none **and for an id the catalog does not hold**, `Offering`, which
+  for the same unknown id is nothing, `CredentialEnv`, `BaseURLEnv`, `RegionEnv`,
+  `ModelsEndpoint`, `OAuthOriginFor`, `Wires`, `Endpoints`. `BaseURL` and
+  `DefaultBaseURL` pick the row's own endpoint for a wire and a region, with the
+  rule that a region answers only an endpoint declaring that region and no region
+  answers only an endpoint declaring none, and the default answering nothing at
+  all for a row that records no `base_url_source` — the gate Zig's
+  `defaultBaseUrlOf` puts there, which no live row currently trips but which a
+  future row would, silently and in one tree only. `WireForModel` sends a model
+  only the responses wire serves — `gpt-5-pro`, `o1-pro`,
+  `computer-use-preview` and the rest — to `openai-responses` while every other
+  openai model takes the row's first implemented wire. The URL half was already pinned by
+  `providers/resolved_urls.json` in both trees; these rules are code, so they are
+  pinned here, each read out of the Zig function it mirrors, with the premise
+  asserted before the behaviour.
+
 - **`docs/parity-job.md` says what the parity job is for.** The job drives the same requests through both trees and fails when the bytes differ, which makes it the last check before a divergence has to be settled by hand against a decision, a draft or a corpus. The note says which divergences that is the last check on — a payload the two trees decode differently, an answer one refuses and the other admits, and above all **the order of a run's events and the settlement order of two open interactions** — the latter uncovered by any fixture, and added by the entry above: the memory backend holds one pending interaction at a time, so it cannot open two, and the contested settlement #475 was written for — a terminal event sweeping several open gates, as the claude adapter's `sweepRun` does — had no fixture until `pi-two-open-calls`. What the `memory` fixture contributes instead is the only run long enough to read as a stream, through `TestBackendsMatchOapx`; `TestMemoryBackendMatchesOapx` compares a *sorted* set and is order-blind by construction — and which are covered cheaper elsewhere, because the fixtures are the oracle for the wire, the corpora for each harness, and the per-adapter tests for each adapter's own error handling. It says that every fixture which submits streams its run's envelopes, because the submit handler subscribes and pumps the run itself rather than the session-open `subscribe` member, and that `memory` is neither unique in doing that nor identical in both trees by construction — the two memory adapters are separate implementations, which is why the comparison scrubs `id` and every `*_ms` member. It has a row for the one divergence the "covered cheaper elsewhere" rule cannot place — what each tree writes to the harness, which needs a second tree to see at all — and it says which test does what — seven fixtures drive a `child.sh`, `opencode` answers the in-test fake HTTP server, and only one of the two memory tests looks at order — and it runs both tests in its own command, because running one is running half the coverage, and names the three CI jobs that run them — `backend-parity`, `memory-conformance`, and the twenty-fold `pi-parity-repeat` determinism gate. It also says what the job is *not* for: it is not conformance, not the harness's coverage, and not a race detector — one deterministic script per fixture cannot schedule a race — though a parity flake that recurs is race evidence, which is how pi's cancel divergence was found and why `pi-parity-repeat` exists. Each fixture gets a row saying which divergence it is the last check on, and `CLAUDE.md` and the README's paragraph that already promised "identical output" link to it. It lives in `docs/` rather than beside the fixtures because the parity test globs that directory and would read a README as a tenth backend.
 
 
