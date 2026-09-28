@@ -21,7 +21,7 @@ trees emit the same answer, in the same order, with the same refusals?**
 | **the order of a run's events** | `runOrderDifference` within `TestBackendsMatchOapx`, since #475 | anything in the corpus or the unit tests |
 | a refusal's code, reason or detail that differs | the content diff | — |
 | **what each tree writes to the harness** | the child diff (`childLineDifference`) and, for `opencode`, the fake server's transcript | nothing — a tree can serve identical envelopes while driving its child differently, and only a second tree shows that |
-| a **contested settlement** — several gates open at once, and the order the tree closes them in | the ordered comparison, *given* such a fixture, and no fixture is one | nothing today. The `memory` run has two interactions but opens them one after the other, and a terminal event sweeping several open gates — what `sweepRun` does in the claude adapter, and what #475 was written for — has no fixture |
+| a **contested settlement** — several calls open at once, and the order the tree closes them in | the ordered comparison, and `pi-two-open-calls` is the fixture | nothing else: the `memory` run has two interactions but opens them one after the other, so a terminal event sweeping several open calls needs a backend without that ceiling |
 
 One row in that table cannot be placed by the rule below it, and the note says so rather than bending the rule: comparing what a tree writes to its harness needs two trees, so there is nowhere cheaper for it to live. Everything else a divergence can be is covered cheaper elsewhere, and the
 parity job is deliberately not where it is duplicated: the fixtures are the
