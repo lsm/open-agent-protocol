@@ -518,6 +518,7 @@ pub fn build(b: *std.Build) void {
     });
     provider_catalog_mod.addImport("data", provider_catalog_data_mod);
     provider_catalog_mod.addImport("ai_types", ai_types_mod);
+    provider_catalog_mod.addImport("compat", compat_mod);
     const provider_catalog_test = b.addTest(.{ .root_module = provider_catalog_mod });
 
     const provider_base_url_mod = b.createModule(.{

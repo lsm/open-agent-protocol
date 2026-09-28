@@ -53,10 +53,7 @@ fn allowsAnonymous(model: ai_types.Model) bool {
 }
 
 fn envApiKeyForProvider(allocator: std.mem.Allocator, provider_id: []const u8) ?[]const u8 {
-    if (!std.mem.eql(u8, provider_id, "anthropic")) return null;
-    if (compat.getEnvVarOwned(allocator, "ANTHROPIC_AUTH_TOKEN")) |key| return key else |_| {}
-    if (compat.getEnvVarOwned(allocator, "ANTHROPIC_API_KEY")) |key| return key else |_| {}
-    return null;
+    return provider_catalog.apiKeyFromEnv(allocator, provider_id);
 }
 
 fn isOAuthToken(key: []const u8) bool {
@@ -2564,4 +2561,73 @@ test "anthropic_oauth_headers_are_forwarded_exactly" {
     try std.testing.expectEqualStrings("2023-06-01", headers[5].value);
     try std.testing.expectEqualStrings("content-type", headers[6].name);
     try std.testing.expectEqualStrings("application/json", headers[6].value);
+}
+
+test "the anthropic wire finds each row's own key, which a vendor list would not" {
+    const rows = [_][]const u8{ "anthropic", "minimax-coding-plan" };
+    for (rows) |id| {
+        const names = provider_catalog.credentialEnv(id);
+        try std.testing.expect(names.len > 0);
+        for (names) |name| {
+            try compat.setTestEnv(std.testing.allocator, name, "row-key");
+            defer compat.clearTestEnv();
+            const found = envApiKeyForProvider(std.testing.allocator, id) orelse {
+                std.debug.print("\n{s} records {s} but a request on this wire finds no key\n", .{ id, name });
+                return error.TestRowKeyNotFound;
+            };
+            defer std.testing.allocator.free(found);
+            try std.testing.expectEqualStrings("row-key", found);
+        }
+    }
+    try std.testing.expectEqualStrings("ANTHROPIC_AUTH_TOKEN", provider_catalog.credentialEnv("anthropic")[0]);
+    try std.testing.expectEqualStrings("MINIMAX_API_KEY", provider_catalog.credentialEnv("minimax-coding-plan")[0]);
+}
+
+test "a row this wire serves but that records no key is refused rather than guessed" {
+    try std.testing.expectEqualStrings("ANTHROPIC_API_KEY", provider_catalog.credentialEnv("anthropic")[1]);
+    const EmptyFirst = struct {
+        fn read(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+            _ = ctx;
+            if (std.mem.eql(u8, name, "ANTHROPIC_AUTH_TOKEN")) return try allocator.dupe(u8, "");
+            return try allocator.dupe(u8, "second-wins");
+        }
+    };
+    const found = provider_catalog.apiKeyForProvider(std.testing.allocator, "anthropic", EmptyFirst.read, null);
+    defer std.testing.allocator.free(found.?);
+    try std.testing.expectEqualStrings("second-wins", found.?);
+}
+
+const RecordedEnv = struct {
+    asked: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *RecordedEnv, allocator: std.mem.Allocator) void {
+        for (self.asked.items) |name| allocator.free(name);
+        self.asked.deinit(allocator);
+    }
+
+    fn read(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+        const self: *RecordedEnv = @ptrCast(@alignCast(ctx orelse return null));
+        try self.asked.append(allocator, try allocator.dupe(u8, name));
+        return try allocator.dupe(u8, "row-key");
+    }
+};
+
+test "every row this wire serves finds its key from the row, not a list of vendor names" {
+    var served: usize = 0;
+    for (provider_catalog.all) |row| {
+        if (row.wires.len == 0) continue;
+        if (!std.mem.eql(u8, provider_catalog.wirePath(row.wires[0]).?.id, "anthropic-messages")) continue;
+        served += 1;
+        if (row.credential_env.len == 0) continue;
+        var recorded = RecordedEnv{};
+        defer recorded.deinit(std.testing.allocator);
+        const found = provider_catalog.apiKeyForProvider(std.testing.allocator, row.id, RecordedEnv.read, &recorded);
+        defer if (found) |value| std.testing.allocator.free(value);
+        if (found == null) {
+            std.debug.print("\n{s} is served on this wire and records {s} but finds no key\n", .{ row.id, row.credential_env[0] });
+            return error.TestRowKeyNotFound;
+        }
+        try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
+    }
+    try std.testing.expect(served >= 2);
 }
