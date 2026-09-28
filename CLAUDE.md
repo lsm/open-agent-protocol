@@ -133,6 +133,7 @@ A strict stack; lower layers never import higher ones.
 | `adapter/{acp,claude,codex/appserver,deepseek,hermes,opencode,pi}` | One per pinned upstream harness |
 | `serve` | Registry + multi-session hub, bounded fan-out, cursor replay; adds no semantics, never validates |
 | `serve/{servehttp,servestdio}` | HTTP+SSE and newline-JSON over one hub; `parity_test.go` enforces the mirror |
+| `cmd/goap` parity fixtures | one per harness plus `memory`; what the job is for, and what the corpora cover instead, is [`docs/parity-job.md`](docs/parity-job.md) |
 | `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
 | `sdk` | The Go client for a running endpoint: it spawns `oapx serve agent,provider --stdio` and exposes `Auth`, `Models`, `Provider`, `Agent` over profiled envelopes. Its own private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is the follow-up |
