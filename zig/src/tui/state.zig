@@ -279,6 +279,8 @@ pub const ComposerState = struct {
     history: std.ArrayList([]u8) = .empty,
     history_index: ?usize = null,
     history_draft: std.ArrayList(u8) = .empty,
+    scroll_row: usize = 0,
+    goal_column: ?usize = null,
 
     pub fn deinit(self: *ComposerState, allocator: std.mem.Allocator) void {
         self.buffer.deinit(allocator);
@@ -293,6 +295,8 @@ pub const ComposerState = struct {
         self.cursor = 0;
         self.history_index = null;
         self.history_draft.clearRetainingCapacity();
+        self.scroll_row = 0;
+        self.goal_column = null;
     }
 
     pub fn text(self: ComposerState) []const u8 {
@@ -307,6 +311,13 @@ pub const ComposerState = struct {
         self.normalizeCursor();
         try self.buffer.insertSlice(allocator, self.cursor, bytes);
         self.cursor += bytes.len;
+    }
+
+    pub fn insertPaste(self: *ComposerState, allocator: std.mem.Allocator, bytes: []const u8) !void {
+        if (std.mem.indexOf(u8, bytes, "\r\n") == null) return self.insertSlice(allocator, bytes);
+        const normalized = try std.mem.replaceOwned(u8, allocator, bytes, "\r\n", "\n");
+        defer allocator.free(normalized);
+        return self.insertSlice(allocator, normalized);
     }
 
     pub fn deleteBeforeCursor(self: *ComposerState) bool {
@@ -335,11 +346,14 @@ pub const ComposerState = struct {
     }
 
     pub fn moveCursorHome(self: *ComposerState) void {
-        self.cursor = 0;
+        self.normalizeCursor();
+        const before = self.buffer.items[0..self.cursor];
+        self.cursor = if (std.mem.lastIndexOfScalar(u8, before, '\n')) |nl| nl + 1 else 0;
     }
 
     pub fn moveCursorEnd(self: *ComposerState) void {
-        self.cursor = self.buffer.items.len;
+        self.normalizeCursor();
+        self.cursor = std.mem.indexOfScalarPos(u8, self.buffer.items, self.cursor, '\n') orelse self.buffer.items.len;
     }
 
     pub fn moveCursorWordPrev(self: *ComposerState) void {
@@ -2387,6 +2401,49 @@ test "Composer cursor edits within the draft" {
     try state.composer.insertSlice(std.testing.allocator, "λ");
     try std.testing.expectEqualStrings("λabc", state.composer.text());
     try std.testing.expectEqual(@as(usize, "λ".len), state.composer.cursor);
+}
+
+test "Composer Home and End jump within the current line" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.composer.insertSlice(std.testing.allocator, "first\nsecond\nthird");
+    state.composer.cursor = 9;
+    state.composer.moveCursorHome();
+    try std.testing.expectEqual(@as(usize, 6), state.composer.cursor);
+    state.composer.moveCursorEnd();
+    try std.testing.expectEqual(@as(usize, 12), state.composer.cursor);
+    state.composer.moveCursorEnd();
+    try std.testing.expectEqual(@as(usize, 12), state.composer.cursor);
+    state.composer.cursor = 2;
+    state.composer.moveCursorEnd();
+    try std.testing.expectEqual(@as(usize, 5), state.composer.cursor);
+    state.composer.cursor = 20;
+    state.composer.moveCursorHome();
+    try std.testing.expectEqual(@as(usize, 13), state.composer.cursor);
+}
+
+test "Composer paste normalises CRLF into LF" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.composer.insertPaste(std.testing.allocator, "one\r\ntwo\r\nthree");
+    try std.testing.expectEqualStrings("one\ntwo\nthree", state.composer.text());
+    try std.testing.expectEqual(@as(usize, 13), state.composer.cursor);
+    try state.composer.insertPaste(std.testing.allocator, "\r\nfour");
+    try std.testing.expectEqualStrings("one\ntwo\nthree\nfour", state.composer.text());
+}
+
+test "Composer clear resets the scroll row and goal column" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try state.composer.insertSlice(std.testing.allocator, "draft");
+    state.composer.scroll_row = 4;
+    state.composer.goal_column = 9;
+    state.composer.clear();
+    try std.testing.expectEqual(@as(usize, 0), state.composer.scroll_row);
+    try std.testing.expectEqual(@as(?usize, null), state.composer.goal_column);
 }
 
 test "AppState cycles thinking levels for TUI shortcut" {

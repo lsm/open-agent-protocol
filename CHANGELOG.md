@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- The TUI composer grows with the draft up to `min(12, height/3)` content rows
+  instead of windowing a long draft with `…`; past that the window follows the cursor
+  and muted `▲ N` / `▼ N` markers in the panel border count the hidden rows. Up/Down
+  move the cursor one visual row inside the draft (keeping the goal column) and only
+  walk history at the first/last row, while a recalled entry showing unedited still
+  walks on any press. Home/End and Ctrl+A/E jump within the current line. Pastes
+  normalise CRLF to LF, tabs render as `→`, and other control bytes render as caret
+  notation so pasted escape sequences can never reach the terminal raw.
+
+### Changed
+- The inline flush budget counts the composer at its one-row minimum (like a modal),
+  so a growing composer covers transcript rows instead of flushing them and a
+  shrinking composer no longer leaves blank rows behind.
+
+### Added
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
 
 - [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) (proposed) amends 0001's "Cancellation intent is not settlement" on two clauses, and both validators change with it. **Acceptance is judged when the cancel is checked**, which a trace shows as the request's position against the run's terminal: an accepted `run.cancel.response` is illegal only when the request it answers (`in_reply_to`) arrived after the run's non-`run.cancelled` terminal, and a request that arrived while the run was live may be answered accepted after a natural completion. **A cancel response is unordered against the run's stream** — it carries no `sequence` and 0001 makes it not a terminal — so its position is never what makes it legal. A late cancel is a *legal request* with 0001's typed answer, so neither validator refuses the request itself; Go used to, and does no longer, which is what lets the two trees judge the same trace the same way. Three fixtures carry it: `core-cancel-accepted-after-natural-completion` (valid), `cancel-accepted-after-late-request` (semantic-invalid, `illegal_run_transition`) and `core-cancel-late-request-refused` (valid, the answer is `run_already_terminal`). The pi announcement order is explicitly *not* settled by this record and is not policed by it: both orders are legal, and the two trees differ in output order only.

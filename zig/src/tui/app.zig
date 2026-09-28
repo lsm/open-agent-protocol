@@ -1650,6 +1650,33 @@ pub const App = struct {
         return true;
     }
 
+    pub fn handleComposerVertical(self: *App, width: usize, delta: isize) !void {
+        const composer = &self.state.composer;
+        if (composer.history_index) |index| {
+            if (index < composer.history.items.len and std.mem.eql(u8, composer.text(), composer.history.items[index])) {
+                _ = if (delta < 0) try self.state.composerHistoryPrev() else try self.state.composerHistoryNext();
+                return;
+            }
+        }
+        if (try self.moveComposerVisualRow(width, delta)) return;
+        _ = if (delta < 0) try self.state.composerHistoryPrev() else try self.state.composerHistoryNext();
+    }
+
+    fn moveComposerVisualRow(self: *App, width: usize, delta: isize) !bool {
+        const composer = &self.state.composer;
+        if (composer.text().len == 0) return false;
+        const content_width = composer_view.contentWidth(width);
+        const rows = try tui_text.layoutRows(self.allocator, composer.text(), content_width);
+        defer self.allocator.free(rows);
+        const pos = tui_text.cursorPos(rows, composer.text(), composer.cursor);
+        const target = @as(isize, @intCast(pos.row)) + delta;
+        if (target < 0 or target >= @as(isize, @intCast(rows.len))) return false;
+        const goal = composer.goal_column orelse pos.col;
+        composer.goal_column = goal;
+        composer.cursor = tui_text.byteOffsetAtColumn(rows, composer.text(), @intCast(target), goal);
+        return true;
+    }
+
     pub fn completeSlashCommand(self: *App) !bool {
         const query = self.slashQuery() orelse return false;
         const info = slashMatch(query, self.slashSelection()) orelse return false;
@@ -1790,6 +1817,7 @@ pub const TuiModel = struct {
         const app = &(self.app orelse return .none);
         switch (msg) {
             .key => |key| {
+                if (key.key != .up and key.key != .down) app.state.composer.goal_column = null;
                 if (key.modifiers.ctrl) switch (key.key) {
                     .char => |c| switch (c) {
                         'c' => return self.handleInterrupt(app, ctx),
@@ -1924,7 +1952,7 @@ pub const TuiModel = struct {
                         .escape => app.cancelLogin(),
                         .backspace => _ = app.state.composer.deleteBeforeCursor(),
                         .char => |c| appendChar(app, c) catch {},
-                        .paste => |text| app.state.composer.insertSlice(app.allocator, text) catch {},
+                        .paste => |text| app.state.composer.insertPaste(app.allocator, text) catch {},
                         .space => app.state.composer.insertSlice(app.allocator, " ") catch {},
                         .left => _ = app.state.composer.moveCursorPrev(),
                         .right => _ = app.state.composer.moveCursorNext(),
@@ -2022,17 +2050,25 @@ pub const TuiModel = struct {
                         }
                     },
                     .char => |c| appendChar(app, c) catch {},
-                    .paste => |text| app.state.composer.insertSlice(app.allocator, text) catch {},
+                    .paste => |text| app.state.composer.insertPaste(app.allocator, text) catch {},
                     .space => app.state.composer.insertSlice(app.allocator, " ") catch {},
                     .left => _ = app.state.composer.moveCursorPrev(),
                     .right => _ = app.state.composer.moveCursorNext(),
                     .home => app.state.composer.moveCursorHome(),
                     .end => app.state.composer.moveCursorEnd(),
                     .up => {
-                        if (app.state.mode != .normal or !app.moveSlashSelection(-1)) _ = app.state.composerHistoryPrev() catch false;
+                        if (app.state.mode != .normal) {
+                            _ = app.state.composerHistoryPrev() catch false;
+                        } else if (!app.moveSlashSelection(-1)) {
+                            app.handleComposerVertical(@max(ctx.width, 20), -1) catch {};
+                        }
                     },
                     .down => {
-                        if (app.state.mode != .normal or !app.moveSlashSelection(1)) _ = app.state.composerHistoryNext() catch false;
+                        if (app.state.mode != .normal) {
+                            _ = app.state.composerHistoryNext() catch false;
+                        } else if (!app.moveSlashSelection(1)) {
+                            app.handleComposerVertical(@max(ctx.width, 20), 1) catch {};
+                        }
                     },
                     .page_up => app.state.transcript_scroll += 5,
                     .page_down => app.state.transcript_scroll -|= 5,
@@ -2129,7 +2165,7 @@ pub const TuiModel = struct {
         const width: usize = @max(ctx.width, 20);
         const height: usize = @max(ctx.height, 8);
         app.last_view_height = height;
-        const chrome = self.renderChrome(app, ctx, width);
+        const chrome = self.renderChrome(app, ctx, width, height);
         if (self.inlineMode(ctx)) {
             const fixed = countLines(chrome.status) + countLines(chrome.composer) + countLines(chrome.extra) + 1;
             const body_budget = height -| fixed;
@@ -2189,14 +2225,15 @@ pub const TuiModel = struct {
         return tailLines(ctx.allocator, stream, budget);
     }
 
-    fn renderChrome(self: *TuiModel, app: *App, ctx: *const zz.Context, width: usize) Chrome {
+    fn renderChrome(self: *TuiModel, app: *App, ctx: *const zz.Context, width: usize, height: usize) Chrome {
         _ = self;
         const hint = if (app.interrupt_armed_tick != null)
             tui_theme.key.ctrl ++ "C again to quit"
         else
             composer_view.hintText(ctx.allocator, &app.state) catch "";
         const status = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
-        const composer = composer_view.render(ctx.allocator, &app.state, .{ .width = width }) catch "";
+        composer_view.adjustScroll(ctx.allocator, &app.state, width, height) catch {};
+        const composer = composer_view.render(ctx.allocator, &app.state, .{ .width = width, .max_rows = composer_view.rowCap(height) }) catch "";
         const queued = if (app.state.mode == .normal) renderQueuedFollowUps(ctx.allocator, &app.state, width) catch "" else "";
         const extra = switch (app.state.mode) {
             .approval => approval_view.render(ctx.allocator, &app.state, .{ .width = width }) catch "",
@@ -2274,8 +2311,8 @@ pub const TuiModel = struct {
     fn flushBudget(self: *TuiModel, app: *App, ctx: *const zz.Context) usize {
         const width: usize = @max(ctx.width, 20);
         const height: usize = @max(ctx.height, 8);
-        const chrome = self.renderChrome(app, ctx, width);
-        return height -| (countLines(chrome.status) + countLines(chrome.composer) + chrome.queued_rows + 1);
+        const chrome = self.renderChrome(app, ctx, width, height);
+        return height -| (countLines(chrome.status) + composer_view.min_panel_rows + chrome.queued_rows + 1);
     }
 
     fn renderCommandPalette(allocator: std.mem.Allocator, app: *const App, width: usize) ![]const u8 {
@@ -5022,4 +5059,109 @@ test "App sends the drafts queued during a compaction however the compaction end
         try std.testing.expect(!app.state.status.compacting);
     }
     try std.testing.expectEqual(@as(usize, 0), app.compaction_transcripts.items.len);
+}
+
+test "TuiModel up moves the cursor one visual row before touching history" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 24;
+    const app = &model.app.?;
+    try app.state.recordComposerHistory("older entry");
+    try app.state.replaceComposerBuffer("alpha\nbeta");
+
+    _ = model.update(.{ .key = .{ .key = .up, .modifiers = .{} } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("alpha\nbeta", app.state.composer.text());
+    try std.testing.expectEqual(@as(usize, 4), app.state.composer.cursor);
+
+    _ = model.update(.{ .key = .{ .key = .down, .modifiers = .{} } }, &tctx.ctx);
+    try std.testing.expectEqual(@as(usize, 10), app.state.composer.cursor);
+}
+
+test "TuiModel up on the first visual row recalls history" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 24;
+    const app = &model.app.?;
+    try app.state.recordComposerHistory("older entry");
+    try app.state.replaceComposerBuffer("alpha\nbeta");
+
+    _ = model.update(.{ .key = .{ .key = .up, .modifiers = .{} } }, &tctx.ctx);
+    _ = model.update(.{ .key = .{ .key = .up, .modifiers = .{} } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("older entry", app.state.composer.text());
+}
+
+test "TuiModel keeps walking history while a recalled entry is shown unedited" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 24;
+    const app = &model.app.?;
+    try app.state.recordComposerHistory("first cmd");
+    try app.state.recordComposerHistory("multi\nline cmd");
+
+    _ = model.update(.{ .key = .{ .key = .up, .modifiers = .{} } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("multi\nline cmd", app.state.composer.text());
+    _ = model.update(.{ .key = .{ .key = .up, .modifiers = .{} } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("first cmd", app.state.composer.text());
+}
+
+test "TuiModel up at the first row of an edited recall discards the edits" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 80;
+    tctx.ctx.height = 24;
+    const app = &model.app.?;
+    try app.state.recordComposerHistory("one");
+    try app.state.recordComposerHistory("two");
+
+    _ = model.update(.{ .key = .{ .key = .up, .modifiers = .{} } }, &tctx.ctx);
+    _ = model.update(.{ .key = .{ .key = .{ .char = 'x' }, .modifiers = .{} } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("twox", app.state.composer.text());
+    _ = model.update(.{ .key = .{ .key = .up, .modifiers = .{} } }, &tctx.ctx);
+    try std.testing.expectEqualStrings("one", app.state.composer.text());
+}
+
+test "composer vertical moves keep the goal column across rows" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    try app.state.replaceComposerBuffer("abcdef\nxy\nuvwxyz");
+
+    try app.handleComposerVertical(80, -1);
+    try std.testing.expectEqual(@as(usize, 9), app.state.composer.cursor);
+    try app.handleComposerVertical(80, -1);
+    try std.testing.expectEqual(@as(usize, 6), app.state.composer.cursor);
+    try app.handleComposerVertical(80, 1);
+    try std.testing.expectEqual(@as(usize, 9), app.state.composer.cursor);
+    try app.handleComposerVertical(80, 1);
+    try std.testing.expectEqual(@as(usize, 16), app.state.composer.cursor);
+}
+
+test "TuiModel flush budget ignores the composer's grown height" {
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator), .render_mode = .inline_history };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    tctx.ctx.width = 40;
+    tctx.ctx.height = 24;
+    const app = &model.app.?;
+
+    const empty_budget = model.flushBudget(app, &tctx.ctx);
+    try app.state.replaceComposerBuffer("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp");
+    const grown_budget = model.flushBudget(app, &tctx.ctx);
+    try std.testing.expectEqual(empty_budget, grown_budget);
 }
