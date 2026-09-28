@@ -813,7 +813,7 @@ pub const TuiRuntime = struct {
 
     fn handleAgentEndEvent(self: *TuiRuntime, termination: ?agent_types.AgentTermination) anyerror!void {
         if (termination == .max_turns) {
-            self.push(.{ .system_warning = .{ .message = try self.dupeOwned("Stopped at this run's turn limit. Send a message to continue.") } });
+            self.push(.{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed("Stopped at this run's turn limit. Send a message to continue.") } });
         }
         const reason: TuiEndReason = if (self.cancelled.load(.acquire)) .cancelled else if (self.last_turn_stop_reason == .@"error") .@"error" else .completed;
         return self.endRun(reason);
