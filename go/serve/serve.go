@@ -1,9 +1,12 @@
 package serve
 
 import (
+	"sync"
+
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"io"
 	"log"
 	"time"
@@ -24,14 +27,21 @@ type Options struct {
 	Logger *log.Logger
 
 	ShutdownTimeout time.Duration
+
+	Bindings binding.Store
+
+	Home string
 }
 
 type Hub struct {
-	registry *Registry
-	sessions *sessionRegistry
-	queue    int
-	shutdown time.Duration
-	logger   *log.Logger
+	registry  *Registry
+	sessions  *sessionRegistry
+	queue     int
+	shutdown  time.Duration
+	logger    *log.Logger
+	bindings  binding.Store
+	home      string
+	bindingMu sync.Mutex
 }
 
 func New(registry *Registry, options Options) *Hub {
@@ -50,6 +60,7 @@ func New(registry *Registry, options Options) *Hub {
 	return &Hub{
 		registry: registry, sessions: newSessionRegistry(),
 		queue: queue, shutdown: shutdown, logger: logger,
+		bindings: options.Bindings, home: options.Home,
 	}
 }
 
@@ -74,20 +85,71 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	}
 
 	entry := newSession(state.SessionID, adapterName, session, func(released *Session) {
+		h.bindingMu.Lock()
+		defer h.bindingMu.Unlock()
 		h.sessions.remove(released.id, released)
+		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, h.now())
 	})
-	if err != nil || state.Status == protocol.SessionClosed {
-		entry.markClosed()
+	opened := h.openRecord(ctx, adapterName, implementation, state, request)
+	entry.binding = opened
+	settled := err != nil || state.Status == protocol.SessionClosed
+	h.bindingMu.Lock()
+	var added error
+	if settled {
+		entry.binding = binding.Record{}
+		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+		h.recordBinding(ctx, opened, binding.ActionClosed, h.now())
+	} else if added = h.sessions.add(entry); added == nil {
+		h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
+	} else {
+		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())
 	}
-	if entry.IsClosed() {
-
+	h.bindingMu.Unlock()
+	if settled {
+		entry.markClosed()
 		return entry, state, base.ErrSessionClosed
 	}
-	if err := h.sessions.add(entry); err != nil {
+	if added != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
 	return entry, state, nil
+}
+
+func (h *Hub) SetWorkingDirectory(adapter, directory string) {
+	h.registry.SetWorkingDirectory(adapter, directory)
+}
+
+func (h *Hub) now() int64 {
+	return time.Now().UnixMilli()
+}
+
+func (h *Hub) openRecord(ctx context.Context, adapterName string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest) binding.Record {
+	if h.bindings == nil {
+		return binding.Record{}
+	}
+	version := ""
+	if descriptor, err := implementation.Probe(ctx); err == nil {
+		version = descriptor.Capabilities.Endpoint.Version
+	}
+	sources := make([]string, 0, len(request.ToolSources))
+	for _, source := range request.ToolSources {
+		sources = append(sources, string(source.ID))
+	}
+	return binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, h.registry.WorkingDirectory(adapterName), sources)
+}
+
+func (h *Hub) recordBinding(ctx context.Context, record binding.Record, action binding.Action, timeMS int64) {
+	if h.bindings == nil || record.SessionID == "" {
+		return
+	}
+	if err := h.bindings.Append(context.WithoutCancel(ctx), binding.Entry{Action: action, TimeMS: timeMS, Record: record}); err != nil {
+		h.logger.Printf("binding: %s for %s: %v", action, record.SessionID, err)
+	}
+}
+
+func (h *Hub) Binding() binding.Store {
+	return h.bindings
 }
 
 func (h *Hub) Session(id protocol.SessionID) (*Session, error) {

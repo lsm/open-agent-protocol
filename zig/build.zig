@@ -517,6 +517,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     provider_catalog_mod.addImport("data", provider_catalog_data_mod);
+    provider_catalog_mod.addImport("ai_types", ai_types_mod);
     const provider_catalog_test = b.addTest(.{ .root_module = provider_catalog_mod });
 
     const provider_base_url_mod = b.createModule(.{
@@ -738,6 +739,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "oauth/github_copilot", .module = github_copilot_mod },
+            .{ .name = "ai_types", .module = ai_types_mod },
         },
     });
 
@@ -2183,6 +2185,26 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const provider_smoke_test = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/e2e/provider_smoke.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "compat", .module = compat_mod },
+                .{ .name = "ai_types", .module = ai_types_mod },
+                .{ .name = "api_registry", .module = api_registry_mod },
+                .{ .name = "register_builtins", .module = register_builtins_mod },
+                .{ .name = "stream", .module = stream_mod },
+                .{ .name = "test_helpers", .module = test_helpers_mod },
+                .{ .name = "event_stream", .module = event_stream_mod },
+                .{ .name = "provider_catalog", .module = provider_catalog_mod },
+                .{ .name = "provider_credential", .module = provider_credential_mod },
+                .{ .name = "provider_base_url", .module = provider_base_url_mod },
+            },
+        }),
+    });
+
     const e2e_openai_test = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("test/e2e/openai_api.zig"),
@@ -3090,6 +3112,11 @@ pub fn build(b: *std.Build) void {
     const test_e2e_openai_step = b.step("test-e2e-openai", "Run OpenAI E2E tests");
     test_e2e_openai_step.dependOn(&b.addRunArtifact(e2e_openai_test).step);
 
+    const test_e2e_provider_smoke_step = b.step("test-e2e-provider-smoke", "Run one catalogued row's live smoke gate (opt-in, never in CI)");
+    test_e2e_provider_smoke_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
+    test_unit_providers_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
+    test_step.dependOn(&b.addRunArtifact(provider_smoke_test).step);
+
     const test_e2e_azure_step = b.step("test-e2e-azure", "Run Azure E2E tests");
     test_e2e_azure_step.dependOn(&b.addRunArtifact(e2e_azure_test).step);
 
@@ -3329,7 +3356,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         out.appendSlice(gpa, "    },\n") catch @panic("out of memory");
     }
     out.appendSlice(gpa, "};\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Pinned = struct {\n    id: []const u8,\n    wire: []const u8,\n    region: ?[]const u8 = null,\n    base_url: []const u8,\n    models_url: ?[]const u8 = null,\n    request_url: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Pinned = struct {\n    id: []const u8,\n    wire: []const u8,\n    region: ?[]const u8 = null,\n    base_url: []const u8,\n    models_url: ?[]const u8 = null,\n    request_url: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const pinned: []const Pinned = &.{\n") catch @panic("out of memory");
     for (pinned.endpoints) |endpoint| {
         out.print(gpa, "    .{{ .id = \"{f}\", .wire = \"{f}\", .base_url = \"{f}\"", .{
@@ -3345,6 +3372,13 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         }
         if (endpoint.request_url) |request_url| {
             out.print(gpa, ", .request_url = \"{f}\"", .{std.zig.fmtString(request_url)}) catch @panic("out of memory");
+        }
+        for (catalog.providers) |row| {
+            if (!std.mem.eql(u8, row.id, endpoint.id)) continue;
+            for (row.endpoints) |served| {
+                if (!std.mem.eql(u8, served.base_url, endpoint.base_url)) continue;
+                if (served.carries_version) out.appendSlice(gpa, ", .carries_version = true") catch @panic("out of memory");
+            }
         }
         out.appendSlice(gpa, " },\n") catch @panic("out of memory");
     }

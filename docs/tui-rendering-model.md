@@ -101,7 +101,10 @@ code paths; add a transcript row instead.
   with unflushed rows and `App.inline_flushed_rows` is how many rows of that block are
   already in scrollback, so flushing is row-granular. Rows go to scrollback (via
   `printAbove`) only when the unflushed stream overflows the **flush budget**, the rows
-  left on screen once the blank separator, composer and status line are subtracted —
+  left on screen once the blank separator, the composer at its minimum one-row height
+  and the status line are subtracted — the composer is budgeted like a modal, so
+  growing it covers transcript rows instead of flushing them and shrinking it later
+  leaves no blank rows behind —
   and never from active entries (assistant, thinking, tool summary, tool result, user
   echo). Quitting flushes everything, including active entries.
 - The live frame is the **tail of the unflushed stream** that fits above the chrome,
@@ -137,7 +140,10 @@ code paths; add a transcript row instead.
 - `StatusState.streaming_since_ms` / `streaming_elapsed_ms` drive the elapsed timer in
   the status line (the app refreshes the elapsed value every tick).
 - `ComposerState` gained word/line editing: `moveCursorWordPrev/Next`,
-  `deleteWordBeforeCursor`, `deleteToLineStart/End`, `deleteAtCursor`.
+  `deleteWordBeforeCursor`, `deleteToLineStart/End`, `deleteAtCursor`. It also tracks
+  `scroll_row` (first visible visual row of the draft, adjusted minimally in
+  `renderChrome` so the cursor row stays inside the window) and `goal_column` (the
+  sticky column for consecutive Up/Down moves); `clear` resets both.
 
 ## Visual language (`zig/src/tui/theme.zig`, `views/`)
 
@@ -165,7 +171,15 @@ code paths; add a transcript row instead.
   row so the renderer's row-diff paints never leak link state into other rows.
 - Composer: rounded panel whose border colour tracks state (idle grey, typing accent,
   streaming pulse, approval warning, login magenta). Typing `/` opens a command palette
-  above it; `Tab` completes the first match.
+  above it; `Tab` completes the first match. The raw draft is laid out into visual rows
+  at the content width by `tui_text.layoutRows` (wide codepoints never split; a cursor
+  past the last cell of a full row — or on the newline ending one — lands on the next
+  row), and the panel grows with the
+  draft up to `min(12, height/3)` content rows, floor 1. Beyond that the window follows
+  the cursor and muted `▲ N` / `▼ N` markers in the top/bottom border count the hidden
+  rows. Tab renders as `→`, other C0 bytes and DEL as caret notation (`^G`, `^?`), C1
+  and invalid UTF-8 as `?`, so a pasted escape sequence can never reach the terminal
+  raw; pastes normalise CRLF to LF. Masked login input stays on one windowed row.
 - Status line: `provider/model`, context gauge with a usage percentage coloured by
   band (green below 60%, yellow 60–75, orange 75–85, red 85 and up), `queue`, a bare
   permission value (`ask`/`bypass`/`pending`), cost (once tokens are known), a bare
@@ -243,10 +257,13 @@ abort turn → close modal, `Ctrl+C` abort/clear first and quit on a second pres
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
 empty idle composer, `Tab` complete the slash command the palette selects,
 `Ctrl+Y` copy the last reply, `Shift+Tab` cycle thinking, `Up/Down` move the slash
-palette's selection while it is open and otherwise walk history (once a recalled entry
-is showing they keep walking history), `PgUp/PgDn` (and the mouse wheel when
-mouse reporting is on) scroll the live window over the whole transcript row stream,
-`Ctrl+A/E` home/end, `Ctrl+U/K` cut to line start/end, `Ctrl+W` / `Alt+Backspace`
+palette's selection while it is open; otherwise they move the cursor one visual row
+inside the draft (keeping the goal column across consecutive presses, snapping to the
+start of a wide codepoint) and, at the first/last row, walk history — once a recalled
+entry is showing unedited they keep walking history, and pressing Up on the first row
+of an edited recall discards the edits and walks on, `PgUp/PgDn` (and the mouse wheel
+when mouse reporting is on) scroll the live window over the whole transcript row stream,
+`Ctrl+A/E` line home/end, `Ctrl+U/K` cut to line start/end, `Ctrl+W` / `Alt+Backspace`
 delete word, `Ctrl+Left/Right`, `Alt+Left/Right`, `Alt+B/F` word moves, `Delete`.
 `Enter` on an open palette runs its selected command.
 

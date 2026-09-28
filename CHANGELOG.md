@@ -10,6 +10,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Go has one library.** The Go SDK moves from its own module at `sdk/go` into the main module as `go/sdk`, so a Go program that wants a client for a running endpoint imports the same module as everything else rather than a second one with its own `go.mod` and its own wire types. The exported surface is unchanged — `Client` with its `Auth`, `Models`, `Provider` and `Agent` namespaces, the same request and response types, the same typed errors — and the package name is `sdk`, because `makai` is the runtime's old name and nothing outside this repository imported it. Every caller-visible literal follows (`oap sdk: `, in the errors, the resolver and the transport's log lines), and the binary cache directory is `…/oapx/bin` rather than `…/makai/bin`, so a package that says the old name is retired is retired in its messages and on disk. **The zero-comment rule now has no exceptions at all**: the 31 files of `sdk/go` were the entire Go allowlist, and folding them in took the last entry with it, so `go/tools/nocomment`'s allowlist and its stale-entry check are gone and the floor for Go is zero like Zig's and TypeScript's. The documentation those comments carried did not go with them: everything a caller of the API needs — the four namespaces, per-call cancellation versus `Client.Close`, opaque `ModelRef` and session ids, what an endpoint refuses with `unsupported_feature`, and the typed error set — is now a section in `docs/go-library.md`, which is prose the policy does not reach. CI's separate `go-sdk` job, which ran its own Go 1.23 toolchain against `sdk/go`, is replaced by a `go-sdk-smoke` job in the main workflow that builds `oapx` and runs the SDK's real-binary tests, the only place the Go SDK talks to a real runtime. The SDK's private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is deliberately a separate change.
 
+- **Every Go decoder that reads bytes from outside the process now has a fuzz target, and a scheduled job runs them.** The class is the rule: not the two decoders an issue happens to name, but every function that turns bytes another program wrote into a value. That is `validation.Validator.Validate` (a whole envelope trace), the hand-rolled duplicate-key JSON walk in six places, the adapters' native entry points (`DecodeNotification` for hermes and deepseek, `DecodeServerRequest`, `DecodeObservation` and `DecodeControlRequest` for claude, `DecodeEvent` for opencode, `DecodeStrict` for pi, hermes and deepseek), and the limit-bounded frame reader in the codex app-server codec. Each target asserts a property rather than merely returning: a refusal carries no value, an admission implies the invariant it was admitted for (an opencode event with a valid id, a supported type and a durable position; a codex frame that is a request, a result or an error and nothing else), a method the decoder does not serve is refused whatever the data says, and a decoder never hands back bytes that are not one whole JSON document. **A scheduled leg that names no target, and a target nothing schedules, both fail a test** (`go/internal/fuzzseed/matrix_test.go`): the matrix and the tree are checked against each other in both directions, and a leg is named by its package as well as its target so a failing job is identifiable. It earned its place immediately -- it found that `go/validation` already carried `FuzzValidateNeverPanics` and `FuzzApplyEnvelopeNeverPanics` and nothing ran them, and it found that two targets this change had added were later edited out of the tree while the matrix still listed them. **Seeds come from the corpus, through the catalog**: `fuzzseed.Corpus(harnessID)` resolves the current corpus of a harness from `harnesses/*.json`, so no version pin is spelled in the tree (the `pin_literal` gate would refuse it) and a new corpus version re-seeds the targets without a code change; `fuzzseed.Manifest` does the same for the 573 conformance fixtures, spread evenly across the corpus rather than taken from its head. The seeds are bounded and deduplicated, because a seed corpus runs on every ordinary `go test`. `.github/workflows/fuzz.yml` runs each target for 45 s on a weekly schedule and on demand, six at a time inside a 20-minute ceiling, and uploads the input that failed so it can become a fixture.
+
+
+- The catalog loader serves the five gateway rows beside DeepSeek: OpenRouter,
+  OpenCode Zen, Vercel AI Gateway, ZenMux and Deep Infra. Each is reachable by
+  exporting its own key — `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`,
+  `AI_GATEWAY_API_KEY`, `ZENMUX_API_KEY`, `DEEPINFRA_API_KEY` — and nothing
+  else, so five of the sixteen rows the loader could serve are now served. They
+  are the first rows whose base already carries the API version, so they are the
+  first to exercise `carries_version` end to end rather than in a unit test: the
+  row's recorded fact decides the request path, and under an override the models
+  listing is built the way the request is, so `OAPX_BASE_URL=https://proxy.example`
+  sends OpenCode Zen to `…/v1/models` and `…/v1/chat/completions` rather than one
+  of each.
+  A gateway that advertises hundreds of models now appears in `/model` and the
+  TUI picker in full. That is the honest outcome of discovery — the runtime does
+  not second-guess what a gateway says it serves — and `providers.json` remains
+  the way to narrow it, through the allowlist the custom-provider path already
+  has. No row is filtered here, because a curated catalog has no opinion about a
+  user's aggregator.
+  **A listed model also has to be requestable**, which listing alone did not
+  prove. Discovery read the credential through the catalog, so the models
+  appeared; the request path's own env fallback named DeepSeek, OpenAI and Kimi
+  literally, so all five new rows reached `error.MissingApiKey` and only DeepSeek
+  worked end to end — for the wrong reason. That fallback now reads the names the
+  row records, which is the same lookup discovery uses, so "export this row's key
+  and it works" is true of the request and not only of the listing.
+  Each row has its own test rather than one shared assertion: the set the
+  production loader enables, each row's wire and version fact, and one that
+  drives `loadProductionModels` with two rows' fakes and reads both models back,
+  so "the row is enabled" and "the row's models appear" are separate claims with
+  separate failures. I checked that second claim by removing OpenRouter from the
+  loader and confirming two tests fail — the first version of these tests called
+  the row loader directly and passed with the row absent, which proved nothing
+  about what the product actually serves.
+  The coding plans, Xiaomi's rows and OpenAI are separate steps. Xiaomi waits for
+  #352, because a pay-as-you-go key must not surface a token plan it cannot use.
+
+- An opt-in live smoke gate per catalogued row, so a row can earn `status:
+  current` against recorded evidence instead of against a probe that only
+  checked a path exists. `zig build test-e2e-provider-smoke` runs the four cases
+  the issue names — one completion, a streamed completion asserted to arrive as
+  more than one delta, one tool call, and one unknown model that must be refused
+  — for a single row named by `OAP_PROVIDER_SMOKE`. DeepSeek is the row wired up
+  as the worked example; the gate's own table is the seven `current` rows, and a
+  hermetic test pins that table against the catalog so a row's promotion or
+  demotion moves the gate with it.
+  **The gate is opt-in twice over, and neither opt-in is a credential.** A
+  credential's presence alone does not run it, which is the rule the harness
+  gates keep and which the existing provider E2E tests do *not* keep — they skip
+  on the key and nothing else, so a developer with `OPENAI_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN` exported runs them by accident. This one reads no key
+  until `OAP_PROVIDER_SMOKE` names a
+  row it knows, and it refuses outright when `CI` is set, so a misconfigured
+  runner cannot start spending a key. Both properties are exercised by running
+  the step with a key exported and no opt-in, and again with the opt-in under
+  `CI=true`.
+  Nothing about a key reaches the output. The credential is resolved through
+  `provider_credential.lookup`, so the row's environment variable wins over a
+  stored one and neither is printed; a failure reports the row, the case and the
+  error name. The base URL and wire are read from the catalog, so the gate
+  cannot drift onto a base the catalog no longer pins, and a regional row — Kimi
+  is the one `current` row that is regional — resolves through its `region_env`
+  rather than a default the gate invents.
+  The step is wired into neither `test` nor any `test-unit-*` group for the four
+  live cases — it runs only when a person names a row — while the module itself
+  is wired into both `test` and `test-unit-providers`, so the two hermetic tests
+  that pin the gate's table run in CI and in a full local run alike. The pin is
+  two-way: every listed row must be `current`, and every `current` row must be
+  listed, so a promotion cannot reach the catalog without reaching the gate.
+  **Redirect `HOME` as well as the keychain service.** `OAPX_KEYCHAIN_SERVICE`
+  redirects the store but not `~/.oapx/auth.json`, so a run with only the
+  service overridden falls back to the real file and spends a real key. I did
+  exactly that while checking this and four live calls went out against a
+  DeepSeek key; with `HOME` redirected the same invocation skips, which is the
+  fourth gap in the keychain notes and the reason the command on the issue
+  redirects both.
+  No evidence is recorded here and no row is promoted: the live runs need the
+  owner's keys, so the ledger, the per-row script results and the `goap check`
+  rule requiring a ledger reference for every `current` row all land in the
+  change that records the first reading.
 
 - `auth.providers` is answered from `providers/catalog.json` rather than from a
   four-row literal. `zig/src/auth/providers.zig` hardcoded Anthropic, GitHub
@@ -61,12 +142,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays a literal because no wire defines a models path.
   The 14 endpoints that deduplicate today carry `carries_version: true`: the ten
   whose base ends in `/v1` — OpenRouter, OpenCode Zen, Alibaba's, MiniMax's, the
-  three Xiaomi plans and Xiaomi, Vercel and ZenMux — and the four whose version is
-  not the last segment, Z.AI's `/paas/v4`, Tencent's and Volcengine's
-  `/coding/v3`, and Deep Infra's `/v1/openai`. The other 8 say nothing, which
-  means the wire's full path is appended. Absent means absent: no endpoint is
-  asked to repeat a default, so adding a wire with a versioned path needs no
-  catalog edit.
+  three Xiaomi plans and Xiaomi, Vercel and ZenMux — plus three that end in a
+  version other than `v1`, Z.AI's `/paas/v4` and Tencent's and Volcengine's
+  `/coding/v3`, and Deep Infra's `/v1/openai`, where the version is not the last
+  segment. The other 8 say nothing, which means the wire's full path is appended.
+  Absent means absent: no endpoint is asked to repeat a default, so adding a
+  wire with a versioned path needs no catalog edit.
   Two loaders carry the member, `Endpoint.CarriesVersion` in `go/providercatalog`
   and the generated `Endpoint.carries_version` in the Zig tree, and two refuse it
   where the fact cannot mean anything: `goap check` reports
@@ -75,12 +156,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ollama` or `google-generative-ai`, whose wires append no leading `/v1`. Those
   two hold the generator's own list of versioned wires, so a Zig test re-checks
   every recorded fact against `wire_paths` as well: a fact the generator let
-  through is still caught where the wire table lives.
-  Nothing reads the fact yet. One test per tree asserts it equals the inference it
-  replaces, so the 14 are recorded before the inference goes, and both are
-  deleted when it does.
+  through is still caught where the wire table lives. Nothing moves a URL —
+  `providers/resolved_urls.json` regenerates byte-identical.
+  At request time the fact reaches the join as `Model.carries_version: ?bool`,
+  null meaning not stated, and a null resolves with one exact lookup of provider
+  plus base URL against the catalog's endpoints, both sides trimmed the way the
+  join trims. Nothing sets the field: the catalog loader, the Kimi, Anthropic,
+  Codex and Copilot special cases, custom providers and every static model on
+  the provider server all pin a base, and none of them can get the fact wrong,
+  and neither wire carries a member — so the agent protocol's model keeps its
+  deduplication through a decoder that was never taught a new field. A base that
+  is not a catalog endpoint's resolves false, so an override never inherits the
+  vendor's fact, and only `providers.json` states one.
+  Two things change for a user. A custom base or a `*_BASE_URL` whose version is
+  not trailing — `…/paas/v4`, `…/v1/openai` — now gets the wire's full path
+  appended where it used to be deduplicated; the remedy is in
+  `docs/custom-endpoints.md`, and it is `providers.json` with `carries_version`,
+  because an environment variable cannot state a fact about a path. And a models
+  listing under an override is built the way its request is, so a
+  carries-version endpoint's listing gains the version its request gains:
+  `OAPX_BASE_URL=https://proxy.example` sends opencode to `…/v1/models` and
+  `…/v1/chat/completions` rather than one of each.
+  A base that ends in `/v1` and states nothing is unchanged, and that is the
+  documented convention rather than the guess this removes: a base the catalog
+  does not hold resolves from a trailing `/v1` alone, so an override naming
+  `https://proxy.example/v1` and a provider-protocol client sending
+  `http://host:8000/v1` both still reach `/v1/chat/completions`. Only a *stated*
+  fact skips that convention, and stating it also turns the read-time strip off
+  in `providers.json`, so the strip and the join cannot both drop the same
+  version. What is gone is the wider guess — a version segment anywhere in the
+  path, `…/v4`, `…/v1/openai` — which is what mis-served a proxy under the
+  vendor's own path shape.
+  `Wire.dedup_version` and the version-segment scan are gone from both trees.
+  `copilot_wire` keeps its suffix and loses only the flag, which had never done
+  anything: its path is `/chat/completions`, with no leading `/v1` to drop.
 
+- The TUI composer grows with the draft up to `min(12, height/3)` content rows
+  instead of windowing a long draft with `…`; past that the window follows the cursor
+  and muted `▲ N` / `▼ N` markers in the panel border count the hidden rows. Up/Down
+  move the cursor one visual row inside the draft (keeping the goal column) and only
+  walk history at the first/last row, while a recalled entry showing unedited still
+  walks on any press. Home/End and Ctrl+A/E jump within the current line. Pastes
+  normalise CRLF to LF, tabs render as `→`, and other control bytes render as caret
+  notation so pasted escape sequences can never reach the terminal raw.
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
+- `go/binding` records what a host needs to reopen a session it opened, and `goap hub --bindings <path>` writes one record per open. A binding says which harness ran which session, under which pin, with which model and tool sources, in which home and — the directory the **adapter entry was configured with**, omitted when the hub does not know one, never the daemon's own — and it never holds a credential or a resolved environment value; a hub test opens a session and asserts the written bytes carry neither. The store is an interface the host supplies, with a file implementation beside it: an append-only log created `0o600` where **history is appended rather than replaced**, and **a torn write is detected and never read** — a partial line or a record whose bytes do not match its checksum is refused as `binding.ErrTorn` rather than half believed, because half a binding would reopen the wrong session. The repair keeps the longest prefix of records that decode, so a crash — or an edit of the host-owned file — cannot leave the log permanently unreadable, and it walks only the bytes it has not already validated, so appends stay linear in what they read; because a validated prefix cannot be re-checked for free, **a read that meets a record it cannot decode forgets the cached prefix**, so an edit the walk missed is noticed by the first read of that record and the next append repairs the log from zero rather than writing after it **Every record is written in the same critical section as the registry transition it records, and none is written for a transition that did not happen**: a registration records its open, a deregistration its close, a rollback records the close even when the adapter's close failed before `markClosed`, and a duplicate that never ran records **one `refusal` and nothing else** — so `binding.State`, which reads the last entry that claims to be a state, never reports a running session as closed. The store is read at reopen; the wire member that asks for one arrives with the reopen unit, so the read side is the store's own `Latest`/`History` for now.
 
 - `zig/src/model_catalog.zig` grows a generic catalog loader, so a row in
   `providers/catalog.json` reaches `/model` and the TUI picker by being
@@ -265,8 +385,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   permission, queue, drops, model, backpressure, context) with the state segment —
   and `bypass`/`pending` — never dropped. The post-backpressure drop counter no
   longer renders as `drops:drops:N`.
+- The inline flush budget counts the composer at its one-row minimum (like a modal),
+  so a growing composer covers transcript rows instead of flushing them and a
+  shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+- **The duplicate-key JSON walk no longer refuses a valid message because of a number it cannot hold.** The walk exists to catch a wire that disagrees with itself, and `encoding/json`'s token reader turns a number into a `float64` by default — so a well-formed integer literal longer than a `float64` can represent (`1e999`, or 400 digits) made the walk return a range error and the adapter reject a message that is perfectly valid. The deepseek copies already asked for `UseNumber()`; acp, claude, codex, hermes, pi and opencode did not, so six adapters refused valid traffic in six slightly different ways, and opencode's copy is exported as `native.RejectDuplicateKeys`. All of them ask now, and the copies that remain are [#489](https://github.com/lsm/open-agent-protocol/issues/489)'s to collapse.
+
 - The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.
 
 

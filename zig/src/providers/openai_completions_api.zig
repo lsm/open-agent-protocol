@@ -89,17 +89,43 @@ fn allowsAnonymous(model: ai_types.Model) bool {
     return true;
 }
 
-fn envApiKeyForProvider(allocator: std.mem.Allocator, provider_id: []const u8) ?[]const u8 {
-    if (std.mem.eql(u8, provider_id, "deepseek")) {
-        return compat_mod.getEnvVarOwned(allocator, "DEEPSEEK_API_KEY") catch null;
-    }
-    if (std.mem.eql(u8, provider_id, "openai")) {
-        return compat_mod.getEnvVarOwned(allocator, "OPENAI_API_KEY") catch null;
-    }
-    if (std.mem.eql(u8, provider_id, "kimi")) {
-        return compat_mod.getEnvVarOwned(allocator, "KIMI_API_KEY") catch null;
+const EnvReader = *const fn (std.mem.Allocator, []const u8, ?*anyopaque) anyerror!?[]u8;
+
+fn readOwnEnv(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+    _ = ctx;
+    const value = compat_mod.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableMissing => return null,
+        else => return err,
+    };
+    return value;
+}
+
+fn apiKeyFromNames(
+    allocator: std.mem.Allocator,
+    names: []const []const u8,
+    reader: EnvReader,
+    ctx: ?*anyopaque,
+) ?[]const u8 {
+    for (names) |name| {
+        const maybe = reader(allocator, name, ctx) catch continue;
+        const value = maybe orelse continue;
+        if (value.len > 0) return value;
+        allocator.free(value);
     }
     return null;
+}
+
+fn apiKeyForProvider(
+    allocator: std.mem.Allocator,
+    provider_id: []const u8,
+    reader: EnvReader,
+    ctx: ?*anyopaque,
+) ?[]const u8 {
+    return apiKeyFromNames(allocator, provider_catalog.credentialEnv(provider_id), reader, ctx);
+}
+
+fn envApiKeyForProvider(allocator: std.mem.Allocator, provider_id: []const u8) ?[]const u8 {
+    return apiKeyForProvider(allocator, provider_id, readOwnEnv, null);
 }
 
 fn appendTextContent(msg: ai_types.Message, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
@@ -967,7 +993,7 @@ pub const wires: []const []const u8 = &.{"openai-completions"};
 
 const request_wire = provider_catalog.wirePath("openai-completions") orelse unreachable;
 
-const copilot_wire = provider_catalog.Wire{ .id = "github-copilot", .suffix = "/chat/completions", .dedup_version = true };
+const copilot_wire = provider_catalog.Wire{ .id = "github-copilot", .suffix = "/chat/completions" };
 
 fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
     var sb = StringBuilder{};
@@ -1040,7 +1066,7 @@ fn runThread(ctx: *ThreadCtx) void {
     defer client.deinit();
 
     const wire = if (std.mem.eql(u8, model.provider, "github-copilot")) copilot_wire else request_wire;
-    const url = provider_catalog.joinUrlOwned(allocator, model.base_url, wire) catch {
+    const url = provider_catalog.joinModelUrlOwned(allocator, model, wire) catch {
         ctx.deinit();
         stream.completeWithError("oom building url");
         stream.markThreadDone();
@@ -2882,17 +2908,71 @@ test "streamSimpleOpenAICompletions exits early when pre-cancelled" {
     try std.testing.expectEqualStrings("request cancelled", stream.getError().?);
 }
 
+const RecordedEnv = struct {
+    asked: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *RecordedEnv, allocator: std.mem.Allocator) void {
+        for (self.asked.items) |name| allocator.free(name);
+        self.asked.deinit(allocator);
+    }
+
+    fn read(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+        const self: *RecordedEnv = @ptrCast(@alignCast(ctx orelse return null));
+        try self.asked.append(allocator, try allocator.dupe(u8, name));
+        return try allocator.dupe(u8, "row-key");
+    }
+};
+
+test "a request consults exactly the names the row records, not a hardcoded list" {
+    for (provider_catalog.all) |row| {
+        var recorded = RecordedEnv{};
+        defer recorded.deinit(std.testing.allocator);
+        const found = apiKeyForProvider(std.testing.allocator, row.id, RecordedEnv.read, &recorded);
+        defer if (found) |value| std.testing.allocator.free(value);
+
+        if (row.credential_env.len == 0) {
+            try std.testing.expect(found == null);
+            try std.testing.expectEqual(@as(usize, 0), recorded.asked.items.len);
+            continue;
+        }
+        if (found == null) {
+            std.debug.print("\n{s} records {s} but a request would find no key\n", .{ row.id, row.credential_env[0] });
+            return error.TestRowKeyNotFound;
+        }
+        try std.testing.expectEqualStrings("row-key", found.?);
+        try std.testing.expectEqual(@as(usize, 1), recorded.asked.items.len);
+        try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
+    }
+    try std.testing.expect(apiKeyForProvider(std.testing.allocator, "no-such-provider", RecordedEnv.read, null) == null);
+}
+
+test "a set but empty variable is skipped for the next name the row records" {
+    const EmptyFirst = struct {
+        fn read(allocator: std.mem.Allocator, name: []const u8, ctx: ?*anyopaque) anyerror!?[]u8 {
+            _ = ctx;
+            if (std.mem.eql(u8, name, "FIRST")) return try allocator.dupe(u8, "");
+            return try allocator.dupe(u8, "second");
+        }
+    };
+    const names = [_][]const u8{ "FIRST", "SECOND" };
+    const found = apiKeyFromNames(std.testing.allocator, &names, EmptyFirst.read, null);
+    defer std.testing.allocator.free(found.?);
+    try std.testing.expectEqualStrings("second", found.?);
+    try std.testing.expectEqualStrings("ANTHROPIC_AUTH_TOKEN", provider_catalog.credentialEnv("anthropic")[0]);
+    try std.testing.expectEqualStrings("ANTHROPIC_API_KEY", provider_catalog.credentialEnv("anthropic")[1]);
+}
+
 test "the openai completions request url drops a trailing slash and keeps a suffix already present" {
-    const cases = [_]struct { base: []const u8, want: []const u8 }{
-        .{ .base = "https://api.openai.com", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com/", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com///", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com/v1/chat/completions", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.openai.com/v1/chat/completions/", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.groq.com/openai/v1/", .want = "https://api.groq.com/openai/v1/chat/completions" },
+    const cases = [_]struct { base: []const u8, fact: bool, want: []const u8 }{
+        .{ .base = "https://api.openai.com", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com///", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/v1/chat/completions", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.openai.com/v1/chat/completions/", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.groq.com/openai/v1/", .fact = true, .want = "https://api.groq.com/openai/v1/chat/completions" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, request_wire, case.fact);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
@@ -2906,28 +2986,29 @@ test "the copilot request url drops a trailing slash and never doubles the versi
         .{ .base = "https://gw.test/v1", .want = "https://gw.test/v1/chat/completions" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, copilot_wire);
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, copilot_wire, false);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
 }
 
-test "the openai completions request url never doubles the version segment" {
-    const cases = [_]struct { base: []const u8, suffix: []const u8, want: []const u8 }{
-        .{ .base = "https://api.openai.com", .suffix = "/v1/chat/completions", .want = "https://api.openai.com/v1/chat/completions" },
-        .{ .base = "https://api.groq.com/openai/v1", .suffix = "/v1/chat/completions", .want = "https://api.groq.com/openai/v1/chat/completions" },
-        .{ .base = "http://localhost:8000/v1/", .suffix = "/v1/chat/completions", .want = "http://localhost:8000/v1/chat/completions" },
-        .{ .base = "https://api.githubcopilot.com", .suffix = "/chat/completions", .want = "https://api.githubcopilot.com/chat/completions" },
-        .{ .base = "https://gw.test/v1", .suffix = "/chat/completions", .want = "https://gw.test/v1/chat/completions" },
-        .{ .base = "https://gw.test/v1/chat/completions", .suffix = "/v1/chat/completions", .want = "https://gw.test/v1/chat/completions" },
-        .{ .base = "https://api.z.ai/api/coding/paas/v4", .suffix = "/v1/chat/completions", .want = "https://api.z.ai/api/coding/paas/v4/chat/completions" },
-        .{ .base = "https://api.lkeap.cloud.tencent.com/coding/v3", .suffix = "/v1/chat/completions", .want = "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions" },
-        .{ .base = "https://api.deepinfra.com/v1/openai", .suffix = "/v1/chat/completions", .want = "https://api.deepinfra.com/v1/openai/chat/completions" },
-        .{ .base = "https://gw.test/v2", .suffix = "/v1/chat/completions", .want = "https://gw.test/v2/chat/completions" },
-        .{ .base = "https://gw.test/vercel", .suffix = "/v1/chat/completions", .want = "https://gw.test/vercel/v1/chat/completions" },
+test "the openai completions request url drops the wire's version only when the fact says the base has one" {
+    const cases = [_]struct { base: []const u8, suffix: []const u8, fact: bool, want: []const u8 }{
+        .{ .base = "https://api.openai.com", .suffix = "/v1/chat/completions", .fact = false, .want = "https://api.openai.com/v1/chat/completions" },
+        .{ .base = "https://api.groq.com/openai/v1", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.groq.com/openai/v1/chat/completions" },
+        .{ .base = "http://localhost:8000/v1/", .suffix = "/v1/chat/completions", .fact = true, .want = "http://localhost:8000/v1/chat/completions" },
+        .{ .base = "https://api.githubcopilot.com", .suffix = "/chat/completions", .fact = false, .want = "https://api.githubcopilot.com/chat/completions" },
+        .{ .base = "https://gw.test/v1", .suffix = "/chat/completions", .fact = false, .want = "https://gw.test/v1/chat/completions" },
+        .{ .base = "https://gw.test/v1/chat/completions", .suffix = "/v1/chat/completions", .fact = false, .want = "https://gw.test/v1/chat/completions" },
+        .{ .base = "https://api.z.ai/api/coding/paas/v4", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.z.ai/api/coding/paas/v4/chat/completions" },
+        .{ .base = "https://api.lkeap.cloud.tencent.com/coding/v3", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions" },
+        .{ .base = "https://api.deepinfra.com/v1/openai", .suffix = "/v1/chat/completions", .fact = true, .want = "https://api.deepinfra.com/v1/openai/chat/completions" },
+        .{ .base = "https://gw.test/v2", .suffix = "/v1/chat/completions", .fact = true, .want = "https://gw.test/v2/chat/completions" },
+        .{ .base = "https://gw.test/vercel", .suffix = "/v1/chat/completions", .fact = false, .want = "https://gw.test/vercel/v1/chat/completions" },
+        .{ .base = "https://api.z.ai/api/coding/paas/v4", .suffix = "/v1/chat/completions", .fact = false, .want = "https://api.z.ai/api/coding/paas/v4/v1/chat/completions" },
     };
     for (cases) |case| {
-        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, .{ .id = "openai-completions", .suffix = case.suffix, .dedup_version = true });
+        const url = try provider_catalog.joinUrlOwned(std.testing.allocator, case.base, .{ .id = "openai-completions", .suffix = case.suffix }, case.fact);
         defer std.testing.allocator.free(url);
         try std.testing.expectEqualStrings(case.want, url);
     }
