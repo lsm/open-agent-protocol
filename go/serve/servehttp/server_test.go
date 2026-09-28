@@ -1123,7 +1123,8 @@ func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
 func TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8(t *testing.T) {
 	_, server := newServer(t, memoryRegistry(0), Options{})
 	for i, contentType := range []string{"application/json", "application/json; charset=utf-8", "application/json; charset=UTF-8", "application/json; charset=utf8", "application/json; charset=UTF8", "application/json; charset=latin1", "application/json; charset=us-ascii", "application/json; charset=iso-8859-1", "application/json; charset=nonsense"} {
-		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-charset-` + strconv.Itoa(i) + `","metadata":{"title":"caf\u00e9 \u2014 na\u00efve \u65e5\u672c\u8a9e"}}}`)
+		want := "s-caf\u00e9-" + strconv.Itoa(i)
+		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"` + want + ` \u2014 na\u00efve \u65e5\u672c\u8a9e"}}`)
 		response, data := post(t, server, "/adapters/memory/sessions", contentType, body)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
@@ -1136,8 +1137,30 @@ func TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8(t *testing.T) {
 		if err := opened.DecodePayload(&answer); err != nil {
 			t.Fatalf("content type %q payload does not decode: %s", contentType, err)
 		}
-		if answer.SessionID != protocol.SessionID("s-charset-"+strconv.Itoa(i)) {
-			t.Fatalf("content type %q session_id = %q, want the one the body named", contentType, answer.SessionID)
+		if string(answer.SessionID) != "s-café-"+strconv.Itoa(i)+" — naïve 日本語" {
+			t.Fatalf("content type %q session_id = %q, want the body's own characters read as UTF-8", contentType, answer.SessionID)
+		}
+	}
+}
+
+func TestABodyThatIsNotUTF8IsReadWithTheReplacementCharacter(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(0), Options{})
+	for i, contentType := range []string{"application/json", "application/json; charset=latin1", "application/json; charset=utf-8"} {
+		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-bad` + "\xff" + `byte-` + strconv.Itoa(i) + `"}}`)
+		response, data := post(t, server, "/adapters/memory/sessions", contentType, body)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
+		}
+		var opened protocol.Envelope
+		if err := json.Unmarshal(data, &opened); err != nil {
+			t.Fatalf("content type %q answer is not an envelope: %s", contentType, data)
+		}
+		var answer protocol.SessionOpenResponse
+		if err := opened.DecodePayload(&answer); err != nil {
+			t.Fatalf("content type %q payload does not decode: %s", contentType, err)
+		}
+		if string(answer.SessionID) != "s-bad\ufffdbyte-"+strconv.Itoa(i) {
+			t.Fatalf("content type %q session_id = %q, want the invalid byte replaced whatever the charset claims", contentType, answer.SessionID)
 		}
 	}
 }

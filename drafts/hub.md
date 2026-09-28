@@ -413,7 +413,7 @@ both answers, at the budget and one byte over it.
 
 | HTTP rule | pinned by |
 | --- | --- |
-| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, the absent `Content-Type`, and a `charset` that is not UTF-8) |
+| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`; a `charset` is no longer a reason to refuse, and the row below says which test pins that) |
 | Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body carries non-ASCII text and the answer must name the session that body asked for, so a misread body cannot pass |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
@@ -967,10 +967,11 @@ first be asked to stop.
 ## Known gaps
 
 The rules this document specifies that a Go test did not pin when it was
-written, and where each is pinned now. Every entry names the test that closes
-it, because a port implementing this draft should be able to check itself
-against the same list. A port must implement every rule here; each was a place
-a differential test would otherwise not see.
+written, and where each is pinned now. Every entry but G3's names the test
+that closes it, because a port implementing this draft should be able to check
+itself against the same list; G3 is a decided question with no rule left to
+pin, and points at the issue that carries it. A port must implement every rule
+here; each was a place a differential test would otherwise not see.
 
 - **G1 — closed.** The status was pinned and nothing else: a `text/plain`
   open is refused `415`, and the assertion was on the status alone, so
