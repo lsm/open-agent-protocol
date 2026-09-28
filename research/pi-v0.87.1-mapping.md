@@ -308,14 +308,21 @@ rather than with a named absence, which is the same place 0039's
 `unsupported_feature` has to be manufactured as for ACP.
 
 **What the Go adapter does with all of it: it knows the names and sends none
-of them.** `go/adapter/pi/internal/native/types.go` types `switch_session`,
-`get_entries`, `get_tree`, `fork`, `clone` and `get_fork_messages` as
-commands, and `go/adapter/pi` sends `new_session`, `abort`, `get_state` and the
-rest — but never a `switch_session` or a `get_entries`. So pi has no reattach
-today either, and the two operations 0039's evidence table names for it are
-reachable and unused. The adapter advertises `run.resume` and `run.replay` as
-`degraded` over its own bounded journal, which is a different capability from
-reattaching to the harness's store and should not be read as one.
+of them.** The adapter sends three commands and no more: `prompt` (always with
+`streamingBehavior: "steer"`, which is also how a follow-up rides — `steer` and
+`followUp` are two values of the same member on the same `prompt` command, not
+two commands), `abort`, and `get_state`. It sends **no session command at
+all**: pi creates a session implicitly when the process starts, which is why
+`native.CommandNewSession` and `native.CommandSwitchSession` are both declared
+in `go/adapter/pi/internal/native/types.go` and neither appears in
+`session.go` — a `switch_session` would be the adapter's first *explicit*
+session command, and it is the one 0039's reattach needs. `get_entries`,
+`get_tree`, `fork`, `clone` and `get_fork_messages` are typed for the same
+reason and equally unused. So pi has no reattach today, and the operations
+0039's evidence table names for it are reachable and unused. The adapter
+advertises `run.resume` and `run.replay` as `degraded` over its own bounded
+journal, which is a different capability from reattaching to the harness's
+store and should not be read as one.
 
 ## P0 mismatches and implemented policy
 
