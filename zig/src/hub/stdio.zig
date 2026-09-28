@@ -69,6 +69,7 @@ pub const Request = struct {
     session_id: ?[]const u8 = null,
     run_id: ?[]const u8 = null,
     after: ?u64 = null,
+    cursor_refused: bool = false,
     payload: ?std.json.Value = null,
     allow_degraded_features: []const []const u8 = &.{},
     supplied: Supplied = .{},
@@ -87,6 +88,9 @@ pub const Request = struct {
         for (all_parameters) |parameter| {
             const declared = declares(parameters, parameter);
             if (declared == self.takes(parameter)) continue;
+            if (self.supplied.after and std.mem.eql(u8, parameter, "after")) {
+                return .{ .code = "invalid_cursor", .message = "the cursor is not a position this stream can resume from" };
+            }
             return .{ .code = "invalid_request", .message = "this op does not define that parameter" };
         }
         return null;
@@ -165,10 +169,12 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
     request.run_id = stringMember(root, "run_id");
     if (request.supplied.after) {
         const after = member(root, "after").?;
-        if (after != .null) {
-            if (after != .integer) return Error.MalformedLine;
-            if (after.integer < 0 or after.integer > std.math.maxInt(u64)) return Error.MalformedLine;
+        if (after == .null) {
+            request.after = null;
+        } else if (after == .integer and after.integer >= 0) {
             request.after = @intCast(after.integer);
+        } else {
+            request.cursor_refused = true;
         }
     }
     if (request.supplied.request) request.payload = member(root, "request");
@@ -352,8 +358,9 @@ pub const Frontend = struct {
             else => return .{ .refused = .{ .code = "probe_failed", .message = try std.fmt.allocPrint(arena, "the adapter \"{s}\" could not be probed", .{name}) } },
         };
         self.next_envelope += 1;
-        const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
         const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
+        self.next_envelope += 1;
+        const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
         const declared = try declaredFeatures(arena, descriptor.features);
         const tools = try arena.dupe(oap_types.ToolDefinition, descriptor.tools);
         const sources = try arena.dupe(oap_types.ToolSourceDescriptor, descriptor.sources);
@@ -381,6 +388,7 @@ pub const Frontend = struct {
         };
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
+        self.next_envelope += 1;
         const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
         const envelope = oap_types.Envelope{
             .id = answer_id,
@@ -429,19 +437,25 @@ pub const Frontend = struct {
         try object.put(arena, "id", .{ .integer = id });
         try object.put(arena, "ok", .{ .bool = true });
         try object.put(arena, "result", value);
-        const line = json_encode.valueAlloc(arena, .{ .object = object }) catch |err| switch (err) {
+        const line = self.frame(arena, object) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                try self.tooLarge(arena, id);
+                return;
+            },
         };
         defer arena.free(line);
-        if (line.len > self.frame_limit) return Error.ResponseTooLarge;
         try self.write(line);
     }
 
     fn answerLine(self: *Frontend, id: i64, payload: []const u8) Error!void {
         const arena = self.allocator;
-        const line = if (std.fmt.allocPrint(arena, "{{\"id\":{d},\"ok\":true,\"result\":{s}}}", .{ id, payload })) |ready| ready else |_| return error.OutOfMemory;
+        const line = std.fmt.allocPrint(arena, "{{\"id\":{d},\"ok\":true,\"result\":{s}}}", .{ id, payload }) catch return error.OutOfMemory;
         defer arena.free(line);
-        if (line.len > self.frame_limit) return Error.ResponseTooLarge;
+        if (line.len > self.frame_limit) {
+            try self.tooLarge(arena, id);
+            return;
+        }
         try self.write(line);
     }
 
@@ -461,11 +475,41 @@ pub const Frontend = struct {
             try body.put(arena, "details", .{ .object = details });
         }
         try object.put(arena, "error", .{ .object = body });
+        if (self.frame(arena, object)) |line| {
+            defer arena.free(line);
+            try self.write(line);
+            return;
+        } else |_| {}
+        if (self.frame(arena, object)) |line| {
+            defer arena.free(line);
+            try self.write(line);
+            return;
+        } else |_| {}
+        try self.tooLarge(arena, id);
+    }
+
+    fn frame(self: *Frontend, arena: std.mem.Allocator, object: anytype) ![]const u8 {
         const line = json_encode.valueAlloc(arena, .{ .object = object }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
         };
+        if (line.len > self.frame_limit) {
+            arena.free(line);
+            return Error.ResponseTooLarge;
+        }
+        return line;
+    }
+
+    fn tooLarge(self: *Frontend, arena: std.mem.Allocator, id: i64) Error!void {
+        var object = try emptyObject(arena);
+        try object.put(arena, "id", .{ .integer = id });
+        try object.put(arena, "ok", .{ .bool = false });
+        try object.put(arena, "result", .{ .null = {} });
+        var body = try emptyObject(arena);
+        try body.put(arena, "code", .{ .string = "response_too_large" });
+        try body.put(arena, "message", .{ .string = "the encoded response exceeds the frame limit" });
+        try object.put(arena, "error", .{ .object = body });
+        const line = try self.frame(arena, object);
         defer arena.free(line);
-        if (line.len > self.frame_limit) return Error.ResponseTooLarge;
         try self.write(line);
     }
 
@@ -477,12 +521,16 @@ pub const Frontend = struct {
     }
 };
 
-fn trim(arena: std.mem.Allocator, message: []const u8) ![]const u8 {
-    if (message.len <= message_limit) return message;
-    var cut = message_limit;
-    while (cut > 0 and message[cut] & 0b1100_0000 == 0b1000_0000) cut -= 1;
-    while (cut > 0 and std.unicode.utf8ByteSequenceLength(message[cut - 1]) catch 0 > cut) cut -= 1;
-    return std.fmt.allocPrint(arena, "{s}…", .{message[0..cut]});
+fn trim(arena: std.mem.Allocator, message: []const u8) Error![]const u8 {
+    if (std.unicode.utf8CountCodepoints(message) catch 0 <= message_limit) return message;
+    var kept: usize = 0;
+    var index: usize = 0;
+    while (index < message.len) {
+        if (kept == message_limit) break;
+        index += std.unicode.utf8ByteSequenceLength(message[index]) catch 1;
+        kept += 1;
+    }
+    return std.fmt.allocPrint(arena, "{s}…", .{message[0..index]});
 }
 
 fn timestamp(arena: std.mem.Allocator, milliseconds: i64) ![]const u8 {
@@ -831,6 +879,18 @@ test "a framing defect stops serving, and the daemon says so" {
     }
 }
 
+test "a refusal that will not fit is reduced, then refused as too large" {
+    const harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = minimum_frame_limit });
+    defer harness.deinit();
+    const name = "adapter-" ++ "n" ** 200;
+    const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{name});
+    try harness.send(line);
+    const answer = (try harness.lastValue()).object.get("error").?.object;
+    try testing.expectEqualStrings("response_too_large", answer.get("code").?.string);
+    try testing.expectEqualStrings("the encoded response exceeds the frame limit", answer.get("message").?.string);
+
+}
+
 test "a line over the frame limit is a defect, and the limit is not negotiable below the floor" {
     var harness = try Harness.init(testing.allocator, .{}, .{ .frame_limit = minimum_frame_limit });
     defer harness.deinit();
@@ -839,6 +899,19 @@ test "a line over the frame limit is a defect, and the limit is not negotiable b
     try testing.expectError(Error.FrameLimitTooSmall, harness.send(&oversized));
     try testing.expect(harness.frontend.stopped);
     try testing.expectError(Error.FrameLimitTooSmall, Frontend.init(testing.allocator, &harness.hub, harness.recorder.sink(), .{ .frame_limit = minimum_frame_limit - 1 }));
+}
+
+test "a cursor that is not a position is a refusal, not a framing defect" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const values = [_][]const u8{ "-1", "1.5", "\"1\"", "true" };
+    for (values) |value| {
+        const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"adapters\",\"after\":{s}}}", .{value});
+        try harness.send(line);
+        try testing.expectEqualStrings("invalid_cursor", try harness.code());
+    }
+    try harness.send("{\"id\":2,\"op\":\"adapters\"}");
+    try testing.expect((try harness.lastValue()).object.get("ok").?.bool);
 }
 
 test "a parameter an op does not define is refused, and a supplied null still counts" {
@@ -980,7 +1053,7 @@ test "state answers a daemon-minted envelope and refuses an unknown session" {
     const envelope = (try harness.lastValue()).object.get("result").?;
     try testing.expectEqualStrings("session.state.response", try textMember(harness.arena(), envelope, "type"));
     try testing.expectEqualStrings("oap-response-1", try textMember(harness.arena(), envelope, "id"));
-    try testing.expectEqualStrings("oap-request-1", try textMember(harness.arena(), envelope, "in_reply_to"));
+    try testing.expectEqualStrings("oap-request-2", try textMember(harness.arena(), envelope, "in_reply_to"));
     try testing.expectEqualStrings("asked", try textMember(harness.arena(), envelope, "session_id"));
     const payload = envelope.object.get("payload").?;
     try testing.expectEqualStrings("asked", try textMember(harness.arena(), payload, "session_id"));
@@ -999,7 +1072,7 @@ test "a refusal's message is bounded so a long one still frames" {
     try harness.send(line);
     const message = (try harness.lastValue()).object.get("error").?.object.get("message").?.string;
     try testing.expect(std.mem.endsWith(u8, message, "\u{2026}"));
-    try testing.expect(message.len <= message_limit + 4);
+    try testing.expect(std.unicode.utf8CountCodepoints(message) catch 0 <= message_limit + 1);
     try testing.expect(std.unicode.utf8ValidateSlice(message));
 }
 
@@ -1012,9 +1085,9 @@ test "a bounded message is cut on a character boundary, not inside one" {
     const message = (try harness.lastValue()).object.get("error").?.object.get("message").?.string;
     try testing.expect(std.unicode.utf8ValidateSlice(message));
     try testing.expect(std.mem.endsWith(u8, message, "\u{2026}"));
-    try testing.expect(message.len <= message_limit + 4);
+    try testing.expect(std.unicode.utf8CountCodepoints(message) catch 0 <= message_limit + 1);
 
-    var varied: [396]u8 = undefined;
+    var varied: [1200]u8 = undefined;
     for (&varied, 0..) |*byte, index| byte.* = if (index % 3 == 0) 0xC3 else if (index % 3 == 1) 0xA9 else 'a';
     const mixed = try std.fmt.allocPrint(harness.arena(), "{{\"id\":2,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{varied[0..]});
     try testing.expect(std.unicode.utf8ValidateSlice(mixed));
