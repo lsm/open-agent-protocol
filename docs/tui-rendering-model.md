@@ -217,17 +217,60 @@ code paths; add a transcript row instead.
   the row is parsed only for rows without a live link (a resumed session's transcript),
   and that parse skips the known label so a tool named "Deployment failed checks" is
   not read as failed.
+- A tool row's argument is fitted to the terminal width by the row, not clipped when
+  the summary is written. A shell tool's row puts the call's `command` under the
+  title, lexed by `tui/shell_highlight.zig` (command words, flags, strings, variables,
+  operators, heredoc bodies, comments), wrapped to the body width and capped at 12
+  rows with a `… +n more lines` marker. When the title's argument is that command,
+  the title drops it so the command shows once.
 
 ## Keys
 
-`Enter` send (steer while streaming), `Shift+Enter` newline, `Esc` clear draft →
+`Enter` send (steer while streaming), `Tab` while streaming queue the draft as a
+follow-up that is sent when the turn stops (it waits above the composer until then,
+and the inline window reserves its rows so no transcript row hides behind it; a
+draft starting with `/` is never queued),
+`Shift+Enter` newline, `Esc` clear draft →
 abort turn → close modal, `Ctrl+C` abort/clear first and quit on a second press
 within ~1.5 s (immediate quit when idle with an empty composer), `Ctrl+D` quit on an
-empty idle composer, `Tab` complete a slash command, `Ctrl+Y` copy the last reply,
-`Shift+Tab` cycle thinking, `Up/Down` history, `PgUp/PgDn` (and the mouse wheel when
+empty idle composer, `Tab` complete the slash command the palette selects,
+`Ctrl+Y` copy the last reply, `Shift+Tab` cycle thinking, `Up/Down` move the slash
+palette's selection while it is open and otherwise walk history (once a recalled entry
+is showing they keep walking history), `PgUp/PgDn` (and the mouse wheel when
 mouse reporting is on) scroll the live window over the whole transcript row stream,
 `Ctrl+A/E` home/end, `Ctrl+U/K` cut to line start/end, `Ctrl+W` / `Alt+Backspace`
 delete word, `Ctrl+Left/Right`, `Alt+Left/Right`, `Alt+B/F` word moves, `Delete`.
+`Enter` on an open palette runs its selected command.
+
+In the model, login and permission pickers, typing filters the list: every
+space-separated term must appear, case-insensitively, in an item's label or detail.
+`Backspace` edits the filter, `Up/Down` and `PgUp/PgDn` move, `Enter` selects and `Esc`
+closes; reopening a picker clears its filter.
+
+## Compaction
+
+`/compact [focus]` replaces the agent's history with a summary the current model
+writes. The request reuses the turn's system prompt, tools and thinking level so the
+provider's prompt cache still applies, and ends with a user message asking for a
+sectioned summary inside `<summary>` tags without tool calls; the optional focus is
+appended to it. The history becomes that summary as a user turn plus a fixed assistant
+acknowledgement, so queued messages still run through the normal continue path.
+Before the request, the messages being replaced are written to
+`~/.oapx/sessions/<session>/compaction-<n>.jsonl`, one message per line, and the
+summary lists every transcript written so far in the session. A later transcript
+starts with the summary before it, so the chain reaches the first message. When the
+history does not fit in one request, the oldest turns are left out and the summary
+says so. A provider error that reports an overflow retries with a quarter less
+history, up to three attempts.
+
+While compacting, the status bar reads `compacting` and `Enter` and `Tab` queue the
+draft. `Esc` cancels the compaction and leaves the history unchanged, but keeps the
+queued drafts: they are sent once the compaction ends, whether it completed, failed or
+was cancelled. The result is a System entry with the message count, estimated tokens
+before and after, the transcript path and the summary. The session file records the
+result as a `compaction_end` event; a resume replays it by resetting the history to
+the summary. None of this crosses the protocol: the agent loop runs in-process, and
+the summary request is an ordinary model call.
 
 Scrolling: while `transcript_scroll` is non-zero the inline body is a window over the
 full transcript rendered at the current width (rows already flushed into terminal

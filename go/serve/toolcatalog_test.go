@@ -38,7 +38,7 @@ func TestHubRefusesAMisScopedToolCatalog(t *testing.T) {
 				Revision: "stub-v1",
 				Tools:    protocol.ToolsListResponse{SessionID: testCase.answer, Tools: []protocol.ToolDefinition{}},
 			}}
-			entry := newSession("listing", "stub", lister)
+			entry := newSession("listing", "stub", lister, nil)
 			_, err := entry.Tools(context.Background(), protocol.ToolsListRequest{SessionID: testCase.ask})
 			if err == nil {
 				t.Fatal("a mis-scoped catalog reached the binding")
@@ -54,7 +54,7 @@ func TestHubRefusesACatalogItCannotBindToADescriptor(t *testing.T) {
 	lister := &listerSession{catalog: base.ToolCatalog{
 		Tools: protocol.ToolsListResponse{SessionID: "listing", Tools: []protocol.ToolDefinition{}},
 	}}
-	entry := newSession("listing", "stub", lister)
+	entry := newSession("listing", "stub", lister, nil)
 	_, err := entry.Tools(context.Background(), protocol.ToolsListRequest{SessionID: "listing"})
 	if err == nil {
 		t.Fatal("an unbindable catalog reached the binding")
@@ -69,7 +69,7 @@ func TestHubRepairsAnAbsentToolList(t *testing.T) {
 		Revision: "stub-v1",
 		Tools:    protocol.ToolsListResponse{SessionID: "listing"},
 	}}
-	entry := newSession("listing", "stub", lister)
+	entry := newSession("listing", "stub", lister, nil)
 	catalog, err := entry.Tools(context.Background(), protocol.ToolsListRequest{
 		SessionID: "listing", AllowDegradedFeatures: []string{protocol.FeatureToolsList},
 	})

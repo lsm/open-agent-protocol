@@ -275,6 +275,8 @@ func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
 			status, code = http.StatusNotFound, "unknown_adapter"
 		case errors.Is(err, serve.ErrSessionExists):
 			status, code = http.StatusConflict, "session_exists"
+		case errors.Is(err, base.ErrSessionClosed):
+			status, code = http.StatusConflict, "session_closed"
 		}
 		s.writeError(w, status, code, adapterMessage(err), envelope)
 		return
@@ -741,18 +743,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	s.streamSubscription(w, flusher, subscription)
 }
 
-func utf8Charset(charset string) bool {
-	return strings.EqualFold(charset, "utf-8") || strings.EqualFold(charset, "utf8")
-}
-
 func (s *Server) readRequest(w http.ResponseWriter, r *http.Request, want ...protocol.EnvelopeType) (protocol.Envelope, bool) {
-	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "the daemon requires Content-Type: application/json", protocol.Envelope{})
-		return protocol.Envelope{}, false
-	}
-	if charset := params["charset"]; charset != "" && !utf8Charset(charset) {
-		s.writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", fmt.Sprintf("the daemon reads %s as UTF-8; Content-Type named charset %q", mediaType, charset), protocol.Envelope{})
 		return protocol.Envelope{}, false
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))

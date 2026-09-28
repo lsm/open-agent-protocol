@@ -199,8 +199,16 @@ a bad request. So is an unknown field, a repeated key, a key that differs from
 its exact protocol spelling, a missing `id`, a missing `op`, an empty line, a
 line carrying a carriage return, a line that is not UTF-8, an unterminated
 final line, a line over the frame limit, and trailing data after the object.
-The daemon **fails closed** on all of them: it stops serving and reports a
+So is a parameter whose **declared type** the line does not carry: a number for
+`adapter`, a list for `session_id`, a string for `allow_degraded_features`. The
+daemon **fails closed** on all of them: it stops serving and reports a
 framing defect naming the line.
+
+A parameter that is present and **null** is not among them. A null member counts
+as supplied, so an op that does not define that parameter refuses it
+`invalid_request` on presence, and an op that does define it treats it as absent.
+The distinction is the type, not the presence: `null` is a value every parameter
+admits, and a number where a string belongs is a line the daemon cannot read.
 
 The **frame limit bounds the payload**, not the line: the terminating `\n` is
 framing and does not count, so a line whose payload is exactly the limit is
@@ -372,15 +380,19 @@ error. That is stated because the four reasons are the whole set.
 | `POST /sessions/{id}/close` | `close` | `204 No Content`, no body | `unknown_session` 404, `run_active` 409, `session_closed` 409, `request_cancelled` 400, `internal` 500 |
 | `GET /sessions/{id}/events` | `events` | an SSE stream, adopting a held subscription when the request named no cursor | see [events](#events) |
 
-Every route that reads a body requires `Content-Type: application/json` with
-no `charset` or a UTF-8 one — any other charset is refused `415
-unsupported_media_type` naming it, because an OAP envelope is UTF-8 JSON and
-the body gate is the only place that knows what the transport received. The
-comparison is case-insensitive, and admits both the registered name
-`utf-8` and its registered alias `utf8`, because a conformant sender may
-use either and refusing the alias would refuse UTF-8 by another name. No
-`charset` at all means UTF-8. A pipe has no
-`Content-Type` at all, so the stdio transport has no counterpart to any of
+Every route that reads a body requires `Content-Type: application/json`, and
+the body is read as UTF-8 whatever `charset` the header names. RFC 8259 §11
+records that no `charset` parameter is defined for `application/json` — the
+media type registers no parameters at all — so a sender that names one is
+describing something the grammar does not carry, and a receiver that refuses it
+is refusing a request it can parse. The two trees admit every charset,
+including `latin1` and a name that is not a charset at all. What the gate still
+refuses is a media type that is not `application/json`, because that is a
+different grammar rather than a different spelling of this one. Validity is the
+decoder's business and not the gate's: a body that is not valid UTF-8 is read
+with U+FFFD in place of the bad bytes, as the JSON decoder does, and a byte
+that a `latin1` header would have decoded cleanly is still replaced. A pipe has
+no `Content-Type` at all, so the stdio transport has no counterpart to any of
 this. The daemon also caps
 the body at 16 MiB, and answers a refusal as an `error.response` envelope
 carrying the request's `in_reply_to`, `session_id` and `run_id` so a client can
@@ -404,8 +416,9 @@ both answers, at the budget and one byte over it.
 
 | HTTP rule | pinned by |
 | --- | --- |
-| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, the absent `Content-Type`, and a `charset` that is not UTF-8) |
-| A UTF-8 `charset` is admitted — `utf-8` or its alias `utf8`, case-insensitively — and no `charset` means UTF-8 | `TestASupportedCharsetIsAdmitted` |
+| A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`; a `charset` is no longer a reason to refuse, and the row below says which test pins that) |
+| Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body names a session whose id carries non-ASCII text, and the answer must echo those characters unchanged, so a body transcoded per the header could not pass |
+| A body that is not valid UTF-8 is read with the replacement character, whatever `charset` it claims | `TestABodyThatIsNotUTF8IsReadWithTheReplacementCharacter` — a body with a raw invalid byte is admitted and the echoed id carries U+FFFD. The gate does not police UTF-8 validity; refusing it would be the new refusal the charset decision removed |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
@@ -453,7 +466,7 @@ emit an `oap-session-closed` event here, and the stdio transport's
 | A live subscription mid-run is not handed a prefix it did not ask for | `TestSSELiveSubscriptionMidRun` |
 | A stream ends when the client closes the connection | structural: the request context — `TestACancelledSubscriptionEndsTheStream` (a cancelled context ends the stream and leaves it finished) and `TestASubscriptionClosedByItsOwnerEndsTheStream` (`Close` ends it with `io.EOF`) at the hub, where it is observable; nothing in the hub reports subscriber accounting, so the HTTP handler is not itself under test |
 | A stream ends when the session closes | `TestSSEStreamEndsOnSessionClose` |
-| A connection to a session that has closed is refused `404 unknown_session` | none yet: `TestSSEOnClosedSession` still pins `409 session_closed`, the kept entry D2 records |
+| A connection to a session that has closed is refused `404 unknown_session` | `TestSSEOnClosedSession`, for a live stream and a cursor stream |
 | A cursor that is not an unsigned sequence is refused `400 invalid_cursor` | `TestSSECursorErrors` |
 | A session with no run to replay is refused `409 no_run_to_resume` | `TestSSENoRunToResume` |
 | An unknown session is refused `404` | `TestSSEUnknownSession` |
@@ -584,7 +597,8 @@ never connects overflows exactly as a slow consumer does, and the adopter reads
 | --- | --- |
 | A held subscription is adopted by the adopting `events` request | `TestOpenSubscriptionIsAdoptedByTheEventsRequest` |
 | A held subscription nothing adopts is released | `TestOpenSubscriptionNotAdoptedIsReleased` |
-| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release); **gap G5** — only the default 30 s is unpinned |
+| The hold is bounded, and expiry releases it | `TestOpenSubscriptionNotAdoptedIsReleased` (a 50 ms hold, polled to release) |
+| The default hold is 30 s, and an explicit window still wins | `TestASubscriptionIsHeldForThirtySecondsByDefault` |
 
 ## The operations
 
@@ -648,30 +662,36 @@ flight.
   (409), `stale_capabilities` (409, with `expected_revision` and
   `current_revision` in `details`), `unsupported_feature` (400, for a tool
   source it will not attach), `capability_degraded` (400, for a feature the
-  request did not opt into), `probe_failed`, `open_failed` (502),
+  request did not opt into), `session_closed` (409, a session that was already
+  closed when the open probed it), `probe_failed`, `open_failed` (502),
   `request_cancelled`, `internal` — and, when the request set `subscribe`, the
   subscription bound can refuse this op specifically.
 - **pinned by:** `TestOpenOpOpensASession`, `TestOpenOpRefusals`,
   `TestOpenRefusalsAreBounded`, `TestHubOpenRejections`,
   `TestHubOpenDefaultsParticipant`, `TestHubOpenClosesSessionWhenStateFails`,
-  `TestHubOpenMarksClosedOnClosedConfirmation`, `TestOpenSession`,
-  `TestOpenSessionAssignsIdentifier`, `TestOpenResponseCarriesTheWholeState`,
-  `TestOpenOpMatchesHTTP`, `TestAttachingOpenPinsOnlyWhatItCites`. The release is
-  not pinned yet: `TestHubOpenMarksClosedOnClosedConfirmation` still keeps a
-  session its adapter confirms closed and answers a subscribe to it with
-  `session_closed`, the kept entry D2 records.
+  `TestOpenSession`, `TestOpenSessionAssignsIdentifier`, `TestOpenResponseCarriesTheWholeState`,
+  `TestOpenOpMatchesHTTP`, `TestAttachingOpenPinsOnlyWhatItCites`,
+  `TestHubOpenRefusesASessionThatWasAlreadyClosedAndLeavesItsIDFree` and
+  `TestTheHubReleasesASessionTheAdapterReportsClosed`. The release through an
+  open is pinned: a session its adapter confirms closed is never kept, its id is
+  free at once, and the open itself answers `session_closed`.
 
 ### `sessions`
 
 - **params:** none.
 - **answer:** `{"sessions":[{"session_id":…,"adapter":…,"status":…,"active_run_id":…,"active_runs":[…],"created_at":…}]}`,
   sorted by session id. Only live sessions are listed: a closed session is
-  released.
+  released. `created_at` is **RFC 3339 in UTC at whole-second precision**, with a
+  trailing `Z` and no fractional part — `2023-11-14T22:15:23Z`, which is what Go's
+  `time.RFC3339` writes. A sub-second remainder is truncated, not rounded, so two
+  trees listing the same session at the same instant write the same byte.
 - **errors:** `invalid_request` (a parameter was supplied).
 - **pinned by:** `TestSessionsOpListsTrackedSessions`, `TestSessionsListingAcrossLifecycle`,
   `TestListingsMatchHTTP`, `TestHubSessionsListingAcrossAdapters`. The release is
-  not pinned yet: `TestSessionsListingAcrossLifecycle` still lists a closed
-  session as `closed`, the kept entry D2 records.
+  pinned through the listing: `TestSessionsListingAcrossLifecycle` finds a closed
+  session absent, `unknown_session` afterwards, and reopens the same id, and
+  `TestHubSessionsListingAcrossAdapters` leaves the closed one out while the live
+  one is still listed.
 
 ### `state`
 
@@ -681,9 +701,14 @@ flight.
 - **errors:** `unknown_session` (404), `invalid_request`, `state_failed` (500),
   `internal` (500).
 - **pinned by:** `TestStateEndpoint`, `TestStateReportingClosedClosesEntry`,
-  `TestOpErrorCodesMirrorHTTP`. The release is not pinned yet:
-  `TestStateReportingClosedClosesEntry` still answers `state` on a session its
-  adapter reported closed with its final document, the kept entry D2 records.
+  `TestOpErrorCodesMirrorHTTP`,
+  `TestTheHubReleasesASessionTheAdapterReportsClosed`. The release is pinned
+  through the state op: the in-flight request still answers `200` with the
+  session's final closed document, as `state` always has for a session its
+  adapter reports closed, and the *next* `state` on the same id is
+  `unknown_session` because the entry is gone. A port that answered
+  `409 session_closed` to the in-flight request would diverge from both trees
+  here.
 
 ### `models`
 
@@ -781,10 +806,12 @@ flight.
   `internal` (500). A second `close` is `unknown_session`, because the first
   released the session; a host that retries a close whose answer it lost treats
   that as done.
-- **pinned by:** `TestSessionsListingAcrossLifecycle`, `TestOpErrorCodesMirrorHTTP`
-  (a `close` of a running session is `run_active`), `TestHubSessionCloseSemantics`,
-  `TestListingsMatchHTTP`. The release is not pinned yet: these tests still pin
-  the kept entry, and D2 records it.
+- **pinned by:** `TestSessionsListingAcrossLifecycle`, `TestHubSessionCloseSemantics`,
+  `TestListingsMatchHTTP`, and `TestOpErrorCodesMirrorHTTP` for both of a
+  `close`'s refusals — `run_active` on a running session and `unknown_session`
+  on a second one. The release is pinned through a `close`:
+  `TestHubSessionCloseSemantics` finds the session absent from the listing and
+  the hub answering `unknown_session` for it.
 
 ### `events`
 
@@ -814,9 +841,10 @@ flight.
   `TestSSEUnknownSession`, `TestSSEOnClosedSession`, `TestEventsOpRefusals`
   (the `busy` refusal at the subscription ceiling, whose message names the
   ending paths rather than implying the host can bring one about). The release
-  is not pinned yet: `TestEventsOpRefusals` and `TestSSEOnClosedSession` still
-  answer a session already closed with `session_closed`, the kept entry D2
-  records.
+  is pinned: `TestEventsOpRefusals` answers a session that has been released
+  with `unknown_session`, apart from the one that never existed, and
+  `TestSSEOnClosedSession` answers a live stream and a cursor stream on a
+  released session with `404 unknown_session` rather than `409 session_closed`.
 
 ## The clients are the far-side proof
 
@@ -942,20 +970,25 @@ first be asked to stop.
 
 ## Known gaps
 
-Rules this document specifies that **no Go test pins today**, and one gap the
-draft is asked to carry. A port must implement every one of them; each is a
-place a differential test would otherwise not see.
+The rules this document specifies that a Go test did not pin when it was
+written, and where each is pinned now. Every entry but G3's names the test
+that closes it, because a port implementing this draft should be able to check
+itself against the same list; G3 is a decided question with no rule left to
+pin, and points at the issue that carries it. A port must implement every rule
+here; each was a place a differential test would otherwise not see.
 
 - **G1 — closed.** The status was pinned and nothing else: a `text/plain`
   open is refused `415`, and the assertion was on the status alone, so
   `unsupported_media_type` was written nowhere. `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode`
   now pins the code and the absent `Content-Type`, both of which take the
   same branch. The stdio side still has no counterpart for either, which
-  is a property of the transport rather than a gap. The **charset** half
-  is now decided rather than open: `application/json; charset=latin1` used
-  to be admitted, and is now refused `415` naming the charset, because an
-  envelope is UTF-8 JSON and admitting a body that says otherwise hands
-  the decoder bytes the schema never described.
+  is a property of the transport rather than a gap. The **charset** half is
+  decided the other way from what it first was: the hub admits every
+  `charset` and reads the body as UTF-8, per RFC 8259 §11, which defines no
+  `charset` parameter for `application/json` at all. A refusal turned a
+  sender's redundant parameter into an error the schema never described, so
+  `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` pins the admission
+  instead.
 - **G2 — structural, pinned at the hub.** A client that drops its connection
   ends the stream by construction — the request context cancels the
   subscription — and that is now asserted where it is observable:
@@ -1087,11 +1120,10 @@ the body, so [#387](https://github.com/lsm/open-agent-protocol/issues/387) and
 [#388](https://github.com/lsm/open-agent-protocol/issues/388) no longer fail a
 byte-for-byte comparison on their first request.
 
-**D2 is Go against the draft.** [Decision
-0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) makes close
-release a session. The Zig core does, in
-[#444](https://github.com/lsm/open-agent-protocol/issues/444); `go/serve` does not
-yet, and that is [#443](https://github.com/lsm/open-agent-protocol/issues/443).
+**D2 is fixed.** Both hubs release a session once it stops being open
+([#452](https://github.com/lsm/open-agent-protocol/pull/452) in Go,
+[#455](https://github.com/lsm/open-agent-protocol/pull/455) in Zig), so a session that is not open answers
+`unknown_session` to every later operation, a second `close` included, and its id is free.
 
 **D3 to D7 are what is left, and all of it is the Zig side and all of one kind:**
 each names something `zig/src/adapter/contract.zig` cannot carry that the draft
@@ -1104,17 +1136,6 @@ the per-run exposure a stream failure needs — in
 same kind of gap. D4 is different in one respect: its negative-capacity half is a
 Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
-
-### D2 — go/serve keeps a closed session
-
-| | |
-| --- | --- |
-| **The draft says** | A session that is not open is released ([Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md)): once its `close` succeeds or its adapter reports it closed, the session is not listed, every op naming it answers `unknown_session`, and its id is free. |
-| **Go does** | `go/serve` keeps a closed session in its table. `sessions` lists it with its final state, `state` answers it, a second `close` is `ok`, and an open under its id is refused `session_exists`. |
-| **Zig does** | Fixed. `close` ends the entry's subscriptions with a `session_closed` ending and releases the entry — its journal, cursors, holds and ids — so the id is free again, every op naming it answers `unknown_session`, and `sessions` lists live sessions only. A session its adapter reports closed is released when it is next observed. |
-| **Why Go is the wrong side** | A kept entry serves no client: it cannot run or be subscribed to, it holds its id against the reopen Decision 0039 stages, and it accumulates for the daemon's lifetime. |
-| **The fix** | [#443](https://github.com/lsm/open-agent-protocol/issues/443) releases the session in Go, and [#444](https://github.com/lsm/open-agent-protocol/issues/444) in Zig. Zig's destructive `close` is the right shape for it. |
-| **Pinned today** | The Go side: `TestHubSessionCloseSemantics`, `TestSessionsListingAcrossLifecycle`, `TestEventsOpRefusals` and `TestSSEOnClosedSession` for a request to a session already closed, and `TestStateReportingClosedClosesEntry` and `TestHubOpenMarksClosedOnClosedConfirmation` for a session its adapter reported closed. The Zig side, by the prose names the tests in `zig/src/hub/hub.zig` carry: "a released session's id is free again, and its memory is gone", "close hands its entry over under allocation failure", "closing a session ends every subscription under it, and releases the session", and "a backend that cannot make progress ends its stream, and the session stays open". |
 
 ### D3 — a served catalog's revision comes from the descriptor, not the lister
 
@@ -1164,8 +1185,18 @@ Go change, queued in
 
 ### Recorded, and not divergences
 
-Two places where the two trees will *look* different and neither is wrong. A
-differential test compares the members, not the prose, at both.
+Three places where the two trees will *look* different and none of them is a
+wrong answer. A differential test compares the members, not the prose, at the
+first two; the third is about bytes and is named here so nobody reads the
+member comparison as a byte comparison.
+
+- **An envelope's member order.** Go's `protocol.Envelope` struct writes
+  `payload` straight after `id`; `zig/src/protocol/oap/envelope.zig` writes it
+  last. Same members, same values, different bytes. The ids, the codes, the
+  wording and every member agree, and the zig stdio frontend mints the same
+  `oap-request-N` and `oap-response-N` in the same per-op order Go spends its
+  counter in — so a differential test that compares members is satisfied, and one
+  that compares bytes is not, and the two are not the same test.
 
 - **A signal's wording.** The stdio `oap-overflow` message says `resume with a
   cursor after this sequence`; the SSE one says `reconnect with a cursor after

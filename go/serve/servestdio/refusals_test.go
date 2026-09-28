@@ -140,3 +140,43 @@ func TestResolveOpReportsARefusedResolution(t *testing.T) {
 		t.Fatal("the refusal carries no message")
 	}
 }
+
+type closedOnOpenAdapter struct{}
+
+func (closedOnOpenAdapter) Probe(ctx context.Context) (base.Descriptor, error) {
+	return base.NewMemory(base.Config{}).Probe(ctx)
+}
+
+func (closedOnOpenAdapter) Open(ctx context.Context, request base.OpenRequest) (base.Session, error) {
+	session, err := base.NewMemory(base.Config{}).Open(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return &closedOnOpenSession{Session: session, id: request.SessionID}, nil
+}
+
+type closedOnOpenSession struct {
+	base.Session
+	id protocol.SessionID
+}
+
+func (s *closedOnOpenSession) State(context.Context) (protocol.SessionState, error) {
+	return protocol.SessionState{SessionID: s.id, Status: protocol.SessionClosed}, base.ErrSessionClosed
+}
+
+func TestOpenOpRefusesASessionTheAdapterReportsClosed(t *testing.T) {
+	hub := newTestHub(t, 64, 64)
+	if err := hub.Registry().Register("closed", closedOnOpenAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	f := startFrontend(t, hub, Options{})
+	request := requestEnvelope(t, "req-open", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
+		SessionID: protocol.SessionID("never-open"),
+	}, "", "")
+	f.send(fmt.Sprintf(`{"id":1,"op":"open","adapter":"closed","request":%s}`, request))
+	requireCode(t, f.expectResponse(1), "session_closed")
+	f.send(fmt.Sprintf(`{"id":2,"op":"open","adapter":"memory","request":%s}`, requestEnvelope(t, "req-open-2", protocol.TypeSessionOpenRequest, protocol.SessionOpenRequest{
+		SessionID: protocol.SessionID("never-open"),
+	}, "", "")))
+	requireOK(t, f.expectResponse(2))
+}

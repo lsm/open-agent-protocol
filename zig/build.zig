@@ -147,7 +147,8 @@ pub fn build(b: *std.Build) void {
     const deepseek_session_test = b.addTest(.{ .root_module = deepseek_session_mod });
 
     const test_unit_adapter_step = b.step("test-unit-adapter", "Run the shared adapter corpus harness tests");
-    const test_unit_hub_step = b.step("test-unit-hub", "Run the multi-session hub core unit tests");
+    const test_unit_hub_step = b.step("test-unit-hub", "Run the multi-session hub core and stdio wire unit tests");
+    const compile_hub_step = b.step("compile-hub", "Compile the multi-session hub core and stdio wire without running them");
 
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_corpus_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_corpus_test).step);
@@ -1373,6 +1374,19 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
         },
     });
+    const hub_stdio_mod = b.createModule(.{
+        .root_source_file = b.path("src/hub/stdio.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "json_encode", .module = json_encode_mod },
+            .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "hub", .module = hub_mod },
+        },
+    });
+    const hub_stdio_test = b.addTest(.{ .root_module = hub_stdio_mod });
     const hub_test = b.addTest(.{ .root_module = hub_mod });
 
     const deepseek_adapter_mod = b.createModule(.{
@@ -1908,8 +1922,9 @@ pub fn build(b: *std.Build) void {
     const tui_theme_mod = b.createModule(.{ .root_source_file = b.path("src/tui/theme.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod } } });
     const tui_text_mod = b.createModule(.{ .root_source_file = b.path("src/tui/text.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "zigzag", .module = zigzag_mod }} });
     const tui_render_mod = b.createModule(.{ .root_source_file = b.path("src/tui/render.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "zigzag", .module = zigzag_mod }} });
+    const tui_shell_highlight_mod = b.createModule(.{ .root_source_file = b.path("src/tui/shell_highlight.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_theme", .module = tui_theme_mod } } });
 
-    const tui_view_transcript_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/transcript.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
+    const tui_view_transcript_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/transcript.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod }, .{ .name = "tui_shell_highlight", .module = tui_shell_highlight_mod } } });
     const tui_view_composer_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/composer.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_status_bar_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/status_bar.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_approval_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/approval.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod }, .{ .name = "json_encode", .module = json_encode_mod } } });
@@ -2443,6 +2458,7 @@ pub fn build(b: *std.Build) void {
     const tui_theme_test = b.addTest(.{ .root_module = tui_theme_mod });
     const tui_text_test = b.addTest(.{ .root_module = tui_text_mod });
     const tui_render_test = b.addTest(.{ .root_module = tui_render_mod });
+    const tui_shell_highlight_test = b.addTest(.{ .root_module = tui_shell_highlight_mod });
     const tui_view_transcript_test = b.addTest(.{ .root_module = tui_view_transcript_mod });
     const tui_view_composer_test = b.addTest(.{ .root_module = tui_view_composer_mod });
     const tui_view_status_bar_test = b.addTest(.{ .root_module = tui_view_status_bar_mod });
@@ -2669,7 +2685,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
+    compile_hub_step.dependOn(&hub_test.step);
+    compile_hub_step.dependOn(&hub_stdio_test.step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_unit_hub_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_step.dependOn(&b.addRunArtifact(codex_adapter_test).step);
@@ -2793,6 +2813,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_theme_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_text_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_render_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_shell_highlight_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_transcript_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_composer_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_status_bar_test).step);
@@ -3048,6 +3069,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_theme_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_text_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_render_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_shell_highlight_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_transcript_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_composer_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_status_bar_test).step);

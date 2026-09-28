@@ -592,8 +592,15 @@ func TestSessionsListingAcrossLifecycle(t *testing.T) {
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("close status %d", response.StatusCode)
 	}
-	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "closed" || entry.ActiveRunID != "" {
-		t.Fatalf("closed listing: %+v", entry)
+	for _, entry := range listSessions(t, server) {
+		if entry.SessionID == "listing" {
+			t.Fatalf("the closed session %+v is still listed", entry)
+		}
+	}
+	requireSessionUnknown(t, server, "listing")
+	openSession(t, server, "memory", "listing")
+	if entry := sessionAt(t, listSessions(t, server), "listing"); entry.Status != "idle" {
+		t.Fatalf("reopened listing: %+v", entry)
 	}
 }
 
@@ -864,30 +871,14 @@ func TestCloseAfterCancellation(t *testing.T) {
 		t.Fatalf("close status %d: %s", response.StatusCode, data)
 	}
 
-	stateResponse, err := server.Client().Get(server.URL + "/sessions/close-cancel/state")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stateResponse.Body.Close()
-	stateData, _ := io.ReadAll(stateResponse.Body)
-	envelope, err := protocol.ParseEnvelope(stateData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var state protocol.SessionState
-	if err := envelope.DecodePayload(&state); err != nil {
-		t.Fatal(err)
-	}
-	if state.Status != protocol.SessionClosed {
-		t.Fatalf("state after close: %+v", state)
-	}
+	requireSessionUnknown(t, server, "close-cancel")
 
 	submit := requestEnvelope(t, protocol.TypeSessionMessageSubmitRequest, "submit-closed", protocol.MessageSubmitRequest{
 		SessionID: "close-cancel", Delivery: protocol.DeliveryAuto,
 		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: protocol.TextContent("x")}},
 	}, "close-cancel", "", "")
 	status, errorEnvelope := postEnvelope(t, server, "/sessions/close-cancel/submit", submit)
-	requireErrorResponse(t, status, http.StatusConflict, errorEnvelope, "session_closed")
+	requireErrorResponse(t, status, http.StatusNotFound, errorEnvelope, "unknown_session")
 }
 
 func TestCancelRejections(t *testing.T) {
@@ -1107,7 +1098,7 @@ func TestQueuedSubmissionRoundTrips(t *testing.T) {
 
 func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
 	_, server := newServer(t, memoryRegistry(0), Options{})
-	for _, contentType := range []string{"text/plain", "", "application/json; charset=latin1", "application/json; charset=us-ascii", "application/json; charset=iso-8859-1"} {
+	for _, contentType := range []string{"text/plain", ""} {
 		response, data := post(t, server, "/adapters/memory/sessions", contentType, []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-g1"}}`))
 		if response.StatusCode != http.StatusUnsupportedMediaType {
 			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
@@ -1126,19 +1117,50 @@ func TestARequestTheDaemonWillNotParseIsRefusedWithItsCode(t *testing.T) {
 		if failure.Error.Code != "unsupported_media_type" {
 			t.Fatalf("content type %q code = %q, want unsupported_media_type", contentType, failure.Error.Code)
 		}
-		if _, named, found := strings.Cut(contentType, "charset="); found && !strings.Contains(failure.Error.Message, named) {
-			t.Fatalf("content type %q message = %q, want it to name the charset it refused", contentType, failure.Error.Message)
+	}
+}
+
+func TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8(t *testing.T) {
+	_, server := newServer(t, memoryRegistry(0), Options{})
+	for i, contentType := range []string{"application/json", "application/json; charset=utf-8", "application/json; charset=UTF-8", "application/json; charset=utf8", "application/json; charset=UTF8", "application/json; charset=latin1", "application/json; charset=us-ascii", "application/json; charset=iso-8859-1", "application/json; charset=nonsense"} {
+		want := "s-caf\u00e9-" + strconv.Itoa(i)
+		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"` + want + ` \u2014 na\u00efve \u65e5\u672c\u8a9e"}}`)
+		response, data := post(t, server, "/adapters/memory/sessions", contentType, body)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
+		}
+		var opened protocol.Envelope
+		if err := json.Unmarshal(data, &opened); err != nil {
+			t.Fatalf("content type %q answer is not an envelope: %s", contentType, data)
+		}
+		var answer protocol.SessionOpenResponse
+		if err := opened.DecodePayload(&answer); err != nil {
+			t.Fatalf("content type %q payload does not decode: %s", contentType, err)
+		}
+		if string(answer.SessionID) != "s-café-"+strconv.Itoa(i)+" — naïve 日本語" {
+			t.Fatalf("content type %q session_id = %q, want the body's own characters read as UTF-8", contentType, answer.SessionID)
 		}
 	}
 }
 
-func TestASupportedCharsetIsAdmitted(t *testing.T) {
+func TestABodyThatIsNotUTF8IsReadWithTheReplacementCharacter(t *testing.T) {
 	_, server := newServer(t, memoryRegistry(0), Options{})
-	for i, contentType := range []string{"application/json", "application/json; charset=utf-8", "application/json; charset=UTF-8", "application/json; charset=utf8", "application/json; charset=UTF8"} {
-		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-charset-` + strconv.Itoa(i) + `"}}`)
+	for i, contentType := range []string{"application/json", "application/json; charset=latin1", "application/json; charset=utf-8"} {
+		body := []byte(`{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"session.open.request","id":"o1","payload":{"session_id":"s-bad` + "\xff" + `byte-` + strconv.Itoa(i) + `"}}`)
 		response, data := post(t, server, "/adapters/memory/sessions", contentType, body)
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("content type %q status %d: %s", contentType, response.StatusCode, data)
+		}
+		var opened protocol.Envelope
+		if err := json.Unmarshal(data, &opened); err != nil {
+			t.Fatalf("content type %q answer is not an envelope: %s", contentType, data)
+		}
+		var answer protocol.SessionOpenResponse
+		if err := opened.DecodePayload(&answer); err != nil {
+			t.Fatalf("content type %q payload does not decode: %s", contentType, err)
+		}
+		if string(answer.SessionID) != "s-bad\ufffdbyte-"+strconv.Itoa(i) {
+			t.Fatalf("content type %q session_id = %q, want the invalid byte replaced whatever the charset claims", contentType, answer.SessionID)
 		}
 	}
 }
@@ -1173,4 +1195,22 @@ func TestATruncatedRequestBodyIsRefusedWithItsOwnCode(t *testing.T) {
 	if !strings.Contains(text, "request_read") {
 		t.Fatalf("a truncated body answered %q, want the request_read code", text)
 	}
+}
+
+func TestOpenRefusesASessionTheAdapterReportsClosed(t *testing.T) {
+	registry := memoryRegistry(0)
+	if err := registry.Register("closed", &statefulAdapter{state: protocol.SessionState{Status: protocol.SessionClosed}}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	server, err := New(hub, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := httptest.NewServer(server.Handler())
+	t.Cleanup(daemon.Close)
+
+	request := requestEnvelope(t, protocol.TypeSessionOpenRequest, "open-closed", protocol.SessionOpenRequest{SessionID: "never-open"}, "never-open", "", "")
+	status, response := postEnvelope(t, daemon, "/adapters/closed/sessions", request)
+	requireErrorResponse(t, status, http.StatusConflict, response, "session_closed")
 }

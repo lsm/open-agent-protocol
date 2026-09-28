@@ -231,6 +231,23 @@ pub const Store = struct {
         return meta;
     }
 
+    pub fn transcriptPath(self: Store, session_id: []const u8, index: usize) ![]u8 {
+        try validateSessionId(session_id);
+        const file_name = try std.fmt.allocPrint(self.allocator, "compaction-{d}.jsonl", .{index});
+        defer self.allocator.free(file_name);
+        return std.fs.path.join(self.allocator, &.{ self.base_dir, session_id, file_name });
+    }
+
+    pub fn saveTranscript(self: Store, session_id: []const u8, index: usize, messages: []const ai_types.Message) ![]u8 {
+        const path = try self.transcriptPath(session_id, index);
+        errdefer self.allocator.free(path);
+        try compat.fs.createDir(compat.fs.getCwd(), std.fs.path.dirname(path) orelse ".");
+        const data = try serializeTranscript(self.allocator, messages);
+        defer self.allocator.free(data);
+        try compat.fs.writeFile(compat.fs.getCwd(), path, data);
+        return path;
+    }
+
     pub fn resumeSession(self: Store, session_id: []const u8, runtime: *tui_runtime.TuiRuntime) !LoadedSession {
         var loaded = try self.load(session_id);
         errdefer loaded.deinit(self.allocator);
@@ -253,6 +270,90 @@ fn validateSessionId(session_id: []const u8) !void {
     if (std.mem.indexOfScalar(u8, session_id, '/') != null) return error.InvalidSessionId;
     if (std.mem.indexOfScalar(u8, session_id, '\\') != null) return error.InvalidSessionId;
     if (std.mem.indexOf(u8, session_id, "..") != null) return error.InvalidSessionId;
+}
+
+fn serializeTranscript(allocator: std.mem.Allocator, messages: []const ai_types.Message) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    for (messages) |message| {
+        var w = json_writer.JsonWriter.init(&buf, allocator);
+        try writeTranscriptMessage(&w, message);
+        try buf.append(allocator, '\n');
+    }
+    return buf.toOwnedSlice(allocator);
+}
+
+fn writeTranscriptMessage(w: *json_writer.JsonWriter, message: ai_types.Message) !void {
+    try w.beginObject();
+    switch (message) {
+        .user => |user| {
+            try w.writeStringField("role", "user");
+            switch (user.content) {
+                .text => |text| try w.writeStringField("text", text),
+                .parts => |parts| try writeTranscriptParts(w, parts),
+            }
+        },
+        .assistant => |assistant| {
+            try w.writeStringField("role", "assistant");
+            try writeTranscriptAssistant(w, assistant.content);
+        },
+        .tool_result => |result| {
+            try w.writeStringField("role", "tool_result");
+            try w.writeStringField("tool_call_id", result.tool_call_id);
+            try w.writeStringField("tool_name", result.tool_name);
+            if (result.is_error) try w.writeBoolField("is_error", true);
+            try writeTranscriptParts(w, result.content);
+        },
+    }
+    try w.endObject();
+}
+
+fn writeTranscriptParts(w: *json_writer.JsonWriter, parts: []const ai_types.UserContentPart) !void {
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(w.allocator);
+    var images: usize = 0;
+    for (parts) |part| switch (part) {
+        .text => |value| try appendParagraph(w.allocator, &text, value.text),
+        .image => images += 1,
+    };
+    try w.writeStringField("text", text.items);
+    if (images > 0) try w.writeIntField("images", images);
+}
+
+fn writeTranscriptAssistant(w: *json_writer.JsonWriter, content: []const ai_types.AssistantContent) !void {
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(w.allocator);
+    var thinking: std.ArrayList(u8) = .empty;
+    defer thinking.deinit(w.allocator);
+    var calls: usize = 0;
+    for (content) |block| switch (block) {
+        .text => |value| try appendParagraph(w.allocator, &text, value.text),
+        .thinking => |value| try appendParagraph(w.allocator, &thinking, value.thinking),
+        .tool_call => calls += 1,
+        .image => {},
+    };
+    try w.writeStringField("text", text.items);
+    if (thinking.items.len > 0) try w.writeStringField("thinking", thinking.items);
+    if (calls == 0) return;
+    try w.writeKey("tool_calls");
+    try w.beginArray();
+    for (content) |block| switch (block) {
+        .tool_call => |call| {
+            try w.beginObject();
+            try w.writeStringField("id", call.id);
+            try w.writeStringField("name", call.name);
+            try w.writeStringField("arguments", call.arguments_json);
+            try w.endObject();
+        },
+        else => {},
+    };
+    try w.endArray();
+}
+
+fn appendParagraph(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
+    if (text.len == 0) return;
+    if (out.items.len > 0) try out.append(allocator, '\n');
+    try out.appendSlice(allocator, text);
 }
 
 fn defaultMetadata(allocator: std.mem.Allocator, session_id: []const u8) !SessionMetadata {
@@ -366,6 +467,16 @@ fn replayEvent(allocator: std.mem.Allocator, messages: *std.ArrayList(ai_types.M
                 msg.deinit(allocator);
             }
             try rememberToolResultMessage(allocator, messages, replay, payload.tool_call_id.slice(), message, .execution_end);
+        },
+        .compaction_end => |payload| if (payload.outcome == .completed and payload.text.slice().len > 0) {
+            var pair = try agent.compaction.historyMessages(allocator, payload.text.slice(), .{ .provider = meta.provider, .model = meta.model });
+            errdefer for (&pair) |*message| message.deinit(allocator);
+            try messages.ensureTotalCapacity(allocator, pair.len);
+            for (messages.items) |*message| message.deinit(allocator);
+            messages.clearRetainingCapacity();
+            messages.appendSliceAssumeCapacity(&pair);
+            for (replay.tool_results.items) |*entry| entry.deinit(allocator);
+            replay.tool_results.clearRetainingCapacity();
         },
         else => {},
     }
@@ -537,6 +648,17 @@ fn writeEvent(w: *json_writer.JsonWriter, event: tui_session.TuiEvent) !void {
             try w.writeBoolField("active", p.active);
             try w.writeIntField("dropped_count", p.dropped_count);
         },
+        .compaction_start => try w.writeStringField("type", "compaction_start"),
+        .compaction_end => |p| {
+            try w.writeStringField("type", "compaction_end");
+            try w.writeStringField("outcome", @tagName(p.outcome));
+            try w.writeStringField("text", p.text.slice());
+            try w.writeStringField("transcript", p.transcript.slice());
+            try w.writeStringField("message", p.message.slice());
+            try w.writeIntField("messages_before", p.messages_before);
+            try w.writeIntField("tokens_before", p.tokens_before);
+            try w.writeIntField("tokens_after", p.tokens_after);
+        },
         .@"error" => |p| {
             try w.writeStringField("type", "error");
             try w.writeStringField("message", p.message.slice());
@@ -682,6 +804,24 @@ fn parseEvent(allocator: std.mem.Allocator, value: std.json.Value) !tui_session.
         .dropped_count = uint64Field(obj, "dropped_count") orelse 0,
     } };
     if (std.mem.eql(u8, kind, "error")) return .{ .@"error" = .{ .message = try owned(allocator, stringField(obj, "message") orelse "") } };
+    if (std.mem.eql(u8, kind, "compaction_start")) return .{ .compaction_start = .{} };
+    if (std.mem.eql(u8, kind, "compaction_end")) {
+        const text = try allocator.dupe(u8, stringField(obj, "text") orelse "");
+        errdefer allocator.free(text);
+        const transcript = try allocator.dupe(u8, stringField(obj, "transcript") orelse "");
+        errdefer allocator.free(transcript);
+        const message = try allocator.dupe(u8, stringField(obj, "message") orelse "");
+
+        return .{ .compaction_end = .{
+            .outcome = parseCompactionOutcome(stringField(obj, "outcome") orelse "failed"),
+            .text = OwnedSlice(u8).initOwned(text),
+            .transcript = OwnedSlice(u8).initOwned(transcript),
+            .message = OwnedSlice(u8).initOwned(message),
+            .messages_before = uint64Field(obj, "messages_before") orelse 0,
+            .tokens_before = uint64Field(obj, "tokens_before") orelse 0,
+            .tokens_after = uint64Field(obj, "tokens_after") orelse 0,
+        } };
+    }
     return error.InvalidEvent;
 }
 
@@ -1114,6 +1254,12 @@ fn parseStopReason(value: []const u8) ai_types.StopReason {
     return .stop;
 }
 
+fn parseCompactionOutcome(value: []const u8) tui_session.TuiEvent.CompactionOutcome {
+    if (std.mem.eql(u8, value, "completed")) return .completed;
+    if (std.mem.eql(u8, value, "cancelled")) return .cancelled;
+    return .failed;
+}
+
 fn parseEndReason(value: []const u8) tui_session.TuiEndReason {
     if (std.mem.eql(u8, value, "cancelled")) return .cancelled;
     if (std.mem.eql(u8, value, "error")) return .@"error";
@@ -1522,6 +1668,8 @@ fn parseEventProbe(allocator: std.mem.Allocator) !void {
         ,
         \\{"type":"tool_execution_end","tool_call_id":"call-0123456789","tool_name":"shell_execute","result_json":"{\"stdout\":\"done\"}","is_error":false,"artifact_count":1,"artifact_refs":"art-one,art-two"}
         ,
+        \\{"type":"compaction_end","outcome":"completed","text":"This conversation was compacted.","transcript":"/s/s1/compaction-1.jsonl","message":"","messages_before":12,"tokens_before":900,"tokens_after":40}
+        ,
     };
 
     for (payloads) |payload| {
@@ -1639,4 +1787,147 @@ fn assistantMessageBuildersProbe(allocator: std.mem.Allocator) !void {
 
 test "assistant message builders survive an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, assistantMessageBuildersProbe, .{});
+}
+
+fn saveText(store: Store, meta: SessionMetadata, role: tui_session.TuiEvent.MessageRole, text: []const u8) !void {
+    var event = tui_session.TuiEvent{ .message_end = .{ .role = role, .text = try owned(std.testing.allocator, text) } };
+    defer event.deinit(std.testing.allocator);
+    try store.save(meta, event);
+}
+
+test "load replays a completed compaction as its summary turn and acknowledgement" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("compacted");
+    defer meta.deinit(std.testing.allocator);
+
+    try saveText(store, meta, .user, "old question");
+    try saveText(store, meta, .assistant, "old answer");
+    var completed = tui_session.TuiEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = try owned(std.testing.allocator, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept state\n</summary>"),
+        .transcript = try owned(std.testing.allocator, "/s/compacted/compaction-1.jsonl"),
+        .messages_before = 2,
+    } };
+    defer completed.deinit(std.testing.allocator);
+    try store.save(meta, completed);
+    try saveText(store, meta, .user, "new question");
+    var failed = tui_session.TuiEvent{ .compaction_end = .{ .outcome = .failed, .message = try owned(std.testing.allocator, "overloaded") } };
+    defer failed.deinit(std.testing.allocator);
+    try store.save(meta, failed);
+
+    var loaded = try store.load("compacted");
+    defer loaded.deinit(std.testing.allocator);
+    const messages = loaded.messages.items;
+    try std.testing.expectEqual(@as(usize, 3), messages.len);
+    try std.testing.expectEqualStrings("kept state", agent.compaction.summaryOf(messages[0].user.content.text));
+    try std.testing.expectEqualStrings(agent.compaction.acknowledgement, messages[1].assistant.content[0].text.text);
+    try std.testing.expectEqualStrings("model-a", messages[1].assistant.model);
+    try std.testing.expectEqualStrings("new question", messages[2].user.content.text);
+
+    try std.testing.expectEqual(@as(usize, 5), loaded.events.items.len);
+    const replayed = loaded.events.items[2].compaction_end;
+    try std.testing.expectEqual(tui_session.TuiEvent.CompactionOutcome.completed, replayed.outcome);
+    try std.testing.expectEqualStrings("/s/compacted/compaction-1.jsonl", replayed.transcript.slice());
+    try std.testing.expectEqual(@as(u64, 2), replayed.messages_before);
+}
+
+test "saveTranscript writes one message per line beside the session files without adding a session" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = try testMeta("archived");
+    defer meta.deinit(std.testing.allocator);
+    try saveText(store, meta, .user, "question");
+
+    const call = [_]ai_types.AssistantContent{
+        .{ .thinking = .{ .thinking = "consider ls" } },
+        .{ .text = .{ .text = "listing" } },
+        .{ .tool_call = .{ .id = "c1", .name = "shell_execute", .arguments_json = "{\"command\":\"ls\"}" } },
+    };
+    const output = [_]ai_types.UserContentPart{.{ .text = .{ .text = "a\nb" } }};
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "question" }, .timestamp = 0 } },
+        .{ .assistant = .{ .content = &call, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "c1", .tool_name = "shell_execute", .content = &output, .is_error = true, .timestamp = 0 } },
+    };
+    const path = try store.saveTranscript("archived", 1, &messages);
+    defer std.testing.allocator.free(path);
+    try std.testing.expect(std.mem.endsWith(u8, path, "archived" ++ std.fs.path.sep_str ++ "compaction-1.jsonl"));
+
+    const data = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), path, 64 * 1024);
+    defer std.testing.allocator.free(data);
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, data, "\n"), '\n');
+    var parsed_lines: [3]std.json.Parsed(std.json.Value) = undefined;
+    var count: usize = 0;
+    defer for (parsed_lines[0..count]) |*parsed| parsed.deinit();
+    while (lines.next()) |line| {
+        try std.testing.expect(count < parsed_lines.len);
+        parsed_lines[count] = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, line, .{});
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), count);
+    const user = parsed_lines[0].value.object;
+    try std.testing.expectEqualStrings("question", user.get("text").?.string);
+    const assistant = parsed_lines[1].value.object;
+    try std.testing.expectEqualStrings("assistant", assistant.get("role").?.string);
+    try std.testing.expectEqualStrings("listing", assistant.get("text").?.string);
+    try std.testing.expectEqualStrings("consider ls", assistant.get("thinking").?.string);
+    const tool_call = assistant.get("tool_calls").?.array.items[0].object;
+    try std.testing.expectEqualStrings("shell_execute", tool_call.get("name").?.string);
+    try std.testing.expectEqualStrings("{\"command\":\"ls\"}", tool_call.get("arguments").?.string);
+    const result = parsed_lines[2].value.object;
+    try std.testing.expectEqualStrings("c1", result.get("tool_call_id").?.string);
+    try std.testing.expectEqualStrings("a\nb", result.get("text").?.string);
+    try std.testing.expect(result.get("is_error").?.bool);
+
+    var sessions = try store.list();
+    defer {
+        for (sessions.items) |*session| session.deinit(std.testing.allocator);
+        sessions.deinit(std.testing.allocator);
+    }
+    try std.testing.expectEqual(@as(usize, 1), sessions.items.len);
+    try std.testing.expectEqualStrings("archived", sessions.items[0].session_id);
+}
+
+fn serializeTranscriptProbe(allocator: std.mem.Allocator) !void {
+    const call = [_]ai_types.AssistantContent{
+        .{ .text = .{ .text = "listing" } },
+        .{ .tool_call = .{ .id = "c1", .name = "shell_execute", .arguments_json = "{}" } },
+    };
+    const output = [_]ai_types.UserContentPart{.{ .text = .{ .text = "out" } }};
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "question" }, .timestamp = 0 } },
+        .{ .assistant = .{ .content = &call, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = .tool_use, .timestamp = 0 } },
+        .{ .tool_result = .{ .tool_call_id = "c1", .tool_name = "shell_execute", .content = &output, .is_error = false, .timestamp = 0 } },
+    };
+    const data = try serializeTranscript(allocator, &messages);
+    allocator.free(data);
+}
+
+fn saveTranscriptProbe(allocator: std.mem.Allocator, base: []const u8) !void {
+    var store = try Store.init(allocator, base);
+    defer store.deinit();
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "question" }, .timestamp = 0 } }};
+    const path = try store.saveTranscript("probe", 1, &messages);
+    allocator.free(path);
+}
+
+test "saveTranscript survives an allocation failure at every step" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, saveTranscriptProbe, .{base});
+}
+
+test "serializeTranscript survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, serializeTranscriptProbe, .{});
 }

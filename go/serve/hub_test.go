@@ -92,6 +92,12 @@ func (s *manualSession) State(context.Context) (protocol.SessionState, error) {
 	return state, nil
 }
 
+func (s *manualSession) reportClosed(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stateErr = err
+}
+
 func (s *manualSession) Resolve(context.Context, base.InteractionResolution) error { return nil }
 
 func (s *manualSession) Cancel(_ context.Context, runID protocol.RunID) (protocol.RunCancelResponse, error) {
@@ -373,10 +379,12 @@ func TestHubOpenClosesSessionWhenStateFails(t *testing.T) {
 	}
 }
 
-func TestHubOpenMarksClosedOnClosedConfirmation(t *testing.T) {
-	gated := &manualClosedAdapter{}
+func TestHubOpenRefusesASessionThatWasAlreadyClosedAndLeavesItsIDFree(t *testing.T) {
 	registry := serve.NewRegistry()
-	if err := registry.Register("manual", gated); err != nil {
+	if err := registry.Register("manual", manualClosedAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("live", &manualAdapter{}); err != nil {
 		t.Fatal(err)
 	}
 	hub := serve.New(registry, serve.Options{})
@@ -384,8 +392,8 @@ func TestHubOpenMarksClosedOnClosedConfirmation(t *testing.T) {
 	defer cancel()
 
 	session, state, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "already-closed"})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("open error %v, want the session-closed refusal", err)
 	}
 	if state.Status != protocol.SessionClosed {
 		t.Fatalf("confirmation state %+v, want the final closed state", state)
@@ -393,8 +401,21 @@ func TestHubOpenMarksClosedOnClosedConfirmation(t *testing.T) {
 	if !session.IsClosed() {
 		t.Fatal("the entry did not record the closed confirmation")
 	}
-	if _, err := hub.Subscribe(ctx, session.ID()); !errors.Is(err, base.ErrSessionClosed) {
-		t.Fatalf("subscribe error %v, want the session-closed refusal", err)
+	if listed := hub.Sessions(ctx); len(listed) != 0 {
+		t.Fatalf("listing %+v, want nothing: a session that was never open is not listed", listed)
+	}
+	if _, err := hub.Subscribe(ctx, "already-closed"); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("subscribe error %v, want the unknown-session refusal", err)
+	}
+	reopened, _, err := hub.Open(ctx, "live", base.OpenRequest{SessionID: "already-closed"})
+	if err != nil {
+		t.Fatalf("the id was not free again: %v", err)
+	}
+	if listed := hub.Sessions(ctx); len(listed) != 1 || listed[0].SessionID != "already-closed" {
+		t.Fatalf("listing %+v, want the reopened session", listed)
+	}
+	if err := reopened.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -992,7 +1013,12 @@ func TestHubSessionsListingAcrossAdapters(t *testing.T) {
 	if err := listed.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	assertListing("list-a", "alpha", protocol.SessionClosed, "")
+	for _, entry := range hub.Sessions(ctx) {
+		if entry.SessionID == "list-a" {
+			t.Fatalf("the closed session %+v is still listed", entry)
+		}
+	}
+	assertListing("list-b", "beta", protocol.SessionIdle, "")
 }
 
 func TestHubSessionCloseSemantics(t *testing.T) {
@@ -1036,18 +1062,17 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 	if !errors.Is(err, base.ErrSessionClosed) || state.Status != protocol.SessionClosed {
 		t.Fatalf("closed state %+v error %v", state, err)
 	}
-	var listed bool
 	for _, entry := range hub.Sessions(ctx) {
-		if entry.SessionID == "close" && entry.Status == protocol.SessionClosed {
-			listed = true
+		if entry.SessionID == "close" {
+			t.Fatalf("the closed session %+v is still listed", entry)
 		}
 	}
-	if !listed {
-		t.Fatal("closed session missing from listing")
-	}
 
-	if _, err := hub.Subscribe(ctx, "close"); !errors.Is(err, base.ErrSessionClosed) {
-		t.Fatalf("subscribe on closed session error %v", err)
+	if _, err := hub.Subscribe(ctx, "close"); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("subscribe on a released session error %v, want the unknown-session refusal", err)
+	}
+	if _, err := hub.Session("close"); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("the hub answered %v for a released session, want the unknown-session refusal", err)
 	}
 	_, err = session.Submit(ctx, protocol.MessageSubmitRequest{
 		SessionID: "close",
@@ -1056,6 +1081,74 @@ func TestHubSessionCloseSemantics(t *testing.T) {
 	})
 	if !errors.Is(err, base.ErrSessionClosed) {
 		t.Fatalf("submit on closed session error %v", err)
+	}
+}
+
+func TestAnAlreadyClosedOpenLeavesTheLiveSessionOfThatIDAlone(t *testing.T) {
+	registry := serve.NewRegistry()
+	if err := registry.Register("memory", base.NewMemory(base.Config{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("manual", manualClosedAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	live, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "shared"}); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("the already-closed open error %v, want the session-closed refusal", err)
+	}
+	if live.IsClosed() {
+		t.Fatal("the already-closed open closed the live session of the same id")
+	}
+	if _, err := hub.Session("shared"); err != nil {
+		t.Fatalf("the live session is gone from the table: %v", err)
+	}
+	if _, err := live.State(ctx); err != nil {
+		t.Fatalf("the live session no longer answers: %v", err)
+	}
+}
+
+func TestTheHubReleasesASessionTheAdapterReportsClosed(t *testing.T) {
+	manual := &manualAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	entry, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "died"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(hub.Sessions(ctx)); got != 1 {
+		t.Fatalf("the open session is listed as %d entries, want 1", got)
+	}
+	subscription, err := hub.Subscribe(ctx, "died")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+
+	manual.active(t).reportClosed(base.ErrSessionClosed)
+	if _, err := entry.State(ctx); !errors.Is(err, base.ErrSessionClosed) {
+		t.Fatalf("the in-flight state error %v, want the adapter's own closed refusal", err)
+	}
+	if _, err := hub.Session("died"); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("the hub answered %v for a session the adapter reported closed", err)
+	}
+	if _, err := hub.Subscribe(ctx, "died"); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("subscribe error %v, want the unknown-session refusal", err)
+	}
+	if got := len(hub.Sessions(ctx)); got != 0 {
+		t.Fatalf("the listing has %d entries, want none: a session the adapter reported closed is released", got)
 	}
 }
 
@@ -1106,8 +1199,8 @@ func TestHubConcurrentSessions(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := len(hub.Sessions(context.Background())); got != sessions {
-		t.Fatalf("listing has %d entries, want %d", got, sessions)
+	if got := len(hub.Sessions(context.Background())); got != 0 {
+		t.Fatalf("listing has %d entries, want none: every session was closed", got)
 	}
 }
 
@@ -1204,5 +1297,32 @@ func TestASubscriptionClosedByItsOwnerEndsTheStream(t *testing.T) {
 	subscription.Close()
 	if _, err := subscription.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("closed subscription next = %v, want io.EOF", err)
+	}
+}
+
+func TestTheListingReleasesASessionTheAdapterReportsClosed(t *testing.T) {
+	manual := &manualAdapter{}
+	registry := serve.NewRegistry()
+	if err := registry.Register("manual", manual); err != nil {
+		t.Fatal(err)
+	}
+	hub := serve.New(registry, serve.Options{})
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	if _, _, err := hub.Open(ctx, "manual", base.OpenRequest{SessionID: "listed-closed"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(hub.Sessions(ctx)); got != 1 {
+		t.Fatalf("the open session is listed as %d entries, want 1", got)
+	}
+	manual.active(t).reportClosed(base.ErrSessionClosed)
+	for _, entry := range hub.Sessions(ctx) {
+		if entry.SessionID == "listed-closed" {
+			t.Fatalf("the listing still carries a closed session: %+v, and reading it did not release it", entry)
+		}
+	}
+	if _, err := hub.Session("listed-closed"); !errors.Is(err, serve.ErrUnknownSession) {
+		t.Fatalf("the hub answered %v after the listing saw the session closed", err)
 	}
 }

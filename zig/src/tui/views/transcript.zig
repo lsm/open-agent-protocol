@@ -3,6 +3,7 @@ const zz = @import("zigzag");
 const tui_state = @import("tui_state");
 const tui_theme = @import("tui_theme");
 const tui_text = @import("tui_text");
+const tui_shell_highlight = @import("tui_shell_highlight");
 
 const AppState = tui_state.AppState;
 const TranscriptKind = tui_state.TranscriptKind;
@@ -18,6 +19,7 @@ pub const EntryOptions = struct {
     live: bool = false,
     anim_tick: u64 = 0,
     awaiting_approval: bool = false,
+    tool: ?*const tui_state.ToolEntry = null,
 };
 
 const DisplayEntry = struct {
@@ -26,6 +28,7 @@ const DisplayEntry = struct {
     timestamp_ms: i64,
     tool_name: []const u8 = "",
     title: []const u8 = "",
+    args_json: []const u8 = "",
     tool_summary: bool = false,
     tool_status: ?ToolRowStatus = null,
     live: bool = false,
@@ -39,6 +42,8 @@ const chat_max_column: usize = 108;
 const max_result_rows: usize = 8;
 const max_thinking_rows: usize = 10;
 const max_live_thinking_rows: usize = 6;
+const max_command_rows: usize = 12;
+const max_description_width: usize = 512;
 const summary_prefix = "\u{25c8} ";
 
 pub fn render(allocator: std.mem.Allocator, state: *const AppState, options: Options) ![]const u8 {
@@ -107,12 +112,14 @@ pub fn renderTranscriptEntry(allocator: std.mem.Allocator, entry: *const Transcr
 }
 
 pub fn renderTranscriptEntryWith(allocator: std.mem.Allocator, entry: *const TranscriptEntry, width: usize, options: EntryOptions) ![]u8 {
+    const tool = if (entry.kind == .tool) options.tool else null;
     var display = DisplayEntry{
         .kind = entry.kind,
         .text = entry.text.items,
         .timestamp_ms = entry.timestamp_ms,
-        .tool_name = if (entry.kind == .tool) inferredToolName(entry.text.items) else "",
-        .title = if (entry.kind == .tool) inferredToolTitle(entry.text.items) else "",
+        .tool_name = if (tool) |found| found.name else if (entry.kind == .tool) inferredToolName(entry.text.items) else "",
+        .title = if (tool) |found| found.label else if (entry.kind == .tool) inferredToolTitle(entry.text.items) else "",
+        .args_json = if (tool) |found| found.args_json else "",
         .tool_summary = entry.tool_summary or parseToolSummary(entry.text.items) != null,
         .live = options.live,
         .anim_tick = options.anim_tick,
@@ -250,6 +257,7 @@ fn appendToolSummary(
         .timestamp_ms = 0,
         .tool_name = tool.name,
         .title = tool.label,
+        .args_json = tool.args_json,
         .tool_summary = true,
         .tool_status = toolRowStatus(tool.status),
     });
@@ -271,7 +279,7 @@ fn sanitizeAndClipToolDescription(allocator: std.mem.Allocator, text: []const u8
     const writer = &out.writer;
     var width: usize = 0;
     var i: usize = 0;
-    while (i < text.len and width < 96) {
+    while (i < text.len and width < max_description_width) {
         const c = text[i];
         switch (c) {
             '\n', '\r', '\t' => {
@@ -759,7 +767,57 @@ fn renderToolSummaryRow(allocator: std.mem.Allocator, entry: *const DisplayEntry
     if (entry.tool_status) |status| summary.status = status;
     const tool_name = if (entry.tool_name.len > 0) entry.tool_name else summary.label;
     const label_text = if (entry.title.len > 0) entry.title else summary.label;
+    const command = try shellCommand(allocator, tool_name, entry.args_json);
+    if (command.len > 0 and summary.arg.len > 0) {
+        const flat = try flattenCommand(allocator, command);
+        if (std.mem.eql(u8, summary.arg, flat) and std.mem.indexOfAny(u8, std.mem.trim(u8, command, " \t\r\n"), "\r\n") == null) {
+            const title = try renderToolTitleRow(allocator, entry, summary, tool_name, label_text, width);
+            if (title.whole_arg) return title.row;
+            summary.arg = "";
+        } else if (std.mem.eql(u8, summary.arg, flat) or clippedFrom(summary.arg, flat)) {
+            summary.arg = "";
+        }
+    }
+    const title = try renderToolTitleRow(allocator, entry, summary, tool_name, label_text, width);
+    if (command.len == 0) return title.row;
+    const block = try tui_shell_highlight.render(allocator, command, bodyWidth(width), max_command_rows);
+    if (block.len == 0) return title.row;
+    return std.fmt.allocPrint(allocator, "{s}\n{s}", .{ title.row, try indentBlock(allocator, block, bodyIndent(width)) });
+}
 
+fn shellCommand(allocator: std.mem.Allocator, tool_name: []const u8, args_json: []const u8) ![]const u8 {
+    if (args_json.len == 0 or tui_theme.toolKindForName(tool_name) != .shell) return "";
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, args_json, .{}) catch return "";
+    defer parsed.deinit();
+    if (parsed.value != .object) return "";
+    const value = parsed.value.object.get("command") orelse return "";
+    if (value != .string) return "";
+    return allocator.dupe(u8, value.string);
+}
+
+fn flattenCommand(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (command) |c| switch (c) {
+        '\n', '\r', '\t' => try out.append(allocator, ' '),
+        0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f, 0x7f => {},
+        else => try out.append(allocator, c),
+    };
+    return out.toOwnedSlice(allocator);
+}
+
+fn clippedFrom(arg: []const u8, full: []const u8) bool {
+    if (!std.mem.endsWith(u8, arg, "…")) return false;
+    const stem = arg[0 .. arg.len - "…".len];
+    return stem.len > 0 and std.mem.startsWith(u8, full, stem);
+}
+
+const TitleRow = struct {
+    row: []u8,
+    whole_arg: bool,
+};
+
+fn renderToolTitleRow(allocator: std.mem.Allocator, entry: *const DisplayEntry, summary: ToolSummary, tool_name: []const u8, label_text: []const u8, width: usize) !TitleRow {
     const status = try renderToolStatus(allocator, summary, entry.anim_tick, entry.awaiting_approval);
     const status_width = tui_text.visibleWidth(status);
     const glyph = try tui_theme.toolRole(tool_name).render(allocator, tui_theme.glyph.tool);
@@ -797,7 +855,7 @@ fn renderToolSummaryRow(allocator: std.mem.Allocator, entry: *const DisplayEntry
         try writer.writeAll("  ");
         try writer.writeAll(status);
     }
-    return out.toOwnedSlice();
+    return .{ .row = try out.toOwnedSlice(), .whole_arg = summary.arg.len > 0 and std.mem.eql(u8, arg_text, summary.arg) };
 }
 
 fn renderWelcome(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]u8 {
@@ -1650,6 +1708,93 @@ test "tool rows take their status from the linked tool entry rather than status 
     try std.testing.expectEqualStrings("push build", anchored.arg);
     try std.testing.expectEqual(ToolRowStatus.ok, anchored.status);
     try std.testing.expectEqualStrings("output=3B", anchored.stats);
+}
+
+test "a shell row spends a wide terminal on its description and shows the command under it" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const description = "Check the Exa env var name in ~/.zshrc without exposing the value itself";
+    const args = "{\"description\":\"" ++ description ++ "\",\"command\":\"grep -n 'EXA' ~/.zshrc | sed 's/=.*//'\\nprintenv EXA_API_KEY >/dev/null && echo set\"}";
+    const tool = (try state.resolveToolOccurrenceForTest("call-shell", "shell_execute", args, .live_intent, .running)).tool;
+    std.testing.allocator.free(tool.label);
+    tool.label = try std.testing.allocator.dupe(u8, "Shell Execute");
+    try state.appendToolSummaryTranscript("◈ Shell Execute \"" ++ description ++ "\"", tool.id);
+    const entry = &state.transcript.items[0];
+
+    const rendered = try renderTranscriptEntryWith(std.testing.allocator, entry, 160, .{ .tool = tool });
+    defer std.testing.allocator.free(rendered);
+    const plain = try stripEscapesForTest(std.testing.allocator, rendered);
+    defer std.testing.allocator.free(plain);
+    var rows = std.mem.splitScalar(u8, plain, '\n');
+    const title = rows.next().?;
+    try std.testing.expect(std.mem.indexOf(u8, title, "Shell Execute  " ++ description) != null);
+    try std.testing.expect(std.mem.indexOf(u8, title, "…") == null);
+    try std.testing.expect(std.mem.indexOf(u8, title, "grep") == null);
+    try std.testing.expectEqualStrings("   $ grep -n 'EXA' ~/.zshrc | sed 's/=.*//'", rows.next().?);
+    try std.testing.expectEqualStrings("     printenv EXA_API_KEY >/dev/null && echo set", rows.next().?);
+    try std.testing.expect(rows.next() == null);
+
+    const shell_open = try colorFg(std.testing.allocator, tui_theme.palette.tool_shell);
+    defer std.testing.allocator.free(shell_open);
+    const styled_title = rendered[0 .. std.mem.indexOfScalar(u8, rendered, '\n') orelse rendered.len];
+    try std.testing.expect(std.mem.indexOf(u8, styled_title, shell_open) != null);
+
+    const narrow = try renderTranscriptEntryWith(std.testing.allocator, entry, 60, .{ .tool = tool });
+    defer std.testing.allocator.free(narrow);
+    var narrow_rows = std.mem.splitScalar(u8, narrow, '\n');
+    while (narrow_rows.next()) |row| try std.testing.expect(tui_text.visibleWidth(row) <= 60);
+}
+
+test "a one-line shell command the title shows whole gets no block until the title cannot hold it" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const tool = (try state.resolveToolOccurrenceForTest("call-bare", "shell_execute", "{\"command\":\"ls -la\"}", .live_intent, .running)).tool;
+    try state.appendToolSummaryTranscript("◈ shell_execute \"ls -la\"", tool.id);
+    const entry = &state.transcript.items[0];
+
+    const wide = try renderTranscriptEntryWith(std.testing.allocator, entry, 100, .{ .tool = tool });
+    defer std.testing.allocator.free(wide);
+    try std.testing.expectEqual(@as(usize, 1), tui_text.lineCount(wide));
+    const wide_plain = try stripEscapesForTest(std.testing.allocator, wide);
+    defer std.testing.allocator.free(wide_plain);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, wide_plain, "ls -la"));
+
+    const narrow = try renderTranscriptEntryWith(std.testing.allocator, entry, 30, .{ .tool = tool });
+    defer std.testing.allocator.free(narrow);
+    const narrow_plain = try stripEscapesForTest(std.testing.allocator, narrow);
+    defer std.testing.allocator.free(narrow_plain);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, narrow_plain, "ls -la"));
+    try std.testing.expect(std.mem.indexOf(u8, narrow_plain, "   $ ls -la") != null);
+}
+
+test "a multiline shell command without a description moves from the title into the block" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const tool = (try state.resolveToolOccurrenceForTest("call-multi", "shell_execute", "{\"command\":\"cd zig\\nzig build\"}", .live_intent, .running)).tool;
+    try state.appendToolSummaryTranscript("◈ shell_execute \"cd zig zig build\"", tool.id);
+    const entry = &state.transcript.items[0];
+
+    const rendered = try renderTranscriptEntryWith(std.testing.allocator, entry, 100, .{ .tool = tool });
+    defer std.testing.allocator.free(rendered);
+    const plain = try stripEscapesForTest(std.testing.allocator, rendered);
+    defer std.testing.allocator.free(plain);
+    var rows = std.mem.splitScalar(u8, plain, '\n');
+    try std.testing.expect(std.mem.indexOf(u8, rows.next().?, "cd zig") == null);
+    try std.testing.expectEqualStrings("   $ cd zig", rows.next().?);
+    try std.testing.expectEqualStrings("     zig build", rows.next().?);
+    try std.testing.expect(rows.next() == null);
+}
+
+test "only shell tools get a command block" {
+    var state = AppState.init(std.testing.allocator);
+    defer state.deinit();
+    const tool = (try state.resolveToolOccurrenceForTest("call-read", "file_read", "{\"path\":\"src/main.zig\",\"command\":\"not a shell\"}", .live_intent, .running)).tool;
+    try state.appendToolSummaryTranscript("◈ file_read \"src/main.zig\"", tool.id);
+    const entry = &state.transcript.items[0];
+    const rendered = try renderTranscriptEntryWith(std.testing.allocator, entry, 100, .{ .tool = tool });
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqual(@as(usize, 1), tui_text.lineCount(rendered));
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "$ ") == null);
 }
 
 test "tool rows keep their status visible on narrow terminals" {
