@@ -162,6 +162,31 @@ pub fn wirePath(wire: []const u8) ?Wire {
     return null;
 }
 
+pub fn firstImplementedWire(row: Provider) ?Wire {
+    for (row.wires) |id| {
+        if (wirePath(id)) |wire| return wire;
+    }
+    return null;
+}
+
+pub fn isResponsesOnlyModel(model_id: []const u8) bool {
+    return std.mem.startsWith(u8, model_id, "o1-pro") or
+        std.mem.startsWith(u8, model_id, "o3-pro") or
+        std.mem.startsWith(u8, model_id, "gpt-5-pro") or
+        std.mem.startsWith(u8, model_id, "gpt-5-codex") or
+        std.mem.startsWith(u8, model_id, "gpt-5.1-codex-max") or
+        std.mem.indexOf(u8, model_id, "deep-research") != null or
+        std.mem.startsWith(u8, model_id, "computer-use-preview");
+}
+
+pub fn wireForModel(provider_id: []const u8, model_id: []const u8) ?Wire {
+    const row = provider(provider_id) orelse return null;
+    if (std.mem.eql(u8, provider_id, "openai") and isResponsesOnlyModel(model_id)) {
+        if (wirePath("openai-responses")) |wire| return wire;
+    }
+    return firstImplementedWire(row);
+}
+
 pub fn endpointCarriesVersion(provider_id: []const u8, base_url: []const u8) bool {
     const row = provider(provider_id) orelse return false;
     const wanted = std.mem.trimEnd(u8, base_url, "/");

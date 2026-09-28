@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The catalog loader serves the five coding-plan rows and OpenAI, each reachable
+  by exporting its own key and nothing else: `ZHIPU_API_KEY`,
+  `ALIBABA_CODING_PLAN_API_KEY`, `MINIMAX_API_KEY`, `TENCENT_CODING_PLAN_API_KEY`,
+  `ARK_CODING_PLAN_API_KEY` and `OPENAI_API_KEY`. Twelve of the sixteen rows the
+  loader could serve now are, with the gateways and DeepSeek. MiniMax is served on
+  `anthropic-messages` and the rest on `openai-completions`, each the wire its
+  catalog row records rather than a shape the loader assumed.
+  All five coding plans are the `carries_version` shape in the hardest form: the
+  base ends in a version segment *and* the `models_endpoint` is `/models`, so the
+  version sits in the middle of the path. A listing that appended a second `/v1`
+  — as the override path does for a versioned base — would ask
+  `…/api/coding/paas/v4/v1/models` and get a 404, so the override test now walks
+  all ten versioned rows rather than the six it did, and a new one pins the
+  versioned base under an override exactly.
+- **OpenAI's wire is chosen per model, and the reason is that the row has two
+  wires and the product already knew which one each model needs.** The catalog
+  lists `openai-completions` first, so a loader that took the row's first wire
+  would serve every OpenAI model as a chat completion — but the built-in OpenAI
+  descriptor has always served OpenAI on `openai-responses`, and the
+  responses-only models (`o1-pro`, `o3-pro`, `gpt-5-pro`, `gpt-5-codex`,
+  `gpt-5.1-codex-max`, `deep-research`, `computer-use-preview`) exist only on
+  that wire. Discovery sees the whole listing at once, so the wire is decided per
+  model id: responses for the models that need it, chat completions for the rest.
+  That list was a private function in `makai.zig`; it now lives in
+  `provider_catalog.zig` as `isResponsesOnlyModel` and `makai` calls it, so there
+  is one list of which models are responses-only rather than two that could
+  drift. A test asserts a single-wire row keeps its wire whatever the model is
+  called, and another asserts the loader and the per-model rule choose the same
+  wire for every row the loader can serve.
 - The catalog loader serves the five gateway rows beside DeepSeek: OpenRouter,
   OpenCode Zen, Vercel AI Gateway, ZenMux and Deep Infra. Each is reachable by
   exporting its own key — `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`,
