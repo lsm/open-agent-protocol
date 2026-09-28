@@ -69,7 +69,6 @@ pub const Request = struct {
     session_id: ?[]const u8 = null,
     run_id: ?[]const u8 = null,
     after: ?u64 = null,
-    cursor_refused: bool = false,
     payload: ?std.json.Value = null,
     allow_degraded_features: []const []const u8 = &.{},
     supplied: Supplied = .{},
@@ -88,9 +87,6 @@ pub const Request = struct {
         for (all_parameters) |parameter| {
             const declared = declares(parameters, parameter);
             if (declared == self.takes(parameter)) continue;
-            if (self.supplied.after and std.mem.eql(u8, parameter, "after")) {
-                return .{ .code = "invalid_cursor", .message = "the cursor is not a position this stream can resume from" };
-            }
             return .{ .code = "invalid_request", .message = "this op does not define that parameter" };
         }
         return null;
@@ -173,8 +169,6 @@ pub fn decode(arena: std.mem.Allocator, line: []const u8) Error!Request {
             request.after = null;
         } else if (after == .integer and after.integer >= 0) {
             request.after = @intCast(after.integer);
-        } else {
-            request.cursor_refused = true;
         }
     }
     if (request.supplied.request) request.payload = member(root, "request");
@@ -352,13 +346,13 @@ pub const Frontend = struct {
     }
 
     fn capabilities(self: *Frontend, arena: std.mem.Allocator, name: []const u8) !Outcome {
+        self.next_envelope += 1;
+        const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
         const descriptor = self.hub.probe(name) catch |err| switch (err) {
             error.UnknownAdapter => return .{ .refused = .{ .code = "unknown_adapter", .message = try std.fmt.allocPrint(arena, "no adapter \"{s}\"", .{name}) } },
             error.OutOfMemory => return error.OutOfMemory,
             else => return .{ .refused = .{ .code = "probe_failed", .message = try std.fmt.allocPrint(arena, "the adapter \"{s}\" could not be probed", .{name}) } },
         };
-        self.next_envelope += 1;
-        const correlation = try std.fmt.allocPrint(arena, "oap-request-{d}", .{self.next_envelope});
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
         const declared = try declaredFeatures(arena, descriptor.features);
@@ -479,12 +473,26 @@ pub const Frontend = struct {
             defer arena.free(line);
             try self.write(line);
             return;
-        } else |_| {}
-        if (self.frame(arena, object)) |line| {
+        } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        }
+        var shed = try emptyObject(arena);
+        try shed.put(arena, "id", .{ .integer = id });
+        try shed.put(arena, "ok", .{ .bool = false });
+        try shed.put(arena, "result", .{ .null = {} });
+        var slimmer = try emptyObject(arena);
+        try slimmer.put(arena, "code", .{ .string = refusal.code });
+        try slimmer.put(arena, "message", .{ .string = refusal.message });
+        try shed.put(arena, "error", .{ .object = slimmer });
+        if (self.frame(arena, shed)) |line| {
             defer arena.free(line);
             try self.write(line);
             return;
-        } else |_| {}
+        } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {},
+        }
         try self.tooLarge(arena, id);
     }
 
@@ -901,14 +909,14 @@ test "a line over the frame limit is a defect, and the limit is not negotiable b
     try testing.expectError(Error.FrameLimitTooSmall, Frontend.init(testing.allocator, &harness.hub, harness.recorder.sink(), .{ .frame_limit = minimum_frame_limit - 1 }));
 }
 
-test "a cursor that is not a position is a refusal, not a framing defect" {
+test "a cursor on an op that takes none is a refusal, not a framing defect" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     const values = [_][]const u8{ "-1", "1.5", "\"1\"", "true" };
     for (values) |value| {
         const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"adapters\",\"after\":{s}}}", .{value});
         try harness.send(line);
-        try testing.expectEqualStrings("invalid_cursor", try harness.code());
+        try testing.expectEqualStrings("invalid_request", try harness.code());
     }
     try harness.send("{\"id\":2,\"op\":\"adapters\"}");
     try testing.expect((try harness.lastValue()).object.get("ok").?.bool);
