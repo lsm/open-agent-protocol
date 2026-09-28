@@ -809,7 +809,13 @@ func (s *AuthService) oapListProviders(ctx context.Context) ([]ProviderAuthInfo,
 			return nil, &AuthError{Kind: AuthKindTransportError, Message: "auth provider entry is not an object"}
 		}
 		p := jsonObject(entry)
-		result = append(result, ProviderAuthInfo{ID: p.str("id"), Name: p.str("name"), Status: AuthStatus(p.str("auth_status")), LastError: p.str("last_error")})
+		raw := make([]protocol.CredentialKind, 0, len(p.arr("auth_kinds")))
+		for _, kind := range p.arr("auth_kinds") {
+			if name, ok := kind.(string); ok {
+				raw = append(raw, protocol.CredentialKind(name))
+			}
+		}
+		result = append(result, ProviderAuthInfo{ID: p.str("id"), Name: p.str("name"), AuthKinds: knownCredentialKinds(raw), Status: AuthStatus(p.str("auth_status")), LastError: p.str("last_error")})
 	}
 	return result, nil
 }
