@@ -211,8 +211,8 @@ group (`packages/protocol/src/groups/session.ts`) carries seventeen routes:
 `session.context`, `session.history`, `session.events`
 (`GET /api/session/:sessionID/event`), `session.message`, `session.switchAgent`,
 `session.switchModel`, `session.prompt`, `session.compact`, `session.wait`,
-`session.interrupt`, `session.message` and the three `session.revert.*` stages —
-seventeen `HttpApiEndpoint`s in the group, counted rather than estimated. The
+`session.interrupt` and the three `session.revert.*` stages — seventeen
+`HttpApiEndpoint`s in the group, counted rather than estimated. The
 Go adapter uses seven of them, and the port goldens in
 `go/adapter/opencode/testdata/port-goldens.json` name every request it makes:
 `POST /api/session`, `POST /api/session/:id/prompt`, `POST
