@@ -1074,6 +1074,10 @@ pub const TuiRuntime = struct {
                 self.pushTerminal(.{ .turn_end = .{ .stop_reason = payload.message.stop_reason } });
             },
             .agent_end => try self.handleAgentEndEvent(),
+            .run_failed => |payload| {
+                self.push(.{ .@"error" = .{ .message = self.dupeOwned(payload.reason.slice()) catch OwnedSlice(u8).initBorrowed(payload.reason.slice()) } });
+                try self.handleAgentEndEvent();
+            },
             .context_usage => |payload| self.push(.{ .context_usage = .{
                 .system_prompt_bytes = payload.system_prompt_bytes,
                 .message_bytes = payload.message_bytes,

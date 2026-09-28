@@ -129,6 +129,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An agent run now always ends with exactly one event that ends it. A run that
+  failed — at any point, including the two paths that returned before the run
+  started — used to simply stop, so a consumer waiting for the run to end waited
+  forever and had a second channel to remember to check for why. `AgentEvent`
+  gains a `run_failed` variant and an `isTerminal` that names the two events that
+  end a run; `runLoopThread` emits exactly one of them from its `defer`, so a
+  failure after the run has already ended does not end it twice, and a second run
+  on the same agent is not silenced by the first run's terminal. A provider that
+  refuses is unchanged: it is a run that got far enough to end, so it ends with a
+  normal `agent_end`.
 - A long reply in the TUI is no longer cut off at two minutes with `Provider protocol
   stream timed out`. The in-process provider bridge counted its 120-second limit from
   the request, so a response still streaming at two minutes was ended mid-sentence. The
