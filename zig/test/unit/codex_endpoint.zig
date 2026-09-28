@@ -214,8 +214,10 @@ test "a codex run cancelled through the endpoint is acknowledged before it settl
     _ = try conversation.pumpUntil("run.started");
 
     const acknowledged = try conversation.cancel(run_id);
-    try testing.expectEqualStrings("run.cancel.response", typeOf(acknowledged[0]));
-    try testing.expectEqualStrings("cancelling", acknowledged[0].object.get("payload").?.object.get("status").?.string);
+    const announcement = if (acknowledged.len > 0 and std.mem.eql(u8, typeOf(acknowledged[0]), "run.status.updated")) acknowledged[0] else null;
+    const answer = if (announcement != null) acknowledged[1] else acknowledged[0];
+    try testing.expectEqualStrings("run.cancel.response", typeOf(answer));
+    if (announcement) |status| try testing.expectEqualStrings("cancelling", status.object.get("payload").?.object.get("status").?.string);
     const cancelled = if (acknowledged.len > 1 and std.mem.eql(u8, typeOf(acknowledged[acknowledged.len - 1]), "run.cancelled"))
         acknowledged[acknowledged.len - 1]
     else

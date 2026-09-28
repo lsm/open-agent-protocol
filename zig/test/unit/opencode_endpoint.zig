@@ -189,7 +189,8 @@ test "an OpenCode run cancelled through the endpoint is acknowledged before it s
     const run_id = admitted[0].object.get("payload").?.object.get("run_id").?.string;
     _ = try conversation.pumpUntil("run.started");
     const cancelled = try conversation.cancel(run_id);
-    try testing.expectEqualStrings("run.cancel.response", typeOf(cancelled[0]));
+    const answer = if (cancelled.len > 1 and std.mem.eql(u8, typeOf(cancelled[0]), "run.status.updated")) cancelled[1] else cancelled[0];
+    try testing.expectEqualStrings("run.cancel.response", typeOf(answer));
     _ = try conversation.pumpUntil("run.cancelled");
 
     try conversation.close();
