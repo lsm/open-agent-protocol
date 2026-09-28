@@ -4,9 +4,10 @@ Status: proposed design
 Governs: the `oapx` command line
 Follows: [Decision 0032](../decisions/0032-go-and-zig-are-peers.md)
 Amended by: [Decision 0038](../decisions/0038-one-released-binary-and-a-library-for-every-language.md),
-which is folded in here: **one released binary, and a library for every language.** `oapx` is the released Zig binary. The Go tree
-carries the same verbs as `goap` and is run from the repository with
-`go run ./go/cmd/goap`; it is not installed and nothing a user reads should
+which is folded in here: **one released binary, and a library for every
+language.** `oapx` is the released Zig binary. The Go tree carries the same
+verb set — as `goap`, matching `oapx` — and is run from the repository with
+`go run ./go/cmd/goap`; it is not installed, and nothing a user reads should
 suggest installing it. So a rule below binds `oapx`, and where the Go tree
 carries the verb it means the same thing there.
 
