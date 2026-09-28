@@ -116,7 +116,10 @@ pub fn render(allocator: std.mem.Allocator, state: *const tui_state.AppState, op
 
     const left = try layoutKept(allocator, segments.items, mask, false);
     defer allocator.free(left);
-    return tui_text.truncateToWidth(allocator, left, options.width);
+    return tui_text.truncateToWidth(allocator, left, options.width) catch |err| switch (err) {
+        error.WriteFailed => error.OutOfMemory,
+        else => err,
+    };
 }
 
 pub fn renderCwdRow(allocator: std.mem.Allocator, display: []const u8, width: usize) ![]u8 {
@@ -148,14 +151,14 @@ fn appendHint(allocator: std.mem.Allocator, left: []const u8, hint: []const u8, 
     const left_width = tui_text.visibleWidth(left);
     const hint_width = tui_text.visibleWidth(hint);
     if (left_width + hint_gap + hint_width > width) return allocator.dupe(u8, left);
-    const styled = try tui_theme.keyHint().render(allocator, hint);
+    const styled = try renderStyled(allocator, tui_theme.keyHint(), hint);
     defer allocator.free(styled);
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
-    try out.writer.writeAll(left);
+    out.writer.writeAll(left) catch return error.OutOfMemory;
     const pad = width - left_width - hint_width;
-    for (0..pad) |_| try out.writer.writeByte(' ');
-    try out.writer.writeAll(styled);
+    for (0..pad) |_| out.writer.writeByte(' ') catch return error.OutOfMemory;
+    out.writer.writeAll(styled) catch return error.OutOfMemory;
     return out.toOwnedSlice();
 }
 
@@ -179,22 +182,22 @@ fn fitLayout(allocator: std.mem.Allocator, segments: []const Segment, mask: []co
 }
 
 fn layoutKept(allocator: std.mem.Allocator, segments: []const Segment, mask: []const bool, show_cut: bool) ![]u8 {
-    const sep = try tui_theme.faint().render(allocator, " " ++ tui_theme.glyph.sep ++ " ");
+    const sep = try renderStyled(allocator, tui_theme.faint(), " " ++ tui_theme.glyph.sep ++ " ");
     defer allocator.free(sep);
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
     var written: usize = 0;
     for (segments, mask) |seg, dropped| {
         if (dropped) continue;
-        if (written > 0) try out.writer.writeAll(sep);
-        try out.writer.writeAll(seg.styled);
+        if (written > 0) out.writer.writeAll(sep) catch return error.OutOfMemory;
+        out.writer.writeAll(seg.styled) catch return error.OutOfMemory;
         written += 1;
     }
     if (show_cut and written > 0) {
-        const ellipsis = try tui_theme.dim().render(allocator, "…");
+        const ellipsis = try renderStyled(allocator, tui_theme.dim(), "…");
         defer allocator.free(ellipsis);
-        try out.writer.writeAll(sep);
-        try out.writer.writeAll(ellipsis);
+        out.writer.writeAll(sep) catch return error.OutOfMemory;
+        out.writer.writeAll(ellipsis) catch return error.OutOfMemory;
     }
     return out.toOwnedSlice();
 }
@@ -213,17 +216,32 @@ fn gaugeColor(pct: u64) zz.Color {
     return tui_theme.palette.gauge_green;
 }
 
+fn renderStyled(allocator: std.mem.Allocator, style: zz.Style, text: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    writeStyled(&out.writer, style, text) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
+
+fn writeStyled(writer: *std.Io.Writer, style: zz.Style, text: []const u8) !void {
+    try style.foreground.writeFg(writer);
+    if (style.bold_attr orelse false) try zz.ansi.sgr(writer, "1");
+    if (style.dim_attr orelse false) try zz.ansi.sgr(writer, "2");
+    try writer.writeAll(text);
+    try writer.writeAll(zz.ansi.reset);
+}
+
 fn renderGauge(allocator: std.mem.Allocator, pct: u64) ![]u8 {
     const filled: usize = @intCast(@min(gauge_cells, (pct * gauge_cells + 50) / 100));
     var out: std.Io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
     const writer = &out.writer;
-    try gaugeColor(pct).writeFg(writer);
-    for (0..filled) |_| try writer.writeAll(tui_theme.glyph.gauge_on);
-    try zz.ansi.sgr(writer, "0");
-    try tui_theme.palette.faint.writeFg(writer);
-    for (filled..gauge_cells) |_| try writer.writeAll(tui_theme.glyph.gauge_off);
-    try writer.writeAll(zz.ansi.reset);
+    gaugeColor(pct).writeFg(writer) catch return error.OutOfMemory;
+    for (0..filled) |_| writer.writeAll(tui_theme.glyph.gauge_on) catch return error.OutOfMemory;
+    zz.ansi.sgr(writer, "0") catch return error.OutOfMemory;
+    tui_theme.palette.faint.writeFg(writer) catch return error.OutOfMemory;
+    for (filled..gauge_cells) |_| writer.writeAll(tui_theme.glyph.gauge_off) catch return error.OutOfMemory;
+    writer.writeAll(zz.ansi.reset) catch return error.OutOfMemory;
     return out.toOwnedSlice();
 }
 
@@ -234,16 +252,16 @@ fn contextText(allocator: std.mem.Allocator, state: *const tui_state.AppState, c
     const used_text = try tui_text.compactNumber(allocator, used);
     defer allocator.free(used_text);
     if (limit == 0) {
-        if (compact) return tui_theme.statusSegment().render(allocator, used_text);
+        if (compact) return renderStyled(allocator, tui_theme.statusSegment(), used_text);
         const gauge_text = try renderGauge(allocator, pct);
         defer allocator.free(gauge_text);
         const value = try std.fmt.allocPrint(allocator, "{s} {s} ctx", .{ gauge_text, used_text });
         defer allocator.free(value);
-        return tui_theme.statusSegment().render(allocator, value);
+        return renderStyled(allocator, tui_theme.statusSegment(), value);
     }
     const pct_text = try std.fmt.allocPrint(allocator, "{d}%", .{pct});
     defer allocator.free(pct_text);
-    const styled_pct = try (zz.Style{}).fg(gaugeColor(pct)).inline_style(true).render(allocator, pct_text);
+    const styled_pct = try renderStyled(allocator, (zz.Style{}).fg(gaugeColor(pct)).inline_style(true), pct_text);
     if (compact) return styled_pct;
     defer allocator.free(styled_pct);
     const gauge_text = try renderGauge(allocator, pct);
@@ -252,7 +270,7 @@ fn contextText(allocator: std.mem.Allocator, state: *const tui_state.AppState, c
     defer allocator.free(limit_text);
     const tokens = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ used_text, limit_text });
     defer allocator.free(tokens);
-    const styled_tokens = try tui_theme.statusSegment().render(allocator, tokens);
+    const styled_tokens = try renderStyled(allocator, tui_theme.statusSegment(), tokens);
     defer allocator.free(styled_tokens);
     return std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ gauge_text, styled_pct, styled_tokens });
 }
@@ -298,16 +316,16 @@ fn pushOwnedSegment(list: *SegmentList, allocator: std.mem.Allocator, kind: Segm
 }
 
 fn pushStyledValue(list: *SegmentList, allocator: std.mem.Allocator, kind: SegmentKind, key: []const u8, value: []const u8, value_style: zz.Style) !void {
-    const styled_key = try tui_theme.statusKey().render(allocator, key);
+    const styled_key = try renderStyled(allocator, tui_theme.statusKey(), key);
     defer allocator.free(styled_key);
-    const styled_value = try value_style.render(allocator, value);
+    const styled_value = try renderStyled(allocator, value_style, value);
     defer allocator.free(styled_value);
     const styled = try std.fmt.allocPrint(allocator, "{s}:{s}", .{ styled_key, styled_value });
     try pushOwned(list, allocator, kind, styled);
 }
 
 fn pushValue(list: *SegmentList, allocator: std.mem.Allocator, kind: SegmentKind, value: []const u8, value_style: zz.Style) !void {
-    try pushOwned(list, allocator, kind, try value_style.render(allocator, value));
+    try pushOwned(list, allocator, kind, try renderStyled(allocator, value_style, value));
 }
 
 fn pushOwnedValue(list: *SegmentList, allocator: std.mem.Allocator, kind: SegmentKind, value: []u8, value_style: zz.Style) !void {
