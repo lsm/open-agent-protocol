@@ -635,12 +635,14 @@ fn fetchCatalogModelsCatalog(allocator: std.mem.Allocator, target: CatalogEndpoi
     var headers: std.ArrayList(std.http.Header) = .empty;
     defer headers.deinit(allocator);
     try headers.append(allocator, .{ .name = "accept", .value = "application/json" });
+    var owned_bearer: ?[]u8 = null;
+    defer if (owned_bearer) |value| secureFree(allocator, value);
     if (std.mem.eql(u8, target.wire, "anthropic-messages")) {
         try headers.append(allocator, .{ .name = "x-api-key", .value = token });
         try headers.append(allocator, .{ .name = "anthropic-version", .value = "2023-06-01" });
     } else {
         const bearer = try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
-        defer secureFree(allocator, bearer);
+        owned_bearer = bearer;
         try headers.append(allocator, .{ .name = "authorization", .value = bearer });
     }
 
