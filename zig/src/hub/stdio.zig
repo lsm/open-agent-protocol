@@ -328,6 +328,11 @@ pub const Frontend = struct {
                     try run_object.put(arena, "run_id", .{ .string = active.run_id });
                     try run_object.put(arena, "status", .{ .string = @tagName(active.status) });
                     if (active.relationship.len > 0) try run_object.put(arena, "relationship", .{ .string = active.relationship });
+                    if (active.queue_position) |position| try run_object.put(arena, "queue_position", .{ .integer = @intCast(position) });
+                    if (active.as_of_sequence) |sequence| try run_object.put(arena, "as_of_sequence", .{ .integer = @intCast(sequence) });
+                    if (active.admitted_submit_requests.len > 0) try run_object.put(arena, "admitted_submit_requests", try jsonStrings(arena, active.admitted_submit_requests));
+                    if (active.pending_interactions.len > 0) try run_object.put(arena, "pending_interactions", try jsonStrings(arena, active.pending_interactions));
+                    if (active.acknowledged_interactions.len > 0) try run_object.put(arena, "acknowledged_interactions", try jsonStrings(arena, active.acknowledged_interactions));
                     run.* = .{ .object = run_object };
                 }
                 try object.put(arena, "active_runs", try jsonArray(arena, runs));
@@ -372,7 +377,7 @@ pub const Frontend = struct {
 
     fn state(self: *Frontend, arena: std.mem.Allocator, session_id: []const u8) !Outcome {
         const reported = self.hub.state(arena, session_id) catch |err| {
-            return .{ .refused = try self.refusalFor(arena, err, session_id) };
+            return .{ .refused = try self.stateRefusal(arena, err, session_id) };
         };
         self.next_envelope += 1;
         const answer_id = try std.fmt.allocPrint(arena, "oap-response-{d}", .{self.next_envelope});
@@ -403,6 +408,17 @@ pub const Frontend = struct {
             error.ScopeMismatch => .{ .code = "scope_mismatch", .message = try std.fmt.allocPrint(arena, "the request names a session other than \"{s}\"", .{session_id}) },
             error.OutOfMemory => return error.OutOfMemory,
             else => .{ .code = "internal", .message = @errorName(err) },
+        };
+    }
+
+    fn stateRefusal(self: *Frontend, arena: std.mem.Allocator, err: hubmod.Failure, session_id: []const u8) !Refusal {
+        return switch (err) {
+            error.UnknownSession,
+            error.SessionClosed,
+            error.ScopeMismatch,
+            => self.refusalFor(arena, err, session_id),
+            error.OutOfMemory => return error.OutOfMemory,
+            else => .{ .code = "state_failed", .message = @errorName(err) },
         };
     }
 
@@ -438,14 +454,11 @@ pub const Frontend = struct {
         try body.put(arena, "code", .{ .string = refusal.code });
         try body.put(arena, "message", .{ .string = try trim(arena, refusal.message) });
         if (refusal.details.len > 0) {
-            const details = try arena.alloc(std.json.Value, refusal.details.len);
-            for (refusal.details, details) |detail, *entry| {
-                var pair = try emptyObject(arena);
-                try pair.put(arena, "key", .{ .string = detail.key });
-                try pair.put(arena, "value", .{ .string = detail.value });
-                entry.* = .{ .object = pair };
+            var details = try emptyObject(arena);
+            for (refusal.details) |detail| {
+                try details.put(arena, detail.key, .{ .string = detail.value });
             }
-            try body.put(arena, "details", try jsonArray(arena, details));
+            try body.put(arena, "details", .{ .object = details });
         }
         try object.put(arena, "error", .{ .object = body });
         const line = json_encode.valueAlloc(arena, .{ .object = object }) catch |err| switch (err) {
@@ -466,8 +479,10 @@ pub const Frontend = struct {
 
 fn trim(arena: std.mem.Allocator, message: []const u8) ![]const u8 {
     if (message.len <= message_limit) return message;
-    const head = std.unicode.utf8ByteSequenceLength(message[message_limit]) catch message_limit;
-    return std.fmt.allocPrint(arena, "{s}…", .{message[0 .. message_limit - head]});
+    var cut = message_limit;
+    while (cut > 0 and message[cut] & 0b1100_0000 == 0b1000_0000) cut -= 1;
+    while (cut > 0 and std.unicode.utf8ByteSequenceLength(message[cut - 1]) catch 0 > cut) cut -= 1;
+    return std.fmt.allocPrint(arena, "{s}…", .{message[0..cut]});
 }
 
 fn timestamp(arena: std.mem.Allocator, milliseconds: i64) ![]const u8 {
@@ -980,11 +995,57 @@ test "a refusal's message is bounded so a long one still frames" {
     defer harness.deinit();
     const name = "adapter-" ++ "n" ** 400;
     const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{name});
+    try testing.expect(std.unicode.utf8ValidateSlice(line));
     try harness.send(line);
     const message = (try harness.lastValue()).object.get("error").?.object.get("message").?.string;
     try testing.expect(std.mem.endsWith(u8, message, "\u{2026}"));
     try testing.expect(message.len <= message_limit + 4);
     try testing.expect(std.unicode.utf8ValidateSlice(message));
+}
+
+test "a bounded message is cut on a character boundary, not inside one" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const name = "adapter-" ++ "\u{00e9}" ** 400;
+    const line = try std.fmt.allocPrint(harness.arena(), "{{\"id\":1,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{name});
+    try harness.send(line);
+    const message = (try harness.lastValue()).object.get("error").?.object.get("message").?.string;
+    try testing.expect(std.unicode.utf8ValidateSlice(message));
+    try testing.expect(std.mem.endsWith(u8, message, "\u{2026}"));
+    try testing.expect(message.len <= message_limit + 4);
+
+    var varied: [396]u8 = undefined;
+    for (&varied, 0..) |*byte, index| byte.* = if (index % 3 == 0) 0xC3 else if (index % 3 == 1) 0xA9 else 'a';
+    const mixed = try std.fmt.allocPrint(harness.arena(), "{{\"id\":2,\"op\":\"capabilities\",\"adapter\":\"{s}\"}}", .{varied[0..]});
+    try testing.expect(std.unicode.utf8ValidateSlice(mixed));
+    try harness.send(mixed);
+    const second = (try harness.lastValue()).object.get("error").?.object.get("message").?.string;
+    try testing.expect(std.unicode.utf8ValidateSlice(second));
+    try testing.expect(std.mem.endsWith(u8, second, "\u{2026}"));
+}
+
+test "the sessions listing carries each session's runs as an array of objects" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    _ = try harness.hub.open(arena, "reference", .{ .session_id = "listed" });
+
+    try harness.send("{\"id\":1,\"op\":\"sessions\"}");
+    const rows = (try harness.lastValue()).object.get("result").?.object.get("sessions").?.array;
+    try testing.expectEqual(@as(usize, 1), rows.items.len);
+    try testing.expectEqualStrings("listed", try textMember(harness.arena(), rows.items[0], "session_id"));
+    try testing.expectEqualStrings("reference", try textMember(harness.arena(), rows.items[0], "adapter"));
+}
+
+test "a state that cannot be read is state_failed, not internal" {
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    try harness.send("{\"id\":1,\"op\":\"state\",\"session_id\":\"absent\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
+    try harness.send("{\"id\":2,\"op\":\"state\",\"session_id\":\"reference\"}");
+    try testing.expectEqualStrings("unknown_session", try harness.code());
 }
 
 test "the in-flight bound refuses any op, naming the bound that refused it" {
