@@ -3489,11 +3489,27 @@ fn fixtureToolUseStream(
     _ = options;
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
+    errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.owns_events = true;
     s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+
+    const owned_id = try allocator.dupe(u8, "tooluse-call-1");
+    errdefer allocator.free(owned_id);
+    const owned_name = try allocator.dupe(u8, "lookup");
+    errdefer allocator.free(owned_name);
+    const owned_args = try allocator.dupe(u8, "{}");
+    errdefer allocator.free(owned_args);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(content);
+    content[0] = .{ .tool_call = .{
+        .id = owned_id,
+        .name = owned_name,
+        .arguments_json = owned_args,
+    } };
+
     s.complete(.{
-        .content = &.{},
+        .content = content,
         .api = "fixture-tooluse-api",
         .provider = "fixture",
         .model = "fixture-model",
