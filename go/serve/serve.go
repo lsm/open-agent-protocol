@@ -89,6 +89,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 	})
 	opened := h.openRecord(ctx, adapterName, implementation, state, request)
 	entry.binding = opened
+	h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
 	if err != nil || state.Status == protocol.SessionClosed {
 		entry.markClosed()
 	}
@@ -96,7 +97,6 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 
 		return entry, state, base.ErrSessionClosed
 	}
-	h.recordBinding(ctx, opened, binding.ActionOpened, state.UpdatedAtMS)
 	if err := h.sessions.add(entry); err != nil {
 		_ = session.Close(context.WithoutCancel(ctx))
 		h.recordBinding(ctx, opened, binding.ActionRefused, h.now())

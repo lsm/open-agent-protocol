@@ -110,7 +110,7 @@ func TestAClosedSessionIsRecordedAsClosed(t *testing.T) {
 	}
 }
 
-func TestARefusedDuplicateOpenIsRecordedAsOpenedAndThenClosed(t *testing.T) {
+func TestARefusedDuplicateOpenIsRecordedAsOpenedAndThenRefused(t *testing.T) {
 	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
 	if err != nil {
 		t.Fatal(err)

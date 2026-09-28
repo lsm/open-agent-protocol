@@ -69,6 +69,7 @@ security posture, and a port carries all of them or is not conformant.
 | **`Origin` refused on every route** | A request carrying any `Origin` header is refused `403 cross_origin_request`. The check wraps the whole mux rather than living in the routes that read a body, so it covers `close` and every route not yet written. | `TestEveryRouteRefusesABrowserOrigin`, `TestReadRequestRefusesBrowserOrigins`, `TestTheOriginBoundaryHoldsWithoutAHostAllowlist` |
 | **`environment` is an allowlist** | A child process inherits nothing ambient. An adapter entry's `environment` names the variables forwarded: a bare `NAME` forwards the daemon's own value (an unset name is omitted), `NAME=value` passes through literally. A tool source's `environment` takes the same form with one stricter rule — a bare `NAME` the daemon does not carry fails at startup, naming the source and the variable, because that entry is the credential list of one executable the daemon itself launches. | `TestResolveEnvironment`, `TestLoadRegistryToolSourceNeedsEveryNameItLists`, `TestCallerEnvironmentNeverNamesAVariableTwice` |
 | **A restart ends every live session** | Run children are per-session and no adapter survives the process, so a restart ends every harness process. Under [Decision 0039](../decisions/0039-a-session-is-oaps-and-a-harness-is-where-it-runs.md) a session outlives its process and close releases it, so no entry accumulates; reopening one is staged as T7, and until it lands a client that reconnects to a restarted hub finds no session. | The restart: `TestServeSessionsClosedOnShutdown`. The release: none yet — `TestHubSessionCloseSemantics` and `TestSessionsListingAcrossLifecycle` still pin the kept entry, which D2 records. |
+| **A binding record holds no credential** | `--bindings <path>` appends one record per open: the session id, the adapter and its pin, the home and working directory the open ran in, the model, and the tool source ids. It never records the request's environment, a credential, or a resolved environment value — a record of what was asked must not become a copy of what was secret — and the file is created `0o600`. History is appended rather than replaced, and a torn tail is truncated on the next write or the next open, so a crash cannot leave the log permanently unreadable |
 | **No payload or environment logging** | The hub, its codecs and its clients never log envelope payloads or resolved environment values. | `TestDaemonOutputNeverCarriesEnvironmentValues` (environment values, through the listing and a load failure); no test pins the payload half |
 
 ## The registry
@@ -328,6 +329,14 @@ the work it already admitted inside its bounded window, closes every session so
 child agent processes are not orphaned, and exits zero. The session sweep runs
 on every exit, including the failures below, so a child is never orphaned by
 one.
+
+`--bindings <path>` names a file the hub appends one binding record to per
+open, and nothing happens without it: a hub built with no store records
+nothing and reports no binding. It is the host's file and the host's decision
+where it lives, and `Decision 0040` is what a record must say — which harness
+ran which session, under which pin, in which home and directory, with which
+model — and what it must never hold. The read side arrives with the reopen
+unit, which is why the flag exists before the wire member does.
 
 `--stdio` and `--addr` name two transports and are mutually exclusive, and the
 hub takes no positional argument. Both are usage errors, refused before
