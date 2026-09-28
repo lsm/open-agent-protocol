@@ -342,3 +342,86 @@ routable through the documented `OPENAI_API_KEY` + `OPENAI_BASE_URL` pair, which
 is the pair the environment reference names for exactly that case; a row on the
 Anthropic wire is not, because the reference documents no Anthropic-compatible
 pair. `model.base_url` is a secondary override under a provider that exists.
+
+## Session reload at v2026.9.24
+
+Decision 0039's evidence table cites this ledger for the Hermes row. Every
+line below is read from the source at this pin's own commit
+`f97608f178d1ffeca59860195ab7da295f7c8e5f` — the same commit and tree as
+*Provenance* above, and the blobs cited here hash to the values recorded
+there (`git hash-object` on each: `methods_session.py` `a41aeff7b731f99a69dfc8556b5ade04d30a83f7`,
+`hermes_state_sessions.py` `1c775a35…`) — and the last paragraph says what
+that does and does not establish.
+
+**Hermes has a real reload, and it is the one harness of the seven whose
+not-found is already typed.** `session.resume` takes a target that may be a
+session id *or* a title, and its common payload (`_resume_response` in
+`tui_gateway/methods_session.py`) answers `session_id`, `resumed`,
+`message_count`, the `messages` (or `messages_omitted` / `hydrating` when the
+caller asks not to have them), `info`, `inflight`, `running`, `session_key`,
+`started_at` and `status`, with the todo state attached by
+`_attach_todo_state`. So a reload answers the messages *and* the identity the
+session's own last route used, in `info.model` / `info.provider`.
+
+**A found session is not guaranteed to carry history, and a not-found is not
+guaranteed to mean the store lacked it.** `_resume_locate` tries, in order: the
+id (`get_session`), then the title (`get_session_by_title`); then, for a lazy
+resume of a child whose first database flush has not landed yet, it proceeds
+with **empty** history because the live mirror streams the turn and the row
+arrives by upgrade time; then a live but unpersisted session
+(`_find_live_unpersisted`, answered by `_resume_live_unpersisted` with
+`stored_session_id`); and finally, for a profile-scoped resume only,
+`_resume_adopt_stranded`, which copies a lineage stranded in the *default*
+store into this profile's database and retries the lookup. A profile that
+holds neither the row nor the donor answers `4007 session not found`.
+
+**Where the store lives, and what it does when it is gone.** The store is a
+SQLite database whose path is `get_hermes_home() / "state.db"`
+(`hermes_state.py`: `DEFAULT_DB_PATH`, `_default_db_path`), and a profile's
+own database is `<root>/profiles/<name>/state.db` — the profile is derived
+from `db_path` alone, per `SessionSessionsMixin` in
+`hermes_state_sessions.py`. A *missing* `state.db` is not an error: on open,
+`_connect_and_init` calls `_secure_state_db_files(self.db_path,
+create_main=True)`, which creates the file mode `0o600`, and then
+`_init_schema()` applies `hermes_state_common.SCHEMA_SQL`. So an empty store
+is created on demand and the resume for any id finds no row and answers
+`4007` — indistinguishable from a session that never existed. A store that is
+present but *unusable* is the case with its own answer: where
+`_profile_db(...)` yields no database, the methods answer
+`_db_unavailable_error(rid, code=5007)`, which is not a not-found. The
+not-found code is also not unique to resume: `session.hidden`'s own lookup
+answers `4001 session not found` for the same condition, so an adapter has to
+carry the code rather than match the message.
+
+**What a reload restores from the row.** `get_session`
+(`hermes_state_sessions.py`) is one `SELECT s.*` with the system prompt and
+the tool set resolved by hash out of `system_prompts` and `tool_names`, so the
+row carries the session's own `model_config` — decoded tolerantly by
+`_parse_model_config`, which takes JSON text or a dict and answers `{}` for
+anything else — its `cwd`, and the hashes of the prompt and tool set it ran
+under. The reply's `info` is deliberately the *session's* model and provider
+(`_live_session_identity`), not the profile default: the source records that a
+warm reattach reporting `_resolve_model()` flipped the Desktop picker on every
+reload and back once the session was dropped. A second store sits beside the
+database — pending messages are appended to `HERMES_HOME/sessions/<id>.jsonl`
+when `state.db` was replaced under a live process — so a transcript can exist
+for a session the database no longer has.
+
+**Whether a typed not-found has to be manufactured: not here, which is why
+this row is the model for 0039's reopen.** `4007` is a typed absence on the
+wire, so `unknown_session` can be carried from it rather than inferred from a
+null or from silence. The harnesses that force the inference are the ones the
+pi and ACP ledgers record: discovery returning `null`, and a spec that says
+nothing at all.
+
+**What the Go adapter does with all of it: it never asks.** `Open` in
+`go/adapter/hermes/adapter.go` always calls `Factory.Start`, which creates a
+*fresh* native session, and it takes the caller's OAP id verbatim
+(`id := req.SessionID`) while recording no binding between that id and the
+native one; `Resume` in `go/adapter/hermes/session.go` replays the adapter's
+own bounded journal. So a reopen naming a previous OAP session id would come
+back as an **empty** session under the same id, silently, rather than
+refusing — the case 0039's binding record has to remove, and the reason this
+ledger matters to #448: the reload already exists on the wire, and the adapter
+is one `session.resume` away from it. Nothing above was observed on a running
+gateway; it is all read from the source at the pin.
