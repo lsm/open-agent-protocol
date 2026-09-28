@@ -289,10 +289,10 @@ model gate already enforces.
 ### Local daemon (`goap hub`)
 
 `goap hub` is this repository's own command and is **not installed**: run it
-with `go run`. `oapx hub` is the released spelling of the same verb, and
-[Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
-records it as work that has not landed — `oapx` answers `unknown argument: hub`
-today, and carries `serve`, `validate`, `run` and `auth`.
+with `go run`. The same verb is `oapx hub` on the released binary, which today
+carries the stdio transport and answers `unavailable` for `--addr` and
+`--config`, naming which. [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)
+is why there is one released binary, and a library for every language.
 
 `goap hub` exposes the adapter registry over HTTP + Server-Sent Events so any
 client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
@@ -302,9 +302,6 @@ wire behavior is the contract the `client` package proves:
 ```sh
 go run ./go/cmd/goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
-
-Decision 0038 is why there is one released binary, and a library for every
-language; it is also what schedules `oapx hub`.
 
 Without `--config` the daemon serves the built-in memory reference adapter
 only. The registry document maps names to in-repo adapter configurations

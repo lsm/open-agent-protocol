@@ -273,6 +273,7 @@ func (message Message) MarshalJSON() ([]byte, error) {
 
 func rejectDuplicateKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	var walk func() error
 	walk = func() error {
 		token, err := decoder.Token()

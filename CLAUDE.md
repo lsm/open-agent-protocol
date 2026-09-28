@@ -70,13 +70,16 @@ TypeScript: `npm ci && npm test` at the root (the SDK) and in `clients/ts` (the
 daemon client). The latter builds `./go/cmd/goap`; set `OAP_GO` if `go` is not on
 `PATH`, or `OAP_TS_SKIP_INTEGRATION=1` to skip it.
 
-`OAP_SDK_BINARY_PATH` is what gates the SDK's real-binary coverage: every test
-in `sdk/typescript/test/makai_binary_smoke.test.ts` skips when it is unset, so
-`npm test` passes green with zero end-to-end binary coverage. A binary found
-through `zig-out` or the `@oap-sdk/cli-*` platform package does not switch those
-tests on, and that package outranks both local build paths, so a fresh
-`zig build` alone is not what the SDK exercises. Export the variable when you
-mean to.
+`OAP_SDK_BINARY_PATH` is what gates the SDKs' real-binary coverage. Every test
+in `sdk/typescript/test/makai_binary_smoke.test.ts` and in
+`go/sdk/binary_smoke_test.go` skips when it is unset, so both SDKs pass green
+with zero end-to-end binary coverage. A binary found through `zig-out` or the
+`@oap-sdk/cli-*` platform package does not switch the TypeScript tests on, and
+that package outranks both local build paths, so a fresh `zig build` alone is
+not what either SDK exercises. Export the variable when you mean to. CI's
+`go-sdk-smoke` job does exactly that: it builds `oapx` and runs
+`go test -race ./go/sdk/...` with the variable set, which is the only place the
+Go SDK talks to a real runtime.
 
 Guardrails, which CI runs before unit tests:
 `./scripts/check-zig-patterns.sh` and `node scripts/check-no-comments.mjs
@@ -92,15 +95,16 @@ Every tracked `.go`, `.zig` and `.ts` file carries no comments — `build.zig`,
 tests, fixtures and `zig/vendor` included. Rationale goes in commit messages, PR
 descriptions, `decisions/` and `drafts/`.
 
-Two enforcers, two ratchets. `scripts/check-no-comments.mjs` covers `.zig` and
-`.ts`, and its allowlist is retired, so the floor there is zero.
-`go/tools/nocomment` covers `.go`, and its `allowlist.txt` still carries the 31
-files of `sdk/go`, which arrived commented. That list only shrinks: an entry
-goes when its comments go, and the check fails if a listed file disappears.
-Never add a comment to a file that is not on it.
+Two enforcers, and both floors are zero. `scripts/check-no-comments.mjs` covers
+`.zig` and `.ts`; `go/tools/nocomment` covers `.go`. Neither carries an
+allowlist any more: the Go one existed only for `sdk/go`, which arrived
+commented, and the fold into `go/sdk` took the last 31 entries with it. A
+comment in a Go file fails the check, with no exemption to add one to. When a
+file needs explaining, the explanation belongs in `docs/`, which is prose the
+policy does not reach.
 
-Exempt are the directives the toolchain honors and the few comments it makes
-unremovable where they are load-bearing — an `Example`'s trailing `// Output:`,
+Exempt in both are the directives the toolchain honors and the few comments it
+makes unremovable where they are load-bearing — an `Example`'s trailing `// Output:`,
 a `Code generated` header, a canonical import comment, a cgo preamble. Position
 is part of the test: prose that merely opens with "Output:" is counted like any
 other sentence. `--write` keeps or removes a group whole, so prose sharing a
@@ -131,6 +135,7 @@ A strict stack; lower layers never import higher ones.
 | `serve/{servehttp,servestdio}` | HTTP+SSE and newline-JSON over one hub; `parity_test.go` enforces the mirror |
 | `serve/serveendpoint`, `conformance` | One agent loop over raw envelopes, and the runner that checks it |
 | `client`, `clients/ts` | Far-side conformance proofs, invisible SSE resume |
+| `sdk` | The Go client for a running endpoint: it spawns `oapx serve agent,provider --stdio` and exposes `Auth`, `Models`, `Provider`, `Agent` over profiled envelopes. Its own private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is the follow-up |
 | `provider`, `internal/providertest` | Provider wire evidence (Z.AI); no Go `model-provider-core` runtime yet |
 | `cmd/goap` | Dispatcher; `serve.go` wires signals, loopback allowlist, bounded shutdown |
 

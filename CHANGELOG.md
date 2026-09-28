@@ -8,8 +8,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **Nothing a user reads suggests installing `goap` any more.** Every run instruction now goes through `go run ./go/cmd/goap` — the README's `hub`, `hub --stdio`, `validate` and `conformance` examples, its `fixtures/packs/` line, `examples/README.md`'s pack invocation and `docs/go-library.md`'s check-you-work line — and the two daemon sections say up front that `goap` is this repository's own command while `oapx hub` is the released spelling 0038 schedules and has not landed, including the error a reader would get (`unknown argument: hub`). `drafts/cli.md` no longer frames two binaries: its title is *One Verb Set*, it states Decision 0038 inline in the decision's own words — one released binary, and a library for every language — and the `goap` column is labelled *repository tool* and records what the Go tree carries so the trees can be compared, rather than presenting a second product. `CLAUDE.md` says the Go command is internal to the repository.
+- **Nothing a user reads suggests installing `goap` any more.** Every run instruction now goes through `go run ./go/cmd/goap` — the README's `hub`, `hub --stdio`, `validate` and `conformance` examples, its `fixtures/packs/` line, `examples/README.md`'s pack invocation and `docs/go-library.md`'s check-you-work line — and the daemon section says up front that `goap` is this repository's own command, run with `go run`, and what the released `oapx hub` carries today (the stdio transport; `unavailable` for `--addr` and `--config`, naming which). `drafts/cli.md` no longer frames two binaries: its title is *One Verb Set*, it states Decision 0038 inline in the decision's own words — one released binary, and a library for every language — and the `goap` column is labelled *repository tool* and records what the Go tree carries so the trees can be compared, rather than presenting a second product. `CLAUDE.md` says the Go command is internal to the repository.
 
+- **Go has one library.** The Go SDK moves from its own module at `sdk/go` into the main module as `go/sdk`, so a Go program that wants a client for a running endpoint imports the same module as everything else rather than a second one with its own `go.mod` and its own wire types. The exported surface is unchanged — `Client` with its `Auth`, `Models`, `Provider` and `Agent` namespaces, the same request and response types, the same typed errors — and the package name is `sdk`, because `makai` is the runtime's old name and nothing outside this repository imported it. Every caller-visible literal follows (`oap sdk: `, in the errors, the resolver and the transport's log lines), and the binary cache directory is `…/oapx/bin` rather than `…/makai/bin`, so a package that says the old name is retired is retired in its messages and on disk. **The zero-comment rule now has no exceptions at all**: the 31 files of `sdk/go` were the entire Go allowlist, and folding them in took the last entry with it, so `go/tools/nocomment`'s allowlist and its stale-entry check are gone and the floor for Go is zero like Zig's and TypeScript's. The documentation those comments carried did not go with them: everything a caller of the API needs — the four namespaces, per-call cancellation versus `Client.Close`, opaque `ModelRef` and session ids, what an endpoint refuses with `unsupported_feature`, and the typed error set — is now a section in `docs/go-library.md`, which is prose the policy does not reach. CI's separate `go-sdk` job, which ran its own Go 1.23 toolchain against `sdk/go`, is replaced by a `go-sdk-smoke` job in the main workflow that builds `oapx` and runs the SDK's real-binary tests, the only place the Go SDK talks to a real runtime. The SDK's private `frame` is still the one place Go hand-rolls an envelope; replacing it with `protocol.Envelope` is deliberately a separate change.
+
+- **Every Go decoder that reads bytes from outside the process now has a fuzz target, and a scheduled job runs them.** The class is the rule: not the two decoders an issue happens to name, but every function that turns bytes another program wrote into a value. That is `validation.Validator.Validate` (a whole envelope trace), the hand-rolled duplicate-key JSON walk in six places, the adapters' native entry points (`DecodeNotification` for hermes and deepseek, `DecodeServerRequest`, `DecodeObservation` and `DecodeControlRequest` for claude, `DecodeEvent` for opencode, `DecodeStrict` for pi, hermes and deepseek), and the limit-bounded frame reader in the codex app-server codec. Each target asserts a property rather than merely returning: a refusal carries no value, an admission implies the invariant it was admitted for (an opencode event with a valid id, a supported type and a durable position; a codex frame that is a request, a result or an error and nothing else), a method the decoder does not serve is refused whatever the data says, and a decoder never hands back bytes that are not one whole JSON document. **A scheduled leg that names no target, and a target nothing schedules, both fail a test** (`go/internal/fuzzseed/matrix_test.go`): the matrix and the tree are checked against each other in both directions, and a leg is named by its package as well as its target so a failing job is identifiable. It earned its place immediately -- it found that `go/validation` already carried `FuzzValidateNeverPanics` and `FuzzApplyEnvelopeNeverPanics` and nothing ran them, and it found that two targets this change had added were later edited out of the tree while the matrix still listed them. **Seeds come from the corpus, through the catalog**: `fuzzseed.Corpus(harnessID)` resolves the current corpus of a harness from `harnesses/*.json`, so no version pin is spelled in the tree (the `pin_literal` gate would refuse it) and a new corpus version re-seeds the targets without a code change; `fuzzseed.Manifest` does the same for the 573 conformance fixtures, spread evenly across the corpus rather than taken from its head. The seeds are bounded and deduplicated, because a seed corpus runs on every ordinary `go test`. `.github/workflows/fuzz.yml` runs each target for 45 s on a weekly schedule and on demand, six at a time inside a 20-minute ceiling, and uploads the input that failed so it can become a fixture.
+
+
+- The catalog loader serves the five gateway rows beside DeepSeek: OpenRouter,
+  OpenCode Zen, Vercel AI Gateway, ZenMux and Deep Infra. Each is reachable by
+  exporting its own key — `OPENROUTER_API_KEY`, `OPENCODE_API_KEY`,
+  `AI_GATEWAY_API_KEY`, `ZENMUX_API_KEY`, `DEEPINFRA_API_KEY` — and nothing
+  else, so five of the sixteen rows the loader could serve are now served. They
+  are the first rows whose base already carries the API version, so they are the
+  first to exercise `carries_version` end to end rather than in a unit test: the
+  row's recorded fact decides the request path, and under an override the models
+  listing is built the way the request is, so `OAPX_BASE_URL=https://proxy.example`
+  sends OpenCode Zen to `…/v1/models` and `…/v1/chat/completions` rather than one
+  of each.
+  A gateway that advertises hundreds of models now appears in `/model` and the
+  TUI picker in full. That is the honest outcome of discovery — the runtime does
+  not second-guess what a gateway says it serves — and `providers.json` remains
+  the way to narrow it, through the allowlist the custom-provider path already
+  has. No row is filtered here, because a curated catalog has no opinion about a
+  user's aggregator.
+  **A listed model also has to be requestable**, which listing alone did not
+  prove. Discovery read the credential through the catalog, so the models
+  appeared; the request path's own env fallback named DeepSeek, OpenAI and Kimi
+  literally, so all five new rows reached `error.MissingApiKey` and only DeepSeek
+  worked end to end — for the wrong reason. That fallback now reads the names the
+  row records, which is the same lookup discovery uses, so "export this row's key
+  and it works" is true of the request and not only of the listing.
+  Each row has its own test rather than one shared assertion: the set the
+  production loader enables, each row's wire and version fact, and one that
+  drives `loadProductionModels` with two rows' fakes and reads both models back,
+  so "the row is enabled" and "the row's models appear" are separate claims with
+  separate failures. I checked that second claim by removing OpenRouter from the
+  loader and confirming two tests fail — the first version of these tests called
+  the row loader directly and passed with the row absent, which proved nothing
+  about what the product actually serves.
+  The coding plans, Xiaomi's rows and OpenAI are separate steps. Xiaomi waits for
+  #352, because a pay-as-you-go key must not surface a token plan it cannot use.
+
+- An opt-in live smoke gate per catalogued row, so a row can earn `status:
+  current` against recorded evidence instead of against a probe that only
+  checked a path exists. `zig build test-e2e-provider-smoke` runs the four cases
+  the issue names — one completion, a streamed completion asserted to arrive as
+  more than one delta, one tool call, and one unknown model that must be refused
+  — for a single row named by `OAP_PROVIDER_SMOKE`. DeepSeek is the row wired up
+  as the worked example; the gate's own table is the seven `current` rows, and a
+  hermetic test pins that table against the catalog so a row's promotion or
+  demotion moves the gate with it.
+  **The gate is opt-in twice over, and neither opt-in is a credential.** A
+  credential's presence alone does not run it, which is the rule the harness
+  gates keep and which the existing provider E2E tests do *not* keep — they skip
+  on the key and nothing else, so a developer with `OPENAI_API_KEY` or
+  `ANTHROPIC_AUTH_TOKEN` exported runs them by accident. This one reads no key
+  until `OAP_PROVIDER_SMOKE` names a
+  row it knows, and it refuses outright when `CI` is set, so a misconfigured
+  runner cannot start spending a key. Both properties are exercised by running
+  the step with a key exported and no opt-in, and again with the opt-in under
+  `CI=true`.
+  Nothing about a key reaches the output. The credential is resolved through
+  `provider_credential.lookup`, so the row's environment variable wins over a
+  stored one and neither is printed; a failure reports the row, the case and the
+  error name. The base URL and wire are read from the catalog, so the gate
+  cannot drift onto a base the catalog no longer pins, and a regional row — Kimi
+  is the one `current` row that is regional — resolves through its `region_env`
+  rather than a default the gate invents.
+  The step is wired into neither `test` nor any `test-unit-*` group for the four
+  live cases — it runs only when a person names a row — while the module itself
+  is wired into both `test` and `test-unit-providers`, so the two hermetic tests
+  that pin the gate's table run in CI and in a full local run alike. The pin is
+  two-way: every listed row must be `current`, and every `current` row must be
+  listed, so a promotion cannot reach the catalog without reaching the gate.
+  **Redirect `HOME` as well as the keychain service.** `OAPX_KEYCHAIN_SERVICE`
+  redirects the store but not `~/.oapx/auth.json`, so a run with only the
+  service overridden falls back to the real file and spends a real key. I did
+  exactly that while checking this and four live calls went out against a
+  DeepSeek key; with `HOME` redirected the same invocation skips, which is the
+  fourth gap in the keychain notes and the reason the command on the issue
+  redirects both.
+  No evidence is recorded here and no row is promoted: the live runs need the
+  owner's keys, so the ledger, the per-row script results and the `goap check`
+  rule requiring a ledger reference for every `current` row all land in the
+  change that records the first reading.
 
 - `auth.providers` is answered from `providers/catalog.json` rather than from a
   four-row literal. `zig/src/auth/providers.zig` hardcoded Anthropic, GitHub
@@ -119,6 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   normalise CRLF to LF, tabs render as `→`, and other control bytes render as caret
   notation so pasted escape sequences can never reach the terminal raw.
 - [Decision 0038](decisions/0038-one-released-binary-and-a-library-for-every-language.md)'s parity section is amended: the two trees are compared by **parsed JSON**, not by bytes, and an exact byte comparison stays only where a harness's ledger records that the harness reads those bytes. No ledger at any pin records it — the two that discuss byte-exactness say the opposite, that a gate "must be structural, never byte-exact" — so the differential suite compares parsed data throughout, and a case that earns byte equality is named in the record and in its test. Byte equality is what made Zig copy `encoding/json`'s escaping of `<`, `>`, `&`, U+2028 and U+2029, which Decision 0032 does not make protocol behaviour. No code changes with the record.
+- `go/binding` records what a host needs to reopen a session it opened, and `goap hub --bindings <path>` writes one record per open. A binding says which harness ran which session, under which pin, with which model and tool sources, in which home and — the directory the **adapter entry was configured with**, omitted when the hub does not know one, never the daemon's own — and it never holds a credential or a resolved environment value; a hub test opens a session and asserts the written bytes carry neither. The store is an interface the host supplies, with a file implementation beside it: an append-only log created `0o600` where **history is appended rather than replaced**, and **a torn write is detected and never read** — a partial line or a record whose bytes do not match its checksum is refused as `binding.ErrTorn` rather than half believed, because half a binding would reopen the wrong session. The repair keeps the longest prefix of records that decode, so a crash — or an edit of the host-owned file — cannot leave the log permanently unreadable, and it walks only the bytes it has not already validated, so appends stay linear in what they read; because a validated prefix cannot be re-checked for free, **a read that meets a record it cannot decode forgets the cached prefix**, so an edit the walk missed is noticed by the first read of that record and the next append repairs the log from zero rather than writing after it **Every record is written in the same critical section as the registry transition it records, and none is written for a transition that did not happen**: a registration records its open, a deregistration its close, a rollback records the close even when the adapter's close failed before `markClosed`, and a duplicate that never ran records **one `refusal` and nothing else** — so `binding.State`, which reads the last entry that claims to be a state, never reports a running session as closed. The store is read at reopen; the wire member that asks for one arrives with the reopen unit, so the read side is the store's own `Latest`/`History` for now.
 
 - `zig/src/model_catalog.zig` grows a generic catalog loader, so a row in
   `providers/catalog.json` reaches `/model` and the TUI picker by being
@@ -169,6 +253,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [Decision 0040](decisions/0040-a-session-reopens-through-its-own-binding.md) (proposed) answers T7's two open questions for `session-reattach`. A reopen is `reopen: true` on `session.open.request` — the unused `recovery` object is not reused — and it answers the session's state document with `recovery.recovered: true` and the model and settings the session actually runs under, which is the harness's recorded configuration rather than the loader's: Codex's `ThreadResumeResponse` requires six such members and the Go adapter dropped all six (#458). A create naming a bound id is `session_exists`, a reopen with no binding is `unknown_session`, and a harness that cannot load is `unsupported_feature`. A store the harness can no longer honour answers `unsupported_feature`, as 0039 already rules, and **no new code is proposed**: the code has to come from the binding rather than the harness's reply, because two of the ledgers record a harness creating a missing store before looking in it (Hermes mode `0o600` plus the schema, OpenCode's migration runner) and pi's discovery answers `null` either way, so for those a deleted database, a moved home and a session that never existed are one answer on the wire. Of the seven harnesses read at their pins, three type their own absence — Hermes `4007`, OpenCode `SessionNotFoundError`, DeepSeek `SessionPersistenceNotFoundError` — and four do not: pi's `null`, ACP's silence, Codex's `-32602 invalid_request` (its own ledger calls that "not a not-found code"), and Claude Code, whose answer is unrecorded. The binding is the host's record — never a credential, never a resolved environment value — written atomically, with a torn write detected and never read, and appended rather than replaced. No wire changes with a proposed record.
 
 
+- `oapx hub` is the multi-session hub in the Zig binary, and `--stdio` serves it
+  over the same transport objects `goap hub --stdio` serves. The hub and its wire
+  are in the `oapx` binary for the first time, which is what the cross-compile
+  check in the previous release could not reach.
+  One loop owns the hub and waits on the readiest of everything it holds — the
+  host's request stream and every open session's child — so a session and a
+  request compete for the same cycle rather than for a share of it, per §8.6. A
+  cycle that read a request drives the hub afterwards, so a child that went quiet
+  during the read is not held back by the next one. On Windows, where there is no
+  `poll` to wait on, the loop falls back to a blocking read of the request stream;
+  that is a wait per input rather than a wait on readiness, and #460 replaces it.
+  `--addr` and `--config` answer `unavailable` and exit non-zero, naming what is
+  missing, because a host that asked for a transport this build does not serve is
+  better told than handed a pipe that answers the requests that fit it.
+  A host that closes the request stream ends the serve, and the serve *succeeded* —
+  treating end-of-stream as an error would make every well-behaved host look like
+  a broken one.
+  A differential test drives one script through `goap hub --stdio` and
+  `oapx hub --stdio` and compares the answers as parsed JSON, keyed by the
+  request's `id` rather than by position, normalising only the envelope ids and
+  timestamps the daemon mints. Four scenarios cover the five ops this wire serves,
+  the refusals and their wording, a null parameter against a wrongly typed one,
+  and a framing defect stopping the wire. It found four divergences the day it
+  was written, all now fixed: the refusal for an undeclared parameter named
+  neither the op nor the parameter, an unknown op said so without naming it, a
+  missing `adapter` was refused as an undefined parameter rather than as
+  `adapter is required`, and a missing `session_id` was refused at all where Go
+  looks the empty id up and answers `unknown_session`.
 - The TUI shows the working directory on a muted, right-aligned row under the status
   line. The path is sanitised, collapsed to `~` on a home-directory component
   boundary, left-truncated with `…` when it is wider than the terminal, and hidden on
@@ -308,9 +420,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+- **The duplicate-key JSON walk no longer refuses a valid message because of a number it cannot hold.** The walk exists to catch a wire that disagrees with itself, and `encoding/json`'s token reader turns a number into a `float64` by default — so a well-formed integer literal longer than a `float64` can represent (`1e999`, or 400 digits) made the walk return a range error and the adapter reject a message that is perfectly valid. The deepseek copies already asked for `UseNumber()`; acp, claude, codex, hermes, pi and opencode did not, so six adapters refused valid traffic in six slightly different ways, and opencode's copy is exported as `native.RejectDuplicateKeys`. All of them ask now, and the copies that remain are [#489](https://github.com/lsm/open-agent-protocol/issues/489)'s to collapse.
+
 - The Zig endpoint now **drains a session's events before it answers a `run.cancel`**, so everything an adapter emitted while handling the cancel — the `run.status.updated {status: cancelling}` announcement the Go adapters emit, and any terminal a harness settles inside the round-trip — reaches the stream before the acknowledgement, which is Go's order. The two trees disagreed here: goap announced `cancelling` and then answered, while oapx answered and then announced, which the order-aware parity comparison found as soon as it stopped sorting its input. Both orders are legal under [Decision 0041](decisions/0041-cancel-acceptance-is-judged-when-the-cancel-is-checked.md) — a cancel response is unordered against a run's stream — so nothing was wrong with either; aligning them is what makes the parity output comparable, and it is a change in `zig/src/adapter/endpoint.zig` rather than in an adapter, because the adapters' only flush point is the drain the host calls. The pre-drain defers a frame failure to the read loop that already owns it, so a cancel cannot turn a serialisation error into a serving error.
 
 
+- `oapx hub --stdio` now passes the hub a clock in **nanoseconds**, which is the
+  unit the hub's contract is in and the one it divides to build a session's
+  `created_at`. It was being passed milliseconds, so every session opened through
+  the verb was stamped 1970 — a plausible timestamp rather than an obvious failure.
+- The hub's stdio serve loop no longer reads the host's pipe when a *session* woke
+  it. The wait collapsed the whole polled set into "did anything wake", so a
+  session producing output also woke the cycle into a blocking read of an idle
+  host's pipe, which is the stall the loop exists to avoid. It now answers one
+  question — is the input ready — and drives the hub either way.
+- The serve loop's per-cycle poll arrays are freed again. The scratch arena was
+  handed to each cycle and never reset, so a daemon accumulated a poll's worth of
+  arrays every cycle for the life of the process.
+- A framing defect exits **non-zero** and names the line that caused it, bounded to
+  512 bytes and marked as cut beyond that: a defect report is not the place to
+  reproduce the defect at whatever length the host chose. A final line the host
+  never terminated is reported as a framing defect rather than dropped, so a host
+  that sent half a request is told rather than left wondering.
+- A caller that cannot give the loop a handle to wait on now gets a read of its
+  input per cycle. It used to be told nothing was ready, and with no sessions open
+  that was forever: a loop that waits for input it never reads.
+- `oapx`'s usage text now names the `hub` verb.
+- `compat.stdio.pipe` now refuses on Windows instead of failing to compile there.
+  It has never been compiled for a Windows target until the hub's stdio module
+  imported `compat`, and the `compile-hub` step has been reporting it since — I read
+  my own measurement of that step as clean and carried on, which is the failure the
+  step was built to prevent.
+- The hub's serve-loop tests read a scripted request stream rather than a real pipe.
+  A blocking read of an OS pipe under the test runner's I/O passes on macOS and
+  hangs on Linux, so `Unit Tests - hub` was killed after six minutes — a test that
+  only ever *polls* a pipe in this job had never read one, which is why nothing
+  had hit it before. The double is scripted, so the loop, the framing, the defect
+  path and end of stream are all still covered and the job terminates.
+- A request line that never arrives no longer buffers without bound. The frame
+  limit was only consulted once a newline turned up, so a host that never sent one
+  could grow the daemon's buffer until it ran out of memory; the buffered bytes are
+  now bounded by the limit and a line over it is a framing defect naming what was
+  buffered.
+- `oapx hub --stdio` now notices a host that closed its pipe on Linux. An empty
+  pipe whose writer has closed polls as `POLLHUP` without `POLLIN`, so the wait saw
+  "no input" and the daemon never learned the request stream had ended — it ran
+  until it was killed. A hangup means a read will return end-of-stream, so it
+  counts as ready. This one only shows on the platform whose `poll` says it that
+  way, which is why the differential job that would have caught it is not wired
+  into CI yet: it needs an `oapx` binary, and that is #390.
+- The hub's differential test normalises what the daemon mints wherever it appears,
+  rather than at the paths it appeared when the test was written. It reached into
+  `result` and `result.payload`, and the sessions listing puts a timestamp inside an
+  array instead, so a listing compared the two trees' clocks against each other.
+- A host that stopped reading now ends the serve. A failed write propagated out of
+  the op but was caught as if it were an unreadable request, so the loop kept
+  reading a host that was no longer there, once per cycle, for as long as the
+  process ran.
+- The three reasons a hub's stdio serve can stop are reported as themselves: a
+  framing defect names the line and says so, a failed read says the request stream
+  failed, and a failed write says the host stopped reading. All three exit
+  non-zero. A read failure was reported as a framing defect, which is a thing that
+  did not happen.
+- The hub's stdio serve loop no longer stops driving the hub after the first
+  request. It read until end-of-stream inside one cycle, so a host that stayed
+  connected and had nothing more to say left every session undriven for as long
+  as it held the pipe open — the sessions' children produced nothing, the journal
+  did not move, and nothing timed out. One readiness, one read, then drive the
+  hub, so a session's output is never held back by a request stream that is idle.
+  End of stream is still the end of the serve, and a framing defect still stops
+  it, so the two are still told apart.
+- A refusal for parameters an op does not define now names all of them, in the
+  order the wire declares them, rather than the first one found. A host that sent
+  three it should not have is told about three.
 - An agent run now always ends with exactly one event that ends it. A run that
   failed — at any point, including the two paths that returned before the run
   started — used to simply stop, so a consumer waiting for the run to end waited

@@ -4,6 +4,7 @@ import "strings"
 
 var public = map[string]bool{
 	"go/client":              true,
+	"go/binding":             true,
 	"go/harness":             true,
 	"go/protocol":            true,
 	"go/providercatalog":     true,
@@ -11,6 +12,7 @@ var public = map[string]bool{
 	"go/serve/serveendpoint": true,
 	"go/serve/servehttp":     true,
 	"go/serve/servestdio":    true,
+	"go/sdk":                 true,
 	"go/validation":          true,
 	"harnesses":              true,
 	"providers":              true,

@@ -684,6 +684,15 @@ pub const Hub = struct {
         return slot(entry.session.ptr);
     }
 
+    pub fn readableHandles(self: *Hub, arena: std.mem.Allocator) std.mem.Allocator.Error![]std.Io.File.Handle {
+        var handles: std.ArrayList(std.Io.File.Handle) = .empty;
+        for (self.entries.items) |*entry| {
+            const handle = handleOf(entry) orelse continue;
+            try handles.append(arena, handle);
+        }
+        return handles.items;
+    }
+
     fn awaitAny(self: *Hub, arena: std.mem.Allocator, wait_ns: u64) !bool {
         if (comptime !pollable) return false;
         var watched = std.ArrayList(std.posix.pollfd).empty;
@@ -995,7 +1004,6 @@ pub const Hub = struct {
         }
     }
 
-
     fn seedOverflow(self: *Hub, subscription: *Subscription, run_id: []const u8, sequence: u64) !void {
         const owned = try self.allocator.dupe(u8, run_id);
         if (subscription.overflow_run.len > 0) self.allocator.free(subscription.overflow_run);
@@ -1064,7 +1072,6 @@ pub const Hub = struct {
         }
         self.removeSession(entry);
     }
-
 
     pub fn leave(self: *Hub, subscription: *Subscription) void {
         self.detach(subscription);
