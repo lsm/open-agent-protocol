@@ -224,6 +224,40 @@ test "App welcome banner neutralises control bytes in the working directory" {
     try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "/tmp/evil?[2J?]0;pwned?dir") != null);
 }
 
+test "App cwd display neutralises control bytes in the working directory" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/tmp/evil\x1b[2J\x1b]0;pwned\x07dir");
+    try app.refreshCwdDisplay();
+    try std.testing.expect(std.mem.indexOf(u8, app.state.cwd_display, "\x1b") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.cwd_display, "\x07") == null);
+    try std.testing.expect(std.mem.indexOf(u8, app.state.cwd_display, "/tmp/evil?[2J?]0;pwned?dir") != null);
+}
+
+test "collapseHome shortens the home directory only on a path component boundary" {
+    const collapsed = try collapseHome(std.testing.allocator, "/Users/lsm/work/repo", "/Users/lsm");
+    defer std.testing.allocator.free(collapsed);
+    try std.testing.expectEqualStrings("~/work/repo", collapsed);
+
+    const home_itself = try collapseHome(std.testing.allocator, "/Users/lsm", "/Users/lsm");
+    defer std.testing.allocator.free(home_itself);
+    try std.testing.expectEqualStrings("~", home_itself);
+
+    const sibling = try collapseHome(std.testing.allocator, "/Users/lsmith/work", "/Users/lsm");
+    defer std.testing.allocator.free(sibling);
+    try std.testing.expectEqualStrings("/Users/lsmith/work", sibling);
+}
+
+fn collapseHomeProbe(allocator: std.mem.Allocator) !void {
+    const collapsed = try collapseHome(allocator, "/Users/lsm/work/repo", "/Users/lsm");
+    allocator.free(collapsed);
+}
+
+test "collapseHome survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, collapseHomeProbe, .{});
+}
+
 test "Context requestClearScreen discards history queued before the request" {
     var tctx: TestContext = undefined;
     tctx.setup();
@@ -580,6 +614,7 @@ pub const App = struct {
         app.store = session_store.Store.initDefault(allocator) catch null;
         try app.ensureSessionId();
         app.working_dir = currentPathOwned(allocator) catch try allocator.dupe(u8, "");
+        try app.refreshCwdDisplay();
         app.loadSessions() catch |err| try app.recordError(@errorName(err));
         return app;
     }
@@ -1589,6 +1624,20 @@ pub const App = struct {
         if (self.runtime) |runtime| runtime.setThinkingLevel(level);
     }
 
+    pub fn refreshCwdDisplay(self: *App) !void {
+        if (self.working_dir.len == 0) {
+            try self.state.setCwdDisplay(self.allocator, "");
+            return;
+        }
+        const sanitized = try tui_text.sanitizeTerminalText(self.allocator, self.working_dir);
+        defer self.allocator.free(sanitized);
+        const home = compat.getEnvVarOwned(self.allocator, "HOME") catch null;
+        defer if (home) |value| self.allocator.free(value);
+        const display = try collapseHome(self.allocator, sanitized, home);
+        defer self.allocator.free(display);
+        try self.state.setCwdDisplay(self.allocator, display);
+    }
+
     pub fn appendWelcome(self: *App) !void {
         const model = try tui_text.sanitizeTerminalText(self.allocator, if (self.state.status.model.len > 0) self.state.status.model else "no-model");
         defer self.allocator.free(model);
@@ -1602,7 +1651,8 @@ pub const App = struct {
                 \\Makai TUI
                 \\model: {s}/{s}
                 \\cwd: {s}
-                \\tips: {s} send {s} {s}{s} newline {s} {s}{s} thinking {s} {s}Y copy reply {s} /help commands
+                \\tips: {s} send {s} {s}{s} newline {s} {s}{s} thinking {s} {s}Y copy reply
+                \\! asks the agent to run a command {s} /help lists every command and key
             , .{ provider, model, cwd, k.enter, tui_theme.glyph.dot, k.shift, k.enter, tui_theme.glyph.dot, k.shift, k.tab, tui_theme.glyph.dot, k.ctrl, tui_theme.glyph.dot });
             defer self.allocator.free(welcome);
             try self.state.appendTranscript(.welcome, welcome);
@@ -2225,13 +2275,19 @@ pub const TuiModel = struct {
         return tailLines(ctx.allocator, stream, budget);
     }
 
+    const cwd_row_min_height: usize = 12;
+
     fn renderChrome(self: *TuiModel, app: *App, ctx: *const zz.Context, width: usize, height: usize) Chrome {
         _ = self;
         const hint = if (app.interrupt_armed_tick != null)
             tui_theme.key.ctrl ++ "C again to quit"
         else
             composer_view.hintText(ctx.allocator, &app.state) catch "";
-        const status = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
+        const bar = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
+        const status = if (height >= cwd_row_min_height and app.state.cwd_display.len > 0) blk: {
+            const row = status_bar_view.renderCwdRow(ctx.allocator, app.state.cwd_display, width) catch break :blk bar;
+            break :blk tui_render.joinVertical(ctx.allocator, &.{ bar, row }) catch bar;
+        } else bar;
         composer_view.adjustScroll(ctx.allocator, &app.state, width, height) catch {};
         const composer = composer_view.render(ctx.allocator, &app.state, .{ .width = width, .max_rows = composer_view.rowCap(height) }) catch "";
         const queued = if (app.state.mode == .normal) renderQueuedFollowUps(ctx.allocator, &app.state, width) catch "" else "";
@@ -2618,6 +2674,16 @@ fn currentPathOwned(allocator: std.mem.Allocator) ![]u8 {
     const path_z = try std.process.currentPathAlloc(defaultIo(), allocator);
     defer allocator.free(path_z);
     return allocator.dupe(u8, path_z);
+}
+
+fn collapseHome(allocator: std.mem.Allocator, path: []const u8, home: ?[]const u8) ![]u8 {
+    const value = home orelse return allocator.dupe(u8, path);
+    if (value.len <= 1) return allocator.dupe(u8, path);
+    if (std.mem.eql(u8, path, value)) return allocator.dupe(u8, "~");
+    if (std.mem.startsWith(u8, path, value) and path.len > value.len and path[value.len] == '/') {
+        return std.fmt.allocPrint(allocator, "~{s}", .{path[value.len..]});
+    }
+    return allocator.dupe(u8, path);
 }
 
 fn newerSessionFirst(_: void, a: session_store.SessionMetadata, b: session_store.SessionMetadata) bool {
@@ -3656,7 +3722,7 @@ test "multi-line /help output renders all lines into transcript view" {
     defer app.deinit();
     try app.submit("/help");
 
-    const rendered = try transcript_view.render(std.testing.allocator, &app.state, .{ .width = 100, .height = 30 });
+    const rendered = try transcript_view.render(std.testing.allocator, &app.state, .{ .width = 100, .height = 44 });
     defer std.testing.allocator.free(rendered);
 
     const expect = [_][]const u8{

@@ -83,8 +83,8 @@ pub fn hintText(allocator: std.mem.Allocator, state: *const tui_state.AppState) 
         if (queued > 0) return std.fmt.allocPrint(allocator, "{s} steer · {s} queue · queued {d} · esc abort", .{ k.enter, k.tab, queued });
         return std.fmt.allocPrint(allocator, "{s} steer · {s} queue · esc abort", .{ k.enter, k.tab });
     }
-    if (std.mem.startsWith(u8, text, "!")) return std.fmt.allocPrint(allocator, "shell mode · {s} runs the command through the agent", .{k.enter});
-    if (std.mem.startsWith(u8, text, "@")) return allocator.dupe(u8, "file picker · type a path or query");
+    if (std.mem.startsWith(u8, text, "!")) return allocator.dupe(u8, "! asks the agent to run a command");
+    if (std.mem.startsWith(u8, text, "@")) return allocator.dupe(u8, "@ mentions a file path in your message");
     if (state.composer.history.items.len > 0) {
         return std.fmt.allocPrint(allocator, "{s} history · {s}{s} newline · / commands", .{ k.up_down, k.shift, k.enter });
     }
@@ -176,7 +176,7 @@ fn renderMaskedRow(allocator: std.mem.Allocator, masked: []const u8, width: usiz
     if (tui_text.visibleWidth(masked) + cursor_blank.len <= width) {
         try writer.writeAll(masked);
     } else {
-        const before = try takeTrailingWidth(allocator, masked, width -| cursor_blank.len);
+        const before = try tui_text.takeTrailingWidth(allocator, masked, width -| cursor_blank.len);
         defer allocator.free(before);
         try writer.writeAll(before);
     }
@@ -282,29 +282,6 @@ fn writeBorderRow(writer: *std.Io.Writer, border: zz.Color, width: usize, top: b
     try writer.writeAll(zz.ansi.reset);
 }
 
-fn takeTrailingWidth(allocator: std.mem.Allocator, text: []const u8, width: usize) ![]u8 {
-    if (width == 0 or text.len == 0) return allocator.dupe(u8, "");
-    if (tui_text.visibleWidth(text) <= width and std.mem.indexOfScalar(u8, text, '\n') == null) return allocator.dupe(u8, text);
-    var start = text.len;
-    var visible: usize = 0;
-    while (start > 0 and visible < width -| 1) {
-        const cp_start = previousCodepointStart(text, start);
-        const cp = text[cp_start..start];
-        if (cp.len == 1 and cp[0] == '\n') break;
-        visible += tui_text.visibleWidth(cp);
-        if (visible > width -| 1) break;
-        start = cp_start;
-    }
-    return std.fmt.allocPrint(allocator, "…{s}", .{text[start..]});
-}
-
-fn previousCodepointStart(text: []const u8, cursor: usize) usize {
-    if (cursor == 0) return 0;
-    var idx = @min(cursor, text.len) - 1;
-    while (idx > 0 and (text[idx] & 0b1100_0000) == 0b1000_0000) idx -= 1;
-    return idx;
-}
-
 test "composer renders placeholder and text" {
     var state = tui_state.AppState.init(std.testing.allocator);
     defer state.deinit();
@@ -365,12 +342,12 @@ test "composer hint follows the interaction state" {
     try state.replaceComposerBuffer("!ls");
     const shell = try hintText(std.testing.allocator, &state);
     defer std.testing.allocator.free(shell);
-    try std.testing.expect(std.mem.indexOf(u8, shell, "shell mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, shell, "run a command") != null);
 
     try state.replaceComposerBuffer("@src");
     const file = try hintText(std.testing.allocator, &state);
     defer std.testing.allocator.free(file);
-    try std.testing.expect(std.mem.indexOf(u8, file, "file picker") != null);
+    try std.testing.expect(std.mem.indexOf(u8, file, "file path") != null);
 
     try state.replaceComposerBuffer("/mo");
     const slash = try hintText(std.testing.allocator, &state);

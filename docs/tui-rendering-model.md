@@ -63,7 +63,8 @@ region**, the same model Bubble Tea's standard renderer and Ink's `<Static>` use
   cursor and resets the live region. Before that it dispatches `window_size` to the
   model, and the app answers by rewinding its flush cursor so the frame itself carries
   the tail of the transcript at the new width; the screen is repainted from the top as
-  `[history tail][frame]` with the status line back on the bottom row and no blank rows
+  `[history tail][frame]` with the status line and working-directory row back on the
+  bottom rows and no blank rows
   pushed into scrollback — at most one screenful of pre-resize output is duplicated in
   scrollback per resize gesture.
 - The top of the old live region is estimated for reflowing terminals (iTerm2,
@@ -179,11 +180,18 @@ code paths; add a transcript row instead.
   rows. Tab renders as `→`, other C0 bytes and DEL as caret notation (`^G`, `^?`), C1
   and invalid UTF-8 as `?`, so a pasted escape sequence can never reach the terminal
   raw; pastes normalise CRLF to LF. Masked login input stays on one windowed row.
-- Status line: `provider/model`, context gauge, state (`idle` or spinner + elapsed),
-  queue, permission, cost (once tokens are known), thinking level, turns, and a
-  right-aligned key hint. Segments truncate whole; the hint outranks the trailing
-  segments but never the first three, and is dropped entirely when even that does not
-  fit.
+- Status line: `provider/model`, context gauge with a usage percentage coloured by
+  band (green below 60%, yellow 60–75, orange 75–85, red 85 and up), `queue`, a bare
+  permission value (`ask`/`bypass`/`pending`), cost (once tokens are known), a bare
+  thinking level (hidden while `off`), `turns:`, and the state (`idle` or spinner +
+  elapsed) last, plus a right-aligned key hint. When the row overflows, the context
+  segment first shrinks to just the coloured percentage, then segments drop whole by
+  priority (turns, thinking, cost, the hint, `ask` permission, queue, drops, model,
+  backpressure, context) behind one trailing `…`; the state segment — and `bypass` or
+  `pending` — are never dropped, and the row is clipped with `…` if even they do not
+  fit. A second row under it shows the working directory, right-aligned and muted,
+  collapsed to `~` under the home directory and left-truncated with `…`; it hides on
+  terminals shorter than 12 rows.
 
 ## Credentials and the model catalog
 
