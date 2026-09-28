@@ -203,6 +203,7 @@ pub const StatusState = struct {
     context_limit: usize = 0,
     turn_count: usize = 0,
     streaming: bool = false,
+    compacting: bool = false,
     streaming_since_ms: i64 = 0,
     streaming_elapsed_ms: u64 = 0,
     last_error: []u8 = &.{},
@@ -578,6 +579,7 @@ pub const AppState = struct {
         self.status.context_used = 0;
         self.status.turn_count = 0;
         self.status.streaming = false;
+        self.status.compacting = false;
         self.stream_aborted = false;
         if (self.status.last_error.len > 0) {
             self.allocator.free(self.status.last_error);
@@ -748,7 +750,7 @@ pub const AppState = struct {
 
     pub fn applyEvent(self: *AppState, event: tui_runtime.TuiEvent) !void {
         if (self.stream_aborted) switch (event) {
-            .turn_end, .agent_end, .@"error", .system_warning, .backpressure_status => {},
+            .turn_end, .agent_end, .@"error", .system_warning, .backpressure_status, .compaction_end => {},
             else => return,
         };
         switch (event) {
@@ -865,6 +867,33 @@ pub const AppState = struct {
                 self.backpressure_active = payload.active;
                 self.dropped_event_count = payload.dropped_count;
             },
+            .compaction_start => {
+                self.status.streaming = true;
+                self.status.compacting = true;
+                self.markStreamingStarted();
+            },
+            .compaction_end => |payload| {
+                self.status.streaming = false;
+                self.status.compacting = false;
+                self.markStreamingStopped();
+                self.stream_aborted = false;
+                switch (payload.outcome) {
+                    .completed => {
+                        self.telemetry.estimated_tokens = payload.tokens_after;
+                        self.status.context_used = @intCast(payload.tokens_after);
+                        const notice = try compactionNotice(self.allocator, payload);
+                        defer self.allocator.free(notice);
+                        try self.appendTranscript(.system, notice);
+                    },
+                    .cancelled => try self.appendTranscript(.system, "compaction cancelled; the conversation is unchanged"),
+                    .failed => {
+                        const message = try std.fmt.allocPrint(self.allocator, "compaction failed: {s}; the conversation is unchanged", .{payload.message.slice()});
+                        defer self.allocator.free(message);
+                        try self.status.setError(self.allocator, message);
+                        try self.appendTranscript(.@"error", message);
+                    },
+                }
+            },
             .turn_end => {
                 self.status.streaming = false;
                 self.markStreamingStopped();
@@ -947,6 +976,25 @@ pub const AppState = struct {
             }
         }
         try self.preview.set(self.allocator, out.items);
+    }
+
+    fn compactionNotice(allocator: std.mem.Allocator, payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).compaction_end)) ![]u8 {
+        var out: std.Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        const writer = &out.writer;
+        try writer.print("conversation compacted · {d} messages · ~", .{payload.messages_before});
+        try writeApproxTokens(writer, payload.tokens_before);
+        try writer.writeAll(" → ~");
+        try writeApproxTokens(writer, payload.tokens_after);
+        try writer.writeAll(" tokens");
+        if (payload.transcript.slice().len > 0) try writer.print("\ntranscript: {s}", .{payload.transcript.slice()});
+        try writer.print("\n\n{s}", .{agent.compaction.summaryOf(payload.text.slice())});
+        return out.toOwnedSlice();
+    }
+
+    fn writeApproxTokens(writer: *std.Io.Writer, tokens: u64) !void {
+        if (tokens < 1000) return writer.print("{d}", .{tokens});
+        try writer.print("{d}.{d}k", .{ tokens / 1000, (tokens % 1000) / 100 });
     }
 
     fn markStreamingStarted(self: *AppState) void {

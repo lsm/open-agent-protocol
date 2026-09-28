@@ -107,12 +107,29 @@ pub const TuiEvent = union(enum) {
     agent_end: struct { generation: u32 = 0, reason: TuiEndReason },
     system_warning: struct { generation: u32 = 0, message: OwnedSlice(u8) },
     backpressure_status: struct { generation: u32 = 0, active: bool, dropped_count: u64 },
+    compaction_start: struct { generation: u32 = 0 },
+    compaction_end: struct {
+        generation: u32 = 0,
+        outcome: CompactionOutcome,
+        text: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+        transcript: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+        message: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+        messages_before: u64 = 0,
+        tokens_before: u64 = 0,
+        tokens_after: u64 = 0,
+    },
     @"error": struct { generation: u32 = 0, message: OwnedSlice(u8) },
 
     pub const MessageRole = enum {
         user,
         assistant,
         tool_result,
+    };
+
+    pub const CompactionOutcome = enum {
+        completed,
+        cancelled,
+        failed,
     };
 
     pub const PromptSegmentKind = enum {
@@ -146,6 +163,8 @@ pub const TuiEvent = union(enum) {
             .agent_end => |p| p.generation,
             .system_warning => |p| p.generation,
             .backpressure_status => |p| p.generation,
+            .compaction_start => |p| p.generation,
+            .compaction_end => |p| p.generation,
             .@"error" => |p| p.generation,
         };
     }
@@ -170,6 +189,8 @@ pub const TuiEvent = union(enum) {
             .agent_end => |*p| p.generation = gen,
             .system_warning => |*p| p.generation = gen,
             .backpressure_status => |*p| p.generation = gen,
+            .compaction_start => |*p| p.generation = gen,
+            .compaction_end => |*p| p.generation = gen,
             .@"error" => |*p| p.generation = gen,
         }
     }
@@ -258,6 +279,17 @@ pub const TuiEvent = union(enum) {
                 p.artifact_refs = OwnedSlice(u8).initOwned(artifact_refs);
             },
             .system_warning => |*p| p.message = OwnedSlice(u8).initOwned(try allocator.dupe(u8, p.message.slice())),
+            .compaction_end => |*p| {
+                const text = try allocator.dupe(u8, p.text.slice());
+                errdefer allocator.free(text);
+                const transcript = try allocator.dupe(u8, p.transcript.slice());
+                errdefer allocator.free(transcript);
+                const message = try allocator.dupe(u8, p.message.slice());
+
+                p.text = OwnedSlice(u8).initOwned(text);
+                p.transcript = OwnedSlice(u8).initOwned(transcript);
+                p.message = OwnedSlice(u8).initOwned(message);
+            },
             .@"error" => |*p| p.message = OwnedSlice(u8).initOwned(try allocator.dupe(u8, p.message.slice())),
             else => {},
         }
@@ -303,6 +335,11 @@ pub const TuiEvent = union(enum) {
                 p.artifact_refs.deinit(allocator);
             },
             .system_warning => |*p| p.message.deinit(allocator),
+            .compaction_end => |*p| {
+                p.text.deinit(allocator);
+                p.transcript.deinit(allocator);
+                p.message.deinit(allocator);
+            },
             .@"error" => |*p| p.message.deinit(allocator),
             else => {},
         }
@@ -321,12 +358,17 @@ pub const TuiSessionResult = struct {
 pub const TuiEventStream = event_stream.EventStream(TuiEvent, TuiSessionResult);
 
 pub const QueuedCounts = agent.Agent.QueuedCounts;
-pub const CompactMessagesResult = ai_types.CompactMessagesResult;
+
+pub const CompactOptions = struct {
+    focus: []const u8 = "",
+    transcripts: []const []const u8 = &.{},
+};
 
 pub const TuiSessionOps = struct {
     start: *const fn (ctx: ?*anyopaque) anyerror!void = undefined,
     resume_session: *const fn (ctx: ?*anyopaque) anyerror!void = undefined,
-    compact_messages: *const fn (ctx: ?*anyopaque) anyerror!CompactMessagesResult = undefined,
+    compact: *const fn (ctx: ?*anyopaque, options: CompactOptions) anyerror!void = undefined,
+    history: *const fn (ctx: ?*anyopaque) []const ai_types.Message = undefined,
     cancel: *const fn (ctx: ?*anyopaque) void = undefined,
     submit_turn: *const fn (ctx: ?*anyopaque, text: []const u8) anyerror!void = undefined,
     steer: *const fn (ctx: ?*anyopaque, text: []const u8) anyerror!void = undefined,
@@ -354,8 +396,12 @@ pub const TuiSession = struct {
         try self.ops.resume_session(self.ctx);
     }
 
-    pub fn compactMessages(self: *TuiSession) !CompactMessagesResult {
-        return try self.ops.compact_messages(self.ctx);
+    pub fn compact(self: *TuiSession, options: CompactOptions) !void {
+        try self.ops.compact(self.ctx, options);
+    }
+
+    pub fn history(self: *TuiSession) []const ai_types.Message {
+        return self.ops.history(self.ctx);
     }
 
     pub fn cancel(self: *TuiSession) void {
@@ -464,6 +510,13 @@ fn cloneProbe(allocator: std.mem.Allocator) !void {
             .result_json = OwnedSlice(u8).initBorrowed("{\"stdout\":\"done\"}"),
             .is_error = false,
             .artifact_refs = OwnedSlice(u8).initBorrowed("art-one,art-two"),
+        } },
+        .{ .compaction_end = .{
+            .outcome = .completed,
+            .text = OwnedSlice(u8).initBorrowed("This conversation was compacted."),
+            .transcript = OwnedSlice(u8).initBorrowed("/sessions/s1/compaction-1.jsonl"),
+            .message = OwnedSlice(u8).initBorrowed("unused"),
+            .messages_before = 12,
         } },
     };
 

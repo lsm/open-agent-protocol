@@ -547,6 +547,7 @@ pub const App = struct {
     pending_clear_screen: bool = false,
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
+    compaction_transcripts: std.ArrayList([]u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
@@ -611,8 +612,57 @@ pub const App = struct {
         if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
         for (self.quarantine_buffer.items) |*event| event.deinit(self.allocator);
         self.quarantine_buffer.deinit(self.allocator);
+        self.clearCompactionTranscripts();
+        self.compaction_transcripts.deinit(self.allocator);
         self.state.deinit();
         self.* = undefined;
+    }
+
+    fn clearCompactionTranscripts(self: *App) void {
+        for (self.compaction_transcripts.items) |path| self.allocator.free(path);
+        self.compaction_transcripts.clearRetainingCapacity();
+    }
+
+    fn recordCompactionTranscript(self: *App, path: []const u8) !void {
+        if (path.len == 0) return;
+        const owned = try self.allocator.dupe(u8, path);
+        errdefer self.allocator.free(owned);
+        try self.compaction_transcripts.append(self.allocator, owned);
+    }
+
+    fn startCompaction(self: *App, focus: []const u8) !void {
+        var session = &(self.session orelse return error.NoRuntimeConfigured);
+        const history = session.history();
+        if (history.len == 0 or agent.compaction.isCompacted(history)) {
+            try self.state.appendTranscript(.system, "Nothing to compact yet.");
+            return;
+        }
+        try self.ensureSessionId();
+        var transcripts: std.ArrayList([]const u8) = .empty;
+        defer transcripts.deinit(self.allocator);
+        for (self.compaction_transcripts.items) |path| try transcripts.append(self.allocator, path);
+        var saved: ?[]u8 = null;
+        defer if (saved) |path| self.allocator.free(path);
+        if (self.store) |store| {
+            saved = try store.saveTranscript(self.session_id, self.compaction_transcripts.items.len + 1, history);
+            try transcripts.append(self.allocator, saved.?);
+        }
+        self.state.stream_aborted = false;
+        session.compact(.{ .focus = focus, .transcripts = transcripts.items }) catch |err| switch (err) {
+            error.NothingToCompact => try self.state.appendTranscript(.system, "Nothing to compact yet."),
+            else => return err,
+        };
+    }
+
+    fn noteTerminalEvent(self: *App, event: tui_runtime.TuiEvent) !bool {
+        switch (event) {
+            .agent_end => |payload| return payload.reason == .completed,
+            .compaction_end => |payload| {
+                if (payload.outcome == .completed) try self.recordCompactionTranscript(payload.transcript.slice());
+                return true;
+            },
+            else => return false,
+        }
     }
 
     fn ensureSessionId(self: *App) !void {
@@ -660,6 +710,10 @@ pub const App = struct {
         self.inline_flushed_rows = 0;
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         self.session_id = new_session_id;
+        self.clearCompactionTranscripts();
+        for (loaded.events.items) |event| {
+            if (event == .compaction_end and event.compaction_end.outcome == .completed) try self.recordCompactionTranscript(event.compaction_end.transcript.slice());
+        }
         try self.state.status.setSessionId(self.allocator, self.session_id);
         if (runtime.currentModel()) |model| {
             try self.state.status.setModelWithContext(self.allocator, model.id, model.provider, model.context_window);
@@ -675,6 +729,7 @@ pub const App = struct {
         if (self.session) |*session| session.clearQueuedMessages();
         self.refreshQueuedCounts();
         self.state.status.streaming = false;
+        self.state.status.compacting = false;
         self.state.mode = .normal;
     }
 
@@ -1117,7 +1172,7 @@ pub const App = struct {
     fn saveEvent(self: *App, event: tui_runtime.TuiEvent) void {
         const store = self.store orelse return;
         switch (event) {
-            .message_start, .context_usage, .prompt_segment_usage, .agent_start, .turn_start, .turn_end, .agent_end => {},
+            .message_start, .context_usage, .prompt_segment_usage, .agent_start, .turn_start, .turn_end, .agent_end, .compaction_start => {},
             .text_delta => |payload| {
                 if (jsonStringBudget(payload.delta.slice()) > max_session_event_payload_bytes) return;
             },
@@ -1149,6 +1204,9 @@ pub const App = struct {
                 if (jsonStringBudget(payload.message.slice()) > max_session_event_payload_bytes) return;
             },
             .backpressure_status => {},
+            .compaction_end => |payload| {
+                if (jsonStringBudget(payload.text.slice()) + jsonStringBudget(payload.transcript.slice()) + jsonStringBudget(payload.message.slice()) > max_session_event_payload_bytes) return;
+            },
             .@"error" => |payload| {
                 if (jsonStringBudget(payload.message.slice()) > max_session_event_payload_bytes) return;
             },
@@ -1228,8 +1286,8 @@ pub const App = struct {
             }
 
             if (self.quarantine_events) {
-                const is_lifecycle = ev == .agent_start or ev == .turn_start;
-                const is_terminal = ev == .agent_end or ev == .@"error";
+                const is_lifecycle = ev == .agent_start or ev == .turn_start or ev == .compaction_start;
+                const is_terminal = ev == .agent_end or ev == .@"error" or ev == .compaction_end;
                 if (is_lifecycle or is_terminal) {
                     self.quarantine_events = false;
                     {
@@ -1243,7 +1301,7 @@ pub const App = struct {
                         while (self.quarantine_buffer.items.len > 0) {
                             var mutable = self.quarantine_buffer.orderedRemove(0);
                             defer mutable.deinit(self.allocator);
-                            if (mutable == .agent_end and mutable.agent_end.reason == .completed) completed_agent_end = true;
+                            if (try self.noteTerminalEvent(mutable)) completed_agent_end = true;
                             self.saveEvent(mutable);
                             try self.applyRuntimeEvent(mutable);
                         }
@@ -1258,7 +1316,7 @@ pub const App = struct {
                     continue;
                 }
             }
-            if (ev == .agent_end and ev.agent_end.reason == .completed) completed_agent_end = true;
+            if (try self.noteTerminalEvent(ev)) completed_agent_end = true;
             self.saveEvent(ev);
             try self.applyRuntimeEvent(ev);
         }
@@ -1457,6 +1515,7 @@ pub const App = struct {
             .open_login_picker => self.openPicker(.login),
             .open_permission_picker => self.openPicker(.permission),
             .start_login_provider => try self.startLoginProviderName(result.login_provider),
+            .compact => try self.startCompaction(command.arg orelse ""),
             .none => {},
         }
         if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
@@ -3694,6 +3753,10 @@ const MockAppSession = struct {
     steer_enabled: bool = true,
     events: tui_runtime.TuiEventStream = undefined,
     events_initialized: bool = false,
+    history_messages: []const ai_types.Message = &.{},
+    compact_count: usize = 0,
+    compact_focus: []u8 = &.{},
+    compact_transcripts: std.ArrayList([]u8) = .empty,
 
     fn session(self: *MockAppSession) tui_runtime.TuiSession {
         return .{
@@ -3714,8 +3777,28 @@ const MockAppSession = struct {
                 .current_model = currentModel,
                 .decide_tool_approval = decideToolApproval,
                 .stream_events = streamEvents,
+                .compact = compact,
+                .history = history,
             },
         };
+    }
+
+    fn compact(ctx: ?*anyopaque, options: tui_runtime.CompactOptions) anyerror!void {
+        const self = ptr(ctx);
+        self.compact_count += 1;
+        std.testing.allocator.free(self.compact_focus);
+        self.compact_focus = try std.testing.allocator.dupe(u8, options.focus);
+        for (self.compact_transcripts.items) |path| std.testing.allocator.free(path);
+        self.compact_transcripts.clearRetainingCapacity();
+        for (options.transcripts) |path| {
+            const owned = try std.testing.allocator.dupe(u8, path);
+            errdefer std.testing.allocator.free(owned);
+            try self.compact_transcripts.append(std.testing.allocator, owned);
+        }
+    }
+
+    fn history(ctx: ?*anyopaque) []const ai_types.Message {
+        return ptr(ctx).history_messages;
     }
 
     fn ptr(ctx: ?*anyopaque) *MockAppSession {
@@ -3814,6 +3897,9 @@ const MockAppSession = struct {
 
     fn deinit(self: *MockAppSession) void {
         if (self.events_initialized) self.events.deinit();
+        std.testing.allocator.free(self.compact_focus);
+        for (self.compact_transcripts.items) |path| std.testing.allocator.free(path);
+        self.compact_transcripts.deinit(std.testing.allocator);
     }
 };
 
@@ -4579,6 +4665,52 @@ test "resume selected session allows runtime without protocol" {
     try app.resumeSelectedSession();
 }
 
+fn unusedStream(
+    ctx: ?*anyopaque,
+    model: ai_types.Model,
+    context: ai_types.Context,
+    options: agent.ProtocolOptions,
+    allocator: std.mem.Allocator,
+) anyerror!*event_stream.AssistantMessageEventStream {
+    _ = ctx;
+    _ = model;
+    _ = context;
+    _ = options;
+    _ = allocator;
+    return error.Unexpected;
+}
+
+test "resume clears a compaction the saved session never finished" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "interrupted"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    try app.store.?.save(meta, .{ .agent_start = .{} });
+    try app.store.?.save(meta, .{ .compaction_start = .{} });
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqualStrings("interrupted", app.session_id);
+    try std.testing.expect(!app.state.status.compacting);
+    try std.testing.expect(!app.state.status.streaming);
+}
+
 test "resume selected session clears delete reset flags on success" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4797,4 +4929,97 @@ test "a granted credential does not change what the login badge reports" {
 
     try std.testing.expectEqual(App.LoginStatus.expired, App.loginStatusFor(&storage, "anthropic", false));
     try std.testing.expectEqual(App.LoginStatus.none, App.loginStatusFor(&storage, "kimi", false));
+}
+
+const compaction_history = [_]ai_types.Message{
+    .{ .user = .{ .content = .{ .text = "question" }, .timestamp = 0 } },
+    .{ .assistant = .{ .content = &.{.{ .text = .{ .text = "answer" } }}, .api = "", .provider = "", .model = "", .usage = .{}, .stop_reason = .stop, .timestamp = 0 } },
+};
+
+test "App /compact archives the history and hands the model every transcript so far" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session_id = try std.testing.allocator.dupe(u8, "s1");
+    var mock = MockAppSession{ .history_messages = &compaction_history };
+    defer mock.deinit();
+    app.session = mock.session();
+    try app.recordCompactionTranscript("/older/compaction-1.jsonl");
+
+    try app.submit("/compact  the parser ");
+
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqualStrings("the parser", mock.compact_focus);
+    try std.testing.expectEqual(@as(usize, 2), mock.compact_transcripts.items.len);
+    try std.testing.expectEqualStrings("/older/compaction-1.jsonl", mock.compact_transcripts.items[0]);
+    const archive = mock.compact_transcripts.items[1];
+    try std.testing.expect(std.mem.endsWith(u8, archive, "s1" ++ std.fs.path.sep_str ++ "compaction-2.jsonl"));
+    const data = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), archive, 64 * 1024);
+    defer std.testing.allocator.free(data);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, data, "\n"));
+    try std.testing.expect(std.mem.indexOf(u8, data, "\"text\":\"answer\"") != null);
+
+    try mock.eventStream().push(.{ .compaction_start = .{} });
+    try mock.eventStream().push(.{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " x\n\n<summary>\nkept state\n</summary>")),
+        .transcript = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, archive)),
+        .messages_before = 2,
+        .tokens_before = 2400,
+        .tokens_after = 300,
+    } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 2), app.compaction_transcripts.items.len);
+    try std.testing.expectEqualStrings(archive, app.compaction_transcripts.items[1]);
+    try std.testing.expect(!app.state.status.streaming);
+    try std.testing.expect(!app.state.status.compacting);
+    try std.testing.expectEqual(@as(usize, 300), app.state.status.context_used);
+    const notice = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqual(tui_state.TranscriptKind.system, notice.kind);
+    try std.testing.expect(std.mem.startsWith(u8, notice.text.items, "conversation compacted · 2 messages · ~2.4k → ~300 tokens"));
+    try std.testing.expect(std.mem.indexOf(u8, notice.text.items, "kept state") != null);
+}
+
+test "App /compact reports an empty or freshly compacted history without compacting" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    app.session = mock.session();
+
+    try app.submit("/compact");
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+    const notice = app.state.transcript.items[app.state.transcript.items.len - 1];
+    try std.testing.expectEqualStrings("Nothing to compact yet.", notice.text.items);
+
+    var pair = try agent.compaction.historyMessages(std.testing.allocator, agent.compaction.header ++ " x", .{});
+    defer for (&pair) |*message| message.deinit(std.testing.allocator);
+    mock.history_messages = &pair;
+    try app.submit("/compact");
+    try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
+}
+
+test "App sends the drafts queued during a compaction however the compaction ends" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    var mock = MockAppSession{ .history_messages = &compaction_history };
+    defer mock.deinit();
+    app.session = mock.session();
+
+    const outcomes = [_]tui_runtime.TuiEvent.CompactionOutcome{ .cancelled, .failed, .completed };
+    for (outcomes, 1..) |outcome, sent| {
+        mock.queued_counts.steering = 1;
+        try mock.eventStream().push(.{ .compaction_start = .{} });
+        try mock.eventStream().push(.{ .compaction_end = .{ .outcome = outcome } });
+        try app.drainEvents();
+        try std.testing.expectEqual(sent, mock.resume_count);
+        try std.testing.expect(!app.state.status.compacting);
+    }
+    try std.testing.expectEqual(@as(usize, 0), app.compaction_transcripts.items.len);
 }
