@@ -1912,6 +1912,22 @@ fn serializeTranscriptProbe(allocator: std.mem.Allocator) !void {
     allocator.free(data);
 }
 
+fn saveTranscriptProbe(allocator: std.mem.Allocator, base: []const u8) !void {
+    var store = try Store.init(allocator, base);
+    defer store.deinit();
+    const messages = [_]ai_types.Message{.{ .user = .{ .content = .{ .text = "question" }, .timestamp = 0 } }};
+    const path = try store.saveTranscript("probe", 1, &messages);
+    allocator.free(path);
+}
+
+test "saveTranscript survives an allocation failure at every step" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, saveTranscriptProbe, .{base});
+}
+
 test "serializeTranscript survives an allocation failure at every step" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, serializeTranscriptProbe, .{});
 }

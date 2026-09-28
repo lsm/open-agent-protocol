@@ -138,20 +138,19 @@ pub fn extractSummary(text: []const u8) []const u8 {
 }
 
 pub fn installedText(allocator: std.mem.Allocator, summary: []const u8, transcripts: []const []const u8, head_truncated: bool) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    const writer = &out.writer;
-    try writer.writeAll(header ++ " The messages before this point were replaced by the summary below");
-    if (head_truncated) try writer.writeAll(", written without the earliest of them because they did not fit in one request");
-    try writer.writeAll(".\n\n" ++ summary_open ++ "\n");
-    try writer.writeAll(summary);
-    try writer.writeAll("\n" ++ summary_close);
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, header ++ " The messages before this point were replaced by the summary below");
+    if (head_truncated) try out.appendSlice(allocator, ", written without the earliest of them because they did not fit in one request");
+    try out.appendSlice(allocator, ".\n\n" ++ summary_open ++ "\n");
+    try out.appendSlice(allocator, summary);
+    try out.appendSlice(allocator, "\n" ++ summary_close);
     if (transcripts.len > 0) {
-        try writer.writeAll("\n\nEverything that was compacted is saved as JSONL transcripts, one message per line, oldest first; each transcript after the first starts with the summary that came before it:\n");
-        for (transcripts) |path| try writer.print("- {s}\n", .{path});
-        try writer.writeAll("When you need a detail the summary leaves out, such as earlier file contents, exact error output or the user's exact words, search or read these files instead of guessing.");
+        try out.appendSlice(allocator, "\n\nEverything that was compacted is saved as JSONL transcripts, one message per line, oldest first; each transcript after the first starts with the summary that came before it:\n");
+        for (transcripts) |path| try out.print(allocator, "- {s}\n", .{path});
+        try out.appendSlice(allocator, "When you need a detail the summary leaves out, such as earlier file contents, exact error output or the user's exact words, search or read these files instead of guessing.");
     }
-    return out.toOwnedSlice();
+    return out.toOwnedSlice(allocator);
 }
 
 pub fn summaryOf(text: []const u8) []const u8 {

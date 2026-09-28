@@ -1620,6 +1620,7 @@ fn summaryStreamFn(
 
     const stream = try allocator.create(event_stream_mod.AssistantMessageEventStream);
     stream.* = event_stream_mod.AssistantMessageEventStream.init(allocator);
+    errdefer _ = stream.deinitAndDestroy();
     if (mock.wait_for_cancel) {
         var waits: usize = 0;
         while (!options.cancel_token.?.isCancelled() and waits < 1000) : (waits += 1) {
@@ -1679,13 +1680,33 @@ const CompactionCapture = struct {
 };
 
 fn appendExchange(agent: *Agent, question: []const u8, answer: []const u8) !void {
-    try agent.appendMessage(.{ .user = .{ .content = .{ .text = try std.testing.allocator.dupe(u8, question) }, .timestamp = 0 } });
-    const text = try std.testing.allocator.dupe(u8, answer);
-    errdefer std.testing.allocator.free(text);
-    const content = try std.testing.allocator.alloc(ai_types.AssistantContent, 1);
-    errdefer std.testing.allocator.free(content);
+    const allocator = agent._allocator;
+    const question_text = try allocator.dupe(u8, question);
+    {
+        errdefer allocator.free(question_text);
+        try agent.appendMessage(.{ .user = .{ .content = .{ .text = question_text }, .timestamp = 0 } });
+    }
+    const text = try allocator.dupe(u8, answer);
+    errdefer allocator.free(text);
+    const content = try allocator.alloc(ai_types.AssistantContent, 1);
+    errdefer allocator.free(content);
     content[0] = .{ .text = .{ .text = text } };
     try agent.appendMessage(.{ .assistant = .{ .content = content, .api = "test-api", .provider = "test-provider", .model = "test-model", .usage = .{}, .stop_reason = .stop, .timestamp = 0 } });
+}
+
+fn summarizeHistoryProbe(allocator: std.mem.Allocator) !void {
+    var mock = SummaryMock{};
+    var agent = Agent.init(allocator, .{ .protocol = .{ .stream_fn = summaryStreamFn, .ctx = &mock } });
+    defer agent.deinit();
+    agent.setModel(test_model);
+    try appendExchange(&agent, "first question", "first answer");
+    const transcripts = [_][]const u8{"/sessions/s1/compaction-1.jsonl"};
+    var result = try agent.summarizeHistory(.{ .focus = "the parser", .transcripts = &transcripts });
+    result.deinit(allocator);
+}
+
+test "summarizeHistory survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, summarizeHistoryProbe, .{});
 }
 
 test "Agent compactAsync replaces the history with the model's summary and an acknowledgement" {

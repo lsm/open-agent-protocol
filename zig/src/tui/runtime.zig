@@ -541,31 +541,8 @@ pub const TuiRuntime = struct {
 
     fn onCompaction(ctx: ?*anyopaque, result: *const agent.compaction.Result) void {
         const self: *TuiRuntime = @ptrCast(@alignCast(ctx.?));
-        const payload = self.compactionEndPayload(result) catch |err| CompactionEnd{ .outcome = .failed, .message = OwnedSlice(u8).initBorrowed(@errorName(err)) };
+        const payload = compactionEndPayload(self.allocator, self.compaction_transcript, result) catch |err| CompactionEnd{ .outcome = .failed, .message = OwnedSlice(u8).initBorrowed(@errorName(err)) };
         self.finishCompaction(payload);
-    }
-
-    fn compactionEndPayload(self: *TuiRuntime, result: *const agent.compaction.Result) !CompactionEnd {
-        switch (result.*) {
-            .completed => |completed| {
-                const text = try self.dupeOwned(completed.text);
-                errdefer {
-                    var owned = text;
-                    owned.deinit(self.allocator);
-                }
-                const transcript = try self.dupeOwned(self.compaction_transcript);
-                return .{
-                    .outcome = .completed,
-                    .text = text,
-                    .transcript = transcript,
-                    .messages_before = completed.messages_before,
-                    .tokens_before = completed.tokens_before,
-                    .tokens_after = completed.tokens_after,
-                };
-            },
-            .cancelled => return .{ .outcome = .cancelled },
-            .failed => |message| return .{ .outcome = .failed, .message = try self.dupeOwned(message) },
-        }
     }
 
     fn finishCompaction(self: *TuiRuntime, payload: CompactionEnd) void {
@@ -1161,6 +1138,26 @@ pub const TuiRuntime = struct {
         self.push(.{ .provider_event = .{ .event_json = OwnedSlice(u8).initOwned(event_json) } });
     }
 };
+
+fn compactionEndPayload(allocator: std.mem.Allocator, transcript_path: []const u8, result: *const agent.compaction.Result) !CompactionEnd {
+    switch (result.*) {
+        .completed => |completed| {
+            const text = try allocator.dupe(u8, completed.text);
+            errdefer allocator.free(text);
+            const transcript = try allocator.dupe(u8, transcript_path);
+            return .{
+                .outcome = .completed,
+                .text = OwnedSlice(u8).initOwned(text),
+                .transcript = OwnedSlice(u8).initOwned(transcript),
+                .messages_before = completed.messages_before,
+                .tokens_before = completed.tokens_before,
+                .tokens_after = completed.tokens_after,
+            };
+        },
+        .cancelled => return .{ .outcome = .cancelled },
+        .failed => |message| return .{ .outcome = .failed, .message = OwnedSlice(u8).initOwned(try allocator.dupe(u8, message)) },
+    }
+}
 
 fn notifyToolApproval(ctx: ?*anyopaque, request: agent.ToolApprovalRequest, allocator: std.mem.Allocator) void {
     const approval_ctx: *ApprovalContext = @ptrCast(@alignCast(ctx.?));
@@ -2056,6 +2053,19 @@ test "runtime follow-up runs once the turn stops and is not tagged as steering" 
     }
     try std.testing.expectEqual(@as(usize, 1), follow_up_ends);
     try std.testing.expect(!follow_up_tagged);
+}
+
+fn compactionEndPayloadProbe(allocator: std.mem.Allocator) !void {
+    const completed = agent.compaction.Result{ .completed = .{ .text = @constCast("summary"), .messages_before = 3, .tokens_before = 10, .tokens_after = 2, .head_truncated = false } };
+    var completed_event = TuiEvent{ .compaction_end = try compactionEndPayload(allocator, "/sessions/s1/compaction-1.jsonl", &completed) };
+    completed_event.deinit(allocator);
+    const failed = agent.compaction.Result{ .failed = @constCast("overloaded") };
+    var failed_event = TuiEvent{ .compaction_end = try compactionEndPayload(allocator, "", &failed) };
+    failed_event.deinit(allocator);
+}
+
+test "compactionEndPayload survives an allocation failure at every step" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, compactionEndPayloadProbe, .{});
 }
 
 const CompactionSeen = struct {
