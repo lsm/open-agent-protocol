@@ -388,8 +388,11 @@ describing something the grammar does not carry, and a receiver that refuses it
 is refusing a request it can parse. The two trees admit every charset,
 including `latin1` and a name that is not a charset at all. What the gate still
 refuses is a media type that is not `application/json`, because that is a
-different grammar rather than a different spelling of this one. A pipe has no
-`Content-Type` at all, so the stdio transport has no counterpart to any of
+different grammar rather than a different spelling of this one. Validity is the
+decoder's business and not the gate's: a body that is not valid UTF-8 is read
+with U+FFFD in place of the bad bytes, as the JSON decoder does, and a byte
+that a `latin1` header would have decoded cleanly is still replaced. A pipe has
+no `Content-Type` at all, so the stdio transport has no counterpart to any of
 this. The daemon also caps
 the body at 16 MiB, and answers a refusal as an `error.response` envelope
 carrying the request's `in_reply_to`, `session_id` and `run_id` so a client can
@@ -414,7 +417,8 @@ both answers, at the budget and one byte over it.
 | HTTP rule | pinned by |
 | --- | --- |
 | A wrong `Content-Type` is refused `415` | `TestReadRequestRefusesBrowserOrigins` (the status), `TestARequestTheDaemonWillNotParseIsRefusedWithItsCode` (the code, and the absent `Content-Type`; a `charset` is no longer a reason to refuse, and the row below says which test pins that) |
-| Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body carries non-ASCII text and the answer must name the session that body asked for, so a misread body cannot pass |
+| Any `charset` is admitted and the body is read as UTF-8 — no `charset` means UTF-8, and `utf-8`, `utf8`, `UTF-8`, `latin1`, `us-ascii`, `iso-8859-1` and a name that is not a charset all behave alike | `TestAnyCharsetIsAdmittedAndTheBodyIsReadAsUTF8` — each case's body names a session whose id carries non-ASCII text, and the answer must echo those characters unchanged, so a body transcoded per the header could not pass |
+| A body that is not valid UTF-8 is read with the replacement character, whatever `charset` it claims | `TestABodyThatIsNotUTF8IsReadWithTheReplacementCharacter` — a body with a raw invalid byte is admitted and the echoed id carries U+FFFD. The gate does not police UTF-8 validity; refusing it would be the new refusal the charset decision removed |
 | A body that cannot be read at all is refused `400 request_read` | `TestATruncatedRequestBodyIsRefusedWithItsOwnCode` — a client that hangs up mid-body over a raw connection, so the daemon's read fails rather than the client's write |
 | A body over 16 MiB is refused `413 request_too_large` | `TestRequestBudgetMatchesHTTP` (which pins the stdio `request_too_large` for the same budget) |
 | A body's refusing status and code match the stdio op's | `TestRequestBudgetMatchesHTTP`, `TestOpErrorCodesMirrorHTTP` |
