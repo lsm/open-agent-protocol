@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/lsm/open-agent-protocol/go/binding"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,6 +68,9 @@ type Session struct {
 
 	closed  bool
 	release func(*Session)
+
+	binding       binding.Record
+	bindingTimeMS int64
 
 	readers      int
 	reservations int

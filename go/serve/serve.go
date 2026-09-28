@@ -85,6 +85,7 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 
 	entry := newSession(state.SessionID, adapterName, session, func(released *Session) {
 		h.sessions.remove(released.id, released)
+		h.recordBinding(context.Background(), released.binding, binding.ActionClosed, released.bindingTimeMS)
 	})
 	if err != nil || state.Status == protocol.SessionClosed {
 		entry.markClosed()
@@ -97,11 +98,11 @@ func (h *Hub) Open(ctx context.Context, adapterName string, request base.OpenReq
 		_ = session.Close(context.WithoutCancel(ctx))
 		return nil, protocol.SessionState{}, &SessionExistsError{ID: entry.id}
 	}
-	h.recordOpen(ctx, adapterName, implementation, state, request)
+	h.recordOpen(ctx, adapterName, implementation, state, request, entry)
 	return entry, state, nil
 }
 
-func (h *Hub) recordOpen(ctx context.Context, adapterName string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest) {
+func (h *Hub) recordOpen(ctx context.Context, adapterName string, implementation base.Adapter, state protocol.SessionState, request base.OpenRequest, entry *Session) {
 	if h.bindings == nil {
 		return
 	}
@@ -118,7 +119,18 @@ func (h *Hub) recordOpen(ctx context.Context, adapterName string, implementation
 		directory = wd
 	}
 	record := binding.FromOpen(string(state.SessionID), adapterName, version, state.CurrentModelID, h.home, directory, sources)
-	_ = h.bindings.Append(context.WithoutCancel(ctx), binding.Opened(record, state.UpdatedAtMS))
+	entry.binding = record
+	entry.bindingTimeMS = state.UpdatedAtMS
+	h.recordBinding(ctx, record, binding.ActionOpened, state.UpdatedAtMS)
+}
+
+func (h *Hub) recordBinding(ctx context.Context, record binding.Record, action binding.Action, timeMS int64) {
+	if h.bindings == nil || record.SessionID == "" {
+		return
+	}
+	if err := h.bindings.Append(context.WithoutCancel(ctx), binding.Entry{Action: action, TimeMS: timeMS, Record: record}); err != nil {
+		h.logger.Printf("binding: %s for %s: %v", action, record.SessionID, err)
+	}
 }
 
 func (h *Hub) Binding() binding.Store {

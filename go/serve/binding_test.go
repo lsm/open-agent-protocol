@@ -49,6 +49,59 @@ func TestAnOpenIsRecordedAsABindingAndNothingSensitiveIs(t *testing.T) {
 	}
 }
 
+func TestARolledBackOpenIsRecordedAsOpenedAndThenClosed(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := boundHub(t, serve.Options{Bindings: store})
+	ctx := context.Background()
+	if _, err := serve.OpenCompound(ctx, hub, "memory", base.OpenRequest{SessionID: "session-rolled-back"},
+		serve.CompoundOpen{Message: &protocol.OpenMessage{}}); err == nil {
+		t.Fatal("the compound open succeeded, so nothing was rolled back")
+	}
+	history, err := store.History(ctx, "session-rolled-back")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history has %d entries, want the open and the close a rollback leaves", len(history))
+	}
+	if history[0].Action != binding.ActionOpened || history[1].Action != binding.ActionClosed {
+		t.Fatalf("history = %+v, want opened then closed", history)
+	}
+	latest, found, err := store.Latest(ctx, "session-rolled-back")
+	if err != nil || !found {
+		t.Fatalf("latest found=%v err=%v", found, err)
+	}
+	if latest.Action != binding.ActionClosed {
+		t.Fatalf("the last action is %q, so a host reading the binding sees a session that is still open", latest.Action)
+	}
+}
+
+func TestAClosedSessionIsRecordedAsClosed(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := boundHub(t, serve.Options{Bindings: store})
+	ctx := context.Background()
+	session, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-closed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.History(ctx, "session-closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[1].Action != binding.ActionClosed {
+		t.Fatalf("history = %+v, want the open and the close", history)
+	}
+}
+
 func TestAHubWithNoStoreRecordsNothingAndSaysSo(t *testing.T) {
 	hub := boundHub(t, serve.Options{})
 	if hub.Binding() != nil {
