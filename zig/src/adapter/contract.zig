@@ -106,6 +106,7 @@ pub const ConfiguredSource = struct {
 pub const OpenRequest = struct {
     session_id: []const u8 = "",
     participant: []const u8,
+    metadata: ?std.json.Value = null,
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
     tool_sources_json: ?[]const u8 = null,
