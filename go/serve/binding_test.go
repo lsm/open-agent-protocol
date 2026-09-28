@@ -110,6 +110,31 @@ func TestAClosedSessionIsRecordedAsClosed(t *testing.T) {
 	}
 }
 
+func TestARefusedDuplicateOpenIsRecordedAsOpenedAndThenClosed(t *testing.T) {
+	store, err := binding.File(filepath.Join(t.TempDir(), "bindings.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := boundHub(t, serve.Options{Bindings: store})
+	ctx := context.Background()
+	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-twice"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := hub.Open(ctx, "memory", base.OpenRequest{SessionID: "session-twice"}); err == nil {
+		t.Fatal("the second open was admitted, so nothing was refused")
+	}
+	history, err := store.History(ctx, "session-twice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 3 {
+		t.Fatalf("history has %d entries, want opened, then the refused open's opened and closed", len(history))
+	}
+	if history[2].Action != binding.ActionClosed {
+		t.Fatalf("the last action is %q, so a host reading the binding sees an open that was refused", history[2].Action)
+	}
+}
+
 func TestAHubWithNoStoreRecordsNothingAndSaysSo(t *testing.T) {
 	hub := boundHub(t, serve.Options{})
 	if hub.Binding() != nil {
