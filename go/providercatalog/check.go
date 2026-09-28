@@ -20,6 +20,7 @@ const (
 	CodeOffering     = "provider_offering_unknown"
 	CodeStatus       = "provider_status_unknown"
 	CodeStaleURLs    = "provider_resolved_urls_stale"
+	CodeCarriesOn    = "provider_carries_version_without_versioned_path"
 )
 
 var LiteralRoots = []string{"go", "zig/src", "zig/build.zig"}
@@ -47,6 +48,9 @@ func Check(catalog Catalog) []Finding {
 		for _, endpoint := range provider.Endpoints {
 			if endpoint.Wire == "" {
 				findings = append(findings, Finding{Provider: provider.ID, Code: CodeEndpointLone, Detail: fmt.Sprintf("provider %q has an endpoint naming no wire", provider.ID)})
+			}
+			if endpoint.CarriesVersion && !wireTakesVersionedPath(endpoint.Wire) {
+				findings = append(findings, Finding{Provider: provider.ID, Code: CodeCarriesOn, Detail: fmt.Sprintf("provider %q records carries_version on its %s endpoint, whose wire appends a path with no leading /v1/, so the fact cannot apply to it", provider.ID, endpoint.Wire)})
 			}
 		}
 		switch provider.Offering {
