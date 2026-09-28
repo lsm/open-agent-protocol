@@ -207,18 +207,9 @@ func TestSmokeAuthListProviders(t *testing.T) {
 			t.Errorf("unknown status %q on %q", provider.Status, provider.ID)
 		}
 	}
-	// This client set OAPX_TEST_FIXTURE_PROVIDER, so the runtime owes it the
-	// row. Its absence is a failure, not a reason to skip.
 	requireFixtureAuthProvider(t, client)
 }
 
-// requireFixtureAuthProvider fails unless the runtime offers its offline
-// test-fixture auth provider.
-//
-// The client passed here asked for it by setting OAPX_TEST_FIXTURE_PROVIDER, so
-// its absence is a failure and not a reason to skip. A skip reads like a pass,
-// and that is exactly how the coverage was lost once already: the row left the
-// served list in #486, this helper skipped, and nothing failed.
 func requireFixtureAuthProvider(t *testing.T, client *Client) {
 	t.Helper()
 	providers, err := client.Auth.ListProviders(testContext(t))
