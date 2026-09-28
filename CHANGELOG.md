@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Kimi is served by the generic catalog loader, and the catalog says which
+  region it defaults to.** Kimi was the one row the loader could not take, so it
+  kept a credential lookup, a models URL, a cache name, a parser and a base-URL
+  function of its own. A row with one endpoint per region may now record
+  `default_region`; `kimi` records `china`, which is what the old code assumed
+  in a `if` it never explained. `goap check` refuses a default naming a region
+  none of the row's endpoints serves.
+  A region comes from `KIMI_REGION` first, then from the region chosen at login,
+  then from the row's default — so a user who chose Global at login is
+  discovered against, and sent to, `api.moonshot.ai`. `KIMI_REGION=moonshot`,
+  `cn` and `coding` still mean what they meant, because those are the words
+  people type and matching the catalog's own names would have dropped all three
+  quietly.
+  **A Kimi login made in the TUI keeps working, which it very nearly did not.**
+  The TUI stores an API key with its region as an *oauth* entry, because the
+  api-key entry has nowhere to put a region. The old Kimi code accepted either
+  shape; the generic credential lookup refused an oauth entry for a row that
+  takes only `api_key`, so a logged-in user would have found Kimi serving zero
+  models and its model refs unresolvable. The lookup now answers such an entry
+  with its `access` as the key, and only when the entry carries **no refresh
+  token** — a real oauth credential always has one, and that is what keeps this
+  from becoming a hole.
+  A refresh that fails now leaves the caller's error alone when *any* loader
+  served something. The old guard asked only about Kimi and Anthropic, and with
+  Kimi on the catalog path it could have fired while a dozen models were in
+  hand.
+
 - **The CI fixture auth provider is served only when a test asks for it by
   name.** `oapx auth providers` returns the catalog's rows and nothing else
   unless `OAPX_TEST_FIXTURE_PROVIDER` is set to `1` or `true`, so a user running

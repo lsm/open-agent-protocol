@@ -77,11 +77,19 @@ pub fn lookup(
             };
         },
         .oauth => |credentials| {
-            if (!accepts(row, .oauth)) return null;
             if (credentials.access.len == 0) return null;
+            if (accepts(row, .oauth)) {
+                return .{
+                    .key = try allocator.dupe(u8, credentials.access),
+                    .source = .oauth,
+                    .name = id,
+                };
+            }
+            if (!accepts(row, .api_key)) return null;
+            if (credentials.refresh.len != 0) return null;
             return .{
                 .key = try allocator.dupe(u8, credentials.access),
-                .source = .oauth,
+                .source = .stored,
                 .name = id,
             };
         },
@@ -139,6 +147,34 @@ test "a stored key answers a row with no environment variable set" {
     defer found.deinit(testing.allocator);
     try testing.expectEqual(Source.stored, found.source);
     try testing.expectEqualStrings("stored-key", found.key);
+}
+
+test "an api key stored as an oauth entry with no refresh still answers its row" {
+    var store = emptyStorage(testing.allocator);
+    defer store.deinit();
+    try store.providers.put(try testing.allocator.dupe(u8, "kimi"), .{ .oauth = .{
+        .refresh = try testing.allocator.dupe(u8, ""),
+        .access = try testing.allocator.dupe(u8, "sk-kimi"),
+        .expires = std.math.maxInt(i64),
+        .provider_data = try testing.allocator.dupe(u8, "region:global"),
+    } });
+
+    var found = (try lookup(testing.allocator, &.{}, &store, "kimi")) orelse return error.TestNoCredential;
+    defer found.deinit(testing.allocator);
+    try testing.expectEqualStrings("sk-kimi", found.key);
+    try testing.expectEqual(Source.stored, found.source);
+}
+
+test "an oauth entry with a refresh is still refused for an api-key-only row" {
+    var store = emptyStorage(testing.allocator);
+    defer store.deinit();
+    try store.providers.put(try testing.allocator.dupe(u8, "kimi"), .{ .oauth = .{
+        .refresh = try testing.allocator.dupe(u8, "a-refresh-token"),
+        .access = try testing.allocator.dupe(u8, "sk-kimi"),
+        .expires = std.math.maxInt(i64),
+        .provider_data = try testing.allocator.dupe(u8, "region:global"),
+    } });
+    try testing.expect((try lookup(testing.allocator, &.{}, &store, "kimi")) == null);
 }
 
 test "an oauth credential answers an oauth row and no other" {

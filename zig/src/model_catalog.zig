@@ -451,29 +451,38 @@ fn catalogEndpointWithOverrides(
     id: []const u8,
     overrides: provider_base_url.BaseUrlOverrides,
 ) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, id);
+    const region = catalogRegion(allocator, null, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     const base_url = try provider_base_url.baseUrlWithOverrides(allocator, id, catalog.wire, overrides);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
-fn catalogEndpointFromEnvironment(allocator: std.mem.Allocator, id: []const u8) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, id);
+fn catalogEndpointFromEnvironment(
+    allocator: std.mem.Allocator,
+    storage: ?*oauth_storage.AuthStorage,
+    id: []const u8,
+) !?CatalogEndpoint {
+    const region = catalogRegion(allocator, storage, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
-fn catalogRegion(allocator: std.mem.Allocator, id: []const u8) ?[]const u8 {
-    const name = provider_catalog.regionEnv(id) orelse return provider_catalog.defaultRegion(id);
-    const value = compat.getEnvVarOwned(allocator, name) catch return provider_catalog.defaultRegion(id);
-    defer allocator.free(value);
-    if (value.len == 0) return provider_catalog.defaultRegion(id);
-    if (regionSynonym(id, value)) |aliased| return aliased;
-    for (provider_catalog.regionsFor(id)) |region| {
-        if (std.ascii.eqlIgnoreCase(region, value)) return region;
+fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) ?[]const u8 {
+    const fallback = provider_catalog.defaultRegion(id);
+    if (provider_catalog.regionEnv(id)) |name| {
+        if (compat.getEnvVarOwned(allocator, name) catch null) |value| {
+            defer allocator.free(value);
+            if (value.len > 0) {
+                if (regionSynonym(id, value)) |aliased| return aliased;
+                for (provider_catalog.regionsFor(id)) |region| {
+                    if (std.ascii.eqlIgnoreCase(region, value)) return region;
+                }
+            }
+        }
     }
-    return provider_catalog.defaultRegion(id);
+    if (catalogStoredRegion(id, storage)) |stored| return stored;
+    return fallback;
 }
 
 fn regionSynonym(id: []const u8, value: []const u8) ?[]const u8 {
@@ -540,7 +549,7 @@ fn loadCatalogModelsWithRows(
         const endpoint = if (builtin.is_test)
             try catalogEndpointWithOverrides(allocator, id, test_catalog_base_urls orelse .{})
         else
-            try catalogEndpointFromEnvironment(allocator, id);
+            try catalogEndpointFromEnvironment(allocator, storage, id);
         var held = endpoint orelse continue;
         defer held.deinit(allocator);
         try appendCatalogTargetModels(allocator, &models, held, storage, mode);
@@ -1976,7 +1985,7 @@ test "loadProductionModels includes the Kimi model, discovered like any other ro
 }
 
 test "the Kimi row serves the China base by default and the global base when the region says so" {
-    const china = catalogRegion(std.testing.allocator, "kimi");
+    const china = catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("china", china.?);
     const china_target = catalogTargetInRegion("kimi", china) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.kimi.com/coding", china_target.base_url);
@@ -2000,7 +2009,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
     };
     for (cases) |case| {
         try compat.setTestEnv(std.testing.allocator, kimi_region_env, case.set);
-        const got = catalogRegion(std.testing.allocator, "kimi");
+        const got = catalogRegion(std.testing.allocator, null, "kimi");
         if (!std.mem.eql(u8, case.want, got orelse "")) {
             std.debug.print("\nKIMI_REGION={s} should resolve to {s}\n", .{ case.set, case.want });
         }
@@ -2010,7 +2019,7 @@ test "KIMI_REGION chooses the region, and an unusable value falls back to the ro
 
     try compat.setTestEnv(std.testing.allocator, "KIMI_REGION", "global");
     defer compat.clearTestEnv();
-    const chosen = catalogRegion(std.testing.allocator, "kimi");
+    const chosen = catalogRegion(std.testing.allocator, null, "kimi");
     try std.testing.expectEqualStrings("global", chosen.?);
     const target = catalogTargetInRegion("kimi", chosen) orelse return error.TestExpectedTarget;
     try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
@@ -2023,6 +2032,53 @@ test "loadProductionModels omits Kimi model by default in tests" {
     for (models) |model| {
         try std.testing.expect(!std.mem.eql(u8, kimi_provider_id, model.provider));
     }
+}
+
+test "the region resolution a user chose at login reaches discovery and the model's base" {
+    const allocator = std.testing.allocator;
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try allocator.dupe(u8, kimi_provider_id), .{ .oauth = .{
+        .access = try allocator.dupe(u8, "sk-kimi"),
+        .refresh = try allocator.dupe(u8, ""),
+        .expires = std.math.maxInt(i64),
+        .provider_data = try allocator.dupe(u8, "region:global"),
+    } });
+
+    const region = catalogRegion(allocator, &storage, "kimi");
+    try std.testing.expectEqualStrings("global", region.?);
+    const target = catalogTargetInRegion("kimi", region) orelse return error.TestExpectedTarget;
+    try std.testing.expectEqualStrings("https://api.moonshot.ai", target.base_url);
+
+    const maybe_endpoint = try catalogEndpointFromEnvironment(allocator, &storage, "kimi");
+    var held_endpoint = maybe_endpoint;
+    defer if (held_endpoint) |*held| held.deinit(allocator);
+    const endpoint = held_endpoint;
+    try std.testing.expectEqualStrings("https://api.moonshot.ai", endpoint.?.base_url);
+    try std.testing.expectEqualStrings("https://api.moonshot.ai/v1/models", endpoint.?.models_url);
+}
+
+test "an environment region still wins over the one chosen at login" {
+    const allocator = std.testing.allocator;
+    var storage = oauth_storage.AuthStorage{
+        .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try allocator.dupe(u8, kimi_provider_id), .{ .oauth = .{
+        .access = try allocator.dupe(u8, "sk-kimi"),
+        .refresh = try allocator.dupe(u8, ""),
+        .expires = std.math.maxInt(i64),
+        .provider_data = try allocator.dupe(u8, "region:global"),
+    } });
+    try compat.setTestEnv(allocator, kimi_region_env, "china");
+    defer compat.clearTestEnv();
+
+    const region = catalogRegion(allocator, &storage, "kimi");
+    try std.testing.expectEqualStrings("china", region.?);
 }
 
 test "a stored OAuth credential's region picks the row's endpoint, and an unusable one does not" {
