@@ -631,7 +631,10 @@ fn contextWindowFor(id: []const u8, model: DiscoveredModel) u32 {
 }
 
 pub fn contextWindowMaximum(model: ai_types.Model) ?u32 {
-    if (provider_catalog.modelMaxContextWindow(model.provider, model.id)) |ceiling| return ceiling;
+    if (provider_catalog.modelMaxContextWindow(model.provider, model.id)) |ceiling| {
+        if (!contextWindowIsReported(model)) return ceiling;
+        return @max(ceiling, model.context_window);
+    }
     if (!contextWindowIsReported(model)) return null;
     return model.context_window;
 }
@@ -2919,6 +2922,23 @@ test "a window a session asks for is capped at the ceiling its row records" {
     };
     try std.testing.expectEqual(@as(?u32, 1_000_000), contextWindowMaximum(uncatalogued_wide));
     try std.testing.expect(contextWindowIsReported(uncatalogued_wide));
+}
+
+test "a ceiling never sits below the window a listing already gave the model" {
+    const reported_wide: ai_types.Model = .{
+        .id = "gpt-5-codex",
+        .name = "GPT-5 Codex",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://example.invalid",
+        .reasoning = true,
+        .input = &.{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 2_000_000,
+        .max_tokens = 16_384,
+    };
+    try std.testing.expectEqual(@as(?u32, 2_000_000), contextWindowMaximum(reported_wide));
+    try std.testing.expect(contextWindowIsReported(reported_wide));
 }
 
 test "a model with no window of its own still takes its row's ceiling" {
