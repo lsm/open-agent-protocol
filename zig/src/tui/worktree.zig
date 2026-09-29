@@ -61,7 +61,9 @@ pub const WorktreeInfo = struct {
 
     pub fn workingDir(self: *const WorktreeInfo, allocator: std.mem.Allocator) ![]u8 {
         if (self.prefix.len == 0) return allocator.dupe(u8, self.path);
-        return std.fs.path.join(allocator, &.{ self.path, self.prefix });
+        const prefix = std.mem.trimEnd(u8, self.prefix, &.{std.fs.path.sep});
+        if (prefix.len == 0) return allocator.dupe(u8, self.path);
+        return std.fs.path.join(allocator, &.{ self.path, prefix });
     }
 };
 
@@ -122,7 +124,12 @@ pub fn create(allocator: std.mem.Allocator, runner: Runner, dir: []const u8, bas
     try compat.fs.createDir(compat.fs.getCwd(), base);
     var add = try runner.run(allocator, &.{ "git", "-C", repo_root, "worktree", "add", path, "-b", branch }, repo_root);
     defer add.deinit(allocator);
-    if (!add.ok) return .{ .failed = try failureMessage(allocator, "git worktree add", &add) };
+    if (!add.ok) {
+        const message = try failureMessage(allocator, "git worktree add", &add);
+        allocator.free(path);
+        allocator.free(branch);
+        return .{ .failed = message };
+    }
 
     const owned_root = try allocator.dupe(u8, repo_root);
     errdefer allocator.free(owned_root);
@@ -310,7 +317,10 @@ fn validateSessionId(session_id: []const u8) !void {
 }
 
 fn parseSidecar(allocator: std.mem.Allocator, data: []const u8) !?WorktreeInfo {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch return null;
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
     defer parsed.deinit();
     if (parsed.value != .object) return null;
     const obj = parsed.value.object;
@@ -498,9 +508,10 @@ test "sidecar round-trips the worktree record" {
     try std.testing.expect((try readSidecar(std.testing.allocator, base, "missing")) == null);
 }
 
-fn parseSidecarProbe(allocator: std.mem.Allocator) !void {
+fn parseSidecarProbe(allocator: std.mem.Allocator) error{OutOfMemory}!void {
     const data = "{\"path\":\"/tmp/wt\",\"branch\":\"tui/abc\",\"repo_root\":\"/repo\",\"prefix\":\"zig/\"}";
-    var info = (try parseSidecar(allocator, data)).?;
+    const maybe_info = try parseSidecar(allocator, data);
+    var info = maybe_info orelse return;
     info.deinit(allocator);
 }
 
