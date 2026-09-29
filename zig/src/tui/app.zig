@@ -566,6 +566,7 @@ pub const ProductionRuntime = struct {
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
+    mode_settings: tui_config.ModeSettings = .{},
 
     pub const InitOptions = struct {
         fixture: bool = false,
@@ -603,8 +604,10 @@ pub const ProductionRuntime = struct {
         }
         errdefer if (saved_config) |*cfg| cfg.deinit(allocator);
 
+        var mode_settings: tui_config.ModeSettings = .{};
         var initial_model: ?SavedModelRef = null;
         if (saved_config) |cfg| {
+            mode_settings = cfg.mode;
             if (cfg.model.len > 0) {
                 initial_model = SavedModelRef{
                     .id = try allocator.dupe(u8, cfg.model),
@@ -622,6 +625,7 @@ pub const ProductionRuntime = struct {
             .permission_engine = permission_engine,
             .models = models,
             .initial_model = initial_model,
+            .mode_settings = mode_settings,
         };
         initial_model = null;
         if (saved_config) |*cfg| cfg.deinit(allocator);
@@ -645,7 +649,8 @@ pub const ProductionRuntime = struct {
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
             .run_async = true,
-            .compact_output = true,
+            .compact_output = self.mode_settings.compact_output,
+            .auto_worktree = self.mode_settings.auto_worktree,
             .generate_titles = true,
         };
     }
@@ -895,7 +900,7 @@ pub const App = struct {
         };
         var app = App{
             .allocator = allocator,
-            .mode_settings = .{ .compact_output = options.compact_output },
+            .mode_settings = .{ .compact_output = options.compact_output, .auto_worktree = options.auto_worktree },
             .state = tui_state.AppState.init(allocator),
             .runtime = runtime_ptr,
             .approval_waiter = approval_waiter,
@@ -911,18 +916,6 @@ pub const App = struct {
             app.state.telemetry.context_window = model.context_window;
         }
         app.store = session_store.Store.initDefault(allocator) catch null;
-        var cfg_store = tui_config.Store.initDefault(allocator) catch null;
-        if (cfg_store) |*settings_store| {
-            defer settings_store.deinit();
-            if (settings_store.loadIfExists()) |maybe_cfg| {
-                if (maybe_cfg) |cfg_value| {
-                    var cfg = cfg_value;
-                    defer cfg.deinit(allocator);
-                    app.mode_settings = cfg.mode;
-                    if (app.runtime) |runtime| runtime.setCompactOutput(app.mode_settings.compact_output);
-                }
-            } else |_| {}
-        }
         try app.ensureSessionId();
         app.working_dir = currentPathOwned(allocator) catch try allocator.dupe(u8, "");
         app.launch_dir = try allocator.dupe(u8, app.working_dir);
@@ -2072,10 +2065,7 @@ pub const App = struct {
                     if (message) |text| try self.state.appendTranscript(.system, text);
                     try self.finishDeleteSession(id);
                 },
-                .failed => |message| {
-                    try self.state.appendTranscript(.@"error", message);
-                    try self.finishDeleteSession(id);
-                },
+                .failed => |message| try self.state.appendTranscript(.@"error", message),
                 else => return error.InvalidWorktreeOutcome,
             }
             return;
@@ -4947,6 +4937,18 @@ const auto_compact_history = [_]ai_types.Message{
         .timestamp = 0,
     } },
 };
+
+test "App init takes mode settings from options, not the environment" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });
+    defer app.deinit();
+    try std.testing.expect(!app.mode_settings.auto_worktree);
+    try std.testing.expect(!app.mode_settings.compact_output);
+
+    var opted_in = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model}, .auto_worktree = true, .compact_output = true });
+    defer opted_in.deinit();
+    try std.testing.expect(opted_in.mode_settings.auto_worktree);
+    try std.testing.expect(opted_in.mode_settings.compact_output);
+}
 
 fn autoCompactTestApp(mock: *MockAppSession) !App {
     var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{auto_compact_test_model} });

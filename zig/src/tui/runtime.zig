@@ -63,6 +63,7 @@ pub const TuiRuntimeOptions = struct {
     permission_mode: PermissionMode = .bypass,
     thinking_level: ai_types.ThinkingLevel = .low,
     compact_output: bool = false,
+    auto_worktree: bool = false,
     run_async: bool = true,
     generate_titles: bool = false,
     context_window: ?u32 = null,
@@ -534,7 +535,7 @@ pub const TuiRuntime = struct {
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
-    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{AboveMaximum, AgentAlreadyStreaming}!void {
+    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{ AboveMaximum, AgentAlreadyStreaming }!void {
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
         }
@@ -1798,7 +1799,7 @@ test "a context window is a whole token count, optionally scaled, and nothing el
 }
 
 test "the window in effect is the model's own until a session sets one" {
-    const models = [_]ai_types.Model{test_model_a, test_model_b};
+    const models = [_]ai_types.Model{ test_model_a, test_model_b };
     var runtime = try TuiRuntime.init(std.testing.allocator, .{ .models = &models });
     defer runtime.deinit();
 
