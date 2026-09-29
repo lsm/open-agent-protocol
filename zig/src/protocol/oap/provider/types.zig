@@ -140,6 +140,30 @@ pub const ReasoningLevel = enum {
     }
 };
 
+pub const Modality = enum {
+    text,
+    image,
+    audio,
+    video,
+    document,
+
+    pub fn parse(value: []const u8) ?Modality {
+        return std.meta.stringToEnum(Modality, value);
+    }
+};
+
+pub const ModelCost = struct {
+    input: ?f64 = null,
+    output: ?f64 = null,
+    cache_read: ?f64 = null,
+    cache_write: ?f64 = null,
+};
+
+pub const ModelCatalogState = struct {
+    observed_at_ms: ?i64 = null,
+    complete: bool,
+};
+
 pub const ErrorCode = enum {
     rate_limited,
     provider_unavailable,
@@ -413,6 +437,12 @@ pub const ModelEntry = struct {
     source: ModelSource = .discovered,
     reasoning_default: ?ReasoningLevel = null,
     auth_status: AuthStatus = .unknown,
+    cost: ?ModelCost = null,
+    input_modalities: []const Modality = &.{},
+    output_modalities: []const Modality = &.{},
+    reasoning_levels: []const ReasoningLevel = &.{},
+    release_date: ?[]const u8 = null,
+    family: ?[]const u8 = null,
 
     pub fn deinit(self: *ModelEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.model_ref);
@@ -420,6 +450,11 @@ pub const ModelEntry = struct {
         if (self.display_name) |value| allocator.free(value);
         allocator.free(self.provider_id);
         allocator.free(self.capabilities);
+        allocator.free(self.input_modalities);
+        allocator.free(self.output_modalities);
+        allocator.free(self.reasoning_levels);
+        if (self.release_date) |value| allocator.free(value);
+        if (self.family) |value| allocator.free(value);
     }
 };
 
@@ -484,6 +519,7 @@ pub const ModelsListRequest = struct {
 
 pub const ModelsListResponse = struct {
     models: []ModelEntry = &.{},
+    catalog: ?ModelCatalogState = null,
 
     pub fn deinit(self: *ModelsListResponse, allocator: std.mem.Allocator) void {
         for (self.models) |*entry| entry.deinit(allocator);

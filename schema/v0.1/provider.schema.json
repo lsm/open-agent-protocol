@@ -216,6 +216,48 @@
         "xhigh"
       ]
     },
+    "modality": {
+      "enum": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "document"
+      ]
+    },
+    "modelCost": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cache_read": {
+          "type": "number"
+        },
+        "cache_write": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "modelCatalogState": {
+      "type": "object",
+      "required": [
+        "complete"
+      ],
+      "properties": {
+        "observed_at_ms": {
+          "type": "integer"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "modelEntry": {
       "type": "object",
       "required": [
@@ -232,7 +274,8 @@
           "$ref": "common.schema.json#/$defs/nonEmptyString"
         },
         "display_name": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1
         },
         "provider_id": {
           "$ref": "common.schema.json#/$defs/nonEmptyString"
@@ -265,6 +308,38 @@
         },
         "auth_status": {
           "$ref": "common.schema.json#/$defs/authStatus"
+        },
+        "cost": {
+          "$ref": "#/$defs/modelCost"
+        },
+        "input_modalities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/modality"
+          }
+        },
+        "output_modalities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/modality"
+          }
+        },
+        "reasoning_levels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/reasoningLevel"
+          }
+        },
+        "release_date": {
+          "type": "string",
+          "minLength": 1
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1
         }
       },
       "additionalProperties": false
@@ -351,6 +426,9 @@
           "items": {
             "$ref": "#/$defs/modelEntry"
           }
+        },
+        "catalog": {
+          "$ref": "#/$defs/modelCatalogState"
         }
       },
       "additionalProperties": false

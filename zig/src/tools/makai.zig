@@ -7594,6 +7594,12 @@ fn oapProviderCompatibility(
     ).facts;
 }
 
+fn oapFallbackCatalogState() ?oap_provider_types.ModelCatalogState {
+    return .{ .observed_at_ms = null, .complete = false };
+}
+
+const oap_built_in_output_modalities = [_]oap_provider_types.Modality{.text};
+
 fn oapModelCapabilities(
     allocator: std.mem.Allocator,
     builtin: oap_provider_catalog.BuiltInProvider,
@@ -7670,6 +7676,8 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
         errdefer if (!model_transferred) allocator.free(provider_id);
         const capabilities = try oapModelCapabilities(allocator, builtin);
         errdefer if (!model_transferred) allocator.free(capabilities);
+        const output_modalities = try allocator.dupe(oap_provider_types.Modality, &oap_built_in_output_modalities);
+        errdefer if (!model_transferred) allocator.free(output_modalities);
 
         try server.addModel(.{
             .model_ref = built_model_ref,
@@ -7682,6 +7690,7 @@ fn populateOapProviderCatalog(allocator: std.mem.Allocator, server: *oap_provide
             .max_output_tokens = builtin.max_output_tokens,
             .source = .fallback,
             .auth_status = if (builtin.allows_anonymous) .authenticated else .unknown,
+            .output_modalities = output_modalities,
         });
         model_transferred = true;
     }
@@ -7900,6 +7909,7 @@ fn openAgentOapProviderTransport(
             .accepts_inference = true,
             .resolves_own_credentials = true,
             .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+            .catalog = oapFallbackCatalogState(),
         }),
     };
     errdefer {
@@ -8545,6 +8555,7 @@ const HttpProviderRuntime = struct {
                 .accepts_inference = true,
                 .resolves_own_credentials = true,
                 .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+                .catalog = oapFallbackCatalogState(),
             }),
             .idle_ttl_ms = oapProviderStreamIdleTtlMs(allocator),
         };
@@ -8954,6 +8965,7 @@ fn runOapProviderMode(
         .accepts_inference = true,
         .resolves_own_credentials = true,
         .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+        .catalog = oapFallbackCatalogState(),
     });
     defer server.deinit();
     var output = bounded_output.Output.init(stdout, std.math.maxInt(u64));
@@ -9166,6 +9178,7 @@ fn runOapMode(
         .accepts_inference = true,
         .resolves_own_credentials = true,
         .profile_revision = OAP_PROVIDER_PROFILE_REVISION,
+        .catalog = oapFallbackCatalogState(),
     });
     defer provider_server.deinit();
     var grant_channels = std.ArrayList(OapGrantChannel).empty;
