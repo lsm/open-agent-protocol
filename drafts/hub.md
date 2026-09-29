@@ -1138,13 +1138,19 @@ byte-for-byte comparison on their first request.
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
-**D4 to D8 are what is left, and all of it is the Zig side and all of one kind:**
-each names something `zig/src/adapter/contract.zig` cannot carry that the draft
-specifies — a member that does not exist, or a signal with nowhere to report it.
-None of them changes a byte on the wire today, and each is a small contract change
-rather than a re-decision, so they are queued rather than fixed here: D5, D6, D7 and
-D8 in [#407](https://github.com/lsm/open-agent-protocol/issues/407). D7 is the per-run
-exposure a stream failure needs; D8 is that `request_cancelled` has no signal to come from.
+**D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
+open's `metadata` reaches an adapter through the core, so a Zig hub no longer accepts a
+request member the draft specifies and then discards it. D9 is the rest of that member's
+path and is **not** a Zig-side gap.
+
+**D4, D6, D7, D8 and D9 are what is left.** Four of them are the Zig side and all of one
+kind: each names something the Zig tree cannot carry that the draft specifies — a member
+that does not exist, or a signal with nowhere to report it. None of them changes a byte
+on the wire today, and each is a small contract change rather than a re-decision, so they
+are queued rather than fixed here: D6, D7, D8 and D9 in
+[#407](https://github.com/lsm/open-agent-protocol/issues/407). D7 is the per-run exposure
+a stream failure needs; D8 is that `request_cancelled` has no signal to come from; D9 is
+a gap **both** trees share, which is why fixing it on one side would be the wrong move.
 D4 is different in one respect: its negative-capacity half is a Go change, queued in
 [#406](https://github.com/lsm/open-agent-protocol/issues/406).
 
@@ -1176,6 +1182,18 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it matters** | A host that cancelled a catalog request and one whose backend failed are told the same thing, so a host cannot tell "I stopped listening" from "the adapter broke". The same gap applies to every op the draft lists `request_cancelled` for, so it is not specific to the catalog operations. |
 | **Why it is not fixable here** | It needs `contract`'s slots to report cancellation, which is a member that does not exist — the same kind of gap as D3 and D5, and the reason it is recorded rather than papered over with a mapping the hub cannot actually reach. |
 | **The fix** | `contract`'s slots report cancellation as its own error, as Go's context does, and the transports map it to `request_cancelled`. |
+
+### D9 — the endpoint surface drops an open's `metadata`, in **both** trees
+
+| | |
+| --- | --- |
+| **The draft says** | `session.open.request` carries `metadata`, and the schema has the member. |
+| **Go does** | `servehttp`'s and the stdio frontend's open paths do not read it into `base.OpenRequest`, so an open that arrives through an endpoint surface has its metadata dropped. |
+| **Zig does** | The same, and one layer deeper: `oap_types.SessionOpenRequest` has no `metadata` member either, so it cannot reach `endpoint.zig`'s `adapter.open` even now that D5 gave `contract.OpenRequest` one. |
+| **Why it matters** | D5 fixed the core's path, so a metadata-carrying open reaches an adapter when it is driven **through the core** and is still dropped when it is driven through an **endpoint**. Two paths to the same adapter, one of which silently discards a request member. |
+| **Why it is not fixed here** | **Both** trees do it. Fixing it on the Zig side alone would make the two *diverge* — the Zig endpoint would forward metadata and the Go one would not — which is the opposite of what Decision 0032 is for. It needs to be a change to both trees, and it is a change to the shared surface rather than to the hub. |
+| **The fix** | `oap_types.SessionOpenRequest` gains `metadata`, both trees' endpoint surfaces read it into their `OpenRequest`, and the two are fixed in one step. Until then an open's metadata is honoured by the core and not by an endpoint, and this says so rather than leaving the difference to be found. |
+
 
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
