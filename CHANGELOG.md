@@ -178,7 +178,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     out unnormalized. It also carries a defect of its own, **#514**: the pending
     calls are keyed by the normalized id and the answered ones by the original, so
     on a Mistral host — where every id is re-hashed — an answered call grows a
-    second, spurious error result. Transcribed rather than corrected, and pinned.
+    second, spurious error result. Transcribed rather than corrected, and pinned,
+    so the port held the defect in place while the Zig side decided it: #514 is
+    fixed in `pre_transform`, and this transcription follows under #358.
   - **The event stream's thirteen kinds are the union, and this client emits nine
     of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
     `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
@@ -1305,8 +1307,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with that, having been discarded on entry (`_ = arena`) and the only reason `runHub`
   still allocated an arena at all.
 
-### Fixed
-
 - **An answered tool call no longer grows a second, synthetic `"No result
   provided"` result when its id is rewritten.** `pre_transform` keys the set of
   unanswered calls by the id the call is written out under and the set of answered
@@ -1320,7 +1320,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once and an unanswered one still grows exactly one synthetic result — carrying the
   rewritten id, so it still names the call it stands in for. The wire is unchanged
   for every id normalization leaves alone, which is every id on a non-OpenAI,
-  non-Mistral host and every clean short id elsewhere. #514
+  non-Mistral host and every clean short id elsewhere. The Go transcription in
+  `go/internal/provider` still keys its answered set by the arrival id, and its
+  change is routed to #358. #514
 
 
 ## [0.2.0] - 2026-09-11

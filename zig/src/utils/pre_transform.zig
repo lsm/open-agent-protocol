@@ -168,19 +168,11 @@ pub fn preTransform(
         tool_id_map.deinit();
     }
 
-    var all_tool_call_ids = std.ArrayList(struct { id: []const u8, name: []const u8 }).empty;
-    defer all_tool_call_ids.deinit(allocator);
-
-    var existing_result_ids = std.StringHashMap(void).init(allocator);
-    defer existing_result_ids.deinit();
-
     for (messages) |msg| {
         switch (msg) {
             .assistant => |a| {
                 for (a.content) |c| {
                     if (c == .tool_call) {
-                        try all_tool_call_ids.append(allocator, .{ .id = c.tool_call.id, .name = c.tool_call.name });
-
                         if (config.max_tool_id_len > 0 or config.mistral_tool_ids or
                             std.mem.find(u8, c.tool_call.id, "|") != null)
                         {
@@ -193,9 +185,6 @@ pub fn preTransform(
                         }
                     }
                 }
-            },
-            .tool_result => |tr| {
-                try existing_result_ids.put(tr.tool_call_id, {});
             },
             else => {},
         }
