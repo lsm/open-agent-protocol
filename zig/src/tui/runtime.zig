@@ -63,6 +63,7 @@ pub const TuiRuntimeOptions = struct {
     thinking_level: ai_types.ThinkingLevel = .low,
     compact_output: bool = false,
     run_async: bool = true,
+    generate_titles: bool = false,
 };
 
 pub const InitialModelRef = struct {
@@ -76,6 +77,73 @@ fn normalizeTuiThinkingLevel(level: ai_types.ThinkingLevel) ai_types.ThinkingLev
         .minimal => .low,
         else => level,
     };
+}
+
+const title_request_text = "Write a short title, at most six words, for a conversation that starts with the message below. Reply with the title only.";
+const title_prompt_message_bytes = 4096;
+const title_max_bytes = 80;
+
+fn titlePrompt(allocator: std.mem.Allocator, first_message: []const u8) ![]u8 {
+    const message = first_message[0..utf8Prefix(first_message, title_prompt_message_bytes)];
+    return std.fmt.allocPrint(allocator, "{s}\n\n<message>\n{s}\n</message>", .{ title_request_text, message });
+}
+
+fn utf8Prefix(text: []const u8, max_bytes: usize) usize {
+    if (text.len <= max_bytes) return text.len;
+    var end = max_bytes;
+    while (end > 0 and (text[end] & 0xC0) == 0x80) end -= 1;
+    return end;
+}
+
+pub fn cleanTitle(allocator: std.mem.Allocator, reply: []const u8) !?[]u8 {
+    var lines = std.mem.tokenizeAny(u8, reply, "\r\n");
+    while (lines.next()) |line| {
+        var title = std.mem.trim(u8, line, " \t\r\"'`*#");
+        title = std.mem.trimEnd(u8, title, ". ");
+        if (title.len == 0) continue;
+        return try allocator.dupe(u8, title[0..utf8Prefix(title, title_max_bytes)]);
+    }
+    return null;
+}
+
+fn requestTitleText(allocator: std.mem.Allocator, protocol: agent.ProtocolClient, model: ai_types.Model, prompt: []const u8, cancel: ai_types.CancelToken) !?[]u8 {
+    const message = ai_types.Message{ .user = .{ .content = .{ .text = prompt }, .timestamp = compat.time.nowMillis() } };
+    const stream = try protocol.stream(model, .{ .messages = &.{message} }, .{
+        .cancel_token = cancel,
+        .thinking_level = .off,
+        .max_tokens = 1024,
+    }, allocator);
+    defer _ = stream.deinitAndDestroy();
+
+    var reply: ?ai_types.AssistantMessage = null;
+    defer if (reply) |*finished| finished.deinit(allocator);
+    while (stream.wait()) |event| {
+        var owned_event = event;
+        switch (owned_event) {
+            .done => |done| {
+                if (reply) |*previous| previous.deinit(allocator);
+                reply = done.message;
+                continue;
+            },
+            .@"error" => |failed| {
+                if (reply) |*previous| previous.deinit(allocator);
+                reply = failed.err;
+                continue;
+            },
+            else => {},
+        }
+        if (stream.owns_events) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
+    }
+    if (reply == null) reply = try stream.cloneResult(allocator);
+    const final = reply orelse return null;
+    if (final.stop_reason != .stop) return null;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(allocator);
+    for (final.content) |block| switch (block) {
+        .text => |part| try text.appendSlice(allocator, part.text),
+        else => {},
+    };
+    return cleanTitle(allocator, text.items);
 }
 
 fn cloneModels(allocator: std.mem.Allocator, models: []const ai_types.Model) ![]ai_types.Model {
@@ -135,6 +203,11 @@ pub const TuiRuntime = struct {
     backpressure_active: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     backpressure_status_active_emitted: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     backpressure_mutex: std.atomic.Mutex = .unlocked,
+    generate_titles: bool = false,
+    title_thread: ?std.Thread = null,
+    title_cancel: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    title_mutex: std.atomic.Mutex = .unlocked,
+    title_result: ?[]u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, options: TuiRuntimeOptions) !TuiRuntime {
         var models = try cloneModels(allocator, options.models);
@@ -201,6 +274,7 @@ pub const TuiRuntime = struct {
             .thinking_level = normalizeTuiThinkingLevel(options.thinking_level),
             .compact_output = options.compact_output,
             .run_async = options.run_async,
+            .generate_titles = options.generate_titles,
         };
         original_tools = &.{};
         wrapped_tools = &.{};
@@ -245,6 +319,9 @@ pub const TuiRuntime = struct {
     }
 
     pub fn deinit(self: *TuiRuntime) void {
+        self.title_cancel.store(true, .release);
+        self.waitForTitleRequest();
+        if (self.title_result) |title| self.allocator.free(title);
         self.stop();
         self.event_stream.deinit();
         self.clearPendingApproval();
@@ -365,6 +442,43 @@ pub const TuiRuntime = struct {
         if (self.local_agent) |*local| {
             if (next_selected) |idx| local.setModel(self.models[idx]);
         }
+    }
+
+    pub fn requestTitle(self: *TuiRuntime, first_message: []const u8) !void {
+        if (!self.generate_titles or self.title_thread != null) return;
+        const protocol = self.protocol orelse return;
+        const selected = self.currentModel() orelse return;
+        var model = try ai_types.cloneModel(self.allocator, selected);
+        errdefer model.deinit(self.allocator);
+        const prompt = try titlePrompt(self.allocator, first_message);
+        errdefer self.allocator.free(prompt);
+        self.title_cancel.store(false, .release);
+        self.title_thread = try std.Thread.spawn(.{}, titleThread, .{ self, protocol, model, prompt });
+    }
+
+    pub fn waitForTitleRequest(self: *TuiRuntime) void {
+        const thread = self.title_thread orelse return;
+        thread.join();
+        self.title_thread = null;
+    }
+
+    pub fn takeGeneratedTitle(self: *TuiRuntime) ?[]u8 {
+        while (!self.title_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.title_mutex.unlock();
+        const title = self.title_result orelse return null;
+        self.title_result = null;
+        return title;
+    }
+
+    fn titleThread(self: *TuiRuntime, protocol: agent.ProtocolClient, model: ai_types.Model, prompt: []u8) void {
+        var owned_model = model;
+        defer owned_model.deinit(self.allocator);
+        defer self.allocator.free(prompt);
+        const title = (requestTitleText(self.allocator, protocol, model, prompt, .{ .cancelled = &self.title_cancel }) catch return) orelse return;
+        while (!self.title_mutex.tryLock()) std.atomic.spinLoopHint();
+        defer self.title_mutex.unlock();
+        if (self.title_result) |previous| self.allocator.free(previous);
+        self.title_result = title;
     }
 
     pub fn currentModel(self: *TuiRuntime) ?ai_types.Model {
@@ -2828,4 +2942,50 @@ test "runtime ends a run whose last reply finished without an output-limit warni
     defer if (ended.warning) |text| std.testing.allocator.free(text);
     try std.testing.expect(ended.warning == null);
     try std.testing.expectEqual(@as(?TuiEndReason, .completed), ended.reason);
+}
+
+test "requestTitle keeps the first line of the model's reply, thinking off" {
+    var mock = MockProtocolCtx{ .reply_text = "  \"Fix the resume freeze.\"  \nsecond line" };
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a}, .generate_titles = true });
+    defer runtime.deinit();
+
+    try runtime.requestTitle("the resume freezes on long sessions");
+    runtime.waitForTitleRequest();
+    const title = runtime.takeGeneratedTitle().?;
+    defer std.testing.allocator.free(title);
+    try std.testing.expectEqualStrings("Fix the resume freeze", title);
+    try std.testing.expectEqual(@as(usize, 1), mock.call_count);
+    try std.testing.expectEqual(ai_types.ThinkingLevel.off, mock.last_thinking_level);
+    try std.testing.expect(runtime.takeGeneratedTitle() == null);
+}
+
+test "requestTitle sends nothing unless titles are enabled" {
+    var mock = MockProtocolCtx{};
+    var runtime = try TuiRuntime.init(std.testing.allocator, .{ .protocol = makeProtocol(&mock), .models = &[_]ai_types.Model{test_model_a} });
+    defer runtime.deinit();
+
+    try runtime.requestTitle("the resume freezes on long sessions");
+    runtime.waitForTitleRequest();
+    try std.testing.expect(runtime.takeGeneratedTitle() == null);
+    try std.testing.expectEqual(@as(usize, 0), mock.call_count);
+}
+
+test "cleanTitle takes the first non-empty line, unquoted, within 80 bytes" {
+    const cases = [_]struct { reply: []const u8, title: ?[]const u8 }{
+        .{ .reply = "\n\n**Fix the resume freeze.**\nmore", .title = "Fix the resume freeze" },
+        .{ .reply = "'Session titles'", .title = "Session titles" },
+        .{ .reply = " \n\t\n", .title = null },
+    };
+    for (cases) |case| {
+        const title = try cleanTitle(std.testing.allocator, case.reply);
+        defer if (title) |value| std.testing.allocator.free(value);
+        if (case.title) |expected| {
+            try std.testing.expectEqualStrings(expected, title.?);
+        } else {
+            try std.testing.expect(title == null);
+        }
+    }
+    const long = try cleanTitle(std.testing.allocator, "é" ** 50);
+    defer std.testing.allocator.free(long.?);
+    try std.testing.expectEqual(@as(usize, 80), long.?.len);
 }
