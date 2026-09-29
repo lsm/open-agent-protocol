@@ -8,6 +8,7 @@ import (
 )
 
 var (
+	ErrPartAlreadyOpen      = fmt.Errorf("inferenceserve: a part is already open")
 	ErrPartIndexMismatch    = fmt.Errorf("inferenceserve: a part arrived that is not the one open")
 	ErrToolCallIdentity     = fmt.Errorf("inferenceserve: a tool_call part needs an id and a name")
 	ErrToolCallIdentityOnly = fmt.Errorf("inferenceserve: only a tool_call part may carry an id and a name")
@@ -20,7 +21,7 @@ type openPart struct {
 
 func carriedSignature(partial provider.PartialMessage) string {
 	for _, block := range partial.Content {
-		if block.Thinking != nil && block.Thinking.Signature != "" {
+		if block.Thinking != nil {
 			return block.Thinking.Signature
 		}
 	}
@@ -34,15 +35,25 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 	case provider.EventStart:
 		return nil, nil
 	case provider.EventError:
+		if state.settled() {
+			return nil, nil
+		}
 		return []Envelope{settleFailed(state, CodeProviderUnavailable, "the provider stream failed")}, nil
 	case provider.EventDone:
 		if state.settled() {
 			return nil, nil
 		}
+		if state.open != nil {
+			return []Envelope{settleFailed(state, CodeProtocolViolation,
+				"the provider settled with a part still open")}, nil
+		}
 		return []Envelope{settleCompleted(state, event)}, nil
 	}
 
 	if isPartStart(event.Kind) {
+		if state.open != nil {
+			return nil, ErrPartAlreadyOpen
+		}
 		part := PartStarted{PartIndex: event.ContentIndex, PartKind: partKindOf(event.Kind)}
 		if part.PartKind == "tool_call" {
 			if event.ID == "" || event.Name == "" {
@@ -108,6 +119,7 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 			part.ToolCall = &EndedToolCall{ToolCallID: call.ID, Name: call.Name, ArgumentsJSON: json.RawMessage(arguments)}
 		}
 		state.open = nil
+		state.ended = append(state.ended, blockOf(part))
 		envelope, err := state.emit("inference.part.ended", "", part)
 		if err != nil {
 			return nil, err
@@ -117,15 +129,30 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 	return nil, nil
 }
 
+func blockOf(part PartEnded) TerminalBlock {
+	switch part.PartKind {
+	case "text":
+		return TerminalBlock{Type: "text", Text: part.Text}
+	case "reasoning":
+		return TerminalBlock{Type: "reasoning", Reasoning: part.Text, Carry: part.Carry}
+	default:
+		call := part.ToolCall
+		held := TerminalBlock{Type: "tool_call", Carry: part.Carry}
+		if call != nil {
+			held.ToolCallID = call.ToolCallID
+			held.Name = call.Name
+			held.ArgumentsJSON = call.ArgumentsJSON
+		}
+		return held
+	}
+}
+
 func settleCompleted(state *State, event provider.Event) Envelope {
 	stopReason := "stop"
-	var content []TerminalBlock
-	if event.Message != nil {
-		if event.Message.StopReason != "" {
-			stopReason = event.Message.StopReason
-		}
-		content = partsOf(event.Message.Content)
+	if event.Message != nil && event.Message.StopReason != "" {
+		stopReason = event.Message.StopReason
 	}
+	content := state.ended
 	if len(content) == 0 {
 		return settleFailed(state, CodeProtocolViolation, "the provider settled with no content")
 	}

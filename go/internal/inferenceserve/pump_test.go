@@ -299,3 +299,112 @@ func typesOf(envelopes []Envelope) []string {
 	}
 	return out
 }
+
+func TestAThoughtSignatureReachesBothSidesWhenTheSignatureOnlyArrivesOnTheDone(t *testing.T) {
+	thinking := provider.ThinkingPart{Thinking: "think", Signature: "sig-1"}
+	state := NewState(&Ids{}, "i1", "anthropic/anthropic-messages@claude")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventThinkingDelta, ContentIndex: 0, Delta: "think"},
+		provider.Event{Kind: provider.EventThinkingEnd, ContentIndex: 0, Delta: "think",
+			Partial: provider.PartialMessage{Content: nil}},
+		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{
+			StopReason: "stop",
+			Content:    []provider.AssistantBlock{{Thinking: &thinking}},
+		}},
+	)
+	validate(t, all)
+	ended := body(t, all[3])
+	blocks := body(t, all[4])["message"].(map[string]any)["content"].([]any)
+	if len(blocks) != 1 {
+		t.Fatalf("the terminal content = %v, want the one ended part", blocks)
+	}
+	if blocks[0].(map[string]any)["carry"] != nil {
+		t.Errorf("the terminal carries %v, want nothing: the terminal is assembled from the ended parts, and that part ended without one", blocks[0].(map[string]any)["carry"])
+	}
+	if ended["carry"] != nil {
+		t.Errorf("the ended reasoning part carries %v, want nothing: the client puts the signature only on the done message, so a part reading it from two places is a divergence the parity test would see", ended["carry"])
+	}
+}
+
+func TestAnErrorAfterACompletedIsRefused(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	all := runTrace(t, state, append(textEvents("a"),
+		provider.Event{Kind: provider.EventTextEnd, ContentIndex: 0, Delta: "a"},
+		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{
+			StopReason: "stop", Content: []provider.AssistantBlock{{Text: &provider.TextPart{Text: "a"}}},
+		}})...)
+	validate(t, all)
+	after, err := Pump(state, provider.Event{Kind: provider.EventError})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 0 {
+		t.Errorf("an error after the completed emitted %v, want nothing: the validator calls that event_after_terminal", typesOf(after))
+	}
+}
+
+func TestADoneWithAPartStillOpenSettlesAFailure(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventTextStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "a"},
+		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: "stop"}},
+	)
+	validate(t, all)
+	terminal := all[len(all)-1]
+	if terminal.Type != "inference.failed" {
+		t.Fatalf("got a %s, want inference.failed: a completed with a part.started that never ends is an invalid frame, and the draft wants that refused at emission", terminal.Type)
+	}
+	failure := body(t, terminal)["error"].(map[string]any)
+	if !strings.Contains(failure["message"].(string), "still open") {
+		t.Errorf("the failure message = %v, want it to name the part still open", failure["message"])
+	}
+}
+
+func TestASecondPartStartIsRefused(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	if _, err := Pump(state, provider.Event{Kind: provider.EventTextStart, ContentIndex: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Pump(state, provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 1}); err != ErrPartAlreadyOpen {
+		t.Errorf("a second part start while one is open = %v, want it refused", err)
+	}
+}
+
+func TestASignatureThePartNeverSawIsNotInventedOnTheTerminal(t *testing.T) {
+	thinking := provider.ThinkingPart{Thinking: "think", Signature: "sig-1"}
+	state := NewState(&Ids{}, "i1", "anthropic/anthropic-messages@claude")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventThinkingEnd, ContentIndex: 0, Delta: "think",
+			Partial: provider.PartialMessage{Content: nil}},
+		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{
+			StopReason: "stop",
+			Content:    []provider.AssistantBlock{{Thinking: &thinking}},
+		}},
+	)
+	validate(t, all)
+	terminal := all[len(all)-1]
+	if terminal.Type != "inference.completed" {
+		t.Fatalf("got a %s, want a completed", terminal.Type)
+	}
+	message, ok := body(t, terminal)["message"].(map[string]any)
+	if !ok {
+		t.Fatalf("the terminal payload = %s, want a message", terminal.Payload)
+	}
+	blocks, ok := message["content"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("the terminal content = %v, want the one ended part", message["content"])
+	}
+	first, ok := blocks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("the terminal block = %v, want an object", blocks[0])
+	}
+	if first["reasoning"] != "think" {
+		t.Errorf("the terminal reasoning = %v, want the accumulated text", first["reasoning"])
+	}
+	if _, present := first["carry"]; present {
+		t.Errorf("the terminal carries %v, want no carry: the part ended without one and the terminal is not a second source", first["carry"])
+	}
+}

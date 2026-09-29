@@ -109,6 +109,7 @@ type State struct {
 	refused     bool
 	lastSettled bool
 	open        *openPart
+	ended       []TerminalBlock
 }
 
 func NewState(ids *Ids, inferenceID, modelRef string) *State {
