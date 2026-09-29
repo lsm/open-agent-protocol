@@ -35,6 +35,7 @@ pub const OverrideError = error{
     InvalidBaseUrl,
     DuplicateOverride,
     ForbiddenOverrideMember,
+    WrongTypedOverrideMember,
 };
 
 pub const override_allowed_members = [_][]const u8{
@@ -279,6 +280,18 @@ fn namedIn(names: []const []const u8, value: []const u8) bool {
     return false;
 }
 
+fn typedString(obj: *const std.json.ObjectMap, key: []const u8) !?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    if (value != .string) return OverrideError.WrongTypedOverrideMember;
+    return value.string;
+}
+
+fn typedBool(obj: *const std.json.ObjectMap, key: []const u8) !?bool {
+    const value = obj.get(key) orelse return null;
+    if (value != .bool) return OverrideError.WrongTypedOverrideMember;
+    return value.bool;
+}
+
 fn parseOverride(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !Override {
     var it = obj.iterator();
     while (it.next()) |entry| {
@@ -286,11 +299,11 @@ fn parseOverride(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
         if (!namedIn(&override_allowed_members, entry.key_ptr.*)) return OverrideError.ForbiddenOverrideMember;
     }
 
-    const raw_id = objectString(obj, "id") orelse return OverrideError.MissingProviderId;
+    const raw_id = try typedString(obj, "id") orelse return OverrideError.MissingProviderId;
     if (provider_catalog.provider(raw_id) == null) return OverrideError.UnknownProviderId;
 
-    const base_url = if (objectString(obj, "base_url")) |raw| url: {
-        const stated = objectBool(obj, "carries_version");
+    const base_url = if (try typedString(obj, "base_url")) |raw| url: {
+        const stated = try typedBool(obj, "carries_version");
         const trimmed = if (stated orelse false)
             std.mem.trimEnd(u8, raw, "/")
         else
@@ -304,6 +317,8 @@ fn parseOverride(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
     const id = try allocator.dupe(u8, raw_id);
     errdefer allocator.free(id);
 
+    if (obj.get("headers") != null and obj.get("headers").? != .object) return OverrideError.WrongTypedOverrideMember;
+    if (obj.get("models") != null and obj.get("models").? != .array) return OverrideError.WrongTypedOverrideMember;
     const headers = try parseHeaders(allocator, obj);
     errdefer {
         for (headers) |header| {
@@ -325,7 +340,7 @@ fn parseOverride(allocator: std.mem.Allocator, obj: *const std.json.ObjectMap) !
     return .{
         .id = id,
         .base_url = base_url,
-        .carries_version = objectBool(obj, "carries_version"),
+        .carries_version = try typedBool(obj, "carries_version"),
         .headers = headers,
         .models = models,
     };
@@ -945,6 +960,27 @@ test "a caller that reads only the providers leaves nothing behind" {
     );
     defer deinitProviders(testing.allocator, from_parse);
     try testing.expectEqual(@as(usize, 1), from_parse.len);
+}
+
+test "an override member of the wrong type is refused rather than read as absent" {
+    const cases = [_][]const u8{
+        "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":123}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://x.test\",\"carries_version\":\"yes\"}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"carries_version\":1}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"base_url\":\"https://x.test\",\"headers\":[{\"A\":\"1\"}]}]}",
+        "{\"overrides\":[{\"id\":123,\"base_url\":\"https://x.test\"}]}",
+        "{\"overrides\":[{\"id\":\"deepseek\",\"models\":\"deepseek-chat\"}]}",
+    };
+    for (cases) |data| {
+        try testing.expectError(OverrideError.WrongTypedOverrideMember, parseConfig(testing.allocator, data));
+    }
+}
+
+test "a wrong-typed member is refused rather than read as an unstated one" {
+    try testing.expectError(
+        OverrideError.WrongTypedOverrideMember,
+        parseConfig(testing.allocator, "{\"overrides\":[{\"id\":\"deepseek\",\"carries_version\":\"true\"}]}"),
+    );
 }
 
 test "an override is found by the row it names and by no other row" {
