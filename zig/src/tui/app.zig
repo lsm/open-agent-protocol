@@ -1214,6 +1214,7 @@ pub const App = struct {
 
     fn saveEvent(self: *App, event: tui_runtime.TuiEvent) void {
         const store = self.store orelse return;
+        if (event == .message_end and event.message_end.role == .assistant) self.flushPendingThinking(store);
         switch (event) {
             .message_start, .context_usage, .prompt_segment_usage, .agent_start, .turn_start, .turn_end, .agent_end, .compaction_start => {},
             .text_delta => |payload| {
@@ -1265,7 +1266,6 @@ pub const App = struct {
                 return;
             },
             .message_start => self.pending_thinking.clearRetainingCapacity(),
-            .message_end => |payload| if (payload.role == .assistant) self.flushPendingThinking(store),
             else => {},
         }
         const compaction = event == .compaction_end and event.compaction_end.outcome == .completed;
@@ -1277,9 +1277,20 @@ pub const App = struct {
 
     fn flushPendingThinking(self: *App, store: session_store.Store) void {
         defer self.pending_thinking.clearRetainingCapacity();
-        if (self.pending_thinking.items.len == 0) return;
-        if (jsonStringBudget(self.pending_thinking.items) > max_session_event_payload_bytes) return;
-        _ = self.saveConversationEvent(store, .{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(self.pending_thinking.items) } }, false);
+        var rest: []const u8 = self.pending_thinking.items;
+        while (rest.len > 0) {
+            const record = sessionRecordPrefix(rest);
+            _ = self.saveConversationEvent(store, .{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(record) } }, false);
+            rest = rest[record.len..];
+        }
+    }
+
+    fn sessionRecordPrefix(text: []const u8) []const u8 {
+        const limit = max_session_event_payload_bytes / jsonStringBudget("x");
+        if (text.len <= limit) return text;
+        var len = limit;
+        while (len > limit - 3 and (text[len] & 0xc0) == 0x80) len -= 1;
+        return text[0..len];
     }
 
     fn saveConversationEvent(self: *App, store: session_store.Store, event: tui_runtime.TuiEvent, force_metadata: bool) bool {
@@ -3737,6 +3748,62 @@ test "App folds a reply's thinking into one record at the reply's end" {
     try std.testing.expectEqualStrings("first second", loaded.events.items[1].thinking_delta.delta.slice());
     try std.testing.expect(loaded.events.items[2] == .message_end);
     try std.testing.expectEqual(@as(usize, 1), loaded.messages.items.len);
+}
+
+test "App splits a reply's thinking into records that fit the session budget" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "long-thinking");
+    defer app.deinit();
+
+    const part = "\u{20ac}" ** 1000;
+    app.saveEvent(.{ .message_start = .{ .role = .assistant } });
+    var sent: usize = 0;
+    while (sent <= max_session_event_payload_bytes / App.jsonStringBudget("x")) : (sent += part.len) {
+        app.saveEvent(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(part) } });
+    }
+    var end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
+    defer end.deinit(std.testing.allocator);
+    app.saveEvent(end);
+
+    var loaded = try app.store.?.load("long-thinking");
+    defer loaded.deinit(std.testing.allocator);
+    var records: usize = 0;
+    var total: usize = 0;
+    for (loaded.events.items) |event| {
+        if (event != .thinking_delta) continue;
+        const delta = event.thinking_delta.delta.slice();
+        try std.testing.expect(App.jsonStringBudget(delta) <= max_session_event_payload_bytes);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(delta));
+        records += 1;
+        total += delta.len;
+    }
+    try std.testing.expectEqual(@as(usize, 2), records);
+    try std.testing.expectEqual(sent, total);
+}
+
+test "App writes a reply's thinking even when the reply is too large to save" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "oversized-reply");
+    defer app.deinit();
+
+    app.saveEvent(.{ .message_start = .{ .role = .assistant } });
+    app.saveEvent(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed("weighing it") } });
+    const text = try std.testing.allocator.alloc(u8, max_session_event_payload_bytes / App.jsonStringBudget("x") + 1);
+    defer std.testing.allocator.free(text);
+    @memset(text, 'x');
+    app.saveEvent(.{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initBorrowed(text) } });
+
+    var loaded = try app.store.?.load("oversized-reply");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), loaded.events.items.len);
+    try std.testing.expect(loaded.events.items[0] == .message_start);
+    try std.testing.expectEqualStrings("weighing it", loaded.events.items[1].thinking_delta.delta.slice());
 }
 
 test "App indexes where a completed compaction starts" {
