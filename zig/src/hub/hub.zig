@@ -68,6 +68,7 @@ pub const SubscribeOptions = struct {
 pub const OpenRequest = struct {
     session_id: []const u8 = "",
     participant: []const u8 = default_participant,
+    metadata: ?std.json.Value = null,
     subscribe: bool = false,
     allow_degraded_features: []const []const u8 = &.{},
     tools_json: ?[]const u8 = null,
@@ -87,6 +88,7 @@ pub const OpenRequest = struct {
         return .{
             .session_id = self.session_id,
             .participant = self.participant,
+            .metadata = self.metadata,
             .allow_degraded_features = self.allow_degraded_features,
             .tools_json = self.tools_json,
             .tool_sources_json = self.tool_sources_json,
@@ -2325,6 +2327,27 @@ test "a catalog is checked before it is served, and stamped with its revision" {
     try testing.expectError(error.ScopeMismatch, hub.tools(arena, opened.session_id, &.{ .session_id = "elsewhere" }));
 }
 
+test "an open's metadata reaches the adapter" {
+    var flaky = Flaky{ .allocator = testing.allocator };
+    flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
+    defer flaky.keep.deinit();
+    var hub = Hub.init(testing.allocator, testClock, .{});
+    defer hub.deinit();
+    try hub.register("flaky", flaky.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    try testing.expect(flaky.saw_metadata == null);
+    _ = try hub.open(arena, "flaky", .{ .session_id = "bare" });
+    try testing.expect(flaky.saw_metadata == null);
+
+    const metadata = try std.json.parseFromSlice(std.json.Value, arena, "{\"tenant\":\"acme\",\"attempt\":3}", .{});
+    _ = try hub.open(arena, "flaky", .{ .session_id = "labelled", .metadata = metadata.value });
+    const seen = flaky.saw_metadata.?;
+    try testing.expectEqualStrings("acme", seen.object.get("tenant").?.string);
+    try testing.expectEqual(@as(i64, 3), seen.object.get("attempt").?.integer);
+}
+
 test "a catalog is stamped with the revision its lister served it under" {
     var flaky = Flaky{ .allocator = testing.allocator, .lister_revision = "lister-v9" };
     flaky.keep = std.heap.ArenaAllocator.init(testing.allocator);
@@ -2518,6 +2541,7 @@ const Scripted = struct {
 const Flaky = struct {
     allocator: std.mem.Allocator,
     lister_revision: []const u8 = "lister-v9",
+    saw_metadata: ?std.json.Value = null,
     keep: std.heap.ArenaAllocator = undefined,
     session: contract.Session = undefined,
     owned_id: []const u8 = "",
@@ -2576,6 +2600,7 @@ fn flakyOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRe
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     _ = arena;
     _ = refusal;
+    self.saw_metadata = request.metadata;
     const id = try self.keep.allocator().dupe(u8, if (request.session_id.len > 0) request.session_id else "flaky");
     self.session = .{ .ptr = self, .vtable = &.{
         .id = flakyId,
