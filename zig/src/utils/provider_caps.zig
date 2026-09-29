@@ -245,10 +245,11 @@ test "an openai host is a host ending in openai.com on a label boundary" {
 }
 
 test "a base URL carrying api.openai.com in its path is detected compatible, not native" {
-    const spoofed = "https://api.openai.com.evil.example/v1/chat/completions";
-    try std.testing.expectEqual(ProviderType.openai_compatible, detectProviderType(spoofed));
+    const embedded = "https://gateway.example/proxy/api.openai.com/v1/chat/completions";
+    try std.testing.expect(!isOpenAIHost(embedded));
+    try std.testing.expectEqual(ProviderType.openai_compatible, detectProviderType(embedded));
 
-    const caps = detectCapabilities(spoofed);
+    const caps = detectCapabilities(embedded);
     try std.testing.expectEqual(ProviderType.openai_compatible, caps.provider_type);
     try std.testing.expect(!caps.supports_developer_role);
     try std.testing.expect(!caps.supports_reasoning_effort);
