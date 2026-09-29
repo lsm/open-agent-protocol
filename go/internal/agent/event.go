@@ -13,6 +13,7 @@ const (
 	MessageEnd        EventKind = "message_end"
 	ToolCallRequested EventKind = "tool_call_requested"
 	ToolCallResolved  EventKind = "tool_call_resolved"
+	ToolCallCancelled EventKind = "tool_call_cancelled"
 	TurnEnd           EventKind = "turn_end"
 	AgentEnd          EventKind = "agent_end"
 	RunFailed         EventKind = "run_failed"
