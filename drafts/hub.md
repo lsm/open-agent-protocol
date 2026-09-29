@@ -519,6 +519,14 @@ wedge every other client and leave a signal unobserved. Pinned by `a peer that
 connects and never sends a request is given up on, not waited on forever`;
 Go's bound is `ReadHeaderTimeout` on the same server.
 
+**Both bounds are a property of a platform that can wait on a socket**, and
+Zig's is a `poll`, so neither holds on Windows: a read there blocks with no
+deadline, and a peer that connects and stays silent wedges the daemon. Rather
+than claim a bound it does not have, the Zig daemon says so on stderr when it
+starts there, and the two tests that pin the bound skip. Closing it is #460's
+work, not this route's; the macOS and Linux builds are the ones the release
+covers.
+
 **The header budget is absolute, and the body budget is not.** Go's
 `ReadHeaderTimeout` runs from the first byte, so a peer that sends one byte
 per window never completes a request; the `IdleTimeout` restarts on every read,

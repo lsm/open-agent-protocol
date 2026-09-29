@@ -81,8 +81,10 @@ pub const Request = struct {
 
 pub fn splitTarget(allocator: std.mem.Allocator, target: []const u8) Failure!Target {
     const at = std.mem.indexOfScalar(u8, target, '?') orelse {
+        const query = try allocator.dupe(u8, "");
+        errdefer allocator.free(query);
         const whole = try allocator.dupe(u8, target);
-        return .{ .path = whole, .query = try allocator.dupe(u8, "") };
+        return .{ .path = whole, .query = query };
     };
     const path = try allocator.dupe(u8, target[0..at]);
     errdefer allocator.free(path);
@@ -90,17 +92,16 @@ pub fn splitTarget(allocator: std.mem.Allocator, target: []const u8) Failure!Tar
     return .{ .path = path, .query = query };
 }
 
-const pollable = @import("builtin").os.tag != .windows;
+pub const pollable = @import("builtin").os.tag != .windows;
 
 fn elapsedMs() !u64 {
     return @intCast(try compat.time.monotonicNanos() / std.time.ns_per_ms);
 }
 
 fn readWithin(stream: *compat.net.Stream, buffer: []u8, wait_ms: i32) Failure!usize {
-    if (comptime pollable) {
-        const ready = compat.net.readableWithin(compat.net.streamHandle(stream), wait_ms) catch return error.ReadFailed;
-        if (!ready) return error.Timeout;
-    }
+    if (comptime !pollable) return stream.read(buffer) catch error.ReadFailed;
+    const ready = compat.net.readableWithin(compat.net.streamHandle(stream), wait_ms) catch return error.ReadFailed;
+    if (!ready) return error.Timeout;
     return stream.read(buffer) catch error.ReadFailed;
 }
 
@@ -254,13 +255,17 @@ const Pipe = struct {
     client: compat.net.Stream,
     accepted: compat.net.Stream,
 
-    fn open() !Pipe {
-        const address = try compat.net.resolveAddress(testing.allocator, "127.0.0.1", 0);
+    fn openWith(allocator: std.mem.Allocator) !Pipe {
+        const address = try compat.net.resolveAddress(allocator, "127.0.0.1", 0);
         var server = try compat.net.tcpListen(address, .{ .reuse_address = true });
         errdefer compat.net.closeServer(&server);
         const client = try compat.net.tcpConnect(compat.net.listenAddress(&server));
         const connection = try compat.net.accept(&server);
         return .{ .server = server, .client = client, .accepted = connection.stream };
+    }
+
+    fn open() !Pipe {
+        return openWith(testing.allocator);
     }
 
     fn close(self: *Pipe) void {
@@ -269,6 +274,19 @@ const Pipe = struct {
         compat.net.closeServer(&self.server);
     }
 };
+
+fn parseUnder(allocator: std.mem.Allocator, raw: []const u8) !void {
+    var pipe = try Pipe.openWith(allocator);
+    defer pipe.close();
+    try pipe.client.writeAll(raw);
+    var request = try readRequest(allocator, &pipe.accepted, header_read_ms, idle_read_ms);
+    request.deinit(allocator);
+}
+
+test "reading a request frees what it built when any allocation fails" {
+    try testing.checkAllAllocationFailures(testing.allocator, parseUnder, .{"GET /adapters?after=3 HTTP/1.1\r\nHost: a\r\n\r\n"});
+    try testing.checkAllAllocationFailures(testing.allocator, parseUnder, .{"POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 4\r\n\r\nbody"});
+}
 
 fn requestOver(raw: []const u8) !Request {
     var pipe = try Pipe.open();
@@ -349,6 +367,10 @@ test "a host that hangs up mid-request is truncated, not answered" {
     try testing.expectError(error.Truncated, readRequest(testing.allocator, &accepted, header_read_ms, idle_read_ms));
 }
 
+test "the read budget bounds a read only where the socket can be waited on" {
+    try testing.expect(!pollable == (@import("builtin").os.tag == .windows));
+}
+
 test "only the two transport codes answer as an error envelope, and the rest as a bare status" {
     try testing.expectEqualStrings("request_too_large", transportRefusal(error.BodyTooLarge).?.code);
     try testing.expectEqualStrings("413 Payload Too Large", transportRefusal(error.BodyTooLarge).?.status);
@@ -363,6 +385,7 @@ test "only the two transport codes answer as an error envelope, and the rest as 
 }
 
 test "a peer that connects and never sends a request is given up on, not waited on forever" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
     try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 50, idle_read_ms));
@@ -370,6 +393,7 @@ test "a peer that connects and never sends a request is given up on, not waited 
 }
 
 test "the header budget is the whole request's, not a fresh one per byte" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("G");

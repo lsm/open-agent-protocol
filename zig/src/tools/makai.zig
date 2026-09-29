@@ -2532,6 +2532,9 @@ fn runHubHttp(
     if (allow == null) {
         try compat.stdio.writeAll(stderr, "oapx: this bind is not loopback; the single-user model is opted out of\n");
     }
+    if (comptime !hub_http.pollable) {
+        try compat.stdio.writeAll(stderr, "oapx: this platform cannot wait on a socket, so a stalled client is not given up on and a signal ends the process rather than the hub; the Windows path is #460\n");
+    }
 
     var next_id: u64 = 0;
     while (!endpoint_signals.received()) {
