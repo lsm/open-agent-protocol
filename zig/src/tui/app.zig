@@ -1050,6 +1050,7 @@ pub const App = struct {
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
+        self.state.telemetry.rate = .{};
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
         if (self.session) |*session| session.clearQueuedMessages();
@@ -2231,17 +2232,19 @@ pub const App = struct {
         const model = runtime.currentModel() orelse return;
         self.state.telemetry.input_cost_per_million = model.cost.input;
         if (self.rate_model.len > 0 and
-            (std.mem.eql(u8, self.rate_model, model.id) and std.mem.eql(u8, self.rate_provider, model.provider)))
-        {
-            return;
-        }
-        if (self.rate_model.len > 0) {
-            self.state.telemetry.rate = .{};
-            self.allocator.free(self.rate_model);
-            self.allocator.free(self.rate_provider);
-        }
-        self.rate_model = self.allocator.dupe(u8, model.id) catch "";
-        self.rate_provider = self.allocator.dupe(u8, model.provider) catch "";
+            std.mem.eql(u8, self.rate_model, model.id) and
+            std.mem.eql(u8, self.rate_provider, model.provider)) return;
+        if (self.rate_model.len > 0) self.state.telemetry.rate = .{};
+        if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
+        if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
+        self.rate_model = &.{};
+        self.rate_provider = &.{};
+        const next_model = self.allocator.dupe(u8, model.id) catch return;
+        errdefer self.allocator.free(next_model);
+        const next_provider = self.allocator.dupe(u8, model.provider) catch return;
+        errdefer self.allocator.free(next_provider);
+        self.rate_model = next_model;
+        self.rate_provider = next_provider;
     }
 
     pub fn slashQuery(self: *const App) ?[]const u8 {
@@ -5072,6 +5075,59 @@ test "App says so when a window the model in effect cannot take is dropped" {
     }
     try std.testing.expect(said_again);
     try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "a resumed session's replayed events leave the rate showing nothing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    if (production.models.len == 0) return error.TestExpectedTarget;
+    const model_id = production.models[0].id;
+
+    var store = try session_store.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "replayed"),
+        .model = try std.testing.allocator.dupe(u8, model_id),
+        .provider = try std.testing.allocator.dupe(u8, production.models[0].provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const text = "replayed assistant text";
+    var delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, text));
+    defer delta.deinit(std.testing.allocator);
+    var ended = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, text));
+    defer ended.deinit(std.testing.allocator);
+    try store.save(meta, .{ .turn_start = .{} });
+    try store.save(meta, .{ .message_start = .{ .role = .assistant } });
+    try store.save(meta, .{ .text_delta = .{ .content_index = 0, .delta = delta } });
+    try store.save(meta, .{ .message_end = .{ .role = .assistant, .text = ended } });
+    try store.save(meta, .{ .turn_end = .{ .stop_reason = .stop } });
+
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session = mock.session();
+    try app.loadSessions();
+    try std.testing.expectEqual(@as(usize, 1), app.state.sessions.items.len);
+    app.state.session_index = 0;
+
+    try app.resumeSelectedSession();
+
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.turn.output_tokens);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.estimated_since_switch.output_tokens);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+    try std.testing.expect(!app.state.telemetry.rate.previous.measured());
+    try std.testing.expect(!app.state.telemetry.rate.average.measured());
+    try std.testing.expect(!app.state.telemetry.rate.live.measured());
 }
 
 test "a model switch resets the rate average, including between two models that cost the same" {
