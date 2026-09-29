@@ -176,6 +176,37 @@ fn featureOnly(arena: std.mem.Allocator, reason: contract.Refusal) std.mem.Alloc
     return try arena.dupe(oap_types.DetailEntry, &.{.{ .key = "feature", .value = reason.feature }});
 }
 
+pub fn statusForRefusal(code: []const u8) ?[]const u8 {
+    const named = [_]struct { code: []const u8, status: []const u8 }{
+        .{ .code = "unknown_adapter", .status = "404 Not Found" },
+        .{ .code = "unknown_session", .status = "404 Not Found" },
+        .{ .code = "session_closed", .status = "409 Conflict" },
+        .{ .code = "session_exists", .status = "409 Conflict" },
+        .{ .code = "unsupported_feature", .status = "400 Bad Request" },
+        .{ .code = "capability_degraded", .status = "400 Bad Request" },
+        .{ .code = "scope_mismatch", .status = "400 Bad Request" },
+        .{ .code = "request_cancelled", .status = "400 Bad Request" },
+        .{ .code = "request_too_large", .status = "413 Payload Too Large" },
+        .{ .code = "invalid_request", .status = "400 Bad Request" },
+        .{ .code = "schema_invalid", .status = "400 Bad Request" },
+        .{ .code = "malformed_json", .status = "400 Bad Request" },
+        .{ .code = "type_mismatch", .status = "400 Bad Request" },
+        .{ .code = "internal", .status = "500 Internal Server Error" },
+        .{ .code = "probe_failed", .status = "500 Internal Server Error" },
+        .{ .code = "open_failed", .status = "500 Internal Server Error" },
+    };
+    for (named) |entry| {
+        if (std.mem.eql(u8, entry.code, code)) return entry.status;
+    }
+    return null;
+}
+
+pub fn detailsJson(arena: std.mem.Allocator, details: []const oap_types.DetailEntry) Error!std.json.Value {
+    var object = try emptyObject(arena);
+    for (details) |entry| try object.put(arena, entry.key, .{ .string = entry.value });
+    return .{ .object = object };
+}
+
 fn requireStringOrNull(root: std.json.ObjectMap, name: []const u8) Error!void {
     const value = member(root, name) orelse return;
     if (value == .null or value == .string) return;
@@ -2202,6 +2233,33 @@ test "the refusals the open gate and the payload read name" {
         try harness.send(case.line);
         try testing.expectEqualStrings(case.code, try harness.code());
     }
+}
+
+test "a refusal code carries the status the draft pins, and an unnamed one carries none" {
+    try testing.expectEqualStrings("404 Not Found", statusForRefusal("unknown_session").?);
+    try testing.expectEqualStrings("404 Not Found", statusForRefusal("unknown_adapter").?);
+    try testing.expectEqualStrings("409 Conflict", statusForRefusal("session_closed").?);
+    try testing.expectEqualStrings("400 Bad Request", statusForRefusal("unsupported_feature").?);
+    try testing.expectEqualStrings("400 Bad Request", statusForRefusal("capability_degraded").?);
+    try testing.expectEqualStrings("500 Internal Server Error", statusForRefusal("internal").?);
+    try testing.expectEqualStrings("413 Payload Too Large", statusForRefusal("request_too_large").?);
+    try testing.expect(statusForRefusal("method_not_allowed") == null);
+    try testing.expect(statusForRefusal("invented_later") == null);
+}
+
+test "refusal details render as the object the envelope carries" {
+    const arena = testing.allocator;
+    var rendered = try detailsJson(arena, &.{
+        .{ .key = "feature", .value = "action.tool_sources.attach" },
+        .{ .key = "source", .value = "x1" },
+    });
+    defer rendered.object.deinit(arena);
+    try testing.expectEqualStrings("action.tool_sources.attach", rendered.object.get("feature").?.string);
+    try testing.expectEqualStrings("x1", rendered.object.get("source").?.string);
+
+    var none = try detailsJson(arena, &.{});
+    defer none.object.deinit(arena);
+    try testing.expectEqual(@as(usize, 0), none.object.count());
 }
 
 test "the in-flight bound refuses any op, naming the bound that refused it" {
