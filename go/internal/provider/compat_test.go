@@ -9,6 +9,61 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAGoogleHostIsTheGeminiAPIHostOrAnAiplatformHostRegionalOrNot(t *testing.T) {
+	hosts := []string{
+		"https://generativelanguage.googleapis.com",
+		"https://generativelanguage.googleapis.com/v1beta",
+		"https://aiplatform.googleapis.com",
+		"https://us-central1-aiplatform.googleapis.com",
+		"https://europe-west4-aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/google",
+		"https://US-CENTRAL1-AIPLATFORM.GOOGLEAPIS.COM",
+	}
+	for _, url := range hosts {
+		if !isGoogleURL(url, true) {
+			t.Errorf("isGoogleURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://googleapis.com",
+		"https://storage.googleapis.com",
+		"https://notgenerativelanguage.googleapis.com",
+		"https://evilgenerativelanguage.googleapis.com.attacker.test",
+		"https://evil-aiplatform.googleapis.com.attacker.test",
+		"https://generativelanguage.googleapis.com.evil.example",
+		"https://evil.example/?next=aiplatform.googleapis.com",
+		"https://evil.example/v1/generativelanguage.googleapis.com",
+		"https://gateway.example/proxy/aiplatform.googleapis.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGoogleURL(url, true) {
+			t.Errorf("isGoogleURL(%q) = true, want false: googleapis.com on its own would claim every Google API, and the two api hosts are the only ones", url)
+		}
+	}
+
+	if isGoogleURL("https://generativelanguage.googleapis.com", false) {
+		t.Error("no base url is not a google host")
+	}
+}
+
+func TestTheCataloguedGoogleBaseStillDetectsAsGoogleWithItsCaps(t *testing.T) {
+	const url = "https://generativelanguage.googleapis.com"
+	if !isGoogleURL(url, true) {
+		t.Fatalf("isGoogleURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderGoogle {
+		t.Errorf("DetectProviderType(%q) = %q, want google", url, got)
+	}
+	caps := DetectCapabilities(url, true)
+	if caps.ProviderType != ProviderGoogle {
+		t.Errorf("caps provider type = %q, want google", caps.ProviderType)
+	}
+	if !caps.Vision || !caps.FunctionCalling {
+		t.Errorf("caps = %+v, want vision and function calling", caps)
+	}
+}
+
 func TestAZaiHostIsZukijourneyDotComOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.zukijourney.com",

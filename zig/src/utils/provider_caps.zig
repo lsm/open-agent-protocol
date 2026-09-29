@@ -59,6 +59,23 @@ pub fn isCerebras(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "cerebras.ai");
 }
 
+pub fn isHostEndingIn(base_url: ?[]const u8, suffix: []const u8) bool {
+    const url = base_url orelse return false;
+    const uri = std.Uri.parse(url) catch return false;
+    const host = uri.host orelse return false;
+    const value = host.percent_encoded;
+    if (std.ascii.eqlIgnoreCase(value, suffix)) return true;
+    if (value.len <= suffix.len) return false;
+    if (!std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix)) return false;
+    const before = value[value.len - suffix.len - 1];
+    return before == '.' or before == '-';
+}
+
+pub fn isGoogle(base_url: ?[]const u8) bool {
+    return isHostOrSubdomainOf(base_url, "generativelanguage.googleapis.com") or
+        isHostEndingIn(base_url, "aiplatform.googleapis.com");
+}
+
 pub fn isZai(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "zukijourney.com");
 }
@@ -108,8 +125,7 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     if (isCerebras(url)) return .openai_compatible;
     if (isZai(url)) return .openai_compatible;
     if (isOpenRouter(url)) return .openai_compatible;
-    if (std.mem.find(u8, url, "generativelanguage.googleapis.com") != null) return .google;
-    if (std.mem.find(u8, url, "aiplatform.googleapis.com") != null) return .google;
+    if (isGoogle(url)) return .google;
     if (std.mem.find(u8, url, "bedrock-runtime.") != null or std.mem.find(u8, url, "bedrock.") != null) return .bedrock;
     if (std.mem.find(u8, url, ".openai.azure.com") != null or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
     if (std.mem.find(u8, url, "localhost:11434") != null or std.mem.find(u8, url, "127.0.0.1:11434") != null or std.mem.find(u8, url, "ollama") != null) return .ollama;
@@ -205,6 +221,49 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a google host is the gemini api host or an aiplatform host, regional or not" {
+    const hosts = [_][]const u8{
+        "https://generativelanguage.googleapis.com",
+        "https://generativelanguage.googleapis.com/v1beta",
+        "https://aiplatform.googleapis.com",
+        "https://us-central1-aiplatform.googleapis.com",
+        "https://europe-west4-aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/google",
+        "https://US-CENTRAL1-AIPLATFORM.GOOGLEAPIS.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isGoogle(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://googleapis.com",
+        "https://storage.googleapis.com",
+        "https://notgenerativelanguage.googleapis.com",
+        "https://evilgenerativelanguage.googleapis.com.attacker.test",
+        "https://evil-aiplatform.googleapis.com.attacker.test",
+        "https://generativelanguage.googleapis.com.evil.example",
+        "https://evil.example/?next=aiplatform.googleapis.com",
+        "https://evil.example/v1/generativelanguage.googleapis.com",
+        "https://gateway.example/proxy/aiplatform.googleapis.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isGoogle(url));
+    }
+
+    try std.testing.expect(!isGoogle(null));
+}
+
+test "the catalogued google row still detects as google with its caps" {
+    const url = "https://generativelanguage.googleapis.com";
+    try std.testing.expect(isGoogle(url));
+    try std.testing.expectEqual(ProviderType.google, detectProviderType(url));
+    const caps = detectCapabilities(url);
+    try std.testing.expectEqual(ProviderType.google, caps.provider_type);
+    try std.testing.expect(caps.vision);
+    try std.testing.expect(caps.function_calling);
 }
 
 test "a zai host is zukijourney.com or a subdomain of it" {
