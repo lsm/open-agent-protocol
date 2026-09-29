@@ -93,7 +93,7 @@ func TestATurnIsTheProvidersOwnEventsOnAChannel(t *testing.T) {
 		Read:     chunkReader([]string{textDelta("hello"), finishStop()}),
 	})
 	events := take(t, turn)
-	if got, want := joined(events), "start text_delta done"; got != want {
+	if got, want := joined(events), "start text_start text_delta text_end done"; got != want {
 		t.Errorf("a text turn is %s, want %s", got, want)
 	}
 	done := events[len(events)-1]
@@ -254,8 +254,8 @@ func TestADeltaReachesTheChannelWhileTheStreamIsStillReading(t *testing.T) {
 		}
 	}
 	close(release)
-	if seen[0] != provider.EventStart || seen[1] != provider.EventTextDelta {
-		t.Errorf("a turn delivers %v, want a start then the delta, both before the reader finished", seen)
+	if seen[0] != provider.EventStart || seen[1] != provider.EventTextStart {
+		t.Errorf("a turn delivers %v, want a start then the part opening, both before the reader finished", seen)
 	}
 }
 
@@ -334,7 +334,14 @@ func TestATurnCancelledMidStreamDeliversTheSameEventsEveryTime(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		turn := ChunkStreamer{}.Stream(ctx, TurnRequest{Model: completionsModel(), Read: read})
 		var events []provider.Event
-		events = takeUntil(t, turn, cancel, func(seen []provider.Event) bool { return len(seen) >= 2 })
+		events = takeUntil(t, turn, cancel, func(seen []provider.Event) bool {
+			for _, event := range seen {
+				if event.Kind == provider.EventTextDelta {
+					return true
+				}
+			}
+			return false
+		})
 		cancel()
 		close(blocked)
 		events = append(events, take(t, turn)...)
@@ -345,8 +352,8 @@ func TestATurnCancelledMidStreamDeliversTheSameEventsEveryTime(t *testing.T) {
 			t.Fatalf("a cancelled turn delivered %v events over twenty runs, want one answer every time: which events survive a cancellation cannot be a coin toss", counts[:attempt+1])
 		}
 	}
-	if counts[0] != 2 {
-		t.Errorf("a cancelled turn delivered %d events, want the start and the delta it read before the cancellation and nothing after", counts[0])
+	if counts[0] != 3 {
+		t.Errorf("a cancelled turn delivered %d events, want the start, the part opening and the delta it read before the cancellation and nothing after", counts[0])
 	}
 }
 

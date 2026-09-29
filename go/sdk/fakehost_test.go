@@ -359,7 +359,13 @@ func defaultModelsResponse() map[string]any {
 			"context_window":    float64(200000),
 			"max_output_tokens": float64(8192),
 			"reasoning_default": "medium",
+			"cost":              map[string]any{"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75},
+			"input_modalities":  []any{"text", "image"},
+			"reasoning_levels":  []any{"off", "medium", "high"},
+			"release_date":      "2025-09-29",
+			"family":            "claude-sonnet",
 		}},
+		"catalog": map[string]any{"observed_at_ms": float64(1_759_100_000_000), "complete": true},
 	}
 }
 

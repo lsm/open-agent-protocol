@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -106,20 +107,14 @@ func (r *Run) emit(event Event) {
 		r.events <- event
 		return
 	}
-	for {
-		if len(r.events) < eventBuffer-1 {
-			select {
-			case r.events <- event:
-			default:
-			}
-			return
-		}
+	for len(r.events) >= eventBuffer-1 {
 		select {
 		case <-r.ctx.Done():
 			return
 		case <-time.After(roomPoll):
 		}
 	}
+	r.events <- event
 }
 
 func (r *Run) settle(result Result) {
@@ -254,6 +249,14 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 			results = append(results, cutOffResult(call))
 			continue
 		}
+		if call.Name == "" {
+			results = append(results, namelessResult(call))
+			continue
+		}
+		if call.ID == "" {
+			results = append(results, idlessResult(call))
+			continue
+		}
 		if !live {
 			results = append(results, cancelledResult(call))
 			continue
@@ -263,6 +266,12 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 		results = append(results, result)
 	}
 	return results, live
+}
+
+func (r *Run) cancelCall(call provider.ToolCall) provider.ToolResult {
+	result := cancelledResult(call)
+	r.emit(Event{Kind: ToolCallCancelled, Call: &call, ToolResult: &result})
+	return result
 }
 
 func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool) {
@@ -277,7 +286,7 @@ func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool
 	select {
 	case result := <-waiter:
 		if r.ctx.Err() != nil {
-			return cancelledResult(call), false
+			return r.cancelCall(call), false
 		}
 		r.emit(Event{Kind: ToolCallResolved, Call: &call, ToolResult: &result})
 		return result, true
@@ -285,12 +294,27 @@ func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool
 		r.mu.Lock()
 		delete(r.pending, call.ID)
 		r.mu.Unlock()
-		return cancelledResult(call), false
+		return r.cancelCall(call), false
 	}
 }
 
 func cutOffResult(call provider.ToolCall) provider.ToolResult {
 	return errorResult(call, fmt.Sprintf("Tool call %q was not run: the reply hit the output token limit, so its arguments may be cut off. Call the tool again with complete arguments.", call.Name))
+}
+
+func namelessResult(call provider.ToolCall) provider.ToolResult {
+	return errorResult(call, fmt.Sprintf("Tool call %s was not run: the reply named no tool, so there is nothing to run. Call a tool by name.", quotedID(call)))
+}
+
+func idlessResult(call provider.ToolCall) provider.ToolResult {
+	return errorResult(call, fmt.Sprintf("Tool call %q was not run: the reply gave it no id, so no answer could be matched to it. Call the tool again.", call.Name))
+}
+
+func quotedID(call provider.ToolCall) string {
+	if call.ID == "" {
+		return "with no id"
+	}
+	return strconv.Quote(call.ID)
 }
 
 func cancelledResult(call provider.ToolCall) provider.ToolResult {

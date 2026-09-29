@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 
 const UNRELEASED = "## Unreleased";
 const GENERATED_HEADING = "### Merged pull requests";
+const LIFTED_BREAKING_HEADING = "### Breaking changes";
 const RELEASED = /^## \[([^\]]+)\] - (\S+)\s*$/;
 const KEEP_A_CHANGELOG_SECTIONS = ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"];
 const MAX_LINE = 240;
@@ -109,6 +110,17 @@ export function compareVersions(left, right) {
 // The body is markdown, hard-wrapped, and carries the template's HTML comment
 // block. The line is the first prose paragraph's first sentence, unwrapped,
 // because a physical line of a wrapped body is half a sentence.
+export const BREAKING_HEADING = /^##[ \t]+Breaking changes[ \t]*$/m;
+
+export function breakingSection(body) {
+  const text = String(body ?? "");
+  const match = BREAKING_HEADING.exec(text);
+  if (match === null) return "";
+  const rest = text.slice(match.index + match[0].length);
+  const end = rest.search(/^##[ \t]/m);
+  return (end < 0 ? rest : rest.slice(0, end)).trim();
+}
+
 export function firstLine(body) {
   const withoutComments = String(body ?? "").replace(/<!--[\s\S]*?-->/g, "");
   const blocks = withoutComments.split(/\n\s*\n/);
@@ -175,9 +187,19 @@ export function fold(changelog, options) {
   }
 
   const entries = options.pullRequests.map(entry).filter((line) => line !== null);
+  // A pull request that made an incompatible change to a public Go package
+  // carries a "## Breaking changes" section, and that section is the record a
+  // reader needs. Lift it into the release under its own heading rather than
+  // leaving it in the description where the release notes cannot reach it.
+  const breaking = options.pullRequests
+    .filter((pr) => typeof pr.number === "number" && pr.title && breakingSection(pr.body))
+    .map((pr) => `- **${pr.title}**${pr.url ? ` ([#${pr.number}](${pr.url}))` : ` (#${pr.number})`}\n\n${breakingSection(pr.body)}`);
   const carried = pending.trim();
   const parts = [`${UNRELEASED}\n`, `## [${options.version}] - ${options.date}\n`];
   if (carried) parts.push(`${carried.replace(/\n+$/, "")}\n`);
+  if (breaking.length > 0) {
+    parts.push(`${LIFTED_BREAKING_HEADING}\n\n${breaking.join("\n\n")}\n`);
+  }
   if (entries.length > 0) {
     parts.push(`${GENERATED_HEADING}\n\n${entries.join("\n")}\n`);
   }

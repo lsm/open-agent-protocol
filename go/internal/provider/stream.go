@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"sort"
 )
 
 var reasoningFields = []string{"reasoning_content", "reasoning", "reasoning_text"}
@@ -220,14 +221,76 @@ func canCarryPartial(s *streamState) bool {
 	return CanCompletePartialTextOnStreamError(len(s.text), len(s.thinking), s.toolCalls)
 }
 
+func (s *streamState) reserve(kind string) int {
+	switch kind {
+	case "thinking":
+		if s.thinkingIndex < 0 {
+			s.thinkingIndex = s.nextIndex
+			s.nextIndex++
+		}
+		return s.thinkingIndex
+	case "text":
+		if s.textIndex < 0 {
+			s.textIndex = s.nextIndex
+			s.nextIndex++
+		}
+		return s.textIndex
+	}
+	return s.nextIndex
+}
+
+type terminalSlot struct {
+	index int
+	block AssistantBlock
+}
+
+func (s *streamState) terminalSlots(hasThinking, hasText bool) []terminalSlot {
+	held := make([]terminalSlot, 0, 2+s.toolCalls)
+	taken := make(map[int]bool, 2+s.toolCalls)
+	if hasThinking && s.thinkingStreamed {
+		held = append(held, terminalSlot{s.thinkingIndex, AssistantBlock{Thinking: s.thinkingPart()}})
+		taken[s.thinkingIndex] = true
+	}
+	if hasText && s.textStreamed {
+		held = append(held, terminalSlot{s.textIndex, AssistantBlock{Text: &TextPart{Text: s.text}}})
+		taken[s.textIndex] = true
+	}
+	free := s.nextIndex
+	for _, extra := range []struct {
+		held    bool
+		content AssistantBlock
+	}{
+		{hasThinking && !s.thinkingStreamed, AssistantBlock{Thinking: s.thinkingPart()}},
+		{hasText && !s.textStreamed, AssistantBlock{Text: &TextPart{Text: s.text}}},
+	} {
+		if !extra.held {
+			continue
+		}
+		for taken[free] {
+			free++
+		}
+		held = append(held, terminalSlot{free, extra.content})
+		taken[free] = true
+	}
+	sort.SliceStable(held, func(i, j int) bool { return held[i].index < held[j].index })
+	return held
+}
+
 func (s *streamState) emitFor(sink *EventSink) {
 	partial := s.partial(nil)
 	if len(s.text) > s.prevText {
-		sink.emit(Event{Kind: EventTextDelta, ContentIndex: 0, Delta: s.text[s.prevText:], Partial: partial})
+		s.textStreamed = true
+		index := s.reserve("text")
+		if s.prevText == 0 {
+			sink.emit(Event{Kind: EventTextStart, ContentIndex: index, Partial: partial})
+		}
+		sink.emit(Event{Kind: EventTextDelta, ContentIndex: index, Delta: s.text[s.prevText:], Partial: partial})
 	}
 	s.prevText = len(s.text)
 	if len(s.thinking) > s.prevThink && !IsKimiModel(s.model) {
-		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: 0, Delta: s.thinking[s.prevThink:], Partial: partial})
+		index := s.reserve("thinking")
+		s.thinkingStreamed = true
+		sink.emit(Event{Kind: EventThinkingDelta, ContentIndex: index, Delta: s.thinking[s.prevThink:], Partial: partial})
 	}
 	s.prevThink = len(s.thinking)
 	for _, detail := range s.lastDetails {
@@ -235,7 +298,7 @@ func (s *streamState) emitFor(sink *EventSink) {
 	}
 	for _, call := range s.lastToolCalls {
 		if call.isStart {
-			index := s.nextIndex
+			index := s.reserve("tool_call")
 			s.tracker.startCall(call.apiIndex, index, call.id, call.name)
 			s.nextIndex++
 			s.toolCalls++
@@ -271,34 +334,67 @@ func (s *streamState) finish(sink *EventSink) {
 		return
 	}
 
-	content := []AssistantBlock{}
-	if hasThinking {
-		thinking := &ThinkingPart{Thinking: s.thinking}
-		if s.hasSig {
-			thinking.Signature = s.signature
-		}
-		content = append(content, AssistantBlock{Thinking: thinking})
-	}
-	if hasText {
-		content = append(content, AssistantBlock{Text: &TextPart{Text: s.text}})
-	}
+	held := s.terminalSlots(hasThinking, hasText)
+	completedAt := make(map[int]AssistantBlock, s.toolCalls)
 	for _, call := range s.tracker.inContentOrder() {
 		completed, ok := s.tracker.completeCall(call.apiIndex)
 		if !ok {
 			continue
 		}
-		content = append(content, AssistantBlock{ToolCall: &completed})
 		index, ok := s.tracker.contentIndex(call.apiIndex)
 		if !ok {
 			continue
 		}
-		grown := append([]AssistantBlock{}, content[:len(content)-1]...)
+		completedAt[index] = AssistantBlock{ToolCall: &completed}
+	}
+	for i := range held {
+		if block, found := completedAt[held[i].index]; found {
+			held[i].block = block
+		}
+	}
+	slots := held
+	for index, block := range completedAt {
+		slots = append(slots, terminalSlot{index, block})
+	}
+	sort.SliceStable(slots, func(i, j int) bool { return slots[i].index < slots[j].index })
+	content := make([]AssistantBlock, 0, len(slots))
+	for _, one := range slots {
+		content = append(content, one.block)
+	}
+	textAt := partIndexUnset
+	if s.textStreamed {
+		textAt = s.textIndex
+	}
+	endedText := false
+	for _, call := range s.tracker.inContentOrder() {
+		completed, ok := s.tracker.completeCall(call.apiIndex)
+		if !ok {
+			continue
+		}
+		index, ok := s.tracker.contentIndex(call.apiIndex)
+		if !ok {
+			continue
+		}
+		if !endedText && textAt >= 0 && textAt < index {
+			sink.emit(Event{Kind: EventTextEnd, ContentIndex: textAt, Delta: s.text, Partial: s.partial(nil)})
+			endedText = true
+		}
+		grown := make([]AssistantBlock, 0, len(content))
+		for _, one := range slots {
+			if one.index >= index {
+				continue
+			}
+			grown = append(grown, one.block)
+		}
 		sink.emit(Event{
 			Kind:         EventToolCallEnd,
 			ContentIndex: index,
 			ToolCall:     &completed,
 			Partial:      s.partial(grown),
 		})
+	}
+	if !endedText && textAt >= 0 {
+		sink.emit(Event{Kind: EventTextEnd, ContentIndex: textAt, Delta: s.text, Partial: s.partial(nil)})
 	}
 	sink.emit(Event{
 		Kind: EventDone,

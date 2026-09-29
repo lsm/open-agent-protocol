@@ -29,7 +29,6 @@ type Provider struct {
 	Offering         string       `json:"offering,omitempty"`
 	Status           string       `json:"status,omitempty"`
 	CredentialEnv    []string     `json:"credential_env,omitempty"`
-	CredentialOrder  []string     `json:"credential_precedence,omitempty"`
 	BaseURLEnv       []string     `json:"base_url_env,omitempty"`
 	RegionEnv        string       `json:"region_env,omitempty"`
 	DefaultRegion    string       `json:"default_region,omitempty"`
