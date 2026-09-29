@@ -1239,6 +1239,24 @@ byte-for-byte comparison on their first request.
 stamped with the revision its *lister* served it under, which is what makes the
 draft's "refuse one that disagrees with the descriptor" check possible at all.
 
+**D13 — a chunked body is refused, where Go de-chunks it.** A request carrying
+any `Transfer-Encoding` is answered a bare `400`; `net/http` decodes chunked
+transparently, so a streaming client works against `goap hub` and not against
+`oapx hub`. This is a gap rather than a decision, and it is closed by the routes
+that read a body — the decoder belongs beside the first `readBody` caller, under
+the same 16 MiB cap, not in a reader with no consumer. Until then the refusal is
+the safe one: a body whose framing this daemon cannot read is not a body it
+should guess at. Pinned by `a chunked body is refused rather than guessed at`.
+
+**D14 — no `100 Continue` is sent, where Go sends one when the handler reads the
+body.** A client that sends `Expect: 100-continue` waits for the interim answer;
+`curl` waits about a second and sends anyway, a stricter client waits out the
+idle budget. Sending it here would be worse than not sending it, because no route
+in this daemon consumes a body yet — an interim answer would invite a body the
+daemon is about to refuse. The routes that read a body answer `100 Continue`
+first, and a route that refuses the head answers the refusal instead. Noted here
+so the difference is a recorded one rather than a surprise in a differential run.
+
 **D5 is fixed** ([#516](https://github.com/lsm/open-agent-protocol/pull/516)): a session
 open's `metadata` reaches an adapter through the core, which before it **had no member to
 carry it** — so the member could not arrive rather than arriving and being dropped. The
