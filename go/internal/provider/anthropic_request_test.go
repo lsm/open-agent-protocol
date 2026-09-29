@@ -405,6 +405,19 @@ func TestTheAnonymityRuleExcludesOneVendorNotFour(t *testing.T) {
 	}
 }
 
+func systemTextOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("not json: %v", err)
+	}
+	system, ok := parsed["system"].([]any)
+	if !ok || len(system) == 0 {
+		t.Fatalf("no system array in %s", body)
+	}
+	return system[0].(map[string]any)["text"].(string)
+}
+
 func TestAnOAuthKeyChangesTheBodyAsWellAsTheHeaders(t *testing.T) {
 	ctx := Context{HasSystem: true, SystemPrompt: "be terse"}
 	plain, isOAuth := BuildAnthropicRequestBody(anthropicModel(), ctx, AnthropicOptions{}, "sk-ant-ordinary")
@@ -418,8 +431,11 @@ func TestAnOAuthKeyChangesTheBodyAsWellAsTheHeaders(t *testing.T) {
 	if !isOAuth {
 		t.Fatal("a key containing sk-ant-oat is oauth")
 	}
-	if strings.Contains(string(oauth), "be terse") {
-		t.Errorf("the oauth path replaces the system prompt outright:\n%s", oauth)
+	if !strings.Contains(string(oauth), "be terse") {
+		t.Errorf("the oauth path prepends the Claude Code text to the caller's prompt, so the prompt must survive:\n%s", oauth)
+	}
+	if !strings.HasPrefix(systemTextOf(t, oauth), oauthSystemText+"\n\n") {
+		t.Errorf("the oauth system text = %q, want the Claude Code sentence then a blank line then the caller's prompt", systemTextOf(t, oauth))
 	}
 	if !strings.Contains(string(oauth), "Claude Code") {
 		t.Errorf("the oauth system text is missing:\n%s", oauth)

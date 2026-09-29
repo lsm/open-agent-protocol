@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     completed, while the **wire** index only keys the map, so the two numbers
     differ; a delta for an index the map has not seen is dropped, and a block type
     the client does not model is skipped rather than failing.
+  - **Under an oauth key the system text is prepended, not replaced**: the Claude
+    Code sentence, a blank line, and then the caller's own prompt. A port that
+    replaces it drops the caller's instructions on every oauth request that has
+    one; the bare sentence is written only when there is no prompt at all.
   - **A tool call is a block inside the content array**, not a sibling member as
     in the openai body, and a tool result is a **`user`** message -- a whole run of
     consecutive results in one message -- whose `content` is a plain string for a
@@ -99,6 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     flag because its own path never sets it, is what canonicalises a tool name
     against the declared tools here -- so **#514** and **#515** are inherited
     directly by this client.
+  - **The cache ttl and the thinking branches are complete or absent**: a long
+    retention gets `ttl:"1h"` when the host is anthropic **or** the model's own
+    compat says so; an adaptive model declares `thinking:{"type":"adaptive"}`
+    before its `output_config.effort`; and a thinking budget is guarded by
+    `max_tokens > 1024`, defaulted to 1024, and clamped to
+    `[1024, max_tokens - 1]`, so a budget the api would reject cannot go out.
 - **`go/internal/provider`: the `openai-completions` client, part of #358 step 2.**
   A Go program can now drive an OpenAI-compatible endpoint without a Zig binary in
   the path. The package is `internal` on purpose: it is not yet a public surface,

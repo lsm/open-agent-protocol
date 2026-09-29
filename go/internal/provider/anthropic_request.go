@@ -211,7 +211,9 @@ func BuildAnthropicRequestBody(model Model, ctx Context, options AnthropicOption
 	}
 
 	systemText := ctx.SystemPrompt
-	if isOAuth {
+	if isOAuth && ctx.HasSystem {
+		systemText = oauthSystemText + "\n\n" + ctx.SystemPrompt
+	} else if isOAuth {
 		systemText = oauthSystemText
 	}
 	if ctx.HasSystem || isOAuth {
