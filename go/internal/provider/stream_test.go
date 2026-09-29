@@ -7,6 +7,10 @@ import (
 	"testing"
 )
 
+func sseFrame(payload string) string {
+	return "data: " + payload + "\n\n"
+}
+
 func chunkReader(chunks []string) ReadChunkFunc {
 	i := 0
 	return func() ([]byte, error) {
@@ -17,10 +21,6 @@ func chunkReader(chunks []string) ReadChunkFunc {
 		i++
 		return out, nil
 	}
-}
-
-func sseFrame(payload string) string {
-	return "data: " + payload + "\n\n"
 }
 
 func runStream(t *testing.T, model Model, frames ...string) []Event {

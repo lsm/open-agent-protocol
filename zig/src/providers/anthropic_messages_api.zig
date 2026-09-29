@@ -385,6 +385,11 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
             while (msg_idx < tx_context.messages.len and tx_context.messages[msg_idx] == .tool_result) {
                 const tr = tx_context.messages[msg_idx].tool_result;
 
+                if (isOrphanedToolResult(tx_context.messages[msg_idx], &tool_call_ids)) {
+                    msg_idx += 1;
+                    continue;
+                }
+
                 try w.beginObject();
                 try w.writeStringField("type", "tool_result");
                 try w.writeStringField("tool_use_id", tr.tool_call_id);
@@ -1994,6 +1999,139 @@ test "buildRequestBody includes ttl for long retention on anthropic url" {
     defer allocator.free(body);
 
     try std.testing.expect(std.mem.find(u8, body, "\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}") != null);
+}
+
+fn anthropicToolResult(id: []const u8) ai_types.Message {
+    return .{ .tool_result = .{
+        .tool_call_id = id,
+        .tool_name = "bash",
+        .content = &.{.{ .text = .{ .text = "output" } }},
+        .is_error = false,
+        .timestamp = 0,
+    } };
+}
+
+fn collectToolUseIDs(allocator: std.mem.Allocator, body: []const u8, out: *std.ArrayList([]const u8)) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+
+    const msg_array = parsed.value.object.get("messages").?.array;
+    for (msg_array.items) |msg| {
+        const content = msg.object.get("content") orelse continue;
+        if (content != .array) continue;
+        for (content.array.items) |block| {
+            if (block != .object) continue;
+            const kind = block.object.get("type") orelse continue;
+            if (!std.mem.eql(u8, kind.string, "tool_result")) continue;
+            try out.append(allocator, try allocator.dupe(u8, block.object.get("tool_use_id").?.string));
+        }
+    }
+}
+
+test "a run of only orphaned results writes no message at all" {
+    const allocator = std.testing.allocator;
+
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "go" }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{.{ .tool_call = .{ .id = "toolu_1", .name = "bash", .arguments_json = "{}" } }},
+            .api = "anthropic-messages",
+            .provider = "anthropic",
+            .model = "claude-3-5-sonnet-20241022",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        anthropicToolResult("toolu_1"),
+        .{ .user = .{ .content = .{ .text = "carry on" }, .timestamp = 0 } },
+        anthropicToolResult("toolu_8"),
+        anthropicToolResult("toolu_9"),
+    };
+
+    const model = ai_types.Model{
+        .id = "claude-3-5-sonnet-20241022",
+        .name = "Claude 3.5 Sonnet",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = "https://api.anthropic.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.3, .cache_write = 3.75 },
+        .context_window = 200000,
+        .max_tokens = 8192,
+    };
+    const context = ai_types.Context{ .messages = &messages };
+    const body = try buildRequestBody(model, context, .{ .max_tokens = 1024 }, allocator, false);
+    defer allocator.free(body);
+
+    var ids = std.ArrayList([]const u8).empty;
+    defer {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit(allocator);
+    }
+    try collectToolUseIDs(allocator, body, &ids);
+    try std.testing.expectEqual(@as(usize, 1), ids.items.len);
+    try std.testing.expectEqualStrings("toolu_1", ids.items[0]);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    for (parsed.value.object.get("messages").?.array.items) |msg| {
+        if (msg.object.get("content")) |content| {
+            if (content == .array and content.array.items.len == 0) {
+                std.debug.print("a user message with an empty content array was written: {s}\n", .{body});
+                return error.TestExpectedEqual;
+            }
+        }
+    }
+}
+
+test "a mixed run keeps only the results whose call is in the conversation" {
+    const allocator = std.testing.allocator;
+
+    const messages = [_]ai_types.Message{
+        .{ .user = .{ .content = .{ .text = "go" }, .timestamp = 0 } },
+        .{ .assistant = .{
+            .content = &.{
+                .{ .tool_call = .{ .id = "toolu_1", .name = "bash", .arguments_json = "{}" } },
+                .{ .tool_call = .{ .id = "toolu_2", .name = "bash", .arguments_json = "{}" } },
+            },
+            .api = "anthropic-messages",
+            .provider = "anthropic",
+            .model = "claude-3-5-sonnet-20241022",
+            .usage = .{},
+            .stop_reason = .tool_use,
+            .timestamp = 0,
+        } },
+        anthropicToolResult("toolu_1"),
+        anthropicToolResult("toolu_9"),
+        anthropicToolResult("toolu_2"),
+    };
+
+    const model = ai_types.Model{
+        .id = "claude-3-5-sonnet-20241022",
+        .name = "Claude 3.5 Sonnet",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = "https://api.anthropic.com",
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.3, .cache_write = 3.75 },
+        .context_window = 200000,
+        .max_tokens = 8192,
+    };
+    const context = ai_types.Context{ .messages = &messages };
+    const body = try buildRequestBody(model, context, .{ .max_tokens = 1024 }, allocator, false);
+    defer allocator.free(body);
+
+    var ids = std.ArrayList([]const u8).empty;
+    defer {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit(allocator);
+    }
+    try collectToolUseIDs(allocator, body, &ids);
+    try std.testing.expectEqual(@as(usize, 2), ids.items.len);
+    try std.testing.expectEqualStrings("toolu_1", ids.items[0]);
+    try std.testing.expectEqualStrings("toolu_2", ids.items[1]);
 }
 
 test "buildRequestBody serializes tool_result as tool_result content block" {
