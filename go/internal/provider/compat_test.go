@@ -9,6 +9,39 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAGroqHostIsGroqDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.groq.com",
+		"https://api.groq.com/openai/v1",
+		"https://groq.com",
+		"https://API.GROQ.COM",
+	}
+	for _, url := range hosts {
+		if !isGroqURL(url, true) {
+			t.Errorf("isGroqURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mygroq.com",
+		"https://notgroq.com",
+		"https://groq.com.evil.example",
+		"https://evil.example/?next=api.groq.com",
+		"https://evil.example/v1/api.groq.com",
+		"https://gateway.example/proxy/api.groq.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGroqURL(url, true) {
+			t.Errorf("isGroqURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isGroqURL("https://api.groq.com", false) {
+		t.Error("no base url is not a groq host")
+	}
+}
+
 func TestAMistralHostIsMistralDotAIOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.mistral.ai",
