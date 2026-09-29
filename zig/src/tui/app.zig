@@ -908,6 +908,17 @@ pub const App = struct {
             app.state.telemetry.context_window = model.context_window;
         }
         app.store = session_store.Store.initDefault(allocator) catch null;
+        var cfg_store = tui_config.Store.initDefault(allocator) catch null;
+        if (cfg_store) |*settings_store| {
+            defer settings_store.deinit();
+            if (settings_store.loadIfExists()) |maybe_cfg| {
+                if (maybe_cfg) |cfg_value| {
+                    var cfg = cfg_value;
+                    defer cfg.deinit(allocator);
+                    app.mode_settings = cfg.mode;
+                }
+            } else |_| {}
+        }
         try app.ensureSessionId();
         app.working_dir = currentPathOwned(allocator) catch try allocator.dupe(u8, "");
         app.launch_dir = try allocator.dupe(u8, app.working_dir);
@@ -1943,14 +1954,26 @@ pub const App = struct {
             if (outcome != .created) try self.appendRuntimeUserMessage(message);
             try self.submit(message);
         }
-        self.drainQueuedWorktreeMessageIfIdle() catch |err| {
-            try self.state.status.setError(self.allocator, @errorName(err));
-            try self.state.appendTranscript(.@"error", @errorName(err));
-        };
+        if (self.queued_worktree_messages.items.len > 0 and self.held_user_message.len == 0 and !self.state.status.streaming) {
+            const message = self.queued_worktree_messages.orderedRemove(0);
+            defer self.allocator.free(message);
+            if (self.session) |*session| {
+                try session.followUp(message);
+                try self.state.appendQueuedFollowUp(message);
+                self.refreshQueuedCounts();
+            } else {
+                try self.submit(message);
+            }
+        }
     }
 
     fn drainQueuedWorktreeMessageIfIdle(self: *App) !void {
         if (self.state.status.streaming or self.queued_worktree_messages.items.len == 0) return;
+        if (self.runtime) |runtime| {
+            if (runtime.local_agent) |*local| {
+                if (!local.isIdle()) return;
+            }
+        }
         const message = self.queued_worktree_messages.orderedRemove(0);
         defer self.allocator.free(message);
         try self.submit(message);
