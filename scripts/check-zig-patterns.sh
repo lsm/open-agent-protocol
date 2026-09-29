@@ -545,7 +545,7 @@ module_test_scan() {
     close(file)
     return 0
   }
-  function walk(pass,   i, line, p, name, ref, delta) {
+  function walk(pass,   i, line, p, name, ref, rest, tail, delta) {
     depth = 0; in_test = 0; test_base = 0; in_mod = 0; mod_base = 0; cur_mod = ""; cur_root = ""
     for (i = 1; i <= n; i++) {
       line = lines[i]
@@ -555,19 +555,30 @@ module_test_scan() {
       if (name != "" && !in_test) {
         in_mod = 1; mod_base = depth; cur_mod = name; cur_root = ""
       }
+      if (in_mod && index(line, "b.createModule(") > 0 && module_name(line) == "") {
+        unresolved["a nested createModule inside " cur_mod] = 1
+      }
       p = root_path(line)
       if (p != "") {
         declared[p] = 1
         if (in_mod) cur_root = p
         if (in_test && pass == 2) tested[p] = 1
       }
-      if (pass == 2 && in_test && match(line, /\.root_module = [A-Za-z_][A-Za-z0-9_]*/)) {
-        ref = substr(line, RSTART, RLENGTH)
-        sub(/^\.root_module = /, "", ref)
-        if (substr(line, RSTART + RLENGTH, 1) == ".") ref = ""
-        if (ref != "") {
-          if (ref in modroot) tested[modroot[ref]] = 1
-          else unresolved[ref] = 1
+      if (pass == 2 && in_test && match(line, /\.root_module =/)) {
+        rest = substr(line, RSTART + RLENGTH + 1)
+        sub(/^[[:space:]]+/, "", rest)
+        if (rest ~ /^b\.createModule/) {
+          inline_root = 1
+        } else if (match(rest, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+          ref = substr(rest, 1, RLENGTH)
+          tail = substr(rest, RLENGTH + 1, 1)
+          if (tail == ".") {
+            unresolved[ref ".<field>"] = 1
+          } else if (ref in modroot) {
+            tested[modroot[ref]] = 1
+          } else {
+            unresolved[ref] = 1
+          }
         }
       }
       depth += delta
@@ -594,10 +605,13 @@ echo "[patterns] checking every module root with test blocks has an addTest..."
 module_test_scan_result="$(module_test_scan)"
 unresolved_root_modules="$(printf "%s\n" "$module_test_scan_result" | grep "^unresolved " | sed "s/^unresolved //" || true)"
 if [[ -n "$unresolved_root_modules" ]]; then
-  echo "[patterns] an addTest names a root module this check cannot resolve:" >&2
+  echo "[patterns] build.zig has a root module this check cannot resolve:" >&2
   printf "%s\n" "$unresolved_root_modules" >&2
   echo "[patterns] update scripts/check-zig-patterns.sh when build.zig hands addTest a" >&2
-  echo "[patterns] module that is neither a declared name nor an inline createModule." >&2
+  echo "[patterns] module that is neither a declared name nor an inline createModule," >&2
+  echo "[patterns] nests a createModule inside a declared module, or reaches a root" >&2
+  echo "[patterns] through another module's field. Each would otherwise be counted" >&2
+  echo "[patterns] as untested and reported with the wrong reason." >&2
   exit 1
 fi
 
