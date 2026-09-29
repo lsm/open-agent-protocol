@@ -1048,10 +1048,7 @@ test "a prompt is written with its punctuation as itself, the way the writer wri
     _ = try probe.open(&refusal);
     const admitted = try probe.submit("a<b>&c \u{2028}d\u{2029}e", &refusal);
     try testing.expect(admitted.accepted);
-    const scratch = probe.arena.allocator();
-    const written = try probe.fake.written(scratch);
-    try testing.expect(std.mem.indexOf(u8, written, "\"text\":\"a<b>&c \u{2028}d\u{2029}e\"") != null);
-    try testing.expect(std.mem.indexOf(u8, written, "u003c") == null);
+    _ = try probe.waitWritten("\"text\":\"a<b>&c \u{2028}d\u{2029}e\"");
 }
 
 test "a turn is admitted when its prompt is written and settles on the prompt's stop reason" {
