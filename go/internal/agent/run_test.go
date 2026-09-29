@@ -819,50 +819,56 @@ func TestACallTheCallerAnswersIsAnnouncedAsResolved(t *testing.T) {
 	}
 }
 
-func TestACallTheLoopAnswersItselfIsAnnouncedWithoutAskingTheCaller(t *testing.T) {
-	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}")}}
+func TestACallTheRunWasCancelledWaitingForIsAnnouncedAsCancelled(t *testing.T) {
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), toolTurn("call_2", "read", "{}")}}
 	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
-	var asked, resolved int
+	var asked, cancelled int
 	drainActing(t, run, func(event Event) {
 		switch event.Kind {
 		case ToolCallRequested:
 			asked++
-			run.Cancel()
-		case ToolCallResolved:
-			resolved++
+			if asked == 1 {
+				go func() {
+					_ = run.ResolveTool("call_1", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
+					run.Cancel()
+				}()
+			}
+		case ToolCallCancelled:
+			cancelled++
 			if event.ToolResult == nil || !event.ToolResult.IsError {
-				t.Errorf("a call the loop answered itself is announced as %+v, want an error result: nothing ran it", event.ToolResult)
+				t.Errorf("a cancelled call is announced as %+v, want an error result: nothing ran it", event.ToolResult)
 			}
 		}
 	})
-	if asked != 1 {
-		t.Errorf("the loop asked %d times, want 1: the call was already open when the cancel landed", asked)
-	}
-	if resolved != 1 {
-		t.Errorf("a call the run was cancelled waiting for was announced %d times, want 1: an open call at run.cancelled is pending_tool_at_terminal, which the validator rejects", resolved)
+	if cancelled != 1 {
+		t.Errorf("a call whose answer landed beside the cancel was announced %d times, want 1: the call is open on the wire and the run settles cancelled, which the validator reads as pending_tool_at_terminal", cancelled)
 	}
 }
 
-func TestACutOffCallIsAnnouncedWithoutAskingTheCaller(t *testing.T) {
+func TestACutOffCallIsAnsweredForTheModelAndStaysOffTheWire(t *testing.T) {
 	cut := scriptedTurn{frames: []string{
 		frame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"write","arguments":"{\"text\":\"cut"}}]}}]}`),
 		frame(`{"choices":[{"delta":{},"finish_reason":"length"}]}`),
 	}}
 	script := &scripted{turns: []scriptedTurn{cut, textTurn("done")}}
 	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("write"))
-	var asked, resolved int
-	drainActing(t, run, func(event Event) {
-		switch event.Kind {
-		case ToolCallRequested:
-			asked++
-		case ToolCallResolved:
-			resolved++
+	events := drainActing(t, run, nil)
+	for _, event := range events {
+		if strings.HasPrefix(string(event.Kind), "tool_call") {
+			t.Fatalf("a call the loop answered itself announced %q, want nothing: no action.call.requested opened it, so a terminal for it is an unmatched tool event", event.Kind)
 		}
-	})
-	if asked != 0 {
-		t.Errorf("a cut-off call asked the caller %d times, want 0: its arguments may be truncated", asked)
 	}
-	if resolved != 1 {
-		t.Errorf("a cut-off call was announced %d times, want 1: a call that vanishes from the wire is a tool call with no terminal event", resolved)
+	var found bool
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		found = true
+		if !message.ToolResult.IsError {
+			t.Error("a cut-off call is an error result, so the model knows it did not run")
+		}
+	}
+	if !found {
+		t.Errorf("a cut-off call left no result for the model to see: %+v", run.Result().Messages)
 	}
 }

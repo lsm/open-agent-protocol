@@ -151,25 +151,41 @@ func TestAnErroredCallFailsRatherThanCompleting(t *testing.T) {
 	}
 }
 
-func TestACutOffOrUnansweredCallStillFailsTheCallOnTheWire(t *testing.T) {
+func TestACallTheRunWasCancelledWaitingForIsCancelledRatherThanFailed(t *testing.T) {
+	tr := trace(t, nil)
+	call := provider.ToolCall{ID: "call_1", Name: "read", Arguments: "{}"}
+	cancelled := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "Tool call \"read\" was not run: the run was cancelled while it waited for a result."}}}, IsError: true}
+	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallCancelled, Call: &call, ToolResult: &cancelled})
+	if got := joinTypes(envelopes); got != "action.call.cancelled" {
+		t.Fatalf("a call the run was cancelled waiting for emits %s, want action.call.cancelled: a failure reaches the validator only from started or progress, and a cancel closes a pending call", got)
+	}
+	var closed protocol.ActionCallPayload
+	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &closed); err != nil {
+		t.Fatal(err)
+	}
+	if closed.Error != nil || closed.Result != nil {
+		t.Errorf("the cancellation carries %+v, want neither a result nor an error: nothing ran the call, so there is nothing to report about how it went", closed)
+	}
+	if closed.ExecutionOwner != "user" {
+		t.Errorf("the cancellation names owner %q, want the trace's own", closed.ExecutionOwner)
+	}
+}
+
+func TestACutOffCallIsFailedWithTheLoopsOwnReason(t *testing.T) {
 	tr := trace(t, nil)
 	call := provider.ToolCall{ID: "call_1", Name: "write", Arguments: `{"text":"cut`}
-	for _, body := range []string{
-		"Tool call \"write\" was not run: the reply hit the output token limit, so its arguments may be cut off. Call the tool again with complete arguments.",
-		"Tool call \"write\" was not run: the run was cancelled while it waited for a result.",
-	} {
-		result := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: body}}}, IsError: true}
-		envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
-		if got := joinTypes(envelopes); got != "action.call.failed" {
-			t.Fatalf("a call nothing ran emits %s, want action.call.failed", got)
-		}
-		var failed protocol.ActionCallPayload
-		if err := json.Unmarshal(mustJSON(t, envelopes[0]), &failed); err != nil {
-			t.Fatal(err)
-		}
-		if failed.Error == nil || failed.Error.Message != body {
-			t.Errorf("the failure says %+v, want the loop's own reason: a call that silently did not run is what a model cannot recover from", failed.Error)
-		}
+	body := "Tool call \"write\" was not run: the reply hit the output token limit, so its arguments may be cut off. Call the tool again with complete arguments."
+	result := provider.ToolResult{ToolCallID: "call_1", Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: body}}}, IsError: true}
+	envelopes := tr.Envelopes(agent.Event{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &result})
+	if got := joinTypes(envelopes); got != "action.call.failed" {
+		t.Fatalf("a cut-off call emits %s, want action.call.failed", got)
+	}
+	var failed protocol.ActionCallPayload
+	if err := json.Unmarshal(mustJSON(t, envelopes[0]), &failed); err != nil {
+		t.Fatal(err)
+	}
+	if failed.Error == nil || failed.Error.Message != body {
+		t.Errorf("the failure says %+v, want the loop's own reason: a tool that silently did not run is what a model cannot recover from", failed.Error)
 	}
 }
 
@@ -298,8 +314,14 @@ func TestEveryPartOfACallersResultReachesTheWire(t *testing.T) {
 	if parts[0].Text != "first" || parts[2].Text != "last" {
 		t.Errorf("the completion carries %q and %q, want first and last in the caller's order", parts[0].Text, parts[2].Text)
 	}
-	if parts[1].Type != protocol.ContentImage || parts[1].Image == nil || parts[1].Image.MediaType != "image/png" {
-		t.Errorf("the middle part is %+v, want the caller's image: dropping it would misreport the result", parts[1])
+	if parts[1].Type != protocol.ContentImage || parts[1].Image == nil {
+		t.Fatalf("the middle part is %+v, want the caller's image: dropping it would misreport the result", parts[1])
+	}
+	if !strings.HasPrefix(parts[1].Image.URL, "data:image/png;base64,") {
+		t.Errorf("the image part carries url %q, want the caller's data URL: the image vocabulary admits a url or a data and media_type pair, never both", parts[1].Image.URL)
+	}
+	if parts[1].Image.MediaType != "" {
+		t.Errorf("the image part also carries media_type %q, which the schema's image oneOf does not admit alongside a url", parts[1].Image.MediaType)
 	}
 }
 
@@ -401,6 +423,7 @@ func TestEveryPayloadMatchesItsOwnTypeSchemaAndNotTheTraceRulesAroundIt(t *testi
 		{Kind: agent.ToolCallResolved, Call: &call, ToolResult: &answered},
 		{Kind: agent.ToolCallRequested, Call: &cut},
 		{Kind: agent.ToolCallResolved, Call: &cut, ToolResult: &failed},
+		{Kind: agent.ToolCallCancelled, Call: &call, ToolResult: &failed},
 		{Kind: agent.AgentEnd, Result: agent.Result{FinalMessage: answeredText}},
 		{Kind: agent.AgentEnd, Result: agent.Result{
 			FinalMessage: provider.AssistantContent{StopReason: provider.StopError},
@@ -423,6 +446,7 @@ func TestEveryPayloadMatchesItsOwnTypeSchemaAndNotTheTraceRulesAroundIt(t *testi
 	for _, want := range []protocol.EnvelopeType{
 		protocol.TypeContentDelta, protocol.TypeActionCallRequested,
 		protocol.TypeActionCallCompleted, protocol.TypeActionCallFailed,
+		protocol.TypeActionCallCancelled,
 		protocol.TypeRunCompleted, protocol.TypeRunFailed, protocol.TypeRunCancelled,
 	} {
 		if !seen[want] {

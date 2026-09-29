@@ -88,9 +88,7 @@ func resultParts(result provider.ToolResult) []protocol.ContentPart {
 		case part.Thinking != nil:
 			out = append(out, protocol.ContentPart{Type: protocol.ContentText, Text: part.Thinking.Thinking})
 		case part.Image != nil:
-			out = append(out, protocol.ContentPart{Type: protocol.ContentImage, Image: &protocol.ImageContent{
-				URL: part.Image.DataURL(), MediaType: part.Image.MediaType,
-			}})
+			out = append(out, protocol.ContentPart{Type: protocol.ContentImage, Image: &protocol.ImageContent{URL: part.Image.DataURL()}})
 		}
 	}
 	if len(out) == 0 {
@@ -137,6 +135,11 @@ func (t *Trace) Envelopes(event agent.Event) []protocol.Envelope {
 			payload.ArgumentsJSON = json.RawMessage(event.Call.Arguments)
 		}
 		return t.call(protocol.TypeActionCallRequested, payload)
+	case agent.ToolCallCancelled:
+		if event.Call == nil {
+			return nil
+		}
+		return t.call(protocol.TypeActionCallCancelled, t.callScope(*event.Call))
 	case agent.ToolCallResolved:
 		if event.Call == nil || event.ToolResult == nil {
 			return nil
