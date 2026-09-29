@@ -584,8 +584,7 @@ fn appendCatalogTargetModels(
     var credential = (try provider_credential.lookup(allocator, environment, storage, target.id)) orelse return;
     defer credential.deinit(allocator);
 
-    const stored_in_use = if (storage) |held| held.resolvedCredential(target.id) != null else false;
-    const honour_marker = stored_in_use and !environmentCredentialIsSet(allocator, target.id);
+    const honour_marker = credential.source == .stored;
     const discovered = discoverCatalogModels(allocator, target, credential.key, mode, honour_marker) catch |err| switch (err) {
         error.ModelCatalogRefused => return,
         else => return err,
@@ -738,14 +737,6 @@ fn freeEnvironment(allocator: std.mem.Allocator, values: []provider_credential.E
     allocator.free(values);
 }
 
-fn environmentCredentialIsSet(allocator: std.mem.Allocator, id: []const u8) bool {
-    const environment = catalogEnvironment(allocator, id) catch return false;
-    defer freeEnvironment(allocator, environment);
-    for (environment) |held| {
-        if (held.value.len > 0) return true;
-    }
-    return false;
-}
 
 fn refusalMarkerName(allocator: std.mem.Allocator, id: []const u8, region: ?[]const u8) ![]u8 {
     const base = try catalogRowCacheName(allocator, id, region);
@@ -2506,6 +2497,7 @@ test "a refusal marker is not honoured an hour after it was recorded" {
     try std.testing.expect(catalogIsFresh(now - 60 * 1000, now, refusal_marker_max_age_ms));
     try std.testing.expect(!catalogIsFresh(now - 60 * 60 * 1000, now, refusal_marker_max_age_ms));
 }
+
 
 test "the refusal drop is scoped to the rows a plan subscription opens" {
     for (provider_catalog.all) |row| {
