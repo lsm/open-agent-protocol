@@ -80,6 +80,7 @@ pub const Validator = struct {
     }
 
     fn openMembers(self: *Validator, document: []const u8) !void {
+        if (!appliesTo(document)) return;
         if (self.opened_for.contains(document)) return;
         const owned = try self.allocator.dupe(u8, document);
         self.opened_for.put(owned, {}) catch |err| {
@@ -105,7 +106,7 @@ pub const Validator = struct {
     }
 
     pub fn branchesFor(self: *const Validator, document: []const u8) []const jsonschema.Alternative {
-        if (!std.mem.eql(u8, document, envelope_document)) return &.{};
+        if (!appliesTo(document)) return &.{};
         return self.loaded.branches;
     }
 
@@ -138,6 +139,11 @@ pub const Validator = struct {
 };
 
 const envelope_document = "envelope.schema.json";
+const provider_document = "provider-envelope.schema.json";
+
+fn appliesTo(document: []const u8) bool {
+    return std.mem.eql(u8, document, envelope_document);
+}
 
 const packed_type_request =
     \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.agent-control-core","type":"com.example.storage.objects.read","id":"read1","session_id":"s1","payload":{"session_id":"s1","bucket":"reports"}}
@@ -279,6 +285,34 @@ test "a descriptor whose fields are the wrong shape is refused, not read past" {
     var judge = try Validator.init(allocator, .{ .io = std.testing.io });
     defer judge.deinit();
     try std.testing.expectError(error.InvalidPackDescriptor, packs_mod.load(std.testing.io, allocator, &judge.registry, &dirs));
+}
+
+test "a pack's members widen the core payload only, and no other document" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "pack.json",
+        .data = "{\"id\":\"com.example.note\",\"version\":\"1.0.0\",\"payload_members\":[{\"payload_type\":\"inference.create.request\",\"member\":\"com.example.note.extra\",\"schema\":{\"type\":\"object\",\"properties\":{\"why\":{\"type\":\"string\"}}}}]}",
+    });
+    const dir = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(dir);
+
+    const provider =
+        \\{"protocol":"open-agent-protocol","version":"0.1","profile":"open-agent-protocol.model-provider-core","type":"inference.create.request","id":"i1","payload":{"model_ref":"m","messages":[],"com.example.note.extra":{"why":"because"}}}
+    ;
+    var carrying = try Validator.init(allocator, .{ .pack_dirs = &.{dir}, .io = std.testing.io });
+    defer carrying.deinit();
+
+    var widened = try std.json.parseFromSlice(std.json.Value, allocator, provider, .{});
+    defer widened.deinit();
+    var on_provider = try carrying.schema(provider_document);
+    defer on_provider.deinit();
+    try std.testing.expect(try on_provider.validate(provider_document, widened.value) != null);
+
+    var on_core = try carrying.schema(envelope_document);
+    defer on_core.deinit();
+    try std.testing.expect(try on_core.validate(envelope_document, widened.value) != null);
 }
 
 test "a descriptor declaring one type twice is refused, not loaded once" {
