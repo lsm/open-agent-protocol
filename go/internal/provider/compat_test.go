@@ -155,7 +155,7 @@ func TestAnAzureOpenAIHostStillDetectsAsAzure(t *testing.T) {
 	}
 }
 
-func TestAGoogleHostIsTheGeminiAPIHostOrAnAiplatformHostRegionalOrNot(t *testing.T) {
+func TestAGoogleHostIsTheTwoAPIHostsOrOneRegionalAiplatformLabel(t *testing.T) {
 	hosts := []string{
 		"https://generativelanguage.googleapis.com",
 		"https://generativelanguage.googleapis.com/v1beta",
@@ -174,9 +174,13 @@ func TestAGoogleHostIsTheGeminiAPIHostOrAnAiplatformHostRegionalOrNot(t *testing
 		"https://googleapis.com",
 		"https://storage.googleapis.com",
 		"https://notgenerativelanguage.googleapis.com",
-		"https://evilgenerativelanguage.googleapis.com.attacker.test",
+		"https://foo.generativelanguage.googleapis.com.evil.com",
+		"https://aiplatform.googleapis.com.evil.com",
+		"https://foo.generativelanguage.googleapis.com",
+		"https://x.aiplatform.googleapis.com",
+		"https://foo.us-central1-aiplatform.googleapis.com",
+		"https://notgenerativelanguage.googleapis.com.attacker.test",
 		"https://evil-aiplatform.googleapis.com.attacker.test",
-		"https://generativelanguage.googleapis.com.evil.example",
 		"https://evil.example/?next=aiplatform.googleapis.com",
 		"https://evil.example/v1/generativelanguage.googleapis.com",
 		"https://gateway.example/proxy/aiplatform.googleapis.com",
@@ -184,7 +188,7 @@ func TestAGoogleHostIsTheGeminiAPIHostOrAnAiplatformHostRegionalOrNot(t *testing
 	}
 	for _, url := range notHosts {
 		if isGoogleURL(url, true) {
-			t.Errorf("isGoogleURL(%q) = true, want false: googleapis.com on its own would claim every Google API, and the two api hosts are the only ones", url)
+			t.Errorf("isGoogleURL(%q) = true, want false: generativelanguage matches exactly, and the regional form is one label ending in -aiplatform directly under googleapis.com -- never a deeper subdomain", url)
 		}
 	}
 

@@ -59,18 +59,6 @@ pub fn isCerebras(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "cerebras.ai");
 }
 
-pub fn isHostEndingIn(base_url: ?[]const u8, suffix: []const u8) bool {
-    const url = base_url orelse return false;
-    const uri = std.Uri.parse(url) catch return false;
-    const host = uri.host orelse return false;
-    const value = host.percent_encoded;
-    if (std.ascii.eqlIgnoreCase(value, suffix)) return true;
-    if (value.len <= suffix.len) return false;
-    if (!std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix)) return false;
-    const before = value[value.len - suffix.len - 1];
-    return before == '.' or before == '-';
-}
-
 fn unbracket(host: []const u8) []const u8 {
     if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
         return host[1 .. host.len - 1];
@@ -96,8 +84,14 @@ pub fn isAzureOpenAI(base_url: ?[]const u8) bool {
 }
 
 pub fn isGoogle(base_url: ?[]const u8) bool {
-    return isHostOrSubdomainOf(base_url, "generativelanguage.googleapis.com") or
-        isHostEndingIn(base_url, "aiplatform.googleapis.com");
+    const host = hostOf(base_url) orelse return false;
+    if (std.ascii.eqlIgnoreCase(host, "generativelanguage.googleapis.com")) return true;
+    if (std.ascii.eqlIgnoreCase(host, "aiplatform.googleapis.com")) return true;
+    const suffix = "-aiplatform.googleapis.com";
+    if (host.len > suffix.len and std.ascii.eqlIgnoreCase(host[host.len - suffix.len ..], suffix)) {
+        if (std.mem.indexOfScalar(u8, host[0 .. host.len - suffix.len], '.') == null) return true;
+    }
+    return false;
 }
 
 pub fn isZai(base_url: ?[]const u8) bool {
@@ -390,7 +384,7 @@ test "an azure openai host still detects as azure" {
     try std.testing.expectEqual(ProviderType.azure, detectProviderType(url));
 }
 
-test "a google host is the gemini api host or an aiplatform host, regional or not" {
+test "a google host is the two api hosts or one regional aiplatform label" {
     const hosts = [_][]const u8{
         "https://generativelanguage.googleapis.com",
         "https://generativelanguage.googleapis.com/v1beta",
@@ -407,9 +401,13 @@ test "a google host is the gemini api host or an aiplatform host, regional or no
         "https://googleapis.com",
         "https://storage.googleapis.com",
         "https://notgenerativelanguage.googleapis.com",
-        "https://evilgenerativelanguage.googleapis.com.attacker.test",
+        "https://foo.generativelanguage.googleapis.com.evil.com",
+        "https://aiplatform.googleapis.com.evil.com",
+        "https://foo.generativelanguage.googleapis.com",
+        "https://x.aiplatform.googleapis.com",
+        "https://foo.us-central1-aiplatform.googleapis.com",
+        "https://notgenerativelanguage.googleapis.com.attacker.test",
         "https://evil-aiplatform.googleapis.com.attacker.test",
-        "https://generativelanguage.googleapis.com.evil.example",
         "https://evil.example/?next=aiplatform.googleapis.com",
         "https://evil.example/v1/generativelanguage.googleapis.com",
         "https://gateway.example/proxy/aiplatform.googleapis.com",

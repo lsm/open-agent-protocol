@@ -156,26 +156,6 @@ func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "cerebras.ai")
 }
 
-func isHostEndingIn(baseURL string, hasBaseURL bool, suffix string) bool {
-	if !hasBaseURL {
-		return false
-	}
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	d := strings.ToLower(suffix)
-	if host == d {
-		return true
-	}
-	if len(host) <= len(d) || !strings.HasSuffix(host, d) {
-		return false
-	}
-	before := host[len(host)-len(d)-1]
-	return before == '.' || before == '-'
-}
-
 func isOllamaURL(baseURL string, hasBaseURL bool) bool {
 	if !hasBaseURL {
 		return false
@@ -201,8 +181,15 @@ func isAzureOpenAIURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isGoogleURL(baseURL string, hasBaseURL bool) bool {
-	return isHostOrSubdomain(baseURL, hasBaseURL, "generativelanguage.googleapis.com") ||
-		isHostEndingIn(baseURL, hasBaseURL, "aiplatform.googleapis.com")
+	host := hostOf(baseURL, hasBaseURL)
+	if host == "generativelanguage.googleapis.com" || host == "aiplatform.googleapis.com" {
+		return true
+	}
+	const suffix = "-aiplatform.googleapis.com"
+	if len(host) > len(suffix) && strings.HasSuffix(host, suffix) {
+		return !strings.Contains(host[:len(host)-len(suffix)], ".")
+	}
+	return false
 }
 
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
