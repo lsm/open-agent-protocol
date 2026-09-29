@@ -566,7 +566,6 @@ pub const ProductionRuntime = struct {
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
-    mode_settings: tui_config.ModeSettings = .{},
 
     pub const InitOptions = struct {
         fixture: bool = false,
@@ -604,10 +603,8 @@ pub const ProductionRuntime = struct {
         }
         errdefer if (saved_config) |*cfg| cfg.deinit(allocator);
 
-        var mode_settings: tui_config.ModeSettings = .{};
         var initial_model: ?SavedModelRef = null;
         if (saved_config) |cfg| {
-            mode_settings = cfg.mode;
             if (cfg.model.len > 0) {
                 initial_model = SavedModelRef{
                     .id = try allocator.dupe(u8, cfg.model),
@@ -625,7 +622,6 @@ pub const ProductionRuntime = struct {
             .permission_engine = permission_engine,
             .models = models,
             .initial_model = initial_model,
-            .mode_settings = mode_settings,
         };
         initial_model = null;
         if (saved_config) |*cfg| cfg.deinit(allocator);
@@ -1958,28 +1954,14 @@ pub const App = struct {
         defer outcome.deinit(self.allocator);
         job.deinit();
         self.worktree_job = null;
-        switch (outcome) {
-            .not_a_repo => try self.state.appendTranscript(.system, "Current directory is not a Git repository; continuing without a worktree."),
-            .failed => |message| {
-                try self.state.appendTranscript(.system, message);
-            },
-            .created => |created| {
-                const new_dir = try created.info.workingDir(self.allocator);
-                defer self.allocator.free(new_dir);
-                try (self.runtime orelse return error.NoRuntimeConfigured).setWorkspaceRoot(new_dir);
-                if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
-                self.working_dir = try self.allocator.dupe(u8, new_dir);
-                try self.refreshCwdDisplay();
-                if (self.store) |store| try tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &created.info);
-                try self.state.appendTranscript(.system, "Git worktree ready for this session.");
-                if (created.uncommitted > 0) try self.state.appendTranscript(.system, "Note: the original repository has uncommitted changes; the worktree starts from the current commit.");
-            },
-        }
+        self.applyWorktreeOutcome(outcome) catch |err| {
+            try self.state.status.setError(self.allocator, @errorName(err));
+            try self.state.appendTranscript(.@"error", @errorName(err));
+        };
         if (self.held_user_message.len > 0) {
             const message = self.held_user_message;
             self.held_user_message = &.{};
             defer self.allocator.free(message);
-            if (outcome != .created) try self.appendRuntimeUserMessage(message);
             try self.submit(message);
         }
         while (self.queued_worktree_messages.items.len > 0) {
@@ -1992,6 +1974,24 @@ pub const App = struct {
             } else {
                 try self.submit(message);
             }
+        }
+    }
+
+    fn applyWorktreeOutcome(self: *App, outcome: tui_worktree.CreateOutcome) !void {
+        switch (outcome) {
+            .not_a_repo => try self.state.appendTranscript(.system, "Current directory is not a Git repository; continuing without a worktree."),
+            .failed => |message| try self.state.appendTranscript(.system, message),
+            .created => |created| {
+                const new_dir = try created.info.workingDir(self.allocator);
+                defer self.allocator.free(new_dir);
+                try (self.runtime orelse return error.NoRuntimeConfigured).setWorkspaceRoot(new_dir);
+                if (self.working_dir.len > 0) self.allocator.free(self.working_dir);
+                self.working_dir = try self.allocator.dupe(u8, new_dir);
+                try self.refreshCwdDisplay();
+                if (self.store) |store| try tui_worktree.writeSidecar(self.allocator, store.base_dir, self.session_id, &created.info);
+                try self.state.appendTranscript(.system, "Git worktree ready for this session.");
+                if (created.uncommitted > 0) try self.state.appendTranscript(.system, "Note: the original repository has uncommitted changes; the worktree starts from the current commit.");
+            },
         }
     }
 
@@ -3106,7 +3106,7 @@ pub const TuiModel = struct {
                 app.drainEvents() catch {};
                 app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
-                app.pollWorktree() catch {};
+                app.pollWorktree() catch |err| app.recordError(@errorName(err)) catch {};
                 app.pollWorktreeManagement() catch |err| app.recordError(@errorName(err)) catch {};
                 app.state.refreshStreamingElapsed(compat.time.nowMillis());
                 if (app.interrupt_armed_tick) |armed| {
