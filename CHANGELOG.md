@@ -23,6 +23,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Kimi is served by the generic catalog loader, and the catalog says which
+  region it defaults to.** Kimi was the one row the loader could not take, so it
+  kept a credential lookup, a models URL, a cache name, a parser and a base-URL
+  function of its own. A row with one endpoint per region may now record
+  `default_region`; `kimi` records `china`, which is what the old code assumed
+  in a `if` it never explained. `goap check` refuses a default naming a region
+  none of the row's endpoints serves.
+  A region comes from `KIMI_REGION` first, then from the region chosen at login,
+  then from the row's default — so a user who chose Global at login is
+  discovered against, and sent to, `api.moonshot.ai`. `KIMI_REGION=moonshot`,
+  `cn` and `coding` still mean what they meant, because those are the words
+  people type and matching the catalog's own names would have dropped all three
+  quietly. The region is now resolved **once**, in one place, and every path that
+  needs one asks for it: it used to be read and normalised three times over, and
+  `KIMI_REGION="global "` — with a trailing space, from a `.env` file — sent
+  discovery to the China models endpoint while the models themselves carried the
+  moonshot base. A region value is trimmed before it is matched, and a value
+  written into `auth.json` by hand is read by the same rules as one typed into
+  the environment, synonyms and all. A row that ships one endpoint per region now
+  also caches each region's discovered models under its own name, so a
+  `KIMI_REGION` switch cannot serve the models one region listed against the other
+  region's base for a day.
+  **Kimi's real limits, its display name and its offline fallback come back.**
+  The generic loader stamped every discovered row with a 128000-token context, an
+  8192-token output cap and the model id as its name, so a Kimi run in the TUI
+  silently asked for half the context it had and half the output it was allowed.
+  Kimi is 262144 and 16384, its model is called `Kimi K2.7 Code`, and when its
+  models endpoint could not be reached it served nothing at all where it used to
+  serve one known model. A catalog row may now record `context_window`,
+  `max_tokens` and a `models` list, with the same meaning a custom provider's
+  fields have had all along: the row's two numbers are the defaults for its
+  models, a `models` entry overrides them for one model and names how to show it,
+  and a row that lists models still serves them when its own listing answers with
+  none. `goap check` refuses a row that declares one model id twice, since the two
+  entries would then disagree about which name and limits win. No row but `kimi`
+  uses any of this yet.
+  **A provider's own listing speaks for its models, and the row's numbers are only
+  the default** — which is what `docs/custom-endpoints.md` has always said about
+  the same two fields on a custom provider. The generic loader did not ask, and
+  stamped its own guess on every model of every row, so a model whose listing
+  reports a 1048576-token context and a 32768 output cap was served a quarter of
+  the context and half the output. A model object is now read for its display
+  name, its context window, its output cap, whether it reasons, and whether it
+  takes images — under the names Kimi's listing used (`context_length`,
+  `supports_reasoning`, `supports_image_in`) and the ones this repository would
+  use, with a row's `models` entry, then the row's figures, then the generic
+  default behind them. Reasoning and image input are what a TUI shows and what a
+  request sends; no row's listing is asked for them today, because only Kimi's
+  parser read them and that parser went with the bespoke loader.
+  **A listing that reports a zero is treated as saying nothing**, for a context
+  window or an output cap: a model served a zero-token budget cannot be used, and
+  the row's own figures are a better guess than a provider's empty field.
+  **A row may now say which credential outranks which.** The environment has been
+  read before a stored login since the generic loader began, and a request is
+  signed with the stored credential first, so a user with both a Kimi login and
+  `KIMI_API_KEY` had their models listed under one key and their requests signed
+  with the other, at the region the other one chose. `kimi` records
+  `["stored", "environment"]`, which is the order its own loader used before the
+  generic one; every other row keeps the default. `goap check` refuses a source
+  it does not know, or the same one twice.
+  **A Kimi login made in the TUI keeps working, which it very nearly did not.**
+  The TUI stores an API key with its region as an *oauth* entry, because the
+  api-key entry has nowhere to put a region. The old Kimi code accepted either
+  shape; the generic credential lookup refused an oauth entry for a row that
+  takes only `api_key`, so a logged-in user would have found Kimi serving zero
+  models and its model refs unresolvable. The lookup now answers such an entry
+  with its `access` as the key, and only when the entry carries **no refresh
+  token** — a real oauth credential always has one, and that is what keeps this
+  from becoming a hole.
+  A refresh that fails now leaves the caller's error alone when *any* loader
+  served something. The old guard asked only about Kimi and Anthropic, and with
+  Kimi on the catalog path it could have fired while a dozen models were in
+  hand.
+
 - **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
 
 - **The CI fixture auth provider is served only when a test asks for it by
