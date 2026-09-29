@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`providers.json` gains an `overrides` array, so a built-in provider can be
+  pointed somewhere else without editing the catalog** (#360). A `providers`
+  entry may not take a catalogued id, which is what stopped a user routing
+  `deepseek` or `anthropic` at a proxy, a gateway or a regional mirror. An
+  override names a catalogued id and may change only where the row's requests
+  go: `base_url`, `carries_version`, `headers` and `models`. Everything else is
+  refused at load as `ForbiddenOverrideMember`, `api` and `wire` first, because
+  a row's wire is what its credential and its descriptor are bound to and an
+  override that changed it would be a different provider wearing the row's id.
+  An id the catalog does not record is `UnknownProviderId` and a row named
+  twice is `DuplicateOverride`, so nothing here depends on which line won.
+  `carries_version` lands with it (#410's last step), because the join's old
+  guess about a `v<digits>` path segment is exactly wrong for a base a user
+  chose: with `https://proxy.example/api/v1/anthropic` the guess sends
+  `…/anthropic/messages` where a proxy mirroring Anthropic's API under that
+  path serves `…/anthropic/v1/messages`, and only the endpoint's owner knows
+  which. The producer, the precedence between the row's `base_url_env` and the
+  override, and the credential rule follow in their own changes.
+
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
   — turns, tool execution, permissions, cancellation, compaction — onto what
