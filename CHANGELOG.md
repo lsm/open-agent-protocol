@@ -1211,6 +1211,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI keys: `Esc` clears the draft, then aborts a running turn; `Ctrl+C` aborts or clears first and quits on a second press (immediately when idle with an empty composer); `Ctrl+D` quits on an empty idle composer; `Ctrl+A/E/U/K/W`, `Alt+Backspace`, `Ctrl`/`Alt`+arrows and `Alt+B/F` edit and move by word; `Delete` removes the character under the caret.
 - `scripts/tui-pty-driver.py` assertions follow the new rendering (raw-stream row breaks for the Shift+Enter draft, `✓`/`✗` tool glyphs, optional status-bar cut marker, double `Ctrl+C` semantics); the fixture provider accepts `<think>…</think>` in `text:` steps.
 
+### Fixed
+
+- **An unrecognised argument to `oapx validate` is no longer read as a path.**
+  `runValidate` appended any argument it did not recognise to the path list, so
+  `oapx validate --mode json manifest.json` reported `--mode: unreadable` and then
+  `json: unreadable` — two files that do not exist — and carried on. The verdict was
+  false about what had happened, and the user's intent was dropped without a word.
+  A flag oapx does not carry is now refused by name:
+  `oapx validate: --mode: unavailable: tolerant mode lands with the validator's own
+  mode, in #367`. The flag's value is never consumed, so one mistyped flag no longer
+  costs two phantom files, and the three flags `goap validate` has but oapx does not —
+  `--mode`, `--pack` and `--provider` — each name themselves rather than falling
+  through to a generic refusal. `unavailable` grew a `surface` parameter, because it
+  hardcoded `oapx hub:` into its message and would have answered
+  `oapx hub: --mode: unavailable` for a `validate` refusal; its `arena` parameter went
+  with that, having been discarded on entry (`_ = arena`) and the only reason `runHub`
+  still allocated an arena at all.
+
+
 ## [0.2.0] - 2026-09-11
 
 ### Added
