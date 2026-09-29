@@ -2468,6 +2468,13 @@ fn hubConfiguredSources(
 }
 
 const hub_default_addr = "127.0.0.1:6270";
+
+fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOption} {
+    compat.stdio.writeAll(stderr, "oapx hub: ") catch {};
+    compat.stdio.writeAll(stderr, message) catch {};
+    compat.stdio.writeAll(stderr, "\n") catch {};
+    return error.InvalidHubOption;
+}
 const hub_accept_poll_ms: i32 = 50;
 const hub_accept_is_pollable = @import("builtin").os.tag != .windows;
 
@@ -2497,11 +2504,22 @@ fn runHubHttp(
     stdout: std.Io.File,
     stderr: std.Io.File,
 ) !void {
-    const colon = std.mem.lastIndexOfScalar(u8, bind, ':') orelse return error.InvalidHubOption;
-    const port = std.fmt.parseInt(u16, std.mem.trim(u8, bind[colon + 1 ..], " "), 10) catch return error.InvalidHubOption;
+    const colon = std.mem.lastIndexOfScalar(u8, bind, ':') orelse return hubBindRefusal(stderr, "--addr names no port; write host:port, as 127.0.0.1:6270");
     const named = hub_http.hostOf(bind);
+    if (bind[0] == '[' and std.mem.indexOfScalar(u8, bind, ']') == null) {
+        return hubBindRefusal(stderr, "--addr opens a bracket and closes none; write an IPv6 host as [::1]:6270");
+    }
+    if (named.len == 0) {
+        return hubBindRefusal(stderr, "--addr names no host; write one, as 127.0.0.1:6270 or [::1]:6270");
+    }
+    if (bind[0] != '[' and std.mem.indexOfScalar(u8, named, ':') != null) {
+        return hubBindRefusal(stderr, "--addr cannot tell its port from an unbracketed IPv6 host; write it as [::1]:6270");
+    }
+    const port = std.fmt.parseInt(u16, std.mem.trim(u8, bind[colon + 1 ..], " "), 10) catch {
+        return hubBindRefusal(stderr, "--addr names a port that is not a number; write host:port, as 127.0.0.1:6270");
+    };
     const allow = hub_http.loopbackHosts(bind);
-    const address = try compat.net.resolveAddress(arena, if (named.len == 0) "127.0.0.1" else named, port);
+    const address = try compat.net.resolveAddress(arena, named, port);
     var listener = try compat.net.tcpListen(address, .{ .reuse_address = true });
     defer compat.net.closeServer(&listener);
     const bound = compat.net.listenAddress(&listener);
@@ -2527,7 +2545,7 @@ fn runHubHttp(
         var scratch_state = std.heap.ArenaAllocator.init(allocator);
         defer scratch_state.deinit();
         const scratch = scratch_state.allocator();
-        var request = hub_http.readRequest(scratch, &connection.stream) catch |failure| {
+        var request = hub_http.readRequest(scratch, &connection.stream, hub_http.header_read_ms, hub_http.idle_read_ms) catch |failure| {
             if (hub_http.transportRefusal(failure)) |refused| {
                 hub_http.writeRefusal(&connection.stream, refused, hub_http.refusalEnvelope(scratch, next_id, refused) catch "") catch {};
             } else {
@@ -2536,12 +2554,12 @@ fn runHubHttp(
             continue;
         };
         defer request.deinit(scratch);
-        if (hub_http.hostRefused(allow orelse &.{}, request.host)) {
-            hub_http.writeRefusal(&connection.stream, hub_http.host_refused, hub_http.refusalEnvelope(scratch, next_id, hub_http.host_refused) catch "") catch {};
-            continue;
-        }
         if (request.origin) {
             hub_http.writeRefusal(&connection.stream, hub_http.origin_refused, hub_http.refusalEnvelope(scratch, next_id, hub_http.origin_refused) catch "") catch {};
+            continue;
+        }
+        if (hub_http.hostRefused(allow orelse &.{}, request.host)) {
+            hub_http.writeRefusal(&connection.stream, hub_http.host_refused, hub_http.refusalEnvelope(scratch, next_id, hub_http.host_refused) catch "") catch {};
             continue;
         }
         hub_http.writeStatus(&connection.stream, "404 Not Found", hub_http.not_found_body) catch {};

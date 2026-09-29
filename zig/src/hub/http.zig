@@ -8,6 +8,9 @@ pub const max_body_bytes = 16 * 1024 * 1024;
 
 pub const bad_request = "400 Bad Request";
 pub const header_too_large = "431 Request Header Fields Too Large";
+pub const request_timeout = "408 Request Timeout";
+pub const header_read_ms: i32 = 30 * std.time.ns_per_s / std.time.ns_per_ms;
+pub const idle_read_ms: i32 = 2 * 60 * std.time.ns_per_s / std.time.ns_per_ms;
 
 pub const Failure = error{
     HeaderTooLarge,
@@ -15,6 +18,7 @@ pub const Failure = error{
     Malformed,
     BodyTooLarge,
     ReadFailed,
+    Timeout,
     UnsupportedTransferEncoding,
 } || std.mem.Allocator.Error;
 
@@ -86,12 +90,22 @@ pub fn splitTarget(allocator: std.mem.Allocator, target: []const u8) Failure!Tar
     return .{ .path = path, .query = query };
 }
 
-pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream) Failure!Request {
+const pollable = @import("builtin").os.tag != .windows;
+
+fn readWithin(stream: *compat.net.Stream, buffer: []u8, wait_ms: i32) Failure!usize {
+    if (comptime pollable) {
+        const ready = compat.net.readableWithin(compat.net.streamHandle(stream), wait_ms) catch return error.ReadFailed;
+        if (!ready) return error.Timeout;
+    }
+    return stream.read(buffer) catch error.ReadFailed;
+}
+
+pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, idle_wait_ms: i32) Failure!Request {
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
     var byte: [1]u8 = undefined;
     while (head.items.len < max_header_bytes) {
-        const n = stream.read(&byte) catch return error.ReadFailed;
+        const n = try readWithin(stream, &byte, header_wait_ms);
         if (n == 0) return error.Truncated;
         try head.append(allocator, byte[0]);
         if (std.mem.endsWith(u8, head.items, "\r\n\r\n")) break;
@@ -120,17 +134,17 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream) Fai
         const at = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         const name = line[0..at];
         const value = std.mem.trim(u8, line[at + 1 ..], " \t");
-        if (std.ascii.startsWithIgnoreCase(name, "host")) {
+        if (std.ascii.eqlIgnoreCase(name, "host")) {
             if (seen_host) return error.Malformed;
             seen_host = true;
             request.host = try allocator.dupe(u8, value);
-        } else if (std.ascii.startsWithIgnoreCase(name, "origin")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "origin")) {
             request.origin = true;
-        } else if (std.ascii.startsWithIgnoreCase(name, "content-type")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "content-type")) {
             request.content_type = try allocator.dupe(u8, value);
-        } else if (std.ascii.startsWithIgnoreCase(name, "content-length")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "content-length")) {
             request.content_length = std.fmt.parseInt(usize, value, 10) catch return error.Malformed;
-        } else if (std.ascii.startsWithIgnoreCase(name, "transfer-encoding")) {
+        } else if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
             return error.UnsupportedTransferEncoding;
         }
     }
@@ -140,7 +154,7 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream) Fai
     request.body = try allocator.alloc(u8, request.content_length);
     var filled: usize = 0;
     while (filled < request.body.len) {
-        const n = stream.read(request.body[filled..]) catch return error.ReadFailed;
+        const n = try readWithin(stream, request.body[filled..], idle_wait_ms);
         if (n == 0) return error.Truncated;
         filled += n;
     }
@@ -199,6 +213,7 @@ pub fn transportRefusal(failed: Failure) ?Refusal {
 pub fn statusFor(failed: Failure) []const u8 {
     return switch (failed) {
         error.HeaderTooLarge => header_too_large,
+        error.Timeout => request_timeout,
         else => bad_request,
     };
 }
@@ -252,7 +267,7 @@ fn requestOver(raw: []const u8) !Request {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll(raw);
-    return readRequest(testing.allocator, &pipe.accepted);
+    return readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms);
 }
 
 test "a request is read off the wire, headers and body included" {
@@ -311,7 +326,7 @@ test "a body over the cap is refused before it is read" {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 16777217\r\n\r\n");
-    try testing.expectError(error.BodyTooLarge, readRequest(testing.allocator, &pipe.accepted));
+    try testing.expectError(error.BodyTooLarge, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms));
 }
 
 test "a host that hangs up mid-request is truncated, not answered" {
@@ -324,7 +339,7 @@ test "a host that hangs up mid-request is truncated, not answered" {
     var accepted = connection.stream;
     defer accepted.close();
     client.close();
-    try testing.expectError(error.Truncated, readRequest(testing.allocator, &accepted));
+    try testing.expectError(error.Truncated, readRequest(testing.allocator, &accepted, header_read_ms, idle_read_ms));
 }
 
 test "only the two transport codes answer as an error envelope, and the rest as a bare status" {
@@ -338,6 +353,25 @@ test "only the two transport codes answer as an error envelope, and the rest as 
     }
     try testing.expect(transportRefusal(error.HeaderTooLarge) == null);
     try testing.expectEqualStrings(header_too_large, statusFor(error.HeaderTooLarge));
+}
+
+test "a peer that connects and never sends a request is given up on, not waited on forever" {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 50, idle_read_ms));
+    try testing.expectEqualStrings(request_timeout, statusFor(error.Timeout));
+}
+
+test "a header whose name merely starts with a known one is not that header" {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("GET /adapters HTTP/1.1\r\nHostname: evil.test\r\nOrigin-Repeat: 1\r\nContent-Types: 7\r\n\r\n");
+    var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms);
+    defer request.deinit(testing.allocator);
+    try testing.expect(request.host == null);
+    try testing.expect(!request.origin);
+    try testing.expect(request.content_type == null);
+    try testing.expectEqual(@as(usize, 0), request.content_length);
 }
 
 test "the loopback allowlist is the three loopback spellings and nothing else" {
