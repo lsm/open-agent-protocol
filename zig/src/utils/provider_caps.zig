@@ -60,8 +60,7 @@ pub fn isCerebras(base_url: ?[]const u8) bool {
 }
 
 pub fn isZai(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.zukijourney.com") != null or std.mem.find(u8, url, "zai") != null;
+    return isHostOrSubdomainOf(base_url, "zukijourney.com");
 }
 
 pub fn isOpenRouter(base_url: ?[]const u8) bool {
@@ -206,6 +205,39 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a zai host is zukijourney.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.zukijourney.com",
+        "https://api.zukijourney.com/api/paas/v4",
+        "https://zukijourney.com",
+        "https://API.ZUKIJOURNEY.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isZai(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://myzukijourney.com",
+        "https://zukijourney.com.evil.example",
+        "https://evil.example/?next=api.zukijourney.com",
+        "https://evil.example/v1/zai",
+        "https://gateway.example/proxy/zai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isZai(url));
+    }
+
+    try std.testing.expect(!isZai(null));
+}
+
+test "the zai-coding-plan row is not detected as zai, and that is recorded rather than fixed here" {
+    const url = "https://api.z.ai/api/coding/paas/v4";
+    try std.testing.expect(!isZai(url));
+    try std.testing.expectEqual(.openai, detectCapabilities(url).thinking_format);
 }
 
 test "a qwen host is dashscope.aliyuncs.com or a subdomain of it" {
