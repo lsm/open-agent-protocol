@@ -2234,15 +2234,20 @@ pub const App = struct {
         if (self.rate_model.len > 0 and
             std.mem.eql(u8, self.rate_model, model.id) and
             std.mem.eql(u8, self.rate_provider, model.provider)) return;
-        if (self.rate_model.len > 0) self.state.telemetry.rate = .{};
-        if (self.rate_model.len > 0) self.allocator.free(self.rate_model);
+        self.adoptRateModel(model.id, model.provider);
+    }
+
+    fn adoptRateModel(self: *App, id: []const u8, provider: []const u8) void {
+        const next_model = self.allocator.dupe(u8, id) catch return;
+        const next_provider = self.allocator.dupe(u8, provider) catch {
+            self.allocator.free(next_model);
+            return;
+        };
+        if (self.rate_model.len > 0) {
+            self.state.telemetry.rate = .{};
+            self.allocator.free(self.rate_model);
+        }
         if (self.rate_provider.len > 0) self.allocator.free(self.rate_provider);
-        self.rate_model = &.{};
-        self.rate_provider = &.{};
-        const next_model = self.allocator.dupe(u8, model.id) catch return;
-        errdefer self.allocator.free(next_model);
-        const next_provider = self.allocator.dupe(u8, model.provider) catch return;
-        errdefer self.allocator.free(next_provider);
         self.rate_model = next_model;
         self.rate_provider = next_provider;
     }
@@ -5075,6 +5080,43 @@ test "App says so when a window the model in effect cannot take is dropped" {
     }
     try std.testing.expect(said_again);
     try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "a failed adopt leaves the old model pair and the average in place" {
+    var app = App{ .allocator = std.testing.allocator, .state = tui_state.AppState.init(std.testing.allocator) };
+    defer app.state.deinit();
+    app.rate_model = try std.testing.allocator.dupe(u8, "first-model");
+    app.rate_provider = try std.testing.allocator.dupe(u8, "first-provider");
+    defer std.testing.allocator.free(app.rate_model);
+    defer std.testing.allocator.free(app.rate_provider);
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const held = app.allocator;
+    app.allocator = failing.allocator();
+    defer app.allocator = held;
+    app.adoptRateModel("second-model", "second-provider");
+
+    try std.testing.expectEqualStrings("first-model", app.rate_model);
+    try std.testing.expectEqualStrings("first-provider", app.rate_provider);
+    try std.testing.expectEqual(@as(u64, 400), app.state.telemetry.rate.measured_since_switch.output_tokens);
+}
+
+test "an adopt that succeeds replaces the pair and clears the average" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqualStrings(gpt_model.id, app.rate_model);
+    try std.testing.expectEqualStrings(gpt_model.provider, app.rate_provider);
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+
+    try app.runtime.?.switchModel("kimi-k2.7-code");
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqualStrings(kimi_model.id, app.rate_model);
+    try std.testing.expectEqualStrings(kimi_model.provider, app.rate_provider);
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
 }
 
 test "a resumed session's replayed events leave the rate showing nothing" {
