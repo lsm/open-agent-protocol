@@ -315,17 +315,6 @@ pub const TokenRateSet = struct {
         return .{};
     }
 
-    pub fn shown(self: *const TokenRateSet) TokenRate {
-        if (self.live.hasFigure()) return self.live;
-        if (self.run_active) {
-            const open = self.turn();
-            if (open.hasFigure()) return open;
-            if (self.previous.hasFigure()) return self.previous;
-            return self.average;
-        }
-        if (self.average.hasFigure()) return self.average;
-        return self.previous;
-    }
 };
 
 pub fn estimateTokenBytes(bytes: u64) u64 {
@@ -2163,17 +2152,17 @@ test "the shown figure is the live one while a message streams, then the turn's"
     rate.liveAt(2_000);
     try std.testing.expect(rate.live.hasFigure());
     try std.testing.expect(rate.live.estimated);
-    try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
-    try std.testing.expectEqual(@as(u64, 1_000), rate.shown().stream_ms);
+    try std.testing.expectEqual(@as(u64, 100), rate.turnShown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 1_000), rate.turnShown().stream_ms);
 
     rate.messageEnded(2_000, 100);
     rate.turnEnded();
     try std.testing.expect(!rate.live.hasFigure());
-    try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
-    try std.testing.expect(!rate.shown().estimated);
+    try std.testing.expectEqual(@as(u64, 100), rate.turnShown().output_tokens);
+    try std.testing.expect(!rate.turnShown().estimated);
 }
 
-test "an idle status line shows the average since the model switch, not a stale turn" {
+test "an idle rate carries the last turn and the average since the model switch" {
     var rate = TokenRateSet{};
     rate.runStarted();
     rate.produced(400, 1_000);
@@ -2188,8 +2177,8 @@ test "an idle status line shows the average since the model switch, not a stale 
 
     try std.testing.expectEqual(@as(u64, 200), rate.average.output_tokens);
     try std.testing.expectEqual(@as(u64, 1_500), rate.average.stream_ms);
-    try std.testing.expectEqual(@as(u64, 200), rate.shown().output_tokens);
-    try std.testing.expectEqual(@as(u64, 1_500), rate.shown().stream_ms);
+    try std.testing.expectEqual(@as(u64, 100), rate.turnShown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 500), rate.turnShown().stream_ms);
 }
 
 test "a run in progress shows its own last turn, ahead of the average" {
@@ -2206,7 +2195,7 @@ test "a run in progress shows its own last turn, ahead of the average" {
     rate.messageEnded(10_000_500, 900);
     rate.turnEnded();
 
-    try std.testing.expectEqual(@as(u64, 900), rate.shown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 900), rate.turnShown().output_tokens);
     try std.testing.expectEqual(@as(u64, 1_000), rate.average.output_tokens);
 }
 
@@ -2219,9 +2208,9 @@ test "a run that measured nothing yet falls back to the average rather than noth
 
     rate.runStarted();
     try std.testing.expect(!rate.previous.hasFigure());
+    try std.testing.expect(!rate.turnShown().hasFigure());
     try std.testing.expectEqual(@as(u64, 100), rate.average.output_tokens);
-    try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
-    try std.testing.expectEqual(@as(u64, 1_000), rate.shown().stream_ms);
+    try std.testing.expectEqual(@as(u64, 1_000), rate.average.stream_ms);
 }
 
 test "a new run does not open showing the run before it" {
@@ -2235,17 +2224,17 @@ test "a new run does not open showing the run before it" {
 
     rate.runStarted();
     try std.testing.expect(!rate.previous.hasFigure());
+    try std.testing.expect(!rate.turnShown().hasFigure());
     try std.testing.expectEqual(@as(u64, 900), rate.average.output_tokens);
-    try std.testing.expectEqual(@as(u64, 900), rate.shown().output_tokens);
-    try std.testing.expectEqual(@as(u64, 1_000), rate.shown().stream_ms);
+    try std.testing.expectEqual(@as(u64, 1_000), rate.average.stream_ms);
 }
 
 test "a turn that produced nothing reports nothing" {
     var rate = TokenRateSet{};
     rate.turnEnded();
     try std.testing.expect(!rate.previous.hasFigure());
-    try std.testing.expect(!rate.shown().hasFigure());
-    try std.testing.expectEqual(@as(u64, 0), rate.shown().perSecond());
+    try std.testing.expect(!rate.turnShown().hasFigure());
+    try std.testing.expectEqual(@as(u64, 0), rate.turnShown().perSecond());
 }
 
 test "a turn aborted mid-stream leaves no live figure and no clock for the next turn" {
@@ -2257,7 +2246,7 @@ test "a turn aborted mid-stream leaves no live figure and no clock for the next 
     rate.turnEnded();
 
     try std.testing.expect(!rate.live.hasFigure());
-    try std.testing.expect(!rate.shown().hasFigure());
+    try std.testing.expect(!rate.turnShown().hasFigure());
     rate.liveAt(9_000_000);
     try std.testing.expect(!rate.live.hasFigure());
 
@@ -2352,8 +2341,8 @@ test "a turn's tool phase shows the turn's own figure, not a lagging average" {
     rate.produced(400, 1_000);
     rate.messageEnded(2_000, 400);
     try std.testing.expectEqual(@as(u64, 400), rate.turn().output_tokens);
-    try std.testing.expectEqual(@as(u64, 400), rate.shown().output_tokens);
-    try std.testing.expect(!rate.shown().estimated);
+    try std.testing.expectEqual(@as(u64, 400), rate.turnShown().output_tokens);
+    try std.testing.expect(!rate.turnShown().estimated);
 
     rate.turnEnded();
     try std.testing.expectEqual(@as(u64, 400), rate.previous.output_tokens);
@@ -2363,7 +2352,7 @@ test "a turn's tool phase shows the turn's own figure, not a lagging average" {
     rate.messageEnded(10_000_500, 100);
     rate.turnEnded();
 
-    try std.testing.expectEqual(@as(u64, 100), rate.shown().output_tokens);
+    try std.testing.expectEqual(@as(u64, 100), rate.turnShown().output_tokens);
     try std.testing.expectEqual(@as(u64, 500), rate.average.output_tokens);
 }
 
