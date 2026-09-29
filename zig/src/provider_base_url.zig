@@ -53,8 +53,6 @@ const anthropic_base_url_env = provider_catalog.baseUrlEnv("anthropic")[0];
 const openai_base_url_env = provider_catalog.baseUrlEnv("openai")[0];
 const deepseek_base_url_env = provider_catalog.baseUrlEnv("deepseek")[0];
 
-
-
 pub fn normalizeVersionedBaseUrl(url: []const u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, url, "/");
     if (std.mem.endsWith(u8, trimmed, "/v1")) return trimmed[0 .. trimmed.len - 3];
@@ -654,7 +652,6 @@ test "oauthOriginAllowed lets a kimi login keep streaming" {
     try std.testing.expect(oauthOriginAllowed(allocator, "kimi", "https://api.moonshot.ai", "", "region:global"));
     try std.testing.expect(!oauthOriginAllowed(allocator, "anthropic", "https://attacker.test", "", null));
 }
-
 
 test "defaultMaxTokensForRef uses catalog limits for catalog pairs" {
     try std.testing.expectEqual(@as(u32, 16_384), defaultMaxTokensForRef("kimi", "openai-completions"));

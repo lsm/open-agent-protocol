@@ -848,7 +848,6 @@ test "every row records how it authenticates, and an origin policy belongs to an
     }
 }
 
-
 fn expectSameOptionalString(want: ?[]const u8, got: ?[]const u8) !void {
     if (want == null or got == null) {
         try std.testing.expect(want == null and got == null);

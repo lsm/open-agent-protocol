@@ -129,7 +129,6 @@ fn loadProductionModelsWithMode(allocator: std.mem.Allocator, mode: CatalogLoadM
 var test_custom_providers_config: ?[]const u8 = null;
 var test_custom_discovery_ids: ?[]const []const u8 = null;
 
-
 var test_force_copilot_models: bool = false;
 
 fn copilotStringFromProviderData(allocator: std.mem.Allocator, provider_data: []const u8, key: []const u8) !?[]u8 {
@@ -484,7 +483,6 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
     if (catalogStoredRegion(id, storage)) |stored| return stored;
     return fallback;
 }
-
 
 fn catalogStoredRegion(id: []const u8, storage: ?*oauth_storage.AuthStorage) ?[]const u8 {
     const stored = storage orelse return null;
@@ -967,16 +965,6 @@ fn parseModelIds(allocator: std.mem.Allocator, data: []const u8) ![][]const u8 {
     return ids.toOwnedSlice(allocator);
 }
 
-
-
-
-
-
-
-
-
-
-
 var test_force_codex_refresh_error: bool = false;
 var test_force_anthropic_models: bool = false;
 
@@ -1249,31 +1237,6 @@ fn fetchCustomModelsCatalog(
     if (fetched.status != 200) return error.ModelCatalogFetchFailed;
     return body;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 fn refreshOpenAICodexCredentials(credentials: oauth_storage.Credentials, allocator: std.mem.Allocator) !oauth_storage.Credentials {
     const refreshed = try codex_oauth.refreshToken(.{
@@ -2273,10 +2236,6 @@ test "a stored OAuth credential's region picks the row's endpoint, and an unusab
     try std.testing.expect(catalogStoredRegion(kimi_provider_id, null) == null);
     try std.testing.expect(catalogStoredRegion("anthropic", null) == null);
 }
-
-
-
-
 
 test "refreshProductionModels keeps Kimi when Codex refresh fails" {
     try provider_catalog.blankEnvironment(std.testing.allocator);
