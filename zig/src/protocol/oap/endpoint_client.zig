@@ -1,13 +1,6 @@
 const std = @import("std");
 const compat = @import("compat");
 
-fn defaultIo() std.Io {
-    return if (@import("builtin").is_test)
-        std.testing.io
-    else
-        std.Io.Threaded.global_single_threaded.io();
-}
-
 pub const max_line_bytes: usize = 1 << 20;
 
 pub const Error = error{
@@ -30,10 +23,19 @@ pub const Frame = union(enum) {
 
 pub const Client = struct {
     allocator: std.mem.Allocator,
+    threaded: std.Io.Threaded,
     child: ?std.process.Child = null,
     pending: std.ArrayList(u8) = .empty,
     line: std.ArrayList(u8) = .empty,
     closed: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator) Client {
+        return .{ .allocator = allocator, .threaded = std.Io.Threaded.init(allocator, .{}) };
+    }
+
+    fn io(self: *Client) std.Io {
+        return self.threaded.io();
+    }
 
     pub fn spawn(allocator: std.mem.Allocator, request: Spawn) !Client {
         var argv = std.ArrayList([]const u8).empty;
@@ -49,7 +51,9 @@ pub const Client = struct {
             try environment.put(name, value);
         }
 
-        const child = try std.process.spawn(defaultIo(), .{
+        var client = Client.init(allocator);
+        errdefer client.deinit();
+        client.child = try std.process.spawn(client.io(), .{
             .argv = argv.items,
             .environ_map = &environment,
             .stdin = .pipe,
@@ -57,22 +61,23 @@ pub const Client = struct {
             .stderr = .inherit,
             .create_no_window = true,
         });
-        return .{ .allocator = allocator, .child = child };
+        return client;
     }
 
     pub fn deinit(self: *Client) void {
         self.close();
         self.pending.deinit(self.allocator);
         self.line.deinit(self.allocator);
+        self.threaded.deinit();
     }
 
     pub fn close(self: *Client) void {
         if (self.child) |*child| {
             if (child.stdin) |stdin| {
-                stdin.close(defaultIo());
+                stdin.close(self.io());
                 child.stdin = null;
             }
-            _ = child.wait(defaultIo()) catch {};
+            _ = child.wait(self.io()) catch {};
             self.child = null;
         }
         self.closed = true;
@@ -83,8 +88,8 @@ pub const Client = struct {
         if (line.len + 1 > max_line_bytes) return Error.FrameTooLong;
         const child = &(self.child orelse return Error.NotRunning);
         const stdin = child.stdin orelse return Error.NotRunning;
-        try stdin.writeStreamingAll(defaultIo(), line);
-        try stdin.writeStreamingAll(defaultIo(), "\n");
+        try stdin.writeStreamingAll(self.io(), line);
+        try stdin.writeStreamingAll(self.io(), "\n");
     }
 
     pub fn next(self: *Client, timeout: std.Io.Timeout) !?Frame {
@@ -118,7 +123,7 @@ pub const Client = struct {
         const stdout = child.stdout orelse return Error.NotRunning;
         var buffer: std.Io.File.MultiReader.Buffer(1) = undefined;
         var multi: std.Io.File.MultiReader = undefined;
-        multi.init(self.allocator, defaultIo(), buffer.toStreams(), &.{stdout});
+        multi.init(self.allocator, self.io(), buffer.toStreams(), &.{stdout});
         defer multi.deinit();
         const reader = multi.reader(0);
         multi.fill(1, timeout) catch |raised| switch (raised) {
@@ -229,13 +234,13 @@ test "a line written to an endpoint comes back framed, and the buffer is the cli
 }
 
 test "a line carrying a newline is refused rather than split into two frames" {
-    var client = Client{ .allocator = std.testing.allocator };
+    var client = Client.init(std.testing.allocator);
     defer client.deinit();
     try std.testing.expectError(Error.EmbeddedNewline, client.write("{\"a\":1}\n{\"b\":2}"));
 }
 
 test "a frame over the bound fails closed rather than truncating" {
-    var client = Client{ .allocator = std.testing.allocator };
+    var client = Client.init(std.testing.allocator);
     defer client.deinit();
     const oversized = try std.testing.allocator.alloc(u8, max_line_bytes);
     defer std.testing.allocator.free(oversized);

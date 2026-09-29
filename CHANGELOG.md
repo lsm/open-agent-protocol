@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **The OAP endpoint client could not spawn an endpoint outside a test build.**
+  `endpoint_client.Client.spawn` handed `std.process.spawn` the io from
+  `std.Io.Threaded.global_single_threaded`, which has no thread to run a child's
+  pipes on, so every spawn outside a test binary failed with `OutOfMemory` from
+  `Threaded.spawnPosix` before a process existed. The client now owns its own
+  `std.Io.Threaded`, as `adapter/process.zig` and `tools/process_runner.zig`
+  already do, and spawns on that. Nothing caught it because the tests took the
+  other branch: `defaultIo` returned `std.testing.io` under `is_test`, so the
+  suite exercised a path the product never ran, and the branch is gone rather
+  than inverted, so the tests now drive the same io a release build does.
+
 ### Added
+
+- **The Zig semantic machine judges a published tool source that carries an
+  attachment-only member**, `attachment_field_in_catalog`, part of #367. A
+  source published in a catalog — a `capabilities.response`'s `sources` or any
+  `layers.*.sources`, an `action.tools.list.response`, a `session.open.response`
+  or a session state document — is a *description* of a tool source, and
+  `command`, `args` and `environment` belong to the attachment that *serves* it.
+  A catalog that names one is publishing the attachment as though it were part of
+  the source, which is the leak `descriptor-leaks-attachment-fields` and
+  `tools-catalog-leaks-attachment-env` are about: an environment entry carrying
+  a secret into a document every session reads. Go has judged this since the
+  rule landed; the Zig machine declared neither the code nor the check, so a
+  source carrying one earned no semantic finding. **`oapx validate` on either
+  fixture is unchanged by this, and was never passing it**: in strict mode the
+  schema phase refuses the member first — `toolSourceDescriptor` is closed — and
+  the semantic phase does not run at all. The rule is unreachable in strict mode
+  by construction, which is why the two fixtures are `mode: tolerant` in the
+  manifest and why the semantic gate skips them: only once #367's tolerant mode
+  exists is there a path that reaches this check, and judging the three tolerant
+  fixtures rather than skipping them is that step's work. A source list the
+  check cannot read is left unjudged, matching Go's decode rather than
+  judging the entries around a malformed one.
 
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
