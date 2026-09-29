@@ -118,6 +118,58 @@ URL:
 No vendor serves `//`, and a base that already ends with its wire's path is used
 as it is rather than having the path appended again.
 
+## Overriding a catalogued row
+
+A `providers` entry may not take a built-in id, because a provider that shadows
+one would answer for a credential the catalog resolves elsewhere. That is why a
+built-in provider cannot be pointed at a proxy, a gateway or a regional mirror
+from here. An `overrides` entry is the other half of the file: it names a
+**catalogued** id and says where that row's requests should go, keeping the
+row's own id and wire.
+
+**The entries are read and validated today, and nothing redirects yet.** The
+members below are recorded and the refusals are enforced at load, so a file that
+misuses one fails on startup and says which error. The `base_url` is not yet
+consulted when a row's requests are made; that lands with the precedence and
+credential rules in a later release. Until then, an override narrows nothing and
+redirects nothing.
+
+```json
+{
+  "overrides": [
+    {
+      "id": "deepseek",
+      "base_url": "https://proxy.internal/deepseek/v1",
+      "carries_version": true,
+      "headers": { "X-Tenant": "acme" }
+    }
+  ]
+}
+```
+
+An override may name only these members:
+
+| Member | Meaning |
+| --- | --- |
+| `id` | Required. The catalogued row to override. An id the catalog does not record is `UnknownProviderId`. |
+| `base_url` | Where the row's requests should go. A trailing `/v1` is stripped unless `carries_version` says otherwise, exactly as for a custom entry. |
+| `carries_version` | `true` when this base already carries the API version. The same fact a custom entry states, and for the same reason: only the endpoint's owner knows where its version sits. |
+| `headers` | Extra request headers for this row. |
+| `models` | Allowlist over what discovery returns, as for a custom entry. |
+
+Everything else is refused at load by name, and the refusal is
+`ForbiddenOverrideMember` for all of it. `api` and `wire` are the two that
+matter most: a row's wire is what its credential and its descriptor are bound
+to, so an override that changed it would be a different provider wearing the
+row's id. `auth`, `name`, `capabilities`, `context_window`, `max_tokens` and
+`reasoning` are refused for the same reason — they describe the provider rather
+than the route to it, and the catalog already answers them. So is any member not
+in the table above, because a name nobody reads is a name that looks like it
+worked.
+
+A row may be overridden at most once, so a file that names `deepseek` twice
+fails with `DuplicateOverride` rather than depending on which line won.
+
 ## Credentials
 
 **Keys are never read from this file.** There are two supported sources:
