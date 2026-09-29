@@ -114,9 +114,15 @@ pub fn execute(
             .working_directory = start_directory,
         });
         const text = try std.fmt.allocPrint(allocator, "shell command failed: {s}", .{@errorName(err)});
+        var owned_here = true;
+        defer if (owned_here) {
+            allocator.free(text);
+            allocator.free(details);
+        };
         var failed = try common.makeTextResultOwned(allocator, text, details);
         errdefer failed.deinit(allocator);
         failed.working_directory = ai_types.OwnedSlice(u8).initOwned(owned_directory);
+        owned_here = false;
         return failed;
     };
     defer allocator.free(result.stdout);
