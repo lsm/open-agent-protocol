@@ -1109,7 +1109,10 @@ pub const App = struct {
             try self.state.appendTranscript(.system, "Wait for worktree setup to finish before deleting a session.");
             return;
         }
-        if (self.worktree_management_job != null) return;
+        if (self.worktree_management_job != null) {
+            try self.state.appendTranscript(.system, "Wait for worktree setup to finish before deleting a session.");
+            return;
+        }
         if (try tui_worktree.readSidecar(self.allocator, store.base_dir, id)) |info_value| {
             var info = info_value;
             defer info.deinit(self.allocator);
