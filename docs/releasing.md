@@ -61,6 +61,38 @@ Two things it refuses, both worth knowing before you tag:
   happens if the tag line and the changelog have drifted apart;
 - a version that already has a section, so the same release cannot be cut twice.
 
+### Open: the tag line and the changelog do not agree
+
+**The next release cannot be cut until someone decides this.** It is the owner's
+call, not a bug in the script.
+
+The tags run `v0.1.0-alpha.1` through `v0.1.0-alpha.4` (2026-09-27). The
+changelog's newest released sections are `## [0.2.0] - 2026-09-11` and
+`## [0.1.0] - 2026-09-05`, and **neither was ever tagged** — there is no `v0.1.0`
+and no `v0.2.0` in the repository. `package.json` says `0.2.0`.
+
+So the next alpha, `v0.1.0-alpha.5`, is a version the script **refuses** to cut:
+it is older than `[0.2.0]`, which the file already records. The tag that CI
+expects and the changelog that ships have been on different version lines, and
+the script will not paper over it.
+
+The gate stays as it is — a tag with no matching section fails `release` and
+`publish-npm` — so this has to be resolved before the next tag, not worked
+around.
+
+Two ways out, and the choice is the owner's:
+
+1. **Tag forward from the changelog.** The next release is `v0.3.0` or later,
+   which is above `[0.2.0]`, and the `v0.1.0-alpha.N` line is retired as a
+   naming accident. The changelog's account of what shipped in `[0.1.0]` and
+   `[0.2.0]` is already the better record, so this makes the tags agree with it.
+2. **Retract the untagged sections** and go back to the alpha line, so
+   `v0.1.0-alpha.5` becomes the next release. This discards the 0.1.0 and 0.2.0
+   release notes, which are the most complete ones in the file.
+
+Whichever is chosen, `package.json`'s version and the tag line should end up
+agreeing too, since the release workflow reads it for the npm package version.
+
 **3. Commit the changelog through a pull request.** This is an ordinary change to
 `CHANGELOG.md` on a branch, merged the usual way. It has to be on `main` *before*
 the tag: the release job checks out the tagged tree and reads the file from
