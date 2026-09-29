@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **The OAP endpoint client could not spawn an endpoint outside a test build.**
+  `endpoint_client.Client.spawn` handed `std.process.spawn` the io from
+  `std.Io.Threaded.global_single_threaded`, which has no thread to run a child's
+  pipes on, so every spawn outside a test binary failed with `OutOfMemory` from
+  `Threaded.spawnPosix` before a process existed. The client now owns its own
+  `std.Io.Threaded`, as `adapter/process.zig` and `tools/process_runner.zig`
+  already do, and spawns on that. Nothing caught it because the tests took the
+  other branch: `defaultIo` returned `std.testing.io` under `is_test`, so the
+  suite exercised a path the product never ran, and the branch is gone rather
+  than inverted, so the tests now drive the same io a release build does.
+
 ### Added
 
 - **The Zig semantic machine judges a published tool source that carries an
@@ -54,32 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   I/O, so it is the one piece of the loop that can be right or wrong on its own.
 
 ### Changed
-
-- **A pull request's superseded CI runs are cancelled instead of left to queue
-  behind the runs that replaced them.** `ci.yml`, `ci-zig.yml` and
-  `benchmark-report.yml` all run on `pull_request` and `push` and none of the
-  three set `concurrency`, so every push to a branch under review left its run
-  holding a runner while the next push queued behind it: at 04:30Z on
-  2026-09-29 thirty-five runs were queued and seventeen of them were already
-  superseded by a newer run for the same workflow and head, and a later count of
-  the same backlog still had forty-one unfinished runs, thirteen superseded,
-  three of them on `main`. Each of the three now takes one concurrency group per
-  pull request, so a newer push cancels the run the previous push started, queued
-  or in progress, and nothing outside a pull request is touched.
-
-  `cancel-in-progress` is an expression that holds only on `pull_request`, and a
-  push carries no pull request number, so it falls back to its own run id --
-  which leaves every push run in a group holding nothing else, and is what keeps
-  the run for each main commit. Both halves of that are load-bearing, because
-  GitHub drops the *pending* run in a shared group by default: the
-  `<prefix>-${{ github.ref }}` key `fuzz.yml` already uses, copied to a
-  push-triggered workflow, would have cancelled three of main's five queued runs
-  rather than nothing at all. The event name is in the group because a pull
-  request number and a run id come from separate counters and neither may stand
-  in for the other, and the `ci-` and `ci-zig-` prefixes are distinct because
-  both files display as `CI` -- one shared prefix would have had the two
-  workflows cancel each other on every push. Cancelling a superseded run costs
-  nothing at the merge gate, which reads only the current head's checks.
 
 - **Zig stops escaping `<`, `>`, `&`, U+2028 and U+2029 the way
   `encoding/json` does**, the last step of #417 under Decision 0038's amended
