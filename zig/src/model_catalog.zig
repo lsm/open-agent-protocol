@@ -2486,7 +2486,7 @@ test "a row the override machinery does not know falls back to the catalog base"
 
 test "the row's base-url override moves both the base and the models url" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
-        .deepseek = "https://proxy.example/api",
+        .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
@@ -2495,7 +2495,7 @@ test "the row's base-url override moves both the base and the models url" {
 
 test "a versioned base-url override loses the trailing version the wire would re-add" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
-        .deepseek = "https://proxy.example/api/v1/",
+        .row = "https://proxy.example/api/v1/",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://proxy.example/api", endpoint.base_url);
@@ -2505,7 +2505,7 @@ test "a versioned base-url override loses the trailing version the wire would re
 test "the global base-url override outranks the row's own" {
     var endpoint = (try catalogEndpointWithOverrides(std.testing.allocator, "deepseek", .{
         .global = "https://everywhere.example",
-        .deepseek = "https://proxy.example/api",
+        .row = "https://proxy.example/api",
     })).?;
     defer endpoint.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("https://everywhere.example", endpoint.base_url);
@@ -2519,7 +2519,7 @@ test "a discovered model carries the overridden base rather than the catalog's" 
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;
@@ -2541,7 +2541,7 @@ test "a row's discovery is read from its overridden models url, not the catalog'
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;
@@ -3406,7 +3406,7 @@ fn overriddenCatalogLoadProbe(allocator: std.mem.Allocator) !void {
     test_catalog_environment = &[_]provider_credential.EnvironmentValue{
         .{ .name = "DEEPSEEK_API_KEY", .value = "row-key" },
     };
-    test_catalog_base_urls = .{ .deepseek = "https://proxy.example/api" };
+    test_catalog_base_urls = .{ .row = "https://proxy.example/api" };
     defer {
         test_catalog_discovery = null;
         test_catalog_environment = null;
