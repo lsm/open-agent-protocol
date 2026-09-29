@@ -96,9 +96,14 @@ Facts a listing learned (Normative):
   v0.1 and ignored by a client that knows of the lists.
 - `reasoning_levels` is the set the model accepts, and `reasoning_default` names
   one of them.
-- These mirror `provider.models.list.response` in the model-provider-core
-  profile ([Decision 0035](../../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md)),
-  so a client reading either reads the same facts.
+- These are the model-provider-core profile's `modelEntry` facts
+  ([Decision 0035](../../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md))
+  named on the SDK's descriptor. The profile's own wire carries them; the SDK
+  descriptor is where an implementation records them, and a client reading
+  either reads the same facts. The interface above is the shape, not a claim
+  that a shipped SDK already populates every member: where a client leaves one
+  absent, the absence means unknown under the rule above, exactly as on the
+  wire.
 
 Auth for listing:
 - Providers that require auth for model listing must return `auth_status = "login_required"` (or `"expired"` / `"failed"`).

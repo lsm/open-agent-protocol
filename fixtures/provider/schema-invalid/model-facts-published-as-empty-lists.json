@@ -1,0 +1,24 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.models.list.response",
+    "id": "m1",
+    "in_reply_to": "m0",
+    "capability_revision": "0.1",
+    "payload": {
+      "models": [
+        {
+          "model_ref": "anthropic/anthropic-messages@claude-sonnet-4-5",
+          "model_id": "claude-sonnet-4-5",
+          "provider_id": "anthropic",
+          "wire": "anthropic-messages",
+          "input_modalities": [],
+          "output_modalities": [],
+          "reasoning_levels": []
+        }
+      ]
+    }
+  }
+]

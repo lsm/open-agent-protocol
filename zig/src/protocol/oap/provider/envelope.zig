@@ -1221,11 +1221,11 @@ fn deserializeModelsListResponse(obj: std.json.ObjectMap, allocator: std.mem.All
         const reasoning_default = try oap_envelope.optionalEnum(types.ReasoningLevel, entry_obj, "reasoning_default");
         const auth_status = try oap_envelope.optionalEnum(types.AuthStatus, entry_obj, "auth_status") orelse .unknown;
         const cost = try deserializeModelCost(entry_obj.get("cost"));
-        const input_modalities = try oap_envelope.decodeEnumList(types.Modality, entry_obj, "input_modalities", allocator);
+        const input_modalities = try decodePublishedEnumList(types.Modality, entry_obj, "input_modalities", allocator);
         errdefer allocator.free(input_modalities);
-        const output_modalities = try oap_envelope.decodeEnumList(types.Modality, entry_obj, "output_modalities", allocator);
+        const output_modalities = try decodePublishedEnumList(types.Modality, entry_obj, "output_modalities", allocator);
         errdefer allocator.free(output_modalities);
-        const owned_reasoning_levels = try oap_envelope.decodeEnumList(types.ReasoningLevel, entry_obj, "reasoning_levels", allocator);
+        const owned_reasoning_levels = try decodePublishedEnumList(types.ReasoningLevel, entry_obj, "reasoning_levels", allocator);
         errdefer allocator.free(owned_reasoning_levels);
 
         const release_date = try oap_envelope.optionalOwnedString(entry_obj, "release_date", allocator);
@@ -1263,6 +1263,18 @@ fn deserializeModelsListResponse(obj: std.json.ObjectMap, allocator: std.mem.All
         .models = owned_models,
         .catalog = catalog,
     } };
+}
+
+fn decodePublishedEnumList(
+    comptime T: type,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    allocator: std.mem.Allocator,
+) ![]const T {
+    if (obj.get(key)) |value| {
+        if (value != .array or value.array.items.len == 0) return DecodeError.InvalidField;
+    }
+    return oap_envelope.decodeEnumList(T, obj, key, allocator);
 }
 
 fn deserializeModelCost(value: ?std.json.Value) !?types.ModelCost {
@@ -1850,6 +1862,32 @@ test "a listing may publish a partial catalog and a partial catalog is still a l
     try std.testing.expectEqual(@as(?i64, 1756400000000), catalog.observed_at_ms);
 }
 
+test "a published set is never empty, so a list and an absent member stay different" {
+    const allocator = std.testing.allocator;
+
+    const empty = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[]}]}",
+    );
+    defer allocator.free(empty);
+    try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(empty, allocator));
+
+    const published = try modelsListLine(
+        allocator,
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[\"text\"]}]}",
+    );
+    defer allocator.free(published);
+
+    var decoded = try deserializeEnvelope(published, allocator);
+    defer decoded.deinit(allocator);
+    const entry = decoded.payload.provider_models_list_response.models[0];
+    try std.testing.expectEqualSlices(types.Modality, &.{.text}, entry.input_modalities);
+
+    const encoded = try serializeEnvelope(decoded, allocator);
+    defer allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "\"input_modalities\":[\"text\"]") != null);
+}
+
 test "a cost, a modality, a level and a listing are each refused outside what they declare" {
     const allocator = std.testing.allocator;
 
@@ -1858,6 +1896,9 @@ test "a cost, a modality, a level and a listing are each refused outside what th
         "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"cost\":{\"input\":\"free\"}}]}",
         "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[\"text\",\"braille\"]}]}",
         "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"reasoning_levels\":[\"off\",\"extreme\"]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"input_modalities\":[]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"output_modalities\":[]}]}",
+        "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\",\"reasoning_levels\":[]}]}",
         "{\"models\":[{\"model_ref\":\"p/other:x@m\",\"model_id\":\"m\",\"provider_id\":\"p\",\"wire\":\"other\"}],\"catalog\":{\"observed_at_ms\":1759100000000}}",
         "{\"models\":[],\"catalog\":{\"complete\":true,\"source_url\":\"https://example.invalid/v1/models\"}}",
     };

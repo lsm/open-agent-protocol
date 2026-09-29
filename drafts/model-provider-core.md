@@ -360,10 +360,12 @@ Each entry in `provider.models.list.response`:
 - `cost?` — `{ input?, output?, cache_read?, cache_write? }`, four numbers and
   no tier. Each is optional, so an implementation that learned a rate for input
   and none for output publishes the one it has.
-- `input_modalities?`, `output_modalities?` — lists from `text`, `image`,
-  `audio`, `video`, `document`.
-- `reasoning_levels?` — the levels the model accepts, with `reasoning_default`
-  naming one of them.
+- `input_modalities?`, `output_modalities?` — a non-empty list from `text`,
+  `image`, `audio`, `video`, `document`. A list is never empty: a present list
+  publishes a set, and an empty one would claim the model accepts nothing, which
+  is not a fact any provider states. Omit the member instead.
+- `reasoning_levels?` — a non-empty list of the levels the model accepts, with
+  `reasoning_default` naming one of them.
 - `release_date?`, `family?` — a string each.
 
 `source` distinguishes a catalog the implementation read from the provider from

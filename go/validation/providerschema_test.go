@@ -94,6 +94,8 @@ func TestProviderSchemaRefusesWhatTheDraftForbids(t *testing.T) {
 		{"a reasoning level outside the set", envelope("provider.models.list.response", `"in_reply_to":"e0","payload":{"models":[{"model_ref":"p/other:x@m","model_id":"m","provider_id":"p","wire":"other","reasoning_levels":["off","extreme"]}]}`), "reasoningLevel"},
 		{"a cost carrying a tier", envelope("provider.models.list.response", `"in_reply_to":"e0","payload":{"models":[{"model_ref":"p/other:x@m","model_id":"m","provider_id":"p","wire":"other","cost":{"input":3,"context_over_200k":6}}]}`), "cost"},
 		{"a cost carrying an unquoted number", envelope("provider.models.list.response", `"in_reply_to":"e0","payload":{"models":[{"model_ref":"p/other:x@m","model_id":"m","provider_id":"p","wire":"other","cost":{"input":"free"}}]}`), "cost"},
+		{"an empty modality list", envelope("provider.models.list.response", `"in_reply_to":"e0","payload":{"models":[{"model_ref":"p/other:x@m","model_id":"m","provider_id":"p","wire":"other","input_modalities":[]}]}`), "minItems"},
+		{"an empty reasoning level set", envelope("provider.models.list.response", `"in_reply_to":"e0","payload":{"models":[{"model_ref":"p/other:x@m","model_id":"m","provider_id":"p","wire":"other","reasoning_levels":[]}]}`), "minItems"},
 		{"a catalog publishing no completeness", envelope("provider.models.list.response", `"in_reply_to":"e0","payload":{"models":[{"model_ref":"p/other:x@m","model_id":"m","provider_id":"p","wire":"other"}],"catalog":{"observed_at_ms":1759100000000}}`), "complete"},
 		{"a catalog member that is not a listing", envelope("provider.models.list.response", `"in_reply_to":"e0","payload":{"models":[],"catalog":{"complete":true,"source_url":"https://example.invalid/v1/models"}}`), "source_url"},
 	} {
