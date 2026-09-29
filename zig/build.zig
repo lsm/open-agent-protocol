@@ -813,6 +813,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sse_parser", .module = sse_parser_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "tool_call_tracker", .module = tool_call_tracker_mod },
+            .{ .name = "provider_caps", .module = provider_caps_mod },
             .{ .name = "sanitize", .module = sanitize_mod },
             .{ .name = "retry", .module = retry_mod },
             .{ .name = "pre_transform", .module = pre_transform_mod },
@@ -2100,31 +2101,9 @@ pub fn build(b: *std.Build) void {
 
     const tool_call_tracker_test = b.addTest(.{ .root_module = tool_call_tracker_mod });
 
-    const api_registry_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/api_registry.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ai_types", .module = ai_types_mod },
-                .{ .name = "event_stream", .module = event_stream_mod },
-                .{ .name = "oauth/storage", .module = oauth_storage_mod },
-            },
-        }),
-    });
+    const api_registry_test = b.addTest(.{ .root_module = api_registry_mod });
 
-    const stream_test = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/stream.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ai_types", .module = ai_types_mod },
-                .{ .name = "event_stream", .module = event_stream_mod },
-                .{ .name = "api_registry", .module = api_registry_mod },
-            },
-        }),
-    });
+    const stream_test = b.addTest(.{ .root_module = stream_mod });
 
     const register_builtins_test = b.addTest(.{ .root_module = register_builtins_mod });
 
@@ -2139,6 +2118,7 @@ pub fn build(b: *std.Build) void {
     const sanitize_test = b.addTest(.{ .root_module = sanitize_mod });
 
     const pre_transform_test = b.addTest(.{ .root_module = pre_transform_mod });
+    const provider_caps_test = b.addTest(.{ .root_module = provider_caps_mod });
 
     const auth_provider_defs_test = b.addTest(.{ .root_module = auth_provider_defs_mod });
 
@@ -2156,6 +2136,7 @@ pub fn build(b: *std.Build) void {
 
     const oauth_pkce_test = b.addTest(.{ .root_module = oauth_pkce_mod });
     const oauth_utils_pkce_test = b.addTest(.{ .root_module = oauth_utils_pkce_mod });
+    const oauth_anthropic_test = b.addTest(.{ .root_module = oauth_anthropic_mod });
     const oauth_openai_codex_test = b.addTest(.{ .root_module = oauth_openai_codex_mod });
 
     const oauth_storage_test = b.addTest(.{ .root_module = oauth_storage_mod });
@@ -2495,9 +2476,11 @@ pub fn build(b: *std.Build) void {
     const tui_view_approval_test = b.addTest(.{ .root_module = tui_view_approval_mod });
     const tui_view_session_picker_test = b.addTest(.{ .root_module = tui_view_session_picker_mod });
     const tui_view_menu_picker_test = b.addTest(.{ .root_module = tui_view_menu_picker_mod });
+    const tui_fixture_test = b.addTest(.{ .root_module = tui_fixture_mod });
     const tui_tests_scenarios_test = b.addTest(.{ .root_module = tui_tests_scenarios_mod });
     const tui_tests_e2e_test = b.addTest(.{ .root_module = tui_tests_e2e_mod });
     const tui_tests_mock_transport_test = b.addTest(.{ .root_module = tui_tests_mock_transport_mod });
+    const tui_tests_fixtures_test = b.addTest(.{ .root_module = tui_tests_fixtures_mod });
     const tools_common_test = b.addTest(.{ .root_module = tools_common_mod });
     const tools_process_runner_test = b.addTest(.{ .root_module = tools_process_runner_mod });
     const tools_artifact_test = b.addTest(.{ .root_module = tools_artifact_mod });
@@ -2801,6 +2784,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&endpoint_signals_test_run.step);
     test_step.dependOn(&b.addRunArtifact(sanitize_test).step);
     test_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
+    test_step.dependOn(&b.addRunArtifact(provider_caps_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_provider_defs_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_resolver_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_credential_test).step);
@@ -2813,6 +2797,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(ollama_api_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
     test_step.dependOn(&b.addRunArtifact(refresh_lock_test).step);
@@ -2853,9 +2838,11 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_view_approval_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_tests_fixtures_test).step);
     test_step.dependOn(&b.addRunArtifact(tools_process_runner_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_test).step);
     test_step.dependOn(&b.addRunArtifact(agent_protocol_chain_test).step);
@@ -3021,6 +3008,7 @@ pub fn build(b: *std.Build) void {
     test_unit_utils_step.dependOn(&b.addRunArtifact(github_copilot_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_pkce_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_utils_pkce_test).step);
+    test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_anthropic_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_openai_codex_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(oauth_storage_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(refresh_lock_test).step);
@@ -3030,6 +3018,7 @@ pub fn build(b: *std.Build) void {
     test_unit_utils_step.dependOn(&b.addRunArtifact(oom_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(sanitize_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
+    test_unit_utils_step.dependOn(&b.addRunArtifact(provider_caps_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(auth_resolver_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(provider_credential_test).step);
 
@@ -3109,9 +3098,11 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_approval_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_fixtures_test).step);
 
     const test_e2e_anthropic_step = b.step("test-e2e-anthropic", "Run Anthropic E2E tests");
     test_e2e_anthropic_step.dependOn(&b.addRunArtifact(e2e_anthropic_test).step);
@@ -3223,6 +3214,12 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         domain: ?[]const u8 = null,
         credential_declares_origin: bool = false,
     };
+    const Model = struct {
+        id: []const u8,
+        name: ?[]const u8 = null,
+        context_window: ?u32 = null,
+        max_tokens: ?u32 = null,
+    };
     const Row = struct {
         id: []const u8,
         display_name: ?[]const u8 = null,
@@ -3230,12 +3227,17 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         offering: ?[]const u8 = null,
         status: ?[]const u8 = null,
         credential_env: []const []const u8 = &.{},
+        credential_precedence: []const []const u8 = &.{},
         base_url_env: []const []const u8 = &.{},
         region_env: ?[]const u8 = null,
+        default_region: ?[]const u8 = null,
         wires: []const []const u8 = &.{},
         base_url_source: ?[]const u8 = null,
         endpoints: []const Endpoint = &.{},
         models_endpoint: ?[]const u8 = null,
+        context_window: ?u32 = null,
+        max_tokens: ?u32 = null,
+        models: []const Model = &.{},
         oauth_origin: ?Origin = null,
         docs: ?[]const u8 = null,
     };
@@ -3288,8 +3290,9 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     out.appendSlice(gpa, "pub const Offering = enum { coding_plan, subscription, api_key };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Status = enum { current, supported, withheld };\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    credential_precedence: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const providers: []const Provider = &.{\n") catch @panic("out of memory");
     for (catalog.providers) |row| {
         out.print(gpa, "    .{{\n        .id = \"{f}\",\n", .{std.zig.fmtString(row.id)}) catch @panic("out of memory");
@@ -3311,10 +3314,14 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
             out.print(gpa, "        .status = .@\"{s}\",\n", .{rank}) catch @panic("out of memory");
         }
         tryWriteStrings(gpa, &out, "        .credential_env = ", row.credential_env);
+        tryWriteStrings(gpa, &out, "        .credential_precedence = ", row.credential_precedence);
         tryWriteStrings(gpa, &out, "        .base_url_env = ", row.base_url_env);
         tryWriteStrings(gpa, &out, "        .wires = ", row.wires);
         if (row.region_env) |name| {
             out.print(gpa, "        .region_env = \"{f}\",\n", .{std.zig.fmtString(name)}) catch @panic("out of memory");
+        }
+        if (row.default_region) |name| {
+            out.print(gpa, "        .default_region = \"{f}\",\n", .{std.zig.fmtString(name)}) catch @panic("out of memory");
         }
         if (row.base_url_source) |source_kind| {
             out.print(gpa, "        .base_url_source = \"{f}\",\n", .{std.zig.fmtString(source_kind)}) catch @panic("out of memory");
@@ -3338,6 +3345,29 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         }
         if (row.models_endpoint) |path_text| {
             out.print(gpa, "        .models_endpoint = \"{f}\",\n", .{std.zig.fmtString(path_text)}) catch @panic("out of memory");
+        }
+        if (row.context_window) |window| {
+            out.print(gpa, "        .context_window = {d},\n", .{window}) catch @panic("out of memory");
+        }
+        if (row.max_tokens) |tokens| {
+            out.print(gpa, "        .max_tokens = {d},\n", .{tokens}) catch @panic("out of memory");
+        }
+        if (row.models.len > 0) {
+            out.appendSlice(gpa, "        .models = &.{\n") catch @panic("out of memory");
+            for (row.models) |model| {
+                out.print(gpa, "            .{{ .id = \"{f}\"", .{std.zig.fmtString(model.id)}) catch @panic("out of memory");
+                if (model.name) |model_name| {
+                    out.print(gpa, ", .name = \"{f}\"", .{std.zig.fmtString(model_name)}) catch @panic("out of memory");
+                }
+                if (model.context_window) |window| {
+                    out.print(gpa, ", .context_window = {d}", .{window}) catch @panic("out of memory");
+                }
+                if (model.max_tokens) |tokens| {
+                    out.print(gpa, ", .max_tokens = {d}", .{tokens}) catch @panic("out of memory");
+                }
+                out.appendSlice(gpa, " },\n") catch @panic("out of memory");
+            }
+            out.appendSlice(gpa, "        },\n") catch @panic("out of memory");
         }
         if (row.oauth_origin) |origin| {
             out.appendSlice(gpa, "        .oauth_origin = .{") catch @panic("out of memory");

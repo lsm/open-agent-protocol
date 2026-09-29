@@ -354,12 +354,13 @@ pub const EventBridge = struct {
         while (!self.cancel_token.load(.acquire)) {
             if (self.source.poll()) |ev| {
                 var mutable_ev = ev;
+                const dest_copies = self.dest.ownership.isOwned();
                 self.dest.push(ev) catch {
-                    ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
+                    if (dest_copies) ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
                     self.dest.completeWithError("Destination queue full");
                     return;
                 };
-                ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
+                if (dest_copies) ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
             } else {
                 if (self.source.isDone()) {
                     if (self.source.getError()) |err| {
@@ -561,6 +562,46 @@ test "ZeroCopyForwarder forwards events" {
     try std.testing.expect(received.? == .start);
 
     var mutable_ev = received.?;
+    ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
+}
+
+test "EventBridge leaves a borrowed destination holding the event it was given" {
+    const allocator = std.testing.allocator;
+
+    var source_stream = event_stream.AssistantMessageStream.init(allocator);
+    defer source_stream.deinit();
+
+    var dest_stream = event_stream.AssistantMessageStream.init(allocator);
+    defer dest_stream.deinit();
+
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "",
+        .provider = "",
+        .model = "borrowed-dest",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+    const event = try ai_types.cloneAssistantMessageEvent(allocator, .{ .start = .{ .partial = partial } });
+    try source_stream.push(event);
+    source_stream.complete(.{
+        .content = &.{},
+        .usage = .{},
+        .stop_reason = .stop,
+        .model = "",
+        .api = "",
+        .provider = "",
+        .timestamp = 0,
+    });
+
+    var bridge = EventBridge.init(&source_stream, &dest_stream, allocator);
+    bridge.run();
+
+    const received = dest_stream.poll().?;
+    try std.testing.expect(received == .start);
+    try std.testing.expectEqualStrings("borrowed-dest", received.start.partial.model);
+    var mutable_ev = received;
     ai_types.deinitAssistantMessageEvent(allocator, &mutable_ev);
 }
 

@@ -19,7 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two rules the Go loop inherits rather than rediscovers: a run ends with
   exactly one terminal event, and a provider that refuses is a normal
   `agent_end` — what it settles as on the wire is the endpoint's decision, not
-  the loop's.
+  the loop's. The note now also records that the first slice lands as four
+  PRs, one concern each, in dependency order.
+- **`go/internal/agent` gains the rule that decides a turn's fate (#370, first
+  of four).** `TurnOutcome` reads a reply and says which of three things
+  happens next: the turn failed, the run is answered, or the reply's tool calls
+  run. It carries `oapx`'s cut-off rule with it — a reply whose arguments were
+  truncated by the output limit is retried, and after three in a row the run is
+  answered rather than retried forever — because a Go loop that ended a run on
+  a different condition would be a parity divergence the harness reports as an
+  unexplained order difference. It reads `provider.AssistantContent` and does no
+  I/O, so it is the one piece of the loop that can be right or wrong on its own.
 
 ### Changed
 
@@ -49,6 +59,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it: `EventBridge`'s test built a *borrowed* destination, which cannot hold
   an event polled off a source stream because the source overwrites its own
   queue slot. Production's destination is owned, so the test now says so.
+
+- **Kimi is served by the generic catalog loader, and the catalog says which
+  region it defaults to.** Kimi was the one row the loader could not take, so it
+  kept a credential lookup, a models URL, a cache name, a parser and a base-URL
+  function of its own. A row with one endpoint per region may now record
+  `default_region`; `kimi` records `china`, which is what the old code assumed
+  in a `if` it never explained. `goap check` refuses a default naming a region
+  none of the row's endpoints serves.
+  A region comes from `KIMI_REGION` first, then from the region chosen at login,
+  then from the row's default — so a user who chose Global at login is
+  discovered against, and sent to, `api.moonshot.ai`. `KIMI_REGION=moonshot`,
+  `cn` and `coding` still mean what they meant, because those are the words
+  people type and matching the catalog's own names would have dropped all three
+  quietly. The region is now resolved **once**, in one place, and every path that
+  needs one asks for it: it used to be read and normalised three times over, and
+  `KIMI_REGION="global "` — with a trailing space, from a `.env` file — sent
+  discovery to the China models endpoint while the models themselves carried the
+  moonshot base. A region value is trimmed before it is matched, and a value
+  written into `auth.json` by hand is read by the same rules as one typed into
+  the environment, synonyms and all. A row that ships one endpoint per region now
+  also caches each region's discovered models under its own name, so a
+  `KIMI_REGION` switch cannot serve the models one region listed against the other
+  region's base for a day.
+  **Kimi's real limits, its display name and its offline fallback come back.**
+  The generic loader stamped every discovered row with a 128000-token context, an
+  8192-token output cap and the model id as its name, so a Kimi run in the TUI
+  silently asked for half the context it had and half the output it was allowed.
+  Kimi is 262144 and 16384, its model is called `Kimi K2.7 Code`, and when its
+  models endpoint could not be reached it served nothing at all where it used to
+  serve one known model. A catalog row may now record `context_window`,
+  `max_tokens` and a `models` list, with the same meaning a custom provider's
+  fields have had all along: the row's two numbers are the defaults for its
+  models, a `models` entry overrides them for one model and names how to show it,
+  and a row that lists models still serves them when its own listing answers with
+  none. `goap check` refuses a row that declares one model id twice, since the two
+  entries would then disagree about which name and limits win. No row but `kimi`
+  uses any of this yet.
+  **A provider's own listing speaks for its models, and the row's numbers are only
+  the default** — which is what `docs/custom-endpoints.md` has always said about
+  the same two fields on a custom provider. The generic loader did not ask, and
+  stamped its own guess on every model of every row, so a model whose listing
+  reports a 1048576-token context and a 32768 output cap was served a quarter of
+  the context and half the output. A model object is now read for its display
+  name, its context window, its output cap, whether it reasons, and whether it
+  takes images — under the names Kimi's listing used (`context_length`,
+  `supports_reasoning`, `supports_image_in`) and the ones this repository would
+  use, with a row's `models` entry, then the row's figures, then the generic
+  default behind them. Reasoning and image input are what a TUI shows and what a
+  request sends; no row's listing is asked for them today, because only Kimi's
+  parser read them and that parser went with the bespoke loader.
+  **A listing that reports a zero is treated as saying nothing**, for a context
+  window or an output cap: a model served a zero-token budget cannot be used, and
+  the row's own figures are a better guess than a provider's empty field.
+  **A row may now say which credential outranks which.** The environment has been
+  read before a stored login since the generic loader began, and a request is
+  signed with the stored credential first, so a user with both a Kimi login and
+  `KIMI_API_KEY` had their models listed under one key and their requests signed
+  with the other, at the region the other one chose. `kimi` records
+  `["stored", "environment"]`, which is the order its own loader used before the
+  generic one; every other row keeps the default. `goap check` refuses a source
+  it does not know, or the same one twice.
+  **A Kimi login made in the TUI keeps working, which it very nearly did not.**
+  The TUI stores an API key with its region as an *oauth* entry, because the
+  api-key entry has nowhere to put a region. The old Kimi code accepted either
+  shape; the generic credential lookup refused an oauth entry for a row that
+  takes only `api_key`, so a logged-in user would have found Kimi serving zero
+  models and its model refs unresolvable. The lookup now answers such an entry
+  with its `access` as the key, and only when the entry carries **no refresh
+  token** — a real oauth credential always has one, and that is what keeps this
+  from becoming a hole.
+  A refresh that fails now leaves the caller's error alone when *any* loader
+  served something. The old guard asked only about Kimi and Anthropic, and with
+  Kimi on the catalog path it could have fired while a dozen models were in
+  hand.
 
 - **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
 
@@ -111,6 +195,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old shape under the debug allocator.
 
 ### Added
+
+- **`/resume` lists sessions by title, in local time.** A session was labelled with its model, provider and a UTC time, so switching models mid-session made it look like a different session. The label is now `title · local date and time · model`. The title starts as the first line of the session's first message; after the first reply, the current model is asked once, in the background, for a title of at most six words, which replaces it. Older sessions take their first message from the file.
+
 - **`go/internal/provider` gains the `anthropic-messages` client, part of #358
   step 3.** It reuses step 2's SSE parser, event types, json tree and
   pre-transform, and it is **a different client rather than a variant of the one
@@ -231,12 +318,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     up; an aborted or errored assistant is dropped; and a thinking block from a
     **different** model becomes text while one from the same model keeps its
     signature. Without this an unanswered call goes out dangling and a long id goes
-    out unnormalized. It also carries a defect of its own, **#514**: the pending
-    calls are keyed by the normalized id and the answered ones by the original, so
-    on a Mistral host — where every id is re-hashed — an answered call grows a
-    second, spurious error result. Transcribed rather than corrected, and pinned,
-    so the port held the defect in place while the Zig side decided it: #514 is
-    fixed in `pre_transform`, and this transcription follows under #358.
+    out unnormalized. It carried a defect of its own, **#514**: the pending
+    calls were keyed by the normalized id and the answered ones by the original, so
+    on a Mistral host — where every id is re-hashed — an answered call grew a
+    second, spurious error result. It was transcribed rather than corrected, and
+    pinned that way, so the port held the defect in place while the Zig side
+    decided it. Both are now fixed: #514 landed in `pre_transform` and the
+    transcription here keys its answered set the same way.
   - **The event stream's thirteen kinds are the union, and this client emits nine
     of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
     `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
@@ -337,6 +425,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `providers/resolved_urls.json` in both trees; these rules are code, so they are
   pinned here, each read out of the Zig function it mirrors, with the premise
   asserted before the behaviour.
+- **`go/providercatalog` applies a base-URL override, so a run can be pointed
+  somewhere that is not the vendor's.** The package could *name* a row's
+  `base_url_env` but nothing read it, and `OAPX_BASE_URL` — the global redirect
+  `zig/src/provider_base_url.zig:17` reads ahead of every per-provider variable —
+  appeared nowhere in the Go tree. Every base URL a Go provider runtime used was
+  therefore the catalog's, and the `base_url_source` gate that is correct on its
+  own is exactly what prevents a redirect: a loopback is not `api.openai.com`, so
+  a static row answers with the catalog's URL and the override is never consulted.
+  `BaseURLWithOverrides(overrides, provider, wire)` now answers an override and
+  `ResolveBaseURL` prefers it over the catalog, in the order
+  `baseUrlWithOverrides` (`:92`) uses: the global variable wins outright; otherwise
+  the provider's own variable applies, and only when the provider **and** the wire
+  both match, so `ANTHROPIC_BASE_URL` does not reach `openai` and a matching wire
+  on the wrong provider is not an override either. A variable that is set but
+  empty is not an override, as everywhere else in this tree, and the Kimi region
+  accepts only the two the catalog records.
+  Two rules read backwards before they were read, both of which would have failed
+  quietly: `normalizeVersionedBaseUrl` (`:79`) **strips** a trailing `/v1` rather
+  than appending one, because the stored base is versionless and the versioned
+  route adds the segment later, and `usesVersionedRoute` (`:85`) keys off the
+  **wire** with `github-copilot` excluded, not off the provider. An override for a
+  versioned route is normalised to be versionless; one for `github-copilot` keeps
+  its path and loses only its trailing slashes, which is what `:94` does on that
+  branch.
+  The variable names are read out of the row through `FirstBaseURLEnv` and
+  `RegionEnv` rather than spelled in Go, so a catalog rename moves both trees —
+  Zig gets its names at compile time from `baseUrlEnv(...)[0]` and cannot drift.
+  The `openai` variable reaches **both** of that row's wires, `openai-completions`
+  and `openai-responses`, because a responses model is reachable through
+  `WireForModel` and a redirect that missed it would send the credential to
+  `api.openai.com` anyway. The Kimi region takes the aliases the catalog's own
+  test names — `moonshot` for global, `cn` and `coding` for china — folded
+  **ASCII**-only, the way `std.ascii.eqlIgnoreCase` is: `strings.EqualFold` also
+  folds `moonſhot` onto `moonshot`, and a value one tree accepts and the other
+  rejects points the run at a different endpoint, which is a credential sent
+  somewhere else. It falls back to the row's own `default_region`, which
+  `DefaultRegion(catalog, id)` answers and which #507 put in the catalog for
+  exactly this, when neither the environment nor the caller's region is usable, so
+  a blank or unrecognised region selects an endpoint instead of refusing to
+  resolve at all — and a row recording no default is still answered, from the
+  literal the source falls back to. The region is kimi's alone:
+  every other pair looks its endpoint up without one, which is what
+  `catalogTarget` (`model_catalog.zig:459`) does when it passes a null region.
 - **`docs/parity-job.md` says what the parity job is for.** The job drives the same requests through both trees and fails when the bytes differ, which makes it the last check before a divergence has to be settled by hand against a decision, a draft or a corpus. The note says which divergences that is the last check on — a payload the two trees decode differently, an answer one refuses and the other admits, and above all **the order of a run's events and the settlement order of two open interactions** — the latter uncovered by any fixture, and added by the entry above: the memory backend holds one pending interaction at a time, so it cannot open two, and the contested settlement #475 was written for — a terminal event sweeping several open gates, as the claude adapter's `sweepRun` does — had no fixture until `pi-two-open-calls`. What the `memory` fixture contributes instead is the only run long enough to read as a stream, through `TestBackendsMatchOapx`; `TestMemoryBackendMatchesOapx` compares a *sorted* set and is order-blind by construction — and which are covered cheaper elsewhere, because the fixtures are the oracle for the wire, the corpora for each harness, and the per-adapter tests for each adapter's own error handling. It says that every fixture which submits streams its run's envelopes, because the submit handler subscribes and pumps the run itself rather than the session-open `subscribe` member, and that `memory` is neither unique in doing that nor identical in both trees by construction — the two memory adapters are separate implementations, which is why the comparison scrubs `id` and every `*_ms` member. It has a row for the one divergence the "covered cheaper elsewhere" rule cannot place — what each tree writes to the harness, which needs a second tree to see at all — and it says which test does what — seven fixtures drive a `child.sh`, `opencode` answers the in-test fake HTTP server, and only one of the two memory tests looks at order — and it runs both tests in its own command, because running one is running half the coverage, and names the three CI jobs that run them — `backend-parity`, `memory-conformance`, and the twenty-fold `pi-parity-repeat` determinism gate. It also says what the job is *not* for: it is not conformance, not the harness's coverage, and not a race detector — one deterministic script per fixture cannot schedule a race — though a parity flake that recurs is race evidence, which is how pi's cancel divergence was found and why `pi-parity-repeat` exists. Each fixture gets a row saying which divergence it is the last check on, and `CLAUDE.md` and the README's paragraph that already promised "identical output" link to it. It lives in `docs/` rather than beside the fixtures because the parity test globs that directory and would read a README as a tenth backend.
 
 
@@ -833,6 +964,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shrinking composer no longer leaves blank rows behind.
 
 ### Fixed
+- **Resuming a long TUI session no longer reads every streamed chunk, and no longer stops at 64 MB.** A session file held every text, tool-call and provider chunk, each line repeating the session's details: one 50 MB session was 84% chunks, a resume parsed all of it, and a file over 64 MB refused to load. Chunks now go to `<session>.stream.jsonl`, which a resume does not read; the details are written only when they change; and `<session>.meta.json` records the last completed compaction, so a resume starts there, with up to 256 KB before it for the screen, and reads the whole file when that compaction's record does not load. Older files still load, skipping their provider events, tool-call deltas and tool progress unparsed, and nothing that was written before is dropped.
+
 - **A shell command's output under 10 KB now reaches the model whole.** With compact output on, which the TUI turns on by default, `shell_execute` stored every output as an artifact whatever its size and returned only a summary: about 430 bytes of retrieval instructions, then the first and last 512 bytes. Output under 1 KB came back about three times its size, output between 1 and 10 KB lost its middle, and the model often had to call `artifact_retrieve` next to read it. The shell tool no longer takes `compact_output`, and only output over its 10 KB limit is stored as an artifact.
 
 - `contract.Session`'s `models` and `tools` now report the revision the lister served
@@ -1053,7 +1186,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `oapx serve agent --backend codex` rebuilds a settled session's arena once it has grown 256 KiB past its last compaction, keeping the thread, the session state, each run's id, turn, status and sequence, and a stub per item and interaction, so a reused native item id is still ignored and its completion fails the run, and a late answer still reads as already resolved, as in `goap`. A Codex session held every frame and envelope until it closed.
 - The Hermes adapter no longer projects the gateway's `thinking.delta` as reasoning, in Go or Zig. The event carries the activity spinner (`"{face} {verb}..."`, or `""` to clear it), not model reasoning, so it is now observed-only; `reasoning.delta` is still projected. Recorded in [`research/hermes-thinking-delta-note.md`](research/hermes-thinking-delta-note.md).
 - **A tool result whose call is gone is now dropped wherever it falls, not only when it opens a run.** The `openai-completions` request builder drops such a result in its outer loop over messages, but that loop then hands a whole run of consecutive results to an inner loop that never repeated the check, so only the result that opened the run was ever examined. An orphan after an answered result was written into the body, where a `tool` message naming a call the request never made is an error the provider rejects — so the repair that exists was applied half the time, and the half that failed is the one a conversation of parallel tool calls answered out of order produces. The inner loop now applies the same guard. Dropping can never make a request worse, because the result is unusable either way, and the rule reads as absolute in the function that carries it; nothing in the code said the rule was positional. A result whose call is present is untouched, and a conversation with no tool call in it at all still keeps every result, since the guard stands down when there is nothing to match against. #513
+- **The Go `openai-completions` request builder drops an orphan wherever it falls in a run, as Zig does.** The port checked for a tool result whose call is not in the conversation in its outer loop over messages, and then collected a whole run of consecutive results into a slice and handed it to `toolResultRun` without repeating the check, so only the result that opened a run was ever examined. The inner loop now applies the same guard, which is what Zig's `openai_completions_api.zig` has done since #530. A run of nothing but orphans writes no tool message at all, and a conversation with no tool call anywhere still keeps every result.
+
+  One of the port's own tests was leaning on the gap without saying so: `TestAnEmptyAssistantIsWrittenAroundToolResultsOnlyWhenAsked` needed two consecutive written tool messages to observe the `requires_assistant_after_tool_result` filler, and got its second one from a result for a call nothing made. Its fixture now calls both tools, so it exercises the rule it is named for rather than the orphan. A test that passes because of a defect is the one kind of test that gets read as evidence for the defect.
 - **A chunk the runtime cannot read is still ignored rather than ending the response, and that is now pinned rather than assumed.** `parseChunk` returns on a chunk that does not parse, which leaves `canCompletePartialTextOnStreamError` reachable only from an exhausted allocator — the sole remaining way `parseChunk` can return an error. That was worth deciding rather than reading either way, so: the swallow is the policy, and it is the tree's, not this file's. `azure_openai_responses`, `openai_responses` (twice), `anthropic_messages` and `google_generative` each return on an unreadable chunk the same way, and only this wire ever wrote the partial-text rule, so the rule is the residue of one error path rather than evidence of a plan the others share. The rule stays as the allocator policy it is — on an OOM mid-stream, text already accumulated is finished with `length` rather than thrown away, but only while no tool call is open — and two tests now hold the swallow in place: one that a malformed chunk, a truncated one, and a valid non-object all leave every accumulator untouched, and one that a good chunk after a malformed one is still read.
+- **One predicate decides whether a base URL is an OpenAI host, and the two that disagreed are gone.** `provider_caps.isOpenAINative` looked for `api.openai.com` anywhere in the URL; `isOpenAIHost` parsed the URL and matched `openai.com` or a `.`-delimited suffix of it, case-insensitively. They were near-synonyms by name and were consulted at different depths: detection in `detectCapabilities` produced the native caps, and then `mergeCompat` discarded every one of them whenever its own predicate said no, so a URL carrying the vendor's name in a path or a query was detected native and then silently downgraded. There is now one `isOpenAIHost`, in `provider_caps`, holding the parse-the-host rule the request builders already shipped; `detectProviderType` and both `openai_completions` and `openai_responses` call it, and the verbatim copy at `openai_responses_api.zig` is gone.
+
+  **One behaviour change, and it is the one that was going the wrong way.** An `openai.com` host — `eu.openai.com`, or the bare `openai.com` — is detected native now, and three of the six decisions these predicates feed move with it: the system prompt is written as `developer` rather than `system`, `reasoning_effort` is written at all, and the token limit is `max_completion_tokens` rather than `max_tokens`. Those three were reaching for the native caps before and getting the compatible ones, which came out right only because the compatible caps happened to match. The other three — `store`, strict mode and the 40-byte tool-id limit — were already keyed on the host predicate and are unchanged.
+
+  A URL naming `api.openai.com` only in its path or a query moves **nothing observable**: it already landed on `store: false`, no strict mode, a zero tool-id limit and the compatible defaults, and it still does. What changed there is the mechanism rather than the wire — detection and use can no longer disagree, because there is one answer between them instead of two that were consulted at different depths.
+
+  `provider_caps` also has **no `addTest` in `build.zig`**, so its nine existing tests had never run; it is wired into `test` and `test-unit-utils` now, and the sixteen-URL table that decided this is a test over the one function. The file's other ten substring predicates are filed as #533. #511
+
+  **The Go port now carries the same one predicate**, as #534 does in Zig: `IsOpenAINativeURL`, which read the substring `api.openai.com` out of the whole URL, is gone, and `DetectProviderType` calls the host-parsing `IsOpenAIHost` that the request builders already used. It is the same change with the same one observable difference — an `openai.com` host such as `proxy.openai.com` or `eu.openai.com` is detected native and merges to the native developer role, `reasoning_effort` and `max_completion_tokens` — and the two tests that pinned the old split, one asserting the gate discarded what detection found, are rewritten because there is no longer a gate and a split to discard across. #511
 - **A `reasoning_details` blob no longer splices the provider's own bytes into the request JSON.** The `openai-completions` read path rebuilt each `reasoning.encrypted` detail by formatting the id and the data straight into a JSON string with `{s}`, so a `"` in either one closed the string early and a `\` began an escape the parser then read as part of the surrounding document. The detail is now written through `zig/src/json/writer.zig`, which is the writer the rest of the tree's escaping already comes from, so the blob is valid JSON whatever the provider put in it — and it matches Go's `encoding/json` down to the HTML-safe escapes, which the writer was brought to parity for. The consequence was confined to the wire: a request whose detail carried a quote or a backslash was not parseable, so it could not be sent as a well-formed body. A detail with nothing to escape is byte-for-byte what it was. This is the only place the tree built a JSON object by hand; the Anthropic wire writes its signature as an ordinary string field. #515
 
 ### Changed
@@ -1348,6 +1493,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI keys: `Esc` clears the draft, then aborts a running turn; `Ctrl+C` aborts or clears first and quits on a second press (immediately when idle with an empty composer); `Ctrl+D` quits on an empty idle composer; `Ctrl+A/E/U/K/W`, `Alt+Backspace`, `Ctrl`/`Alt`+arrows and `Alt+B/F` edit and move by word; `Delete` removes the character under the caret.
 - `scripts/tui-pty-driver.py` assertions follow the new rendering (raw-stream row breaks for the Shift+Enter draft, `✓`/`✗` tool glyphs, optional status-bar cut marker, double `Ctrl+C` semantics); the fixture provider accepts `<think>…</think>` in `text:` steps.
 
+### Added
+
+- **An open that subscribes or attaches is gated on the revision the host asked for.**
+  `hub.OpenRequest` carries a `capability_revision`, and an open that set `subscribe` or
+  carried tool sources compares it against the registered adapter's revision, answering
+  `error.StaleCapabilities` on a disagreement — the refusal the draft names, with
+  `expected_revision` and `current_revision` for the frontend to report. Go splits this
+  across two gates, `AttachmentGate` and `SubscribeGate`, and the draft's own line calls
+  the second "the same comparison", so one check covers both; what differs between them
+  is the support feature each then checks, and that half already exists as the open's
+  election check. `Failure.StaleCapabilities` had been declared since the hub was
+  written and **never returned by anything**: no code compared a revision, and the
+  request had no member to carry one. So a host that gated
+  its open on a revision got a session opened against whatever the adapter happened to
+  be serving — a silent disagreement where the draft specifies a 409 — and the answer's
+  `capability_revision` had no checked value to report, only the request's own, which is
+  the number the gate exists to verify. The comparison runs before the `session_exists`
+  lookup, so the gate wins over a name collision in the order Go's wire has it, and a
+  request that states no revision is not gated, which is Go's own `revision != ""`
+  guard rather than a hole. The gate runs before the election check as well, so an open
+  that both cites a stale revision and asks for an unadvertised feature answers
+  `stale_capabilities`, as Go's wire order has it. The gate and the open's two
+  attach elections key on whether the request **carries** entries, not on whether the
+  member is present: Go gates on `len(request.ToolSources) == 0`, so an open sending
+  `"tool_sources": []` attaches nothing and is admitted, where keying on the member's
+  mere presence called it an attachment and refused it as unadvertised.
+
 ### Fixed
 
 - **An unrecognised argument to `oapx validate` is no longer read as a path.**
@@ -1380,9 +1552,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewritten id, so it still names the call it stands in for. The wire is unchanged
   for every id normalization leaves alone, which is every id on a non-OpenAI,
   non-Mistral host and every clean short id elsewhere. The Go transcription in
-  `go/internal/provider` still keys its answered set by the arrival id, and its
-  change is routed to #358. #514
-
+  `go/internal/provider` keyed its answered set by the arrival id and now does
+  the same as here. #514
 
 ## [0.2.0] - 2026-09-11
 

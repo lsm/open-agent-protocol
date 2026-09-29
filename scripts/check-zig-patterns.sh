@@ -401,7 +401,6 @@ zig/src/tui/runtime.zig|                .data = try allocator.dupe(u8, img.data)
 zig/src/tui/runtime.zig|                .id = try allocator.dupe(u8, tc.id),
 zig/src/tui/runtime.zig|                .text = try allocator.dupe(u8, t.text),
 zig/src/tui/runtime.zig|                .thinking = try allocator.dupe(u8, t.thinking),
-zig/src/tui/session_store.zig|        .session_id = try allocator.dupe(u8, session_id),
 zig/src/tui/state.zig|            .id = try allocator.dupe(u8, id),
 zig/src/tui/state.zig|            .tool_call_id = try allocator.dupe(u8, tool_call_id),
 zig/src/utils/oauth/anthropic.zig|        .access_token = try allocator.dupe(u8, access_token),

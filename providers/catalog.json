@@ -179,7 +179,12 @@
       "credential_env": [
         "KIMI_API_KEY"
       ],
+      "credential_precedence": [
+        "stored",
+        "environment"
+      ],
       "region_env": "KIMI_REGION",
+      "default_region": "china",
       "wires": [
         "openai-completions"
       ],
@@ -197,6 +202,14 @@
         }
       ],
       "models_endpoint": "/v1/models",
+      "context_window": 262144,
+      "max_tokens": 16384,
+      "models": [
+        {
+          "id": "kimi-k2.7-code",
+          "name": "Kimi K2.7 Code"
+        }
+      ],
       "docs": "https://www.kimi.com/code/docs"
     },
     {

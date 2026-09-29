@@ -287,11 +287,27 @@ fn deliveryFeature(delivery: oap_types.RequestedDelivery) ?[]const u8 {
     };
 }
 
+pub fn carriesEntries(raw: ?[]const u8) bool {
+    var bare: [8]u8 = undefined;
+    var kept: usize = 0;
+    for (raw orelse return false) |byte| {
+        if (std.ascii.isWhitespace(byte)) continue;
+        if (kept == bare.len) return true;
+        bare[kept] = byte;
+        kept += 1;
+    }
+    const text = bare[0..kept];
+    if (std.mem.eql(u8, text, "[]")) return false;
+    if (std.mem.eql(u8, text, "{}")) return false;
+    if (std.mem.eql(u8, text, "null")) return false;
+    return true;
+}
+
 pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const oap_types.SessionOpenRequest, refusal: *Refusal) Failure!void {
     const elections = [_]struct { key: []const u8, present: bool }{
+        .{ .key = feature_tool_sources_attach, .present = carriesEntries(request.tool_sources_json) },
         .{ .key = feature_open_subscribe, .present = request.subscribe },
-        .{ .key = feature_tool_sources_attach, .present = request.tool_sources_json != null },
-        .{ .key = feature_tools_provide, .present = request.tools_json != null },
+        .{ .key = feature_tools_provide, .present = carriesEntries(request.tools_json) },
     };
     for (elections) |election| {
         if (!election.present) continue;

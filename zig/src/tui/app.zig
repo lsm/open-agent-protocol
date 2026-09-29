@@ -378,6 +378,7 @@ pub const ProductionRuntime = struct {
             .workspace_root = self.permission_engine.workspace_root,
             .run_async = true,
             .compact_output = true,
+            .generate_titles = true,
         };
     }
 
@@ -582,6 +583,16 @@ pub const App = struct {
     slash_index: usize = 0,
     slash_index_query: u64 = 0,
     compaction_transcripts: std.ArrayList([]u8) = .empty,
+    written_model: []u8 = &.{},
+    written_provider: []u8 = &.{},
+    session_written: bool = false,
+    session_created_at: i64 = 0,
+    compaction_offset: u64 = 0,
+    pending_thinking: std.ArrayList(u8) = .empty,
+    session_title: []u8 = &.{},
+    session_title_generated: bool = false,
+    first_user_text: []u8 = &.{},
+    title_session_id: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
@@ -649,6 +660,12 @@ pub const App = struct {
         self.quarantine_buffer.deinit(self.allocator);
         self.clearCompactionTranscripts();
         self.compaction_transcripts.deinit(self.allocator);
+        if (self.written_model.len > 0) self.allocator.free(self.written_model);
+        if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
+        self.pending_thinking.deinit(self.allocator);
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
+        if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
         self.state.deinit();
         self.* = undefined;
     }
@@ -717,7 +734,7 @@ pub const App = struct {
         }
         std.mem.sort(session_store.SessionMetadata, metas.items, {}, newerSessionFirst);
         for (metas.items) |meta| {
-            const label = try formatSessionLabel(self.allocator, meta);
+            const label = try formatSessionLabel(self.allocator, meta, utcOffsetSeconds(@divFloor(meta.last_active, 1000)));
             defer self.allocator.free(label);
             try self.state.addSession(meta.session_id, label);
         }
@@ -745,10 +762,7 @@ pub const App = struct {
         self.inline_flushed_rows = 0;
         if (self.session_id.len > 0) self.allocator.free(self.session_id);
         self.session_id = new_session_id;
-        self.clearCompactionTranscripts();
-        for (loaded.events.items) |event| {
-            if (event == .compaction_end and event.compaction_end.outcome == .completed) try self.recordCompactionTranscript(event.compaction_end.transcript.slice());
-        }
+        try self.restoreCompactionTranscripts(store, &loaded);
         try self.state.status.setSessionId(self.allocator, self.session_id);
         if (runtime.currentModel()) |model| {
             try self.state.status.setModelWithContext(self.allocator, model.id, model.provider, model.context_window);
@@ -766,6 +780,8 @@ pub const App = struct {
         self.state.status.streaming = false;
         self.state.status.compacting = false;
         self.state.mode = .normal;
+        try self.adoptLoadedSession(loaded.metadata);
+        self.saveSessionIndex(store);
     }
 
     const login_providers = [_][]const u8{ "anthropic", "github-copilot", "openai-codex", "kimi" };
@@ -1206,6 +1222,7 @@ pub const App = struct {
 
     fn saveEvent(self: *App, event: tui_runtime.TuiEvent) void {
         const store = self.store orelse return;
+        if (event == .message_end and event.message_end.role == .assistant) self.flushPendingThinking(store);
         switch (event) {
             .message_start, .context_usage, .prompt_segment_usage, .agent_start, .turn_start, .turn_end, .agent_end, .compaction_start => {},
             .text_delta => |payload| {
@@ -1246,8 +1263,156 @@ pub const App = struct {
                 if (jsonStringBudget(payload.message.slice()) > max_session_event_payload_bytes) return;
             },
         }
+        switch (event) {
+            .text_delta, .tool_call_delta, .provider_event, .tool_execution_update => {
+                store.saveChunk(self.session_id, event) catch {};
+                return;
+            },
+            .thinking_delta => |payload| {
+                self.pending_thinking.appendSlice(self.allocator, payload.delta.slice()) catch {};
+                store.saveChunk(self.session_id, event) catch {};
+                return;
+            },
+            .message_start => self.pending_thinking.clearRetainingCapacity(),
+            else => {},
+        }
+        const compaction = event == .compaction_end and event.compaction_end.outcome == .completed;
+        const offset: ?u64 = if (compaction) store.conversationBytes(self.session_id) catch null else null;
+        const wrote_metadata = self.saveConversationEvent(store, event, compaction);
+        if (wrote_metadata) self.compaction_offset = offset orelse self.compaction_offset;
+        const titled = switch (event) {
+            .message_end => |payload| payload.role == .user and self.titleFromFirstMessage(payload.text.slice()),
+            else => false,
+        };
+        if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
+        if (event == .agent_end) self.requestSessionTitle();
+    }
+
+    fn titleFromFirstMessage(self: *App, text: []const u8) bool {
+        if (self.session_title.len > 0) return false;
+        const line = titleLine(text);
+        if (line.len == 0) return false;
+        const title = self.allocator.dupe(u8, line) catch return false;
+        const first = self.allocator.dupe(u8, text) catch {
+            self.allocator.free(title);
+            return false;
+        };
+        self.session_title = title;
+        self.first_user_text = first;
+        return true;
+    }
+
+    fn requestSessionTitle(self: *App) void {
+        if (self.session_title_generated or self.first_user_text.len == 0) return;
+        const runtime = self.runtime orelse return;
+        const session_id = self.allocator.dupe(u8, self.session_id) catch return;
+        if (!(runtime.requestTitle(self.first_user_text) catch false)) {
+            self.allocator.free(session_id);
+            return;
+        }
+        if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
+        self.title_session_id = session_id;
+    }
+
+    fn collectGeneratedTitle(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const title = runtime.takeGeneratedTitle() orelse return;
+        const session_id = self.title_session_id;
+        self.title_session_id = &.{};
+        defer if (session_id.len > 0) self.allocator.free(session_id);
+        if (!std.mem.eql(u8, session_id, self.session_id)) {
+            defer self.allocator.free(title);
+            if (self.store) |store| store.saveGeneratedTitle(session_id, title) catch {};
+            return;
+        }
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        self.session_title = title;
+        self.session_title_generated = true;
+        if (self.store) |store| self.saveSessionIndex(store);
+    }
+
+    fn flushPendingThinking(self: *App, store: session_store.Store) void {
+        defer self.pending_thinking.clearRetainingCapacity();
+        var rest: []const u8 = self.pending_thinking.items;
+        while (rest.len > 0) {
+            const record = sessionRecordPrefix(rest);
+            _ = self.saveConversationEvent(store, .{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(record) } }, false);
+            rest = rest[record.len..];
+        }
+    }
+
+    fn sessionRecordPrefix(text: []const u8) []const u8 {
+        const limit = max_session_event_payload_bytes / jsonStringBudget("x");
+        if (text.len <= limit) return text;
+        var len = limit;
+        while (len > limit - 3 and (text[len] & 0xc0) == 0x80) len -= 1;
+        return text[0..len];
+    }
+
+    fn saveConversationEvent(self: *App, store: session_store.Store, event: tui_runtime.TuiEvent, force_metadata: bool) bool {
         const meta = self.currentSessionMetadata();
-        store.save(meta, event) catch {};
+        const changed = force_metadata or !self.session_written or
+            !std.mem.eql(u8, meta.model, self.written_model) or
+            !std.mem.eql(u8, meta.provider, self.written_provider);
+        if (!changed) {
+            store.saveEvent(self.session_id, event) catch {};
+            return false;
+        }
+        store.save(meta, event) catch return false;
+        self.rememberWrittenMetadata(meta.model, meta.provider) catch {};
+        if (!self.session_written) {
+            self.session_written = true;
+            if (self.session_created_at == 0) self.session_created_at = meta.last_active;
+        }
+        return true;
+    }
+
+    fn rememberWrittenMetadata(self: *App, model: []const u8, provider: []const u8) !void {
+        const next_model = try self.allocator.dupe(u8, model);
+        errdefer self.allocator.free(next_model);
+        const next_provider = try self.allocator.dupe(u8, provider);
+        if (self.written_model.len > 0) self.allocator.free(self.written_model);
+        if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
+        self.written_model = next_model;
+        self.written_provider = next_provider;
+    }
+
+    fn restoreCompactionTranscripts(self: *App, store: session_store.Store, loaded: *const session_store.LoadedSession) !void {
+        self.clearCompactionTranscripts();
+        for (loaded.events.items) |event| {
+            if (event == .compaction_end and event.compaction_end.outcome == .completed) try self.recordCompactionTranscript(event.compaction_end.transcript.slice());
+        }
+        if (self.compaction_transcripts.items.len >= loaded.metadata.compactions) return;
+        self.clearCompactionTranscripts();
+        for (1..@as(usize, loaded.metadata.compactions) + 1) |index| {
+            const path = try store.transcriptPath(self.session_id, index);
+            errdefer self.allocator.free(path);
+            try self.compaction_transcripts.append(self.allocator, path);
+        }
+    }
+
+    fn saveSessionIndex(self: *App, store: session_store.Store) void {
+        var meta = self.currentSessionMetadata();
+        meta.created_at = self.session_created_at;
+        meta.compaction_offset = self.compaction_offset;
+        meta.compactions = @intCast(self.compaction_transcripts.items.len);
+        meta.title = self.session_title;
+        meta.title_generated = self.session_title_generated;
+        store.saveIndex(meta) catch {};
+    }
+
+    fn adoptLoadedSession(self: *App, metadata: session_store.SessionMetadata) !void {
+        try self.rememberWrittenMetadata(metadata.model, metadata.provider);
+        self.session_written = true;
+        self.session_created_at = metadata.created_at;
+        self.compaction_offset = metadata.compaction_offset;
+        self.pending_thinking.clearRetainingCapacity();
+        const title = try self.allocator.dupe(u8, metadata.title);
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        self.session_title = title;
+        self.session_title_generated = metadata.title_generated;
+        if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
+        self.first_user_text = &.{};
     }
 
     fn messageEndPayloadSize(payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).message_end)) usize {
@@ -1359,6 +1524,7 @@ pub const App = struct {
         self.state.reconcileSteers(session.steersConsumedCount());
         self.syncBackpressureState();
         self.syncModelTelemetry();
+        self.collectGeneratedTitle();
         if (self.pending_session_reset and !self.state.status.streaming) {
             if (self.runtime) |runtime| {
                 if (runtime.local_agent) |*local| {
@@ -2720,27 +2886,114 @@ fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
     );
 }
 
-fn formatSessionLabel(allocator: std.mem.Allocator, meta: session_store.SessionMetadata) ![]u8 {
-    const ts = meta.last_active;
-    const secs: i64 = @divFloor(ts, 1000);
+const session_title_bytes = 60;
+
+fn titleLine(text: []const u8) []const u8 {
+    var lines = std.mem.tokenizeAny(u8, text, "\r\n");
+    while (lines.next()) |raw| {
+        var line = std.mem.trim(u8, raw, " \t");
+        for (line, 0..) |byte, index| {
+            if (byte < 0x20 or byte == 0x7f) {
+                line = std.mem.trimEnd(u8, line[0..index], " ");
+                break;
+            }
+        }
+        if (line.len == 0) continue;
+        if (line.len <= session_title_bytes) return line;
+        var end: usize = session_title_bytes;
+        while (end > 0 and (line[end] & 0xC0) == 0x80) end -= 1;
+        return line[0..end];
+    }
+    return "";
+}
+
+const CTm = extern struct {
+    tm_sec: c_int,
+    tm_min: c_int,
+    tm_hour: c_int,
+    tm_mday: c_int,
+    tm_mon: c_int,
+    tm_year: c_int,
+    tm_wday: c_int,
+    tm_yday: c_int,
+    tm_isdst: c_int,
+    tm_gmtoff: c_long,
+    tm_zone: ?[*:0]const u8,
+};
+
+extern "c" fn localtime_r(timer: *const std.c.time_t, result: *CTm) ?*CTm;
+
+fn utcOffsetSeconds(epoch_seconds: i64) i64 {
+    if (comptime @import("builtin").os.tag == .windows or !@import("builtin").link_libc) {
+        return 0;
+    } else {
+        const timer: std.c.time_t = @intCast(epoch_seconds);
+        var tm: CTm = undefined;
+        const local = localtime_r(&timer, &tm) orelse return 0;
+        return local.tm_gmtoff;
+    }
+}
+
+fn formatSessionLabel(allocator: std.mem.Allocator, meta: session_store.SessionMetadata, utc_offset_seconds: i64) ![]u8 {
+    const secs: i64 = @divFloor(meta.last_active, 1000) + utc_offset_seconds;
     const epoch = std.time.epoch.EpochSeconds{ .secs = @as(u64, @intCast(@max(secs, 0))) };
     const day = epoch.getEpochDay();
     const year_day = day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
     const day_secs = epoch.getDaySeconds();
+    const title = titleLine(meta.title);
     return std.fmt.allocPrint(
         allocator,
-        "{s} {s} {d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}",
+        "{s} · {d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} · {s}",
         .{
-            if (meta.model.len > 0) meta.model else "unknown",
-            if (meta.provider.len > 0) meta.provider else "",
+            if (title.len > 0) title else "untitled",
             year_day.year,
             month_day.month.numeric(),
             month_day.day_index + 1,
             day_secs.getHoursIntoDay(),
             day_secs.getMinutesIntoHour(),
+            if (meta.model.len > 0) meta.model else "unknown",
         },
     );
+}
+
+test "formatSessionLabel shows the title's first line, the local time and the model" {
+    const session_id = try std.testing.allocator.dupe(u8, "s1");
+    defer std.testing.allocator.free(session_id);
+    const model = try std.testing.allocator.dupe(u8, "gpt-6-luna");
+    defer std.testing.allocator.free(model);
+    const provider = try std.testing.allocator.dupe(u8, "openai-codex");
+    defer std.testing.allocator.free(provider);
+    const title = try std.testing.allocator.dupe(u8, "  Fix the resume freeze\nwith more detail");
+    defer std.testing.allocator.free(title);
+    const meta = session_store.SessionMetadata{ .session_id = session_id, .model = model, .provider = provider, .last_active = 1790600760000, .title = title };
+
+    const label = try formatSessionLabel(std.testing.allocator, meta, 8 * 3600);
+    defer std.testing.allocator.free(label);
+    try std.testing.expectEqualStrings("Fix the resume freeze · 2026-09-28 21:06 · gpt-6-luna", label);
+
+    var untitled_meta = meta;
+    untitled_meta.title = &.{};
+    const untitled = try formatSessionLabel(std.testing.allocator, untitled_meta, 0);
+    defer std.testing.allocator.free(untitled);
+    try std.testing.expectEqualStrings("untitled · 2026-09-28 13:06 · gpt-6-luna", untitled);
+}
+
+test "utcOffsetSeconds reads an offset a real time zone could have" {
+    const offset = utcOffsetSeconds(1790600760);
+    try std.testing.expect(@abs(offset) <= 14 * 3600);
+    try std.testing.expectEqual(@as(i64, 0), @mod(offset, 900));
+}
+
+test "titleLine keeps the first non-empty line, up to a control byte, within 60 bytes on a character boundary" {
+    try std.testing.expectEqualStrings("first", titleLine("\n  first  \nsecond"));
+    try std.testing.expectEqualStrings("", titleLine(" \n\t"));
+    try std.testing.expectEqualStrings("next tweaks:", titleLine("next tweaks:\r    1. the status line"));
+    try std.testing.expectEqualStrings("title", titleLine("title \x1b[2Jcleared"));
+    const long = "é" ** 40;
+    const cut = titleLine(long);
+    try std.testing.expectEqual(@as(usize, 60), cut.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
 }
 
 fn defaultModel() ai_types.Model {
@@ -2774,7 +3027,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     production.initBridge();
 
     var options = production.options();
-    if (fixture) |runtime| options.protocol = runtime.provider.protocolClient();
+    if (fixture) |runtime| {
+        options.protocol = runtime.provider.protocolClient();
+        options.generate_titles = false;
+    }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
     program.model = .{ .options = options };
@@ -3508,16 +3764,40 @@ test "fixture runtime rejects unknown step after a scenario prefix" {
     try std.testing.expectError(error.EmptyFixtureStep, FixtureRuntime.fromValue(std.testing.allocator, "text:one|"));
 }
 
-test "App saveEvent keeps debug-visible event types" {
+fn sessionTestApp(base: []const u8, session_id: []const u8) !App {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    errdefer app.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    app.session_id = try std.testing.allocator.dupe(u8, session_id);
+    try app.state.status.setModel(std.testing.allocator, "model-a", "provider-a");
+    return app;
+}
+
+fn sessionFileLines(base: []const u8, file_name: []const u8) !std.ArrayList([]const u8) {
+    const path = try std.fs.path.join(std.testing.allocator, &.{ base, file_name });
+    defer std.testing.allocator.free(path);
+    const data = try compat.fs.readFileAlloc(std.testing.allocator, compat.fs.getCwd(), path, 1024 * 1024);
+    errdefer std.testing.allocator.free(data);
+    var lines: std.ArrayList([]const u8) = .empty;
+    errdefer lines.deinit(std.testing.allocator);
+    try lines.append(std.testing.allocator, data);
+    var iter = std.mem.splitScalar(u8, std.mem.trimEnd(u8, data, "\n"), '\n');
+    while (iter.next()) |line| try lines.append(std.testing.allocator, line);
+    return lines;
+}
+
+fn freeSessionFileLines(lines: *std.ArrayList([]const u8)) void {
+    std.testing.allocator.free(lines.items[0]);
+    lines.deinit(std.testing.allocator);
+}
+
+test "App saveEvent keeps conversation events in the session and chunks in its stream file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
     defer std.testing.allocator.free(base);
-
-    var app = App.initWithoutRuntime(std.testing.allocator);
+    var app = try sessionTestApp(base, "split-events");
     defer app.deinit();
-    app.store = try session_store.Store.init(std.testing.allocator, base);
-    app.session_id = try std.testing.allocator.dupe(u8, "save-debug-events");
 
     var thinking = tui_runtime.TuiEvent{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "plan")) } };
     defer thinking.deinit(std.testing.allocator);
@@ -3556,17 +3836,290 @@ test "App saveEvent keeps debug-visible event types" {
     defer start.deinit(std.testing.allocator);
     app.saveEvent(start);
 
-    var loaded = try app.store.?.load("save-debug-events");
+    var loaded = try app.store.?.load("split-events");
     defer loaded.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 6), loaded.events.items.len);
-    try std.testing.expect(loaded.events.items[0] == .thinking_delta);
-    try std.testing.expect(loaded.events.items[1] == .tool_approval_requested);
-    try std.testing.expect(loaded.events.items[2] == .tool_execution_update);
-    try std.testing.expect(loaded.events.items[3] == .provider_event);
-    try std.testing.expectEqualStrings("{\"type\":\"done\"}", loaded.events.items[3].provider_event.event_json.slice());
-    try std.testing.expect(loaded.events.items[4] == .@"error");
-    try std.testing.expect(loaded.events.items[5] == .tool_execution_start);
-    try std.testing.expectEqualStrings("{\"command\":\"pwd\"}", loaded.events.items[5].tool_execution_start.args_json.slice());
+    try std.testing.expectEqual(@as(usize, 3), loaded.events.items.len);
+    try std.testing.expect(loaded.events.items[0] == .tool_approval_requested);
+    try std.testing.expect(loaded.events.items[1] == .@"error");
+    try std.testing.expect(loaded.events.items[2] == .tool_execution_start);
+    try std.testing.expectEqualStrings("{\"command\":\"pwd\"}", loaded.events.items[2].tool_execution_start.args_json.slice());
+
+    var stream = try sessionFileLines(base, "split-events.stream.jsonl");
+    defer freeSessionFileLines(&stream);
+    try std.testing.expectEqual(@as(usize, 4), stream.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, stream.items[1], "\"type\":\"thinking_delta\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.items[2], "\"type\":\"tool_execution_update\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stream.items[3], "\"type\":\"provider_event\"") != null);
+}
+
+test "App writes session metadata when a session starts and when its model changes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "metadata-changes");
+    defer app.deinit();
+
+    app.saveEvent(.{ .turn_start = .{} });
+    app.saveEvent(.{ .turn_end = .{ .stop_reason = .stop } });
+    try app.state.status.setModel(std.testing.allocator, "model-b", "provider-b");
+    app.saveEvent(.{ .turn_start = .{} });
+
+    var lines = try sessionFileLines(base, "metadata-changes.jsonl");
+    defer freeSessionFileLines(&lines);
+    try std.testing.expectEqual(@as(usize, 4), lines.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, lines.items[1], "\"model\":\"model-a\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, lines.items[2], "\"metadata\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, lines.items[3], "\"model\":\"model-b\"") != null);
+
+    var index = try app.store.?.loadIndex("metadata-changes");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("model-b", index.model);
+    try std.testing.expect(index.created_at > 0);
+}
+
+test "App folds a reply's thinking into one record at the reply's end" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "folded-thinking");
+    defer app.deinit();
+
+    app.saveEvent(.{ .message_start = .{ .role = .assistant } });
+    for ([_][]const u8{ "first ", "second" }) |part| {
+        var delta = tui_runtime.TuiEvent{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, part)) } };
+        defer delta.deinit(std.testing.allocator);
+        app.saveEvent(delta);
+    }
+    var end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
+    defer end.deinit(std.testing.allocator);
+    app.saveEvent(end);
+
+    var loaded = try app.store.?.load("folded-thinking");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), loaded.events.items.len);
+    try std.testing.expect(loaded.events.items[0] == .message_start);
+    try std.testing.expectEqualStrings("first second", loaded.events.items[1].thinking_delta.delta.slice());
+    try std.testing.expect(loaded.events.items[2] == .message_end);
+    try std.testing.expectEqual(@as(usize, 1), loaded.messages.items.len);
+}
+
+test "App splits a reply's thinking into records that fit the session budget" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "long-thinking");
+    defer app.deinit();
+
+    const part = "\u{20ac}" ** 1000;
+    app.saveEvent(.{ .message_start = .{ .role = .assistant } });
+    var sent: usize = 0;
+    while (sent <= max_session_event_payload_bytes / App.jsonStringBudget("x")) : (sent += part.len) {
+        app.saveEvent(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed(part) } });
+    }
+    var end = tui_runtime.TuiEvent{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "answer")) } };
+    defer end.deinit(std.testing.allocator);
+    app.saveEvent(end);
+
+    var loaded = try app.store.?.load("long-thinking");
+    defer loaded.deinit(std.testing.allocator);
+    var records: usize = 0;
+    var total: usize = 0;
+    for (loaded.events.items) |event| {
+        if (event != .thinking_delta) continue;
+        const delta = event.thinking_delta.delta.slice();
+        try std.testing.expect(App.jsonStringBudget(delta) <= max_session_event_payload_bytes);
+        try std.testing.expect(std.unicode.utf8ValidateSlice(delta));
+        records += 1;
+        total += delta.len;
+    }
+    try std.testing.expectEqual(@as(usize, 2), records);
+    try std.testing.expectEqual(sent, total);
+}
+
+test "App writes a reply's thinking even when the reply is too large to save" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "oversized-reply");
+    defer app.deinit();
+
+    app.saveEvent(.{ .message_start = .{ .role = .assistant } });
+    app.saveEvent(.{ .thinking_delta = .{ .content_index = 0, .delta = OwnedSlice(u8).initBorrowed("weighing it") } });
+    const text = try std.testing.allocator.alloc(u8, max_session_event_payload_bytes / App.jsonStringBudget("x") + 1);
+    defer std.testing.allocator.free(text);
+    @memset(text, 'x');
+    app.saveEvent(.{ .message_end = .{ .role = .assistant, .text = OwnedSlice(u8).initBorrowed(text) } });
+
+    var loaded = try app.store.?.load("oversized-reply");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), loaded.events.items.len);
+    try std.testing.expect(loaded.events.items[0] == .message_start);
+    try std.testing.expectEqualStrings("weighing it", loaded.events.items[1].thinking_delta.delta.slice());
+}
+
+test "App indexes where a completed compaction starts" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "compaction-index");
+    defer app.deinit();
+
+    var before = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
+    defer before.deinit(std.testing.allocator);
+    app.saveEvent(before);
+    const offset = try app.store.?.conversationBytes("compaction-index");
+    var compacted = tui_runtime.TuiEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
+    } };
+    defer compacted.deinit(std.testing.allocator);
+    app.saveEvent(compacted);
+
+    var index = try app.store.?.loadIndex("compaction-index");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(offset, index.compaction_offset);
+
+    var loaded = try app.store.?.load("compaction-index");
+    defer loaded.deinit(std.testing.allocator);
+    try std.testing.expectEqual(offset, loaded.metadata.compaction_offset);
+    try std.testing.expectEqual(@as(usize, 2), loaded.messages.items.len);
+    try std.testing.expect(loaded.events.items[0] == .message_end);
+}
+
+test "App keeps the last compaction offset when a compaction record is not written" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "unwritten-compaction");
+    defer app.deinit();
+
+    var before = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "before")) } };
+    defer before.deinit(std.testing.allocator);
+    app.saveEvent(before);
+    const offset = try app.store.?.conversationBytes("unwritten-compaction");
+    var compacted = tui_runtime.TuiEvent{ .compaction_end = .{
+        .outcome = .completed,
+        .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>")),
+    } };
+    defer compacted.deinit(std.testing.allocator);
+    app.saveEvent(compacted);
+    try std.testing.expectEqual(offset, app.compaction_offset);
+
+    const path = try std.fs.path.join(std.testing.allocator, &.{ base, "unwritten-compaction.jsonl" });
+    defer std.testing.allocator.free(path);
+    try compat.fs.getCwd().deleteFile(defaultIo(), path);
+    try compat.fs.createDir(compat.fs.getCwd(), path);
+    try std.testing.expect(try app.store.?.conversationBytes("unwritten-compaction") != offset);
+    app.saveEvent(compacted);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+
+    var index = try app.store.?.loadIndex("unwritten-compaction");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(offset, index.compaction_offset);
+}
+
+test "App titles a new session with its first message's first line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "first-message-title");
+    defer app.deinit();
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "\n fix the resume freeze\nwith detail")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    var second = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "another message")) } };
+    defer second.deinit(std.testing.allocator);
+    app.saveEvent(second);
+
+    var index = try app.store.?.loadIndex("first-message-title");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("fix the resume freeze", index.title);
+    try std.testing.expect(!index.title_generated);
+}
+
+test "App indexes the title the model generates after the first reply" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "generated-title");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+    runtime.waitForTitleRequest();
+    app.collectGeneratedTitle();
+
+    var index = try app.store.?.loadIndex("generated-title");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Resume freeze fix", index.title);
+    try std.testing.expect(index.title_generated);
+    try std.testing.expectEqual(@as(usize, 1), provider.call_count);
+}
+
+test "App files a generated title under the session that asked for it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "asking-session");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+    runtime.waitForTitleRequest();
+
+    try saveTestSession(app.store.?, "resumed-session", 1);
+    var resumed = try app.store.?.load("resumed-session");
+    defer resumed.deinit(std.testing.allocator);
+    std.testing.allocator.free(app.session_id);
+    app.session_id = try std.testing.allocator.dupe(u8, "resumed-session");
+    try app.adoptLoadedSession(resumed.metadata);
+    app.collectGeneratedTitle();
+
+    var asking = try app.store.?.loadIndex("asking-session");
+    defer asking.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Resume freeze fix", asking.title);
+    try std.testing.expect(asking.title_generated);
+    try std.testing.expectEqual(@as(usize, 0), app.session_title.len);
+    try std.testing.expect(!app.session_title_generated);
+    try std.testing.expectError(error.FileNotFound, app.store.?.loadIndex("resumed-session"));
 }
 
 test "App clear_transcript clears the tool registry" {
@@ -4812,6 +5365,57 @@ test "resume clears a compaction the saved session never finished" {
     try std.testing.expectEqualStrings("interrupted", app.session_id);
     try std.testing.expect(!app.state.status.compacting);
     try std.testing.expect(!app.state.status.streaming);
+}
+
+test "resume keeps every compaction transcript when it loads from the last compaction" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    errdefer std.testing.allocator.destroy(runtime);
+    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .protocol = .{ .stream_fn = unusedStream } });
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    app.runtime = runtime;
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    const store = app.store.?;
+
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "two-compactions"),
+        .model = try std.testing.allocator.dupe(u8, ""),
+        .provider = try std.testing.allocator.dupe(u8, ""),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const summary = agent.compaction.header ++ " Summary follows.\n\n<summary>\nkept\n</summary>";
+    const first_path = try store.transcriptPath("two-compactions", 1);
+    defer std.testing.allocator.free(first_path);
+    var first = tui_runtime.TuiEvent{ .compaction_end = .{ .outcome = .completed, .text = OwnedSlice(u8).initBorrowed(summary), .transcript = OwnedSlice(u8).initBorrowed(first_path) } };
+    try store.save(meta, first);
+    const filler_text = try std.testing.allocator.alloc(u8, 16 * 1024);
+    defer std.testing.allocator.free(filler_text);
+    @memset(filler_text, 'x');
+    for (0..20) |_| try store.saveEvent("two-compactions", .{ .system_warning = .{ .message = OwnedSlice(u8).initBorrowed(filler_text) } });
+    const offset = try store.conversationBytes("two-compactions");
+    const second_path = try store.transcriptPath("two-compactions", 2);
+    defer std.testing.allocator.free(second_path);
+    first.compaction_end.transcript = OwnedSlice(u8).initBorrowed(second_path);
+    try store.save(meta, first);
+    meta.compaction_offset = offset;
+    meta.compactions = 2;
+    try store.saveIndex(meta);
+
+    try app.loadSessions();
+    try app.resumeSelectedSession();
+    try std.testing.expectEqual(@as(usize, 2), app.compaction_transcripts.items.len);
+    try std.testing.expectEqualStrings(first_path, app.compaction_transcripts.items[0]);
+    try std.testing.expectEqualStrings(second_path, app.compaction_transcripts.items[1]);
+
+    var index = try store.loadIndex("two-compactions");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 2), index.compactions);
 }
 
 test "resume selected session clears delete reset flags on success" {

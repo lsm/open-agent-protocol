@@ -8,6 +8,7 @@ const sse_parser = @import("sse_parser");
 const error_detail = @import("provider_error_detail");
 const json_writer = @import("json_writer");
 const tool_call_tracker = @import("tool_call_tracker");
+const provider_caps = @import("provider_caps");
 const sanitize = @import("sanitize");
 const retry_util = @import("retry");
 const pre_transform = @import("pre_transform");
@@ -88,14 +89,6 @@ fn isTransparentOpenAIProxy(model: ai_types.Model) bool {
         model_compat.supports_reasoning_effort == true;
 }
 
-fn isOpenAIHost(base_url: []const u8) bool {
-    const uri = std.Uri.parse(base_url) catch return false;
-    const host = uri.host orelse return false;
-    const value = host.percent_encoded;
-    return std.ascii.eqlIgnoreCase(value, "openai.com") or
-        (value.len > "openai.com".len and std.ascii.eqlIgnoreCase(value[value.len - "openai.com".len ..], "openai.com") and value[value.len - "openai.com".len - 1] == '.');
-}
-
 fn freeToolCallIds(allocator: std.mem.Allocator, map: *std.StringHashMap(void)) void {
     var iter = map.keyIterator();
     while (iter.next()) |key| {
@@ -164,7 +157,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
-        .max_tool_id_len = if (isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
+        .max_tool_id_len = if (provider_caps.isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
         .insert_synthetic_results = true,
         .tools = context.tools,
     });
@@ -178,7 +171,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
     try w.writeStringField("model", model.id);
 
     const is_codex_model = isOpenAICodexResponsesModel(model);
-    const supports_openai_reasoning = model.reasoning and (isOpenAIHost(model.base_url) or
+    const supports_openai_reasoning = model.reasoning and (provider_caps.isOpenAIHost(model.base_url) or
         is_codex_model or
         (if (model.compat) |model_compat| model_compat.supports_reasoning_effort == true else false));
     const explicit_system_prompt = context.getSystemPrompt();
@@ -195,7 +188,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
 
     if (context.tools) |tools| {
         if (tools.len > 0) {
-            const honors_native_caps = is_codex_model or isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model);
+            const honors_native_caps = is_codex_model or provider_caps.isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model);
             const model_compat: ai_types.OpenAICompatOptions = model.compat orelse .{};
             const supports_tool_strict = model_compat.supports_strict_mode orelse honors_native_caps;
             try w.writeKey("tools");
@@ -246,7 +239,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
             compat_options.supports_reasoning_effort == true
     else
         false;
-    const supports_store = isOpenAIHost(model.base_url) or
+    const supports_store = provider_caps.isOpenAIHost(model.base_url) or
         (if (model.compat) |compat_options| compat_options.supports_store == true else false) or
         is_codex_model;
     if (supports_store) {
@@ -271,7 +264,7 @@ fn buildRequestBody(model: ai_types.Model, context: ai_types.Context, options: a
     }
 
     if (options.cache_retention) |retention| {
-        if (retention == .long and (isOpenAIHost(model.base_url) or is_openai_proxy)) {
+        if (retention == .long and (provider_caps.isOpenAIHost(model.base_url) or is_openai_proxy)) {
             try w.writeStringField("prompt_cache_retention", "24h");
         }
     }
