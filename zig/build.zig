@@ -813,6 +813,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "sse_parser", .module = sse_parser_mod },
             .{ .name = "json_writer", .module = json_writer_mod },
             .{ .name = "tool_call_tracker", .module = tool_call_tracker_mod },
+            .{ .name = "provider_caps", .module = provider_caps_mod },
             .{ .name = "sanitize", .module = sanitize_mod },
             .{ .name = "retry", .module = retry_mod },
             .{ .name = "pre_transform", .module = pre_transform_mod },
@@ -2139,6 +2140,7 @@ pub fn build(b: *std.Build) void {
     const sanitize_test = b.addTest(.{ .root_module = sanitize_mod });
 
     const pre_transform_test = b.addTest(.{ .root_module = pre_transform_mod });
+    const provider_caps_test = b.addTest(.{ .root_module = provider_caps_mod });
 
     const auth_provider_defs_test = b.addTest(.{ .root_module = auth_provider_defs_mod });
 
@@ -2801,6 +2803,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&endpoint_signals_test_run.step);
     test_step.dependOn(&b.addRunArtifact(sanitize_test).step);
     test_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
+    test_step.dependOn(&b.addRunArtifact(provider_caps_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_provider_defs_test).step);
     test_step.dependOn(&b.addRunArtifact(auth_resolver_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_credential_test).step);
@@ -3030,6 +3033,7 @@ pub fn build(b: *std.Build) void {
     test_unit_utils_step.dependOn(&b.addRunArtifact(oom_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(sanitize_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(pre_transform_test).step);
+    test_unit_utils_step.dependOn(&b.addRunArtifact(provider_caps_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(auth_resolver_test).step);
     test_unit_utils_step.dependOn(&b.addRunArtifact(provider_credential_test).step);
 

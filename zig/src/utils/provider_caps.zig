@@ -88,9 +88,12 @@ pub fn isDeepSeek(base_url: ?[]const u8) bool {
     return std.mem.find(u8, url, "api.deepseek.com") != null;
 }
 
-pub fn isOpenAINative(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.openai.com") != null;
+pub fn isOpenAIHost(base_url: []const u8) bool {
+    const uri = std.Uri.parse(base_url) catch return false;
+    const host = uri.host orelse return false;
+    const value = host.percent_encoded;
+    return std.ascii.eqlIgnoreCase(value, "openai.com") or
+        (value.len > "openai.com".len and std.ascii.eqlIgnoreCase(value[value.len - "openai.com".len ..], "openai.com") and value[value.len - "openai.com".len - 1] == '.');
 }
 
 pub fn isAnthropic(base_url: ?[]const u8) bool {
@@ -102,7 +105,7 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     const url = base_url orelse return .unknown;
 
     if (isAnthropic(url)) return .anthropic;
-    if (isOpenAINative(url)) return .openai_native;
+    if (isOpenAIHost(url)) return .openai_native;
     if (isGitHubCopilot(url)) return .openai_compatible;
     if (isMistral(url)) return .openai_compatible;
     if (isGroq(url)) return .openai_compatible;
@@ -206,6 +209,62 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "an openai host is a host ending in openai.com on a label boundary" {
+    const hosts = [_][]const u8{
+        "https://api.openai.com",
+        "https://api.openai.com/v1",
+        "https://openai.com",
+        "https://eu.openai.com",
+        "https://OpenAI.com",
+        "https://API.OPENAI.COM",
+        "https://user:pass@api.openai.com/v1",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isOpenAIHost(url));
+        try std.testing.expectEqual(ProviderType.openai_native, detectProviderType(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://myopenai.com",
+        "https://notopenai.com",
+        "https://openai.com.evil.example",
+        "https://api.openai.com.evil.example",
+        "https://evil.example/?next=api.openai.com",
+        "https://evil.example/openai/api.openai.com/v1",
+        "https://azure.microsoft.com/openai/deployments/api.openai.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isOpenAIHost(url));
+    }
+
+    try std.testing.expectEqual(ProviderType.unknown, detectProviderType(null));
+}
+
+test "a base URL carrying api.openai.com in its path is detected compatible, not native" {
+    const spoofed = "https://api.openai.com.evil.example/v1/chat/completions";
+    try std.testing.expectEqual(ProviderType.openai_compatible, detectProviderType(spoofed));
+
+    const caps = detectCapabilities(spoofed);
+    try std.testing.expectEqual(ProviderType.openai_compatible, caps.provider_type);
+    try std.testing.expect(!caps.supports_developer_role);
+    try std.testing.expect(!caps.supports_reasoning_effort);
+    try std.testing.expectEqualStrings("max_tokens", caps.max_tokens_field);
+}
+
+test "an openai.com subdomain is detected native and gets the native caps" {
+    const regional = "https://eu.openai.com/v1/chat/completions";
+    try std.testing.expect(isOpenAIHost(regional));
+    try std.testing.expectEqual(ProviderType.openai_native, detectProviderType(regional));
+
+    const caps = detectCapabilities(regional);
+    try std.testing.expectEqual(ProviderType.openai_native, caps.provider_type);
+    try std.testing.expect(caps.supports_developer_role);
+    try std.testing.expect(caps.supports_reasoning_effort);
+    try std.testing.expectEqualStrings("max_completion_tokens", caps.max_tokens_field);
 }
 
 test "isMistral detection" {
