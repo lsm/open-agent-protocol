@@ -394,5 +394,9 @@ and the wrong side is fixed or the divergence recorded in its own section.
   environment values.
 - Foreign-harness identifiers stay in namespaced `extensions`; they never become
   OAP identities.
-- If behavior changes, update the spec or draft in the same PR, and add an
-  entry under `Unreleased` in `CHANGELOG.md`, which follows Keep a Changelog.
+- If behavior changes, update the spec or draft it touches in the same PR, and
+  say what changed in the PR description, because the release notes are written
+  from it. A pull request does not edit `CHANGELOG.md`: the release process
+  writes it, in the Keep a Changelog shape, from the PRs merged since the last
+  tag. So do not add an entry under `Unreleased`, and do not read a missing one
+  as an unfinished PR.
