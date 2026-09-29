@@ -304,6 +304,12 @@ client — not only Go hosts — can drive any OAP adapter. The daemon is a thin
 HTTP+SSE codec (`serve/servehttp`) over the embeddable `serve` package; its
 wire behavior is the contract the `client` package proves:
 
+**`go/serve` is the library, and it is for in-process hosts.** A Go host that
+wants the hub driven inside its own test binary imports `go/serve` and calls it
+directly — no socket, no port, no second process. `oapx hub` is the product's
+daemon; the two serve the same wire, and `go/cmd/goap`'s differential asserts
+that rather than assuming it.
+
 ```sh
 go run ./go/cmd/goap hub [--config examples/oap-serve.json] [--addr 127.0.0.1:6270]
 ```
