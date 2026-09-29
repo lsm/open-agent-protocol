@@ -1085,6 +1085,7 @@ pub const TuiRuntime = struct {
                 payload.content_json = try self.dupeOwned(content_json);
             },
             .assistant => |m| {
+                payload.output_tokens = m.usage.output;
                 payload.text = try self.dupeOwned(assistantText(m.content));
                 const content_json = try serializeAssistantContent(self.allocator, m.content);
                 defer self.allocator.free(content_json);
