@@ -133,13 +133,45 @@ This lifecycle keeps stream state isolated and prevents long-lived client state 
 
 ## 6) Memory Ownership Model (Critical)
 
-`EventStream` does not universally own borrowed provider strings.
+A generic `EventStream` is borrowed by default: what it stores is whatever the
+pusher handed it, and `deinit()` frees nothing from an event unless the stream
+was built with owned-event cleanup. That default is what makes the generic
+container cheap, and it is why a borrowed stream ties every event's lifetime to
+the pusher's.
 
-Canonical ownership rules:
-1. Provider-produced stream events may contain borrowed slices tied to provider buffers.
-2. Protocol client paths that persist events must deep-copy (`clone*`) before queue ownership transfer.
-3. Any queue that owns events must explicitly opt into owned-event cleanup semantics.
-4. Never add blanket event-string deinit in generic `EventStream.deinit()`; this causes double-free in borrowed-string paths.
+**Provider streams are the exception, and unconditionally so.** Every stream a
+provider builds — anthropic, google, ollama, azure, and the mock streams the tui
+and the provider-protocol bridge build themselves — clones each event as it is
+queued. The rule:
+
+> A provider stream clones every event it queues, so whatever the producing
+> thread hands the queue is copied and the producing thread may free its own copy
+> the moment the push returns. Nothing a consumer reads is tied to the lifetime of
+> the thread that produced it.
+
+This was chosen over per-event ownership because a producer thread cannot
+outlive-correct the events it has queued: `wait()` reads the ring buffer before it
+checks `completed`, and `deinit()` drains through `poll()` after joining the
+thread, so an event can reach a consumer *after* every buffer the thread owned has
+been freed. Retiring those buffers in a thread-scoped list is a use-after-free, not
+a lifetime. The cost is a deep copy per event, on every provider stream and for
+every caller, and it is paid deliberately to remove the class rather than one
+instance of it.
+
+Consequences, all of which the ownership tests check:
+
+1. A consumer of a provider stream **must** release each event it polls
+   (`releaseEvent`, or `deinitAssistantMessageEvent`), because the clone is
+   per-poll. A consumer that keeps an event and never releases it leaks.
+2. `StreamOptions.requires_owned_stream_events` **has been removed** rather than
+   left inert. It used to let a caller choose the borrowed mode, and a
+   caller-chosen ownership flag is what made the two lifetime models coexist in
+   one codebase.
+3. The terminal is not an event. `done` is delivered as the stream's *result*,
+   never pushed onto the queue, so the result cannot be freed both as a queued
+   event and as the stream's result. `deinit()` frees it once.
+4. Never add blanket event-string deinit in generic `EventStream.deinit()`; that
+   would double-free the borrowed events a non-provider pusher may still own.
 5. A value handed to a caller across a lifetime boundary is owned by that caller
    or it is not handed over. The provider protocol client's terminal query
    returns `ai_types.OwnedMessage` for this reason: a bare `AssistantMessage`

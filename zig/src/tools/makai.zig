@@ -2446,7 +2446,6 @@ fn hubSignalled(_: *const anyopaque) bool {
     return !endpoint_signals.received();
 }
 
-
 fn runHubHttp(
     allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
@@ -2942,7 +2941,6 @@ fn runConformance(
     return !report.passed();
 }
 
-
 const ValidateVerdict = union(enum) {
     judged: []ValidateFinding,
     unjudged: []const u8,
@@ -3347,7 +3345,7 @@ test "the tui takes a context window and refuses anything else" {
     try std.testing.expectError(error.MissingContextWindow, parseTuiArgs(&.{"--context-window"}));
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "loads" }));
     try std.testing.expectError(error.ContextWindowNotATokenCount, parseTuiArgs(&.{ "--context-window", "0" }));
-    try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{"--model", "gpt-5-codex"}));
+    try std.testing.expectError(error.UnknownOption, parseTuiArgs(&.{ "--model", "gpt-5-codex" }));
 }
 
 const DEFAULT_PRINT_MODEL_ID = "kimi-k2.7-code";
@@ -8235,7 +8233,6 @@ fn startOapInference(
     cancelled.* = std.atomic.Value(bool).init(false);
 
     var options: ai_types.StreamOptions = .{};
-    options.requires_owned_stream_events = true;
     var resolved_credential: ?auth_resolver.ResolvedKey = null;
     defer if (resolved_credential) |*key| key.deinit(allocator);
 
@@ -9605,7 +9602,6 @@ fn backendClock() u64 {
     return compat.time.monotonicNanos() catch 0;
 }
 
-
 fn backendIo() std.Io {
     return if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
 }
@@ -10403,7 +10399,7 @@ test "a mode oapx does not carry is refused by name, and never read as a path" {
     var out = try tmp.dir.createFile(std.testing.io, "stdout", .{});
     var complained_on = try tmp.dir.createFile(std.testing.io, "stderr", .{});
     try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{ "--mode", "lenient", "t.json" }, out, complained_on));
-    try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{"--mode=lenient", "t.json"}, out, complained_on));
+    try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{ "--mode=lenient", "t.json" }, out, complained_on));
     try std.testing.expectError(error.UnsupportedMode, runValidate(allocator, &.{"--mode"}, out, complained_on));
     out.close(std.testing.io);
     complained_on.close(std.testing.io);

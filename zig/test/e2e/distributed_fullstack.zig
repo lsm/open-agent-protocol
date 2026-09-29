@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const compat = @import("compat");
 const ai_types = @import("ai_types");
@@ -71,11 +70,8 @@ fn distributedMockProviderStream(
 
     const stream = try allocator.create(event_stream.AssistantMessageEventStream);
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
-    if (options) |o| {
-        if (o.requires_owned_stream_events) {
-            stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-        }
-    }
+    _ = options;
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const response = if (contextHasToolResult(context))
         try makeFinalMessage(allocator)

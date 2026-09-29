@@ -297,11 +297,8 @@ test "InProcessProviderProtocolBridge smoke test" {
 
             const s = try a.create(event_stream.AssistantMessageEventStream);
             s.* = event_stream.AssistantMessageEventStream.init(a);
-            if (options) |o| {
-                if (o.requires_owned_stream_events) {
-                    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-                }
-            }
+            _ = options;
+            s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
             s.push(.{ .start = .{ .partial = .{
                 .content = &.{},
@@ -466,13 +463,11 @@ test "InProcessProviderProtocolBridge preserves streamed tool call terminal resu
             a: std.mem.Allocator,
         ) anyerror!*event_stream.AssistantMessageEventStream {
             _ = context;
-            const o = options orelse ai_types.StreamOptions{};
+            _ = options;
 
             const s = try a.create(event_stream.AssistantMessageEventStream);
             s.* = event_stream.AssistantMessageEventStream.init(a);
-            if (o.requires_owned_stream_events) {
-                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-            }
+            s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
             const p = partial(model);
 
             s.push(.{ .start = .{ .partial = p } }) catch {};

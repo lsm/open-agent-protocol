@@ -29,9 +29,8 @@ fn mockProviderStream(
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     if (options) |o| {
-        if (o.requires_owned_stream_events) {
-            s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
-        }
+        _ = o;
+        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     }
 
     const final = ai_types.AssistantMessage{

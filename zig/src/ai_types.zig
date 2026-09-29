@@ -115,7 +115,6 @@ pub const StreamOptions = struct {
     http_timeout_ms: ?u64 = 30_000,
     ping_interval_ms: ?u64 = null,
     owned_headers: ?OwnedSlice(HeaderPair) = null,
-    requires_owned_stream_events: bool = false,
 
     pub fn getApiKey(self: *const StreamOptions) ?[]const u8 {
         const key = self.api_key.slice();
