@@ -7,17 +7,19 @@ const PipeTransport = in_process.SerializedPipe;
 
 pub const Error = error{
     NoSession,
+    NoActiveRun,
     NotInitialized,
-    OutOfOrder,
 };
 
 pub const Client = struct {
     allocator: std.mem.Allocator,
     pipe: *PipeTransport,
     next_request_id: u64 = 0,
+    outstanding: std.StringHashMapUnmanaged(void) = .empty,
     session_id: ?[]u8 = null,
     capability_revision: ?[]u8 = null,
     pending_run_id: ?[]u8 = null,
+    unanswered: u64 = 0,
 
     pub fn init(allocator: std.mem.Allocator, pipe: *PipeTransport) Client {
         return .{ .allocator = allocator, .pipe = pipe };
@@ -28,15 +30,33 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
+        var it = self.outstanding.keyIterator();
+        while (it.next()) |key| self.allocator.free(key.*);
+        self.outstanding.deinit(self.allocator);
         if (self.session_id) |id| self.allocator.free(id);
         if (self.capability_revision) |rev| self.allocator.free(rev);
         if (self.pending_run_id) |id| self.allocator.free(id);
         self.* = undefined;
     }
 
+    pub fn outstandingCount(self: *const Client) usize {
+        return self.outstanding.count();
+    }
+
     fn requestId(self: *Client) ![]const u8 {
         self.next_request_id += 1;
-        return std.fmt.allocPrint(self.allocator, "tui-req-{d}", .{self.next_request_id});
+        const id = try std.fmt.allocPrint(self.allocator, "tui-req-{d}", .{self.next_request_id});
+        errdefer self.allocator.free(id);
+        try self.outstanding.put(self.allocator, id, {});
+        return id;
+    }
+
+    fn settleRequest(self: *Client, id: []const u8) bool {
+        if (self.outstanding.fetchRemove(id)) |entry| {
+            self.allocator.free(entry.key);
+            return true;
+        }
+        return false;
     }
 
     pub fn send(self: *Client, envelope: oap_types.Envelope) !void {
@@ -59,7 +79,6 @@ pub const Client = struct {
         const versions = [_][]const u8{oap_types.VERSION};
         const profiles = [_][]const u8{oap_types.PROFILE};
         const id = try self.requestId();
-        defer self.allocator.free(id);
         try self.send(.{ .id = id, .payload = .{ .initialize_request = .{
             .protocol_versions = &versions,
             .profiles = &profiles,
@@ -69,7 +88,6 @@ pub const Client = struct {
     pub fn openSession(self: *Client) !void {
         if (self.capability_revision == null) return Error.NotInitialized;
         const id = try self.requestId();
-        defer self.allocator.free(id);
         try self.send(.{
             .id = id,
             .capability_revision = self.capability_revision,
@@ -80,7 +98,6 @@ pub const Client = struct {
     pub fn submit(self: *Client, text: []const u8) !void {
         const session_id = self.session_id orelse return Error.NoSession;
         const id = try self.requestId();
-        defer self.allocator.free(id);
         var parts = [_]oap_types.ContentPart{.{ .text = text }};
         var messages = [_]oap_types.Message{.{ .role = .user, .content = .{ .parts = &parts } }};
         try self.send(.{
@@ -98,7 +115,6 @@ pub const Client = struct {
     pub fn switchModel(self: *Client, model_id: []const u8) !void {
         const session_id = self.session_id orelse return Error.NoSession;
         const id = try self.requestId();
-        defer self.allocator.free(id);
         try self.send(.{
             .id = id,
             .session_id = session_id,
@@ -109,9 +125,8 @@ pub const Client = struct {
 
     pub fn cancel(self: *Client) !void {
         const session_id = self.session_id orelse return Error.NoSession;
-        const run_id = self.pending_run_id orelse return Error.NoSession;
+        const run_id = self.pending_run_id orelse return Error.NoActiveRun;
         const id = try self.requestId();
-        defer self.allocator.free(id);
         try self.send(.{
             .id = id,
             .session_id = session_id,
@@ -121,20 +136,61 @@ pub const Client = struct {
         });
     }
 
-    pub fn absorb(self: *Client, envelope: oap_types.Envelope) !void {
-        if (envelope.capability_revision) |revision| try self.rememberRevision(revision);
+    pub fn absorb(self: *Client, envelope: oap_types.Envelope) void {
+        if (envelope.in_reply_to) |reply_to| {
+            if (!self.settleRequest(reply_to)) {
+                self.unanswered += 1;
+                return;
+            }
+        }
+
         switch (envelope.payload) {
-            .session_open_response => |payload| try self.rememberSessionId(payload.session_id),
-            .message_submit_response => |payload| {
-                if (payload.accepted) {
-                    if (payload.run_id) |run_id| try self.rememberRunId(run_id);
+            .initialize_response, .capabilities_response, .capabilities_updated => {
+                if (envelope.capability_revision) |revision| {
+                    self.rememberRevision(revision) catch { self.unanswered += 1; };
                 }
-            },
-            .run_status_updated, .content_delta => {
-                if (envelope.run_id) |run_id| try self.rememberRunId(run_id);
             },
             else => {},
         }
+
+        switch (envelope.payload) {
+            .session_open_response => |payload| {
+                self.rememberSessionId(payload.session_id) catch { self.unanswered += 1; };
+            },
+            .message_submit_response => |payload| {
+                if (payload.accepted) {
+                    if (payload.run_id) |run_id| {
+                        self.rememberRunId(run_id) catch { self.unanswered += 1; };
+                    }
+                }
+            },
+            .run_status_updated, .content_delta => {
+                if (envelope.run_id) |run_id| {
+                    self.rememberRunId(run_id) catch { self.unanswered += 1; };
+                }
+            },
+            .run_completed, .run_failed, .run_cancelled => self.forgetRun(),
+            else => {},
+        }
+    }
+
+    pub fn absorbProbe(self: *Client, envelope: oap_types.Envelope) void {
+        self.absorb(envelope);
+    }
+
+    pub fn settleProbe(self: *Client, run_id: []const u8) !void {
+        try self.rememberRunId(run_id);
+        const final_message = oap_types.Message{ .role = .assistant, .content = .{ .parts = &.{} } };
+        self.absorb(.{
+            .id = "term",
+            .run_id = run_id,
+            .payload = .{ .run_completed = .{
+                .session_id = "s",
+                .run_id = run_id,
+                .final_response = final_message,
+                .stop_reason = "stop",
+            } },
+        });
     }
 
     pub fn takeSessionId(self: *Client) ?[]u8 {
@@ -217,7 +273,7 @@ const Exchange = struct {
         while (try self.client.recv()) |env| {
             var owned = env;
             defer owned.deinit(self.allocator);
-            try self.client.absorb(owned);
+            self.client.absorb(owned);
             seen += 1;
         }
         return seen;
@@ -259,6 +315,87 @@ test "a submit before a session is opened is refused without a request on the wi
 
     var inbound = pipe.serverReceiver();
     try std.testing.expect((try inbound.readLine(allocator)) == null);
+}
+
+test "a response that answers no outstanding request is counted, not absorbed" {
+    const allocator = std.testing.allocator;
+    var pipe = in_process.createSerializedPipe(allocator);
+    defer pipe.deinit();
+    var client = Client.init(allocator, &pipe);
+    defer client.deinit();
+
+    try client.rememberRevision("rev-1");
+    client.absorbProbe(.{ .id = "stray", .in_reply_to = "tui-req-999", .payload = .{ .capabilities_response = .{ .endpoint = .{ .id = "e" } } } });
+
+    try std.testing.expectEqual(@as(u64, 1), client.unanswered);
+    try std.testing.expectEqualStrings("rev-1", client.capability_revision.?);
+}
+
+test "the capability revision only moves on the responses that carry it" {
+    const allocator = std.testing.allocator;
+    var pipe = in_process.createSerializedPipe(allocator);
+    defer pipe.deinit();
+    var client = Client.init(allocator, &pipe);
+    defer client.deinit();
+
+    try client.rememberRevision("rev-2");
+    client.absorbProbe(.{ .id = "evt", .capability_revision = "rev-older", .payload = .{ .content_delta = .{ .session_id = "s", .run_id = "r", .part = .{ .text = "late" } } } });
+    try std.testing.expectEqualStrings("rev-2", client.capability_revision.?);
+
+    client.absorbProbe(.{ .id = "upd", .capability_revision = "rev-3", .payload = .{ .capabilities_updated = .{ .previous_revision = "rev-2" } } });
+    try std.testing.expectEqualStrings("rev-3", client.capability_revision.?);
+}
+
+test "a terminal run event clears the run, so a later cancel says no run" {
+    const allocator = std.testing.allocator;
+    var exchange = try Exchange.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@m" });
+    defer exchange.deinit();
+    exchange.start();
+
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+    try exchange.client.submit("go on");
+    _ = try exchange.step();
+    try std.testing.expect(exchange.client.pending_run_id != null);
+    try std.testing.expectEqual(@as(usize, 0), exchange.client.outstandingCount());
+
+    try exchange.client.settleProbe("run-1");
+    try std.testing.expect(exchange.client.pending_run_id == null);
+    try std.testing.expectError(Error.NoActiveRun, exchange.client.cancel());
+}
+
+test "outstanding requests are settled as their responses arrive" {
+    const allocator = std.testing.allocator;
+    var exchange = try Exchange.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@m" });
+    defer exchange.deinit();
+    exchange.start();
+
+    try exchange.client.initialize();
+    try std.testing.expectEqual(@as(usize, 1), exchange.client.outstandingCount());
+    _ = try exchange.step();
+    try std.testing.expectEqual(@as(usize, 0), exchange.client.outstandingCount());
+
+    try exchange.client.openSession();
+    try std.testing.expectEqual(@as(usize, 1), exchange.client.outstandingCount());
+    _ = try exchange.step();
+    try std.testing.expectEqual(@as(usize, 0), exchange.client.outstandingCount());
+    try std.testing.expectEqual(@as(u64, 0), exchange.client.unanswered);
+}
+
+test "a cancel with a session but no run says the run is missing" {
+    const allocator = std.testing.allocator;
+    var exchange = try Exchange.init(allocator, .{ .default_model_id = "anthropic/anthropic-messages@m" });
+    defer exchange.deinit();
+    exchange.start();
+
+    try exchange.client.initialize();
+    _ = try exchange.step();
+    try exchange.client.openSession();
+    _ = try exchange.step();
+    try std.testing.expect(exchange.client.session_id != null);
+    try std.testing.expectError(Error.NoActiveRun, exchange.client.cancel());
 }
 
 fn rememberProbe(allocator: std.mem.Allocator) !void {
