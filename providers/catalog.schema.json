@@ -103,12 +103,6 @@
       },
       "additionalProperties": false
     },
-    "credentialSource": {
-      "enum": [
-        "stored",
-        "environment"
-      ]
-    },
     "model": {
       "type": "object",
       "required": [
@@ -207,15 +201,6 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^/"
-        },
-        "credential_precedence": {
-          "description": "Where this row's credential is looked for, in the order given. Absent means `[\"environment\", \"stored\"]`, which is what a row needs only when a user has at most one of the two. A row that names `stored` first is saying that a login made through this repository outranks a variable in the environment, because a request is signed with the stored credential first \u2014 so listing models under the variable's would advertise models the same user cannot call, at the other region.",
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/credentialSource"
-          }
         },
         "context_window": {
           "description": "The context window in tokens, as this provider's own figures give it, for every model of this row that has no `models` entry saying otherwise. Absent means the generic default, which is a guess and a low one; a model the provider describes itself with a larger window is served the row's figure unless its entry corrects it.",

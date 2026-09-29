@@ -9,6 +9,7 @@ const custom_providers = @import("custom_providers");
 const github_copilot = @import("oauth/github_copilot");
 const provider_catalog = @import("provider_catalog");
 const provider_credential = @import("provider_credential");
+const auth_resolver = @import("auth_resolver");
 const provider_base_url = @import("provider_base_url");
 const anthropic_messages_api = @import("anthropic_messages_api");
 const openai_completions_api = @import("openai_completions_api");
@@ -2156,6 +2157,98 @@ test "loadProductionModels omits Kimi model by default in tests" {
 
     for (models) |model| {
         try std.testing.expect(!std.mem.eql(u8, kimi_provider_id, model.provider));
+    }
+}
+
+test "a Kimi listing and the requests that follow use the same credential and the same region" {
+    const allocator = std.testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    const cases = [_]struct { env_key: ?[]const u8, env_region: ?[]const u8, stored: ?[]const u8, stored_region: ?[]const u8, want_key: ?[]const u8, want_region: []const u8 }{
+        .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-stored", .want_region = "global" },
+        .{ .env_key = null, .env_region = null, .stored = "sk-stored", .stored_region = null, .want_key = "sk-stored", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = null, .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "global" },
+        .{ .env_key = "sk-env", .env_region = "global", .stored = "sk-stored", .stored_region = "china", .want_key = "sk-env", .want_region = "global" },
+        .{ .env_key = "sk-env", .env_region = "china", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "china" },
+        .{ .env_key = "sk-env", .env_region = "mars", .stored = "sk-stored", .stored_region = "global", .want_key = "sk-env", .want_region = "global" },
+        .{ .env_key = null, .env_region = null, .stored = null, .stored_region = null, .want_key = null, .want_region = "china" },
+    };
+
+    for (cases) |case| {
+        var storage = oauth_storage.AuthStorage{
+            .providers = std.StringHashMap(oauth_storage.ProviderAuth).init(allocator),
+            .allocator = allocator,
+        };
+        defer storage.deinit();
+        if (case.stored) |key| {
+            const data = if (case.stored_region) |region|
+                try std.fmt.allocPrint(allocator, "region:{s}", .{region})
+            else
+                try allocator.dupe(u8, "no region");
+            try storage.providers.put(try allocator.dupe(u8, kimi_provider_id), .{ .oauth = .{
+                .access = try allocator.dupe(u8, key),
+                .refresh = try allocator.dupe(u8, ""),
+                .expires = std.math.maxInt(i64),
+                .provider_data = data,
+            } });
+        }
+
+        try compat.setTestEnv(allocator, kimi_env_key, case.env_key orelse "");
+        try compat.setTestEnv(allocator, kimi_region_env, case.env_region orelse "");
+
+        var environment: [2]provider_credential.EnvironmentValue = undefined;
+        var held: usize = 0;
+        for (provider_catalog.credentialEnv(kimi_provider_id)) |name| {
+            const value = compat.getEnvVarOwned(allocator, name) catch continue;
+            environment[held] = .{ .name = name, .value = value };
+            held += 1;
+        }
+        defer {
+            for (environment[0..held]) |entry| allocator.free(entry.value);
+        }
+
+        var listed = (try provider_credential.lookup(allocator, environment[0..held], &storage, kimi_provider_id));
+        defer if (listed) |*found| found.deinit(allocator);
+        if (case.want_key) |want| {
+            try std.testing.expectEqualStrings(want, listed.?.key);
+        } else {
+            try std.testing.expect(listed == null);
+        }
+
+        if (case.want_key) |want| {
+            var sent = try auth_resolver.resolveApiKeyOfKind(allocator, &storage, kimi_provider_id, null, .any);
+            defer sent.deinit(allocator);
+            try std.testing.expectEqualStrings(want, sent.api_key);
+        } else {
+            try std.testing.expectError(
+                error.AuthRequired,
+                auth_resolver.resolveApiKeyOfKind(allocator, &storage, kimi_provider_id, null, .any),
+            );
+        }
+
+        const region = catalogRegion(allocator, &storage, kimi_provider_id);
+        try std.testing.expectEqualStrings(case.want_region, region.?);
+
+        var listed_base = (try catalogEndpointFromEnvironment(allocator, &storage, kimi_provider_id)).?;
+        defer listed_base.deinit(allocator);
+        try std.testing.expectEqualStrings(case.want_region, listed_base.region.?);
+
+        const request_base = try provider_base_url.defaultBaseUrlForRefWithRegion(
+            allocator,
+            kimi_provider_id,
+            kimi_api_id,
+            region,
+        );
+        defer allocator.free(request_base);
+        try std.testing.expectEqualStrings(listed_base.base_url, request_base);
+
+        const want_base = if (std.mem.eql(u8, case.want_region, "global"))
+            "https://api.moonshot.ai"
+        else
+            "https://api.kimi.com/coding";
+        try std.testing.expectEqualStrings(want_base, listed_base.base_url);
+        try std.testing.expectEqualStrings(want_base, request_base);
     }
 }
 

@@ -23,25 +23,24 @@ type Catalog struct {
 }
 
 type Provider struct {
-	ID              string       `json:"id"`
-	DisplayName     string       `json:"display_name,omitempty"`
-	Auth            []string     `json:"auth,omitempty"`
-	Offering        string       `json:"offering,omitempty"`
-	Status          string       `json:"status,omitempty"`
-	CredentialEnv   []string     `json:"credential_env,omitempty"`
-	CredentialOrder []string     `json:"credential_precedence,omitempty"`
-	BaseURLEnv      []string     `json:"base_url_env,omitempty"`
-	RegionEnv       string       `json:"region_env,omitempty"`
-	DefaultRegion   string       `json:"default_region,omitempty"`
-	Wires           []string     `json:"wires,omitempty"`
-	BaseURLSource   string       `json:"base_url_source,omitempty"`
-	Endpoints       []Endpoint   `json:"endpoints,omitempty"`
-	ModelsPath      string       `json:"models_endpoint,omitempty"`
-	ContextWindow   int          `json:"context_window,omitempty"`
-	MaxTokens       int          `json:"max_tokens,omitempty"`
-	Models          []Model      `json:"models,omitempty"`
-	OAuthOrigin     *OAuthOrigin `json:"oauth_origin,omitempty"`
-	Docs            string       `json:"docs,omitempty"`
+	ID            string       `json:"id"`
+	DisplayName   string       `json:"display_name,omitempty"`
+	Auth          []string     `json:"auth,omitempty"`
+	Offering      string       `json:"offering,omitempty"`
+	Status        string       `json:"status,omitempty"`
+	CredentialEnv []string     `json:"credential_env,omitempty"`
+	BaseURLEnv    []string     `json:"base_url_env,omitempty"`
+	RegionEnv     string       `json:"region_env,omitempty"`
+	DefaultRegion string       `json:"default_region,omitempty"`
+	Wires         []string     `json:"wires,omitempty"`
+	BaseURLSource string       `json:"base_url_source,omitempty"`
+	Endpoints     []Endpoint   `json:"endpoints,omitempty"`
+	ModelsPath    string       `json:"models_endpoint,omitempty"`
+	ContextWindow int          `json:"context_window,omitempty"`
+	MaxTokens     int          `json:"max_tokens,omitempty"`
+	Models        []Model      `json:"models,omitempty"`
+	OAuthOrigin   *OAuthOrigin `json:"oauth_origin,omitempty"`
+	Docs          string       `json:"docs,omitempty"`
 }
 
 type Model struct {

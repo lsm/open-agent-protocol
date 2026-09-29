@@ -2134,6 +2134,8 @@ test "a granted kimi credential outranks the stored login's region" {
 }
 
 test "a kimi api key stored in the oauth shape still reaches its endpoint" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var state = AuthTestState{ .expires = compat.time.nowMillis() + 60_000 };
     auth_test_state = &state;
     defer auth_test_state = null;

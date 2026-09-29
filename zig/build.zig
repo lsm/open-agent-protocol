@@ -664,6 +664,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oauth/storage", .module = oauth_storage_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "custom_providers", .module = custom_providers_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
         },
     });
 
@@ -1970,6 +1971,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "provider_credential", .module = provider_credential_mod },
             .{ .name = "provider_base_url", .module = provider_base_url_mod },
+            .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
             .{ .name = "openai_completions_api", .module = openai_completions_api_mod },
             .{ .name = "openai_responses_api", .module = openai_responses_api_mod },
@@ -3230,7 +3232,6 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         offering: ?[]const u8 = null,
         status: ?[]const u8 = null,
         credential_env: []const []const u8 = &.{},
-        credential_precedence: []const []const u8 = &.{},
         base_url_env: []const []const u8 = &.{},
         region_env: ?[]const u8 = null,
         default_region: ?[]const u8 = null,
@@ -3295,7 +3296,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    credential_precedence: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const providers: []const Provider = &.{\n") catch @panic("out of memory");
     for (catalog.providers) |row| {
         out.print(gpa, "    .{{\n        .id = \"{f}\",\n", .{std.zig.fmtString(row.id)}) catch @panic("out of memory");
@@ -3317,7 +3318,6 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
             out.print(gpa, "        .status = .@\"{s}\",\n", .{rank}) catch @panic("out of memory");
         }
         tryWriteStrings(gpa, &out, "        .credential_env = ", row.credential_env);
-        tryWriteStrings(gpa, &out, "        .credential_precedence = ", row.credential_precedence);
         tryWriteStrings(gpa, &out, "        .base_url_env = ", row.base_url_env);
         tryWriteStrings(gpa, &out, "        .wires = ", row.wires);
         if (row.region_env) |name| {

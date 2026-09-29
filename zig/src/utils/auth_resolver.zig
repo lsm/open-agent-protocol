@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const compat = @import("compat");
 const storage_mod = @import("oauth/storage");
 const custom_providers = @import("custom_providers");
+const provider_catalog = @import("provider_catalog");
 
 pub const AuthStorage = storage_mod.AuthStorage;
 pub const ProviderAuth = storage_mod.ProviderAuth;
@@ -34,6 +35,15 @@ pub fn resolveApiKey(
     return resolveApiKeyOfKind(allocator, auth_storage, provider_id, provided_api_key, .any);
 }
 
+fn rowEnvironmentKey(allocator: std.mem.Allocator, provider_id: []const u8) ?[]u8 {
+    const key = provider_catalog.apiKeyFromEnv(allocator, provider_id) orelse return null;
+    if (key.len == 0) {
+        allocator.free(key);
+        return null;
+    }
+    return @constCast(key);
+}
+
 pub fn resolveApiKeyOfKind(
     allocator: std.mem.Allocator,
     auth_storage: ?*AuthStorage,
@@ -47,6 +57,8 @@ pub fn resolveApiKeyOfKind(
             return .{ .api_key = dup };
         }
     }
+
+    if (rowEnvironmentKey(allocator, provider_id)) |key| return .{ .api_key = key };
 
     if (auth_storage) |storage| {
         if (storage.resolvedCredential(provider_id)) |auth| {
@@ -165,6 +177,46 @@ test "resolveApiKey - loads oauth access token from storage by provider_id" {
     defer resolved.deinit(testing.allocator);
 
     try testing.expectEqualStrings("oauth-access", resolved.api_key);
+}
+
+test "an environment key wins over a stored login, and a row that names no variable is untouched" {
+    const allocator = testing.allocator;
+    try provider_catalog.blankEnvironment(allocator);
+    defer compat.clearTestEnv();
+
+    var storage = AuthStorage{
+        .providers = std.StringHashMap(ProviderAuth).init(allocator),
+        .allocator = allocator,
+    };
+    defer storage.deinit();
+    try storage.providers.put(try allocator.dupe(u8, "kimi"), .{ .oauth = .{
+        .access = try allocator.dupe(u8, "sk-stored"),
+        .refresh = try allocator.dupe(u8, ""),
+        .expires = 0,
+    } });
+
+    var with_env = try resolveApiKeyOfKind(allocator, &storage, "kimi", null, .any);
+    defer with_env.deinit(allocator);
+    try testing.expectEqualStrings("sk-stored", with_env.api_key);
+
+    try compat.setTestEnv(allocator, "KIMI_API_KEY", "sk-env");
+    var env_wins = try resolveApiKeyOfKind(allocator, &storage, "kimi", null, .any);
+    defer env_wins.deinit(allocator);
+    try testing.expectEqualStrings("sk-env", env_wins.api_key);
+
+    try storage.providers.put(try allocator.dupe(u8, "openai-codex"), .{ .oauth = .{
+        .access = try allocator.dupe(u8, "codex-access"),
+        .refresh = try allocator.dupe(u8, "codex-refresh"),
+        .expires = 0,
+    } });
+    var codex = try resolveApiKeyOfKind(allocator, &storage, "openai-codex", null, .any);
+    defer codex.deinit(allocator);
+    try testing.expectEqualStrings("codex-access", codex.api_key);
+
+    try testing.expectError(
+        error.AuthRequired,
+        resolveApiKeyOfKind(allocator, &storage, "no-such-row", null, .any),
+    );
 }
 
 test "resolveApiKeyOfKind - api_key_only refuses a stored oauth token" {
