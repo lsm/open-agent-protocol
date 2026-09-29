@@ -237,8 +237,14 @@ code paths; add a transcript row instead.
   a 401 or 403 is a refusal rather than an outage: the row is dropped for that listing
   and the fallbacks above are not consulted, because a plan row that refuses is one the
   subscription does not open. The refusal is remembered as a marker for five minutes,
-  and only for a stored login — a key from `KIMI_API_KEY` is never covered by one — so
-  buying the plan or logging out brings the row back on the next listing. Each entry takes its
+  and only for a stored login — a key from `KIMI_API_KEY` is never covered by one, and
+  logging out brings the row back on the next listing. The marker is keyed by row and
+  region, not by the login that earned it, so it is deliberately not derived from the
+  credential and nothing derived from a credential reaches disk. The cost of that is one
+  bounded case: replacing a stored login with a different one inside the five minutes
+  leaves the new key suppressed until the marker expires or a forced refresh re-probes.
+  Nothing is written that would let the marker tell the two logins apart, so the window is
+  kept short rather than made exact. Each entry takes its
   display name, context window, reasoning flag and text/image input from the response's
   `display_name`, `context_length`, `supports_reasoning` and `supports_image_in`; the
   endpoint reports no output cap, so every entry keeps the 16 384 default. A selected
