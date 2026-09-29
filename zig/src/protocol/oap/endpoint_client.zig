@@ -72,15 +72,32 @@ pub const Client = struct {
     }
 
     pub fn close(self: *Client) void {
+        self.closeStdin();
+        if (self.child) |*child| {
+            _ = child.wait(self.io()) catch {};
+            self.child = null;
+        }
+        self.closed = true;
+    }
+
+    pub fn closeStdin(self: *Client) void {
         if (self.child) |*child| {
             if (child.stdin) |stdin| {
                 stdin.close(self.io());
                 child.stdin = null;
             }
-            _ = child.wait(self.io()) catch {};
-            self.child = null;
         }
-        self.closed = true;
+    }
+
+    pub fn waitExit(self: *Client) !u8 {
+        const child = &(self.child orelse return Error.NotRunning);
+        const term = try child.wait(self.io());
+        self.child = null;
+        return switch (term) {
+            .exited => |code| code,
+            .signal => |number| 128 +% @as(u8, @intCast(@intFromEnum(number))),
+            else => Error.NotRunning,
+        };
     }
 
     pub fn write(self: *Client, line: []const u8) !void {

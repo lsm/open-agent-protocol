@@ -1199,6 +1199,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const oap_conformance_runner_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/oap/conformance_runner.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "types", .module = protocol_oap_types_mod },
+            .{ .name = "envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "endpoint_client", .module = oap_endpoint_client_mod },
+        },
+    });
+    const oap_conformance_runner_test = b.addTest(.{ .root_module = oap_conformance_runner_mod });
+
     const adapter_contract_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/contract.zig"),
         .target = target,
@@ -2586,6 +2598,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "oap_server", .module = protocol_oap_server_mod },
             .{ .name = "oap_bridge", .module = protocol_oap_bridge_mod },
+            .{ .name = "oap_conformance", .module = oap_conformance_runner_mod },
             .{ .name = "oap_auth_adapter", .module = protocol_oap_auth_adapter_mod },
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "oap_provider_envelope", .module = protocol_oap_provider_envelope_mod },
@@ -2883,6 +2896,7 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
+    test_step.dependOn(&b.addRunArtifact(oap_conformance_runner_test).step);
     test_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
@@ -2981,6 +2995,7 @@ pub fn build(b: *std.Build) void {
     const test_unit_oap_auth_adapter_step = b.step("test-unit-oap-auth-adapter", "Run OAP auth adapter unit tests");
     test_unit_oap_auth_adapter_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
+    test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_conformance_runner_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);

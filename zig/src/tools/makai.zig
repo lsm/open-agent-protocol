@@ -33,6 +33,7 @@ const kimi_provider_id = "kimi";
 const kimi_china_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "china");
 const kimi_global_base_url = provider_catalog.baseUrlOrCompileError(kimi_provider_id, "openai-completions", "global");
 const oap_server = @import("oap_server");
+const oap_conformance = @import("oap_conformance");
 const oap_auth_adapter = @import("oap_auth_adapter");
 const agent_oap_provider_bridge = @import("agent_oap_provider_bridge");
 const oap_remote_provider_transport = @import("oap_remote_provider_transport");
@@ -2584,6 +2585,120 @@ const TraceItem = struct {
 
 const ValidateFormat = enum { human, json };
 
+const ConformanceFormat = enum { text, json };
+
+fn writeConformanceString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const quoted = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(quoted);
+    try out.appendSlice(allocator, quoted);
+}
+
+fn runConformance(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    stdout: std.Io.File,
+) !bool {
+    var format: ConformanceFormat = .text;
+    var command: ?[]const u8 = null;
+    var endpoint_args = std.ArrayList([]const u8).empty;
+    defer endpoint_args.deinit(allocator);
+    var session: []const u8 = "conformance";
+    var line_deadline_ms: i64 = @intCast(oap_conformance.default_line_deadline_ms);
+
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--command")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            command = args[index];
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--command=")) {
+            command = arg["--command=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--format")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            format = std.meta.stringToEnum(ConformanceFormat, args[index]) orelse return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--format=")) {
+            format = std.meta.stringToEnum(ConformanceFormat, arg["--format=".len..]) orelse return error.InvalidArgument;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--session")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            session = args[index];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--timeout-ms")) {
+            index += 1;
+            if (index >= args.len) return error.InvalidArgument;
+            line_deadline_ms = std.fmt.parseInt(i64, args[index], 10) catch return error.InvalidArgument;
+            if (line_deadline_ms <= 0) return error.InvalidArgument;
+            continue;
+        }
+        try endpoint_args.append(allocator, arg);
+    }
+
+    const named = command orelse {
+        try compat.stdio.writeAll(stdout, "conformance: --command CMD is required; there is no built-in endpoint to drive\n");
+        return true;
+    };
+
+    var report = oap_conformance.run(allocator, .{
+        .command = named,
+        .args = endpoint_args.items,
+        .session_id = session,
+        .line_deadline_ms = line_deadline_ms,
+    }) catch |err| {
+        try compat.stdio.writeAll(stdout, try std.fmt.allocPrint(allocator, "conformance: {s}\n", .{@errorName(err)}));
+        return true;
+    };
+    defer report.deinit();
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    if (format == .json) try out.appendSlice(allocator, "{\"endpoint\":");
+    if (format == .json) try writeConformanceString(allocator, &out, report.endpoint);
+    if (format == .json) try out.appendSlice(allocator, ",\"checks\":[");
+    for (report.checks.items, 0..) |check, position| {
+        if (position != 0) try out.appendSlice(allocator, if (format == .json) "," else "\n");
+        if (format == .json) {
+            try out.appendSlice(allocator, "{\"name\":");
+            try writeConformanceString(allocator, &out, check.name);
+            try out.appendSlice(allocator, ",\"passed\":");
+            try out.appendSlice(allocator, if (check.passed) "true" else "false");
+            if (check.skipped) try out.appendSlice(allocator, ",\"skipped\":true");
+            if (check.detail.len != 0) {
+                try out.appendSlice(allocator, ",\"detail\":");
+                try writeConformanceString(allocator, &out, check.detail);
+            }
+            try out.appendSlice(allocator, "}");
+        } else {
+            try out.appendSlice(allocator, if (check.passed) "PASS " else "FAIL ");
+            try out.appendSlice(allocator, check.name);
+            if (check.detail.len != 0) {
+                try out.appendSlice(allocator, "\n     ");
+                try out.appendSlice(allocator, check.detail);
+            }
+        }
+    }
+    if (format == .json) {
+        try out.appendSlice(allocator, "],\"passed\":");
+        try out.appendSlice(allocator, if (report.passed()) "true" else "false");
+        try out.appendSlice(allocator, "}\n");
+    } else {
+        try out.appendSlice(allocator, if (report.passed()) "\nconformance: PASS\n" else "\nconformance: FAIL\n");
+    }
+    try compat.stdio.writeAll(stdout, out.items);
+    return !report.passed();
+}
+
+
 const ValidateVerdict = union(enum) {
     judged: []ValidateFinding,
     unjudged: []const u8,
@@ -2875,6 +2990,7 @@ fn printUsage(file: std.Io.File) !void {
         \\  oapx serve agent,provider --stdio [--model <model-ref>]
         \\  oapx hub --stdio
         \\  oapx validate [--format human|json] <trace.json>...
+        \\  oapx conformance --command CMD [--session <id>] [--timeout-ms <n>] [--format text|json]
         \\  oapx auth providers [--json]
         \\  oapx auth login --provider <id> [--json]
         \\  oapx --version
@@ -2904,6 +3020,10 @@ fn printUsage(file: std.Io.File) !void {
         \\                   Use --http for a loopback-only HTTP/SSE endpoint.
         \\  serve agent,provider  Serve both OAP profiles over one stdio connection
         \\  validate         Judge traces: decode, schema, then the ported semantic rules
+        \\  conformance      Drive an OAP endpoint and judge it: the handshake, then
+        \\                   one submitted run through to its terminal event. Needs
+        \\                   --command; everything after the flags is the endpoint's
+        \\                   own argv. Exits non-zero on any failed check.
         \\  auth providers   List oauth-capable providers
         \\  auth login       Run OAuth flow and persist credentials
         \\  --version        Print binary version
@@ -7004,6 +7124,24 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, args[1], "validate")) {
         const failed = runValidate(allocator, args[2..], stdout, stderr) catch |err| {
             if (err == error.Unavailable) std.process.exit(1);
+            if (err == error.InvalidArgument) try printUsage(stderr);
+            return err;
+        };
+        if (failed) std.process.exit(1);
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "conformance")) {
+        const failed = runConformance(allocator, args[2..], stdout) catch |err| {
+            if (err == error.InvalidArgument) try printUsage(stderr);
+            return err;
+        };
+        if (failed) std.process.exit(1);
+        return;
+    }
+
+    if (std.mem.eql(u8, args[1], "conformance")) {
+        const failed = runConformance(allocator, args[2..], stdout) catch |err| {
             if (err == error.InvalidArgument) try printUsage(stderr);
             return err;
         };
