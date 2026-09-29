@@ -91,6 +91,11 @@ pub const Client = struct {
         } } });
     }
 
+    pub fn requestCapabilities(self: *Client) !void {
+        const id = try self.requestId();
+        try self.sendRequest(.{ .id = id, .payload = .{ .capabilities_request = {} } });
+    }
+
     pub fn openSession(self: *Client) !void {
         if (self.capability_revision == null) return Error.NotInitialized;
         const id = try self.requestId();
@@ -152,7 +157,11 @@ pub const Client = struct {
 
         switch (envelope.payload) {
             .initialize_response, .capabilities_response, .capabilities_updated => {
-                if (envelope.capability_revision) |revision| try self.rememberRevision(revision);
+                if (envelope.capability_revision) |revision| {
+                    try self.rememberRevision(revision);
+                } else if (envelope.payload == .initialize_response and self.capability_revision == null) {
+                    try self.requestCapabilities();
+                }
             },
             else => {},
         }
@@ -454,6 +463,34 @@ test "a request that fails to send is not left outstanding" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, sendFailureProbe, .{});
 }
 
+test "an initialize response with no revision asks for capabilities rather than stalling" {
+    const allocator = std.testing.allocator;
+    var pipe = in_process.createSerializedPipe(allocator);
+    defer pipe.deinit();
+    var client = Client.init(allocator, &pipe);
+    defer client.deinit();
+
+    try client.initialize();
+    try client.absorb(.{ .id = "init-resp", .in_reply_to = "tui-req-1", .payload = .{
+        .initialize_response = .{
+            .protocol_version = oap_types.VERSION,
+            .profile = oap_types.PROFILE,
+            .endpoint = .{ .id = "endpoint-1" },
+        },
+    } });
+    try std.testing.expect(client.capability_revision == null);
+    try std.testing.expectEqual(@as(usize, 1), client.outstandingCount());
+
+    var inbound = pipe.serverReceiver();
+    const first = (try inbound.readLine(allocator)) orelse return error.NoInitializeRequest;
+    defer allocator.free(first);
+    try std.testing.expect(std.mem.indexOf(u8, first, "\"protocol.initialize.request\"") != null);
+
+    const asked = (try inbound.readLine(allocator)) orelse return error.NoCapabilitiesRequest;
+    defer allocator.free(asked);
+    try std.testing.expect(std.mem.indexOf(u8, asked, "\"capabilities.request\"") != null);
+}
+
 test "a drained read compacts the pipe instead of retaining every line" {
     const allocator = std.testing.allocator;
     var exchange = try admittedExchange(allocator);
@@ -565,6 +602,7 @@ fn rememberProbe(allocator: std.mem.Allocator) !void {
             if (client.unanswered != 0) return error.UnansweredCountedSomethingElse;
             return err;
         },
+        else => return err,
     };
     if (client.unanswered != 0) return error.UnansweredCountedSomethingElse;
     if (client.capability_revision == null) return error.RevisionNotTaken;
