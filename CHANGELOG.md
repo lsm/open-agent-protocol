@@ -53,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still arriving would have been held until the body ended, which is the one
   moment it is not needed. A stream error reaches that callback too, so a turn
   that breaks mid-flight reports it rather than ending quietly.
+  The two wires now also agree on what a `TurnRequest` means. A forced tool
+  carried its mode across but not its name, so an anthropic body would have
+  asked for `{"type":"tool","name":""}` — a tool that does not exist — while
+  the completions body named it correctly. A reasoning effort was dropped
+  entirely, so the same request meant "think" on one wire and nothing on the
+  other; it now reaches the anthropic body as thinking at that effort.
 
 ### Changed
 

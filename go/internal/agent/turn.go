@@ -78,7 +78,12 @@ func anthropicOptions(options provider.StreamOptions) provider.AnthropicOptions 
 	}
 	if options.HasToolChoice {
 		out.ToolChoiceType = options.ToolChoice.Mode
+		out.ToolChoiceName = options.ToolChoice.Function
 		out.HasToolChoice = true
+	}
+	if options.ReasoningEffort != "" {
+		out.ThinkingEnabled = true
+		out.ThinkingEffort = options.ReasoningEffort
 	}
 	return out
 }

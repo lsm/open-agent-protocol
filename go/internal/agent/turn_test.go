@@ -243,3 +243,39 @@ func TestADeltaReachesTheChannelWhileTheStreamIsStillReading(t *testing.T) {
 		t.Errorf("a turn delivers %v, want a start then the delta, both before the reader finished", seen)
 	}
 }
+
+func TestAForcedToolCarriesItsNameOnBothWires(t *testing.T) {
+	options := provider.StreamOptions{
+		HasToolChoice: true,
+		ToolChoice:    provider.ToolChoice{Mode: provider.ToolChoiceFunction, Function: "read"},
+	}
+	completions := provider.BuildRequestBody(completionsModel(), provider.Context{
+		Tools:    []provider.Tool{{Name: "read", Parameters: []byte(`{"type":"object"}`)}},
+		Messages: []provider.Message{{User: &provider.UserContent{Text: "read a", HasText: true}}},
+	}, options)
+	if !strings.Contains(string(completions), `"tool_choice"`) || !strings.Contains(string(completions), "read") {
+		t.Errorf("a forced tool on the completions wire is %s", completions)
+	}
+	anthropic, _ := provider.BuildAnthropicRequestBody(completionsModel(), provider.Context{
+		Tools:    []provider.Tool{{Name: "read", Parameters: []byte(`{"type":"object"}`)}},
+		Messages: []provider.Message{{User: &provider.UserContent{Text: "read a", HasText: true}}},
+	}, anthropicOptions(options), "")
+	if !strings.Contains(string(anthropic), `"name":"read"`) {
+		t.Errorf("a forced tool on the anthropic wire is %s, want the tool's name: an empty name asks for a tool that does not exist", anthropic)
+	}
+}
+
+func TestAReasoningEffortReachesTheAnthropicWireAsThinking(t *testing.T) {
+	model := provider.Model{ID: "claude-sonnet-4-5", API: "anthropic-messages", Provider: "anthropic", MaxTokens: 4096, Reasoning: true, HasCompat: true}
+	options := provider.StreamOptions{ReasoningEffort: "high"}
+	mapped := anthropicOptions(options)
+	if !mapped.ThinkingEnabled || mapped.ThinkingEffort != "high" {
+		t.Errorf("a reasoning effort maps to %+v, want thinking enabled at that effort: the completions wire sends reasoning_effort, so dropping it here would make one request mean two things", mapped)
+	}
+	body, _ := provider.BuildAnthropicRequestBody(model, provider.Context{
+		Messages: []provider.Message{{User: &provider.UserContent{Text: "think", HasText: true}}},
+	}, mapped, "")
+	if !strings.Contains(string(body), "thinking") {
+		t.Errorf("an anthropic body with a reasoning effort is %s, want a thinking block", body)
+	}
+}
