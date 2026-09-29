@@ -744,7 +744,7 @@ fn executeToolCalls(
                         continue;
                     }
                     if (legacy_decision == .approve_always) {
-                        const call = permission.parseToolCall(allocator, tool_call.name, validated_args) catch null;
+                        const call = permission.parseToolCallOf(allocator, t.operation, tool_call.name, validated_args) catch null;
                         if (call) |parsed_call| {
                             defer permission.deinitParsedToolCall(allocator, parsed_call);
                             if (permission.canPersistDecision(parsed_call)) engine.persistDecision(parsed_call, .allow) catch {};
