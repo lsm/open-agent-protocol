@@ -199,13 +199,14 @@ code paths; add a transcript row instead.
   relative target resolved against the directory holding the pointer, and that
   directory's `HEAD` is read instead. A `ref: refs/heads/` line gives the branch name
   and any other line gives the first seven characters of the commit id for a detached
-  HEAD. The nearest repository decides the row: once a directory holds a `.git`, its
-  `HEAD` is the one that counts, so a working directory with no repository above it and
-  a nearest repository whose `HEAD` cannot be read both leave the right end empty rather
-  than falling through to an enclosing one. The read happens when the working directory
-  changes and on a slow tick — every 100th tick, five seconds — so a `git checkout`
-  shows up without a `git` process per render. When the row is too narrow for both, the
-  branch is dropped and the path takes the full width.
+  HEAD. The nearest `.git` decides the row and nothing above it is consulted: a
+  working directory with no repository above it, a nearest `.git/HEAD` that cannot be
+  read, and a `.git` pointer file that does not parse all leave the right end empty
+  rather than falling through to an enclosing repository, which is what `git` does
+  when it errors on the repository it finds. The read happens when the working
+  directory changes and on a slow tick — every 100th tick, five seconds — so a
+  `git checkout` shows up without a `git` process per render. When the row is too
+  narrow for both, the branch is dropped and the path takes the full width.
 
 ## Credentials and the model catalog
 

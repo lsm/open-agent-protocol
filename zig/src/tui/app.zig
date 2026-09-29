@@ -374,6 +374,21 @@ test "App git branch walks up to the enclosing repository" {
     try std.testing.expectEqualStrings("enclosing", app.state.git_branch);
 }
 
+test "App git branch stops at a repository whose gitdir pointer is unparseable" {
+    var repo = try BranchRepo.init(std.testing.allocator);
+    defer repo.deinit(std.testing.allocator);
+    try repo.writeHead(std.testing.allocator, "ref: refs/heads/outer\n");
+    try repo.makeDotGitAFile(std.testing.allocator, "not a pointer at all");
+
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, repo.repo);
+    try app.refreshCwdDisplay();
+
+    try std.testing.expectEqualStrings("", app.state.git_branch);
+}
+
 test "App git branch stops at a repository whose HEAD is unreadable" {
     var repo = try BranchRepo.init(std.testing.allocator);
     defer repo.deinit(std.testing.allocator);
@@ -3114,9 +3129,12 @@ fn gitHeadLabel(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
     var current = try allocator.dupe(u8, dir_path);
     defer allocator.free(current);
     while (current.len > 0) {
-        const head_path = try gitHeadPath(allocator, current);
-        defer if (head_path) |value| allocator.free(value);
-        if (head_path) |path| return try readGitBranchName(allocator, path);
+        const lookup = try gitHeadPath(allocator, current);
+        defer if (lookup.path) |value| allocator.free(value);
+        if (lookup.dot_git_present) {
+            const head = lookup.path orelse break;
+            return try readGitBranchName(allocator, head);
+        }
         const parent = std.fs.path.dirname(current) orelse break;
         if (parent.len == 0 or std.mem.eql(u8, parent, current)) break;
         const next = try allocator.dupe(u8, parent);
@@ -3139,11 +3157,19 @@ fn readGitBranchName(allocator: std.mem.Allocator, head_path: []const u8) !?[]u8
     return try allocator.dupe(u8, line[0..detached_id_len]);
 }
 
-fn gitHeadPath(allocator: std.mem.Allocator, dir_path: []const u8) !?[]u8 {
+const HeadLookup = struct {
+    dot_git_present: bool,
+    path: ?[]u8,
+};
+
+fn gitHeadPath(allocator: std.mem.Allocator, dir_path: []const u8) !HeadLookup {
     const dot_git = try std.fs.path.join(allocator, &.{ dir_path, ".git" });
     defer allocator.free(dot_git);
-    if (!gitDirIsDirectory(dot_git)) return gitPointerHeadPath(allocator, dir_path, dot_git);
-    return try std.fs.path.join(allocator, &.{ dot_git, "HEAD" });
+    if (gitDirIsDirectory(dot_git)) {
+        return .{ .dot_git_present = true, .path = try std.fs.path.join(allocator, &.{ dot_git, "HEAD" }) };
+    }
+    if (!gitDirIsFile(dot_git)) return .{ .dot_git_present = false, .path = null };
+    return .{ .dot_git_present = true, .path = try gitPointerHeadPath(allocator, dir_path, dot_git) };
 }
 
 fn gitPointerHeadPath(allocator: std.mem.Allocator, dir_path: []const u8, dot_git: []const u8) !?[]u8 {
@@ -3160,6 +3186,12 @@ fn gitPointerHeadPath(allocator: std.mem.Allocator, dir_path: []const u8, dot_gi
 
 fn gitDirIsDirectory(dot_git: []const u8) bool {
     _ = compat.fs.directoryPermissions(dot_git) catch return false;
+    return true;
+}
+
+fn gitDirIsFile(dot_git: []const u8) bool {
+    var file = compat.fs.openFile(compat.fs.getCwd(), dot_git, .{}) catch return false;
+    file.close(defaultIo());
     return true;
 }
 
