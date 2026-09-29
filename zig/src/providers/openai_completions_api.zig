@@ -32,7 +32,7 @@ const MergedCompat = struct {
 fn mergeCompat(model: ai_types.Model) MergedCompat {
     const caps = provider_caps.detectCapabilities(model.base_url);
     const compat: ai_types.OpenAICompatOptions = model.compat orelse .{};
-    const is_openai_native = isOpenAIHost(model.base_url);
+    const is_openai_native = provider_caps.isOpenAIHost(model.base_url);
     const honors_native_caps = is_openai_native or isTransparentOpenAIProxy(model);
     const detected_developer_role = if (honors_native_caps) caps.supports_developer_role else false;
     const detected_reasoning_effort = if (honors_native_caps) caps.supports_reasoning_effort else false;
@@ -70,14 +70,6 @@ fn isTransparentOpenAIProxy(model: ai_types.Model) bool {
     return compat.supports_store == true and
         compat.supports_developer_role == true and
         compat.supports_reasoning_effort == true;
-}
-
-fn isOpenAIHost(base_url: []const u8) bool {
-    const uri = std.Uri.parse(base_url) catch return false;
-    const host = uri.host orelse return false;
-    const value = host.percent_encoded;
-    return std.ascii.eqlIgnoreCase(value, "openai.com") or
-        (value.len > "openai.com".len and std.ascii.eqlIgnoreCase(value[value.len - "openai.com".len ..], "openai.com") and value[value.len - "openai.com".len - 1] == '.');
 }
 
 fn allowsAnonymous(model: ai_types.Model) bool {
@@ -623,7 +615,7 @@ fn buildRequestBody(
         .target_api = model.api,
         .target_provider = model.provider,
         .target_model_id = model.id,
-        .max_tool_id_len = if (isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
+        .max_tool_id_len = if (provider_caps.isOpenAIHost(model.base_url) or isTransparentOpenAIProxy(model)) 40 else 0,
         .mistral_tool_ids = merged.requires_mistral_tool_ids,
         .insert_synthetic_results = true,
         .tools = context.tools,
