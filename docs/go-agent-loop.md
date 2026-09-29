@@ -189,7 +189,15 @@ cancelled context cannot do that — both cases are ready, and Go picks at
 random, so a run that raced would settle as cancelled and deliver no terminal,
 which is the one trace a consumer cannot interpret. After a cancel, a
 non-terminal is dropped rather than waited for, so a cancelled run's events
-after the cancellation are whatever arrived before it.
+after the cancellation are whatever arrived before it. A tool call's closing
+event is dropped under the same rule, which is a trade worth naming: waiting
+for room instead would put the run's terminal behind a wait the cancelling
+consumer has already stopped serving, and the terminal is the one event the
+buffer reserves a slot for. So a cancel that lands with the buffer already
+full can leave a call open on the wire, which the validator reads as
+`pending_tool_at_terminal`. It takes a consumer that is behind by the whole
+buffer to get there, and the alternative loses the terminal, which is a worse
+trace than one missing a close.
 
 ## What the loop must be, whatever the slice
 

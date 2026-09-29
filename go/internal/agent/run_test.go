@@ -819,20 +819,45 @@ func TestACallTheCallerAnswersIsAnnouncedAsResolved(t *testing.T) {
 	}
 }
 
+func TestACallWhoseAnswerRacesACancelIsAnnouncedEitherWay(t *testing.T) {
+	for attempt := 0; attempt < 20; attempt++ {
+		script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), toolTurn("call_2", "read", "{}")}}
+		run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
+		var resolved, cancelled int
+		drainActing(t, run, func(event Event) {
+			switch event.Kind {
+			case ToolCallRequested:
+				if event.Call.ID == "call_1" {
+					go func() {
+						_ = run.ResolveTool("call_1", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
+						run.Cancel()
+					}()
+				}
+			case ToolCallResolved:
+				resolved++
+			case ToolCallCancelled:
+				cancelled++
+			}
+		})
+		if resolved+cancelled != 1 {
+			t.Fatalf("the call was announced %d times, want 1: a call whose answer raced the cancel is settled either way, but never left open when the run settles", resolved+cancelled)
+		}
+		if cancelled == 1 {
+			return
+		}
+	}
+	t.Error("no attempt in twenty had the loop wake on the answer first, so this is not pinning the order the cancel wins in")
+}
+
 func TestACallTheRunWasCancelledWaitingForIsAnnouncedAsCancelled(t *testing.T) {
-	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}"), toolTurn("call_2", "read", "{}")}}
+	script := &scripted{turns: []scriptedTurn{toolTurn("call_1", "read", "{}")}}
 	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("read a"))
 	var asked, cancelled int
 	drainActing(t, run, func(event Event) {
 		switch event.Kind {
 		case ToolCallRequested:
 			asked++
-			if asked == 1 {
-				go func() {
-					_ = run.ResolveTool("call_1", provider.ToolResult{Parts: []provider.ContentPart{{Text: &provider.TextPart{Text: "a"}}}})
-					run.Cancel()
-				}()
-			}
+			run.Cancel()
 		case ToolCallCancelled:
 			cancelled++
 			if event.ToolResult == nil || !event.ToolResult.IsError {
@@ -840,8 +865,40 @@ func TestACallTheRunWasCancelledWaitingForIsAnnouncedAsCancelled(t *testing.T) {
 			}
 		}
 	})
+	if asked != 1 {
+		t.Errorf("the loop asked %d times, want 1: the call was already open when the cancel landed", asked)
+	}
 	if cancelled != 1 {
-		t.Errorf("a call whose answer landed beside the cancel was announced %d times, want 1: the call is open on the wire and the run settles cancelled, which the validator reads as pending_tool_at_terminal", cancelled)
+		t.Errorf("a call the run was cancelled waiting for was announced %d times, want 1: a call open at run.cancelled is pending_tool_at_terminal, which the validator rejects", cancelled)
+	}
+}
+
+func TestACallWithNoNameIsAnsweredForTheModelAndNeverAskedFor(t *testing.T) {
+	nameless := scriptedTurn{frames: []string{
+		frame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"arguments":"{}"}}]}}]}`),
+		frame(`{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`),
+	}}
+	script := &scripted{turns: []scriptedTurn{nameless, textTurn("done")}}
+	run := Start(context.Background(), Config{Model: completionsModel(), Streamer: script}, prompts("do it"))
+	events := drainActing(t, run, nil)
+	terminalOf(t, events)
+	for _, event := range events {
+		if strings.HasPrefix(string(event.Kind), "tool_call") {
+			t.Fatalf("a call naming no tool announced %q, want nothing: a control layer cannot be asked to run a call with no name, and the schema admits none", event.Kind)
+		}
+	}
+	var reason string
+	for _, message := range run.Result().Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		if !message.ToolResult.IsError {
+			t.Error("a nameless call is an error result, so the model knows it did not run")
+		}
+		reason = message.ToolResult.Parts[0].Text.Text
+	}
+	if !strings.Contains(reason, "named no tool") {
+		t.Errorf("the model is told %q, want it told the reply named no tool", reason)
 	}
 }
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -248,6 +249,10 @@ func (r *Run) runToolCalls(assistant provider.AssistantContent) ([]provider.Tool
 			results = append(results, cutOffResult(call))
 			continue
 		}
+		if call.Name == "" {
+			results = append(results, namelessResult(call))
+			continue
+		}
 		if !live {
 			results = append(results, cancelledResult(call))
 			continue
@@ -291,6 +296,17 @@ func (r *Run) awaitToolResult(call provider.ToolCall) (provider.ToolResult, bool
 
 func cutOffResult(call provider.ToolCall) provider.ToolResult {
 	return errorResult(call, fmt.Sprintf("Tool call %q was not run: the reply hit the output token limit, so its arguments may be cut off. Call the tool again with complete arguments.", call.Name))
+}
+
+func namelessResult(call provider.ToolCall) provider.ToolResult {
+	return errorResult(call, fmt.Sprintf("Tool call %s was not run: the reply named no tool, so there is nothing to run. Call a tool by name.", quotedID(call)))
+}
+
+func quotedID(call provider.ToolCall) string {
+	if call.ID == "" {
+		return "with no id"
+	}
+	return strconv.Quote(call.ID)
 }
 
 func cancelledResult(call provider.ToolCall) provider.ToolResult {
