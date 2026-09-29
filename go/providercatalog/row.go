@@ -37,6 +37,14 @@ func BaseURLEnv(catalog Catalog, id string) []string {
 	return provider.BaseURLEnv
 }
 
+func DefaultRegion(catalog Catalog, id string) string {
+	provider, known := findProvider(catalog, id)
+	if !known {
+		return ""
+	}
+	return provider.DefaultRegion
+}
+
 func RegionEnv(catalog Catalog, id string) string {
 	provider, known := findProvider(catalog, id)
 	if !known {
