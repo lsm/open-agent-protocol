@@ -138,7 +138,7 @@ after the first slice's traces match. `max_iterations` is the one that lands
 with the loop rather than after it: it is one counter and one condition, and a
 loop without it spins on a model that keeps calling tools.
 
-### Two contracts a consumer of a turn has to hold
+### The contracts a consumer has to hold
 
 **The channel closes; it does not report.** A `Turn` ends when its `Events`
 channel closes, and a cancelled turn closes with no terminal event at all —
@@ -166,6 +166,20 @@ makes the cancellation rule simple to state, since only one call is ever
 outstanding. Parallel calls are the change to make when a client needs them,
 and `pi-two-open-calls` is the fixture that would catch it going the other
 way.
+
+**A settle the answer derived names the request it answers.** A call's
+`action.call.completed` and `action.call.failed` come from a
+`action.call.resolve.request` the control layer accepted, and the validator
+reads them against it: the terminal must name that request in `request_id`,
+and a call whose accepted resolution is the error arm may only be failed. The
+loop cannot know any of that — it sees an answer, not a request — so the
+mapping asks the consumer for it (`looptrace.Trace.Accepted`) and cites what it
+is given. A consumer that accepts a resolution and forgets to record it gets a
+terminal citing no request, which the validator reports as
+`unmatched_interaction`. That is the intended failure: the alternative is a
+mapping inventing a request id, which settles a call against an answer nobody
+gave. It is also why the mapping and the session cannot be separate concerns —
+the contract is only holdable by the layer that receives the resolution.
 
 A run's terminal is the exception, and it is the exception by construction
 rather than by luck: the event buffer's last slot is reserved for it, so a
