@@ -9,6 +9,321 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAQwenHostIsDashscopeAliyuncsDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com",
+		"https://coding-intl.dashscope.aliyuncs.com/v1",
+		"https://DASHSCOPE.ALIYUNCS.COM",
+		"https://dashscope-intl.aliyuncs.com",
+		"https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+	}
+	for _, url := range hosts {
+		if !isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mydashscope.aliyuncs.com.attacker.example",
+		"https://aliyuncs.com",
+		"https://www.aliyuncs.com",
+		"https://notdashscope.aliyuncs.com",
+		"https://evil.example/?next=dashscope",
+		"https://evil.example/v1/qwen",
+		"https://gateway.example/proxy/dashscope.aliyuncs.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isQwenURL(url, true) {
+			t.Errorf("isQwenURL(%q) = true, want false: the domain is dashscope.aliyuncs.com, not aliyuncs.com, and the old rule matched the bare words dashscope and qwen anywhere", url)
+		}
+	}
+
+	if isQwenURL("https://dashscope.aliyuncs.com", false) {
+		t.Error("no base url is not a qwen host")
+	}
+}
+
+func TestAnAnthropicHostIsAnthropicDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.anthropic.com",
+		"https://api.anthropic.com/v1",
+		"https://anthropic.com",
+		"https://API.ANTHROPIC.COM",
+	}
+	for _, url := range hosts {
+		if !isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myanthropic.com",
+		"https://notanthropic.com",
+		"https://anthropic.com.evil.example",
+		"https://evil.example/?next=api.anthropic.com",
+		"https://evil.example/v1/api.anthropic.com",
+		"https://gateway.example/proxy/api.anthropic.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isAnthropicURL("https://api.anthropic.com", false) {
+		t.Error("no base url is not an anthropic host")
+	}
+}
+
+func TestTheCataloguedAnthropicBaseStillGetsTheAnthropicCaps(t *testing.T) {
+	const url = "https://api.anthropic.com"
+	if got := DetectProviderType(url, true); got != ProviderAnthropic {
+		t.Errorf("DetectProviderType(%q) = %q, want anthropic", url, got)
+	}
+	caps := DetectCapabilities(url, true)
+	if caps.ProviderType != ProviderAnthropic {
+		t.Errorf("caps provider type = %q, want anthropic", caps.ProviderType)
+	}
+	if !caps.ExtendedThinking || !caps.PromptCaching || !caps.Vision {
+		t.Errorf("caps = %+v, want the anthropic set", caps)
+	}
+}
+
+func TestAnOpenRouterHostIsOpenrouterDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://openrouter.ai",
+		"https://openrouter.ai/api/v1",
+		"https://OPENROUTER.AI",
+	}
+	for _, url := range hosts {
+		if !isOpenRouterURL(url, true) {
+			t.Errorf("isOpenRouterURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myopenrouter.ai",
+		"https://notopenrouter.ai",
+		"https://openrouter.ai.evil.example",
+		"https://evil.example/?next=openrouter.ai",
+		"https://evil.example/v1/openrouter.ai",
+		"https://gateway.example/proxy/openrouter.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isOpenRouterURL(url, true) {
+			t.Errorf("isOpenRouterURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isOpenRouterURL("https://openrouter.ai", false) {
+		t.Error("no base url is not an openrouter host")
+	}
+}
+
+func TestADeepSeekHostIsDeepseekDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.deepseek.com",
+		"https://api.deepseek.com/v1",
+		"https://deepseek.com",
+		"https://API.DEEPSEEK.COM",
+	}
+	for _, url := range hosts {
+		if !isDeepSeekURL(url, true) {
+			t.Errorf("isDeepSeekURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mydeepseek.com",
+		"https://notdeepseek.com",
+		"https://deepseek.com.evil.example",
+		"https://evil.example/?next=api.deepseek.com",
+		"https://evil.example/v1/api.deepseek.com",
+		"https://gateway.example/proxy/api.deepseek.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isDeepSeekURL(url, true) {
+			t.Errorf("isDeepSeekURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isDeepSeekURL("https://api.deepseek.com", false) {
+		t.Error("no base url is not a deepseek host")
+	}
+}
+
+func TestAGitHubCopilotHostIsGithubcopilotDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.githubcopilot.com",
+		"https://api.individual.githubcopilot.com",
+		"https://api.acme.githubcopilot.com",
+		"https://githubcopilot.com",
+		"https://API.GITHUBCOPILOT.COM",
+	}
+	for _, url := range hosts {
+		if !isGitHubCopilotURL(url, true) {
+			t.Errorf("isGitHubCopilotURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://notgithubcopilot.com",
+		"https://mygithubcopilot.com",
+		"https://githubcopilot.com.attacker.test",
+		"https://api.githubcopilot.com@attacker.test",
+		"https://evil.example/?next=api.githubcopilot.com",
+		"https://evil.example/v1/api.githubcopilot.com",
+		"https://gateway.example/proxy/api.githubcopilot.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGitHubCopilotURL(url, true) {
+			t.Errorf("isGitHubCopilotURL(%q) = true, want false: the name is in a host suffix, a path, a query or a userinfo section", url)
+		}
+	}
+
+	if isGitHubCopilotURL("https://api.githubcopilot.com", false) {
+		t.Error("no base url is not a github copilot host")
+	}
+}
+
+func TestAChutesHostIsChutesDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.chutes.ai",
+		"https://api.chutes.ai/v1",
+		"https://chutes.ai",
+		"https://API.CHUTES.AI",
+	}
+	for _, url := range hosts {
+		if !isChutesURL(url, true) {
+			t.Errorf("isChutesURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mychutes.ai",
+		"https://notchutes.ai",
+		"https://chutes.ai.evil.example",
+		"https://evil.example/?next=chutes.ai",
+		"https://evil.example/v1/chutes.ai",
+		"https://gateway.example/proxy/chutes.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isChutesURL(url, true) {
+			t.Errorf("isChutesURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isChutesURL("https://api.chutes.ai", false) {
+		t.Error("no base url is not a chutes host")
+	}
+}
+
+func TestACerebrasHostIsCerebrasDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.cerebras.ai",
+		"https://api.cerebras.ai/v1",
+		"https://cerebras.ai",
+		"https://API.CEREBRAS.AI",
+	}
+	for _, url := range hosts {
+		if !isCerebrasURL(url, true) {
+			t.Errorf("isCerebrasURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mycerebras.ai",
+		"https://notcerebras.ai",
+		"https://cerebras.ai.evil.example",
+		"https://evil.example/?next=api.cerebras.ai",
+		"https://evil.example/v1/api.cerebras.ai",
+		"https://gateway.example/proxy/api.cerebras.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isCerebrasURL(url, true) {
+			t.Errorf("isCerebrasURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isCerebrasURL("https://api.cerebras.ai", false) {
+		t.Error("no base url is not a cerebras host")
+	}
+}
+
+func TestAGroqHostIsGroqDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.groq.com",
+		"https://api.groq.com/openai/v1",
+		"https://groq.com",
+		"https://API.GROQ.COM",
+	}
+	for _, url := range hosts {
+		if !isGroqURL(url, true) {
+			t.Errorf("isGroqURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mygroq.com",
+		"https://notgroq.com",
+		"https://groq.com.evil.example",
+		"https://evil.example/?next=api.groq.com",
+		"https://evil.example/v1/api.groq.com",
+		"https://gateway.example/proxy/api.groq.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGroqURL(url, true) {
+			t.Errorf("isGroqURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isGroqURL("https://api.groq.com", false) {
+		t.Error("no base url is not a groq host")
+	}
+}
+
+func TestAMistralHostIsMistralDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.mistral.ai",
+		"https://api.mistral.ai/v1",
+		"https://mistral.ai",
+		"https://API.MISTRAL.AI",
+	}
+	for _, url := range hosts {
+		if !isMistralURL(url, true) {
+			t.Errorf("isMistralURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://mymistral.ai",
+		"https://notmistral.ai",
+		"https://mistral.ai.evil.example",
+		"https://evil.example/?next=api.mistral.ai",
+		"https://evil.example/v1/api.mistral.ai",
+		"https://gateway.example/proxy/api.mistral.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isMistralURL(url, true) {
+			t.Errorf("isMistralURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isMistralURL("https://api.mistral.ai", false) {
+		t.Error("no base url is not a mistral host")
+	}
+}
+
 func TestAnOpenAIHostIsAHostEndingInOpenAIDotComOnALabelBoundary(t *testing.T) {
 	hosts := []string{
 		"https://api.openai.com",

@@ -73,8 +73,7 @@ fn distributedMockProviderStream(
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
     if (options) |o| {
         if (o.requires_owned_stream_events) {
-            stream.owns_events = true;
-            stream.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+            stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
         }
     }
 

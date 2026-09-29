@@ -1,10 +1,14 @@
 const std = @import("std");
 const ai_types = @import("ai_types");
 
+pub fn isContextOverflowText(err_msg: []const u8) bool {
+    return matchesOverflowPattern(err_msg);
+}
+
 pub fn isContextOverflow(message: ai_types.AssistantMessage, context_window: ?u64) bool {
     if (message.stop_reason == .@"error") {
         if (message.getErrorMessage()) |err_msg| {
-            if (matchesOverflowPattern(err_msg)) {
+            if (isContextOverflowText(err_msg)) {
                 return true;
             }
         }

@@ -10,6 +10,7 @@ const register_builtins = @import("register_builtins");
 const agent = @import("agent");
 const event_stream = @import("event_stream");
 const tui_runtime = @import("tui_runtime");
+const tui_auto_continue = @import("tui_auto_continue");
 const tui_state = @import("tui_state");
 const tui_commands = @import("tui_commands");
 const tui_login = @import("tui_login");
@@ -36,6 +37,7 @@ extern "c" fn unsetenv(name: [*:0]const u8) c_int;
 
 pub const TuiRuntime = tui_runtime.TuiRuntime;
 pub const TuiRuntimeOptions = tui_runtime.TuiRuntimeOptions;
+pub const parseContextWindow = tui_runtime.parseContextWindow;
 
 const max_session_event_jsonl_bytes = 8 * 1024 * 1024;
 const max_session_event_payload_bytes = max_session_event_jsonl_bytes / 2;
@@ -936,6 +938,9 @@ pub const App = struct {
     session_title_generated: bool = false,
     first_user_text: []u8 = &.{},
     title_session_id: []u8 = &.{},
+    run_error_text: []u8 = &.{},
+    auto_continue: tui_auto_continue.Streak = .{},
+    replaying_history: bool = false,
     branch_dir: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
@@ -1011,6 +1016,7 @@ pub const App = struct {
         if (self.session_title.len > 0) self.allocator.free(self.session_title);
         if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
         if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
+        if (self.run_error_text.len > 0) self.allocator.free(self.run_error_text);
         if (self.branch_dir.len > 0) self.allocator.free(self.branch_dir);
         self.state.deinit();
         self.* = undefined;
@@ -1050,6 +1056,19 @@ pub const App = struct {
             error.NothingToCompact => try self.state.appendTranscript(.system, "Nothing to compact yet."),
             else => return err,
         };
+    }
+
+    fn rememberRunError(self: *App, message: []const u8) !void {
+        if (std.mem.eql(u8, self.run_error_text, message)) return;
+        const owned = try self.allocator.dupe(u8, message);
+        if (self.run_error_text.len > 0) self.allocator.free(self.run_error_text);
+        self.run_error_text = owned;
+    }
+
+    fn forgetRunError(self: *App) void {
+        if (self.run_error_text.len == 0) return;
+        self.allocator.free(self.run_error_text);
+        self.run_error_text = &.{};
     }
 
     fn noteTerminalEvent(self: *App, event: tui_runtime.TuiEvent) !bool {
@@ -1118,11 +1137,16 @@ pub const App = struct {
         } else {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
+        self.replaying_history = true;
         self.state.setFollowingAgentCwd(false);
-        defer self.state.setFollowingAgentCwd(true);
+        defer {
+            self.replaying_history = false;
+            self.state.setFollowingAgentCwd(true);
+        }
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
+        self.discardReplayedError();
         try self.state.finalizeInterruptedTools();
         self.state.retireToolOccurrences();
         if (self.session) |*session| session.clearQueuedMessages();
@@ -1823,6 +1847,55 @@ pub const App = struct {
         }
     }
 
+    fn runFinishedWithoutProviderError(self: *App) void {
+        self.forgetRunError();
+        self.auto_continue.onUserTurn();
+    }
+
+    pub fn userTookOver(self: *App) void {
+        const was_pending = self.auto_continue.pending();
+        self.auto_continue.onUserTurn();
+        if (!was_pending) return;
+        self.state.appendTranscript(.system, "the automatic continue was dropped.") catch {};
+    }
+
+    pub fn discardReplayedError(self: *App) void {
+        self.forgetRunError();
+        self.auto_continue.onUserTurn();
+    }
+
+    fn scheduleAutoContinue(self: *App) void {
+        if (self.state.queue.total() > 0) {
+            self.auto_continue.onUserTurn();
+            return;
+        }
+        switch (self.auto_continue.onRunEndedInError(self.run_error_text, compat.time.nowMillis())) {
+            .skip => {},
+            .send_after => |delay| {
+                const message = std.fmt.allocPrint(self.allocator, "The run ended in a provider error. Continuing in {d}s.", .{
+                    @divFloor(delay + 999, 1000),
+                }) catch return;
+                defer self.allocator.free(message);
+                self.state.appendTranscript(.system, message) catch {};
+            },
+        }
+    }
+
+    pub fn pumpAutoContinue(self: *App, now_ms: i64) void {
+        if (!self.auto_continue.due(now_ms)) return;
+        if (self.state.mode != .normal) return;
+        if (self.state.status.streaming) return;
+        if (self.state.queue.total() > 0) return;
+        self.auto_continue.take();
+        const message = std.fmt.allocPrint(self.allocator, "Provider error. Sending \"{s}\" on your behalf.", .{
+            tui_auto_continue.continue_text,
+        }) catch return;
+        defer self.allocator.free(message);
+        self.state.appendTranscript(.system, message) catch {};
+        if (self.compactBeforeTurn(tui_auto_continue.continue_text) catch false) return;
+        self.sendUserTurn(tui_auto_continue.continue_text) catch |err| self.recordError(@errorName(err)) catch {};
+    }
+
     pub fn drainEvents(self: *App) !void {
         var session = &(self.session orelse return);
         var completed_agent_end = false;
@@ -1874,6 +1947,7 @@ pub const App = struct {
         self.state.reconcileSteers(session.steersConsumedCount());
         self.syncBackpressureState();
         self.syncModelTelemetry();
+        try self.noteDroppedContextWindow();
         self.collectGeneratedTitle();
         if (self.pending_session_reset and !self.state.status.streaming) {
             if (self.runtime) |runtime| {
@@ -1905,6 +1979,16 @@ pub const App = struct {
     }
 
     fn applyRuntimeEvent(self: *App, event: tui_runtime.TuiEvent) !void {
+        if (!self.replaying_history) {
+            switch (event) {
+                .@"error" => |payload| try self.rememberRunError(payload.message.slice()),
+                .agent_end => |payload| switch (payload.reason) {
+                    .@"error" => self.scheduleAutoContinue(),
+                    .completed, .cancelled => self.runFinishedWithoutProviderError(),
+                },
+                else => {},
+            }
+        }
         switch (event) {
             .message_start => |payload| {
                 if (payload.role == .user) return;
@@ -1972,6 +2056,8 @@ pub const App = struct {
         if (trimmed.len == 0) return;
         self.state.transcript_scroll = 0;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        self.forgetRunError();
+        self.userTookOver();
         if (try self.compactBeforeTurn(trimmed)) return;
         try self.sendUserTurn(trimmed);
     }
@@ -2058,6 +2144,7 @@ pub const App = struct {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len == 0) return;
         if (trimmed[0] == '/') return try self.submitCommand(trimmed);
+        self.userTookOver();
         self.applyPendingSessionResetSync() catch |err| {
             if (err == error.PendingSessionReset) {
                 try self.state.appendTranscript(.@"error", "Session reset pending; wait for the current run to finish.");
@@ -2112,6 +2199,7 @@ pub const App = struct {
 
         if (command.kind == .abort) {
             if (self.approval_waiter) |waiter| waiter.rejectPending();
+            self.userTookOver();
         }
 
         switch (result.action) {
@@ -2138,6 +2226,10 @@ pub const App = struct {
             .none => {},
         }
         if ((command.kind == .model or command.kind == .provider) and command.arg != null) self.persistCurrentModel();
+        switch (command.kind) {
+            .context, .model, .provider => self.applyContextWindow(),
+            else => {},
+        }
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2151,6 +2243,23 @@ pub const App = struct {
         }
         try self.state.status.setError(self.allocator, message);
         try self.state.appendTranscript(.@"error", message);
+    }
+
+    fn noteDroppedContextWindow(self: *App) !void {
+        const runtime = self.runtime orelse return;
+        const refused = runtime.takeContextWindowRefused() orelse return;
+        const model = runtime.currentModel() orelse return;
+        self.applyContextWindow();
+        const msg = try std.fmt.allocPrint(self.allocator, "{d} context tokens is above the {d} {s} takes, so the model's own {d} is in effect.", .{ refused, runtime.contextWindowMaximum() orelse 0, model.id, model.context_window });
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
+    }
+
+    fn applyContextWindow(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const window = runtime.contextWindow();
+        self.state.status.context_limit = @intCast(window);
+        self.state.telemetry.context_window = window;
     }
 
     fn persistCurrentModel(self: *App) void {
@@ -2365,6 +2474,7 @@ pub const App = struct {
             return err;
         };
         try self.ensureSessionId();
+        self.userTookOver();
         if (self.session) |*session| {
             try session.followUp(trimmed);
             try self.state.appendQueuedFollowUp(trimmed);
@@ -2576,6 +2686,7 @@ pub const TuiModel = struct {
                             },
                             .escape => {
                                 app.decideApproval(false, false) catch |err| app.recordError(@errorName(err)) catch {};
+                                app.userTookOver();
                                 decided = true;
                             },
                             else => {},
@@ -2598,7 +2709,7 @@ pub const TuiModel = struct {
                         .enter => {
                             app.resumeSelectedSession() catch |err| app.recordError(@errorName(err)) catch {};
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2610,7 +2721,10 @@ pub const TuiModel = struct {
                             app.submitLoginInput(text);
                             app.state.composer.clear();
                         },
-                        .escape => app.cancelLogin(),
+                        .escape => {
+                            app.cancelLogin();
+                            app.userTookOver();
+                        },
                         .backspace => _ = app.state.composer.deleteBeforeCursor(),
                         .char => |c| appendChar(app, c) catch {},
                         .paste => |text| app.state.composer.insertPaste(app.allocator, text) catch {},
@@ -2638,7 +2752,7 @@ pub const TuiModel = struct {
                             .login => app.applySelectedLogin() catch |err| app.recordError(@errorName(err)) catch {},
                             .permission => app.applySelectedPermission() catch |err| app.recordError(@errorName(err)) catch {},
                         },
-                        .escape => app.state.mode = .normal,
+                        .escape => closeModal(app),
                         else => {},
                     }
                     return .none;
@@ -2742,6 +2856,7 @@ pub const TuiModel = struct {
             .tick => {
                 app.state.anim_tick +%= 1;
                 app.drainEvents() catch {};
+                app.pumpAutoContinue(compat.time.nowMillis());
                 app.pollLogin() catch {};
                 app.state.refreshStreamingElapsed(compat.time.nowMillis());
                 if (app.interrupt_armed_tick) |armed| {
@@ -2782,6 +2897,7 @@ pub const TuiModel = struct {
     }
 
     fn handleInterrupt(self: *TuiModel, app: *App, ctx: *zz.Context) zz.Cmd(Msg) {
+        app.userTookOver();
         if (app.interrupt_armed_tick != null) return self.quitCmd(app, ctx);
         if (app.state.mode == .login_input) {
             app.cancelLogin();
@@ -2805,8 +2921,14 @@ pub const TuiModel = struct {
         return self.quitCmd(app, ctx);
     }
 
+    fn closeModal(app: *App) void {
+        app.state.mode = .normal;
+        app.userTookOver();
+    }
+
     fn handleEscape(self: *TuiModel, app: *App) void {
         _ = self;
+        app.userTookOver();
         if (app.state.composer.buffer.items.len > 0) {
             app.state.composer.clear();
             return;
@@ -3536,7 +3658,7 @@ fn defaultModel() ai_types.Model {
     };
 }
 
-pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
+pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
 
@@ -3552,6 +3674,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     production.initBridge();
 
     var options = production.options();
+    options.context_window = context_window;
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -5061,6 +5184,104 @@ test "App submit abort when streaming via runtime-only cancels and reports trans
     try std.testing.expectEqualStrings("Turn aborted.", app.state.transcript.items[0].text.items);
 }
 
+const gpt_model = ai_types.Model{
+    .id = "gpt-5-codex",
+    .name = "GPT-5 Codex",
+    .api = "openai-responses",
+    .provider = "openai",
+    .base_url = "https://example.invalid",
+    .reasoning = true,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 128_000,
+    .max_tokens = 16_384,
+};
+
+const kimi_model = ai_types.Model{
+    .id = "kimi-k2.7-code",
+    .name = "Kimi K2.7 Code",
+    .api = "openai-completions",
+    .provider = "kimi",
+    .base_url = "https://example.invalid",
+    .reasoning = false,
+    .input = &[_][]const u8{"text"},
+    .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+    .context_window = 262_144,
+    .max_tokens = 16_384,
+};
+
+test "App says so when a window the model in effect cannot take is dropped" {
+    const models = [_]ai_types.Model{ gpt_model, kimi_model };
+    var app = try App.init(std.testing.allocator, .{ .models = &models, .context_window = 1_100_000 });
+    defer app.deinit();
+
+    try app.drainEvents();
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "1100000 context tokens is above the 1000000 gpt-5-codex takes") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+    try std.testing.expect(app.runtime.?.contextWindowRefused() == null);
+
+    try app.submit("/context 1m");
+    try app.drainEvents();
+    try app.runtime.?.switchModel("kimi-k2.7-code");
+    try app.drainEvents();
+    var said_again = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "1000000 context tokens is above the 262144 kimi-k2.7-code takes") != null) said_again = true;
+    }
+    try std.testing.expect(said_again);
+    try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "App a model command leaves the gauge on the window in effect" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 200000");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+
+    try app.submit("/model kimi-k2.7-code");
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+
+    try app.submit("/model gpt-5-codex");
+    try std.testing.expectEqual(@as(u64, 200_000), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(usize, 200_000), app.state.status.context_limit);
+}
+
+test "App a catalog refresh that drops the window leaves the gauge on the model's own" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{ gpt_model, kimi_model } });
+    defer app.deinit();
+
+    try app.submit("/context 1m");
+    try std.testing.expectEqual(@as(usize, 1_000_000), app.state.status.context_limit);
+
+    try app.runtime.?.replaceModels(&[_]ai_types.Model{kimi_model}, null);
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+    try std.testing.expectEqual(@as(usize, 262_144), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 262_144), app.state.telemetry.context_window);
+}
+
+test "App context moves the gauge, and the model's own window comes back" {
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model} });
+    defer app.deinit();
+
+    try app.submit("/context 512");
+
+    try std.testing.expectEqual(@as(usize, 512), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 512), app.state.telemetry.context_window);
+    try std.testing.expectEqual(@as(u32, 512), app.runtime.?.currentModel().?.context_window);
+
+    try app.submit("/context default");
+
+    try std.testing.expectEqual(@as(usize, 1024), app.state.status.context_limit);
+    try std.testing.expectEqual(@as(u64, 1024), app.state.telemetry.context_window);
+}
+
 test "App submit does not clear stream_aborted for slash commands" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -6187,8 +6408,7 @@ const MockProvider = struct {
         s.* = event_stream.AssistantMessageEventStream.init(a);
         if (options) |opts| {
             if (opts.requires_owned_stream_events) {
-                s.owns_events = true;
-                s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
             }
         }
 
@@ -6550,4 +6770,369 @@ test "TuiModel flush budget ignores the composer's grown height" {
     try app.state.replaceComposerBuffer("aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn oooo pppp");
     const grown_budget = model.flushBudget(app, &tctx.ctx);
     try std.testing.expectEqual(empty_budget, grown_budget);
+}
+
+fn pushErrorRun(app: *App, mock: *MockAppSession, message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+    try mock.eventStream().push(.{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(try app.allocator.dupe(u8, message)) } });
+    try mock.eventStream().push(.{ .agent_end = .{ .reason = reason } });
+    try app.drainEvents();
+}
+
+const auto_continue_harness = struct {
+    app: App,
+    mock: *MockAppSession,
+
+    fn init() !@This() {
+        const mock = try std.testing.allocator.create(MockAppSession);
+        mock.* = .{};
+        errdefer std.testing.allocator.destroy(mock);
+        var harness = @This(){
+            .app = App.initWithoutRuntime(std.testing.allocator),
+            .mock = mock,
+        };
+        harness.app.session = mock.session();
+        return harness;
+    }
+
+    fn deinit(self: *@This()) void {
+        self.app.deinit();
+        self.mock.deinit();
+        std.testing.allocator.destroy(self.mock);
+    }
+
+    fn failRun(self: *@This(), message: []const u8, reason: tui_runtime.TuiEndReason) !void {
+        try pushErrorRun(&self.app, self.mock, message, reason);
+    }
+
+    fn pump(self: *@This(), advance_ms: i64) void {
+        self.app.pumpAutoContinue(compat.time.nowMillis() + advance_ms);
+    }
+
+    fn pastDelay(self: *@This()) void {
+        self.pump(@intCast(tui_auto_continue.default_delay_ms));
+    }
+
+    fn transcriptHas(self: *@This(), needle: []const u8) bool {
+        for (self.app.state.transcript.items) |entry| {
+            if (std.mem.indexOf(u8, entry.text.items, needle) != null) return true;
+        }
+        return false;
+    }
+};
+
+test "a run ending in a provider error schedules one continue and says so" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+    try std.testing.expect(harness.transcriptHas("Continuing in 3s"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.resume_count);
+    try std.testing.expect(harness.transcriptHas("on your behalf"));
+}
+
+test "the automatic continue holds when the second run fails the same way" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+    try std.testing.expect(!harness.app.auto_continue.pending());
+}
+
+test "a user turn after a failure lets a later one nudge again" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try harness.app.submit("try the other model");
+    try std.testing.expect(!harness.app.auto_continue.continued);
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 3), harness.mock.submit_count);
+}
+
+test "a cancelled run never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .cancelled);
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "an auth failure never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 401 (check ANTHROPIC_API_KEY is valid) (authentication_error: invalid x-api-key)", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a context overflow never schedules a continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("prompt is too long: 250000 tokens > 200000 maximum", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+}
+
+test "a user turn inside the delay says the continue was dropped" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.transcriptHas("Continuing in 3s"));
+
+    try harness.app.submit("never mind, I will retype it");
+    try std.testing.expect(harness.transcriptHas("the automatic continue was dropped"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+}
+
+test "a clean run says nothing about a continue that was never armed" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 401 (check the key)", .@"error");
+    try harness.app.submit("let me fix the key");
+    try std.testing.expect(!harness.transcriptHas("dropped"));
+}
+
+test "an abort before the delay is up drops the pending continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    try harness.app.submit("/abort");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a follow-up queued before the delay is up drops the pending continue" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    _ = try harness.app.queueFollowUp("never mind, use the other key");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "a follow-up already queued at the failure means no nudge is announced" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    _ = try harness.app.queueFollowUp("then try the other key");
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(!harness.app.auto_continue.pending());
+    try std.testing.expect(!harness.transcriptHas("Continuing in"));
+
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "the automatic continue waits for an automatic compaction like a typed one" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try pushErrorRun(&app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 1), mock.compact_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.pending_after_compaction != null);
+
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+    try std.testing.expectEqual(@as(usize, 1), mock.submit_count);
+}
+
+test "a picker open at the deadline defers the nudge rather than spending it" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.app.state.mode = .picker;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+    try std.testing.expect(harness.app.auto_continue.pending());
+
+    harness.app.state.mode = .normal;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 1), harness.mock.submit_count);
+}
+
+test "the nudge waits out its delay and holds while a run is still going" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    harness.pump(0);
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+
+    harness.app.state.status.streaming = true;
+    harness.pastDelay();
+    try std.testing.expectEqual(@as(usize, 0), harness.mock.submit_count);
+}
+
+test "resuming a session whose last run ended in an error does not nudge" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    app.runtime.?.run_async = false;
+
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+
+    const model = app.runtime.?.currentModel() orelse return error.NoModelConfigured;
+    var meta = session_store.SessionMetadata{
+        .session_id = try std.testing.allocator.dupe(u8, "s-error"),
+        .model = try std.testing.allocator.dupe(u8, model.id),
+        .provider = try std.testing.allocator.dupe(u8, model.provider),
+        .last_active = 1,
+    };
+    defer meta.deinit(std.testing.allocator);
+    const saved_error = try std.testing.allocator.dupe(u8, "anthropic request failed: HTTP 400 invalid_request_error");
+    defer std.testing.allocator.free(saved_error);
+    try app.store.?.save(meta, .{ .@"error" = .{ .message = OwnedSlice(u8).initOwned(saved_error) } });
+    try app.store.?.saveEvent("s-error", .{ .agent_end = .{ .reason = .@"error" } });
+
+    try app.loadSessions();
+    app.state.session_index = 0;
+    try app.resumeSelectedSession();
+
+    try std.testing.expect(!app.auto_continue.pending());
+    try std.testing.expectEqualStrings("", app.run_error_text);
+    for (app.state.transcript.items) |entry| {
+        try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "Continuing in") == null);
+    }
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), app.runtime.?.steersConsumedCount());
+}
+
+test "Esc while a run is going aborts it and drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    app.state.status.streaming = true;
+    model.handleEscape(app);
+    try std.testing.expectEqual(@as(usize, 1), mock.cancel_count);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Esc closing a picker drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+    const after_delay = compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms));
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    app.state.mode = .picker;
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expect(app.auto_continue.pending());
+
+    _ = model.update(.{ .key = .{ .key = .escape } }, &tctx.ctx);
+    try std.testing.expectEqual(tui_state.AppMode.normal, app.state.mode);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(after_delay);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "Ctrl+C drops the pending continue" {
+    var mock = MockAppSession{};
+    defer mock.deinit();
+    var model = TuiModel{ .app = App.initWithoutRuntime(std.testing.allocator) };
+    defer model.deinit();
+    var tctx: TestContext = undefined;
+    tctx.setup();
+    defer tctx.deinit();
+    const app = &model.app.?;
+    app.session = mock.session();
+
+    try pushErrorRun(app, &mock, "anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expect(app.auto_continue.pending());
+
+    _ = model.handleInterrupt(app, &tctx.ctx);
+    try std.testing.expect(!app.auto_continue.pending());
+
+    app.pumpAutoContinue(compat.time.nowMillis() + @as(i64, @intCast(tui_auto_continue.default_delay_ms)));
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+}
+
+test "a run that ends clean leaves no error text for a later failure" {
+    var harness = try auto_continue_harness.init();
+    defer harness.deinit();
+
+    try harness.failRun("anthropic request failed: HTTP 400 invalid_request_error", .@"error");
+    try std.testing.expectEqualStrings("anthropic request failed: HTTP 400 invalid_request_error", harness.app.run_error_text);
+
+    try harness.mock.eventStream().push(.{ .agent_end = .{ .reason = .completed } });
+    try harness.app.drainEvents();
+    try std.testing.expectEqualStrings("", harness.app.run_error_text);
 }
