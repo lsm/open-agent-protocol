@@ -312,6 +312,15 @@ refuse a request that size. A refusal is a limit on what this repository will as
 not a claim about what the provider accepts: a window above what a model reports still
 fails the turn with the provider's own overflow error, and `/compact` is the way out.
 
+A window the user sets is kept in `~/.oapx/config.json` under `mode.context_window`, so
+it is still there next session, and `/context default` removes the member rather than
+writing the model's own number back — an absent member means the catalog's window, which is
+what a session that never set one uses. A value above a model's ceiling that is found in
+the file on startup is dropped for that session and reported the same way a switch reports
+it, and the file is left exactly as it was: a window this repository will not ask for is
+not a reason to edit the user's settings. A window refused at the prompt changes nothing
+either, so what is written is always a window the user chose.
+
 The ceiling follows the model, so a window the model in effect cannot take is dropped
 rather than carried: `--context-window` above the first model's ceiling is dropped before
 the first turn, and so is a session's window when a model switch lands on a model whose

@@ -548,6 +548,10 @@ pub const TuiRuntime = struct {
         self.applyContextWindowToAgent();
     }
 
+    pub fn contextWindowOverride(self: *const TuiRuntime) ?u32 {
+        return self.context_window;
+    }
+
     pub fn contextWindowRefused(self: *const TuiRuntime) ?u32 {
         return self.context_window_refused;
     }
