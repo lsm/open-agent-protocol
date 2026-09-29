@@ -2388,6 +2388,8 @@ test "an anthropic OAuth token is bound to the Anthropic origin" {
 }
 
 test "an api without an auth provider id never resolves a vendor OAuth token" {
+    try provider_catalog.blankEnvironment(std.testing.allocator);
+    defer compat.clearTestEnv();
     var state = AuthTestState{ .expires = compat.time.nowMillis() + 60_000 };
     auth_test_state = &state;
     defer auth_test_state = null;
