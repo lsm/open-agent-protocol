@@ -303,7 +303,7 @@ fn writeState(list: *SegmentList, allocator: std.mem.Allocator, state: *const tu
 fn writeRate(list: *SegmentList, allocator: std.mem.Allocator, state: *const tui_state.AppState) !void {
     const rate = &state.telemetry.rate;
     const shown = rate.shown();
-    if (!shown.measured()) return;
+    if (!shown.hasFigure()) return;
     var buf: [16]u8 = undefined;
     const mark = if (shown.estimated) "~" else "";
     const value = std.fmt.bufPrint(&buf, "{s}{d} tok/s", .{ mark, shown.perSecond() }) catch return;

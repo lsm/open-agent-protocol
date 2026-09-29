@@ -195,8 +195,13 @@ code paths; add a transcript row instead.
 - The rate is a `~`-marked estimate or an unmarked measurement, and the mark always
   means the same thing: **a mark means an estimate, an unmarked figure is measured.**
   It is the live figure while a message streams — necessarily an estimate, because
-  usage only arrives at `message_end` — then the previous turn's, then the average
-  since the last model switch. The average never mixes the two kinds: it is the mean
+  usage only arrives at `message_end`. While a run is in progress that is the figure
+  the run has just produced, since the previous turn's would describe a run already
+  finished; once the run ends the row shows the average since the last model switch,
+  because an idle line is asking how fast this model is, not what one reply happened to
+  manage. A run that has measured nothing yet falls back to the average rather than
+  showing nothing, so the segment never appears and disappears at the start of a run.
+  The average never mixes the two kinds: it is the mean
   of the measured turns alone, and only when the model has produced no measured turn at
   all does it fall back to the mean of the estimates, marked. So a provider that
   reports no usage leaves the average measuring nothing rather than reading as slow, and

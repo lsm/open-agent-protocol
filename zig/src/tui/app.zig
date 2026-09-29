@@ -5264,9 +5264,9 @@ test "a resumed session's replayed events leave the rate showing nothing" {
     try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.turn().output_tokens);
     try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.estimated_since_switch.output_tokens);
     try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
-    try std.testing.expect(!app.state.telemetry.rate.previous.measured());
-    try std.testing.expect(!app.state.telemetry.rate.average.measured());
-    try std.testing.expect(!app.state.telemetry.rate.live.measured());
+    try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.live.hasFigure());
 }
 
 test "a model switch resets the rate average, including between two models that cost the same" {
@@ -5292,14 +5292,14 @@ test "a model switch resets the rate average, including between two models that 
     app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
     app.state.telemetry.rate.turnEnded();
     app.drainEvents() catch {};
-    try std.testing.expect(app.state.telemetry.rate.measured_since_switch.measured());
+    try std.testing.expect(app.state.telemetry.rate.measured_since_switch.hasFigure());
 
     try app.runtime.?.switchModel("gpt-5-codex-twin");
     app.drainEvents() catch {};
 
     try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
-    try std.testing.expect(!app.state.telemetry.rate.average.measured());
-    try std.testing.expect(!app.state.telemetry.rate.previous.measured());
+    try std.testing.expect(!app.state.telemetry.rate.average.hasFigure());
+    try std.testing.expect(!app.state.telemetry.rate.previous.hasFigure());
 }
 
 test "App a model command leaves the gauge on the window in effect" {
