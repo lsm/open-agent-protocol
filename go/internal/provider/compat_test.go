@@ -9,6 +9,38 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAnOpenRouterHostIsOpenrouterDotAIOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://openrouter.ai",
+		"https://openrouter.ai/api/v1",
+		"https://OPENROUTER.AI",
+	}
+	for _, url := range hosts {
+		if !isOpenRouterURL(url, true) {
+			t.Errorf("isOpenRouterURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myopenrouter.ai",
+		"https://notopenrouter.ai",
+		"https://openrouter.ai.evil.example",
+		"https://evil.example/?next=openrouter.ai",
+		"https://evil.example/v1/openrouter.ai",
+		"https://gateway.example/proxy/openrouter.ai",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isOpenRouterURL(url, true) {
+			t.Errorf("isOpenRouterURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isOpenRouterURL("https://openrouter.ai", false) {
+		t.Error("no base url is not an openrouter host")
+	}
+}
+
 func TestADeepSeekHostIsDeepseekDotComOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.deepseek.com",

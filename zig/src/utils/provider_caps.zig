@@ -65,8 +65,7 @@ pub fn isZai(base_url: ?[]const u8) bool {
 }
 
 pub fn isOpenRouter(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "openrouter.ai") != null;
+    return isHostOrSubdomainOf(base_url, "openrouter.ai");
 }
 
 pub fn isChutes(base_url: ?[]const u8) bool {
@@ -208,6 +207,39 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "an openrouter host is openrouter.ai or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://openrouter.ai",
+        "https://openrouter.ai/api/v1",
+        "https://OPENROUTER.AI",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isOpenRouter(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://myopenrouter.ai",
+        "https://notopenrouter.ai",
+        "https://openrouter.ai.evil.example",
+        "https://evil.example/?next=openrouter.ai",
+        "https://evil.example/v1/openrouter.ai",
+        "https://gateway.example/proxy/openrouter.ai",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isOpenRouter(url));
+    }
+
+    try std.testing.expect(!isOpenRouter(null));
+}
+
+test "the catalogued openrouter row still detects as openai compatible" {
+    const url = "https://openrouter.ai/api/v1";
+    try std.testing.expect(isOpenRouter(url));
+    try std.testing.expectEqual(ProviderType.openai_compatible, detectProviderType(url));
 }
 
 test "a deepseek host is deepseek.com or a subdomain of it" {
