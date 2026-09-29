@@ -1,7 +1,19 @@
 name: CI
 
 on:
+  # Pushes run only on main, as ci-zig.yml already does. An unfiltered push gave
+  # every in-repo pull request branch a second, push-event run of this workflow on
+  # the same sha as its pull_request run: the same `test`, the same `go-sdk-smoke`,
+  # the same `ts` and `compatibility`, all of them duplicated. A branch push with
+  # no pull request open got the run with nothing waiting on it, which is the
+  # common case while a lane is mid-stack.
+  #
+  # The pull_request trigger below still covers every branch with an open pull
+  # request, which is the check the merge gate reads, so narrowing this loses no
+  # gate coverage. A push to a branch whose pull request is not open yet is
+  # checked when the pull request opens.
   push:
+    branches: [main]
   pull_request:
 
 permissions:

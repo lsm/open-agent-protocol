@@ -580,6 +580,7 @@ fn storedOAuthOriginAllowed(
             model.base_url,
             credentials.refresh,
             credentials.provider_data,
+            .{},
         ),
     };
 }

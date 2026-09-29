@@ -1937,6 +1937,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const tui_auto_continue_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/auto_continue.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "overflow", .module = overflow_mod },
+        },
+    });
+
     const tui_state_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/state.zig"),
         .target = target,
@@ -1974,6 +1983,17 @@ pub fn build(b: *std.Build) void {
     const tui_view_session_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/session_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_menu_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/menu_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
 
+    const tui_worktree_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/worktree.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json/writer", .module = json_writer_mod },
+            .{ .name = "tools/common", .module = tools_common_mod },
+            .{ .name = "tools/process_runner", .module = tools_process_runner_mod },
+        },
+    });
     const tui_login_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/login.zig"),
         .target = target,
@@ -2015,6 +2035,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "agent", .module = agent_mod },
             .{ .name = "event_stream", .module = event_stream_mod },
             .{ .name = "tui_runtime", .module = tui_runtime_mod },
+            .{ .name = "tui_auto_continue", .module = tui_auto_continue_mod },
             .{ .name = "tui_state", .module = tui_state_mod },
             .{ .name = "tui_commands", .module = tui_commands_mod },
             .{ .name = "tui_login", .module = tui_login_mod },
@@ -2026,6 +2047,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oauth/storage", .module = oauth_storage_mod },
             .{ .name = "tui_render", .module = tui_render_mod },
             .{ .name = "tui_session_store", .module = tui_session_store_mod },
+            .{ .name = "tui_worktree", .module = tui_worktree_mod },
             .{ .name = "tui_view_transcript", .module = tui_view_transcript_mod },
             .{ .name = "tui_view_composer", .module = tui_view_composer_mod },
             .{ .name = "tui_view_status_bar", .module = tui_view_status_bar_mod },
@@ -2474,6 +2496,7 @@ pub fn build(b: *std.Build) void {
     const tui_runtime_test = b.addTest(.{ .root_module = tui_runtime_mod });
     const tui_session_store_test = b.addTest(.{ .root_module = tui_session_store_mod });
     const tui_state_test = b.addTest(.{ .root_module = tui_state_mod });
+    const tui_auto_continue_test = b.addTest(.{ .root_module = tui_auto_continue_mod });
     const tui_commands_test = b.addTest(.{ .root_module = tui_commands_mod });
     const tui_login_test = b.addTest(.{ .root_module = tui_login_mod });
     const model_catalog_test = b.addTest(.{ .root_module = model_catalog_mod });
@@ -2489,6 +2512,7 @@ pub fn build(b: *std.Build) void {
     const tui_view_session_picker_test = b.addTest(.{ .root_module = tui_view_session_picker_mod });
     const tui_view_menu_picker_test = b.addTest(.{ .root_module = tui_view_menu_picker_mod });
     const tui_fixture_test = b.addTest(.{ .root_module = tui_fixture_mod });
+    const tui_worktree_test = b.addTest(.{ .root_module = tui_worktree_mod });
     const tui_tests_scenarios_test = b.addTest(.{ .root_module = tui_tests_scenarios_mod });
     const tui_tests_e2e_test = b.addTest(.{ .root_module = tui_tests_e2e_mod });
     const tui_tests_mock_transport_test = b.addTest(.{ .root_module = tui_tests_mock_transport_mod });
@@ -2838,6 +2862,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_login_test).step);
     test_step.dependOn(&b.addRunArtifact(model_catalog_test).step);
@@ -2853,6 +2878,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_worktree_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
@@ -3099,6 +3125,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_runtime_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_session_store_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_state_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_auto_continue_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_commands_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_login_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(model_catalog_test).step);
@@ -3114,6 +3141,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_worktree_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);

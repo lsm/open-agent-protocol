@@ -24,6 +24,7 @@ pub const ToolPermission = struct {
 pub const ModeSettings = struct {
     compact_output: bool = true,
     context_window: ?u32 = null,
+    auto_worktree: bool = false,
 };
 
 pub const Config = struct {
@@ -159,6 +160,7 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
         .object => |mode_obj| {
             cfg.mode.compact_output = boolField(mode_obj, "compact_output", cfg.mode.compact_output);
             cfg.mode.context_window = positiveIntField(mode_obj, "context_window");
+            cfg.mode.auto_worktree = boolField(mode_obj, "auto_worktree", cfg.mode.auto_worktree);
         },
         else => {},
     };
@@ -190,6 +192,7 @@ fn serializeConfig(allocator: std.mem.Allocator, cfg: Config) ![]u8 {
     if (cfg.mode.context_window) |window| {
         try w.writeIntField("context_window", window);
     }
+    try w.writeBoolField("auto_worktree", cfg.mode.auto_worktree);
     try w.endObject();
     try w.endObject();
     try buf.append(allocator, '\n');
@@ -248,6 +251,8 @@ test "save config reload preserves model provider and api" {
     std.testing.allocator.free(cfg.api);
     cfg.api = try std.testing.allocator.dupe(u8, "openai-responses");
     try cfg.permissions.append(std.testing.allocator, .{ .tool_name = try std.testing.allocator.dupe(u8, "shell_execute"), .mode = .deny });
+    cfg.mode.compact_output = false;
+    cfg.mode.auto_worktree = true;
     try store.save(cfg);
 
     var loaded = try store.load();
@@ -257,6 +262,8 @@ test "save config reload preserves model provider and api" {
     try std.testing.expectEqualStrings("openai-responses", loaded.api);
     try std.testing.expectEqual(@as(usize, 1), loaded.permissions.items.len);
     try std.testing.expectEqual(ToolPermission.Mode.deny, loaded.permissions.items[0].mode);
+    try std.testing.expectEqual(false, loaded.mode.compact_output);
+    try std.testing.expectEqual(true, loaded.mode.auto_worktree);
 }
 
 test "a context window survives a save and an absent one stays absent" {
