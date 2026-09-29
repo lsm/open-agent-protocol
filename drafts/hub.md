@@ -1233,6 +1233,27 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it matters** | The differential comparison keeps `details` and drops only `message`, so the two trees will disagree on the first open whose elections are unadvertised or degraded. Unreachable today — the only registered adapter advertises all three — and live the moment #389's registry registers a real one. |
 | **The fix** | The hub has to surface the refusal, not just the error: either a `Failure` that carries the `Refusal`, or a variant of `open` that returns it. That is a core change, and it is the same change `submit`, `resolve` and `cancel` will each want, so it belongs in the PR that serves the first of them. |
 
+### D13 — an ill-typed envelope member answers `schema_invalid` where Go answers `malformed_json`
+
+| | |
+| --- | --- |
+| **The draft says** | `open`'s errors distinguish `malformed_json` (the envelope will not decode) from `schema_invalid` (it decodes and does not satisfy the schema). The distinction is the draft's, and it is meaningful. |
+| **Go does** | `gateRequest` runs `ParseEnvelope` first and only then `schema.Validate`. `ParseEnvelope` is "can `encoding/json` unmarshal this into the `Envelope` struct", so a **wrong-typed** member fails it (`json: cannot unmarshal number into Go struct field plain.id`) and answers `malformed_json`, while a **missing** member or an off-schema value parses and answers `schema_invalid`. |
+| **Zig does** | `schema_invalid` for both. `oap_envelope.deserializeEnvelope` decodes *and* dispatches on the type in one step, so the two questions Go asks separately cannot be asked separately here. |
+| **Why neither order fixes it** | Validate-then-decode gives `schema_invalid` for the ill-typed member, as now. Decode-then-validate gives `schema_invalid` for the ill-typed member too — but it *also* answers `malformed_json` for `{"id":"x","type":"nonesuch"}`, where Go answers `schema_invalid`, because the Zig decode rejects the unknown type and Go's parse does not. Measured, not reasoned: both orders were tried and each is wrong on one of the two inputs. |
+| **The fix** | The envelope module needs a parse step that is "shape only" — unmarshal into the struct without the type dispatch — so the gate can ask Go's two questions in Go's order. That is a change to `protocol/oap/envelope.zig`, shared by every consumer, and it is worth doing once rather than per op. |
+| **Reach** | Reachable today: any open with a number where a string belongs. The differential scenario sends `{"request":7}` and `{"request":[]}`, which both agree on, but not an ill-typed *member*. |
+
+### D14 — an unframable open answer keeps the session silently
+
+| | |
+| --- | --- |
+| **The draft says** | "An open response that cannot be encoded rolls the session back and says so", and "an open whose id the host named is **kept** when its response cannot be framed, and the refusal names it". |
+| **Go does** | `refuseOversizedOpen` and `refuseUnencodableOpen`: a **host-named** session is left open and the refusal says so; an **adapter-minted** one is rolled back, because nobody learned its id and an unreachable session must not leak. |
+| **Zig does** | The answer goes through the generic `answerLine` path, which answers `response_too_large` and **keeps the session in both cases**, with no distinction named. |
+| **Why it matters** | A `sessions` listing after such a refusal would show a session the host has no id for. Unreachable with today's registry — one adapter, an 18 MiB frame limit and a small state document — and live the moment a real adapter's state does not fit. |
+| **The fix** | Belongs with the `response_too_large` work, which is its own PR: the rollback needs the hub's own allocator and a shutdown-bounded close, which is the shape D6 gives hub-2 for #389. Recording it here so the follow-up PR starts from the rule rather than from this paragraph. |
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |
