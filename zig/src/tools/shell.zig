@@ -9,9 +9,12 @@ pub const schema_execute =
 ;
 
 const end_directory_script =
-    \\eval "$1"
+    \\__oap_cmd=$1
+    \\__oap_nonce=$2
+    \\set --
+    \\eval "$__oap_cmd"
     \\__oap_rc=$?
-    \\printf '\n%s%s\n' "$2" "$(pwd)"
+    \\printf '\n%s%s\n' "$__oap_nonce" "$(pwd)"
     \\exit $__oap_rc
 ;
 
@@ -31,6 +34,11 @@ fn splitEndDirectory(stdout: []const u8, nonce: [16]u8) EndDirectory {
     const line_end = std.mem.indexOfScalar(u8, after, '\n') orelse after.len;
     if (line_end == 0) return .{ .stdout = stdout[0..index], .directory = null };
     return .{ .stdout = stdout[0..index], .directory = after[0..line_end] };
+}
+
+fn reportDirectory(term: std.process.Child.Term, parsed: ?[]const u8, start: []const u8) []const u8 {
+    if (term != .exited) return start;
+    return parsed orelse start;
 }
 
 pub const execute_tool = agent.AgentTool{
@@ -91,7 +99,7 @@ pub fn execute(
     const captured = splitEndDirectory(result.stdout, nonce);
     const start_directory = try std.Io.Dir.path.resolve(allocator, &.{workspace_root});
     defer allocator.free(start_directory);
-    const end_directory = captured.directory orelse start_directory;
+    const end_directory = reportDirectory(result.term, captured.directory, start_directory);
 
     const exit_code: ?u8 = switch (result.term) {
         .exited => |code| code,
@@ -202,6 +210,42 @@ test "a missing or empty marker reports no directory" {
     const split = splitEndDirectory(empty, nonce);
     try std.testing.expect(split.directory == null);
     try std.testing.expectEqualStrings("out", split.stdout);
+}
+
+test "the command sees no positional parameters, as it did before the wrapper" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"printf '[%s][%s]' \\\"$1\\\" \\\"$2\\\"\"}}", .{cwd});
+    defer std.testing.allocator.free(args);
+    var result = try execute("call-args", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "[]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "oap-cwd-") == null);
+}
+
+test "a command that reassigns the positional parameters still reports its directory" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"set -- clobbered; pwd\"}}", .{cwd});
+    defer std.testing.allocator.free(args);
+    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{cwd});
+    defer std.testing.allocator.free(expected);
+    var result = try execute("call-clobber", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, expected) != null);
+}
+
+test "a marker is only read when the wrapper exited normally" {
+    const start = "/start";
+    try std.testing.expectEqualStrings("/parsed", reportDirectory(.{ .exited = 0 }, "/parsed", start));
+    try std.testing.expectEqualStrings("/parsed", reportDirectory(.{ .exited = 7 }, "/parsed", start));
+    try std.testing.expectEqualStrings(start, reportDirectory(.{ .exited = 0 }, null, start));
+    try std.testing.expectEqualStrings(start, reportDirectory(.{ .signal = .KILL }, "/parsed", start));
+    try std.testing.expectEqualStrings(start, reportDirectory(.{ .stopped = .KILL }, "/parsed", start));
+    try std.testing.expectEqualStrings(start, reportDirectory(.{ .unknown = 0 }, "/parsed", start));
 }
 
 test "shell execute captures stdout" {
