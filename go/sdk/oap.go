@@ -350,7 +350,50 @@ func (s *ModelsService) oapList(ctx context.Context, req ListModelsRequest) (*Li
 				descriptor.Capabilities = append(descriptor.Capabilities, ModelCapability(name))
 			}
 		}
+		if published, ok := model["cost"].(map[string]any); ok {
+			rates := jsonObject(published)
+			descriptor.Cost = &ModelCost{}
+			if value, ok := rates.num("input"); ok {
+				descriptor.Cost.Input = value
+			}
+			if value, ok := rates.num("output"); ok {
+				descriptor.Cost.Output = value
+			}
+			if value, ok := rates.num("cache_read"); ok {
+				descriptor.Cost.CacheRead = value
+			}
+			if value, ok := rates.num("cache_write"); ok {
+				descriptor.Cost.CacheWrite = value
+			}
+		}
+		for _, item := range model.arr("input_modalities") {
+			if name, ok := item.(string); ok {
+				descriptor.InputModalities = append(descriptor.InputModalities, name)
+			}
+		}
+		for _, item := range model.arr("output_modalities") {
+			if name, ok := item.(string); ok {
+				descriptor.OutputModalities = append(descriptor.OutputModalities, name)
+			}
+		}
+		for _, item := range model.arr("reasoning_levels") {
+			if name, ok := item.(string); ok {
+				descriptor.ReasoningLevels = append(descriptor.ReasoningLevels, ReasoningLevel(name))
+			}
+		}
+		descriptor.ReleaseDate = model.str("release_date")
+		descriptor.Family = model.str("family")
 		result.Models = append(result.Models, descriptor)
+	}
+	if published, ok := envelopePayload(response)["catalog"].(map[string]any); ok {
+		catalog := &ModelCatalog{}
+		if value, ok := jsonObject(published).num("observed_at_ms"); ok {
+			catalog.ObservedAtMS = int64(value)
+		}
+		if value, ok := published["complete"].(bool); ok {
+			catalog.Complete = value
+		}
+		result.Catalog = catalog
 	}
 	return result, nil
 }

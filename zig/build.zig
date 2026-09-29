@@ -673,6 +673,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oauth/storage", .module = oauth_storage_mod },
             .{ .name = "compat", .module = compat_mod },
             .{ .name = "custom_providers", .module = custom_providers_mod },
+            .{ .name = "provider_catalog", .module = provider_catalog_mod },
         },
     });
 
@@ -1208,6 +1209,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const oap_conformance_runner_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/oap/conformance_runner.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "types", .module = protocol_oap_types_mod },
+            .{ .name = "envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "endpoint_client", .module = oap_endpoint_client_mod },
+        },
+    });
+    const oap_conformance_runner_test = b.addTest(.{ .root_module = oap_conformance_runner_mod });
+
     const adapter_contract_mod = b.createModule(.{
         .root_source_file = b.path("src/adapter/contract.zig"),
         .target = target,
@@ -1392,6 +1405,17 @@ pub fn build(b: *std.Build) void {
             .{ .name = "compat", .module = compat_mod },
         },
     });
+    const hub_http_mod = b.createModule(.{
+        .root_source_file = b.path("src/hub/http.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "oap_types", .module = protocol_oap_types_mod },
+            .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
+            .{ .name = "compat", .module = compat_mod },
+        },
+    });
+    const hub_http_test = b.addTest(.{ .root_module = hub_http_mod });
     const hub_stdio_mod = b.createModule(.{
         .root_source_file = b.path("src/hub/stdio.zig"),
         .target = target,
@@ -1401,6 +1425,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oap_envelope", .module = protocol_oap_envelope_mod },
             .{ .name = "json_encode", .module = json_encode_mod },
             .{ .name = "contract", .module = adapter_contract_mod },
+            .{ .name = "jsonschema", .module = jsonschema_mod },
             .{ .name = "hub", .module = hub_mod },
         },
     });
@@ -1891,6 +1916,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "provider_credential", .module = provider_credential_mod },
             .{ .name = "provider_base_url", .module = provider_base_url_mod },
+            .{ .name = "auth_resolver", .module = auth_resolver_mod },
             .{ .name = "anthropic_messages_api", .module = anthropic_messages_api_mod },
             .{ .name = "openai_completions_api", .module = openai_completions_api_mod },
             .{ .name = "openai_responses_api", .module = openai_responses_api_mod },
@@ -1983,6 +2009,17 @@ pub fn build(b: *std.Build) void {
     const tui_view_session_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/session_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "zigzag", .module = zigzag_mod }, .{ .name = "tui_state", .module = tui_state_mod }, .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
     const tui_view_menu_picker_mod = b.createModule(.{ .root_source_file = b.path("src/tui/views/menu_picker.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "tui_theme", .module = tui_theme_mod }, .{ .name = "tui_text", .module = tui_text_mod }, .{ .name = "tui_render", .module = tui_render_mod } } });
 
+    const tui_worktree_mod = b.createModule(.{
+        .root_source_file = b.path("src/tui/worktree.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "compat", .module = compat_mod },
+            .{ .name = "json/writer", .module = json_writer_mod },
+            .{ .name = "tools/common", .module = tools_common_mod },
+            .{ .name = "tools/process_runner", .module = tools_process_runner_mod },
+        },
+    });
     const tui_login_mod = b.createModule(.{
         .root_source_file = b.path("src/tui/login.zig"),
         .target = target,
@@ -2036,6 +2073,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "oauth/storage", .module = oauth_storage_mod },
             .{ .name = "tui_render", .module = tui_render_mod },
             .{ .name = "tui_session_store", .module = tui_session_store_mod },
+            .{ .name = "tui_worktree", .module = tui_worktree_mod },
             .{ .name = "tui_view_transcript", .module = tui_view_transcript_mod },
             .{ .name = "tui_view_composer", .module = tui_view_composer_mod },
             .{ .name = "tui_view_status_bar", .module = tui_view_status_bar_mod },
@@ -2500,6 +2538,7 @@ pub fn build(b: *std.Build) void {
     const tui_view_session_picker_test = b.addTest(.{ .root_module = tui_view_session_picker_mod });
     const tui_view_menu_picker_test = b.addTest(.{ .root_module = tui_view_menu_picker_mod });
     const tui_fixture_test = b.addTest(.{ .root_module = tui_fixture_mod });
+    const tui_worktree_test = b.addTest(.{ .root_module = tui_worktree_mod });
     const tui_tests_scenarios_test = b.addTest(.{ .root_module = tui_tests_scenarios_mod });
     const tui_tests_e2e_test = b.addTest(.{ .root_module = tui_tests_e2e_mod });
     const tui_tests_mock_transport_test = b.addTest(.{ .root_module = tui_tests_mock_transport_mod });
@@ -2608,6 +2647,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "provider_catalog", .module = provider_catalog_mod },
             .{ .name = "oap_server", .module = protocol_oap_server_mod },
             .{ .name = "oap_bridge", .module = protocol_oap_bridge_mod },
+            .{ .name = "oap_conformance", .module = oap_conformance_runner_mod },
             .{ .name = "oap_auth_adapter", .module = protocol_oap_auth_adapter_mod },
             .{ .name = "oap_provider_types", .module = protocol_oap_provider_types_mod },
             .{ .name = "oap_provider_envelope", .module = protocol_oap_provider_envelope_mod },
@@ -2637,6 +2677,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "hermes_adapter", .module = hermes_adapter_mod },
             .{ .name = "memory_adapter", .module = memory_adapter_mod },
             .{ .name = "hub", .module = hub_mod },
+            .{ .name = "hub_http", .module = hub_http_mod },
             .{ .name = "hub_stdio", .module = hub_stdio_mod },
             .{ .name = "bounded_output", .module = bounded_output_mod },
             .{ .name = "endpoint_signals", .module = endpoint_signals_mod },
@@ -2724,10 +2765,13 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(adapter_endpoint_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_step.dependOn(&b.addRunArtifact(hub_http_test).step);
     test_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
     compile_hub_step.dependOn(&hub_test.step);
+    compile_hub_step.dependOn(&hub_http_test.step);
     compile_hub_step.dependOn(&hub_stdio_test.step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_test).step);
+    test_unit_hub_step.dependOn(&b.addRunArtifact(hub_http_test).step);
     test_unit_hub_step.dependOn(&b.addRunArtifact(hub_stdio_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_adapter_test).step);
@@ -2865,6 +2909,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
+    test_step.dependOn(&b.addRunArtifact(tui_worktree_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
@@ -2907,6 +2952,7 @@ pub fn build(b: *std.Build) void {
     test_unit_adapter_step.dependOn(&b.addRunArtifact(claude_session_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(acp_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
+    test_step.dependOn(&b.addRunArtifact(oap_conformance_runner_test).step);
     test_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
     test_step.dependOn(&b.addRunArtifact(claude_rpc_test).step);
     test_unit_adapter_step.dependOn(&b.addRunArtifact(pi_rpc_test).step);
@@ -3005,6 +3051,7 @@ pub fn build(b: *std.Build) void {
     const test_unit_oap_auth_adapter_step = b.step("test-unit-oap-auth-adapter", "Run OAP auth adapter unit tests");
     test_unit_oap_auth_adapter_step.dependOn(&b.addRunArtifact(protocol_oap_auth_adapter_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_endpoint_client_test).step);
+    test_unit_protocol_step.dependOn(&b.addRunArtifact(oap_conformance_runner_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_server_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_client_test).step);
     test_unit_protocol_step.dependOn(&b.addRunArtifact(protocol_agent_runtime_test).step);
@@ -3127,6 +3174,7 @@ pub fn build(b: *std.Build) void {
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_session_picker_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_view_menu_picker_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_fixture_test).step);
+    test_unit_tui_step.dependOn(&b.addRunArtifact(tui_worktree_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_scenarios_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_e2e_test).step);
     test_unit_tui_step.dependOn(&b.addRunArtifact(tui_tests_mock_transport_test).step);
@@ -3256,7 +3304,6 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
         offering: ?[]const u8 = null,
         status: ?[]const u8 = null,
         credential_env: []const []const u8 = &.{},
-        credential_precedence: []const []const u8 = &.{},
         base_url_env: []const []const u8 = &.{},
         region_env: ?[]const u8 = null,
         default_region: ?[]const u8 = null,
@@ -3338,7 +3385,7 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
     out.appendSlice(gpa, "pub const Endpoint = struct {\n    wire: []const u8,\n    base_url: []const u8,\n    region: ?[]const u8 = null,\n    carries_version: bool = false,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const Model = struct {\n    id: []const u8,\n    name: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const OAuthOrigin = struct {\n    exact: []const []const u8 = &.{},\n    domain: ?[]const u8 = null,\n    credential_declares_origin: bool = false,\n};\n\n") catch @panic("out of memory");
-    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    credential_precedence: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
+    out.appendSlice(gpa, "pub const Provider = struct {\n    id: []const u8,\n    display_name: ?[]const u8 = null,\n    auth: []const AuthKind = &.{},\n    offering: ?Offering = null,\n    status: ?Status = null,\n    credential_env: []const []const u8 = &.{},\n    base_url_env: []const []const u8 = &.{},\n    region_env: ?[]const u8 = null,\n    default_region: ?[]const u8 = null,\n    wires: []const []const u8 = &.{},\n    base_url_source: ?[]const u8 = null,\n    endpoints: []const Endpoint = &.{},\n    models_endpoint: ?[]const u8 = null,\n    context_window: ?u32 = null,\n    max_context_window: ?u32 = null,\n    max_tokens: ?u32 = null,\n    models: []const Model = &.{},\n    oauth_origin: ?OAuthOrigin = null,\n    docs: ?[]const u8 = null,\n};\n\n") catch @panic("out of memory");
     out.appendSlice(gpa, "pub const providers: []const Provider = &.{\n") catch @panic("out of memory");
     for (catalog.providers) |row| {
         out.print(gpa, "    .{{\n        .id = \"{f}\",\n", .{std.zig.fmtString(row.id)}) catch @panic("out of memory");
@@ -3360,7 +3407,6 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
             out.print(gpa, "        .status = .@\"{s}\",\n", .{rank}) catch @panic("out of memory");
         }
         tryWriteStrings(gpa, &out, "        .credential_env = ", row.credential_env);
-        tryWriteStrings(gpa, &out, "        .credential_precedence = ", row.credential_precedence);
         tryWriteStrings(gpa, &out, "        .base_url_env = ", row.base_url_env);
         tryWriteStrings(gpa, &out, "        .wires = ", row.wires);
         if (row.region_env) |name| {

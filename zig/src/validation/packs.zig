@@ -31,23 +31,25 @@ pub const Loaded = struct {
     }
 };
 
-fn readAll(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(8 * 1024 * 1024));
+fn readAll(io: std.Io, allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(8 * 1024 * 1024));
 }
 
 pub fn load(
+    io: std.Io,
     parent: std.mem.Allocator,
     registry: *jsonschema.Registry,
     pack_dirs: []const []const u8,
 ) !Loaded {
-    return gather(parent, registry, pack_dirs);
+    return gather(io, parent, registry, pack_dirs);
 }
 
-pub fn describe(parent: std.mem.Allocator, pack_dirs: []const []const u8) !Loaded {
-    return gather(parent, null, pack_dirs);
+pub fn describe(io: std.Io, parent: std.mem.Allocator, pack_dirs: []const []const u8) !Loaded {
+    return gather(io, parent, null, pack_dirs);
 }
 
 fn gather(
+    io: std.Io,
     parent: std.mem.Allocator,
     registry: ?*jsonschema.Registry,
     pack_dirs: []const []const u8,
@@ -62,7 +64,7 @@ fn gather(
 
     for (pack_dirs) |dir| {
         const descriptor_path = try std.fs.path.join(allocator, &.{ dir, "pack.json" });
-        const descriptor_bytes = try readAll(allocator, descriptor_path);
+        const descriptor_bytes = try readAll(io, allocator, descriptor_path);
         const descriptor = try std.json.parseFromSliceLeaky(std.json.Value, allocator, descriptor_bytes, .{});
         if (descriptor != .object) return error.InvalidPackDescriptor;
         const pack_id = (descriptor.object.get("id") orelse return error.InvalidPackDescriptor).string;
@@ -73,7 +75,7 @@ fn gather(
                 for (schemas.array.items) |schema_name| {
                     const file = schema_name.string;
                     const schema_path = try std.fs.path.join(allocator, &.{ dir, file });
-                    const schema_bytes = try readAll(allocator, schema_path);
+                    const schema_bytes = try readAll(io, allocator, schema_path);
                     const key = try std.fmt.allocPrint(allocator, "{s}{s}/{s}/{s}", .{ pack_base_uri, pack_id, version, file });
                     try target.addDocument(key, schema_bytes);
                 }

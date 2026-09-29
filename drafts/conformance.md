@@ -556,6 +556,24 @@ catalog can be served by an endpoint that applies no per-submit selection.
 Model resolution, aliases, pricing, cache refresh, and provider auth state are
 outside this unit unless a richer profile defines them.
 
+**A price is published, not judged.** The provider profile's
+`provider.models.list.response` carries an optional `cost` on each model entry
+([Decision 0035](../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md)),
+and it is a published fact with no unit behind it. A rate is true of the
+response that carried it, which is what makes publishing it safe and judging it
+separate: an implementation that quotes a rate it does not honour has published
+a falsehood rather than a wrong price, and this draft judges neither. What the
+schema does judge is the shape — four numbers, no tier, and no member beyond
+those four — so a `cost` is a subset of them or absent. The same holds for the
+other published members: the shape is judged, a fact's relationship to another
+fact is not. A `reasoning_default` outside its own `reasoning_levels` is an
+obligation the producer broke, not a diagnostic a validator emits, because the
+check is across two members and the schema cannot express one. A listing's
+`catalog.complete: false` is likewise
+published and unjudged; a caller told the listing is a subset decides for
+itself what to publish in its own catalog, and that is judged under that
+catalog's own unit.
+
 ### `+provider-attach`
 
 An implementation conforms to optional `+provider-attach` if it advertises
