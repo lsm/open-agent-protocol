@@ -2229,10 +2229,19 @@ pub const App = struct {
     fn syncModelTelemetry(self: *App) void {
         const runtime = self.runtime orelse return;
         const model = runtime.currentModel() orelse return;
-        if (self.state.telemetry.input_cost_per_million != model.cost.input) {
-            self.state.telemetry.rate = .{};
-        }
         self.state.telemetry.input_cost_per_million = model.cost.input;
+        if (self.rate_model.len > 0 and
+            (std.mem.eql(u8, self.rate_model, model.id) and std.mem.eql(u8, self.rate_provider, model.provider)))
+        {
+            return;
+        }
+        if (self.rate_model.len > 0) {
+            self.state.telemetry.rate = .{};
+            self.allocator.free(self.rate_model);
+            self.allocator.free(self.rate_provider);
+        }
+        self.rate_model = self.allocator.dupe(u8, model.id) catch "";
+        self.rate_provider = self.allocator.dupe(u8, model.provider) catch "";
     }
 
     pub fn slashQuery(self: *const App) ?[]const u8 {
@@ -5063,6 +5072,39 @@ test "App says so when a window the model in effect cannot take is dropped" {
     }
     try std.testing.expect(said_again);
     try std.testing.expectEqual(@as(u64, 262_144), app.runtime.?.contextWindow());
+}
+
+test "a model switch resets the rate average, including between two models that cost the same" {
+    const same_price = ai_types.Model{
+        .id = "gpt-5-codex-twin",
+        .name = "GPT-5 Codex Twin",
+        .api = "openai-responses",
+        .provider = "openai",
+        .base_url = "https://example.invalid",
+        .reasoning = true,
+        .input = &[_][]const u8{"text"},
+        .cost = .{ .input = 1.25, .output = 10, .cache_read = 0, .cache_write = 0 },
+        .context_window = 128_000,
+        .max_tokens = 16_384,
+    };
+    var twin = gpt_model;
+    twin.id = "gpt-5-codex-twin";
+    twin.cost = same_price.cost;
+    const models = [_]ai_types.Model{ gpt_model, twin };
+    var app = try App.init(std.testing.allocator, .{ .models = &models });
+    defer app.deinit();
+
+    app.state.telemetry.rate.measured_since_switch = .{ .output_tokens = 400, .stream_ms = 1_000 };
+    app.state.telemetry.rate.turnEnded();
+    app.drainEvents() catch {};
+    try std.testing.expect(app.state.telemetry.rate.measured_since_switch.measured());
+
+    try app.runtime.?.switchModel("gpt-5-codex-twin");
+    app.drainEvents() catch {};
+
+    try std.testing.expectEqual(@as(u64, 0), app.state.telemetry.rate.measured_since_switch.output_tokens);
+    try std.testing.expect(!app.state.telemetry.rate.average.measured());
+    try std.testing.expect(!app.state.telemetry.rate.previous.measured());
 }
 
 test "App a model command leaves the gauge on the window in effect" {

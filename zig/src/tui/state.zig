@@ -241,6 +241,9 @@ pub const TokenRateSet = struct {
     }
 
     pub fn turnEnded(self: *TokenRateSet) void {
+        self.message_bytes = 0;
+        self.message_first_ms = 0;
+        self.live = .{};
         if (self.turn.stream_ms == 0 and self.turn.output_tokens == 0) {
             self.turn = .{};
             self.turn_first_ms = 0;
@@ -2022,6 +2025,26 @@ test "a turn that produced nothing reports nothing" {
     try std.testing.expect(!rate.previous.measured());
     try std.testing.expect(!rate.shown().measured());
     try std.testing.expectEqual(@as(u64, 0), rate.shown().perSecond());
+}
+
+test "a turn aborted mid-stream leaves no live figure and no clock for the next turn" {
+    var rate = TokenRateSet{};
+    rate.produced(400, 1_000);
+    rate.liveAt(2_000);
+    try std.testing.expect(rate.live.measured());
+
+    rate.turnEnded();
+
+    try std.testing.expect(!rate.live.measured());
+    try std.testing.expect(!rate.shown().measured());
+    rate.liveAt(9_000_000);
+    try std.testing.expect(!rate.live.measured());
+
+    rate.produced(400, 10_000_000);
+    rate.messageEnded(10_000_500, 100);
+    rate.turnEnded();
+    try std.testing.expectEqual(@as(u64, 500), rate.previous.stream_ms);
+    try std.testing.expectEqual(@as(u64, 100), rate.previous.output_tokens);
 }
 
 test "a rate with no time or no tokens never reads as speed" {
