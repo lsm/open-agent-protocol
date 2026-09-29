@@ -154,7 +154,10 @@ fn substitutedSources(
     wire: ?[]const u8,
 ) Error!?[]const u8 {
     const listed = wire orelse return null;
-    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, listed, .{}) catch return null;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, listed, .{}) catch |failure| switch (failure) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
     if (parsed != .array) return null;
     var buffer: std.ArrayList(u8) = .empty;
     var writer = json_writer.JsonWriter.init(&buffer, arena);
@@ -166,11 +169,12 @@ fn substitutedSources(
         if (configured) |source| {
             try writeConfiguredSource(&writer, source, entry.object);
         } else {
-            try writer.writeRawJson(try std.json.Stringify.valueAlloc(arena, entry, .{}));
+            const kept = try std.json.Stringify.valueAlloc(arena, entry, .{});
+            try writer.writeRawJson(kept);
         }
     }
     try writer.endArray();
-    return try buffer.toOwnedSlice(arena);
+    return buffer.toOwnedSlice(arena) catch return error.OutOfMemory;
 }
 
 fn writeConfiguredSource(
@@ -2214,6 +2218,22 @@ test "an unconfigured id may be named from the wire, but a process one may not" 
     try testing.expectEqual(@as(usize, 3), refusal.details.len);
     try testing.expectEqualStrings(contract.feature_tool_sources_attach, refusal.details[0].value);
     try testing.expectEqualStrings("x1", refusal.details[2].value);
+}
+
+test "an allocator that refuses is not a request with no sources" {
+    var fails = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const configured = [_]contract.ConfiguredSource{.{
+        .id = "pinned",
+        .kind = "remote",
+        .endpoint = "https://operator.test",
+    }};
+    var hub: Hub = undefined;
+    hub = Hub.init(fails.allocator(), wallClock, .{ .tool_sources = &configured });
+    defer hub.deinit();
+    // `catch return null` would answer "no tool sources" and let the open
+    // succeed with the attachment silently dropped, which is the failure this
+    // whole path exists to prevent
+    try testing.expectError(error.OutOfMemory, substitutedSources(fails.allocator(), &hub, "[{\"id\":\"pinned\",\"kind\":\"remote\"}]"));
 }
 
 test "the adapter is handed the operator's source, and an unconfigured one as written" {
