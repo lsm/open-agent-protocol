@@ -139,7 +139,8 @@ func isChutesURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isQwenURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "dashscope") || holdsURL(baseURL, hasBaseURL, "qwen")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "dashscope.aliyuncs.com") ||
+		isHostOrSubdomain(baseURL, hasBaseURL, "dashscope-intl.aliyuncs.com")
 }
 
 func isDeepSeekURL(baseURL string, hasBaseURL bool) bool {

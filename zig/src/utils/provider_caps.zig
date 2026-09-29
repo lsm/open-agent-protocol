@@ -73,8 +73,8 @@ pub fn isChutes(base_url: ?[]const u8) bool {
 }
 
 pub fn isQwen(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "dashscope") != null or std.mem.find(u8, url, "qwen") != null;
+    return isHostOrSubdomainOf(base_url, "dashscope.aliyuncs.com") or
+        isHostOrSubdomainOf(base_url, "dashscope-intl.aliyuncs.com");
 }
 
 pub fn isDeepSeek(base_url: ?[]const u8) bool {
@@ -206,6 +206,44 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a qwen host is dashscope.aliyuncs.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://dashscope.aliyuncs.com",
+        "https://coding-intl.dashscope.aliyuncs.com",
+        "https://coding-intl.dashscope.aliyuncs.com/v1",
+        "https://DASHSCOPE.ALIYUNCS.COM",
+        "https://dashscope-intl.aliyuncs.com",
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isQwen(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://mydashscope.aliyuncs.com.attacker.example",
+        "https://aliyuncs.com",
+        "https://www.aliyuncs.com",
+        "https://notdashscope.aliyuncs.com",
+        "https://evil.example/?next=dashscope",
+        "https://evil.example/v1/qwen",
+        "https://gateway.example/proxy/dashscope.aliyuncs.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isQwen(url));
+    }
+
+    try std.testing.expect(!isQwen(null));
+}
+
+test "the catalogued alibaba row still gets the qwen thinking format" {
+    const url = "https://coding-intl.dashscope.aliyuncs.com/v1";
+    try std.testing.expect(isQwen(url));
+    try std.testing.expectEqual(ProviderType.openai_compatible, detectProviderType(url));
+    try std.testing.expectEqual(.qwen, detectCapabilities(url).thinking_format);
 }
 
 test "an anthropic host is anthropic.com or a subdomain of it" {
