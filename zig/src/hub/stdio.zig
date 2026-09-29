@@ -1247,7 +1247,7 @@ const reference_descriptor = contract.Descriptor{
     .capability_revision = "reference-v1",
     .features = &.{
         .{ .key = "session.open.subscribe", .level = .native },
-        .{ .key = contract.feature_tool_sources_attach, .level = .native },
+        .{ .key = contract.feature_tool_sources_attach, .level = .native, .modes = &.{"session_open"} },
         .{ .key = "run.cancel", .level = .emulated, .scope = "primary", .modes = &.{"stream"}, .constraints_json = "{\"max\":2}" },
     },
 };
@@ -1584,6 +1584,8 @@ test "the adapters listing answers every registered adapter, sorted, with its re
     const features = capabilities.object.get("features").?.object;
     try testing.expectEqualStrings("native", try textMember(harness.arena(), features.get("session.open.subscribe").?, "level"));
     try testing.expectEqualStrings("native", try textMember(harness.arena(), features.get(contract.feature_tool_sources_attach).?, "level"));
+    const attach = features.get(contract.feature_tool_sources_attach).?;
+    try testing.expectEqualStrings("session_open", attach.object.get("modes").?.array.items[0].string);
     const emulated = features.get("run.cancel").?;
     try testing.expectEqualStrings("primary", try textMember(harness.arena(), emulated, "scope"));
     try testing.expectEqual(@as(i64, 2), emulated.object.get("constraints").?.object.get("max").?.integer);
