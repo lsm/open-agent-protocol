@@ -20,3 +20,14 @@ fn captured(found: ?u8, value: *u8) void {
     consume(value);
     _ = found;
 }
+
+fn branch_with_else(flag: bool, value: *u8) void {
+    if (flag) {
+        defer release(value);
+        use(value);
+    } else {
+        other();
+    }
+    consume(value);
+    _ = flag;
+}
