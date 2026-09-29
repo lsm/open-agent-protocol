@@ -395,6 +395,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `providers/resolved_urls.json` in both trees; these rules are code, so they are
   pinned here, each read out of the Zig function it mirrors, with the premise
   asserted before the behaviour.
+- **`go/providercatalog` applies a base-URL override, so a run can be pointed
+  somewhere that is not the vendor's.** The package could *name* a row's
+  `base_url_env` but nothing read it, and `OAPX_BASE_URL` — the global redirect
+  `zig/src/provider_base_url.zig:17` reads ahead of every per-provider variable —
+  appeared nowhere in the Go tree. Every base URL a Go provider runtime used was
+  therefore the catalog's, and the `base_url_source` gate that is correct on its
+  own is exactly what prevents a redirect: a loopback is not `api.openai.com`, so
+  a static row answers with the catalog's URL and the override is never consulted.
+  `BaseURLWithOverrides(overrides, provider, wire)` now answers an override and
+  `ResolveBaseURL` prefers it over the catalog, in the order
+  `baseUrlWithOverrides` (`:92`) uses: the global variable wins outright; otherwise
+  the provider's own variable applies, and only when the provider **and** the wire
+  both match, so `ANTHROPIC_BASE_URL` does not reach `openai` and a matching wire
+  on the wrong provider is not an override either. A variable that is set but
+  empty is not an override, as everywhere else in this tree, and the Kimi region
+  accepts only the two the catalog records.
+  Two rules read backwards before they were read, both of which would have failed
+  quietly: `normalizeVersionedBaseUrl` (`:79`) **strips** a trailing `/v1` rather
+  than appending one, because the stored base is versionless and the versioned
+  route adds the segment later, and `usesVersionedRoute` (`:85`) keys off the
+  **wire** with `github-copilot` excluded, not off the provider. An override for a
+  versioned route is normalised to be versionless; one for `github-copilot` keeps
+  its path and loses only its trailing slashes, which is what `:94` does on that
+  branch.
+  The variable names are read out of the row through `FirstBaseURLEnv` and
+  `RegionEnv` rather than spelled in Go, so a catalog rename moves both trees —
+  Zig gets its names at compile time from `baseUrlEnv(...)[0]` and cannot drift.
+  The `openai` variable reaches **both** of that row's wires, `openai-completions`
+  and `openai-responses`, because a responses model is reachable through
+  `WireForModel` and a redirect that missed it would send the credential to
+  `api.openai.com` anyway. The Kimi region takes the aliases the catalog's own
+  test names — `moonshot` for global, `cn` and `coding` for china — folded
+  **ASCII**-only, the way `std.ascii.eqlIgnoreCase` is: `strings.EqualFold` also
+  folds `moonſhot` onto `moonshot`, and a value one tree accepts and the other
+  rejects points the run at a different endpoint, which is a credential sent
+  somewhere else. It falls back to the row's own `default_region`, which
+  `DefaultRegion(catalog, id)` answers and which #507 put in the catalog for
+  exactly this, when neither the environment nor the caller's region is usable, so
+  a blank or unrecognised region selects an endpoint instead of refusing to
+  resolve at all — and a row recording no default is still answered, from the
+  literal the source falls back to. The region is kimi's alone:
+  every other pair looks its endpoint up without one, which is what
+  `catalogTarget` (`model_catalog.zig:459`) does when it passes a null region.
 - **`docs/parity-job.md` says what the parity job is for.** The job drives the same requests through both trees and fails when the bytes differ, which makes it the last check before a divergence has to be settled by hand against a decision, a draft or a corpus. The note says which divergences that is the last check on — a payload the two trees decode differently, an answer one refuses and the other admits, and above all **the order of a run's events and the settlement order of two open interactions** — the latter uncovered by any fixture, and added by the entry above: the memory backend holds one pending interaction at a time, so it cannot open two, and the contested settlement #475 was written for — a terminal event sweeping several open gates, as the claude adapter's `sweepRun` does — had no fixture until `pi-two-open-calls`. What the `memory` fixture contributes instead is the only run long enough to read as a stream, through `TestBackendsMatchOapx`; `TestMemoryBackendMatchesOapx` compares a *sorted* set and is order-blind by construction — and which are covered cheaper elsewhere, because the fixtures are the oracle for the wire, the corpora for each harness, and the per-adapter tests for each adapter's own error handling. It says that every fixture which submits streams its run's envelopes, because the submit handler subscribes and pumps the run itself rather than the session-open `subscribe` member, and that `memory` is neither unique in doing that nor identical in both trees by construction — the two memory adapters are separate implementations, which is why the comparison scrubs `id` and every `*_ms` member. It has a row for the one divergence the "covered cheaper elsewhere" rule cannot place — what each tree writes to the harness, which needs a second tree to see at all — and it says which test does what — seven fixtures drive a `child.sh`, `opencode` answers the in-test fake HTTP server, and only one of the two memory tests looks at order — and it runs both tests in its own command, because running one is running half the coverage, and names the three CI jobs that run them — `backend-parity`, `memory-conformance`, and the twenty-fold `pi-parity-repeat` determinism gate. It also says what the job is *not* for: it is not conformance, not the harness's coverage, and not a race detector — one deterministic script per fixture cannot schedule a race — though a parity flake that recurs is race evidence, which is how pi's cancel divergence was found and why `pi-parity-repeat` exists. Each fixture gets a row saying which divergence it is the last check on, and `CLAUDE.md` and the README's paragraph that already promised "identical output" link to it. It lives in `docs/` rather than beside the fixtures because the parity test globs that directory and would read a README as a tenth backend.
 
 
