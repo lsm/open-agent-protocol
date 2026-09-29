@@ -487,14 +487,8 @@ fn buildCompoundId(allocator: std.mem.Allocator, call_id: []const u8, item_id: [
     return out;
 }
 
-fn pushOwnedEvent(allocator: std.mem.Allocator, stream: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) !void {
-    const owned = try ai_types.cloneAssistantMessageEvent(allocator, event);
-    errdefer {
-        var cleanup = owned;
-        ai_types.deinitAssistantMessageEvent(allocator, &cleanup);
-    }
-
-    if (!stream.pushBlocking(owned)) return error.StreamCompleted;
+fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) !void {
+    if (!stream.pushBlocking(event)) return error.StreamCompleted;
 }
 
 const ParsedEvent = struct {
@@ -1127,7 +1121,7 @@ fn runThread(ctx: *ThreadCtx) void {
     var last_ping_time: i64 = 0;
     const ping_interval = ctx.ping_interval_ms orelse 0;
 
-    _ = pushOwnedEvent(allocator, stream, .{
+    _ = pushEvent(stream, .{
         .start = .{
             .partial = .{
                 .content = &.{},
@@ -1191,7 +1185,7 @@ fn runThread(ctx: *ThreadCtx) void {
                         next_content_index += 1;
                         text_started = true;
 
-                        _ = pushOwnedEvent(allocator, stream, .{
+                        _ = pushEvent(stream, .{
                             .text_start = .{
                                 .content_index = text_content_index.?,
                                 .partial = .{
@@ -1210,7 +1204,7 @@ fn runThread(ctx: *ThreadCtx) void {
                     text.appendSlice(allocator, delta) catch {};
 
                     if (text_content_index) |idx| {
-                        _ = pushOwnedEvent(allocator, stream, .{
+                        _ = pushEvent(stream, .{
                             .text_delta = .{
                                 .content_index = idx,
                                 .delta = delta,
@@ -1292,7 +1286,7 @@ fn runThread(ctx: *ThreadCtx) void {
                             return;
                         };
 
-                        _ = pushOwnedEvent(allocator, stream, .{
+                        _ = pushEvent(stream, .{
                             .toolcall_start = .{
                                 .content_index = content_index,
                                 .id = compound_id,
@@ -1314,7 +1308,7 @@ fn runThread(ctx: *ThreadCtx) void {
                     if (item_id_to_content_index.get(args.item_id)) |content_index| {
                         tool_call_tracker_instance.appendDelta(content_index, args.delta) catch {};
 
-                        _ = pushOwnedEvent(allocator, stream, .{
+                        _ = pushEvent(stream, .{
                             .toolcall_delta = .{
                                 .content_index = content_index,
                                 .delta = args.delta,
@@ -1340,7 +1334,7 @@ fn runThread(ctx: *ThreadCtx) void {
                         next_content_index += 1;
                         thinking_started = true;
 
-                        _ = pushOwnedEvent(allocator, stream, .{
+                        _ = pushEvent(stream, .{
                             .thinking_start = .{
                                 .content_index = thinking_content_index.?,
                                 .partial = .{
@@ -1359,7 +1353,7 @@ fn runThread(ctx: *ThreadCtx) void {
                     thinking.appendSlice(allocator, delta) catch {};
 
                     if (thinking_content_index) |idx| {
-                        _ = pushOwnedEvent(allocator, stream, .{
+                        _ = pushEvent(stream, .{
                             .thinking_delta = .{
                                 .content_index = idx,
                                 .delta = delta,
@@ -1378,7 +1372,7 @@ fn runThread(ctx: *ThreadCtx) void {
                 },
                 .reasoning_done => {
                     if (thinking_content_index) |idx| {
-                        _ = pushOwnedEvent(allocator, stream, .{
+                        _ = pushEvent(stream, .{
                             .thinking_end = .{
                                 .content_index = idx,
                                 .content = thinking.items,
@@ -1407,7 +1401,7 @@ fn runThread(ctx: *ThreadCtx) void {
                                     if (tc.thought_signature) |sig| allocator.free(sig);
                                 }
 
-                                _ = pushOwnedEvent(allocator, stream, .{
+                                _ = pushEvent(stream, .{
                                     .toolcall_end = .{
                                         .content_index = content_index,
                                         .tool_call = tc,
@@ -1607,7 +1601,7 @@ pub fn streamOpenAIResponses(model: ai_types.Model, context: ai_types.Context, o
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     s.wait_for_thread_on_deinit = true;
 
     const ctx = try allocator.create(ThreadCtx);
@@ -2099,7 +2093,7 @@ test "OpenAI Responses stream events own cloned function call strings" {
     const allocator = std.testing.allocator;
 
     var stream = event_stream.AssistantMessageEventStream.init(allocator);
-    stream.owns_events = true;
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     defer stream.deinit();
 
     const added_data = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_123\",\"call_id\":\"call_abc\",\"name\":\"shell_execute\",\"arguments\":\"\"}}";
@@ -2108,7 +2102,7 @@ test "OpenAI Responses stream events own cloned function call strings" {
     const compound_id = try buildCompoundId(allocator, added_item.call_id.?, added_item.id.?);
     defer allocator.free(compound_id);
 
-    try pushOwnedEvent(allocator, &stream, .{ .toolcall_start = .{
+    try pushEvent(&stream, .{ .toolcall_start = .{
         .content_index = 0,
         .id = compound_id,
         .name = added_item.name.?,
@@ -2139,7 +2133,7 @@ test "OpenAI Responses stream events own cloned function call strings" {
     const delta_data = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_123\",\"delta\":\"{\\\"command\\\":\\\"ls -al\\\"}\"}";
     var delta = parseResponseEventToStruct(delta_data, allocator) orelse return error.TestExpectedDelta;
     const args = delta.event_type.function_call_args_delta;
-    try pushOwnedEvent(allocator, &stream, .{ .toolcall_delta = .{
+    try pushEvent(&stream, .{ .toolcall_delta = .{
         .content_index = 0,
         .delta = args.delta,
         .partial = .{

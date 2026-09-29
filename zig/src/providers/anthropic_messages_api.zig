@@ -1336,7 +1336,7 @@ fn runThread(ctx: *ThreadCtx) void {
         for (pending_delta_frees.items) |s| allocator.free(s);
         pending_delta_frees.deinit(allocator);
     }
-    const stream_clones_events = stream.owns_events and stream.clone_event_fn != null;
+    const stream_clones_events = stream.ownership.isOwned();
 
     var raw_body = std.ArrayList(u8).empty;
     defer raw_body.deinit(allocator);
@@ -1722,8 +1722,7 @@ pub fn streamAnthropicMessages(
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
     if (o.requires_owned_stream_events) {
-        s.owns_events = true;
-        s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     }
 
     const ctx = try allocator.create(ThreadCtx);

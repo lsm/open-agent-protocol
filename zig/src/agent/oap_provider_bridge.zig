@@ -65,8 +65,7 @@ fn streamViaOap(
     const stream = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(stream);
     stream.* = event_stream.AssistantMessageEventStream.init(allocator);
-    stream.owns_events = true;
-    stream.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     stream.wait_for_thread_on_deinit = true;
     errdefer stream.deinit();
 

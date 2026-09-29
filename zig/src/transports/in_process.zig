@@ -40,7 +40,7 @@ pub const InProcessTransport = struct {
         errdefer allocator.destroy(stream);
 
         stream.* = event_stream.AssistantMessageStream.init(allocator);
-        stream.owns_events = true;
+        stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
         self.* = .{
             .stream = stream,
@@ -87,10 +87,8 @@ pub const InProcessTransport = struct {
         switch (msg) {
             .event => |ev| {
                 var mutable_ev = ev;
-                self.stream.push(mutable_ev) catch |err| {
-                    ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
-                    return err;
-                };
+                defer ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
+                try self.stream.push(mutable_ev);
             },
             .result => |r| {
                 self.stream.complete(r);
@@ -188,7 +186,7 @@ pub const InProcessTransport = struct {
 pub fn createPair(allocator: std.mem.Allocator) !struct { client: *InProcessTransport, server: *InProcessTransport } {
     const stream = try allocator.create(event_stream.AssistantMessageStream);
     stream.* = event_stream.AssistantMessageStream.init(allocator);
-    stream.owns_events = true;
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const client = try allocator.create(InProcessTransport);
     client.* = InProcessTransport.initWithStream(stream, allocator);
@@ -355,20 +353,13 @@ pub const EventBridge = struct {
     pub fn run(self: *Self) void {
         while (!self.cancel_token.load(.acquire)) {
             if (self.source.poll()) |ev| {
-                const cloned = ai_types.cloneAssistantMessageEvent(self.allocator, ev) catch {
-                    self.dest.completeWithError("Failed to clone event");
-                    return;
-                };
-
                 var mutable_ev = ev;
-                ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
-
-                self.dest.push(cloned) catch {
-                    var mutable_cloned = cloned;
-                    ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_cloned);
+                self.dest.push(ev) catch {
+                    ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
                     self.dest.completeWithError("Destination queue full");
                     return;
                 };
+                ai_types.deinitAssistantMessageEvent(self.allocator, &mutable_ev);
             } else {
                 if (self.source.isDone()) {
                     if (self.source.getError()) |err| {
@@ -416,7 +407,7 @@ pub const ZeroCopyForwarder = struct {
 
     pub fn forward(self: *Self, ev: ai_types.AssistantMessageEvent) !void {
         var cleanup = ev;
-        errdefer ai_types.deinitAssistantMessageEvent(self.allocator, &cleanup);
+        defer if (self.dest.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(self.allocator, &cleanup);
         try self.dest.push(ev);
     }
 
@@ -504,6 +495,7 @@ test "EventBridge forwards events" {
     defer source_stream.deinit();
 
     var dest_stream = event_stream.AssistantMessageStream.init(allocator);
+    dest_stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     defer dest_stream.deinit();
 
     const partial = ai_types.AssistantMessage{

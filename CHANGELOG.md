@@ -23,6 +23,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`EventStream` takes one ownership setting whose values cannot express the
+  use-after-free.** `owns_events` and `clone_event_fn` were separate, and the
+  dangerous combination was legal: set `owns_events` and the stream frees
+  whatever is queued at `deinit`, but `push` only deep-copies when a clone
+  function is *also* set, so a producer that pushed a borrowed event left the
+  stream holding slices it would later free. `CLAUDE.md` warned about it, and
+  three producers were living in exactly that state — each with a private
+  `pushOwnedEvent` that cloned by hand, which is the only reason it was safe
+  and the only thing making it unsafe the day a site used plain `push`.
+
+  The two fields are now one `ownership` union: `.borrowed` stores what it is
+  given and never frees it, and `.{ .owned = clone_fn }` carries the clone
+  function *inside the value*, so an owned stream is one that always copies.
+  There is no "owns but does not clone" value to construct.
+
+  **The hand-off is the other half:** the stream now clones, so the three
+  `pushOwnedEvent` helpers are gone and their producers push directly and free
+  their own event once the push returns. A producer that forgets to free now
+  leaks rather than corrupting, which the allocator reports. `in_process` got
+  the same treatment, and its `forward` and `EventBridge` free conditionally
+  on the destination's setting.
+
+  One test configuration could not work and the old unconditional clone hid
+  it: `EventBridge`'s test built a *borrowed* destination, which cannot hold
+  an event polled off a source stream because the source overwrites its own
+  queue slot. Production's destination is owned, so the test now says so.
+
 - **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.
 
 - **The CI fixture auth provider is served only when a test asks for it by

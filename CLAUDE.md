@@ -220,11 +220,17 @@ Rules the source will not tell you:
   `compileError` or a `[0]` index fires; the same call inside a function body is
   not a build gate, which is why an env name is read as `baseUrlEnv(id)[0]` and
   not through a helper that errors.
-- `EventStream.owns_events` is an **ownership** flag, not a cloning switch:
-  `push` deep-copies only when `clone_event_fn` is also set, and setting
-  `owns_events` without cloning before push is a use-after-free. A stream ends
-  via `complete`/`completeWithError`, never a `.done` event. Full contract:
-  `docs/zig-stream-memory-ownership.md`.
+- **`EventStream.ownership` is one setting, and its two values are the whole
+  contract.** `.borrowed` (the default) stores what `push` is given and never
+  frees it, so the producer must keep the backing storage alive until the
+  consumer has drained the queue. `.{ .owned = clone_fn }` deep-copies on
+  `push` and frees what it copied, so the stream can never free the producer's
+  memory — the clone function travels *inside* the value, so there is no
+  "owns but does not clone" setting to express. A producer that used to clone
+  by hand before pushing (`pushOwnedEvent`) pushes directly now, and **frees
+  its own event once the push returns**, because the stream holds a copy. A
+  stream ends via `complete`/`completeWithError`, never a `.done` event. Full
+  contract: `docs/zig-stream-memory-ownership.md`.
 - **`ProtocolClient` is a separate contract, and the stream rules do not cover
   it.** Its terminal query hands back a deep copy the caller owns:
   `waitResult`/`waitResultFor` return an `ai_types.OwnedMessage`, so the result

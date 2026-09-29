@@ -985,16 +985,8 @@ fn buildBearerAuthValue(allocator: std.mem.Allocator, token: []const u8) ![]u8 {
     return out;
 }
 
-fn pushOwnedEvent(
-    allocator: std.mem.Allocator,
-    stream: *event_stream.AssistantMessageEventStream,
-    event: ai_types.AssistantMessageEvent,
-) void {
-    const owned = ai_types.cloneAssistantMessageEvent(allocator, event) catch return;
-    if (!stream.pushBlocking(owned)) {
-        var cleanup = owned;
-        ai_types.deinitAssistantMessageEvent(allocator, &cleanup);
-    }
+fn pushEvent(stream: *event_stream.AssistantMessageEventStream, event: ai_types.AssistantMessageEvent) void {
+    _ = stream.pushBlocking(event);
 }
 
 fn isKimiModel(model: ai_types.Model) bool {
@@ -1345,7 +1337,7 @@ fn runThread(ctx: *ThreadCtx) void {
     var last_ping_time: i64 = 0;
     const ping_interval = ctx.ping_interval_ms orelse 0;
 
-    pushOwnedEvent(allocator, stream, .{
+    pushEvent(stream, .{
         .start = .{
             .partial = .{
                 .content = &.{},
@@ -1418,7 +1410,7 @@ fn runThread(ctx: *ThreadCtx) void {
 
             if (text.items.len > prev_text_len) {
                 const delta = text.items[prev_text_len..];
-                pushOwnedEvent(allocator, stream, .{
+                pushEvent(stream, .{
                     .text_delta = .{
                         .content_index = 0,
                         .delta = delta,
@@ -1437,7 +1429,7 @@ fn runThread(ctx: *ThreadCtx) void {
 
             if (thinking.items.len > prev_thinking_len and !isKimiModel(model)) {
                 const delta = thinking.items[prev_thinking_len..];
-                pushOwnedEvent(allocator, stream, .{
+                pushEvent(stream, .{
                     .thinking_delta = .{
                         .content_index = 0,
                         .delta = delta,
@@ -1472,7 +1464,7 @@ fn runThread(ctx: *ThreadCtx) void {
                     next_content_index += 1;
                     tool_call_count += 1;
 
-                    pushOwnedEvent(allocator, stream, .{
+                    pushEvent(stream, .{
                         .toolcall_start = .{
                             .content_index = content_index,
                             .id = id,
@@ -1497,7 +1489,7 @@ fn runThread(ctx: *ThreadCtx) void {
                     };
 
                     if (tool_call_tracker_instance.getContentIndex(tce.api_index)) |content_index| {
-                        pushOwnedEvent(allocator, stream, .{
+                        pushEvent(stream, .{
                             .toolcall_delta = .{
                                 .content_index = content_index,
                                 .delta = delta,
@@ -1655,7 +1647,7 @@ fn runThread(ctx: *ThreadCtx) void {
         if (tool_call_tracker_instance.completeCall(api_idx, allocator)) |tc| {
             content[idx] = .{ .tool_call = tc };
 
-            pushOwnedEvent(allocator, stream, .{
+            pushEvent(stream, .{
                 .toolcall_end = .{
                     .content_index = idx,
                     .tool_call = tc,
@@ -1759,7 +1751,7 @@ pub fn streamOpenAICompletions(
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
     s.wait_for_thread_on_deinit = true;
-    s.owns_events = true;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const ctx = try allocator.create(ThreadCtx);
     errdefer {

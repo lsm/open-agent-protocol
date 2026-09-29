@@ -3097,7 +3097,7 @@ fn runPrintMode(allocator: std.mem.Allocator, args: []const []const u8) !void {
     while (stream.wait()) |ev| {
         event_count += 1;
         var owned_event = ev;
-        defer if (stream.owns_events) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
+        defer if (stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
         switch (ev) {
             .text_delta => |td| {
                 perrf("[text] ({d}b) {s}\n", .{ td.delta.len, td.delta });
@@ -3414,8 +3414,7 @@ fn makeFixtureStream(
 ) !*event_stream.AssistantMessageEventStream {
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     if (fail_with_error) {
         s.completeWithError("fixture stream failure");
@@ -3498,8 +3497,7 @@ fn fixtureToolUseStream(
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const owned_id = try allocator.dupe(u8, "tooluse-call-1");
     errdefer allocator.free(owned_id);
@@ -3551,8 +3549,7 @@ fn fixtureDistributedToolStream(
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     errdefer allocator.destroy(s);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const owned_id = try allocator.dupe(u8, "dist-call-1");
     errdefer allocator.free(owned_id);
