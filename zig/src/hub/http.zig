@@ -227,12 +227,79 @@ pub fn statusFor(failed: Failure) []const u8 {
     };
 }
 
-pub fn writeRefusal(stream: *compat.net.Stream, refused: Refusal, body: []const u8) !void {
-    try writeHead(stream, refused.status, "application/json", body);
+pub const Bind = struct {
+    host: []const u8,
+    port: u16,
+};
+
+pub const BindFailure = error{
+    NoPort,
+    NoHost,
+    UnclosedBracket,
+    UnbracketedIpv6,
+    NotAPort,
+};
+
+pub fn parseBind(bind: []const u8) BindFailure!Bind {
+    const colon = std.mem.lastIndexOfScalar(u8, bind, ':') orelse return error.NoPort;
+    if (bind[0] == '[' and std.mem.indexOfScalar(u8, bind, ']') == null) return error.UnclosedBracket;
+    const host = hostOf(bind);
+    if (host.len == 0) return error.NoHost;
+    if (bind[0] != '[' and std.mem.indexOfScalar(u8, host, ':') != null) return error.UnbracketedIpv6;
+    const port = std.fmt.parseInt(u16, std.mem.trim(u8, bind[colon + 1 ..], " "), 10) catch return error.NotAPort;
+    return .{ .host = host, .port = port };
 }
 
-pub fn writeStatus(stream: *compat.net.Stream, status: []const u8, body: []const u8) !void {
-    try writeHead(stream, status, "text/plain; charset=utf-8", body);
+pub const Answer = union(enum) {
+    refusal: Refusal,
+    not_found,
+};
+
+pub fn answer(allow: []const []const u8, request: Request) Answer {
+    if (request.origin) return .{ .refusal = origin_refused };
+    if (hostRefused(allow, request.host)) return .{ .refusal = host_refused };
+    return .not_found;
+}
+
+pub fn writeAnswer(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, given: Answer) !void {
+    switch (given) {
+        .refusal => |refused| {
+            const body = try refusalEnvelope(arena, next_id, refused);
+            try writeHead(stream, refused.status, "application/json", body);
+        },
+        .not_found => try writeHead(stream, "404 Not Found", "text/plain; charset=utf-8", not_found_body),
+    }
+}
+
+pub fn addressText(arena: std.mem.Allocator, bound: compat.net.Address) ![]const u8 {
+    return switch (bound) {
+        .ip4 => |four| try std.fmt.allocPrint(arena, "{d}.{d}.{d}.{d}:{d}", .{ four.bytes[0], four.bytes[1], four.bytes[2], four.bytes[3], bound.getPort() }),
+        .ip6 => |six| try std.fmt.allocPrint(arena, "[{x}:{x}:{x}:{x}:{x}:{x}:{x}:{x}]:{d}", .{
+            std.mem.readInt(u16, six.bytes[0..2], .big),
+            std.mem.readInt(u16, six.bytes[2..4], .big),
+            std.mem.readInt(u16, six.bytes[4..6], .big),
+            std.mem.readInt(u16, six.bytes[6..8], .big),
+            std.mem.readInt(u16, six.bytes[8..10], .big),
+            std.mem.readInt(u16, six.bytes[10..12], .big),
+            std.mem.readInt(u16, six.bytes[12..14], .big),
+            std.mem.readInt(u16, six.bytes[14..16], .big),
+            bound.getPort(),
+        }),
+    };
+}
+
+pub fn connectionPending(server: *const compat.net.Server, wait_ms: i32) bool {
+    if (comptime !pollable) return true;
+    const ready = compat.net.readableWithin(compat.net.serverHandle(server), wait_ms) catch return false;
+    return ready;
+}
+
+pub fn writeTransportFailure(stream: *compat.net.Stream, arena: std.mem.Allocator, next_id: u64, failure: Failure) !void {
+    if (transportRefusal(failure)) |refused| {
+        const body = try refusalEnvelope(arena, next_id, refused);
+        return writeHead(stream, refused.status, "application/json", body);
+    }
+    return writeHead(stream, statusFor(failure), "text/plain; charset=utf-8", "bad request");
 }
 
 fn writeHead(stream: *compat.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
@@ -247,7 +314,7 @@ fn writeHead(stream: *compat.net.Stream, status: []const u8, content_type: []con
     try stream.writeAll(body);
 }
 
-pub const not_found_body = "not found";
+const not_found_body = "not found";
 
 const testing = std.testing;
 
@@ -255,6 +322,7 @@ const Pipe = struct {
     server: compat.net.Server,
     client: compat.net.Stream,
     accepted: compat.net.Stream,
+    answered: bool = false,
 
     fn openWith(allocator: std.mem.Allocator) !Pipe {
         const address = try compat.net.resolveAddress(allocator, "127.0.0.1", 0);
@@ -269,12 +337,28 @@ const Pipe = struct {
         return openWith(testing.allocator);
     }
 
-    fn close(self: *Pipe) void {
+    fn closeAccepted(self: *Pipe) void {
+        if (self.answered) return;
+        self.answered = true;
         self.accepted.close();
+    }
+
+    fn close(self: *Pipe) void {
+        self.closeAccepted();
         self.client.close();
         compat.net.closeServer(&self.server);
     }
 };
+
+fn readToEnd(stream: *compat.net.Stream, buffer: []u8) ![]const u8 {
+    var filled: usize = 0;
+    while (filled < buffer.len) {
+        const n = try stream.read(buffer[filled..]);
+        if (n == 0) break;
+        filled += n;
+    }
+    return buffer[0..filled];
+}
 
 fn parseUnder(allocator: std.mem.Allocator, raw: []const u8) !void {
     var pipe = try Pipe.openWith(allocator);
@@ -413,6 +497,131 @@ test "a header whose name merely starts with a known one is not that header" {
     try testing.expect(!request.origin);
     try testing.expect(request.content_type == null);
     try testing.expectEqual(@as(usize, 0), request.content_length);
+}
+
+test "a bind is read as a host and a port, and a malformed one says which part it is" {
+    const refused = [_]struct { bind: []const u8, want: BindFailure }{
+        .{ .bind = "127.0.0.1", .want = error.NoPort },
+        .{ .bind = ":0", .want = error.NoHost },
+        .{ .bind = "[::1", .want = error.UnclosedBracket },
+        .{ .bind = "::1", .want = error.UnbracketedIpv6 },
+        .{ .bind = "127.0.0.1:0:0", .want = error.UnbracketedIpv6 },
+        .{ .bind = "127.0.0.1:port", .want = error.NotAPort },
+        .{ .bind = "127.0.0.1:99999", .want = error.NotAPort },
+        .{ .bind = "", .want = error.NoPort },
+    };
+    for (refused) |case| {
+        testing.expectError(case.want, parseBind(case.bind)) catch |err| {
+            std.debug.print("parseBind(\"{s}\") gave {s}, wanted {s}\n", .{ case.bind, @errorName(err), @errorName(case.want) });
+            return err;
+        };
+    }
+    const four = try parseBind("127.0.0.1:6270");
+    try testing.expectEqualStrings("127.0.0.1", four.host);
+    try testing.expectEqual(@as(u16, 6270), four.port);
+    const six = try parseBind("[::1]:0");
+    try testing.expectEqualStrings("::1", six.host);
+    try testing.expectEqual(@as(u16, 0), six.port);
+    const named = try parseBind("localhost:1");
+    try testing.expectEqualStrings("localhost", named.host);
+    try testing.expectEqual(@as(u16, 1), named.port);
+}
+
+test "a request carrying both an Origin and a foreign Host is refused the Origin first" {
+    const allow = loopbackHosts("127.0.0.1:6270").?;
+    const both = [_]Answer{
+        answer(allow, .{ .method = "GET", .target = "GET", .split = .{ .path = "/adapters", .query = "" }, .host = "evil.test", .origin = true }),
+        answer(allow, .{ .method = "GET", .target = "GET", .split = .{ .path = "/adapters", .query = "" }, .host = "evil.test" }),
+        answer(allow, .{ .method = "GET", .target = "GET", .split = .{ .path = "/adapters", .query = "" }, .host = "127.0.0.1:6270" }),
+        answer(&.{}, .{ .method = "GET", .target = "GET", .split = .{ .path = "/adapters", .query = "" }, .host = "evil.test" }),
+    };
+    try testing.expectEqualStrings("cross_origin_request", both[0].refusal.code);
+    try testing.expectEqualStrings("unrecognized_host", both[1].refusal.code);
+    try testing.expect(both[2] == .not_found);
+    try testing.expect(both[3] == .not_found);
+}
+
+test "the daemon answers over a real socket, and the bytes say which refusal it was" {
+    const allow = loopbackHosts("127.0.0.1:0").?;
+    const cases = [_]struct { raw: []const u8, want: []const u8 }{
+        .{ .raw = "GET /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\n\r\n", .want = "404" },
+        .{ .raw = "GET /adapters HTTP/1.1\r\nHost: LOCALHOST\r\n\r\n", .want = "404" },
+        .{ .raw = "GET /adapters HTTP/1.1\r\nHost: evil.test\r\n\r\n", .want = "unrecognized_host" },
+        .{ .raw = "GET /adapters HTTP/1.1\r\nHost: a\r\nOrigin: http://evil.test\r\n\r\n", .want = "cross_origin_request" },
+        .{ .raw = "GET /adapters HTTP/1.1\r\nHost: evil.test\r\nOrigin: http://evil.test\r\n\r\n", .want = "cross_origin_request" },
+    };
+    for (cases, 0..) |case, index| {
+        var pipe = try Pipe.open();
+        defer pipe.close();
+        try pipe.client.writeAll(case.raw);
+        var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms);
+        defer request.deinit(testing.allocator);
+        var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+        defer scratch_state.deinit();
+        try writeAnswer(&pipe.accepted, scratch_state.allocator(), index + 1, answer(allow, request));
+        pipe.closeAccepted();
+        var spoken: [64 * 1024]u8 = undefined;
+        const said = try readToEnd(&pipe.client, &spoken);
+        try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 "));
+        try testing.expect(std.mem.indexOf(u8, said, case.want) != null);
+        if (index == 0) try testing.expect(std.mem.indexOf(u8, said, "error.response") == null);
+    }
+}
+
+test "the accept poll reports an idle listener as idle and a waiting one as waiting" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const address = try compat.net.resolveAddress(testing.allocator, "127.0.0.1", 0);
+    var server = try compat.net.tcpListen(address, .{ .reuse_address = true });
+    defer compat.net.closeServer(&server);
+    try testing.expect(!connectionPending(&server, 20));
+    var client = try compat.net.tcpConnect(compat.net.listenAddress(&server));
+    try testing.expect(connectionPending(&server, 2000));
+    const connection = try compat.net.accept(&server);
+    var accepted = connection.stream;
+    accepted.close();
+    client.close();
+}
+
+test "the banner names the bound address, IPv4 plainly and IPv6 bracketed" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const four: compat.net.Address = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = 52402 } };
+    try testing.expectEqualStrings("127.0.0.1:52402", try addressText(arena, four));
+    const six: compat.net.Address = .{ .ip6 = .{
+        .bytes = .{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 },
+        .port = 63829,
+    } };
+    try testing.expectEqualStrings("[0:0:0:0:0:0:0:1]:63829", try addressText(arena, six));
+}
+
+test "a request that could not be read is answered as a transport failure, never as an empty envelope" {
+    const cases = [_]struct { failure: Failure, want: []const u8, envelope: bool }{
+        .{ .failure = error.BodyTooLarge, .want = "413", .envelope = true },
+        .{ .failure = error.ReadFailed, .want = "request_read", .envelope = true },
+        .{ .failure = error.Malformed, .want = "400", .envelope = false },
+        .{ .failure = error.Timeout, .want = "408", .envelope = false },
+        .{ .failure = error.HeaderTooLarge, .want = "431", .envelope = false },
+    };
+    for (cases) |case| {
+        var pipe = try Pipe.open();
+        defer pipe.close();
+        var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+        defer scratch_state.deinit();
+        try writeTransportFailure(&pipe.accepted, scratch_state.allocator(), 7, case.failure);
+        pipe.closeAccepted();
+        var spoken: [4096]u8 = undefined;
+        const said = try readToEnd(&pipe.client, &spoken);
+        try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 "));
+        try testing.expect(std.mem.indexOf(u8, said, case.want) != null);
+        try testing.expect((std.mem.indexOf(u8, said, "error.response") != null) == case.envelope);
+        if (case.envelope) try testing.expect(std.mem.indexOf(u8, said, "oap-error-7") != null);
+        const at = std.mem.indexOf(u8, said, "Content-Length: ") orelse return error.NoLength;
+        const declared = std.fmt.parseInt(usize, std.mem.sliceTo(said[at + "Content-Length: ".len ..], '\r'), 10) catch return error.BadLength;
+        const body = said[std.mem.indexOf(u8, said, "\r\n\r\n").? + 4 ..];
+        try testing.expectEqual(declared, body.len);
+        try testing.expect(declared > 0);
+    }
 }
 
 test "the loopback allowlist is the three loopback spellings and nothing else" {

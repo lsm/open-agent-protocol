@@ -2476,24 +2476,7 @@ fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOpti
     return error.InvalidHubOption;
 }
 const hub_accept_poll_ms: i32 = 50;
-const hub_accept_is_pollable = @import("builtin").os.tag != .windows;
 
-fn boundAddress(arena: std.mem.Allocator, bound: compat.net.Address) ![]const u8 {
-    return switch (bound) {
-        .ip4 => |four| try std.fmt.allocPrint(arena, "{d}.{d}.{d}.{d}:{d}", .{ four.bytes[0], four.bytes[1], four.bytes[2], four.bytes[3], bound.getPort() }),
-        .ip6 => |six| try std.fmt.allocPrint(arena, "[{x}:{x}:{x}:{x}:{x}:{x}:{x}:{x}]:{d}", .{
-            std.mem.readInt(u16, six.bytes[0..2], .big),
-            std.mem.readInt(u16, six.bytes[2..4], .big),
-            std.mem.readInt(u16, six.bytes[4..6], .big),
-            std.mem.readInt(u16, six.bytes[6..8], .big),
-            std.mem.readInt(u16, six.bytes[8..10], .big),
-            std.mem.readInt(u16, six.bytes[10..12], .big),
-            std.mem.readInt(u16, six.bytes[12..14], .big),
-            std.mem.readInt(u16, six.bytes[14..16], .big),
-            bound.getPort(),
-        }),
-    };
-}
 
 fn runHubHttp(
     allocator: std.mem.Allocator,
@@ -2504,27 +2487,19 @@ fn runHubHttp(
     stdout: std.Io.File,
     stderr: std.Io.File,
 ) !void {
-    const colon = std.mem.lastIndexOfScalar(u8, bind, ':') orelse return hubBindRefusal(stderr, "--addr names no port; write host:port, as 127.0.0.1:6270");
-    const named = hub_http.hostOf(bind);
-    if (bind[0] == '[' and std.mem.indexOfScalar(u8, bind, ']') == null) {
-        return hubBindRefusal(stderr, "--addr opens a bracket and closes none; write an IPv6 host as [::1]:6270");
-    }
-    if (named.len == 0) {
-        return hubBindRefusal(stderr, "--addr names no host; write one, as 127.0.0.1:6270 or [::1]:6270");
-    }
-    if (bind[0] != '[' and std.mem.indexOfScalar(u8, named, ':') != null) {
-        return hubBindRefusal(stderr, "--addr cannot tell its port from an unbracketed IPv6 host; write it as [::1]:6270");
-    }
-    const port = std.fmt.parseInt(u16, std.mem.trim(u8, bind[colon + 1 ..], " "), 10) catch {
-        return hubBindRefusal(stderr, "--addr names a port that is not a number; write host:port, as 127.0.0.1:6270");
-    };
+    const wanted = hub_http.parseBind(bind) catch |failure| return hubBindRefusal(stderr, switch (failure) {
+        error.NoPort => "--addr names no port; write host:port, as 127.0.0.1:6270",
+        error.NoHost => "--addr names no host; write one, as 127.0.0.1:6270 or [::1]:6270",
+        error.UnclosedBracket => "--addr opens a bracket and closes none; write an IPv6 host as [::1]:6270",
+        error.UnbracketedIpv6 => "--addr cannot tell its port from an unbracketed IPv6 host; write it as [::1]:6270",
+        error.NotAPort => "--addr names a port that is not a number; write host:port, as 127.0.0.1:6270",
+    });
     const allow = hub_http.loopbackHosts(bind);
-    const address = try compat.net.resolveAddress(arena, named, port);
+    const address = try compat.net.resolveAddress(arena, wanted.host, wanted.port);
     var listener = try compat.net.tcpListen(address, .{ .reuse_address = true });
     defer compat.net.closeServer(&listener);
-    const bound = compat.net.listenAddress(&listener);
     try compat.stdio.writeAll(stdout, "listening on http://");
-    try compat.stdio.writeAll(stdout, try boundAddress(arena, bound));
+    try compat.stdio.writeAll(stdout, try hub_http.addressText(arena, compat.net.listenAddress(&listener)));
     try compat.stdio.writeAll(stdout, "\n");
     try compat.stdio.writeAll(stderr, "oapx: serving adapters: ");
     try compat.stdio.writeAll(stderr, served);
@@ -2538,10 +2513,7 @@ fn runHubHttp(
 
     var next_id: u64 = 0;
     while (!endpoint_signals.received()) {
-        if (comptime hub_accept_is_pollable) {
-            const ready = compat.net.readableWithin(compat.net.serverHandle(&listener), hub_accept_poll_ms) catch continue;
-            if (!ready) continue;
-        }
+        if (!hub_http.connectionPending(&listener, hub_accept_poll_ms)) continue;
         var connection = compat.net.accept(&listener) catch |failure| {
             sweepHubSessions(core, stderr);
             try compat.stdio.writeAll(stderr, "oapx: stopped\n");
@@ -2553,23 +2525,11 @@ fn runHubHttp(
         defer scratch_state.deinit();
         const scratch = scratch_state.allocator();
         var request = hub_http.readRequest(scratch, &connection.stream, hub_http.header_read_ms, hub_http.idle_read_ms) catch |failure| {
-            if (hub_http.transportRefusal(failure)) |refused| {
-                hub_http.writeRefusal(&connection.stream, refused, hub_http.refusalEnvelope(scratch, next_id, refused) catch "") catch {};
-            } else {
-                hub_http.writeStatus(&connection.stream, hub_http.statusFor(failure), "bad request") catch {};
-            }
+            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure) catch {};
             continue;
         };
         defer request.deinit(scratch);
-        if (request.origin) {
-            hub_http.writeRefusal(&connection.stream, hub_http.origin_refused, hub_http.refusalEnvelope(scratch, next_id, hub_http.origin_refused) catch "") catch {};
-            continue;
-        }
-        if (hub_http.hostRefused(allow orelse &.{}, request.host)) {
-            hub_http.writeRefusal(&connection.stream, hub_http.host_refused, hub_http.refusalEnvelope(scratch, next_id, hub_http.host_refused) catch "") catch {};
-            continue;
-        }
-        hub_http.writeStatus(&connection.stream, "404 Not Found", hub_http.not_found_body) catch {};
+        hub_http.writeAnswer(&connection.stream, scratch, next_id, hub_http.answer(allow orelse &.{}, request)) catch {};
     }
     try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
     sweepHubSessions(core, stderr);
