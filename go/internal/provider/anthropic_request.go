@@ -106,6 +106,18 @@ func defaultThinkingBudget(level string, budgets map[string]int) int {
 	return fallbacks[level]
 }
 
+func AnthropicThinkingForLevel(level string, budgets map[string]int) AnthropicOptions {
+	if level == "" || level == "off" {
+		return AnthropicOptions{}
+	}
+	out := AnthropicOptions{ThinkingEnabled: true, ThinkingEffort: mapThinkingLevelToEffort(level)}
+	if budget := defaultThinkingBudget(level, budgets); budget > 0 {
+		out.ThinkingBudgetTokens = budget
+		out.HasThinkingBudget = true
+	}
+	return out
+}
+
 type CacheRetention string
 
 const (

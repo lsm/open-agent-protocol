@@ -480,7 +480,8 @@ pub const Session = struct {
         return if (cast(ptr).live()) .running else .idle;
     }
 
-    fn close(ptr: *anyopaque) void {
+    fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
+        _ = force;
         const self = cast(ptr);
         self.shutdown();
         self.destroy();
@@ -647,7 +648,7 @@ const Probe = struct {
     }
 
     fn deinit(self: *Probe) void {
-        if (self.handle) |opened| opened.close();
+        if (self.handle) |opened| opened.teardown();
         self.arena.deinit();
         self.fake.deinit(testing.allocator);
     }
@@ -720,7 +721,7 @@ test "a close asks the harness to shut down before stopping it" {
     defer probe.deinit();
     var refusal = contract.Refusal{};
     const opened = try probe.open(&refusal);
-    opened.close();
+    opened.teardown();
     probe.handle = null;
     const written = try probe.fake.written(probe.arena.allocator());
     try testing.expect(std.mem.endsWith(u8, written, "{\"id\":2,\"jsonrpc\":\"2.0\",\"method\":\"shutdown\"}\nshutdown answered\n"));

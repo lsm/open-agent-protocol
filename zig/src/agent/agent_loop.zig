@@ -895,7 +895,7 @@ fn streamAssistantResponse(
         switch (provider_event) {
             .start => |s| {
                 var owned_start_event = provider_event;
-                errdefer if (provider_stream.owns_events) {
+                errdefer if (provider_stream.ownership.isOwned()) {
                     ai_types.deinitAssistantMessageEvent(allocator, &owned_start_event);
                 };
 
@@ -912,42 +912,42 @@ fn streamAssistantResponse(
                 try pushAgentEvent(event_stream, .{ .message_start = .{
                     .message = msg,
                 } });
-                if (provider_stream.owns_events) {
+                if (provider_stream.ownership.isOwned()) {
                     ai_types.deinitAssistantMessageEvent(allocator, &owned_start_event);
                 }
                 message_started = true;
             },
             .text_start => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .text_delta => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .text_end => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .thinking_start => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .thinking_delta => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .thinking_end => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .toolcall_start => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .toolcall_delta => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .toolcall_end => |evt| {
-                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.owns_events);
+                try pushProviderMessageUpdate(allocator, event_stream, provider_event, evt.partial, provider_stream.ownership.isOwned());
             },
             .done => |d| {
                 var cleanup_event = provider_event;
                 var final_transferred = false;
-                errdefer if (provider_stream.owns_events and !final_transferred) {
+                errdefer if (provider_stream.ownership.isOwned() and !final_transferred) {
                     ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
                 };
                 final_message = d.message;
@@ -960,7 +960,7 @@ fn streamAssistantResponse(
             .@"error" => |e| {
                 var cleanup_event = provider_event;
                 var final_transferred = false;
-                errdefer if (provider_stream.owns_events and !final_transferred) {
+                errdefer if (provider_stream.ownership.isOwned() and !final_transferred) {
                     ai_types.deinitAssistantMessageEvent(allocator, &cleanup_event);
                 };
                 final_message = e.err;

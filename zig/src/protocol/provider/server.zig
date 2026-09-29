@@ -580,6 +580,7 @@ fn storedOAuthOriginAllowed(
             model.base_url,
             credentials.refresh,
             credentials.provider_data,
+            .{},
         ),
     };
 }
@@ -913,7 +914,7 @@ fn handleStreamRequest(server: *ProtocolServer, request: protocol_types.StreamRe
             server.allocator,
         );
     };
-    if (!stream.owns_events) {
+    if (!stream.ownership.isOwned()) {
         cancelled.store(true, .release);
         stream.wait_for_thread_on_deinit = true;
         if (server.releaseProviderStream(stream, server.options.provider_join_timeout_ms) and !server.provider_thread_abandoned) {
@@ -1416,8 +1417,7 @@ fn mockStream(
     _ = options;
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const result = ai_types.AssistantMessage{
         .content = &.{},
@@ -1445,8 +1445,7 @@ fn mockStreamSimple(
     _ = options;
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const result = ai_types.AssistantMessage{
         .content = &.{},
@@ -1556,8 +1555,7 @@ fn authTestStream(
     }
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     if (state.auth_fail_all_calls or (state.auth_fail_first_call and state.stream_calls == 1)) {
         s.completeWithError("401 unauthorized");
     } else {
@@ -3284,8 +3282,7 @@ fn cancelCapturingStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const result = ai_types.AssistantMessage{
         .content = &.{},
@@ -3403,8 +3400,7 @@ fn baseUrlCapturingStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     s.complete(.{
         .content = &.{},
         .api = "test-api",
@@ -3431,8 +3427,7 @@ fn baseUrlCapturingStreamSimple(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     s.complete(.{
         .content = &.{},
         .api = "test-api",
@@ -4004,8 +3999,7 @@ fn cancelCapturingStreamSimple(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     s.complete(.{
         .content = &.{},
         .api = "test-api",
@@ -4083,8 +4077,7 @@ fn slowProviderStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     SlowProviderState.created = s;
     SlowProviderState.created_cancel_flag = if (options) |opts|
@@ -4208,8 +4201,7 @@ fn wedgedProviderStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     s.wait_for_thread_on_deinit = true;
 
     WedgedProviderState.created = s;
@@ -4675,8 +4667,7 @@ fn capturingStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     const result = ai_types.AssistantMessage{
         .content = &.{},
         .api = "test-api",
