@@ -104,7 +104,12 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
             else => continue,
         };
 
-        var loaded = packs_mod.load(std.testing.io, allocator, &registry, pack_dirs.items) catch {
+        var with_packs: ?jsonschema.Registry = null;
+        defer if (with_packs) |*held| held.deinit();
+        if (pack_dirs.items.len != 0) with_packs = try jsonschema.Registry.initFromBundled(allocator);
+        const scope: *jsonschema.Registry = if (with_packs) |*held| held else &registry;
+
+        var loaded = packs_mod.load(std.testing.io, allocator, scope, pack_dirs.items) catch {
             skipped_packs += 1;
             continue;
         };
@@ -113,11 +118,11 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         var override_arena = std.heap.ArenaAllocator.init(allocator);
         defer override_arena.deinit();
 
-        var validator = jsonschema.Validator.init(allocator, &registry);
+        var validator = jsonschema.Validator.init(allocator, scope);
         defer validator.deinit();
 
         if (tolerant) {
-            for (registry.documents.keys()) |name| {
+            for (scope.documents.keys()) |name| {
                 if (tolerate.isMetaSchema(name)) continue;
                 const tolerated = try tolerate.document(override_arena.allocator(), registry.root(name).?);
                 try validator.overrides.put(allocator, name, tolerated);
@@ -125,8 +130,8 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
         }
 
         for (loaded.members) |member| {
-            const target = packs_mod.payloadTarget(&registry, documentFor(profile), member.payload_type) orelse continue;
-            const current = validator.overrides.get(target.document) orelse registry.root(target.document).?;
+            const target = packs_mod.payloadTarget(scope, documentFor(profile), member.payload_type) orelse continue;
+            const current = validator.overrides.get(target.document) orelse scope.root(target.document).?;
             const member_schema = if (tolerant)
                 try tolerate.document(override_arena.allocator(), member.schema)
             else
