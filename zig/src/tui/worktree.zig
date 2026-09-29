@@ -152,6 +152,8 @@ pub fn create(allocator: std.mem.Allocator, runner: Runner, dir: []const u8, bas
 }
 
 pub fn reattach(allocator: std.mem.Allocator, runner: Runner, info: *const WorktreeInfo) !?[]u8 {
+    var prune = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "worktree", "prune" }, info.repo_root);
+    prune.deinit(allocator);
     var add = try runner.run(allocator, &.{ "git", "-C", info.repo_root, "worktree", "add", info.path, info.branch }, info.repo_root);
     defer add.deinit(allocator);
     if (!add.ok) return try failureMessage(allocator, "git worktree add", &add);
@@ -717,6 +719,22 @@ test "management job treats a vanished repository root as removable" {
     defer outcome.deinit(std.testing.allocator);
     try std.testing.expect(outcome == .removed);
     try std.testing.expect(outcome.removed == null);
+}
+
+test "reattach prunes stale registration before adding" {
+    var git: FakeGit = .{};
+    defer git.deinit(std.testing.allocator);
+    const info = WorktreeInfo{ .path = @constCast("/tmp/reattach-wt"), .branch = @constCast("tui/abc"), .repo_root = @constCast("/tmp"), .prefix = "" };
+    const message = try reattach(std.testing.allocator, git.runner(), &info);
+    defer if (message) |text| std.testing.allocator.free(text);
+    try std.testing.expect(message == null);
+    var saw_prune = false;
+    var saw_add = false;
+    for (git.calls.items) |call| {
+        if (std.mem.indexOf(u8, call, "worktree prune") != null) saw_prune = true;
+        if (std.mem.indexOf(u8, call, "worktree add") != null) saw_add = true;
+    }
+    try std.testing.expect(saw_prune and saw_add);
 }
 
 test "sidecar round-trips the worktree record" {

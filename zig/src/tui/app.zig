@@ -1159,10 +1159,15 @@ pub const App = struct {
             }
             const root = if (tui_worktree.pathExists(info.path))
                 try info.workingDir(self.allocator)
-            else if (info.prefix.len > 0)
-                try std.fs.path.join(self.allocator, &.{ info.repo_root, std.mem.trimEnd(u8, info.prefix, &.{std.fs.path.sep}) })
-            else
-                try self.allocator.dupe(u8, info.repo_root);
+            else root: {
+                if (info.prefix.len > 0) {
+                    const prefixed = try std.fs.path.join(self.allocator, &.{ info.repo_root, std.mem.trimEnd(u8, info.prefix, &.{std.fs.path.sep}) });
+                    if (tui_worktree.pathExists(prefixed)) break :root prefixed;
+                    self.allocator.free(prefixed);
+                }
+                if (tui_worktree.pathExists(info.repo_root)) break :root try self.allocator.dupe(u8, info.repo_root);
+                break :root try self.allocator.dupe(u8, self.launch_dir);
+            };
             defer self.allocator.free(root);
             try runtime.setWorkspaceRoot(root);
             try replaceOwnedString(self.allocator, &self.working_dir, root);
