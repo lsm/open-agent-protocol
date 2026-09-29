@@ -33,11 +33,14 @@ bypasses all of it and calls `agent.Agent` directly.
 
 `session.message.delivery.queue`, `session.message.delivery.steer`,
 `session.message.delivery.btw`, `action.tools.list`, `action.providers.attach`
-and `run.instructions` are **not advertised**, and `handleSubmit` refuses any
-delivery but `auto` with `unsupported_feature`. A test at `server.zig:2131`
-pins that they are unadvertised and a test at `server.zig:3024` pins the typed
-refusal, so it is a decision, not an oversight — but it is a decision that costs
-the TUI two of its primary mid-run controls, which is G2.
+and `run.instructions` are **not advertised** — they are absent from
+`advertised_features` — and `handleSubmit` refuses any delivery but `auto` with
+`unsupported_feature`. A test at `server.zig:3024` pins the typed refusal, so
+the refusal is a decision rather than an oversight; the non-advertisement of
+`action.tools.list` and `session.message.delivery.queue` is pinned at
+`server.zig:2130` and `2131`, while the other four rest on the capability table
+alone. Either way it costs the TUI two of its primary mid-run controls, which
+is G2.
 
 ## The map
 
