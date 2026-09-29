@@ -74,3 +74,13 @@ fn braceless_else_if_leaves_a_loop_defer(items: []const []const u8, value: *u8) 
         defer release(value);
     }
 }
+
+fn multiline_defer_block(flag: bool, value: *u8) void {
+    if (flag) {
+        defer {
+            release(value);
+        }
+    }
+    consume(value);
+    _ = flag;
+}

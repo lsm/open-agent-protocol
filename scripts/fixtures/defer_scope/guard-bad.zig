@@ -63,3 +63,11 @@ fn error_else(found: anyerror!void, value: *u8) void {
     }
     _ = err;
 }
+
+fn one_line_with_two_statements(flag: bool, value: *u8) void {
+    if (flag) {
+        defer release(value); use(value);
+    }
+    consume(value);
+    _ = flag;
+}

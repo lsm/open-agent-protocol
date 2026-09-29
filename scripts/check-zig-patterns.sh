@@ -657,12 +657,14 @@ if [[ -n "$undeclared_defer_scope" ]]; then
   echo "[patterns] zig/src/transports/in_process.zig." >&2
   echo "[patterns] This is a floor, not a detector. It sees a plain \`if\`, a \`} else if (...) {\`" >&2
   echo "[patterns] or \`} else {\` / \`} else |err| {\` branch, a payload-capture head, and a block" >&2
-  echo "[patterns] nested one deep, whenever the block's only statement is the defer. A \`defer {\`" >&2
-  echo "[patterns] block IS seen, since the line still starts with \`defer\`. NOT SEEN: an \`errdefer\`" >&2
-  echo "[patterns] alone, which the pattern does not match; a braceless \`} else if (c) continue;\`," >&2
-  echo "[patterns] which opens no block; a switch prong; and a defer sharing a line with following" >&2
-  echo "[patterns] code, which is counted as one statement. Until then, read a defer in a" >&2
-  echo "[patterns] conditional as suspect by hand." >&2
+  echo "[patterns] nested one deep, whenever the block's only top-level line starts with \`defer\`." >&2
+  echo "[patterns] A line carrying more than one statement still counts as that one line, so" >&2
+  echo "[patterns] \`defer release(v); use(v);\` is seen. NOT SEEN, all of it measured against the" >&2
+  echo "[patterns] fixtures rather than assumed: an \`errdefer\` alone; a \`defer {\` block on its own" >&2
+  echo "[patterns] lines, whose inner lines raise the statement count and whose own closing brace" >&2
+  echo "[patterns] ends the conditional early; a one-line \`if (f) { defer f(); }\`, whose head does not" >&2
+  echo "[patterns] end in \`{\`; a braceless \`} else if (c) continue;\`, which opens no block; and a" >&2
+  echo "[patterns] switch prong. Until then, read a defer in a conditional as suspect by hand." >&2
   echo "[patterns] known_defer_scope is a backlog for sites that predate this check, not a list of" >&2
   echo "[patterns] approved ones. Adding to it needs a reason in the commit message saying why the" >&2
   echo "[patterns] defer is not meant to outlive its block. New code is expected to be fixed." >&2
@@ -691,7 +693,7 @@ if [[ "$scanned_zig_files" -eq 0 ]]; then
   echo "[patterns] that because it calls the scanner directly. Fail rather than pass on nothing." >&2
   exit 1
 fi
-defer_scope_expected_bad=7
+defer_scope_expected_bad=8
 defer_scope_expected_good=0
 bad_fixture_hits="$(scan_defer_scope "$defer_fixture_bad")"
 good_fixture_hits="$(scan_defer_scope "$defer_fixture_good")"
@@ -701,12 +703,12 @@ if [[ "$bad_fixture_count" -ne "$defer_scope_expected_bad" ]]; then
   echo "$bad_fixture_hits" >&2
   echo "[patterns] guard-bad.zig holds one function per spelling this check is supposed to see: a" >&2
   echo "[patterns] plain if, a \`} else if\` branch, a \`} else\` branch, a payload-capture head, a" >&2
-  echo "[patterns] block nested one deep, an \`if\` head carrying a \`://\` string literal, and an" >&2
-  echo "[patterns] \`} else |err| {\` branch. Fewer" >&2
+  echo "[patterns] block nested one deep, an \`if\` head carrying a \`://\` string literal, an" >&2
+  echo "[patterns] \`} else |err| {\` branch, and a lone line carrying two statements. Fewer" >&2
   echo "[patterns] means a spelling went unseen again, which is the" >&2
   echo "[patterns] defect this check exists to prevent; more means it is matching something it should" >&2
   echo "[patterns] not. A count is checked rather than a non-empty result because a check that" >&2
-  echo "[patterns] quietly stops seeing three of the six shapes still passes an emptiness test." >&2
+  echo "[patterns] quietly stops seeing three of the eight shapes still passes an emptiness test." >&2
   exit 1
 fi
 good_fixture_count="$(printf '%s\n' "$good_fixture_hits" | grep -c . || true)"
@@ -715,7 +717,8 @@ if [[ "$good_fixture_count" -ne "$defer_scope_expected_good" ]]; then
   echo "$good_fixture_hits" >&2
   echo "[patterns] guard-good.zig holds the shapes that are correct: a defer sharing a block with the" >&2
   echo "[patterns] work it protects, one in a function body, one in a capture block that also uses the" >&2
-  echo "[patterns] value, one in an if-branch with an else and a second statement, two written on a" >&2
+  echo "[patterns] value, one in an if-branch with an else and a second statement, a multi-line" >&2
+  echo "[patterns] \`defer {\` block, a braceless else-if leaving a loop defer, and two on a" >&2
   echo "[patterns] single line with a following statement, two loop bodies -- one freeing a local and" >&2
   echo "[patterns] one freeing the loop's own capture -- and one freeing a capture in an \`} else if\`" >&2
   echo "[patterns] head, which is the same exemption as the plain \`if\` spelled the other way. The loop" >&2
