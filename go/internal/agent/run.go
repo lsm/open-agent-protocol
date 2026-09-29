@@ -1,0 +1,282 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/lsm/open-agent-protocol/go/internal/provider"
+)
+
+const eventBuffer = 64
+
+const roomPoll = time.Millisecond
+
+type Config struct {
+	Model         provider.Model
+	Streamer      Streamer
+	MaxIterations int
+	Options       provider.StreamOptions
+}
+
+type Result struct {
+	Messages     []provider.Message
+	FinalMessage provider.AssistantContent
+	Turns        int
+	Termination  Termination
+}
+
+type Run struct {
+	config Config
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	events chan Event
+	done   chan struct{}
+
+	mu      sync.Mutex
+	settled bool
+	result  Result
+	err     error
+}
+
+func Start(ctx context.Context, config Config, prompts []provider.Message) *Run {
+	runCtx, cancel := context.WithCancel(ctx)
+	run := &Run{
+		config: config,
+		ctx:    runCtx,
+		cancel: cancel,
+		events: make(chan Event, eventBuffer),
+		done:   make(chan struct{}),
+	}
+	go func() {
+		defer close(run.done)
+		defer close(run.events)
+		defer cancel()
+		run.loop(prompts)
+	}()
+	return run
+}
+
+func (r *Run) Events() <-chan Event { return r.events }
+
+func (r *Run) Wait() Result { <-r.done; return r.Result() }
+
+func (r *Run) Result() Result {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.result
+}
+
+func (r *Run) Err() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
+}
+
+func (r *Run) Cancel() { r.cancel() }
+
+func (r *Run) emit(event Event) {
+	if event.IsTerminal() {
+		r.events <- event
+		return
+	}
+	for {
+		if len(r.events) < eventBuffer-1 {
+			select {
+			case r.events <- event:
+			default:
+			}
+			return
+		}
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-time.After(roomPoll):
+		}
+	}
+}
+
+func (r *Run) settle(result Result) {
+	r.mu.Lock()
+	if r.settled {
+		r.mu.Unlock()
+		return
+	}
+	r.settled = true
+	r.result = result
+	r.mu.Unlock()
+	final := result.FinalMessage
+	r.emit(Event{Kind: AgentEnd, Termination: result.Termination, Assistant: &final, Result: result})
+}
+
+func (r *Run) fail(reason string) {
+	r.mu.Lock()
+	if r.settled {
+		r.mu.Unlock()
+		return
+	}
+	r.settled = true
+	r.err = fmt.Errorf("agent: %s", reason)
+	r.mu.Unlock()
+	r.emit(Event{Kind: RunFailed, Reason: reason})
+}
+
+func (r *Run) withinLimit(turns int) bool {
+	if r.config.MaxIterations <= 0 {
+		return true
+	}
+	return turns < r.config.MaxIterations
+}
+
+const closedWithoutTerminal = "the provider stream closed without a terminal event"
+
+func (r *Run) loop(prompts []provider.Message) {
+	if r.config.Streamer == nil {
+		r.fail("a run needs a streamer to reach a model")
+		return
+	}
+	var history []provider.Message
+	for _, prompt := range prompts {
+		copied := prompt
+		r.emit(Event{Kind: MessageStart, Message: &copied})
+		history = append(history, copied)
+		r.emit(Event{Kind: MessageEnd, Message: &copied})
+	}
+	if len(history) == 0 {
+		r.fail("a run needs at least one message to answer")
+		return
+	}
+	r.emit(Event{Kind: AgentStart})
+
+	turns := 0
+	cutOffToolTurns := 0
+	ended := false
+	termination := TerminationClean
+
+	for r.withinLimit(turns) {
+		if r.ctx.Err() != nil {
+			termination = TerminationCanceled
+			ended = true
+			break
+		}
+
+		r.emit(Event{Kind: TurnStart})
+		assistant, closedWithout := r.streamTurn(history)
+		turns++
+		history = append(history, provider.Message{Assistant: &assistant})
+
+		if closedWithout != "" {
+			r.emit(Event{Kind: TurnEnd, Assistant: &assistant})
+			if r.ctx.Err() != nil {
+				r.settle(Result{Messages: history, FinalMessage: assistant, Turns: turns, Termination: TerminationCanceled})
+				return
+			}
+			r.fail(closedWithout)
+			return
+		}
+
+		outcome := TurnOutcome(assistant, cutOffToolTurns)
+		if outcome == OutcomeCalledTools && assistant.StopReason == provider.StopLength {
+			cutOffToolTurns++
+		} else {
+			cutOffToolTurns = 0
+		}
+
+		switch outcome {
+		case OutcomeFailed, OutcomeAnswered:
+			r.emit(Event{Kind: TurnEnd, Assistant: &assistant})
+			ended = true
+		case OutcomeCalledTools:
+			r.emit(Event{Kind: TurnEnd, Assistant: &assistant})
+			r.fail("a reply asked for tools and this loop has nowhere to send them")
+			return
+		}
+
+		if ended {
+			break
+		}
+	}
+
+	if !ended {
+		termination = TerminationMaxTurns
+	}
+	if r.ctx.Err() != nil {
+		termination = TerminationCanceled
+	}
+	r.settle(Result{Messages: history, FinalMessage: r.lastAssistant(history), Turns: turns, Termination: termination})
+}
+
+func (r *Run) lastAssistant(history []provider.Message) provider.AssistantContent {
+	for index := len(history) - 1; index >= 0; index-- {
+		if history[index].Assistant != nil {
+			return *history[index].Assistant
+		}
+	}
+	return provider.AssistantContent{
+		Parts:      []provider.ContentPart{{Text: &provider.TextPart{}}},
+		StopReason: provider.StopStop,
+		API:        r.config.Model.API,
+		Provider:   r.config.Model.Provider,
+		Model:      r.config.Model.ID,
+	}
+}
+
+func (r *Run) errorContent(reason string) provider.AssistantContent {
+	return provider.AssistantContent{
+		Parts:      []provider.ContentPart{{Text: &provider.TextPart{Text: reason}}},
+		StopReason: provider.StopError,
+		API:        r.config.Model.API,
+		Provider:   r.config.Model.Provider,
+		Model:      r.config.Model.ID,
+	}
+}
+
+func (r *Run) streamTurn(history []provider.Message) (provider.AssistantContent, string) {
+	turn := r.config.Streamer.Stream(r.ctx, TurnRequest{
+		Model:    r.config.Model,
+		Messages: history,
+		Options:  r.config.Options,
+	})
+	var assistant *provider.AssistantContent
+	refusal := ""
+	for event := range turn.Events {
+		switch event.Kind {
+		case provider.EventTextDelta:
+			r.emit(Event{Kind: TextDelta, Delta: event.Delta})
+		case provider.EventThinkingDelta:
+			r.emit(Event{Kind: ReasoningDelta, Delta: event.Delta})
+		case provider.EventDone:
+			if event.Message != nil {
+				assistant = contentOf(*event.Message)
+			}
+		case provider.EventError:
+			refusal = event.Reason
+		}
+	}
+	if assistant != nil {
+		return *assistant, ""
+	}
+	if r.ctx.Err() != nil {
+		return r.errorContent("the run was cancelled"), ""
+	}
+	if refusal != "" {
+		return r.errorContent(refusal), ""
+	}
+	return r.errorContent(closedWithoutTerminal), closedWithoutTerminal
+}
+
+func contentOf(message provider.AssistantMessage) *provider.AssistantContent {
+	parts := make([]provider.ContentPart, 0, len(message.Content))
+	for _, block := range message.Content {
+		parts = append(parts, provider.ContentPart{Text: block.Text, Thinking: block.Thinking, ToolCall: block.ToolCall})
+	}
+	return &provider.AssistantContent{
+		Parts:      parts,
+		StopReason: message.StopReason,
+		API:        message.API,
+		Provider:   message.Provider,
+		Model:      message.Model,
+	}
+}
