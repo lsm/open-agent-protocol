@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **A model entry publishes the facts a listing learned, and absence means
+  unknown** ([Decision 0035](decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md)).
+  `provider.models.list.response` gains six optional members on each entry —
+  `cost` (flat, four numbers, no tier), `input_modalities`, `output_modalities`
+  over `text`/`image`/`audio`/`video`/`document`, `reasoning_levels`,
+  `release_date` and `family` — and the response gains an optional `catalog`
+  member carrying `complete` and `observed_at_ms`. A member that is present
+  publishes a fact; one that is absent says the implementation did not learn
+  it, so a caller must not read an absent `cost` as free or an absent modality
+  list as text-only. A `cost` whose four numbers are zero is a published fact
+  about a free model. `input_modalities` and `output_modalities` supersede
+  `capabilities`' `vision`, `audio_input` and `audio_output`, which stay for
+  v0.1 as deprecated aliases. `cost` is published and unjudged: no conformance
+  unit judges a rate, and the one a listing published is true of the response
+  that carried it. `oapx serve provider` now publishes `complete: false` with
+  its built-in list, because that list is a fallback rather than the whole of
+  what the provider serves, and each built-in entry publishes the one fact it
+  knows: `output_modalities: ["text"]`. `observed_at_ms` is carried end to end
+  and left absent by that producer, which reads no catalog at a known time; #355
+  is where the first one fills it.
+
 ### Changed
 
 - **`make build` and `make tui` build ReleaseSafe.** They built Debug, where Zig's debug allocator records a stack trace for every allocation: resuming a 50 MB session left the TUI unresponsive for over a minute, and a message sent later took 14 seconds to answer a keystroke. A ReleaseSafe build resumes the same session in about a second. `OPTIMIZE=Debug` still gives a debug build.

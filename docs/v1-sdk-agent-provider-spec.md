@@ -80,6 +80,26 @@ Caching rules:
 - Auth status can lag reality by up to `cache_max_age_ms` in cache-hit paths.
 - `models.resolve(...)` reuses the same cache semantics as `models.list(...)`.
 
+Facts a listing learned (Normative):
+- `cost`, `input_modalities`, `output_modalities`, `reasoning_levels`,
+  `release_date` and `family` are optional and absent by default. Absence says
+  the implementation did not learn the fact; it is never a default value. A
+  client must not read an absent `cost` as free or an absent modality list as
+  text-only, and a `cost` whose numbers are all zero is a published fact about
+  a free model.
+- `cost` is flat at four numbers, `{ input, output, cache_read, cache_write }`,
+  and carries no tier. A rate is true of the response that carried it; no
+  conformance unit judges it.
+- `input_modalities` and `output_modalities` draw from `text`, `image`,
+  `audio`, `video` and `document`. They supersede `ModelCapability`'s `vision`,
+  `audio_input` and `audio_output`, which are retained as deprecated aliases for
+  v0.1 and ignored by a client that knows of the lists.
+- `reasoning_levels` is the set the model accepts, and `reasoning_default` names
+  one of them.
+- These mirror `provider.models.list.response` in the model-provider-core
+  profile ([Decision 0035](../../decisions/0035-a-model-entry-publishes-its-facts-and-absence-means-unknown.md)),
+  so a client reading either reads the same facts.
+
 Auth for listing:
 - Providers that require auth for model listing must return `auth_status = "login_required"` (or `"expired"` / `"failed"`).
 - Missing auth must not hard-fail the whole response if static fallback is available.
@@ -120,6 +140,7 @@ export type ModelCapability =
   | "audio_output";
 
 export type ModelSource = "dynamic" | "static_fallback";
+export type ReasoningLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export type AuthRetryPolicy = "manual" | "auto_once";
 
 // Known values are standardized; the union stays open-ended for forward compatibility.
@@ -178,6 +199,22 @@ export interface AuthFlowHandlers {
   onPrompt?: (prompt: Extract<MakaiAuthEvent, { type: "prompt" }>) => Promise<string> | string;
 }
 
+/**
+ * A rate and the facts a listing learned about a model. Every one of them is
+ * optional and none has a default: an absent member says the implementation did
+ * not learn that fact, so a caller must not read an absent `cost` as free or an
+ * absent modality list as text-only. A `cost` whose four numbers are zero is a
+ * published fact about a free model.
+ */
+export interface ModelCost {
+  input?: number;
+  output?: number;
+  cache_read?: number;
+  cache_write?: number;
+}
+
+export type Modality = "text" | "image" | "audio" | "video" | "document";
+
 export interface ModelDescriptor {
   model_ref: string; // opaque stable handle, server-issued
   model_id: string;
@@ -192,6 +229,13 @@ export interface ModelDescriptor {
   context_window?: number;
   max_output_tokens?: number;
   reasoning_default?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  cost?: ModelCost;
+  input_modalities?: Modality[];
+  output_modalities?: Modality[];
+  /** The levels the model accepts; `reasoning_default` names one of them. */
+  reasoning_levels?: ReasoningLevel[];
+  release_date?: string;
+  family?: string;
   metadata?: Record<string, string>;
 }
 
@@ -647,6 +691,12 @@ pub const ModelDescriptor = struct {
     context_window: ?u32 = null,
     max_output_tokens: ?u32 = null,
     reasoning_default: ?ReasoningLevel = null,
+    cost: ?ModelCost = null,
+    input_modalities: OwnedSlice(Modality) = OwnedSlice(Modality).initBorrowed(""),
+    output_modalities: OwnedSlice(Modality) = OwnedSlice(Modality).initBorrowed(""),
+    reasoning_levels: OwnedSlice(ReasoningLevel) = OwnedSlice(ReasoningLevel).initBorrowed(""),
+    release_date: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
+    family: OwnedSlice(u8) = OwnedSlice(u8).initBorrowed(""),
     metadata: ?OwnedSlice(MetadataEntry) = null,
 };
 
@@ -675,6 +725,18 @@ pub const ReasoningLevel = enum {
     medium,
     high,
     xhigh,
+};
+
+pub const Modality = enum { text, image, audio, video, document };
+
+/// A rate the listing published. Each number is optional and none has a
+/// default, so an absent member says the implementation did not learn that
+/// number rather than that the model is free.
+pub const ModelCost = struct {
+    input: ?f64 = null,
+    output: ?f64 = null,
+    cache_read: ?f64 = null,
+    cache_write: ?f64 = null,
 };
 
 pub const MetadataEntry = struct {

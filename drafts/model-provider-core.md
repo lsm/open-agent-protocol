@@ -335,7 +335,7 @@ Eighteen, in five groups.
 | `provider.describe.request` | caller → implementation | nothing required |
 | `provider.describe.response` | implementation → caller | `providers[]`, `capability_revision`, `protocol_versions[]`, `profile_revision?` |
 | `provider.models.list.request` | caller → implementation | `provider_id?` |
-| `provider.models.list.response` | implementation → caller | `models[]`, `capability_revision` |
+| `provider.models.list.response` | implementation → caller | `models[]`, `capability_revision`, `catalog?` |
 
 `capability_revision` is required on both responses, for the reason agent
 control requires it on `capabilities.response` and `models.response`: the whole
@@ -349,17 +349,72 @@ Each entry in `provider.models.list.response`:
 - `model_id`, `display_name?`, `provider_id`, `wire`
 - `context_window?`, `max_output_tokens?`
 - `capabilities` — from `chat`, `streaming`, `tools`, `vision`, `reasoning`,
-  `prompt_cache`, `audio_input`, `audio_output`.
+  `prompt_cache`, `audio_input`, `audio_output`. The three media values are
+  deprecated aliases, superseded by the two modality lists below; a caller that
+  knows of them reads the lists instead. They stay for v0.1 so a v0.1 peer that
+  reads them keeps working.
 - `lifecycle` — `stable`, `preview`, `deprecated`.
 - `source` — `discovered` or `fallback`.
 - `reasoning_default?` — `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - `auth_status` — below.
+- `cost?` — `{ input?, output?, cache_read?, cache_write? }`, four numbers and
+  no tier. Each is optional, so an implementation that learned a rate for input
+  and none for output publishes the one it has.
+- `input_modalities?`, `output_modalities?` — lists from `text`, `image`,
+  `audio`, `video`, `document`.
+- `reasoning_levels?` — the levels the model accepts, with `reasoning_default`
+  naming one of them.
+- `release_date?`, `family?` — a string each.
 
 `source` distinguishes a catalog the implementation read from the provider from
 one it fell back to from a built-in list. Merging the two silently is how a
 client confidently offers a model that no longer exists; a caller looking at a
 fallback catalog is looking at something that may be months stale and should be
 told.
+
+#### A member that is present publishes a fact, and one that is absent is unknown
+
+Every fact above `auth_status` is optional and none of them has a default. A
+caller must not read an absent `cost` as free, an absent modality list as
+text-only, or an absent `reasoning_levels` as a model with one level. A `cost`
+whose four numbers are zero is a published fact about a free model; an absent
+`cost` is not a quotation. This is
+[Decision 0034](../decisions/0034-an-unpublished-catalog-is-unknown.md)'s rule
+for tool catalogs applied to model facts, and it is decidable from one response.
+
+`cost` is a fact about the response that carried it, not a quotation and not a
+promise, and no unit judges it. A tier — the `context_over_200k` a provider's
+own dataset records on some models — is not in v0.1: no provider in the evidence
+publishes one, and a shape nothing fills is a claim about the schema rather than
+about a model.
+
+#### The listing publishes its own completeness and age
+
+`provider.models.list.response` carries an optional `catalog`:
+
+```
+catalog?: { observed_at_ms?: integer, complete: boolean }
+```
+
+`complete: false` says the listing is a subset of what the provider serves. A
+caller told that must read an absent `model_ref` as an id nobody has heard of
+rather than as a model that does not exist; a provider that has never heard of
+an id is not thereby unable to serve it, and the `model_not_found` refusal
+below is unchanged. An absent `catalog` keeps today's meaning, the listing being
+the whole of what this implementation knows. The asymmetry with the rule above
+is deliberate: an absent per-model fact is unknown, while a listing's
+completeness is presumed and must be denied explicitly, because the consumer of
+that presumption assumes it.
+
+`observed_at_ms` is when the underlying catalog was read, not when the response
+was built, so a `fallback` source can be told from a fresh one.
+
+**What this does not repair.** `+models` judges the agent-control session
+catalog on `models.response`, which the validator reads without ever seeing a
+provider list, so `complete: false` here does not stand that binding down and
+`model_not_in_catalog` is unchanged. Making a partial catalog disarm the
+two-directional binding needs a member on `models.response`, in the other
+profile, and is left to that profile's decision.
 
 #### `auth_status`, and a correction
 

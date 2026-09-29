@@ -1,0 +1,54 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.models.list.response",
+    "id": "m1",
+    "in_reply_to": "m0",
+    "capability_revision": "0.1",
+    "payload": {
+      "models": [
+        {
+          "model_ref": "anthropic/anthropic-messages@claude-sonnet-4-5",
+          "model_id": "claude-sonnet-4-5",
+          "display_name": "Claude Sonnet 4.5",
+          "provider_id": "anthropic",
+          "wire": "anthropic-messages",
+          "context_window": 200000,
+          "max_output_tokens": 8192,
+          "capabilities": ["chat", "streaming", "tools", "reasoning"],
+          "lifecycle": "stable",
+          "source": "discovered",
+          "auth_status": "authenticated",
+          "cost": {
+            "input": 3,
+            "output": 15,
+            "cache_read": 0.3,
+            "cache_write": 3.75
+          },
+          "input_modalities": ["text", "image", "document"],
+          "output_modalities": ["text"],
+          "reasoning_levels": ["off", "low", "medium", "high"],
+          "reasoning_default": "medium",
+          "release_date": "2025-09-29",
+          "family": "claude-sonnet"
+        },
+        {
+          "model_ref": "ollama/other:ollama-chat@llama3",
+          "model_id": "llama3",
+          "provider_id": "ollama",
+          "wire": "other",
+          "capabilities": ["chat", "streaming"],
+          "lifecycle": "stable",
+          "source": "fallback",
+          "auth_status": "unknown"
+        }
+      ],
+      "catalog": {
+        "observed_at_ms": 1759100000000,
+        "complete": true
+      }
+    }
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "protocol": "open-agent-protocol",
+    "version": "0.1",
+    "profile": "open-agent-protocol.model-provider-core",
+    "type": "provider.models.list.response",
+    "id": "m2",
+    "in_reply_to": "m0",
+    "capability_revision": "0.1",
+    "payload": {
+      "models": [
+        {
+          "model_ref": "kimi/openai-chat-completions@kimi-k2",
+          "model_id": "kimi-k2",
+          "display_name": "Kimi K2",
+          "provider_id": "kimi",
+          "wire": "openai-chat-completions",
+          "capabilities": ["chat", "streaming", "tools"],
+          "lifecycle": "stable",
+          "source": "fallback",
+          "auth_status": "unknown"
+        }
+      ],
+      "catalog": {
+        "observed_at_ms": 1756400000000,
+        "complete": false
+      }
+    }
+  }
+]

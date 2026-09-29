@@ -216,6 +216,48 @@
         "xhigh"
       ]
     },
+    "modality": {
+      "enum": [
+        "text",
+        "image",
+        "audio",
+        "video",
+        "document"
+      ]
+    },
+    "modelCost": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number"
+        },
+        "output": {
+          "type": "number"
+        },
+        "cache_read": {
+          "type": "number"
+        },
+        "cache_write": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "modelCatalogState": {
+      "type": "object",
+      "required": [
+        "complete"
+      ],
+      "properties": {
+        "observed_at_ms": {
+          "type": "integer"
+        },
+        "complete": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "modelEntry": {
       "type": "object",
       "required": [
@@ -265,6 +307,33 @@
         },
         "auth_status": {
           "$ref": "common.schema.json#/$defs/authStatus"
+        },
+        "cost": {
+          "$ref": "#/$defs/modelCost"
+        },
+        "input_modalities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modality"
+          }
+        },
+        "output_modalities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/modality"
+          }
+        },
+        "reasoning_levels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reasoningLevel"
+          }
+        },
+        "release_date": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
         }
       },
       "additionalProperties": false
@@ -351,6 +420,9 @@
           "items": {
             "$ref": "#/$defs/modelEntry"
           }
+        },
+        "catalog": {
+          "$ref": "#/$defs/modelCatalogState"
         }
       },
       "additionalProperties": false
