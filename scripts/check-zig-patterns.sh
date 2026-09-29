@@ -512,6 +512,121 @@ if [[ -n "$stale_multi_alloc" ]]; then
   exit 1
 fi
 
+known_defer_scope="$(cat <<'DEFER'
+DEFER
+)"
+
+scan_defer_scope() {
+  local file="$1"
+  awk -v file="$file" '
+    {
+      if (collecting) {
+        trimmed = $0
+        sub(/^[ \t]+/, "", trimmed)
+        sub(/[ \t]+$/, "", trimmed)
+        if (trimmed == "}") {
+          if (count == 1 && only_defer) print file ":" if_line
+          collecting = 0
+          count = 0
+          only_defer = 0
+          next
+        }
+        if (trimmed != "") {
+          count++
+          if (count == 1 && trimmed ~ /^defer[ \t]/) only_defer = 1
+        }
+        next
+      }
+      if ($0 ~ /^[ \t]*if[ \t]*\(.*\)[ \t]*\{[ \t]*$/) {
+        collecting = 1
+        if_line = FNR
+        count = 0
+        only_defer = 0
+      }
+    }
+  ' "$file"
+}
+
+echo "[patterns] checking for a defer scoped inside a block that closes before the call..."
+actual_defer_scope=""
+while IFS= read -r -d '' file; do
+  scope_hits="$(scan_defer_scope "$file")"
+  if [[ -n "$scope_hits" ]]; then
+    actual_defer_scope+="$scope_hits"$'\n'
+  fi
+done < <(find zig/src -name "*.zig" -print0 | sort -z)
+
+undeclared_defer_scope="$(comm -13 \
+  <(printf "%s\n" "$known_defer_scope" | grep -v '^$' | sort) \
+  <(printf "%s\n" "$actual_defer_scope" | grep -v '^$' | sort))"
+if [[ -n "$undeclared_defer_scope" ]]; then
+  echo "[patterns] a defer sits in a block whose body is only that defer:" >&2
+  echo "$undeclared_defer_scope" >&2
+  echo "[patterns] SCOPE, exactly: a plain \`if (cond) {\` block whose body is a single" >&2
+  echo "[patterns] \`defer\`, with the guarded call after the block. A defer runs when its block" >&2
+  echo "[patterns] closes, so here it runs before the call it was meant to outlive." >&2
+  echo "[patterns] Hold the call's result, do the free, then branch on the error; see run() in" >&2
+  echo "[patterns] zig/src/transports/in_process.zig." >&2
+  echo "[patterns] This is a floor, not a detector, and it is a narrow floor. NOT SEEN: a defer in a" >&2
+  echo "[patterns] branch that has a following \`else\` (the \`} else {\` line reads as a second" >&2
+  echo "[patterns] statement, so the block looks non-empty); a defer in a \`} else if (...) {\` or" >&2
+  echo "[patterns] \`else {\` branch; one in a payload-capture head such as \`if (x) |v| {\`; one" >&2
+  echo "[patterns] nested one block deep; an \`errdefer\` on its own, which the pattern does not" >&2
+  echo "[patterns] match; and any \`while\` or \`for\` body, since only \`if\` opens are matched." >&2
+  echo "[patterns] Each is the same defect - the defer runs before the code it was meant to" >&2
+  echo "[patterns] outlive. Catching them needs brace-depth tracking, which reports ten false" >&2
+  echo "[patterns] positives on today's tree; tracked in #603, with the reproducer. Until then," >&2
+  echo "[patterns] read a defer in a conditional as suspect by hand." >&2
+  echo "[patterns] known_defer_scope is a backlog for sites that predate this check, not a list of" >&2
+  echo "[patterns] approved ones. Adding to it needs a reason in the commit message saying why the" >&2
+  echo "[patterns] defer is not meant to outlive its block. New code is expected to be fixed." >&2
+  exit 1
+fi
+
+stale_defer_scope="$(comm -23 \
+  <(printf "%s\n" "$known_defer_scope" | grep -v '^$' | sort) \
+  <(printf "%s\n" "$actual_defer_scope" | grep -v '^$' | sort))"
+if [[ -n "$stale_defer_scope" ]]; then
+  echo "[patterns] known_defer_scope declares a site that no longer exists:" >&2
+  echo "$stale_defer_scope" >&2
+  echo "[patterns] a fixed site must be removed from the list" >&2
+  exit 1
+fi
+
+defer_fixture_bad="scripts/fixtures/defer_scope/guard-bad.zig"
+defer_fixture_good="scripts/fixtures/defer_scope/guard-good.zig"
+scanned_zig_files=0
+while IFS= read -r -d '' _; do
+  scanned_zig_files=$((scanned_zig_files + 1))
+done < <(find zig/src -name "*.zig" -print0)
+if [[ "$scanned_zig_files" -eq 0 ]]; then
+  echo "[patterns] the defer-scope scan saw no Zig files under zig/src:" >&2
+  echo "[patterns] the tree scan is vacuously green, and the fixture self-test below cannot see" >&2
+  echo "[patterns] that because it calls the scanner directly. Fail rather than pass on nothing." >&2
+  exit 1
+fi
+bad_fixture_hits="$(scan_defer_scope "$defer_fixture_bad")"
+good_fixture_hits="$(scan_defer_scope "$defer_fixture_good")"
+if [[ -z "$bad_fixture_hits" ]]; then
+  echo "[patterns] the defer-scope check no longer reports its own bad fixture:" >&2
+  echo "[patterns] $defer_fixture_bad holds the one shape this check exists to catch. A check that" >&2
+  echo "[patterns] has stopped catching it is not a check. The fixtures are scanned directly, so the" >&2
+  echo "[patterns] count above is what keeps the tree scan from passing on nothing." >&2
+  exit 1
+fi
+if [[ -n "$good_fixture_hits" ]]; then
+  echo "[patterns] the defer-scope check reports a fixture it must not:" >&2
+  echo "$good_fixture_hits" >&2
+  echo "[patterns] $defer_fixture_good holds the shapes that are correct today: a defer sharing a" >&2
+  echo "[patterns] block with the work it protects, one in a function body, one in a capture block" >&2
+  echo "[patterns] that also uses the value, and one in an if-branch that has an else and holds a" >&2
+  echo "[patterns] second statement. That last one is here because \`} else {\` is where this scanner" >&2
+  echo "[patterns] is weakest: the line reads as a statement, so collection runs on into the else" >&2
+  echo "[patterns] body. An if-branch whose ONLY statement is a defer is the bug, not a fixture, and" >&2
+  echo "[patterns] it is listed above under NOT SEEN." >&2
+  exit 1
+fi
+
 build_zig="zig/build.zig"
 build_dir="$(dirname "$build_zig")/"
 
