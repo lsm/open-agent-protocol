@@ -9,6 +9,57 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAnOllamaHostIsLoopbackOn11434AndNothingElse(t *testing.T) {
+	hosts := []string{
+		"http://127.0.0.1:11434",
+		"http://127.0.0.1:11434/",
+		"http://127.0.0.1:11434/api/chat",
+		"http://localhost:11434",
+		"http://localhost:11434/api/chat",
+		"http://[::1]:11434",
+		"http://LOCALHOST:11434",
+	}
+	for _, url := range hosts {
+		if !isOllamaURL(url, true) {
+			t.Errorf("isOllamaURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"http://127.0.0.1:11435",
+		"http://localhost:11435",
+		"http://localhost",
+		"http://127.0.0.1",
+		"https://ollama.internal:11434",
+		"https://my-ollama.example.com",
+		"http://ollama.internal:11434",
+		"https://ollama.example.com/v1",
+		"http://example.com:11434/ollama",
+		"http://notlocalhost:11434",
+		"http://127.0.0.2:11434",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isOllamaURL(url, true) {
+			t.Errorf("isOllamaURL(%q) = true, want false: a loopback host on 11434, or nothing -- the bare word matched a path", url)
+		}
+	}
+
+	if isOllamaURL("http://127.0.0.1:11434", false) {
+		t.Error("no base url is not an ollama host")
+	}
+}
+
+func TestTheCataloguedOllamaLocalDefaultStillDetectsAsOllama(t *testing.T) {
+	const url = "http://127.0.0.1:11434"
+	if !isOllamaURL(url, true) {
+		t.Fatalf("isOllamaURL(%q) = false, want true", url)
+	}
+	if got := DetectProviderType(url, true); got != ProviderOllama {
+		t.Errorf("DetectProviderType(%q) = %q, want ollama", url, got)
+	}
+}
+
 func TestABedrockHostHasBedrockOrBedrockRuntimeAsItsFirstLabelUnderAmazonaws(t *testing.T) {
 	hosts := []string{
 		"https://bedrock.us-east-1.amazonaws.com",
@@ -582,7 +633,7 @@ func TestDetectProviderTypeOrdersItsSubstringChain(t *testing.T) {
 		"https://cognitiveservices.azure.com":              ProviderAzure,
 		"http://localhost:11434":                           ProviderOllama,
 		"http://127.0.0.1:11434":                           ProviderOllama,
-		"http://myollama.example":                          ProviderOllama,
+		"http://myollama.example":                          ProviderOpenAICompat,
 	}
 	for baseURL, want := range cases {
 		if got := DetectProviderType(baseURL, true); got != want {
