@@ -1264,6 +1264,17 @@ are "stamped with the revision the lister served it under", and both name
 | **Why it matters** | The host is told its id is taken when the real reason its request cannot be served is that the adapter will not attach what it asked for. Fixing the name is then useless and the actual refusal is never reported. Reachable with both trees' own memory adapter, so it needs no exotic adapter to appear. |
 | **The fix, and why it is one change with four others** | Match Go: call `adapter.open`, then check for the duplicate, then close the session just opened. That is a **core** change, and it is the same one **D11** (admit a message, report `admitted_submit_requests`), **D12** (surface the `contract.Refusal` so `feature` and `reason` reach the wire), **D14** (roll an unnamed session back) and the ordering half of **D13** all want. Five rows, one change: `hub.open` should do what Go's `hub.Open` does — run the adapter, apply the checks in Go's order, and report *which* refusal and why. That belongs in its own PR before `submit`, and it is the reason `submit`'s PR is worth its size. |
 
+### D16 — the envelope size budget is measured on re-serialized bytes
+
+| | |
+| --- | --- |
+| **The draft says** | "A stdio request envelope over 16 MiB is refused" — which reads as the bytes the host sent. |
+| **Go does** | `gateRequest` compares `len(payload)` of the raw `json.RawMessage`, so the budget is the member's **byte span in the line**. |
+| **Zig does** | `Request.payload` is a parsed `std.json.Value`, and `gateRequest` re-encodes it with `ownedRawJson` — **compact** — before measuring. A pretty-printed or escaped envelope spanning 16–18 MiB compacts to under 16 MiB, so it is served. |
+| **Why it matters** | The frame limit is 18 MiB, so such a line is accepted by the wire and the two trees then disagree about it: oapx serves the open, goap answers `request_too_large`. It is the one budget where "what the host sent" and "what we re-printed" differ, and the draft's wording is about the first. |
+| **The fix** | The serve loop's `decode` has the raw line; it would need to record the member's byte span and hand it to the gate alongside the parsed value. That is a `Request` member and a change in `decode` — cheap, and local to this file. |
+| **Why it is not fixed here** | Not a size question: no test can send a 16 MiB envelope through the differential without making the job enormous, so a fix here would be asserted only by a unit test with a hand-built span, and the differential could not confirm it. It is also a wire detail rather than a core one, so it is not part of the `hub.open` refusal change that D11, D12, D14 and D15 share. |
+
 ### D4 — the registry's `journal_capacity` is hub-wide in Zig, per-adapter in Go
 
 | | |
