@@ -334,7 +334,14 @@ func TestATurnCancelledMidStreamDeliversTheSameEventsEveryTime(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		turn := ChunkStreamer{}.Stream(ctx, TurnRequest{Model: completionsModel(), Read: read})
 		var events []provider.Event
-		events = takeUntil(t, turn, cancel, func(seen []provider.Event) bool { return len(seen) >= 2 })
+		events = takeUntil(t, turn, cancel, func(seen []provider.Event) bool {
+			for _, event := range seen {
+				if event.Kind == provider.EventTextDelta {
+					return true
+				}
+			}
+			return false
+		})
 		cancel()
 		close(blocked)
 		events = append(events, take(t, turn)...)
