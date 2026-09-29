@@ -2921,7 +2921,7 @@ test "a window a session asks for is capped at the ceiling its row records" {
     try std.testing.expect(contextWindowIsReported(uncatalogued_wide));
 }
 
-test "a model with no window at all has no ceiling and reports no window" {
+test "a model with no window of its own still takes its row's ceiling" {
     const empty: ai_types.Model = .{
         .id = "m",
         .name = "M",

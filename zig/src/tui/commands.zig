@@ -15,7 +15,6 @@ pub const CommandKind = enum {
     clear,
     compact,
     context,
-
     autocompact,
     abort,
     quit,
@@ -88,7 +87,6 @@ pub const commands = [_]CommandInfo{
     .{ .name = "clear", .kind = .clear, .usage = "/clear", .description = "Clear transcript display", .handler = handleClear },
     .{ .name = "compact", .kind = .compact, .usage = "/compact [focus]", .description = "Summarize the conversation to free context", .handler = handleCompact },
     .{ .name = "context", .kind = .context, .usage = "/context [tokens|default]", .description = "Show or set the context window for this session", .handler = handleContext },
-
     .{ .name = "autocompact", .kind = .autocompact, .usage = "/autocompact [percent|off]", .description = "Show or set the share of the window that compacts on its own", .handler = handleAutoCompact },
     .{ .name = "abort", .kind = .abort, .usage = "/abort", .description = "Cancel the active streaming turn", .handler = handleAbort },
     .{ .name = "quit", .kind = .quit, .usage = "/quit", .description = "Exit TUI", .handler = handleQuit },
