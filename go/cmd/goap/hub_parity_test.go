@@ -70,7 +70,7 @@ func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 	}
 }
 
-func TestHubStdioRefusesAConfigItCannotReadAndNamesTheFile(t *testing.T) {
+func TestHubRefusesAConfigItCannotReadAndNamesTheFile(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to check the flags it refuses")
@@ -112,7 +112,7 @@ func TestHubStdioEndsCleanlyWhenTheHostClosesThePipe(t *testing.T) {
 	}
 }
 
-func TestHubStdioAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
+func TestHubAddrBindsLoopbackAndEndsOnAnInterrupt(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
 		t.Skip("set OAP_OAPX_BIN to an oapx binary to check its HTTP daemon")

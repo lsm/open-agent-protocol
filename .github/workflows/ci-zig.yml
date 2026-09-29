@@ -276,7 +276,7 @@ jobs:
       - name: Require oapx hub --stdio to answer exactly as goap hub --stdio
         env:
           OAP_OAPX_BIN: /tmp/oapx-hub/bin/oapx
-        run: go test ./go/cmd/goap/ -run TestHubStdio -v
+        run: go test ./go/cmd/goap/ -run 'TestHub(Stdio|Refuses|Addr)' -v
 
       - name: Require oapx hub to refuse what it does not carry
         run: |
