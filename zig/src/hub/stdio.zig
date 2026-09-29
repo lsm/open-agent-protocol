@@ -532,6 +532,10 @@ pub const Frontend = struct {
                 }
             }
         }
+        if (open.subscribe) {
+            envelope.deinit(arena);
+            return .{ .refused = .{ .code = "unsupported_feature", .message = "a subscribing open is refused until events lands" } };
+        }
         if (open.message_json != null) {
             envelope.deinit(arena);
             return .{ .refused = .{ .code = "unsupported_feature", .message = "an open carrying a message is refused until submit lands" } };
@@ -555,7 +559,7 @@ pub const Frontend = struct {
             .id = answer_id,
             .in_reply_to = envelope.id,
             .session_id = opened.state.session_id,
-            .capability_revision = if (open.subscribe) opened.revision else envelope.capability_revision,
+            .capability_revision = if (open.subscribe or contract.carriesEntries(open.tool_sources_json)) opened.revision else envelope.capability_revision,
             .payload = .{ .session_open_response = opened.state },
         };
         const line = try oap_envelope.serializeEnvelope(opened_envelope, arena);
@@ -581,6 +585,7 @@ pub const Frontend = struct {
             error.UnsupportedFeature, error.ToolCatalogUnavailable => .{ .code = "unsupported_feature", .message = "the adapter does not advertise a feature the request elected" },
             error.CapabilityDegraded => .{ .code = "capability_degraded", .message = "a feature the request did not opt into is degraded" },
             error.AdapterDescriptorUnbound => .{ .code = "internal", .message = "the adapter descriptor carries no capability revision" },
+            error.BackendFailed => .{ .code = "probe_failed", .message = "the adapter's probe refused" },
             error.OutOfMemory => error.OutOfMemory,
             else => .{ .code = "open_failed", .message = @errorName(err) },
         };
@@ -1877,25 +1882,44 @@ test "an open answers with the request envelope's own id and the session it made
     try testing.expectEqual(@as(usize, 1), try listedSessions(harness));
 }
 
-test "an open that subscribes answers with the revision it was gated under" {
+test "a subscribing open is refused, because this wire cannot drain a subscription" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
     const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v1\",\"payload\":{\"session_id\":\"s1\",\"subscribe\":true}}";
     try harness.send(try openLine(harness.arena(), "reference", envelope));
-    const result = try openResult(harness);
-    try testing.expectEqualStrings("reference-v1", result.get("capability_revision").?.string);
+    try testing.expectEqualStrings("unsupported_feature", try harness.code());
 }
 
 test "an open citing a stale revision is refused, naming both revisions" {
     const harness = try Harness.init(testing.allocator, .{}, .{});
     defer harness.deinit();
-    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v0\",\"payload\":{\"session_id\":\"s1\",\"subscribe\":true}}";
+    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"capability_revision\":\"reference-v0\",\"payload\":{\"session_id\":\"s1\",\"tool_sources\":[{\"id\":\"extra\",\"kind\":\"local\"}]}}";
     try harness.send(try openLine(harness.arena(), "reference", envelope));
     try testing.expectEqualStrings("stale_capabilities", try harness.code());
     const details = (try harness.lastValue()).object.get("error").?.object.get("details").?.object;
     try testing.expectEqualStrings("reference-v1", details.get("expected_revision").?.string);
     try testing.expectEqualStrings("reference-v0", details.get("current_revision").?.string);
     try testing.expectEqual(@as(usize, 0), try listedSessions(harness));
+}
+
+test "a metadata-carrying open hands the adapter what the payload carried" {
+    reference_holder.saw_metadata_members = 0;
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"s1\",\"metadata\":{\"tenant\":\"acme\",\"attempt\":3}}}";
+    try harness.send(try openLine(harness.arena(), "reference", envelope));
+    try testing.expect((try openResult(harness)).get("session_id") != null);
+    try testing.expectEqual(@as(usize, 2), reference_holder.saw_metadata_members);
+}
+
+test "a metadata at the envelope root is not the payload's metadata" {
+    reference_holder.saw_metadata_members = 0;
+    const harness = try Harness.init(testing.allocator, .{}, .{});
+    defer harness.deinit();
+    const envelope = "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"metadata\":{\"tenant\":\"acme\"},\"payload\":{\"session_id\":\"s1\"}}";
+    try harness.send(try openLine(harness.arena(), "reference", envelope));
+    try testing.expect((try openResult(harness)).get("session_id") != null);
+    try testing.expectEqual(@as(usize, 0), reference_holder.saw_metadata_members);
 }
 
 test "the refusals the open gate and the payload read name" {
@@ -1909,6 +1933,7 @@ test "the refusals the open gate and the payload read name" {
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":7}", .code = "malformed_json" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":[]}", .code = "malformed_json" },
         .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"m\",\"message\":{\"messages\":[{\"role\":\"user\",\"content\":\"go\"}],\"delivery\":\"auto\"}}}}", .code = "unsupported_feature" },
+        .{ .line = "{\"id\":1,\"op\":\"open\",\"adapter\":\"reference\",\"request\":{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"open-agent-protocol.agent-control-core\",\"type\":\"session.open.request\",\"id\":\"o1\",\"payload\":{\"session_id\":\"n\",\"subscribe\":true}}}", .code = "unsupported_feature" },
     };
     for (cases) |case| {
         const harness = try Harness.init(testing.allocator, .{}, .{});

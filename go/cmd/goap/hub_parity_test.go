@@ -37,9 +37,9 @@ var hubParityScenarios = map[string][]string{
 		`{"id":4,"op":"open","adapter":"memory","request":{"id":"x"}}`,
 		`{"id":5,"op":"open","adapter":"memory","request":` + openEnvelopeFields + `,"id":"o1"}}`,
 	},
-	"an open is refused the same way after it is asked for twice": {
+	"a refused open leaves no session behind": {
 		`{"id":1,"op":"open","adapter":"absent","request":` + openEnvelopeFields + `,"id":"o1","payload":{"session_id":"s1"}}}`,
-		`{"id":2,"op":"open","adapter":"memory","request":` + openEnvelopeFields + `,"id":"o1","payload":{"session_id":"s1"},"metadata":7}}`,
+		`{"id":2,"op":"open","adapter":"memory","request":` + openEnvelopeFields + `,"id":"o2","payload":{"session_id":"s1","metadata":7}}}`,
 		`{"id":3,"op":"sessions"}`,
 	},
 	"the catalog ops refuse the same refusals": {
