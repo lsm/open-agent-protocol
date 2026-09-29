@@ -398,5 +398,5 @@ and the wrong side is fixed or the divergence recorded in its own section.
   say what changed in the PR description, because the release notes are written
   from it. A pull request does not edit `CHANGELOG.md`: the release process
   writes it, in the Keep a Changelog shape, from the PRs merged since the last
-  tag. So do not add an entry under `Unreleased`, and do not read a missing one
-  as an unfinished PR.
+  tag — [`docs/releasing.md`](docs/releasing.md) has the steps. So do not add an
+  entry under `Unreleased`, and do not read a missing one as an unfinished PR.
