@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/lsm/open-agent-protocol/go/internal/provider"
@@ -62,7 +63,7 @@ func only(names []string, allowed ...string) string {
 }
 
 func TestTheFirstScopedEnvelopeOpensTheSequenceAtOneAndItNeverRepeats(t *testing.T) {
-	state := NewState("i1", "m")
+	state := NewState(&Ids{}, "i1", "m")
 	if _, err := state.Started(1); err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestOnlyTheSixScopedTypesCarryASequenceAndAnInferenceID(t *testing.T) {
 			t.Errorf("scoped(%q) = %v, want %v: the validator's scoped set is exactly these six", typ, got, want)
 		}
 	}
-	state := NewState("i1", "m")
+	state := NewState(&Ids{}, "i1", "m")
 	for _, typ := range every {
 		envelope, err := state.emit(typ, "", struct{}{})
 		if err != nil {
@@ -113,7 +114,7 @@ func TestOnlyTheSixScopedTypesCarryASequenceAndAnInferenceID(t *testing.T) {
 }
 
 func TestACreateResponseIsUnscopedAndTheStartedEnvelopeStillOpensAtOne(t *testing.T) {
-	state := NewState("i1", "m")
+	state := NewState(&Ids{}, "i1", "m")
 	accepted, err := state.Accepted("c0", Honoured{IncludeSnapshot: "never"})
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +146,7 @@ func TestACreateResponseIsUnscopedAndTheStartedEnvelopeStillOpensAtOne(t *testin
 }
 
 func TestAnAcceptedCreateCarriesItsHonouredAndNothingElse(t *testing.T) {
-	accepted, err := NewState("i1", "m").Accepted("c0", Honoured{IncludeSnapshot: "on_part_end"})
+	accepted, err := NewState(&Ids{}, "i1", "m").Accepted("c0", Honoured{IncludeSnapshot: "on_part_end"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +167,7 @@ func TestAnAcceptedCreateCarriesItsHonouredAndNothingElse(t *testing.T) {
 }
 
 func TestARefusedCreateAllocatesNoInferenceAndNothingScopedCanFollowIt(t *testing.T) {
-	held := NewState("i-already-allocated", "m")
+	held := NewState(&Ids{}, "i-already-allocated", "m")
 	refused, err := held.Refused("c0", "model_not_found", "no such model")
 	if err != nil {
 		t.Fatal(err)
@@ -199,7 +200,7 @@ func TestARefusedCreateAllocatesNoInferenceAndNothingScopedCanFollowIt(t *testin
 }
 
 func TestEveryEnvelopeCarriesTheProtocolHeader(t *testing.T) {
-	state := NewState("i1", "m")
+	state := NewState(&Ids{}, "i1", "m")
 	started, err := state.Started(1)
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +220,7 @@ func TestEveryEnvelopeCarriesTheProtocolHeader(t *testing.T) {
 }
 
 func TestAFailureNestsItsErrorTheWayTheSchemaRequires(t *testing.T) {
-	envelope, err := NewState("i1", "m").Failed("provider_unavailable", "the provider stream failed")
+	envelope, err := NewState(&Ids{}, "i1", "m").Failed("provider_unavailable", "the provider stream failed")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +275,7 @@ func TestAToolCallPartEndedNestsItsCallAndCarriesNoText(t *testing.T) {
 	if !ok || arguments["city"] != "Kyoto" {
 		t.Errorf("arguments_json = %v, want the arguments as an object", call.ArgumentsJSON)
 	}
-	envelope, err := NewState("i1", "m").emit("inference.part.ended", "", ended)
+	envelope, err := NewState(&Ids{}, "i1", "m").emit("inference.part.ended", "", ended)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +315,7 @@ func TestNoPayloadThisLayerCanEmitCarriesAThoughtSignature(t *testing.T) {
 	call := provider.ToolCall{ID: "tc1", Name: "lookup", Arguments: `{"city":"Kyoto"}`, ThoughtSig: "sig-1"}
 	thinking := provider.ThinkingPart{Thinking: "think", Signature: "sig-1"}
 	text := "hello"
-	state := NewState("i1", "m")
+	state := NewState(&Ids{}, "i1", "m")
 	var envelopes []Envelope
 	add := func(envelope Envelope, err error) {
 		if err != nil {
@@ -391,7 +392,7 @@ func TestTheTerminalAssemblesTheEndedPartsInOrder(t *testing.T) {
 	if terminal[2].Type != "tool_call" || terminal[2].ToolCallID != "tc1" {
 		t.Errorf("the third block = %+v, want the call in the order the parts ended", terminal[2])
 	}
-	envelope, err := NewState("i1", "m").Completed("tool_use", terminal)
+	envelope, err := NewState(&Ids{}, "i1", "m").Completed("tool_use", terminal)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +410,7 @@ func TestTheTerminalAssemblesTheEndedPartsInOrder(t *testing.T) {
 }
 
 func TestAnEmptyTerminalCarriesTheEmptyStringTheSchemaAllows(t *testing.T) {
-	envelope, err := NewState("i1", "m").Completed("stop", partsOf(nil))
+	envelope, err := NewState(&Ids{}, "i1", "m").Completed("stop", partsOf(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +448,7 @@ func buildFullTrace(t *testing.T) []Envelope {
 	t.Helper()
 	call := provider.ToolCall{ID: "tc1", Name: "lookup", Arguments: `{"city":"Kyoto"}`, ThoughtSig: "sig-1"}
 	thinking := provider.ThinkingPart{Thinking: "think", Signature: "sig-1"}
-	state := NewState("i1", "openai/openai-completions@gpt-4o")
+	state := NewState(&Ids{}, "i1", "openai/openai-completions@gpt-4o")
 	var envelopes []Envelope
 	add := func(envelope Envelope, err error) {
 		t.Helper()
@@ -508,7 +509,7 @@ func TestTheValidatorRejectsATraceThisLayerWouldHaveEmittedBeforeTheFixes(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := NewState("i1", "m")
+	state := NewState(&Ids{}, "i1", "m")
 	broken, err := state.emit("inference.failed", "", struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
@@ -522,8 +523,24 @@ func TestTheValidatorRejectsATraceThisLayerWouldHaveEmittedBeforeTheFixes(t *tes
 	}
 	result := validator.Validate(bytes.NewReader(append(append([]byte("["), held...), ']')), "flat-failure")
 	if len(result.Diagnostics) == 0 {
-		t.Error("the validator accepted a flattened failure payload, so it cannot be the oracle this test leans on")
+		t.Fatal("the validator accepted a flattened failure payload, so it cannot be the oracle this test leans on")
 	}
+	if len(result.Diagnostics) == 1 && result.Diagnostics[0].Code == validation.CodeSchemaInvalid &&
+		result.Diagnostics[0].Phase == validation.PhaseSchema {
+		return
+	}
+	for _, diagnostic := range result.Diagnostics {
+		t.Logf("the validator said %s at %s: %s", diagnostic.Code, diagnostic.Pointer, diagnostic.Message)
+	}
+	t.Errorf("a flattened failure payload was rejected for %v, want %s in the schema phase: any other code or phase would let a later scope rule make this pass for the wrong reason", codesOf(result.Diagnostics), validation.CodeSchemaInvalid)
+}
+
+func codesOf(diagnostics []validation.Diagnostic) []string {
+	out := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		out = append(out, diagnostic.Code)
+	}
+	return out
 }
 
 func TestTheCarryOnAToolCallPartMustBeTheOneTheTerminalCarries(t *testing.T) {
@@ -538,5 +555,150 @@ func TestTheCarryOnAToolCallPartMustBeTheOneTheTerminalCarries(t *testing.T) {
 	un := PartEnded{PartIndex: 1, PartKind: "tool_call", ToolCall: &EndedToolCall{ToolCallID: "tc2", Name: "other", ArgumentsJSON: json.RawMessage("{}")}}
 	if partsOf([]provider.AssistantBlock{{ToolCall: &provider.ToolCall{ID: "tc2", Name: "other"}}})[0].Carry != un.Carry {
 		t.Error("an unsigned call must carry nothing on either side")
+	}
+}
+
+func TestTwoInferencesOnOneConnectionNeverRepeatAnEnvelopeID(t *testing.T) {
+	ids := &Ids{}
+	first := NewState(ids, "i-first", "m")
+	second := NewState(ids, "i-second", "m")
+	seen := map[string]string{}
+	for _, state := range []*State{first, second} {
+		if _, err := state.Started(1); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			envelope, err := state.emit("inference.part.delta", "", struct {
+				PartIndex int    `json:"part_index"`
+				Delta     string `json:"delta"`
+			}{Delta: "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if owner, taken := seen[envelope.ID]; taken {
+				t.Fatalf("the envelope id %q was issued twice, to %s and %s: a host deduplicating by id would drop one inference's events silently", envelope.ID, owner, state.inferenceID)
+			}
+			seen[envelope.ID] = state.inferenceID
+		}
+	}
+	if len(seen) != 6 {
+		t.Errorf("%d distinct ids across two inferences, want 6: the started envelopes are issued through the same allocator", len(seen))
+	}
+}
+
+func TestEachInferenceKeepsItsOwnSequenceDomainOnOneConnection(t *testing.T) {
+	ids := &Ids{}
+	first := NewState(ids, "i-first", "m")
+	second := NewState(ids, "i-second", "m")
+	if _, err := first.Started(1); err != nil {
+		t.Fatal(err)
+	}
+	secondStart, err := second.Started(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondStart.Sequence != 1 {
+		t.Errorf("the second inference's started carries sequence %d, want 1: each inference has its own domain and the draft says sequences from two inferences are never compared", secondStart.Sequence)
+	}
+	if secondStart.InferenceID != "i-second" {
+		t.Errorf("the second inference's started carries inference_id %q", secondStart.InferenceID)
+	}
+}
+
+func TestMalformedToolCallArgumentsEndTheInferenceRatherThanDroppingTheTerminal(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	if _, err := state.Started(1); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := state.Completed("tool_use", []TerminalBlock{{
+		Type:          "tool_call",
+		ToolCallID:    "tc1",
+		Name:          "lookup",
+		ArgumentsJSON: json.RawMessage(`{"city":`),
+	}})
+	if err != nil {
+		t.Fatalf("Completed returned %v, want a failure envelope instead: the terminal must not be lost to a marshalling error", err)
+	}
+	if envelope.Type != "inference.failed" {
+		t.Fatalf("got a %s, want inference.failed", envelope.Type)
+	}
+	failure, ok := body(t, envelope)["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("the payload = %s, want the code and message under error", envelope.Payload)
+	}
+	if failure["code"] != "provider_unavailable" {
+		t.Errorf("the failure code = %v, want provider_unavailable", failure["code"])
+	}
+	if !strings.Contains(failure["message"].(string), "not json") {
+		t.Errorf("the failure message = %v, want it to say the arguments are not json", failure["message"])
+	}
+}
+
+func TestTheFailureTheMalformedArgumentsProducePassesTheValidator(t *testing.T) {
+	validator, err := validation.NewProviderValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewState(&Ids{}, "i1", "m")
+	started, err := state.Started(1700000000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := state.Completed("tool_use", []TerminalBlock{{
+		Type: "tool_call", ToolCallID: "tc1", Name: "lookup", ArgumentsJSON: json.RawMessage(`{"city":`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := json.Marshal(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := json.Marshal(failed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := append(append(append([]byte("["), first...), ','), second...)
+	result := validator.Validate(bytes.NewReader(append(document, ']')), "malformed-arguments")
+	if len(result.Diagnostics) != 0 {
+		for _, diagnostic := range result.Diagnostics {
+			t.Errorf("%s %s: %s", diagnostic.Phase, diagnostic.Code, diagnostic.Message)
+		}
+	}
+}
+
+func TestTwoInferencesIssuingIdsAtOnceNeverRepeatOne(t *testing.T) {
+	ids := &Ids{}
+	states := []*State{NewState(ids, "i-a", "m"), NewState(ids, "i-b", "m"), NewState(ids, "i-c", "m")}
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	var wg sync.WaitGroup
+	for _, state := range states {
+		wg.Add(1)
+		go func(state *State) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				envelope, err := state.emit("inference.part.delta", "", struct {
+					PartIndex int    `json:"part_index"`
+					Delta     string `json:"delta"`
+				}{Delta: "x"})
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				mu.Lock()
+				if seen[envelope.ID] {
+					t.Errorf("the envelope id %q was issued twice under concurrency", envelope.ID)
+					mu.Unlock()
+					return
+				}
+				seen[envelope.ID] = true
+				mu.Unlock()
+			}
+		}(state)
+	}
+	wg.Wait()
+	if len(seen) != 600 {
+		t.Errorf("%d distinct ids from three concurrent inferences, want 600", len(seen))
 	}
 }
