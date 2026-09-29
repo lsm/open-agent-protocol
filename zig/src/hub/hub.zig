@@ -10,6 +10,8 @@ pub const default_stream_queue = 64;
 pub const default_journal_capacity = 256;
 pub const default_hold_ns = 30 * std.time.ns_per_s;
 pub const default_shutdown_ns = 10 * std.time.ns_per_s;
+pub const close_attempts = 3;
+pub const close_retry_wait_ns = 100 * std.time.ns_per_ms;
 pub const default_participant = "user";
 
 pub const Failure = error{
@@ -134,6 +136,23 @@ pub const Listed = struct {
 pub const Builder = struct {
     context: *anyopaque,
     make: *const fn (context: *anyopaque, arena: std.mem.Allocator, entry: config.AdapterEntry) contract.Failure!contract.Adapter,
+};
+
+pub const Sweep = struct {
+    sessions: usize = 0,
+    closed: usize = 0,
+    refused: usize = 0,
+    refused_attempts: usize = 0,
+    unattempted: usize = 0,
+
+    pub fn clean(self: Sweep) bool {
+        return self.refused == 0 and self.unattempted == 0;
+    }
+};
+
+const Settled = struct {
+    attempts: usize = 0,
+    closed: bool = false,
 };
 
 const pollable = builtin.os.tag != .windows;
@@ -277,6 +296,7 @@ const Entry = struct {
     adapter_name: []u8,
     session_id: []u8,
     session: contract.Session,
+    session_closed: bool = false,
     created_at_ms: i64,
     run_id: []u8,
     journal: std.ArrayList(Journaled) = .empty,
@@ -289,7 +309,7 @@ const Entry = struct {
         for (self.journal.items) |kept| allocator.free(kept.line);
         self.journal.deinit(allocator);
         self.subscribers.deinit(allocator);
-        self.session.close();
+        if (!self.session_closed) self.session.teardown();
         allocator.free(self.adapter_name);
         allocator.free(self.session_id);
         allocator.free(self.run_id);
@@ -352,11 +372,14 @@ pub const Hub = struct {
         self.adapters.appendAssumeCapacity(.{ .name = owned, .adapter = adapter, .revision = descriptor.capability_revision });
     }
 
-    pub fn load(self: *Hub, arena: std.mem.Allocator, file: config.File, builder: Builder) !void {
+    pub fn load(self: *Hub, arena: std.mem.Allocator, file: config.File, builder: Builder, diagnostic: *config.Diagnostic) !void {
         var taken = self.journal_capacity != default_journal_capacity;
         for (file.adapters) |entry| {
             if (entry.journal_capacity) |capacity| {
-                if (capacity < 0) return error.ConfigRefused;
+                if (capacity < 0) {
+                    diagnostic.message = std.fmt.allocPrint(arena, "config: adapter \"{s}\": \"journal_capacity\" must not be negative", .{entry.name}) catch "config: an adapter names a negative \"journal_capacity\"";
+                    return error.ConfigRefused;
+                }
                 if (!taken) {
                     if (capacity > 0) self.journal_capacity = @intCast(capacity);
                     taken = true;
@@ -449,7 +472,7 @@ pub const Hub = struct {
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refusal);
         var session = try registered.adapter.open(arena, request.contractRequest(), &refusal);
         var adopted = false;
-        errdefer if (!adopted) session.close();
+        errdefer if (!adopted) session.teardown();
         if (self.findSession(session.id()) != null) return error.SessionExists;
         const opened_state = try session.state(arena, &refusal);
         const entry = try self.adopt(adapter_name, session, @intCast(self.clock() / std.time.ns_per_ms));
@@ -773,30 +796,66 @@ pub const Hub = struct {
         }
     }
 
-    pub fn closeSessions(self: *Hub) void {
+    pub fn closeSessions(self: *Hub) Sweep {
+        var summary = Sweep{};
         const deadline = self.clock() + self.shutdown_ns;
         while (self.entries.items.len > 0) {
-            if (self.clock() >= deadline) break;
+            const now = self.clock();
+            if (now >= deadline) {
+                summary.unattempted = self.entries.items.len;
+                break;
+            }
+            const share = (deadline - now) / @as(u64, @intCast(self.entries.items.len));
             var scratch = std.heap.ArenaAllocator.init(self.allocator);
             defer scratch.deinit();
-            self.settle(&self.entries.items[0], scratch.allocator());
+            const outcome = self.settle(&self.entries.items[0], scratch.allocator(), now + share);
+            summary.closed += @intFromBool(outcome.closed);
+            if (outcome.closed) {
+                summary.refused += 0;
+            } else {
+                summary.refused += 1;
+                summary.refused_attempts += outcome.attempts;
+            }
         }
+        summary.sessions = summary.closed + summary.refused + summary.unattempted;
+        return summary;
     }
 
-    fn settle(self: *Hub, entry: *Entry, arena: std.mem.Allocator) void {
-        var refusal = contract.Refusal{};
-        if (entry.session.state(arena, &refusal)) |reported| {
-            for (reported.active_runs) |active| {
-                if (active.run_id.len == 0) continue;
-                _ = entry.session.cancel(arena, active.run_id, &refusal) catch {};
+    fn settle(self: *Hub, entry: *Entry, arena: std.mem.Allocator, until_ns: u64) Settled {
+        var outcome = Settled{};
+        var attempt: usize = 0;
+        while (attempt < close_attempts) : (attempt += 1) {
+            outcome.attempts += 1;
+            self.stopRuns(entry, arena);
+            if (entry.session.close()) |_| {
+                entry.session_closed = true;
+                outcome.closed = true;
+                break;
+            } else |err| {
+                if (err == error.OutOfMemory) break;
             }
-            if (reported.active_run_id) |named| {
-                if (named.len == 0) {} else if (!namedIn(reported.active_runs, named)) {
-                    _ = entry.session.cancel(arena, named, &refusal) catch {};
-                }
-            }
-        } else |_| {}
+            const now = self.clock();
+            if (now >= until_ns) break;
+            const wait = @min(close_retry_wait_ns, until_ns - now);
+            _ = entry.session.pump(wait) catch {};
+        }
         self.releaseSession(entry);
+        return outcome;
+    }
+
+    fn stopRuns(self: *Hub, entry: *Entry, arena: std.mem.Allocator) void {
+        _ = self;
+        var refusal = contract.Refusal{};
+        const reported = entry.session.state(arena, &refusal) catch return;
+        for (reported.active_runs) |active| {
+            if (active.run_id.len == 0) continue;
+            _ = entry.session.cancel(arena, active.run_id, &refusal) catch {};
+        }
+        if (reported.active_run_id) |named| {
+            if (named.len == 0) {} else if (!namedIn(reported.active_runs, named)) {
+                _ = entry.session.cancel(arena, named, &refusal) catch {};
+            }
+        }
     }
 
     fn discard(self: *Hub, subscription: *Subscription, ending: Ending) void {
@@ -1726,17 +1785,19 @@ test "a registry document's journal capacity is read, and its zero keeps the def
     var scratch = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    try hub.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 12 }} }, .{ .context = &adapter, .make = scripted });
+    var diagnostic = config.Diagnostic{};
+    try hub.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 12 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic);
     try testing.expectEqual(@as(usize, 12), hub.journal_capacity);
 
     var zeroed = Hub.init(testing.allocator, testClock, .{});
     defer zeroed.deinit();
-    try zeroed.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} }, .{ .context = &adapter, .make = scripted });
+    try zeroed.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = 0 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic);
     try testing.expectEqual(@as(usize, default_journal_capacity), zeroed.journal_capacity);
 
     var refused = Hub.init(testing.allocator, testClock, .{});
     defer refused.deinit();
-    try testing.expectError(error.ConfigRefused, refused.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = -1 }} }, .{ .context = &adapter, .make = scripted }));
+    try testing.expectError(error.ConfigRefused, refused.load(arena, config.File{ .adapters = &.{.{ .name = "memory", .kind = "memory", .journal_capacity = -1 }} }, .{ .context = &adapter, .make = scripted }, &diagnostic));
+    try testing.expectEqualStrings("config: adapter \"memory\": \"journal_capacity\" must not be negative", diagnostic.message);
     try testing.expectEqual(@as(usize, 0), refused.sessionCount());
 }
 
@@ -2483,9 +2544,11 @@ test "the shutdown sweep cancels a live run before it releases the session" {
     _ = try hub.open(arena, "flaky", .{ .session_id = "second" });
     try testing.expectEqual(@as(usize, 0), flaky.cancels);
 
-    hub.closeSessions();
+    const summary = hub.closeSessions();
     try testing.expectEqual(@as(usize, 2), flaky.cancels);
     try testing.expectEqual(@as(usize, 2), flaky.closes);
+    try testing.expect(summary.clean());
+    try testing.expectEqual(@as(usize, 2), summary.closed);
     try testing.expectEqual(@as(usize, 0), hub.sessionCount());
     try testing.expectError(error.UnknownSession, hub.state(arena, "settled"));
     try testing.expectError(error.UnknownSession, hub.state(arena, "second"));
@@ -2510,7 +2573,8 @@ test "closeSessions settles every session" {
         _ = try hub.open(arena, "memory", .{ .session_id = name });
     }
     try testing.expectEqual(@as(usize, 3), hub.sessionCount());
-    hub.closeSessions();
+    const summary = hub.closeSessions();
+    try testing.expectEqual(@as(usize, 3), summary.closed);
     try testing.expectEqual(@as(usize, 0), hub.sessionCount());
     for (names) |name| try testing.expectError(error.UnknownSession, hub.state(arena, name));
     try testing.expectEqual(@as(usize, 0), (try hub.sessions(arena)).len);
@@ -2802,9 +2866,239 @@ fn flakyActivity(ptr: *anyopaque) contract.Activity {
     return .idle;
 }
 
-fn flakyClose(ptr: *anyopaque) void {
+fn flakyClose(ptr: *anyopaque, force: bool) contract.Failure!void {
+    _ = force;
     const self: *Flaky = @ptrCast(@alignCast(ptr));
     self.closes += 1;
+}
+
+const Stubborn = struct {
+    session_id: []const u8 = "stubborn",
+    settle_after: usize = 0,
+    running: bool = true,
+    state_ns: u64 = 0,
+    cancels: usize = 0,
+    closes: usize = 0,
+    refusals: usize = 0,
+    torn_down: usize = 0,
+    pumped_ns: u64 = 0,
+    waits: [8]u64 = .{ 0, 0, 0, 0, 0, 0, 0, 0 },
+    wait_len: usize = 0,
+
+    fn adapter(self: *Stubborn) contract.Adapter {
+        return .{ .ptr = self, .vtable = &.{ .probe = flakyProbe, .open = stubbornOpen } };
+    }
+};
+
+fn stubbornOpen(ptr: *anyopaque, arena: std.mem.Allocator, request: contract.OpenRequest, refusal: *contract.Refusal) contract.Failure!contract.Session {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    _ = arena;
+    _ = request;
+    _ = refusal;
+    self.running = true;
+    return .{ .ptr = self, .vtable = &.{
+        .id = stubbornId,
+        .state = stubbornState,
+        .submit = stubbornSubmit,
+        .resolve = flakyResolve,
+        .cancel = stubbornCancel,
+        .pump = stubbornPump,
+        .drain = stubbornDrain,
+        .activity = stubbornActivity,
+        .close = stubbornClose,
+    } };
+}
+
+fn stubbornId(ptr: *anyopaque) []const u8 {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    return self.session_id;
+}
+
+fn stubbornState(ptr: *anyopaque, arena: std.mem.Allocator, refusal: *contract.Refusal) contract.Failure!oap_types.SessionState {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    if (self.state_ns > 0) tick(self.state_ns);
+    const session_id = try arena.dupe(u8, self.session_id);
+    if (!self.running) return .{ .session_id = session_id, .status = .idle };
+    const run = try arena.dupe(u8, "run-1");
+    const runs = try arena.dupe(oap_types.ActiveRun, &.{.{ .run_id = run, .status = .running, .relationship = "primary" }});
+    return .{ .session_id = session_id, .status = .running, .active_run_id = run, .active_runs = runs };
+}
+
+fn stubbornSubmit(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.MessageSubmitRequest, refusal: *contract.Refusal) contract.Failure!oap_types.MessageSubmitResponse {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    _ = request;
+    _ = refusal;
+    self.running = true;
+    const session_id = try arena.dupe(u8, self.session_id);
+    const submission_id = try arena.dupe(u8, "s1");
+    const run_id = try arena.dupe(u8, "run-1");
+    return .{
+        .session_id = session_id,
+        .accepted = true,
+        .submission_id = submission_id,
+        .requested_delivery = .auto,
+        .effective_delivery = .start,
+        .admission = .started,
+        .run_id = run_id,
+        .status = .running,
+    };
+}
+
+fn stubbornCancel(ptr: *anyopaque, arena: std.mem.Allocator, run_id: []const u8, refusal: *contract.Refusal) contract.Failure!oap_types.RunCancelResponse {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    _ = refusal;
+    self.cancels += 1;
+    if (self.settle_after == 0) self.running = false else self.settle_after -= 1;
+    const session_id = try arena.dupe(u8, self.session_id);
+    const named = try arena.dupe(u8, run_id);
+    return .{ .session_id = session_id, .run_id = named, .accepted = true, .status = .cancelling };
+}
+
+fn stubbornPump(ptr: *anyopaque, wait_ns: u64) contract.Failure!bool {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    self.pumped_ns += wait_ns;
+    if (self.wait_len < self.waits.len) {
+        self.waits[self.wait_len] = wait_ns;
+        self.wait_len += 1;
+    }
+    tick(wait_ns);
+    return false;
+}
+
+fn stubbornDrain(ptr: *anyopaque, allocator: std.mem.Allocator, out: *std.ArrayList(contract.Event)) contract.Failure!void {
+    _ = ptr;
+    _ = allocator;
+    _ = out;
+}
+
+fn stubbornActivity(ptr: *anyopaque) contract.Activity {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    return if (self.running) .running else .idle;
+}
+
+fn stubbornClose(ptr: *anyopaque, force: bool) contract.Failure!void {
+    const self: *Stubborn = @ptrCast(@alignCast(ptr));
+    if (!force and self.running) {
+        self.refusals += 1;
+        return error.RunActive;
+    }
+    if (force) {
+        self.torn_down += 1;
+        return;
+    }
+    self.closes += 1;
+}
+
+test "a close that refuses while a run is live is retried through a cancel until it lands" {
+    var stubborn = Stubborn{ .session_id = "held", .settle_after = 1 };
+    var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = 60 * std.time.ns_per_s });
+    defer hub.deinit();
+    try hub.register("stubborn", stubborn.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    const opened = try hub.open(arena, "stubborn", .{ .session_id = "held" });
+
+    const summary = hub.closeSessions();
+    try testing.expect(summary.clean());
+    try testing.expectEqual(@as(usize, 1), summary.closed);
+    try testing.expectEqual(@as(usize, 2), stubborn.cancels);
+    try testing.expectEqual(@as(usize, 1), stubborn.refusals);
+    try testing.expectEqual(@as(usize, 1), stubborn.closes);
+    try testing.expectEqual(@as(usize, 0), stubborn.torn_down);
+    try testing.expect(stubborn.waits[0] == close_retry_wait_ns);
+    try testing.expectEqual(@as(usize, 0), hub.sessionCount());
+    try testing.expectError(error.UnknownSession, hub.state(arena, opened.session_id));
+}
+
+test "a close that never stops refusing is given the attempts the draft names, and the session is torn down rather than left behind" {
+    var stubborn = Stubborn{ .session_id = "wedged", .settle_after = std.math.maxInt(usize) };
+    var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = 60 * std.time.ns_per_s });
+    defer hub.deinit();
+    try hub.register("stubborn", stubborn.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "stubborn", .{ .session_id = "wedged" });
+
+    const summary = hub.closeSessions();
+    try testing.expect(!summary.clean());
+    try testing.expectEqual(@as(usize, 1), summary.refused);
+    try testing.expectEqual(@as(usize, 0), summary.unattempted);
+    try testing.expectEqual(@as(usize, 0), summary.closed);
+    try testing.expectEqual(close_attempts, stubborn.refusals);
+    try testing.expectEqual(@as(usize, 0), stubborn.closes);
+    try testing.expectEqual(@as(usize, 1), stubborn.torn_down);
+    try testing.expectEqual(@as(usize, 0), hub.sessionCount());
+}
+
+test "one wedged session is given a share of the window, and the session beside it is still closed" {
+    var stubborn = Stubborn{ .session_id = "wedged", .settle_after = std.math.maxInt(usize) };
+    var settles = memory.Adapter.init(testing.allocator);
+    const window = 50 * std.time.ns_per_ms;
+    var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = window });
+    defer hub.deinit();
+    try hub.register("stubborn", stubborn.adapter());
+    try hub.register("memory", settles.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "stubborn", .{ .session_id = "wedged" });
+    _ = try hub.open(arena, "memory", .{ .session_id = "settles" });
+
+    const summary = hub.closeSessions();
+    try testing.expectEqual(@as(usize, 2), summary.sessions);
+    try testing.expectEqual(@as(usize, 1), summary.closed);
+    try testing.expectEqual(@as(usize, 1), summary.refused);
+    try testing.expectEqual(@as(usize, 0), summary.unattempted);
+    try testing.expectEqual(@as(usize, close_attempts - 1), summary.refused_attempts);
+    try testing.expectEqual(@as(usize, 0), hub.sessionCount());
+    try testing.expectError(error.UnknownSession, hub.state(arena, "settles"));
+    try testing.expectEqual(window / 2, stubborn.pumped_ns);
+    try testing.expectEqual(@as(u64, @intCast(window / 2)), stubborn.waits[0]);
+    try testing.expect(stubborn.pumped_ns > 0);
+}
+
+test "the sweep waits no longer than the window it was given" {
+    var stubborn = Stubborn{ .session_id = "wedged", .settle_after = std.math.maxInt(usize) };
+    const window = 50 * std.time.ns_per_ms;
+    var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = window });
+    defer hub.deinit();
+    try hub.register("stubborn", stubborn.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "stubborn", .{ .session_id = "wedged" });
+
+    const summary = hub.closeSessions();
+    try testing.expect(!summary.clean());
+    try testing.expect(stubborn.refusals < close_attempts);
+    try testing.expectEqual(window, stubborn.pumped_ns);
+    try testing.expectEqual(@as(usize, 0), hub.sessionCount());
+}
+
+test "a session whose own state call overruns its share leaves the rest unattempted, and the sweep says so" {
+    var overrunning = Stubborn{ .session_id = "slow", .settle_after = std.math.maxInt(usize), .state_ns = 60 * std.time.ns_per_ms };
+    var settles = memory.Adapter.init(testing.allocator);
+    const window = 50 * std.time.ns_per_ms;
+    var hub = Hub.init(testing.allocator, testClock, .{ .shutdown_ns = window });
+    defer hub.deinit();
+    try hub.register("slow", overrunning.adapter());
+    try hub.register("memory", settles.adapter());
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    _ = try hub.open(arena, "slow", .{ .session_id = "slow" });
+    _ = try hub.open(arena, "memory", .{ .session_id = "settles" });
+
+    const summary = hub.closeSessions();
+    try testing.expectEqual(@as(usize, 2), summary.sessions);
+    try testing.expectEqual(@as(usize, 1), summary.refused);
+    try testing.expectEqual(@as(usize, 0), summary.closed);
+    try testing.expectEqual(@as(usize, 1), summary.unattempted);
+    try testing.expectEqual(@as(usize, 2), summary.closed + summary.refused + summary.unattempted);
+    try testing.expectEqual(@as(usize, 1), hub.sessionCount());
 }
 
 test "a session whose stream fails is ended, its subscribers told, and its child kept" {

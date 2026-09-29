@@ -5,6 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  # The same superseding rule as ci.yml, under a prefix that keeps the two
+  # workflows apart: both display as "CI", so a shared group would cancel this
+  # file's run whenever the other's was queued on the same pull request. A push
+  # carries no pull request number, so it falls back to its own run id and
+  # shares a group with nothing, which is what keeps a run per main commit.
+  group: ci-zig-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check-secrets:
     name: Check Available Secrets

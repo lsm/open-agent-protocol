@@ -48,7 +48,7 @@ const Entry = struct {
         self.cursors.deinit(allocator);
         for (self.journal.items) |kept| allocator.free(kept.line);
         self.journal.deinit(allocator);
-        self.session.close();
+        self.session.teardown();
     }
 };
 
@@ -366,12 +366,12 @@ pub const Endpoint = struct {
             .tool_sources_json = tool_sources_json,
         }, refusal);
         const state_now = session.state(arena, refusal) catch |failure| {
-            session.close();
+            session.teardown();
             return failure;
         };
         if (self.find(session.id()) != null) {
             const message = try std.fmt.allocPrint(arena, "session \"{s}\" already exists", .{session.id()});
-            session.close();
+            session.teardown();
             return self.deny("session_exists", message, &.{});
         }
         self.entries.appendAssumeCapacity(.{ .session = session });
@@ -1202,7 +1202,8 @@ const FakeSession = struct {
         return if (cast(ptr).active) .running else .idle;
     }
 
-    fn close(ptr: *anyopaque) void {
+    fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
+        _ = force;
         const self = cast(ptr);
         const allocator = self.fake.allocator;
         self.fake.closed += 1;

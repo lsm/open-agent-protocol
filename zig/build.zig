@@ -101,6 +101,19 @@ pub fn build(b: *std.Build) void {
     });
     semantic_mod.addImport("jsonschema", jsonschema_mod);
     const semantic_test = b.addTest(.{ .root_module = semantic_mod });
+    const provider_semantic_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/provider_semantic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const validator_mod = b.createModule(.{
+        .root_source_file = b.path("src/validation/validator.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    validator_mod.addImport("jsonschema", jsonschema_mod);
+    validator_mod.addImport("tolerate", tolerate_mod);
+    const validator_test = b.addTest(.{ .root_module = validator_mod });
     const semantic_gate_mod = b.createModule(.{
         .root_source_file = b.path("src/validation/semantic_gate.zig"),
         .target = target,
@@ -108,11 +121,6 @@ pub fn build(b: *std.Build) void {
     });
     semantic_gate_mod.addImport("semantic", semantic_mod);
     semantic_gate_mod.addImport("packs", packs_mod);
-    const provider_semantic_mod = b.createModule(.{
-        .root_source_file = b.path("src/validation/provider_semantic.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     semantic_gate_mod.addImport("provider_semantic", provider_semantic_mod);
     const provider_semantic_test = b.addTest(.{ .root_module = provider_semantic_mod });
     semantic_gate_mod.addOptions("build_options", gate_options);
@@ -161,6 +169,7 @@ pub fn build(b: *std.Build) void {
     test_unit_validation_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_unit_validation_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_unit_validation_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);
@@ -2603,7 +2612,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "semantic", .module = semantic_mod },
             .{ .name = "provider_semantic", .module = provider_semantic_mod },
             .{ .name = "packs", .module = packs_mod },
-            .{ .name = "jsonschema", .module = jsonschema_mod },
+            .{ .name = "validator", .module = validator_mod },
             .{ .name = "version_options", .module = version_module },
             .{ .name = "adapter_endpoint", .module = adapter_endpoint_mod },
             .{ .name = "adapter_contract", .module = adapter_contract_mod },
@@ -2739,6 +2748,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(schema_bytes_test).step);
     test_step.dependOn(&b.addRunArtifact(jsonschema_test).step);
     test_step.dependOn(&b.addRunArtifact(tolerate_test).step);
+    test_step.dependOn(&b.addRunArtifact(validator_test).step);
     test_step.dependOn(&b.addRunArtifact(fixture_gate_test).step);
     test_step.dependOn(&b.addRunArtifact(semantic_test).step);
     test_step.dependOn(&b.addRunArtifact(provider_semantic_test).step);

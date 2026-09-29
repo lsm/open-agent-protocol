@@ -946,8 +946,15 @@ pub const Session = struct {
         return if (run.pending.len > 0 or run.status == .waiting_for_input) .waiting else .running;
     }
 
-    fn close(ptr: *anyopaque) void {
-        cast(ptr).destroy();
+    fn close(ptr: *anyopaque, force: bool) contract.Failure!void {
+        const self = cast(ptr);
+        if (!force) {
+            for ([_]?*Run{ self.active, self.reserved }) |candidate| {
+                const run = candidate orelse continue;
+                if (run.live()) return error.RunActive;
+            }
+        }
+        self.destroy();
     }
 
     fn tools(ptr: *anyopaque, arena: std.mem.Allocator, request: *const oap_types.ToolsListRequest, refusal: *contract.Refusal) contract.Failure!contract.ToolSet {
@@ -1339,7 +1346,7 @@ const Probe = struct {
     }
 
     fn deinit(self: *Probe) void {
-        self.session.close();
+        self.session.teardown();
         self.arena.deinit();
     }
 
@@ -1580,7 +1587,7 @@ fn submitAndSettle(allocator: std.mem.Allocator) !void {
     defer arena.deinit();
     var refusal = contract.Refusal{};
     const session = try adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user" }, &refusal);
-    defer session.close();
+    defer session.teardown();
     const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto, .instructions = "Be brief." };
     _ = try session.submit(arena.allocator(), &request, &refusal);
@@ -1685,7 +1692,7 @@ fn provideAndSettle(allocator: std.mem.Allocator) !void {
     defer arena.deinit();
     var refusal = contract.Refusal{};
     const session = try adapter.adapter().open(arena.allocator(), .{ .session_id = "s1", .participant = "user", .tools_json = provided_lookup, .tool_sources_json = attached_local }, &refusal);
-    defer session.close();
+    defer session.teardown();
     const messages = try arena.allocator().dupe(oap_types.Message, &.{.{ .role = .user, .content = .{ .text = "run" } }});
     const request = oap_types.MessageSubmitRequest{ .session_id = "s1", .messages = messages, .delivery = .auto };
     const admitted = try session.submit(arena.allocator(), &request, &refusal);
