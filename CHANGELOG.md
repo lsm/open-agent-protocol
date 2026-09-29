@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Go tree needs and in what order, and names the first slice: text turns
   and client-executed tool calls over `go/internal/provider`, served by
   `goap serve agent` with no backend so the parity harness compares it with
-  `oapx`'s own loop. It records the two rules the Go loop inherits rather than
-  rediscovers: a run ends with exactly one terminal event, and a provider that
-  refuses is a normal `agent_end` rather than a `run.failed`.
+  `oapx`'s own loop, driven at the loopback provider #528 adds. It records the
+  two rules the Go loop inherits rather than rediscovers: a run ends with
+  exactly one terminal event, and a provider that refuses is a normal
+  `agent_end` — what it settles as on the wire is the endpoint's decision, not
+  the loop's.
 
 ### Changed
 

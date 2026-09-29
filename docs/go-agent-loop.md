@@ -56,15 +56,20 @@ structure; the second is a rule about what the Go loop may claim.
 
 ## Where the Go tree stands
 
-The Go provider runtime is done (#358): `go/internal/provider` builds request
-bodies for `openai-completions` and `anthropic-messages` and turns an SSE chunk
-into `provider.Event`s. What it does not have is a loop. `provider.Message`
-already is the user/assistant/tool-result triple
-(`go/internal/provider/types.go:98`), so the slice reuses it rather than
-declaring a parallel one; what is missing is everything a *loop* needs around
-it: an `AgentEvent` union, a `StopReason` beyond `aborted`/`error`
-(`go/internal/provider/types.go:18`), a turn counter, and the per-run event
-stream that carries a terminal.
+The Go provider runtime (#358) is part-way: `go/internal/provider` builds
+request bodies for `openai-completions` and `anthropic-messages` and turns an
+SSE chunk into `provider.Event`s — steps 2 and 3, both merged. Step 5 is in
+progress in #528, which adds `OAPX_BASE_URL` and the per-provider base-URL
+overrides to the Go tree plus `MockProvider`, a loopback `openai-completions`
+endpoint that serves fixed frames and records what it was sent; the serving
+layer is the next piece of it. Step 4, model discovery, waits on #352.
+
+What the tree has none of is a loop. `provider.Message` is already the
+user/assistant/tool-result triple (`go/internal/provider/types.go:98`), so the
+slice reuses it rather than declaring a parallel one; what is missing is
+everything a *loop* needs around it: an `AgentEvent` union, a `StopReason`
+beyond `aborted`/`error` (`go/internal/provider/types.go:18`), a turn counter,
+and the per-run event stream that carries a terminal.
 
 The Go tree does have the half of the loop that is protocol rather than model:
 `go/serve/serveendpoint` (`dispatch.go:294` `submit`, `:332` `pump`) admits a
@@ -161,9 +166,10 @@ malformed argument are three results, not three failures.
 
 `oapx serve agent` without `--backend` builds a `StdioProtocolLoop`
 (`zig/src/tools/makai.zig:8886`) and runs its own loop; with `--backend` it
-runs an adapter. The Go `serve agent` currently requires `--backend` and
-defaults it to `memory` (`go/cmd/goap/endpoint.go:39`). The third step makes
-the Go tree's own loop the no-backend case, so the parity harness can drive
+runs an adapter. The Go `serve agent` always runs an adapter — the flag
+defaults to `memory` (`go/cmd/goap/endpoint.go:39`), so there is no
+no-backend case to fill. The third step gives it one: `goap serve agent` with
+no `--backend` serves the Go tree's own loop, so the parity harness can drive
 `goap serve agent` and `oapx serve agent` over the same scenario with no
 adapter in either, and compare the two loops' traces.
 
@@ -172,13 +178,16 @@ adapters, and the `memory` fixture compares two scripted loops; neither reaches
 a loop that decides. Driving two real loops over one scenario is the first check
 that can say the Go loop's *answers* are its own.
 
-The harness needs one thing it does not have today: a provider both trees can
-answer from. `exchangeWithChild` compares an endpoint's envelopes and, where
-one exists, what the endpoint wrote to its child. A native loop has no child,
-so the comparison is over the trace, and both trees must be driven by the same
-deterministic model. The shape that fits: a local HTTP provider speaking the
-`anthropic-messages` wire, which `go/internal/provider` already speaks, and a
-scenario that gives it a scripted tool call to make.
+The comparison is over the trace, so both trees have to be driven by the same
+deterministic model — and #528 is what makes that possible. It honours
+`OAPX_BASE_URL` in the Go tree and adds `MockProvider`: a loopback
+`openai-completions` endpoint serving fixed frames and recording the path,
+headers and body it was sent, with `TextTurn`, `ToolTurn`, `UsageTurn` and
+`ErrorTurn` building the frames a turn is made of. The parity scenario points
+both trees at that provider, and the recorded requests are a second diff
+alongside the traces — where `exchangeWithChild` compares what an endpoint
+wrote to its *child*, a native loop's equivalent is what it wrote to the
+provider, and only a second tree shows that.
 
 ## And then the SDK
 
@@ -201,7 +210,10 @@ program observes and nothing in the tree would say why.
   advertise `native` — but that is a difference from `oapx` the parity harness
   will report, so it needs the draft it touches updated in the same PR, not
   left to a later reader.
-- **Which model a parity run uses.** The scenario above needs a provider
-  neither tree can be given a credential for. That is a fixture question with
-  an owner answer attached, and it is the first thing to settle when the
-  second step lands.
+- **Whether the parity fixture is its own loop or a shared provider.** #528
+  answers what the model is, and the scenario above says the fixture drives
+  both trees at one loopback provider. What is still open is the ordering:
+  whether that provider is started per fixture like `startFakeOpenCode` is for
+  `opencode`, or is started once and shared. It is a fixture question with no
+  protocol content, and it is the first thing to settle when the second step
+  lands.
