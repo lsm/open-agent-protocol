@@ -9,6 +9,41 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAGitHubCopilotHostIsGithubcopilotDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.githubcopilot.com",
+		"https://api.individual.githubcopilot.com",
+		"https://api.acme.githubcopilot.com",
+		"https://githubcopilot.com",
+		"https://API.GITHUBCOPILOT.COM",
+	}
+	for _, url := range hosts {
+		if !isGitHubCopilotURL(url, true) {
+			t.Errorf("isGitHubCopilotURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://notgithubcopilot.com",
+		"https://mygithubcopilot.com",
+		"https://githubcopilot.com.attacker.test",
+		"https://api.githubcopilot.com@attacker.test",
+		"https://evil.example/?next=api.githubcopilot.com",
+		"https://evil.example/v1/api.githubcopilot.com",
+		"https://gateway.example/proxy/api.githubcopilot.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isGitHubCopilotURL(url, true) {
+			t.Errorf("isGitHubCopilotURL(%q) = true, want false: the name is in a host suffix, a path, a query or a userinfo section", url)
+		}
+	}
+
+	if isGitHubCopilotURL("https://api.githubcopilot.com", false) {
+		t.Error("no base url is not a github copilot host")
+	}
+}
+
 func TestAChutesHostIsChutesDotAIOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://api.chutes.ai",

@@ -44,8 +44,7 @@ pub const ProviderCapabilities = struct {
 };
 
 pub fn isGitHubCopilot(base_url: ?[]const u8) bool {
-    const url = base_url orelse return false;
-    return std.mem.find(u8, url, "api.githubcopilot.com") != null;
+    return isHostOrSubdomainOf(base_url, "githubcopilot.com");
 }
 
 pub fn isMistral(base_url: ?[]const u8) bool {
@@ -209,6 +208,36 @@ pub fn detectCapabilities(base_url: ?[]const u8) ProviderCapabilities {
 test "isGitHubCopilot detection" {
     try std.testing.expect(isGitHubCopilot("https://api.githubcopilot.com/v1/chat"));
     try std.testing.expect(!isGitHubCopilot("https://api.openai.com/v1/chat"));
+    try std.testing.expect(!isGitHubCopilot(null));
+}
+
+test "a github copilot host is githubcopilot.com or a subdomain of it" {
+    const hosts = [_][]const u8{
+        "https://api.githubcopilot.com",
+        "https://api.individual.githubcopilot.com",
+        "https://api.acme.githubcopilot.com",
+        "https://githubcopilot.com",
+        "https://API.GITHUBCOPILOT.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isGitHubCopilot(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://notgithubcopilot.com",
+        "https://mygithubcopilot.com",
+        "https://githubcopilot.com.attacker.test",
+        "https://api.githubcopilot.com@attacker.test",
+        "https://evil.example/?next=api.githubcopilot.com",
+        "https://evil.example/v1/api.githubcopilot.com",
+        "https://gateway.example/proxy/api.githubcopilot.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isGitHubCopilot(url));
+    }
+
     try std.testing.expect(!isGitHubCopilot(null));
 }
 
