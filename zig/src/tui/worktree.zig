@@ -535,9 +535,13 @@ fn worktreeTestBase(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]u
 }
 
 test "create reports a non-repo directory without adding a worktree" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try worktreeTestBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
     var git: FakeGit = .{ .is_repo = false };
     defer git.deinit(std.testing.allocator);
-    var outcome = try create(std.testing.allocator, git.runner(), "/not/a/repo", "/tmp/base", "abc");
+    var outcome = try create(std.testing.allocator, git.runner(), "/not/a/repo", base, "abc");
     defer outcome.deinit(std.testing.allocator);
     try std.testing.expect(outcome == .not_a_repo);
 }
