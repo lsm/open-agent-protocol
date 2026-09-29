@@ -3,8 +3,8 @@ name: CI
 on:
   # Pushes run only on main, as ci-zig.yml already does. An unfiltered push gave
   # every in-repo pull request branch a second, push-event run of this workflow on
-  # the same sha as its pull_request run: the same `test`, the same `go-sdk-smoke`,
-  # the same `ts` and `compatibility`, all of them duplicated. A branch push with
+  # the same sha as its pull_request run: the same `test`, the same `go-sdk-smoke`
+  # and the same `ts`, all of them duplicated. A branch push with
   # no pull request open got the run with nothing waiting on it, which is the
   # common case while a lane is mid-stack.
   #
@@ -14,19 +14,10 @@ on:
   # checked when the pull request opens.
   push:
     branches: [main]
+  # No `edited` here: a title or body edit would re-run all of this workflow,
+  # and the only job that reads the description is the compatibility gate, which
+  # lives in compatibility.yml so that it re-runs on an edit for its own cost.
   pull_request:
-    # `edited` is load-bearing for the compatibility gate, which records an
-    # incompatible Go change in the pull request description: a body edit is the
-    # only way that record changes after the last run, and without it a deleted
-    # or mis-cased `## Breaking changes` section would leave the break recorded
-    # nowhere -- the push run skips that job, and the release lifts nothing.
-    #
-    # It also fires on a title edit, so an edit costs one run of this workflow
-    # rather than one job. The other jobs are deliberately NOT skipped on an
-    # edited run: a skipped check reports as `skipped` rather than passing, and
-    # the merge gate reads the current head's checks, so scoping the re-run to
-    # the gate alone would risk the very merge it is meant to keep safe.
-    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -88,55 +79,6 @@ jobs:
       - name: Tests leave no credential store in the checkout
         if: always()
         run: ./scripts/check-no-test-litter.sh
-
-  compatibility:
-    # pull_request only: the record an incompatible change has to appear in is
-    # the pull request description, and a push to main carries no description.
-    # On a push the change has already been reviewed and recorded, so there is
-    # nothing for this job to check that the pull request run did not.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.x'
-          cache: true
-      # The comparison is against this pull request's own base, not the last
-      # release tag. A tag comparison is cumulative, so every pull request would
-      # have to re-record every break any earlier one made, which is why the
-      # description as the record could not work while both were in place. The
-      # cumulative view still exists: the release lifts each pull request's
-      # Breaking changes section into the notes, so the release section names
-      # every break since the last tag.
-      - name: Check out the merge base to compare against
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/base"
-          # The merge base, not base.sha. base.sha is the base branch's tip at
-          # event time, so a base that moved while this pull request was open
-          # would hand it every break those intervening merges made, and the
-          # author would have to record packages this pull request never
-          # touched -- which the release lift would then misattribute.
-          git worktree add --detach "$RUNNER_TEMP/base" \
-            "$(git merge-base origin/"${{ github.event.pull_request.base.ref }}" HEAD)"
-
-      - name: Write the pull request description where the checker reads it
-        env:
-          # The description is the record now that a PR does not edit
-          # CHANGELOG.md, so the gate reads the body's Breaking changes section
-          # instead of that file's Unreleased section.
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
-
-      - name: An incompatible public API change must be recorded in this pull request
-        env:
-          PR_BASE_ROOT: ${{ runner.temp }}/base
-        run: |
-          set -euo pipefail
-          go run ./go/cmd/apidiffcheck -description "$RUNNER_TEMP/pr-body.md"
 
   ts:
     runs-on: ubuntu-latest
