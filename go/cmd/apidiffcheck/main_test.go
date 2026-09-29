@@ -167,3 +167,24 @@ func TestPackageDirsListTheTreeTheyArePointedAt(t *testing.T) {
 		t.Fatalf("packageDirs listed %s, which is not under the root %s it was given", dirs[0], here)
 	}
 }
+
+func TestAnAddedPackageIsSkippedRatherThanDiffedAgainstAStaleExport(t *testing.T) {
+	base := []string{"go/protocol"}
+	head := []string{"go/protocol", "go/adapter/newharness"}
+	added := setDifference(head, base)
+	if len(added) != 1 {
+		t.Fatalf("added %v, want one package", added)
+	}
+	baseDir := t.TempDir()
+	if _, err := apidiffReport(baseDir, filepath.Join(t.TempDir(), "absent"), testModule, head, added); err == nil {
+		t.Fatal("a base that cannot be loaded was accepted for go/protocol")
+	} else if !strings.Contains(err.Error(), "go/protocol") {
+		t.Fatalf("err = %v, want one naming the package", err)
+	}
+}
+
+func TestABaseExportFailureIsAnErrorRatherThanASkippedPackage(t *testing.T) {
+	if _, err := apidiffReport(t.TempDir(), filepath.Join(t.TempDir(), "absent"), testModule, []string{"go/protocol"}, nil); err == nil {
+		t.Fatal("a base checkout that cannot be loaded was accepted, which would skip the comparison and let a real break through")
+	}
+}

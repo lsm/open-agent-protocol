@@ -75,7 +75,7 @@ func check(root, baseRoot, description string, stdout io.Writer) error {
 		return err
 	}
 	removed, added := setDifference(base, head), setDifference(head, base)
-	report, err := apidiffReport(root, baseRoot, module, head)
+	report, err := apidiffReport(root, baseRoot, module, head, added)
 	if err != nil {
 		return err
 	}
@@ -168,21 +168,26 @@ func packageDirs(root string) ([]string, error) {
 	return dirs, nil
 }
 
-func apidiffReport(head, baseRoot, module string, packages []string) (string, error) {
+func apidiffReport(head, baseRoot, module string, packages, added []string) (string, error) {
+	skip := map[string]bool{}
+	for _, name := range added {
+		skip[name] = true
+	}
 	work, err := os.MkdirTemp("", "apidiffcheck")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(work)
 	var report strings.Builder
-	for _, name := range packages {
+	for i, name := range packages {
+		if skip[name] {
+			continue
+		}
 		importPath := module + "/" + name
-		oldExport := path.Join(work, "old")
-		newExport := path.Join(work, "new")
+		oldExport := path.Join(work, fmt.Sprintf("old-%d", i))
+		newExport := path.Join(work, fmt.Sprintf("new-%d", i))
 		if err := writeExport(baseRoot, importPath, oldExport); err != nil {
-			if _, statErr := os.Stat(oldExport); statErr != nil {
-				continue
-			}
+			return "", fmt.Errorf("export data for the base of %s: %w", name, err)
 		}
 		if err := writeExport(head, importPath, newExport); err != nil {
 			return "", fmt.Errorf("export data for %s: %w", name, err)
