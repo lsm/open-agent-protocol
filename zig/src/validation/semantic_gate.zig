@@ -223,7 +223,7 @@ test "the Zig semantic phase emits exactly the lifecycle codes the manifest decl
                     try pack_dirs.append(allocator, try std.fs.path.join(allocator, &.{ root, "fixtures", name.string }));
                 }
             }
-            var loaded = try packs_mod.describe(allocator, pack_dirs.items);
+            var loaded = try packs_mod.describe(std.testing.io, allocator, pack_dirs.items);
             defer loaded.deinit();
 
             var types = std.ArrayList(semantic.PackedType).empty;
