@@ -226,6 +226,82 @@ test "App welcome banner neutralises control bytes in the working directory" {
     try std.testing.expect(std.mem.indexOf(u8, entry.text.items, "/tmp/evil?[2J?]0;pwned?dir") != null);
 }
 
+test "App tool call arguments move the path row to the agent's directory" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+    try std.testing.expectEqualStrings("/work/session", app.state.cwdRowPath());
+
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/other\",\"command\":\"ls\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/other", app.state.cwdRowPath());
+    try std.testing.expect(app.state.agentCwdIsOutsideSession());
+}
+
+test "App tool call without a workspace root leaves the path row alone" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("workspace_list"),
+        .args_json = .initBorrowed("{\"query\":\"src\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/session", app.state.cwdRowPath());
+    try std.testing.expect(!app.state.agentCwdIsOutsideSession());
+}
+
+test "App resume leaves the path row at the session root" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/elsewhere\"}"),
+    } });
+    try std.testing.expectEqualStrings("/work/elsewhere", app.state.cwdRowPath());
+
+    app.state.resetReplayState();
+    app.state.setFollowingAgentCwd(false);
+    defer app.state.setFollowingAgentCwd(true);
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-2"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/replayed\"}"),
+    } });
+
+    try std.testing.expectEqualStrings("/work/session", app.state.cwdRowPath());
+}
+
+test "App tool call keeps the path row muted inside the session root" {
+    var app = App.initWithoutRuntime(std.testing.allocator);
+    defer app.deinit();
+    std.testing.allocator.free(app.working_dir);
+    app.working_dir = try std.testing.allocator.dupe(u8, "/work/session");
+    try app.refreshCwdDisplay();
+
+    try app.applyRuntimeEvent(.{ .tool_execution_start = .{
+        .tool_call_id = .initBorrowed("call-1"),
+        .tool_name = .initBorrowed("shell_execute"),
+        .args_json = .initBorrowed("{\"workspace_root\":\"/work/session/sub\"}"),
+    } });
+
+    try std.testing.expect(!app.state.agentCwdIsOutsideSession());
+}
+
 test "App cwd display neutralises control bytes in the working directory" {
     var app = App.initWithoutRuntime(std.testing.allocator);
     defer app.deinit();
@@ -1062,7 +1138,11 @@ pub const App = struct {
             try self.state.status.setModelWithContext(self.allocator, loaded.metadata.model, loaded.metadata.provider, 0);
         }
         self.replaying_history = true;
-        defer self.replaying_history = false;
+        self.state.setFollowingAgentCwd(false);
+        defer {
+            self.replaying_history = false;
+            self.state.setFollowingAgentCwd(true);
+        }
         for (loaded.events.items) |*event| {
             try self.applyRuntimeEvent(event.*);
         }
@@ -2127,6 +2207,7 @@ pub const App = struct {
             .clear_transcript => {
                 self.state.clearTranscript();
                 self.state.clearTools();
+                self.state.resetAgentCwd();
                 self.inline_history_flushed = 0;
                 self.inline_flushed_rows = 0;
                 self.pending_clear_screen = true;
@@ -2249,6 +2330,7 @@ pub const App = struct {
         const display = try collapseHome(self.allocator, sanitized, home);
         defer self.allocator.free(display);
         try self.state.setCwdDisplay(self.allocator, display);
+        try self.state.setSessionRoot(self.allocator, self.working_dir);
         try self.refreshGitBranch();
     }
 
@@ -2941,7 +3023,7 @@ pub const TuiModel = struct {
             composer_view.hintText(ctx.allocator, &app.state) catch "";
         const bar = status_bar_view.render(ctx.allocator, &app.state, .{ .width = width, .hint = hint }) catch "";
         const status = if (height >= cwd_row_min_height and app.state.cwd_display.len > 0) blk: {
-            const row = status_bar_view.renderCwdRow(ctx.allocator, app.state.cwd_display, app.state.git_branch, width) catch break :blk bar;
+            const row = status_bar_view.renderCwdRow(ctx.allocator, &app.state, width) catch break :blk bar;
             break :blk tui_render.joinVertical(ctx.allocator, &.{ bar, row }) catch bar;
         } else bar;
         composer_view.adjustScroll(ctx.allocator, &app.state, width, height) catch {};
