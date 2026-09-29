@@ -378,6 +378,7 @@ pub const ProductionRuntime = struct {
             .workspace_root = self.permission_engine.workspace_root,
             .run_async = true,
             .compact_output = true,
+            .generate_titles = true,
         };
     }
 
@@ -588,6 +589,10 @@ pub const App = struct {
     session_created_at: i64 = 0,
     compaction_offset: u64 = 0,
     pending_thinking: std.ArrayList(u8) = .empty,
+    session_title: []u8 = &.{},
+    session_title_generated: bool = false,
+    first_user_text: []u8 = &.{},
+    title_session_id: []u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator, options: tui_runtime.TuiRuntimeOptions) !App {
         var runtime_options = options;
@@ -658,6 +663,9 @@ pub const App = struct {
         if (self.written_model.len > 0) self.allocator.free(self.written_model);
         if (self.written_provider.len > 0) self.allocator.free(self.written_provider);
         self.pending_thinking.deinit(self.allocator);
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
+        if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
         self.state.deinit();
         self.* = undefined;
     }
@@ -726,7 +734,7 @@ pub const App = struct {
         }
         std.mem.sort(session_store.SessionMetadata, metas.items, {}, newerSessionFirst);
         for (metas.items) |meta| {
-            const label = try formatSessionLabel(self.allocator, meta);
+            const label = try formatSessionLabel(self.allocator, meta, utcOffsetSeconds(@divFloor(meta.last_active, 1000)));
             defer self.allocator.free(label);
             try self.state.addSession(meta.session_id, label);
         }
@@ -1272,7 +1280,55 @@ pub const App = struct {
         const offset: ?u64 = if (compaction) store.conversationBytes(self.session_id) catch null else null;
         const wrote_metadata = self.saveConversationEvent(store, event, compaction);
         if (wrote_metadata) self.compaction_offset = offset orelse self.compaction_offset;
-        if (wrote_metadata or event == .agent_end) self.saveSessionIndex(store);
+        const titled = switch (event) {
+            .message_end => |payload| payload.role == .user and self.titleFromFirstMessage(payload.text.slice()),
+            else => false,
+        };
+        if (wrote_metadata or titled or event == .agent_end) self.saveSessionIndex(store);
+        if (event == .agent_end) self.requestSessionTitle();
+    }
+
+    fn titleFromFirstMessage(self: *App, text: []const u8) bool {
+        if (self.session_title.len > 0) return false;
+        const line = titleLine(text);
+        if (line.len == 0) return false;
+        const title = self.allocator.dupe(u8, line) catch return false;
+        const first = self.allocator.dupe(u8, text) catch {
+            self.allocator.free(title);
+            return false;
+        };
+        self.session_title = title;
+        self.first_user_text = first;
+        return true;
+    }
+
+    fn requestSessionTitle(self: *App) void {
+        if (self.session_title_generated or self.first_user_text.len == 0) return;
+        const runtime = self.runtime orelse return;
+        const session_id = self.allocator.dupe(u8, self.session_id) catch return;
+        if (!(runtime.requestTitle(self.first_user_text) catch false)) {
+            self.allocator.free(session_id);
+            return;
+        }
+        if (self.title_session_id.len > 0) self.allocator.free(self.title_session_id);
+        self.title_session_id = session_id;
+    }
+
+    fn collectGeneratedTitle(self: *App) void {
+        const runtime = self.runtime orelse return;
+        const title = runtime.takeGeneratedTitle() orelse return;
+        const session_id = self.title_session_id;
+        self.title_session_id = &.{};
+        defer if (session_id.len > 0) self.allocator.free(session_id);
+        if (!std.mem.eql(u8, session_id, self.session_id)) {
+            defer self.allocator.free(title);
+            if (self.store) |store| store.saveGeneratedTitle(session_id, title) catch {};
+            return;
+        }
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        self.session_title = title;
+        self.session_title_generated = true;
+        if (self.store) |store| self.saveSessionIndex(store);
     }
 
     fn flushPendingThinking(self: *App, store: session_store.Store) void {
@@ -1340,6 +1396,8 @@ pub const App = struct {
         meta.created_at = self.session_created_at;
         meta.compaction_offset = self.compaction_offset;
         meta.compactions = @intCast(self.compaction_transcripts.items.len);
+        meta.title = self.session_title;
+        meta.title_generated = self.session_title_generated;
         store.saveIndex(meta) catch {};
     }
 
@@ -1349,6 +1407,12 @@ pub const App = struct {
         self.session_created_at = metadata.created_at;
         self.compaction_offset = metadata.compaction_offset;
         self.pending_thinking.clearRetainingCapacity();
+        const title = try self.allocator.dupe(u8, metadata.title);
+        if (self.session_title.len > 0) self.allocator.free(self.session_title);
+        self.session_title = title;
+        self.session_title_generated = metadata.title_generated;
+        if (self.first_user_text.len > 0) self.allocator.free(self.first_user_text);
+        self.first_user_text = &.{};
     }
 
     fn messageEndPayloadSize(payload: @TypeOf(@as(tui_runtime.TuiEvent, undefined).message_end)) usize {
@@ -1460,6 +1524,7 @@ pub const App = struct {
         self.state.reconcileSteers(session.steersConsumedCount());
         self.syncBackpressureState();
         self.syncModelTelemetry();
+        self.collectGeneratedTitle();
         if (self.pending_session_reset and !self.state.status.streaming) {
             if (self.runtime) |runtime| {
                 if (runtime.local_agent) |*local| {
@@ -2821,27 +2886,114 @@ fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {
     );
 }
 
-fn formatSessionLabel(allocator: std.mem.Allocator, meta: session_store.SessionMetadata) ![]u8 {
-    const ts = meta.last_active;
-    const secs: i64 = @divFloor(ts, 1000);
+const session_title_bytes = 60;
+
+fn titleLine(text: []const u8) []const u8 {
+    var lines = std.mem.tokenizeAny(u8, text, "\r\n");
+    while (lines.next()) |raw| {
+        var line = std.mem.trim(u8, raw, " \t");
+        for (line, 0..) |byte, index| {
+            if (byte < 0x20 or byte == 0x7f) {
+                line = std.mem.trimEnd(u8, line[0..index], " ");
+                break;
+            }
+        }
+        if (line.len == 0) continue;
+        if (line.len <= session_title_bytes) return line;
+        var end: usize = session_title_bytes;
+        while (end > 0 and (line[end] & 0xC0) == 0x80) end -= 1;
+        return line[0..end];
+    }
+    return "";
+}
+
+const CTm = extern struct {
+    tm_sec: c_int,
+    tm_min: c_int,
+    tm_hour: c_int,
+    tm_mday: c_int,
+    tm_mon: c_int,
+    tm_year: c_int,
+    tm_wday: c_int,
+    tm_yday: c_int,
+    tm_isdst: c_int,
+    tm_gmtoff: c_long,
+    tm_zone: ?[*:0]const u8,
+};
+
+extern "c" fn localtime_r(timer: *const std.c.time_t, result: *CTm) ?*CTm;
+
+fn utcOffsetSeconds(epoch_seconds: i64) i64 {
+    if (comptime @import("builtin").os.tag == .windows or !@import("builtin").link_libc) {
+        return 0;
+    } else {
+        const timer: std.c.time_t = @intCast(epoch_seconds);
+        var tm: CTm = undefined;
+        const local = localtime_r(&timer, &tm) orelse return 0;
+        return local.tm_gmtoff;
+    }
+}
+
+fn formatSessionLabel(allocator: std.mem.Allocator, meta: session_store.SessionMetadata, utc_offset_seconds: i64) ![]u8 {
+    const secs: i64 = @divFloor(meta.last_active, 1000) + utc_offset_seconds;
     const epoch = std.time.epoch.EpochSeconds{ .secs = @as(u64, @intCast(@max(secs, 0))) };
     const day = epoch.getEpochDay();
     const year_day = day.calculateYearDay();
     const month_day = year_day.calculateMonthDay();
     const day_secs = epoch.getDaySeconds();
+    const title = titleLine(meta.title);
     return std.fmt.allocPrint(
         allocator,
-        "{s} {s} {d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}",
+        "{s} · {d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2} · {s}",
         .{
-            if (meta.model.len > 0) meta.model else "unknown",
-            if (meta.provider.len > 0) meta.provider else "",
+            if (title.len > 0) title else "untitled",
             year_day.year,
             month_day.month.numeric(),
             month_day.day_index + 1,
             day_secs.getHoursIntoDay(),
             day_secs.getMinutesIntoHour(),
+            if (meta.model.len > 0) meta.model else "unknown",
         },
     );
+}
+
+test "formatSessionLabel shows the title's first line, the local time and the model" {
+    const session_id = try std.testing.allocator.dupe(u8, "s1");
+    defer std.testing.allocator.free(session_id);
+    const model = try std.testing.allocator.dupe(u8, "gpt-6-luna");
+    defer std.testing.allocator.free(model);
+    const provider = try std.testing.allocator.dupe(u8, "openai-codex");
+    defer std.testing.allocator.free(provider);
+    const title = try std.testing.allocator.dupe(u8, "  Fix the resume freeze\nwith more detail");
+    defer std.testing.allocator.free(title);
+    const meta = session_store.SessionMetadata{ .session_id = session_id, .model = model, .provider = provider, .last_active = 1790600760000, .title = title };
+
+    const label = try formatSessionLabel(std.testing.allocator, meta, 8 * 3600);
+    defer std.testing.allocator.free(label);
+    try std.testing.expectEqualStrings("Fix the resume freeze · 2026-09-28 21:06 · gpt-6-luna", label);
+
+    var untitled_meta = meta;
+    untitled_meta.title = &.{};
+    const untitled = try formatSessionLabel(std.testing.allocator, untitled_meta, 0);
+    defer std.testing.allocator.free(untitled);
+    try std.testing.expectEqualStrings("untitled · 2026-09-28 13:06 · gpt-6-luna", untitled);
+}
+
+test "utcOffsetSeconds reads an offset a real time zone could have" {
+    const offset = utcOffsetSeconds(1790600760);
+    try std.testing.expect(@abs(offset) <= 14 * 3600);
+    try std.testing.expectEqual(@as(i64, 0), @mod(offset, 900));
+}
+
+test "titleLine keeps the first non-empty line, up to a control byte, within 60 bytes on a character boundary" {
+    try std.testing.expectEqualStrings("first", titleLine("\n  first  \nsecond"));
+    try std.testing.expectEqualStrings("", titleLine(" \n\t"));
+    try std.testing.expectEqualStrings("next tweaks:", titleLine("next tweaks:\r    1. the status line"));
+    try std.testing.expectEqualStrings("title", titleLine("title \x1b[2Jcleared"));
+    const long = "é" ** 40;
+    const cut = titleLine(long);
+    try std.testing.expectEqual(@as(usize, 60), cut.len);
+    try std.testing.expect(std.unicode.utf8ValidateSlice(cut));
 }
 
 fn defaultModel() ai_types.Model {
@@ -2875,7 +3027,10 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io) !void {
     production.initBridge();
 
     var options = production.options();
-    if (fixture) |runtime| options.protocol = runtime.provider.protocolClient();
+    if (fixture) |runtime| {
+        options.protocol = runtime.provider.protocolClient();
+        options.generate_titles = false;
+    }
 
     var program = zz.Program(TuiModel).initWithOptions(allocator, io, &environ_map, tuiProgramOptions());
     program.model = .{ .options = options };
@@ -3867,6 +4022,104 @@ test "App keeps the last compaction offset when a compaction record is not writt
     var index = try app.store.?.loadIndex("unwritten-compaction");
     defer index.deinit(std.testing.allocator);
     try std.testing.expectEqual(offset, index.compaction_offset);
+}
+
+test "App titles a new session with its first message's first line" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "first-message-title");
+    defer app.deinit();
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "\n fix the resume freeze\nwith detail")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    var second = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "another message")) } };
+    defer second.deinit(std.testing.allocator);
+    app.saveEvent(second);
+
+    var index = try app.store.?.loadIndex("first-message-title");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("fix the resume freeze", index.title);
+    try std.testing.expect(!index.title_generated);
+}
+
+test "App indexes the title the model generates after the first reply" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "generated-title");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+    runtime.waitForTitleRequest();
+    app.collectGeneratedTitle();
+
+    var index = try app.store.?.loadIndex("generated-title");
+    defer index.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Resume freeze fix", index.title);
+    try std.testing.expect(index.title_generated);
+    try std.testing.expectEqual(@as(usize, 1), provider.call_count);
+}
+
+test "App files a generated title under the session that asked for it" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", &tmp.sub_path, "sessions" });
+    defer std.testing.allocator.free(base);
+    var app = try sessionTestApp(base, "asking-session");
+    defer app.deinit();
+
+    var provider = fixture_provider.MockProvider.init(.{ .steps = &.{.{ .text = "\"Resume freeze fix.\"" }} });
+    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
+    runtime.* = tui_runtime.TuiRuntime.init(std.testing.allocator, .{
+        .protocol = provider.protocolClient(),
+        .models = &[_]ai_types.Model{defaultModel()},
+        .generate_titles = true,
+    }) catch |err| {
+        std.testing.allocator.destroy(runtime);
+        return err;
+    };
+    app.runtime = runtime;
+
+    var first = tui_runtime.TuiEvent{ .message_end = .{ .role = .user, .text = OwnedSlice(u8).initOwned(try std.testing.allocator.dupe(u8, "the resume freezes on long sessions")) } };
+    defer first.deinit(std.testing.allocator);
+    app.saveEvent(first);
+    app.saveEvent(.{ .agent_end = .{ .reason = .completed } });
+    runtime.waitForTitleRequest();
+
+    try saveTestSession(app.store.?, "resumed-session", 1);
+    var resumed = try app.store.?.load("resumed-session");
+    defer resumed.deinit(std.testing.allocator);
+    std.testing.allocator.free(app.session_id);
+    app.session_id = try std.testing.allocator.dupe(u8, "resumed-session");
+    try app.adoptLoadedSession(resumed.metadata);
+    app.collectGeneratedTitle();
+
+    var asking = try app.store.?.loadIndex("asking-session");
+    defer asking.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("Resume freeze fix", asking.title);
+    try std.testing.expect(asking.title_generated);
+    try std.testing.expectEqual(@as(usize, 0), app.session_title.len);
+    try std.testing.expect(!app.session_title_generated);
+    try std.testing.expectError(error.FileNotFound, app.store.?.loadIndex("resumed-session"));
 }
 
 test "App clear_transcript clears the tool registry" {

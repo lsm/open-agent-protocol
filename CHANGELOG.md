@@ -168,6 +168,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   old shape under the debug allocator.
 
 ### Added
+
+- **`/resume` lists sessions by title, in local time.** A session was labelled with its model, provider and a UTC time, so switching models mid-session made it look like a different session. The label is now `title · local date and time · model`. The title starts as the first line of the session's first message; after the first reply, the current model is asked once, in the background, for a title of at most six words, which replaces it. Older sessions take their first message from the file.
+
 - **`go/internal/provider` gains the `anthropic-messages` client, part of #358
   step 3.** It reuses step 2's SSE parser, event types, json tree and
   pre-transform, and it is **a different client rather than a variant of the one
