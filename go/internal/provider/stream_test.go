@@ -114,14 +114,13 @@ func TestAStreamThatProducedNothingStillYieldsOneEmptyTextPart(t *testing.T) {
 	}
 }
 
-func TestTheTerminalOrdersThinkingThenTextThenToolCalls(t *testing.T) {
+func TestTheTerminalIsTheAssemblyInPartIndexOrder(t *testing.T) {
 	events := runStream(t, streamModel(),
-		sseFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
 		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`),
 	)
-	done := findEvent(t, events, EventDone)
-	blocks := done.Message.Content
+	blocks := findEvent(t, events, EventDone).Message.Content
 	if len(blocks) != 3 {
 		t.Fatalf("got %d blocks, want thinking, text and one tool call", len(blocks))
 	}
@@ -133,6 +132,35 @@ func TestTheTerminalOrdersThinkingThenTextThenToolCalls(t *testing.T) {
 	}
 	if blocks[2].ToolCall == nil {
 		t.Errorf("the third block = %+v, want the tool call", blocks[2])
+	}
+}
+
+func TestTheTerminalFollowsTheWireWhenTextArrivesBeforeReasoning(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`),
+	)
+	blocks := findEvent(t, events, EventDone).Message.Content
+	if len(blocks) != 2 {
+		t.Fatalf("got %d blocks, want two", len(blocks))
+	}
+	if blocks[0].Text == nil {
+		t.Errorf("the first block = %+v, want the text: it streamed first, so it holds index 0", blocks[0])
+	}
+	if blocks[1].Thinking == nil {
+		t.Errorf("the second block = %+v, want the reasoning", blocks[1])
+	}
+	textIndex, thinkingIndex := -1, -1
+	for _, event := range events {
+		switch event.Kind {
+		case EventTextDelta:
+			textIndex = event.ContentIndex
+		case EventThinkingDelta:
+			thinkingIndex = event.ContentIndex
+		}
+	}
+	if textIndex >= thinkingIndex {
+		t.Errorf("the text holds index %d and the reasoning %d, want the text lower: the terminal's order is the wire's", textIndex, thinkingIndex)
 	}
 }
 
@@ -174,8 +202,8 @@ func TestAToolCallEndsAtTheIndexItsStartUsed(t *testing.T) {
 	)
 	start := findEvent(t, events, EventToolCallStart)
 	end := findEvent(t, events, EventToolCallEnd)
-	if start.ContentIndex != 0 {
-		t.Errorf("the start's content index = %d, want 0: it counted tool calls alone", start.ContentIndex)
+	if start.ContentIndex != 1 {
+		t.Errorf("the start's content index = %d, want 1: the text part holds 0, and a part's index is its place in the content", start.ContentIndex)
 	}
 	if end.ContentIndex != start.ContentIndex {
 		t.Errorf("the end's content index = %d and the start's = %d: one call occupies one index, and a consumer that opened the part it started cannot end a part it never opened", end.ContentIndex, start.ContentIndex)
@@ -274,6 +302,9 @@ func TestAContentIndexIsAssignedByArrivalNotByTheApiIndex(t *testing.T) {
 	}
 	if len(ends) != 2 {
 		t.Fatalf("got %d ends, want 2", len(ends))
+	}
+	if starts["first"] != ends[1].ContentIndex || starts["second"] != ends[0].ContentIndex {
+		t.Errorf("starts %v against ends %d and %d: a call's index is its place in the content, and nothing may renumber it between the two", starts, ends[0].ContentIndex, ends[1].ContentIndex)
 	}
 	if ends[0].ToolCall.ID != "second" || ends[1].ToolCall.ID != "first" {
 		t.Errorf("ends carry %q then %q, want the content order the starts established", ends[0].ToolCall.ID, ends[1].ToolCall.ID)
@@ -679,6 +710,185 @@ func TestATurnWithNoTextDeclaresNoTextPart(t *testing.T) {
 	for _, kind := range kindsOf(events) {
 		if kind == EventTextStart || kind == EventTextEnd {
 			t.Errorf("got a %s in a turn that streamed no text, want no text part declared", kind)
+		}
+	}
+}
+
+func TestReasoningThenTextHoldDifferentParts(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"think"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"answer"}}]}`),
+	)
+	seen := map[int]EventKind{}
+	for _, event := range events {
+		switch event.Kind {
+		case EventThinkingDelta, EventTextDelta:
+			if previous, held := seen[event.ContentIndex]; held {
+				t.Errorf("%s and %s both hold content index %d: two parts cannot occupy one index, and a consumer opens a part by index", previous, event.Kind, event.ContentIndex)
+			}
+			seen[event.ContentIndex] = event.Kind
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("the turn streamed %d distinct parts, want 2: reasoning and text are different parts and the terminal holds both", len(seen))
+	}
+	thinkingAt, thoughtThere := seen[0]
+	if !thoughtThere || thinkingAt != EventThinkingDelta {
+		t.Errorf("index 0 holds %v, want the reasoning: the content array puts thinking before text", seen[0])
+	}
+	if body := findEvent(t, events, EventDone).Message; len(body.Content) != 2 {
+		t.Errorf("the terminal holds %d blocks, want 2", len(body.Content))
+	}
+}
+
+func TestAReasoningOnlyTurnHoldsIndexZero(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"reasoning_content":"think"}}]}`),
+	)
+	delta := findEvent(t, events, EventThinkingDelta)
+	if delta.ContentIndex != 0 {
+		t.Errorf("the reasoning delta holds index %d, want 0: with nothing ahead of it, reasoning is the first part", delta.ContentIndex)
+	}
+}
+
+func TestNoTwoPartsShareAContentIndexWhateverOrderTheyArriveIn(t *testing.T) {
+	cases := map[string][]string{
+		"text then reasoning": {
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+			`{"choices":[{"delta":{"reasoning_content":"t"}}]}`,
+		},
+		"reasoning then text": {
+			`{"choices":[{"delta":{"reasoning_content":"t"}}]}`,
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+		},
+		"a call then trailing text": {
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`,
+			`{"choices":[{"delta":{"content":"after"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+		},
+		"text then a call": {
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+		},
+	}
+	for name, frames := range cases {
+		built := make([]string, 0, len(frames))
+		for _, frame := range frames {
+			built = append(built, sseFrame(frame))
+		}
+		events := runStream(t, streamModel(), built...)
+		claimed := map[int]EventKind{}
+		for _, event := range events {
+			switch event.Kind {
+			case EventTextDelta, EventThinkingDelta, EventToolCallStart:
+			default:
+				continue
+			}
+			if previous, held := claimed[event.ContentIndex]; held {
+				t.Errorf("%s: %s and %s both hold index %d, and a consumer opens a part by its index", name, previous, event.Kind, event.ContentIndex)
+			}
+			claimed[event.ContentIndex] = event.Kind
+		}
+	}
+}
+
+func TestAContentIndexIsReservedByTheFirstPartThatClaimsIt(t *testing.T) {
+	events := runStream(t, streamModel(),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`),
+		sseFrame(`{"choices":[{"delta":{"content":"after"}}]}`),
+		sseFrame(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`),
+	)
+	start := findEvent(t, events, EventToolCallStart)
+	end := findEvent(t, events, EventToolCallEnd)
+	var text *Event
+	for _, event := range events {
+		if event.Kind == EventTextDelta {
+			held := event
+			text = &held
+		}
+	}
+	if text == nil {
+		t.Fatal("the fixture streamed no text, so it is not the script under test")
+	}
+	if text.ContentIndex == start.ContentIndex {
+		t.Errorf("the trailing text and the call both hold index %d: the call claimed it first, so the text is a second part", text.ContentIndex)
+	}
+	if end.ContentIndex != start.ContentIndex {
+		t.Errorf("the call opened at %d and ended at %d, want them equal", start.ContentIndex, end.ContentIndex)
+	}
+}
+
+func TestAPartKeepsTheIndexItStartedAtAndTheTerminalFollows(t *testing.T) {
+	cases := map[string][]string{
+		"text then reasoning then a call": {
+			`{"choices":[{"delta":{"content":"answer"}}]}`,
+			`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`,
+		},
+		"reasoning then text": {
+			`{"choices":[{"delta":{"reasoning_content":"pondering"}}]}`,
+			`{"choices":[{"delta":{"content":"answer"}}]}`,
+		},
+		"a call then trailing text": {
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`,
+			`{"choices":[{"delta":{"content":"after"}}]}`,
+		},
+		"text then a call": {
+			`{"choices":[{"delta":{"content":"answer"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read"}}]}}]}`,
+		},
+		"text then two calls": {
+			`{"choices":[{"delta":{"content":"a"}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f"}}]}}]}`,
+			`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"g"}}]}}]}`,
+		},
+	}
+	wireKind := map[EventKind]string{
+		EventTextDelta: "text", EventThinkingDelta: "reasoning", EventToolCallStart: "tool_call",
+	}
+	for name, frames := range cases {
+		built := make([]string, 0, len(frames))
+		for _, frame := range frames {
+			built = append(built, sseFrame(frame))
+		}
+		events := runStream(t, streamModel(), built...)
+		terminal := findEvent(t, events, EventDone)
+		at := make(map[int]string, len(terminal.Message.Content))
+		for i, block := range terminal.Message.Content {
+			switch {
+			case block.Thinking != nil:
+				at[i] = "reasoning"
+			case block.Text != nil:
+				at[i] = "text"
+			case block.ToolCall != nil:
+				at[i] = "tool_call"
+			}
+		}
+		claimed := make(map[int]EventKind, len(at))
+		for _, event := range events {
+			switch event.Kind {
+			case EventTextDelta, EventThinkingDelta, EventToolCallStart:
+			default:
+				continue
+			}
+			if previous, held := claimed[event.ContentIndex]; held {
+				t.Errorf("%s: %s and %s both hold index %d", name, previous, event.Kind, event.ContentIndex)
+			}
+			claimed[event.ContentIndex] = event.Kind
+		}
+		for index, kind := range claimed {
+			want, held := at[index]
+			if !held {
+				t.Errorf("%s: a part claims index %d and the terminal holds %d blocks", name, index, len(at))
+				continue
+			}
+			if wireKind[kind] != want {
+				t.Errorf("%s: index %d is %s on the wire and %s in the terminal, and the assembly check compares them", name, index, wireKind[kind], want)
+			}
+		}
+		if len(claimed) != len(at) {
+			t.Errorf("%s: %d parts on the wire and %d in the terminal, want the same", name, len(claimed), len(at))
 		}
 	}
 }

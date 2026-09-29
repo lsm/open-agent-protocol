@@ -179,26 +179,42 @@ func (c *streamClock) millis() int64 {
 }
 
 type streamState struct {
-	model         Model
-	clock         *streamClock
-	usage         Usage
-	stopReason    StopReason
-	thinking      string
-	text          string
-	signature     string
-	hasSig        bool
-	nextIndex     int
-	textIndex     int
-	toolCalls     int
-	tracker       *toolTracker
-	prevText      int
-	prevThink     int
-	lastToolCalls []toolCallEvent
-	lastDetails   []reasoningDetail
+	model            Model
+	clock            *streamClock
+	usage            Usage
+	stopReason       StopReason
+	thinking         string
+	text             string
+	signature        string
+	hasSig           bool
+	nextIndex        int
+	thinkingIndex    int
+	textIndex        int
+	textStreamed     bool
+	thinkingStreamed bool
+	toolCalls        int
+	tracker          *toolTracker
+	prevText         int
+	prevThink        int
+	lastToolCalls    []toolCallEvent
+	lastDetails      []reasoningDetail
 }
 
+const partIndexUnset = -1
+
 func newStreamState(model Model) *streamState {
-	return &streamState{model: model, stopReason: "stop", tracker: newToolTracker(), clock: &streamClock{}}
+	return &streamState{
+		model: model, stopReason: "stop", tracker: newToolTracker(), clock: &streamClock{},
+		thinkingIndex: partIndexUnset, textIndex: partIndexUnset,
+	}
+}
+
+func (s *streamState) thinkingPart() *ThinkingPart {
+	thinking := &ThinkingPart{Thinking: s.thinking}
+	if s.hasSig {
+		thinking.Signature = s.signature
+	}
+	return thinking
 }
 
 func (s *streamState) partial(content []AssistantBlock) PartialMessage {
