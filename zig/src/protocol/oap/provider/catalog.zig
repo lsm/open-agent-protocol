@@ -167,15 +167,6 @@ pub const BUILT_IN_PROVIDERS = [_]BuiltInProvider{
     },
 };
 
-/// Owned serving entries for one provider row, built from a catalog
-/// snapshot. A model is kept when it belongs to `provider_id` and, when
-/// `wire` is given, when the api it names maps to that wire, so a row is
-/// only served the models its own wire can carry.
-///
-/// `source` is a parameter rather than a guess: a snapshot does not say
-/// whether a model came from discovery or from a row's declared models,
-/// and claiming the wrong provenance is worse than making the caller
-/// state it.
 pub fn ownedModelEntriesForRow(
     allocator: std.mem.Allocator,
     models: []const ai_types.Model,
@@ -285,7 +276,7 @@ test "a row serves every model the snapshot names for it" {
             .base_url = "",
             .reasoning = true,
             .input = &.{"text", "image"},
-            .cost = .{},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 200_000,
             .max_tokens = 8_192,
         },
@@ -297,7 +288,7 @@ test "a row serves every model the snapshot names for it" {
             .base_url = "",
             .reasoning = false,
             .input = &.{"text"},
-            .cost = .{},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 200_000,
             .max_tokens = 8_192,
         },
@@ -309,7 +300,7 @@ test "a row serves every model the snapshot names for it" {
             .base_url = "",
             .reasoning = false,
             .input = &.{"text"},
-            .cost = .{},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 128_000,
             .max_tokens = 16_384,
         },
@@ -347,7 +338,7 @@ test "a row the snapshot names no model for serves nothing" {
         .base_url = "",
         .reasoning = false,
         .input = &.{"text"},
-        .cost = .{},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
         .context_window = 128_000,
         .max_tokens = 16_384,
     }};
@@ -369,7 +360,7 @@ test "a row is served only the models its own wire can carry" {
             .base_url = "",
             .reasoning = false,
             .input = &.{"text"},
-            .cost = .{},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 128_000,
             .max_tokens = 16_384,
         },
@@ -381,7 +372,7 @@ test "a row is served only the models its own wire can carry" {
             .base_url = "",
             .reasoning = false,
             .input = &.{"text"},
-            .cost = .{},
+            .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
             .context_window = 128_000,
             .max_tokens = 16_384,
         },
