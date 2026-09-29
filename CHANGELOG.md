@@ -74,7 +74,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cadence this forwards meaningless: a keepalive emitted while a slow body was
   still arriving would have been held until the body ended, which is the one
   moment it is not needed. A stream error reaches that callback too, so a turn
-  that breaks mid-flight reports it rather than ending quietly.
+  that breaks mid-flight reports it rather than ending quietly. A sink with a
+  callback set no longer retains anything, because a turn that kept its whole
+  event log — every delta, every grown content block — until the stream ended
+  paid for the reply twice, and a long one pays for it in full.
   The two wires now also agree on what a `TurnRequest` means. A forced tool
   carried its mode across but not its name, so an anthropic body would have
   asked for `{"type":"tool","name":""}` — a tool that does not exist — while

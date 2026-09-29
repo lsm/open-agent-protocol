@@ -547,3 +547,25 @@ func TestEventsAreDeliveredInTheOrderTheyWereEmitted(t *testing.T) {
 		}
 	}
 }
+
+func TestASinkWithACallbackKeepsNothingForALaterReader(t *testing.T) {
+	var seen []Event
+	sink := &EventSink{OnEvent: func(event Event) { seen = append(seen, event) }}
+	Stream(sink, streamModel(), Context{}, StreamOptions{}, chunkReader([]string{sseFrame(`{"choices":[{"delta":{"content":"hi"}}]}`)}), nil)
+	if len(seen) == 0 {
+		t.Fatal("a sink with a callback saw nothing")
+	}
+	if held := sink.Drain(); len(held) != 0 {
+		t.Errorf("a sink with a callback still retained %d events, want none: a long reply would keep every event alive", len(held))
+	}
+}
+
+func TestASinkWithACallbackDoesNotAlsoRetainForItsReader(t *testing.T) {
+	var seen int
+	sink := &EventSink{OnEvent: func(Event) { seen++ }}
+	Stream(sink, streamModel(), Context{}, StreamOptions{}, chunkReader([]string{sseFrame(`{"choices":[{"delta":{"content":"hi"}}]}`)}), nil)
+	held := sink.Drain()
+	if len(held) != 0 || seen == 0 {
+		t.Errorf("a callback saw %d events and a reader %d, want the callback to take the stream and the reader nothing", seen, len(held))
+	}
+}

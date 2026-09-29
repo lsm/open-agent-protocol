@@ -78,10 +78,11 @@ type EventSink struct {
 }
 
 func (s *EventSink) emit(event Event) {
-	s.events = append(s.events, event)
 	if s.OnEvent != nil {
 		s.OnEvent(event)
+		return
 	}
+	s.events = append(s.events, event)
 }
 
 func (s *EventSink) Drain() []Event {

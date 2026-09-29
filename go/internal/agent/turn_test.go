@@ -26,6 +26,10 @@ func frame(payload string) string {
 	return "data: " + payload + "\n\n"
 }
 
+func anthropicModel() provider.Model {
+	return provider.Model{ID: "claude-sonnet-4-5", API: "anthropic-messages", Provider: "anthropic", MaxTokens: 4096, Reasoning: true, HasCompat: true}
+}
+
 func completionsModel() provider.Model {
 	return provider.Model{ID: "local-model", API: "openai-completions", Provider: "local", BaseURL: "http://127.0.0.1:8080/v1", HasBaseURL: true, MaxTokens: 100, HasCompat: true}
 }
@@ -244,38 +248,42 @@ func TestADeltaReachesTheChannelWhileTheStreamIsStillReading(t *testing.T) {
 	}
 }
 
-func TestAForcedToolCarriesItsNameOnBothWires(t *testing.T) {
+func TestAForcedToolNamesItselfOnTheAnthropicWire(t *testing.T) {
 	options := provider.StreamOptions{
 		HasToolChoice: true,
 		ToolChoice:    provider.ToolChoice{Mode: provider.ToolChoiceFunction, Function: "read"},
 	}
-	completions := provider.BuildRequestBody(completionsModel(), provider.Context{
+	turn := provider.Context{
 		Tools:    []provider.Tool{{Name: "read", Parameters: []byte(`{"type":"object"}`)}},
-		Messages: []provider.Message{{User: &provider.UserContent{Text: "read a", HasText: true}}},
-	}, options)
-	if !strings.Contains(string(completions), `"tool_choice"`) || !strings.Contains(string(completions), "read") {
-		t.Errorf("a forced tool on the completions wire is %s", completions)
+		Messages: []provider.Message{{User: &provider.UserContent{Text: "go", HasText: true}}},
 	}
-	anthropic, _ := provider.BuildAnthropicRequestBody(completionsModel(), provider.Context{
-		Tools:    []provider.Tool{{Name: "read", Parameters: []byte(`{"type":"object"}`)}},
-		Messages: []provider.Message{{User: &provider.UserContent{Text: "read a", HasText: true}}},
-	}, anthropicOptions(options), "")
-	if !strings.Contains(string(anthropic), `"name":"read"`) {
-		t.Errorf("a forced tool on the anthropic wire is %s, want the tool's name: an empty name asks for a tool that does not exist", anthropic)
+	body, _ := provider.BuildAnthropicRequestBody(anthropicModel(), turn, anthropicOptions(options), "")
+	if !strings.Contains(string(body), `"tool_choice":{"type":"tool","name":"read"}`) {
+		t.Errorf("a forced tool on the anthropic wire is %s, want the choice naming it: an empty name asks for a tool that does not exist", body)
+	}
+	dropped := anthropicOptions(provider.StreamOptions{HasToolChoice: true, ToolChoice: provider.ToolChoice{Mode: provider.ToolChoiceFunction}})
+	without, _ := provider.BuildAnthropicRequestBody(anthropicModel(), turn, dropped, "")
+	if !strings.Contains(string(without), `"name":""`) {
+		t.Errorf("dropping the choice's name yields %s, want the empty name this test distinguishes from the working one", without)
 	}
 }
 
 func TestAReasoningEffortReachesTheAnthropicWireAsThinking(t *testing.T) {
-	model := provider.Model{ID: "claude-sonnet-4-5", API: "anthropic-messages", Provider: "anthropic", MaxTokens: 4096, Reasoning: true, HasCompat: true}
 	options := provider.StreamOptions{ReasoningEffort: "high"}
 	mapped := anthropicOptions(options)
 	if !mapped.ThinkingEnabled || mapped.ThinkingEffort != "high" {
 		t.Errorf("a reasoning effort maps to %+v, want thinking enabled at that effort: the completions wire sends reasoning_effort, so dropping it here would make one request mean two things", mapped)
 	}
-	body, _ := provider.BuildAnthropicRequestBody(model, provider.Context{
-		Messages: []provider.Message{{User: &provider.UserContent{Text: "think", HasText: true}}},
+	body, _ := provider.BuildAnthropicRequestBody(anthropicModel(), provider.Context{
+		Messages: []provider.Message{{User: &provider.UserContent{Text: "go", HasText: true}}},
 	}, mapped, "")
-	if !strings.Contains(string(body), "thinking") {
+	if !strings.Contains(string(body), `"thinking"`) {
 		t.Errorf("an anthropic body with a reasoning effort is %s, want a thinking block", body)
+	}
+	without, _ := provider.BuildAnthropicRequestBody(anthropicModel(), provider.Context{
+		Messages: []provider.Message{{User: &provider.UserContent{Text: "go", HasText: true}}},
+	}, anthropicOptions(provider.StreamOptions{}), "")
+	if strings.Contains(string(without), `"thinking"`) {
+		t.Errorf("a request with no reasoning effort is %s, want no thinking block", without)
 	}
 }
