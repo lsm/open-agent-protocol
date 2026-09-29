@@ -40,19 +40,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/base"
-          # The merge base, computed against the pull request's HEAD commit
-          # rather than the checked-out tree.
+          # The merge base of the base ref and this pull request's head commit.
           #
-          # actions/checkout with no ref gives refs/pull/N/merge, and the merge
-          # base of that with origin/<base.ref> is the base *tip*, so using HEAD
-          # here would compare this pull request against every public change
-          # merged into the base since the two diverged and report them as this
-          # pull request's. Fetch the head sha and take the merge base of it
-          # with the base ref, which is the commit the two actually share.
-          git fetch -q origin "${{ github.event.pull_request.head.sha }}"
+          # Not HEAD: actions/checkout with no ref gives refs/pull/N/merge, whose
+          # merge base with origin/<base.ref> is the base *tip*, so comparing
+          # against that would charge this pull request with every public change
+          # merged into the base since the two diverged.
+          #
+          # Not `git fetch origin <sha>` either: GitHub does not serve an
+          # arbitrary sha as a ref, so that fails outright. checkout's
+          # fetch-depth: 0 has already brought the whole history, which is why
+          # the head commit is available here to name.
           git worktree add --detach "$RUNNER_TEMP/base" \
             "$(git merge-base "origin/${{ github.event.pull_request.base.ref }}" \
-                            "origin/${{ github.event.pull_request.head.sha }}")"
+                            "${{ github.event.pull_request.head.sha }}")"
 
       - name: Write the pull request description where the checker reads it
         env:
