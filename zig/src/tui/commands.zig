@@ -359,15 +359,16 @@ fn handleContext(ctx: CommandContext, command: Command) !CommandResult {
             .is_error = true,
         };
     };
-    if (runtime.contextWindowMaximum()) |ceiling| {
-        if (window > ceiling) {
-            return .{
-                .output = try std.fmt.allocPrint(ctx.allocator, "{s} takes at most {d} context tokens; {d} is above it. The window in effect is {d}.", .{ model.id, ceiling, window, runtime.contextWindow() }),
-                .is_error = true,
-            };
-        }
-    }
-    try runtime.setContextWindow(window);
+    runtime.setContextWindow(window) catch |err| switch (err) {
+        error.AboveMaximum => return .{
+            .output = try std.fmt.allocPrint(ctx.allocator, "{s} takes at most {d} context tokens; {d} is above it. The window in effect is {d}.", .{ model.id, runtime.contextWindowMaximum() orelse 0, window, runtime.contextWindow() }),
+            .is_error = true,
+        },
+        error.AgentAlreadyStreaming => return .{
+            .output = try ctx.allocator.dupe(u8, "A turn is running; set the context window once it finishes."),
+            .is_error = true,
+        },
+    };
     return .{ .output = try contextWindowReport(ctx.allocator, runtime) };
 }
 

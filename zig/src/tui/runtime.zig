@@ -534,9 +534,14 @@ pub const TuiRuntime = struct {
         return model_catalog.contextWindowIsReported(self.models[index]);
     }
 
-    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) !void {
+    pub fn setContextWindow(self: *TuiRuntime, window: ?u32) error{AboveMaximum, AgentAlreadyStreaming}!void {
         if (self.local_agent) |*local| {
             if (!local.isIdle()) return error.AgentAlreadyStreaming;
+        }
+        if (window) |held| {
+            if (self.contextWindowMaximum()) |ceiling| {
+                if (held > ceiling) return error.AboveMaximum;
+            }
         }
         self.context_window = window;
         self.context_window_refused = null;
