@@ -484,7 +484,7 @@ pub const PermissionEvent = struct {
     description: ?[]const u8 = null,
     choices: []PermissionChoice = &.{},
     arguments_json: ?[]const u8 = null,
-    outcome: InteractionOutcome = .resolved,
+    outcome: ?InteractionOutcome = null,
     choice_id: ?[]const u8 = null,
     granted: ?bool = null,
     reason: ?ProtocolError = null,
@@ -518,7 +518,7 @@ pub const UserInputEvent = struct {
     questions: []InputQuestion = &.{},
     allow_cancel: ?bool = null,
     draft_answers: []InputAnswer = &.{},
-    status: InputResolutionStatus = .submitted,
+    status: ?InputResolutionStatus = null,
     answers: []InputAnswer = &.{},
 
     pub fn deinit(self: *UserInputEvent, allocator: std.mem.Allocator) void {

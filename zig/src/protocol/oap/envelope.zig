@@ -376,7 +376,7 @@ fn serializePermissionEvent(w: *json_writer.JsonWriter, value: oap_types.Permiss
         try w.writeKey("arguments_json");
         try writeJsonValueOrString(w, arguments);
     }
-    try w.writeStringField("outcome", @tagName(value.outcome));
+    if (value.outcome) |outcome| try w.writeStringField("outcome", @tagName(outcome));
     if (value.choice_id) |choice| try w.writeStringField("choice_id", choice);
     if (value.granted) |granted| try w.writeBoolField("granted", granted);
     if (value.reason) |reason| {
@@ -393,7 +393,7 @@ fn serializeUserInputEvent(w: *json_writer.JsonWriter, value: oap_types.UserInpu
     if (value.questions.len > 0) try serializeQuestions(w, value.questions);
     if (value.allow_cancel) |allow| try w.writeBoolField("allow_cancel", allow);
     try serializeAnswers(w, "draft_answers", value.draft_answers);
-    try w.writeStringField("status", @tagName(value.status));
+    if (value.status) |status| try w.writeStringField("status", @tagName(status));
     try serializeAnswers(w, "answers", value.answers);
 }
 
@@ -1175,10 +1175,10 @@ fn deserializePermissionEvent(obj: std.json.ObjectMap, allocator: std.mem.Alloca
     }
     const arguments_json = if (obj.get("arguments_json")) |value| try json_encode.valueAlloc(allocator, value) else null;
     errdefer if (arguments_json) |owned| allocator.free(owned);
-    const outcome = if (obj.get("outcome")) |raw| blk: {
+    const outcome: ?oap_types.InteractionOutcome = if (obj.get("outcome")) |raw| blk: {
         if (raw != .string) return DecodeError.InvalidField;
         break :blk oap_types.InteractionOutcome.parse(raw.string) orelse return DecodeError.InvalidField;
-    } else oap_types.InteractionOutcome.resolved;
+    } else null;
     const choice_id = try optionalOwnedString(obj, "choice_id", allocator);
     errdefer if (choice_id) |owned| allocator.free(owned);
     const granted = try optionalBool(obj, "granted");
@@ -1236,10 +1236,10 @@ fn deserializeUserInputEvent(obj: std.json.ObjectMap, allocator: std.mem.Allocat
         for (draft_answers) |*answer| answer.deinit(allocator);
         allocator.free(draft_answers);
     }
-    const status = if (obj.get("status")) |raw| blk: {
+    const status: ?oap_types.InputResolutionStatus = if (obj.get("status")) |raw| blk: {
         if (raw != .string) return DecodeError.InvalidField;
         break :blk oap_types.InputResolutionStatus.parse(raw.string) orelse return DecodeError.InvalidField;
-    } else oap_types.InputResolutionStatus.submitted;
+    } else null;
     const answers = if (obj.get("answers")) |value|
         try deserializeAnswers(value, allocator)
     else
@@ -1998,7 +1998,8 @@ fn deserializeToolsList(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !
 }
 
 fn deserializeAnswers(value: std.json.Value, allocator: std.mem.Allocator) ![]oap_types.InputAnswer {
-    if (value != .array or value.array.items.len == 0) return DecodeError.InvalidField;
+    if (value != .array) return DecodeError.InvalidField;
+    if (value.array.items.len == 0) return &.{};
     const answers = try allocator.alloc(oap_types.InputAnswer, value.array.items.len);
     var filled: usize = 0;
     errdefer {
@@ -2061,6 +2062,7 @@ const InteractionScope = struct {
 
 fn deserializeInputResolve(obj: std.json.ObjectMap, allocator: std.mem.Allocator) !oap_types.UserInputResolveRequest {
     const listed = obj.get("answers") orelse return DecodeError.MissingField;
+    if (listed != .array or listed.array.items.len == 0) return DecodeError.InvalidField;
     const scope = try InteractionScope.decode(obj, allocator);
     errdefer scope.deinit(allocator);
     const answers = try deserializeAnswers(listed, allocator);
@@ -2756,7 +2758,7 @@ test "a user input resolution round trips every answer shape" {
     try std.testing.expectEqual(@as(usize, 0), resolution.answers[1].selected_option_ids.len);
 }
 
-test "a user input resolution with no answers is refused rather than decoded empty" {
+test "a resolve request still needs its answers, and a requested event may carry an empty draft" {
     const allocator = std.testing.allocator;
     try std.testing.expectError(DecodeError.InvalidField, deserializeEnvelope(
         "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
@@ -2764,6 +2766,16 @@ test "a user input resolution with no answers is refused rather than decoded emp
             "\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"answers\":[]}}",
         allocator,
     ));
+
+    var requested = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"type\":\"user.input.requested\",\"id\":\"a\",\"payload\":{\"interaction_id\":\"i\"," ++
+            "\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\"," ++
+            "\"title\":\"t\",\"questions\":[],\"draft_answers\":[]}}",
+        allocator,
+    );
+    defer requested.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), requested.payload.user_input_requested.draft_answers.len);
 }
 
 test "a permission resolution round trips its optional members" {
@@ -3004,6 +3016,25 @@ test "every new payload decoder frees what it built when an allocation fails" {
             "\"providers\":[{\"id\":\"p\",\"display_name\":\"P\",\"wire\":\"w\",\"kind\":\"direct\"}]}}",
         prefix ++ "capabilities.response\",\"payload\":{\"endpoint\":{\"id\":\"e\"},\"features\":{\"a\":{\"level\":\"emulated\",\"modes\":[\"session_open\"]," ++
             "\"constraints\":{\"fixed_result\":{\"ok\":true}},\"limits\":{\"max_sources\":2}}},\"tools\":[{\"name\":\"t\",\"input_schema\":{},\"execution_owner\":\"o\"}]}}",
+        prefix ++ "action.call.requested\",\"payload\":{\"interaction_id\":\"i\",\"request_id\":\"q\",\"session_id\":\"s\",\"run_id\":\"r" ++
+            "\",\"tool_call_id\":\"t\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"execution_owner\":\"o\",\"source\":\"n\",\"name\"" ++
+            ":\"Tool\",\"arguments_json\":{\"a\":1},\"progress\":{\"done\":1},\"result\":{\"hits\":2}}}",
+        prefix ++ "action.call.failed\",\"payload\":{\"session_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"execution_owner\":\"o" ++
+            "\",\"error\":{\"code\":\"tool_failed\",\"message\":\"m\",\"details\":{\"k\":\"v\"}}}}",
+        prefix ++ "action.permission.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"" ++
+            "session_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"title\":\"T\",\"description\":\"d\",\"choices\":[{\"id\":\"a\",\"" ++
+            "label\":\"A\",\"description\":\"x\"},{\"id\":\"b\",\"label\":\"B\"}],\"arguments_json\":{\"a\":1}}}",
+        prefix ++ "action.permission.resolved\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"s" ++
+            "ession_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"outcome\":\"rejected\",\"choice_id\":\"c\",\"granted\":false," ++
+            "\"reason\":{\"code\":\"tool_failed\",\"message\":\"m\",\"details\":{\"k\":\"v\"}}}}",
+        prefix ++ "user.input.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"session" ++
+            "_id\":\"s\",\"run_id\":\"r\",\"tool_call_id\":\"t\",\"title\":\"T\",\"description\":\"d\",\"allow_cancel\":true,\"question" ++
+            "s\":[{\"id\":\"q\",\"prompt\":\"p\",\"kind\":\"single_choice\",\"required\":true,\"options\":[{\"id\":\"o\",\"label\":\"O\",\"" ++
+            "description\":\"x\"}]},{\"id\":\"r\",\"prompt\":\"p2\"}],\"draft_answers\":[{\"question_id\":\"q\",\"selected_option_i" ++
+            "ds\":[\"o\"]},{\"question_id\":\"r\",\"text\":\"t\"}]}}",
+        prefix ++ "user.input.resolved\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\",\"responded_by\":\"u\",\"session_" ++
+            "id\":\"s\",\"run_id\":\"r\",\"status\":\"cancelled\",\"answers\":[{\"question_id\":\"q\",\"text\":\"t\"}]}}",
+        prefix ++ "capabilities.updated\",\"payload\":{\"previous_revision\":\"r0\",\"reason\":\"why\"}}",
     };
     for (lines) |line| {
         try std.testing.checkAllAllocationFailures(std.testing.allocator, decodeAndRelease, .{line});
@@ -3169,4 +3200,41 @@ test "a call event carrying a result keeps the result as json rather than as a s
     const written = try serializeEnvelope(decoded, allocator);
     defer allocator.free(written);
     try std.testing.expect(std.mem.indexOf(u8, written, "\"result\":{\"hits\":2") != null);
+}
+
+test "a requested event does not grow an outcome or a status its schema forbids" {
+    const allocator = std.testing.allocator;
+    var requested = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"id\":\"p\",\"type\":\"action.permission.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\"," ++
+            "\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"title\":\"T\",\"choices\":[{\"id\":\"a\",\"label\":\"A\"}]}}",
+        allocator,
+    );
+    defer requested.deinit(allocator);
+    const written = try serializeEnvelope(requested, allocator);
+    defer allocator.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "\"outcome\"") == null);
+
+    var gate = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"id\":\"i1\",\"type\":\"user.input.requested\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\"," ++
+            "\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"title\":\"T\",\"questions\":[]}}",
+        allocator,
+    );
+    defer gate.deinit(allocator);
+    const gate_written = try serializeEnvelope(gate, allocator);
+    defer allocator.free(gate_written);
+    try std.testing.expect(std.mem.indexOf(u8, gate_written, "\"status\"") == null);
+
+    var settled = try deserializeEnvelope(
+        "{\"protocol\":\"open-agent-protocol\",\"version\":\"0.1\",\"profile\":\"" ++ oap_types.PROFILE ++
+            "\",\"id\":\"p2\",\"type\":\"action.permission.resolved\",\"payload\":{\"interaction_id\":\"i\",\"requested_by\":\"e\"," ++
+            "\"responded_by\":\"u\",\"session_id\":\"s\",\"run_id\":\"r\",\"outcome\":\"rejected\",\"granted\":false}}",
+        allocator,
+    );
+    defer settled.deinit(allocator);
+    const settled_written = try serializeEnvelope(settled, allocator);
+    defer allocator.free(settled_written);
+    try std.testing.expect(std.mem.indexOf(u8, settled_written, "\"outcome\":\"rejected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, settled_written, "\"granted\":false") != null);
 }
