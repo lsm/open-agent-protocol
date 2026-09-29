@@ -272,6 +272,31 @@ space-separated term must appear, case-insensitively, in an item's label or deta
 `Backspace` edits the filter, `Up/Down` and `PgUp/PgDn` move, `Enter` selects and `Esc`
 closes; reopening a picker clears its filter.
 
+## Context window
+
+The window in effect is the model's own `context_window` until the session says
+otherwise. `/context` with no argument reports it, naming the model, the provider and
+the ceiling; `/context <tokens>` sets it for the session, and `/context default`
+restores the catalog's window. `oapx --tui --context-window <tokens>` sets the same
+window at startup, and a later `/context` in that session replaces it. A count is a
+whole number, optionally scaled by `k` or `m`, so `1m`, `272k` and `1000000` are the
+same request; anything else — a sign, a decimal, an empty string, a count that
+overflows — is refused rather than rounded.
+
+The window in effect is what the compaction budget is computed against and what the
+context gauge divides by, so the two cannot disagree: the runtime hands the agent a
+model carrying the session's window everywhere it hands it a model, which is at start,
+at a model switch, at a picker selection and when the catalog is refreshed.
+
+A value is refused when it is above the ceiling the model's row records in the provider
+catalog, and the refusal names the model, the ceiling and the window still in effect.
+Lowering is never refused. A model that records no ceiling is accepted at any size,
+because the window such a model arrives with is this repository's generic default rather
+than a statement about the model — the reply says so, and with it that the provider may
+refuse a request that size. A refusal is a limit on what this repository will ask for,
+not a claim about what the provider accepts: a window above what a model reports still
+fails the turn with the provider's own overflow error, and `/compact` is the way out.
+
 ## Compaction
 
 `/compact [focus]` replaces the agent's history with a summary the current model

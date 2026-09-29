@@ -4356,13 +4356,8 @@ test "App submit abort when streaming via runtime-only cancels and reports trans
 }
 
 test "App context moves the gauge, and the model's own window comes back" {
-    const runtime = try std.testing.allocator.create(tui_runtime.TuiRuntime);
-    errdefer std.testing.allocator.destroy(runtime);
-    runtime.* = try tui_runtime.TuiRuntime.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model} });
-    var app = App.initWithoutRuntime(std.testing.allocator);
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{test_model} });
     defer app.deinit();
-    app.runtime = runtime;
-    try app.state.status.setModelWithContext(std.testing.allocator, "mock-model", "mock", 1024);
 
     try app.submit("/context 512");
 
@@ -4370,7 +4365,7 @@ test "App context moves the gauge, and the model's own window comes back" {
     try std.testing.expectEqual(@as(u64, 512), app.state.telemetry.context_window);
     try std.testing.expectEqual(@as(u32, 512), app.runtime.?.currentModel().?.context_window);
 
-    try app.submit("/context");
+    try app.submit("/context default");
 
     try std.testing.expectEqual(@as(usize, 1024), app.state.status.context_limit);
     try std.testing.expectEqual(@as(u64, 1024), app.state.telemetry.context_window);

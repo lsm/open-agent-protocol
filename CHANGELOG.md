@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/context` sets the context window for a session (#559).** The window was
+  whatever the catalog resolved for the model, so a model that holds more than
+  the generic 128000 could not be given it. `/context <tokens>` and
+  `oapx --tui --context-window <tokens>` take a whole count, optionally scaled
+  by `k` or `m`; `/context` reports the window in effect with the model it
+  belongs to, and `/context default` restores the catalog's. The window in
+  effect is what the compaction budget is computed against and what the
+  context gauge divides by — the runtime hands the agent a model carrying it
+  everywhere it hands it a model, so a switch or a catalog refresh re-applies
+  it. A value above the ceiling the model's row records is refused naming the
+  model, the ceiling and the window still in effect; lowering is never refused,
+  and a model that records no ceiling is accepted at any size, with the reply
+  saying that the model reports no window of its own and the provider may
+  refuse a request that size. The persisted half follows #520.
 - **A design note for the Go tree's native agent loop (#370).**
   [`docs/go-agent-loop.md`](docs/go-agent-loop.md) maps `zig/src/agent/`'s loop
   — turns, tool execution, permissions, cancellation, compaction — onto what
