@@ -542,7 +542,7 @@ const context_test_model: ai_types.Model = .{
     .name = "GPT-5 Codex",
     .api = "openai-responses",
     .provider = "openai",
-    .base_url = "https://api.openai.com",
+    .base_url = "https://example.invalid",
     .reasoning = true,
     .input = &.{"text"},
     .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
