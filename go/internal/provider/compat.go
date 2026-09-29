@@ -90,13 +90,6 @@ type Model struct {
 	Cost            Cost
 }
 
-func holdsURL(baseURL string, hasBaseURL bool, needle string) bool {
-	if !hasBaseURL {
-		return false
-	}
-	return strings.Contains(baseURL, needle)
-}
-
 func isGitHubCopilotURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "githubcopilot.com")
 }
