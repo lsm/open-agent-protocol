@@ -847,6 +847,7 @@ pub const App = struct {
     pending_resume_path: []u8 = &.{},
     resume_without_worktree_id: []u8 = &.{},
     pending_delete_id: []u8 = &.{},
+    pending_delete_path: []u8 = &.{},
     worktree_attempted: bool = false,
     held_user_message: []u8 = &.{},
     queued_worktree_messages: std.ArrayList([]u8) = .empty,
@@ -974,6 +975,7 @@ pub const App = struct {
         if (self.pending_resume_path.len > 0) self.allocator.free(self.pending_resume_path);
         if (self.resume_without_worktree_id.len > 0) self.allocator.free(self.resume_without_worktree_id);
         if (self.pending_delete_id.len > 0) self.allocator.free(self.pending_delete_id);
+        if (self.pending_delete_path.len > 0) self.allocator.free(self.pending_delete_path);
         if (self.held_user_message.len > 0) self.allocator.free(self.held_user_message);
         for (self.queued_worktree_messages.items) |message| self.allocator.free(message);
         self.queued_worktree_messages.deinit(self.allocator);
@@ -1115,9 +1117,12 @@ pub const App = struct {
             errdefer job.deinit();
             const pending_id = try self.allocator.dupe(u8, id);
             errdefer self.allocator.free(pending_id);
+            const pending_path = try self.allocator.dupe(u8, info.path);
+            errdefer self.allocator.free(pending_path);
             try self.state.appendTranscript(.system, "Checking and removing the session worktree…");
             self.worktree_management_job = job;
             self.pending_delete_id = pending_id;
+            self.pending_delete_path = pending_path;
             return;
         }
         try self.finishDeleteSession(id);
@@ -1197,6 +1202,11 @@ pub const App = struct {
     pub fn resumeSelectedSession(self: *App) !void {
         if (self.worktree_job != null or self.worktree_management_job != null) {
             try self.state.appendTranscript(.system, "Wait for worktree setup to finish before resuming another session.");
+            return;
+        }
+        if (self.state.status.streaming) {
+            self.state.mode = .normal;
+            try self.state.appendTranscript(.system, "Cannot resume a session while a turn is running; wait for it to finish or abort it.");
             return;
         }
         self.discardPendingWorktreeSidecar();
@@ -2093,11 +2103,18 @@ pub const App = struct {
             const id = self.pending_delete_id;
             self.pending_delete_id = &.{};
             defer self.allocator.free(id);
+            const path = self.pending_delete_path;
+            self.pending_delete_path = &.{};
+            defer if (path.len > 0) self.allocator.free(path);
             switch (outcome) {
                 .dirty => try self.state.appendTranscript(.system, "Cannot delete this session: its worktree is dirty or Git could not verify it safely."),
                 .removed => |message| {
                     if (message) |text| try self.state.appendTranscript(.system, text);
-                    try self.finishDeleteSession(id);
+                    if (message != null and path.len > 0 and tui_worktree.pathExists(path)) {
+                        try self.state.appendTranscript(.system, "The session worktree could not be removed; keeping it and its worktree record.");
+                    } else {
+                        try self.finishDeleteSession(id);
+                    }
                 },
                 .failed => |message| try self.state.appendTranscript(.@"error", message),
                 else => return error.InvalidWorktreeOutcome,
