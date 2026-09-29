@@ -84,6 +84,7 @@ type Honoured struct {
 
 const (
 	CodeProtocolViolation   = "protocol_violation"
+	CodeEndpointError       = "endpoint_error"
 	CodeProviderUnavailable = "provider_unavailable"
 )
 

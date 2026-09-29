@@ -230,17 +230,100 @@ func TestPumpGatesAToolCallIdentityBothWays(t *testing.T) {
 	}
 }
 
-func TestATerminalWithNoContentSettlesAFailureTheValidatorAccepts(t *testing.T) {
+func TestAPartslessDoneCompletesWithEmptyContentTheWayTheSourceDoes(t *testing.T) {
 	state := NewState(&Ids{}, "i1", "m")
 	all := runTrace(t, state, provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: "stop"}})
 	validate(t, all)
 	terminal := all[len(all)-1]
+	if terminal.Type != "inference.completed" {
+		t.Fatalf("got a %s, want inference.completed: contentFromParts returns the empty text when no parts ended, and the schema allows a string content", terminal.Type)
+	}
+	message, ok := body(t, terminal)["message"].(map[string]any)
+	if !ok {
+		t.Fatalf("the terminal payload = %s, want a message", terminal.Payload)
+	}
+	if content, ok := message["content"].(string); !ok || content != "" {
+		t.Errorf("content = %v, want the empty string rather than an empty array: an array would need minItems 1", message["content"])
+	}
+}
+
+func TestADoneWithAPartStillOpenSettlesEndpointError(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventTextStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "a"},
+		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: "stop"}},
+	)
+	validate(t, all)
+	terminal := all[len(all)-1]
 	if terminal.Type != "inference.failed" {
-		t.Fatalf("got a %s, want inference.failed: an empty terminal would be a content array the schema refuses", terminal.Type)
+		t.Fatalf("got a %s, want inference.failed: a completed with a part.started that never ends is an invalid frame", terminal.Type)
 	}
 	failure := body(t, terminal)["error"].(map[string]any)
-	if failure["code"] != CodeProtocolViolation {
-		t.Errorf("the code = %v, want %s", failure["code"], CodeProtocolViolation)
+	if failure["code"] != CodeEndpointError {
+		t.Errorf("the code = %v, want %s: that is what the shipped path answers for a terminal it could not deliver, and the two codes sit in different taxonomy classes so a host would branch differently on each tree", failure["code"], CodeEndpointError)
+	}
+}
+
+func TestAFailureAbandonsTheOpenPartSoNothingScopedCanFollow(t *testing.T) {
+	state := NewState(&Ids{}, "i1", "m")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventTextStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "a"},
+		provider.Event{Kind: provider.EventError},
+	)
+	validate(t, all)
+	after, err := Pump(state, provider.Event{Kind: provider.EventTextEnd, ContentIndex: 0, Delta: "a"})
+	if err != ErrPartIndexMismatch {
+		t.Fatalf("a part ending after the failure = %v, want a mismatch: the failure abandoned the open part, so this index is not open", err)
+	}
+	if len(after) != 0 {
+		t.Errorf("a part ending after the failure emitted %v, want nothing: a stale open part would let scoped envelopes through after the terminal", typesOf(after))
+	}
+}
+
+func TestASignatureIsReadFromThePartThatIsEndingNotTheFirstOne(t *testing.T) {
+	first := provider.ThinkingPart{Thinking: "one", Signature: "sig-first"}
+	second := provider.ThinkingPart{Thinking: "two", Signature: "sig-second"}
+	state := NewState(&Ids{}, "i1", "anthropic/anthropic-messages@claude")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventThinkingEnd, ContentIndex: 0, Delta: "one",
+			Partial: provider.PartialMessage{Content: []provider.AssistantBlock{{Thinking: &first}, {Thinking: &second}}}},
+		provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 1},
+		provider.Event{Kind: provider.EventThinkingEnd, ContentIndex: 1, Delta: "two",
+			Partial: provider.PartialMessage{Content: []provider.AssistantBlock{{Thinking: &first}, {Thinking: &second}}}},
+		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{
+			StopReason: "stop",
+			Content:    []provider.AssistantBlock{{Thinking: &first}, {Thinking: &second}},
+		}},
+	)
+	validate(t, all)
+	if got := body(t, all[2])["carry"]; got != "sig-first" {
+		t.Errorf("the first part carries %v, want sig-first", got)
+	}
+	if got := body(t, all[4])["carry"]; got != "sig-second" {
+		t.Errorf("the second part carries %v, want sig-second: the signature is read by content_index, so reading the first thinking block would put the other part's signature on this one", got)
+	}
+}
+
+func TestAPartEndingBeyondThePartialHasNoSignature(t *testing.T) {
+	thinking := provider.ThinkingPart{Thinking: "one", Signature: "sig-first"}
+	state := NewState(&Ids{}, "i1", "m")
+	all := runTrace(t, state,
+		provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 0},
+		provider.Event{Kind: provider.EventThinkingEnd, ContentIndex: 0, Delta: "one",
+			Partial: provider.PartialMessage{Content: []provider.AssistantBlock{{Thinking: &thinking}}}},
+		provider.Event{Kind: provider.EventThinkingStart, ContentIndex: 1},
+		provider.Event{Kind: provider.EventThinkingEnd, ContentIndex: 1, Delta: "two",
+			Partial: provider.PartialMessage{Content: nil}},
+		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{
+			StopReason: "stop", Content: []provider.AssistantBlock{{Thinking: &thinking}},
+		}},
+	)
+	validate(t, all)
+	if got := body(t, all[4])["carry"]; got != nil {
+		t.Errorf("a part ending past the end of the partial carries %v, want nothing: the source yields null when the index is not a thinking part", got)
 	}
 }
 
@@ -341,24 +424,6 @@ func TestAnErrorAfterACompletedIsRefused(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Errorf("an error after the completed emitted %v, want nothing: the validator calls that event_after_terminal", typesOf(after))
-	}
-}
-
-func TestADoneWithAPartStillOpenSettlesAFailure(t *testing.T) {
-	state := NewState(&Ids{}, "i1", "m")
-	all := runTrace(t, state,
-		provider.Event{Kind: provider.EventTextStart, ContentIndex: 0},
-		provider.Event{Kind: provider.EventTextDelta, ContentIndex: 0, Delta: "a"},
-		provider.Event{Kind: provider.EventDone, Message: &provider.AssistantMessage{StopReason: "stop"}},
-	)
-	validate(t, all)
-	terminal := all[len(all)-1]
-	if terminal.Type != "inference.failed" {
-		t.Fatalf("got a %s, want inference.failed: a completed with a part.started that never ends is an invalid frame, and the draft wants that refused at emission", terminal.Type)
-	}
-	failure := body(t, terminal)["error"].(map[string]any)
-	if !strings.Contains(failure["message"].(string), "still open") {
-		t.Errorf("the failure message = %v, want it to name the part still open", failure["message"])
 	}
 }
 

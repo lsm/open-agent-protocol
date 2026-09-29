@@ -19,13 +19,15 @@ type openPart struct {
 	kind  string
 }
 
-func carriedSignature(partial provider.PartialMessage) string {
-	for _, block := range partial.Content {
-		if block.Thinking != nil {
-			return block.Thinking.Signature
-		}
+func carriedSignature(partial provider.PartialMessage, contentIndex int) string {
+	if contentIndex < 0 || contentIndex >= len(partial.Content) {
+		return ""
 	}
-	return ""
+	block := partial.Content[contentIndex]
+	if block.Thinking == nil {
+		return ""
+	}
+	return block.Thinking.Signature
 }
 
 func Pump(state *State, event provider.Event) ([]Envelope, error) {
@@ -44,8 +46,8 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 			return nil, nil
 		}
 		if state.open != nil {
-			return []Envelope{settleFailed(state, CodeProtocolViolation,
-				"the provider settled with a part still open")}, nil
+			return []Envelope{settleFailed(state, CodeEndpointError,
+				"the endpoint could not deliver the terminal for this inference")}, nil
 		}
 		return []Envelope{settleCompleted(state, event)}, nil
 	}
@@ -96,7 +98,7 @@ func Pump(state *State, event provider.Event) ([]Envelope, error) {
 			held := event.Delta
 			part.Text = &held
 			if part.PartKind == "reasoning" {
-				part.Carry = carriedSignature(event.Partial)
+				part.Carry = carriedSignature(event.Partial, event.ContentIndex)
 			}
 		case "tool_call":
 			call := event.ToolCall
@@ -153,9 +155,6 @@ func settleCompleted(state *State, event provider.Event) Envelope {
 		stopReason = event.Message.StopReason
 	}
 	content := state.ended
-	if len(content) == 0 {
-		return settleFailed(state, CodeProtocolViolation, "the provider settled with no content")
-	}
 	envelope, err := state.Completed(stopReason, content)
 	if err != nil {
 		return settleFailed(state, CodeProtocolViolation, err.Error())
@@ -164,6 +163,7 @@ func settleCompleted(state *State, event provider.Event) Envelope {
 }
 
 func settleFailed(state *State, code, message string) Envelope {
+	state.open = nil
 	envelope, err := state.Failed(code, message)
 	if err != nil {
 		return Envelope{Type: "inference.failed", Payload: json.RawMessage(`{}`)}
