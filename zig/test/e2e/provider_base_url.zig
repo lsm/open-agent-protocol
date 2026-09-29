@@ -64,8 +64,7 @@ fn capturingStream(
 
     const s = try allocator.create(event_stream.AssistantMessageEventStream);
     s.* = event_stream.AssistantMessageEventStream.init(allocator);
-    s.owns_events = true;
-    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     s.complete(.{
         .content = &.{},
         .api = "test-api",

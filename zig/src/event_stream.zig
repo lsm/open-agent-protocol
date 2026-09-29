@@ -10,6 +10,15 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         const RING_BUFFER_MASK = RING_BUFFER_SIZE - 1;
         pub const usable_capacity = RING_BUFFER_SIZE - 1;
 
+        pub const Ownership = union(enum) {
+            borrowed,
+            owned: *const fn (std.mem.Allocator, T) error{OutOfMemory}!T,
+
+            pub fn isOwned(self: Ownership) bool {
+                return self == .owned;
+            }
+        };
+
         ring_buffer: [RING_BUFFER_SIZE]T,
         published: [RING_BUFFER_SIZE]std.atomic.Value(bool),
         head: std.atomic.Value(usize),
@@ -25,8 +34,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
         allocator: std.mem.Allocator,
         wait_for_thread_on_deinit: bool = false,
         join_timeout_ms: u64 = DEINIT_THREAD_JOIN_TIMEOUT_MS,
-        owns_events: bool = false,
-        clone_event_fn: ?*const fn (std.mem.Allocator, T) error{OutOfMemory}!T = null,
+        ownership: Ownership = .borrowed,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             var published: [RING_BUFFER_SIZE]std.atomic.Value(bool) = undefined;
@@ -79,7 +87,7 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                 }
             };
             if (comptime is_assistant_message_event) {
-                if (self.owns_events) {
+                if (self.ownership.isOwned()) {
                     ai_types.deinitAssistantMessageEvent(self.allocator, event);
                 }
             } else if (comptime event_has_deinit) {
@@ -174,12 +182,13 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                     return error.QueueFull;
                 }
 
-                if (self.owns_events) {
-                    if (self.clone_event_fn) |clone_fn| {
+                switch (self.ownership) {
+                    .borrowed => {},
+                    .owned => |clone_fn| {
                         if (owned_event == null) {
                             owned_event = try clone_fn(self.allocator, event);
                         }
-                    }
+                    },
                 }
 
                 if (self.head.cmpxchgWeak(current_head, next_head, .acquire, .acquire)) |_| {
@@ -187,14 +196,14 @@ pub fn EventStream(comptime T: type, comptime R: type) type {
                 }
 
                 var event_to_store = event;
-                if (self.owns_events) {
-                    if (self.clone_event_fn) |clone_fn| {
-                        _ = clone_fn;
+                switch (self.ownership) {
+                    .borrowed => {},
+                    .owned => {
                         if (owned_event) |*owned| {
                             event_to_store = owned.*;
                             owned_event = null;
                         }
-                    }
+                    },
                 }
                 self.ring_buffer[current_head] = event_to_store;
 
@@ -791,12 +800,46 @@ test "AssistantMessageStream cloneResult returns null on error-completed stream"
     try std.testing.expectEqualStrings("boom", stream.getError().?);
 }
 
+test "an owned stream copies what it is pushed, so it never frees the producer's event" {
+    const allocator = std.testing.allocator;
+
+    var stream = AssistantMessageStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    defer stream.deinit();
+
+    const text = try allocator.dupe(u8, "producer owns this");
+    const partial = ai_types.AssistantMessage{
+        .content = &.{},
+        .api = "test-api",
+        .provider = "test-provider",
+        .model = "test-model",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    };
+
+    try stream.push(.{ .text_delta = .{
+        .content_index = 0,
+        .delta = text,
+        .partial = partial,
+    } });
+
+    const copied = stream.poll().?;
+    try std.testing.expect(copied.text_delta.delta.ptr != text.ptr);
+    try std.testing.expectEqualStrings("producer owns this", copied.text_delta.delta);
+
+    allocator.free(text);
+    try std.testing.expectEqualStrings("producer owns this", copied.text_delta.delta);
+
+    var drained = copied;
+    ai_types.deinitAssistantMessageEvent(allocator, &drained);
+}
+
 test "AssistantMessageStream owned events: consumer frees each polled event" {
     const allocator = std.testing.allocator;
 
     var stream = AssistantMessageStream.init(allocator);
-    stream.owns_events = true;
-    stream.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const partial = ai_types.AssistantMessage{
         .content = &.{},
@@ -855,8 +898,7 @@ test "AssistantMessageStream owned events: releaseEvent frees polled events" {
     const allocator = std.testing.allocator;
 
     var stream = AssistantMessageStream.init(allocator);
-    stream.owns_events = true;
-    stream.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
     const partial = ai_types.AssistantMessage{
         .content = &.{},
