@@ -746,6 +746,7 @@ pub const App = struct {
 
     pub fn resumeSelectedSession(self: *App) !void {
         const store = self.store orelse return error.NoStoreConfigured;
+        try self.dropPendingAfterCompaction("the session was resumed before the compaction finished");
         if (self.state.session_index >= self.state.sessions.items.len) return;
         const selected = self.state.sessions.items[self.state.session_index];
         const runtime = if (self.runtime) |r| r else return error.NoRuntimeConfigured;
@@ -1542,6 +1543,7 @@ pub const App = struct {
                 self.pending_session_reset = false;
             }
         }
+        var resumed_run = false;
         if (completed_agent_end and self.state.queue.total() > 0) {
             session.resumeSession() catch |err| {
                 try self.state.status.setError(self.allocator, @errorName(err));
@@ -1549,10 +1551,11 @@ pub const App = struct {
                 return;
             };
             self.refreshQueuedCounts();
+            resumed_run = true;
         }
         if (self.compaction_just_ended) |completed| {
             self.compaction_just_ended = null;
-            try self.sendPendingAfterCompaction(completed);
+            try self.sendPendingAfterCompaction(completed, resumed_run or self.state.status.streaming);
         }
     }
 
@@ -1683,14 +1686,27 @@ pub const App = struct {
         return true;
     }
 
-    fn sendPendingAfterCompaction(self: *App, completed: bool) !void {
+    fn sendPendingAfterCompaction(self: *App, completed: bool, busy: bool) !void {
         const pending = self.pending_after_compaction orelse return;
         self.pending_after_compaction = null;
         defer self.allocator.free(pending);
         if (!completed) {
             try self.state.appendTranscript(.system, "the automatic compaction did not finish; sending the message with the history unchanged");
         }
+        if (busy) {
+            try self.steer(pending);
+            return;
+        }
         try self.sendUserTurn(pending);
+    }
+
+    fn dropPendingAfterCompaction(self: *App, reason: []const u8) !void {
+        const pending = self.pending_after_compaction orelse return;
+        self.pending_after_compaction = null;
+        defer self.allocator.free(pending);
+        const msg = try std.fmt.allocPrint(self.allocator, "a message waiting on an automatic compaction was not sent: {s}.", .{reason});
+        defer self.allocator.free(msg);
+        try self.state.appendTranscript(.system, msg);
     }
 
     pub fn steer(self: *App, text: []const u8) !void {
@@ -4113,6 +4129,54 @@ test "autocompact leaves a turn alone below the share, and when it is off" {
 
     try std.testing.expectEqual(@as(usize, 0), mock.compact_count);
     try std.testing.expectEqual(@as(usize, 2), mock.submit_count);
+}
+
+test "autocompact steers the held turn rather than blocking on a run the queue resumed" {
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+
+    try app.submit("held turn");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    mock.queued_counts.follow_up = 1;
+    try mock.eventStream().push(.{ .compaction_end = .{ .outcome = .completed } });
+    try app.drainEvents();
+
+    try std.testing.expectEqual(@as(usize, 1), mock.resume_count);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    try std.testing.expectEqual(@as(usize, 1), mock.steer_count);
+}
+
+test "a session resume drops a held turn with a note, before the resume runs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var mock = MockAppSession{ .history_messages = &auto_compact_history };
+    defer mock.deinit();
+    var app = try autoCompactTestApp(&mock);
+    defer app.deinit();
+    if (app.store) |*store| store.deinit();
+    app.store = try session_store.Store.init(std.testing.allocator, base);
+    try saveTestSession(app.store.?, "s1", 1);
+    try app.loadSessions();
+    app.state.session_index = 0;
+
+    try app.submit("held turn");
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+
+    app.resumeSelectedSession() catch {};
+
+    try std.testing.expect(app.pending_after_compaction == null);
+    try std.testing.expectEqual(@as(usize, 0), mock.submit_count);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "was not sent: the session was resumed") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
 }
 
 test "autocompact does not compact a history that is already a summary" {

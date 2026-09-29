@@ -292,9 +292,12 @@ again.
 When it fires, the transcript says so, the compaction runs exactly as `/compact` runs it
 (down to the transcript it writes), and the held message is sent when the compaction ends —
 including when it was cancelled or failed, because a message the user typed is not something
-to drop quietly; that case says the history is unchanged. A session whose history is
-already a summary, or empty, is not compacted again, and one automatic compaction runs at a
-time.
+to drop quietly; that case says the history is unchanged. A message the queue resumes while
+the compaction finishes is steered rather than submitted, so waiting for a turn never blocks
+the tick thread. A `/resume` that lands before the compaction ends drops the held message
+with a note saying so, at the top of the resume, so it cannot be sent into the session that
+replaced it. A session whose history is already a summary, or empty, is not compacted
+again, and one automatic compaction runs at a time.
 
 ## Compaction
 
