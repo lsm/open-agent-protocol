@@ -271,6 +271,7 @@ type wireModelsResponse struct {
 	Models        []wireModelDescriptor `json:"models"`
 	FetchedAtMs   *float64              `json:"fetched_at_ms"`
 	CacheMaxAgeMs *float64              `json:"cache_max_age_ms"`
+	Catalog       *wireModelCatalog     `json:"catalog"`
 }
 
 type wireModelDescriptor struct {
@@ -287,7 +288,70 @@ type wireModelDescriptor struct {
 	ContextWindow    *float64          `json:"context_window"`
 	MaxOutputTokens  *float64          `json:"max_output_tokens"`
 	ReasoningDefault *string           `json:"reasoning_default"`
+	Cost             *wireModelCost    `json:"cost"`
+	InputModalities  *[]string         `json:"input_modalities"`
+	OutputModalities *[]string         `json:"output_modalities"`
+	ReasoningLevels  *[]string         `json:"reasoning_levels"`
+	ReleaseDate      *string           `json:"release_date"`
+	Family           *string           `json:"family"`
 	Metadata         map[string]string `json:"metadata"`
+}
+
+type wireModelCost struct {
+	Input      *float64 `json:"input"`
+	Output     *float64 `json:"output"`
+	CacheRead  *float64 `json:"cache_read"`
+	CacheWrite *float64 `json:"cache_write"`
+}
+
+type wireModelCatalog struct {
+	ObservedAtMS *float64 `json:"observed_at_ms"`
+	Complete     *bool    `json:"complete"`
+}
+
+func (w *wireModelCost) descriptor() *ModelCost {
+	if w == nil {
+		return nil
+	}
+	cost := &ModelCost{}
+	if w.Input != nil {
+		cost.Input = *w.Input
+	}
+	if w.Output != nil {
+		cost.Output = *w.Output
+	}
+	if w.CacheRead != nil {
+		cost.CacheRead = *w.CacheRead
+	}
+	if w.CacheWrite != nil {
+		cost.CacheWrite = *w.CacheWrite
+	}
+	return cost
+}
+
+func text(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func reasoningLevelsOf(values *[]string) []ReasoningLevel {
+	if values == nil {
+		return nil
+	}
+	levels := make([]ReasoningLevel, 0, len(*values))
+	for _, value := range *values {
+		levels = append(levels, ReasoningLevel(value))
+	}
+	return levels
+}
+
+func stringsOf(values *[]string) []string {
+	if values == nil {
+		return nil
+	}
+	return *values
 }
 
 func parseModelsResponse(f *frame, streamID string) (*ListModelsResponse, error) {
@@ -308,6 +372,17 @@ func parseModelsResponse(f *frame, streamID string) (*ListModelsResponse, error)
 		return nil, malformed("models_response is missing a numeric 'fetched_at_ms'")
 	}
 
+	var catalog *ModelCatalog
+	if wire.Catalog != nil {
+		catalog = &ModelCatalog{}
+		if wire.Catalog.ObservedAtMS != nil {
+			catalog.ObservedAtMS = int64(*wire.Catalog.ObservedAtMS)
+		}
+		if wire.Catalog.Complete != nil {
+			catalog.Complete = *wire.Catalog.Complete
+		}
+	}
+
 	cacheMaxAge := defaultCacheMaxAge
 	if wire.CacheMaxAgeMs != nil {
 		cacheMaxAge = time.Duration(*wire.CacheMaxAgeMs) * time.Millisecond
@@ -323,6 +398,7 @@ func parseModelsResponse(f *frame, streamID string) (*ListModelsResponse, error)
 	}
 	return &ListModelsResponse{
 		Models:      models,
+		Catalog:     catalog,
 		FetchedAt:   time.UnixMilli(int64(*wire.FetchedAtMs)),
 		CacheMaxAge: cacheMaxAge,
 	}, nil
@@ -365,17 +441,23 @@ func parseModelDescriptor(raw wireModelDescriptor, index int, streamID string) (
 	}
 
 	model := ModelDescriptor{
-		ModelRef:     raw.ModelRef,
-		ModelID:      raw.ModelID,
-		DisplayName:  raw.DisplayName,
-		ProviderID:   raw.ProviderID,
-		API:          raw.API,
-		BaseURL:      raw.BaseURL,
-		AuthStatus:   AuthStatus(raw.AuthStatus),
-		Lifecycle:    ModelLifecycle(raw.Lifecycle),
-		Capabilities: capabilities,
-		Source:       ModelSource(raw.Source),
-		Metadata:     raw.Metadata,
+		ModelRef:         raw.ModelRef,
+		ModelID:          raw.ModelID,
+		DisplayName:      raw.DisplayName,
+		ProviderID:       raw.ProviderID,
+		API:              raw.API,
+		BaseURL:          raw.BaseURL,
+		AuthStatus:       AuthStatus(raw.AuthStatus),
+		Lifecycle:        ModelLifecycle(raw.Lifecycle),
+		Capabilities:     capabilities,
+		Source:           ModelSource(raw.Source),
+		Metadata:         raw.Metadata,
+		Cost:             raw.Cost.descriptor(),
+		InputModalities:  stringsOf(raw.InputModalities),
+		OutputModalities: stringsOf(raw.OutputModalities),
+		ReasoningLevels:  reasoningLevelsOf(raw.ReasoningLevels),
+		ReleaseDate:      text(raw.ReleaseDate),
+		Family:           text(raw.Family),
 	}
 	if raw.ContextWindow != nil {
 		model.ContextWindow = int(*raw.ContextWindow)
