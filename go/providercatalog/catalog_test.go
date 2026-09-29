@@ -91,15 +91,19 @@ func TestLoadReadsTheContextWindowCeilingAndOnlyTheRowsThatStateOneDo(t *testing
 			t.Errorf("%s records a window of %d above its own ceiling of %d", provider.ID, provider.ContextWindow, provider.MaxContextWindow)
 		}
 		for _, model := range provider.Models {
+			window := model.ContextWindow
+			if window == 0 {
+				window = provider.ContextWindow
+			}
 			limit := model.MaxContextWindow
 			if limit == 0 {
 				limit = provider.MaxContextWindow
 			}
-			if model.ContextWindow == 0 || limit == 0 {
+			if window == 0 || limit == 0 {
 				continue
 			}
-			if model.ContextWindow > limit {
-				t.Errorf("%s model %s records a window of %d above the ceiling of %d it resolves", provider.ID, model.ID, model.ContextWindow, limit)
+			if window > limit {
+				t.Errorf("%s model %s resolves a window of %d above the ceiling of %d it resolves", provider.ID, model.ID, window, limit)
 			}
 		}
 	}

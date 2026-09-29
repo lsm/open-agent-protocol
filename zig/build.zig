@@ -3298,13 +3298,12 @@ fn providerCatalogDataModule(b: *std.Build, target: std.Build.ResolvedTarget, op
             }
         }
         for (row.models) |model| {
-            if (model.context_window) |window| {
-                const ceiling = model.max_context_window orelse row.max_context_window orelse continue;
-                if (window > ceiling) std.debug.panic(
-                    "providers/catalog.json gives {s}'s model {s} a context_window of {d} above the {d} it resolves, so the window would be one the ceiling refuses",
-                    .{ row.id, model.id, window, ceiling },
-                );
-            }
+            const window = model.context_window orelse row.context_window orelse continue;
+            const ceiling = model.max_context_window orelse row.max_context_window orelse continue;
+            if (window > ceiling) std.debug.panic(
+                "providers/catalog.json gives {s}'s model {s} a context_window of {d} above the {d} it resolves, so the window would be one the ceiling refuses",
+                .{ row.id, model.id, window, ceiling },
+            );
         }
     }
     var out = std.ArrayList(u8).empty;
