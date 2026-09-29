@@ -2474,6 +2474,13 @@ fn hubBindRefusal(stderr: std.Io.File, message: []const u8) error{InvalidHubOpti
     return error.InvalidHubOption;
 }
 const hub_accept_poll_ms: i32 = 50;
+const hub_io_cycle_ms: i32 = 50;
+
+const keepGoing = hub_http.KeepGoing{ .context = undefined, .check = hubSignalled };
+
+fn hubSignalled(_: *const anyopaque) bool {
+    return !endpoint_signals.received();
+}
 
 
 fn runHubHttp(
@@ -2530,12 +2537,25 @@ fn runHubHttp(
         defer scratch_state.deinit();
         const scratch = scratch_state.allocator();
         var body_allowed = true;
-        var request = hub_http.readRequest(scratch, &connection.stream, hub_http.header_read_ms, hub_http.idle_read_ms, &body_allowed) catch |failure| {
+        var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed) catch |failure| {
+            if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
             continue;
         };
         defer request.deinit(scratch);
-        hub_http.writeAnswer(&connection.stream, scratch, next_id, hub_http.answer(allow orelse &.{}, request), body_allowed) catch {};
+        const answered = hub_http.answer(allow orelse &.{}, request);
+        if (answered != .not_found) {
+            hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+            continue;
+        }
+        try compat.stdio.writeAll(stderr, "\n");
+        hub_http.readBody(scratch, &connection.stream, &request, hub_http.idle_read_ms, hub_io_cycle_ms, keepGoing) catch |failure| {
+            try compat.stdio.writeAll(stderr, "\n");
+            if (failure == error.Stopped) break;
+            hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
+            continue;
+        };
+        hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
     }
     try compat.stdio.writeAll(stderr, "oapx: shutting down\n");
     sweepHubSessions(core, stderr);

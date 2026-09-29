@@ -19,6 +19,7 @@ pub const Failure = error{
     BodyTooLarge,
     BodyTruncated,
     ReadFailed,
+    Stopped,
     Timeout,
     UnsupportedTransferEncoding,
 } || std.mem.Allocator.Error;
@@ -66,6 +67,7 @@ pub const Request = struct {
     origin: bool = false,
     content_type: ?[]const u8 = null,
     content_length: usize = 0,
+    filled: usize = 0,
     body: []u8 = &.{},
 
     pub fn deinit(self: *Request, allocator: std.mem.Allocator) void {
@@ -99,22 +101,41 @@ fn elapsedMs() !u64 {
     return @intCast(try compat.time.monotonicNanos() / std.time.ns_per_ms);
 }
 
-fn readUntil(stream: *compat.net.Stream, buffer: []u8, deadline_ms: u64) Failure!usize {
-    const left_ms: i64 = @as(i64, @intCast(deadline_ms)) - @as(i64, @intCast(elapsedMs() catch 0));
-    if (left_ms <= 0) return error.Timeout;
-    if (comptime !pollable) return stream.read(buffer) catch error.ReadFailed;
-    const ready = compat.net.readableWithin(compat.net.streamHandle(stream), @intCast(@min(left_ms, @as(i64, std.math.maxInt(i32))))) catch return error.ReadFailed;
-    if (!ready) return error.Timeout;
-    return stream.read(buffer) catch error.ReadFailed;
+pub const KeepGoing = struct {
+    context: *const anyopaque = undefined,
+    check: *const fn (*const anyopaque) bool,
+
+    fn yes(self: KeepGoing) bool {
+        return self.check(self.context);
+    }
+};
+
+pub const always_going = KeepGoing{ .context = undefined, .check = struct {
+    fn yes(_: *const anyopaque) bool {
+        return true;
+    }
+}.yes };
+
+fn readUntil(stream: *compat.net.Stream, buffer: []u8, deadline_ms: u64, cycle_ms: i32, keep_going: KeepGoing) Failure!usize {
+    while (true) {
+        if (!keep_going.yes()) return error.Stopped;
+        const left_ms: i64 = @as(i64, @intCast(deadline_ms)) - @as(i64, @intCast(elapsedMs() catch 0));
+        if (left_ms <= 0) return error.Timeout;
+        if (comptime !pollable) return stream.read(buffer) catch error.ReadFailed;
+        const wait: i32 = @intCast(@min(left_ms, @as(i64, @max(@as(i64, cycle_ms), 1))));
+        const ready = compat.net.readableWithin(compat.net.streamHandle(stream), wait) catch return error.ReadFailed;
+        if (!ready) continue;
+        return stream.readSome(buffer) catch error.ReadFailed;
+    }
 }
 
-pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, idle_wait_ms: i32, body_allowed: *bool) Failure!Request {
+pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing, body_allowed: *bool) Failure!Request {
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
     var byte: [1]u8 = undefined;
     const headers_done = (elapsedMs() catch 0) + @as(u64, @intCast(@max(header_wait_ms, 0)));
     while (head.items.len < max_header_bytes) {
-        const n = try readUntil(stream, &byte, headers_done);
+        const n = try readUntil(stream, &byte, headers_done, cycle_ms, keep_going);
         if (n == 0) return error.Truncated;
         try head.append(allocator, byte[0]);
         if (std.mem.endsWith(u8, head.items, "\r\n\r\n")) break;
@@ -165,15 +186,24 @@ pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, hea
     }
 
     if (request.content_length > max_body_bytes) return error.BodyTooLarge;
-    if (request.content_length == 0) return request;
+    return request;
+}
+
+pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, request: *Request, idle_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing) Failure!void {
+    if (request.content_length == 0) return;
     request.body = try allocator.alloc(u8, request.content_length);
     const idle_ms: u64 = @intCast(@max(idle_wait_ms, 0));
-    var filled: usize = 0;
-    while (filled < request.body.len) {
-        const n = try readUntil(stream, request.body[filled..], (elapsedMs() catch 0) + idle_ms);
+    while (request.filled < request.body.len) {
+        const n = try readUntil(stream, request.body[request.filled..], (elapsedMs() catch 0) + idle_ms, cycle_ms, keep_going);
         if (n == 0) return error.BodyTruncated;
-        filled += n;
+        request.filled += n;
     }
+}
+
+pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, idle_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing, body_allowed: *bool) Failure!Request {
+    var request = try readHead(allocator, stream, header_wait_ms, cycle_ms, keep_going, body_allowed);
+    errdefer request.deinit(allocator);
+    try readBody(allocator, stream, &request, idle_wait_ms, cycle_ms, keep_going);
     return request;
 }
 
@@ -360,6 +390,7 @@ pub fn defaultBind() []const u8 {
 }
 
 const testing = std.testing;
+const test_cycle_ms: i32 = 20;
 
 var spare = true;
 
@@ -414,7 +445,7 @@ fn parseUnder(allocator: std.mem.Allocator, raw: []const u8) !void {
     var pipe = try Pipe.openWith(allocator);
     defer pipe.close();
     try pipe.client.writeAll(raw);
-    var request = try readRequest(allocator, &pipe.accepted, header_read_ms, idle_read_ms, fresh());
+    var request = try readRequest(allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh());
     request.deinit(allocator);
 }
 
@@ -427,7 +458,7 @@ fn requestOver(raw: []const u8) !Request {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll(raw);
-    return readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, fresh());
+    return readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh());
 }
 
 test "a HEAD request is read like any other, so the answer can be shaped from its method" {
@@ -502,7 +533,7 @@ test "a body over the cap is refused before it is read" {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 16777217\r\n\r\n");
-    try testing.expectError(error.BodyTooLarge, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, fresh()));
+    try testing.expectError(error.BodyTooLarge, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh()));
 }
 
 test "a client that hangs up mid-body is refused request_read, as the draft pins it" {
@@ -512,7 +543,7 @@ test "a client that hangs up mid-body is refused request_read, as the draft pins
     try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 64\r\n\r\n\"{\"a\":");
     const io = if (@import("builtin").is_test) std.testing.io else std.Io.Threaded.global_single_threaded.io();
     pipe.client.inner.shutdown(io, .send) catch return error.NoHalfClose;
-    try testing.expectError(error.BodyTruncated, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, fresh()));
+    try testing.expectError(error.BodyTruncated, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh()));
     var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch_state.deinit();
     try writeTransportFailure(&pipe.accepted, scratch_state.allocator(), 4, error.BodyTruncated, true);
@@ -534,7 +565,7 @@ test "a host that hangs up mid-request is truncated, not answered" {
     var accepted = connection.stream;
     defer accepted.close();
     client.close();
-    try testing.expectError(error.Truncated, readRequest(testing.allocator, &accepted, header_read_ms, idle_read_ms, fresh()));
+    try testing.expectError(error.Truncated, readRequest(testing.allocator, &accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh()));
 }
 
 test "the read budget bounds a read only where the socket can be waited on" {
@@ -558,7 +589,7 @@ test "a peer that connects and never sends a request is given up on, not waited 
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
     var pipe = try Pipe.open();
     defer pipe.close();
-    try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 50, idle_read_ms, fresh()));
+    try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 50, idle_read_ms, test_cycle_ms, always_going, fresh()));
     try testing.expectEqualStrings(request_timeout, statusFor(error.Timeout));
 }
 
@@ -568,7 +599,7 @@ test "the header budget is the whole request's, not a fresh one per byte" {
     defer pipe.close();
     try pipe.client.writeAll("G");
     const started = elapsedMs() catch 0;
-    try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 120, idle_read_ms, fresh()));
+    try testing.expectError(error.Timeout, readRequest(testing.allocator, &pipe.accepted, 120, idle_read_ms, test_cycle_ms, always_going, fresh()));
     try testing.expect((elapsedMs() catch 0) - started < 2000);
 }
 
@@ -576,7 +607,7 @@ test "a header whose name merely starts with a known one is not that header" {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("GET /adapters HTTP/1.1\r\nHostname: evil.test\r\nOrigin-Repeat: 1\r\nContent-Types: 7\r\n\r\n");
-    var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, fresh());
+    var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh());
     defer request.deinit(testing.allocator);
     try testing.expect(request.host == null);
     try testing.expect(!request.origin);
@@ -649,7 +680,7 @@ test "a HEAD is answered with the length a GET would send and no body at all" {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("HEAD /adapters HTTP/1.1\r\nHost: 127.0.0.1:6270\r\n\r\n");
-    var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, fresh());
+    var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh());
     request.deinit(testing.allocator);
     var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch_state.deinit();
@@ -668,7 +699,7 @@ test "a HEAD whose read fails after its method gets no body either" {
     defer pipe.close();
     try pipe.client.writeAll("HEAD / HTTP/1.1\r\nHost: a\r\nContent-Length: 16777217\r\n\r\n");
     var body_allowed = true;
-    try testing.expectError(error.BodyTooLarge, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, &body_allowed));
+    try testing.expectError(error.BodyTooLarge, readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, &body_allowed));
     try testing.expect(!body_allowed);
     var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer scratch_state.deinit();
@@ -747,7 +778,7 @@ test "the daemon answers over a real socket, and the bytes say which refusal it 
         var pipe = try Pipe.open();
         defer pipe.close();
         try pipe.client.writeAll(case.raw);
-        var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, fresh());
+        var request = try readRequest(testing.allocator, &pipe.accepted, header_read_ms, idle_read_ms, test_cycle_ms, always_going, fresh());
         defer request.deinit(testing.allocator);
         var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
         defer scratch_state.deinit();
@@ -816,6 +847,118 @@ test "a request that could not be read is answered as a transport failure, never
         try testing.expectEqual(declared, body.len);
         try testing.expect(declared > 0);
     }
+}
+
+const flipped = struct {
+    var stop: std.atomic.Value(bool) = .init(false);
+    const context: u8 = 0;
+
+    fn after(_: *const anyopaque) bool {
+        return !stop.load(.acquire);
+    }
+
+    fn waitThenFlip() void {
+        compat.time.sleepMs(120);
+        stop.store(true, .release);
+    }
+};
+
+test "a poll waiting on a silent peer is re-checked inside its cycle, not held to its deadline" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    flipped.stop.store(false, .release);
+    const thread = try std.Thread.spawn(.{}, flipped.waitThenFlip, .{});
+    defer thread.join();
+    var body = try bodyOf(testing.allocator, 8);
+    defer body.deinit(testing.allocator);
+    const started = compat.time.nowMillis();
+    const outcome = readBody(testing.allocator, &pipe.accepted, &body, 120_000, 20, .{ .context = @ptrCast(&flipped), .check = flipped.after });
+    const spent = compat.time.nowMillis() - started;
+    try testing.expectError(error.Stopped, outcome);
+    try testing.expect(spent < 3000);
+    try testing.expectEqual(@as(usize, 0), body.filled);
+}
+
+test "a body that arrives in part is taken as it comes, and never waited on for the rest" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("POST /adapters/memory/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 64\r\n\r\n{\"a\":");
+    var body_allowed = true;
+    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed);
+    defer head.deinit(testing.allocator);
+    flipped.stop.store(false, .release);
+    const thread = try std.Thread.spawn(.{}, flipped.waitThenFlip, .{});
+    defer thread.join();
+    const started = compat.time.nowMillis();
+    const outcome = readBody(testing.allocator, &pipe.accepted, &head, 120_000, 20, .{ .context = @ptrCast(&flipped), .check = flipped.after });
+    const spent = compat.time.nowMillis() - started;
+    try testing.expectError(error.Stopped, outcome);
+    try testing.expect(spent < 3000);
+    try testing.expectEqual(@as(usize, 5), head.filled);
+    try testing.expectEqualStrings("{\"a\":", head.body[0..head.filled]);
+}
+
+test "a read in flight gives up when the daemon is told to stop, rather than waiting out its deadline" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 8\r\n\r\n{\"a\":");
+    const started = elapsedMs() catch 0;
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var body = try bodyOf(arena, 8);
+    try testing.expectError(error.Stopped, readBody(arena, &pipe.accepted, &body, 60_000, 20, .{
+        .context = undefined,
+        .check = struct {
+            fn stop(_: *const anyopaque) bool {
+                return false;
+            }
+        }.stop,
+    }));
+    try testing.expect((elapsedMs() catch 0) - started < 500);
+}
+
+fn bodyOf(allocator: std.mem.Allocator, length: usize) Failure!Request {
+    var request = Request{ .method = &.{}, .target = &.{}, .split = .{ .path = &.{}, .query = &.{} }, .content_length = length };
+    errdefer request.deinit(allocator);
+    request.method = try allocator.dupe(u8, "POST");
+    request.target = try allocator.dupe(u8, "/");
+    request.split = try splitTarget(allocator, "/");
+    return request;
+}
+
+test "the trust model is decided on the head, so a refused request never waits on a body it will not read" {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: evil.test\r\nOrigin: http://evil.test\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n");
+    var body_allowed = true;
+    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed);
+    defer head.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 4096), head.content_length);
+    try testing.expectEqual(@as(usize, 0), head.body.len);
+    try testing.expectEqualStrings("cross_origin_request", answer(loopbackHosts("127.0.0.1:0").?, head).refusal.code);
+    var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch_state.deinit();
+    try writeAnswer(&pipe.accepted, scratch_state.allocator(), 2, answer(loopbackHosts("127.0.0.1:0").?, head), body_allowed);
+    pipe.closeAccepted();
+    var spoken: [4096]u8 = undefined;
+    const said = try readToEnd(&pipe.client, &spoken);
+    try testing.expect(std.mem.indexOf(u8, said, "cross_origin_request") != null);
+}
+
+test "a body is read only when a route wants it, and the read is the same one a GET would get" {
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 4\r\n\r\nbody");
+    var body_allowed = true;
+    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed);
+    defer head.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), head.body.len);
+    try readBody(testing.allocator, &pipe.accepted, &head, idle_read_ms, test_cycle_ms, always_going);
+    try testing.expectEqualStrings("body", head.body);
 }
 
 test "the default bind is loopback, so every default user keeps the allowlist" {

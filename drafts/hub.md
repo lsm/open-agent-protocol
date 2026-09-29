@@ -548,6 +548,27 @@ daemon's own 404 while no route is written; Go pins the same thing by
 `TestTheRouteTableIsComplete`, which fails when a path is added to neither the
 mux nor a list of the routes still to come.
 
+**A read in flight is bounded, and a signal is noticed inside the bound.** The
+daemon polls a connection for at most 50 ms at a time and re-checks whether it
+should stop between polls, so an interrupt during a slow or stalled request ends
+the daemon in well under a second rather than at the end of the request's own
+budget. A read also returns **whatever has arrived** rather than waiting for its
+buffer to fill: a client that promises 4 KiB and sends 5 bytes must not hold the
+one connection the daemon serves until it sends the rest. Zig: `a poll waiting
+on a silent peer is re-checked inside its cycle, not held to its deadline` and
+`a body that arrives in part is taken as it comes, and never waited on for the
+rest`, plus the same two measured against the built binary.
+
+**The trust model is decided on the head, before any body is read.** A
+cross-origin or foreign-`Host` request that declares a body and withholds it is
+refused as soon as its head is parsed, which is what Go's middleware does — so it
+neither spends the 16 MiB scratch on a request the posture exists to refuse, nor
+holds the single serve slot for the idle budget. A body is read only by a route
+that will consume one. Zig: `the trust model is decided on the head, so a refused
+request never waits on a body it will not read`, and measured: a refused
+cross-origin POST that declares 4 KiB and sends 5 bytes is answered `403` in
+under a millisecond.
+
 **A `HEAD` is answered with the headers a `GET` would send and no body.** RFC
 9110 forbids a body in a HEAD response and net/http suppresses one, so a port
 that sends one is wrong rather than merely different — and the `Content-Length`
