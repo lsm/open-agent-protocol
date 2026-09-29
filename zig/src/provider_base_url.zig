@@ -20,7 +20,7 @@ pub fn defaultBaseUrlForRefWithRegion(
     const row_env = try rowBaseUrlEnvOwned(allocator, provider_id);
     defer if (row_env) |value| allocator.free(value);
 
-    const kimi_region = resolveKimiRegion(allocator, stored_kimi_region);
+    const kimi_region = try resolveKimiRegion(allocator, stored_kimi_region);
 
     return baseUrlWithOverrides(allocator, provider_id, api, .{
         .global = global orelse "",
@@ -68,13 +68,13 @@ pub fn usesVersionedRoute(provider_id: []const u8, api: []const u8) bool {
 const kimi_region_env_name = provider_catalog.regionEnv("kimi") orelse
     @compileError("providers/catalog.json records no region_env for kimi");
 
-fn resolveKimiRegion(allocator: std.mem.Allocator, stored_region: ?[]const u8) []const u8 {
+fn resolveKimiRegion(allocator: std.mem.Allocator, stored_region: ?[]const u8) ![]const u8 {
     const fallback = provider_catalog.defaultRegion("kimi") orelse "china";
     if (envOwnedOrNull(allocator, kimi_region_env_name) catch null) |value| {
         defer allocator.free(value);
         if (provider_catalog.regionFromValue("kimi", value)) |resolved| return resolved;
     }
-    if (!provider_catalog.credentialEnvIsSet(allocator, "kimi")) {
+    if (!try provider_catalog.credentialEnvIsSet(allocator, "kimi")) {
         if (stored_region) |stored| {
             if (provider_catalog.regionFromValue("kimi", stored)) |resolved| return resolved;
         }

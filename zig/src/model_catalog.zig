@@ -467,13 +467,13 @@ fn catalogEndpointFromEnvironment(
     storage: ?*oauth_storage.AuthStorage,
     id: []const u8,
 ) !?CatalogEndpoint {
-    const region = catalogRegion(allocator, storage, id);
+    const region = try catalogRegion(allocator, storage, id);
     const catalog = catalogTargetInRegion(id, region) orelse return null;
     const base_url = try provider_base_url.defaultBaseUrlForRefWithRegion(allocator, id, catalog.wire, region);
     return try catalogEndpointWithBase(allocator, catalog, base_url);
 }
 
-fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) ?[]const u8 {
+fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStorage, id: []const u8) !?[]const u8 {
     const fallback = provider_catalog.defaultRegion(id);
     if (provider_catalog.regionEnv(id)) |name| {
         if (compat.getEnvVarOwned(allocator, name) catch null) |value| {
@@ -481,7 +481,7 @@ fn catalogRegion(allocator: std.mem.Allocator, storage: ?*oauth_storage.AuthStor
             if (provider_catalog.regionFromValue(id, value)) |resolved| return resolved;
         }
     }
-    if (!provider_catalog.credentialEnvIsSet(allocator, id)) {
+    if (!try provider_catalog.credentialEnvIsSet(allocator, id)) {
         if (catalogStoredRegion(id, storage)) |stored| return stored;
     }
     return fallback;

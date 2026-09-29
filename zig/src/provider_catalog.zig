@@ -236,16 +236,18 @@ fn regionNames(comptime row: Provider) []const []const u8 {
     }
 }
 
-pub fn credentialEnvIsSet(allocator: std.mem.Allocator, id: []const u8) bool {
+pub fn credentialEnvIsSet(allocator: std.mem.Allocator, id: []const u8) !bool {
     const row = provider(id) orelse return false;
     for (row.credential_env) |name| {
-        const value = compat.getEnvVarOwned(allocator, name) catch continue;
+        const value = compat.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+            error.EnvironmentVariableMissing => continue,
+            else => return err,
+        };
         defer allocator.free(value);
         if (value.len > 0) return true;
     }
     return false;
 }
-
 pub fn rowsReadingEnv(env: []const u8) usize {
     var rows: usize = 0;
     for (all) |row| {
