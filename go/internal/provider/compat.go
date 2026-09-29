@@ -126,6 +126,31 @@ func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "cerebras.ai")
 }
 
+func isHostEndingIn(baseURL string, hasBaseURL bool, suffix string) bool {
+	if !hasBaseURL {
+		return false
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	d := strings.ToLower(suffix)
+	if host == d {
+		return true
+	}
+	if len(host) <= len(d) || !strings.HasSuffix(host, d) {
+		return false
+	}
+	before := host[len(host)-len(d)-1]
+	return before == '.' || before == '-'
+}
+
+func isGoogleURL(baseURL string, hasBaseURL bool) bool {
+	return isHostOrSubdomain(baseURL, hasBaseURL, "generativelanguage.googleapis.com") ||
+		isHostEndingIn(baseURL, hasBaseURL, "aiplatform.googleapis.com")
+}
+
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "zukijourney.com")
 }
@@ -182,8 +207,7 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 		isZaiURL(baseURL, hasBaseURL),
 		isOpenRouterURL(baseURL, hasBaseURL):
 		return ProviderOpenAICompat
-	case holdsURL(baseURL, hasBaseURL, "generativelanguage.googleapis.com"),
-		holdsURL(baseURL, hasBaseURL, "aiplatform.googleapis.com"):
+	case isGoogleURL(baseURL, hasBaseURL):
 		return ProviderGoogle
 	case holdsURL(baseURL, hasBaseURL, "bedrock-runtime."), holdsURL(baseURL, hasBaseURL, "bedrock."):
 		return ProviderBedrock
