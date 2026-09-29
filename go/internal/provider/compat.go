@@ -147,7 +147,7 @@ func isDeepSeekURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isAnthropicURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.anthropic.com")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "anthropic.com")
 }
 
 func IsOpenAIHost(baseURL string, hasBaseURL bool) bool {

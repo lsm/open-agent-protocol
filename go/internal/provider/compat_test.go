@@ -9,6 +9,53 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAnAnthropicHostIsAnthropicDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.anthropic.com",
+		"https://api.anthropic.com/v1",
+		"https://anthropic.com",
+		"https://API.ANTHROPIC.COM",
+	}
+	for _, url := range hosts {
+		if !isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myanthropic.com",
+		"https://notanthropic.com",
+		"https://anthropic.com.evil.example",
+		"https://evil.example/?next=api.anthropic.com",
+		"https://evil.example/v1/api.anthropic.com",
+		"https://gateway.example/proxy/api.anthropic.com",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isAnthropicURL(url, true) {
+			t.Errorf("isAnthropicURL(%q) = true, want false: the name is in a host suffix, a path or a query", url)
+		}
+	}
+
+	if isAnthropicURL("https://api.anthropic.com", false) {
+		t.Error("no base url is not an anthropic host")
+	}
+}
+
+func TestTheCataloguedAnthropicBaseStillGetsTheAnthropicCaps(t *testing.T) {
+	const url = "https://api.anthropic.com"
+	if got := DetectProviderType(url, true); got != ProviderAnthropic {
+		t.Errorf("DetectProviderType(%q) = %q, want anthropic", url, got)
+	}
+	caps := DetectCapabilities(url, true)
+	if caps.ProviderType != ProviderAnthropic {
+		t.Errorf("caps provider type = %q, want anthropic", caps.ProviderType)
+	}
+	if !caps.ExtendedThinking || !caps.PromptCaching || !caps.Vision {
+		t.Errorf("caps = %+v, want the anthropic set", caps)
+	}
+}
+
 func TestAnOpenRouterHostIsOpenrouterDotAIOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://openrouter.ai",
