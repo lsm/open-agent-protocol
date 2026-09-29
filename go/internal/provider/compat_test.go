@@ -9,6 +9,39 @@ func hostModel(baseURL string) Model {
 	return Model{Provider: "openai", BaseURL: baseURL, HasBaseURL: true, HasCompat: true}
 }
 
+func TestAZaiHostIsZukijourneyDotComOrASubdomainOfIt(t *testing.T) {
+	hosts := []string{
+		"https://api.zukijourney.com",
+		"https://api.zukijourney.com/api/paas/v4",
+		"https://zukijourney.com",
+		"https://API.ZUKIJOURNEY.COM",
+	}
+	for _, url := range hosts {
+		if !isZaiURL(url, true) {
+			t.Errorf("isZaiURL(%q) = false, want true", url)
+		}
+	}
+
+	notHosts := []string{
+		"https://myzukijourney.com",
+		"https://zukijourney.com.evil.example",
+		"https://evil.example/?next=api.zukijourney.com",
+		"https://evil.example/v1/zai",
+		"https://gateway.example/proxy/zai",
+		"https://api.z.ai/api/coding/paas/v4",
+		"not a url at all",
+	}
+	for _, url := range notHosts {
+		if isZaiURL(url, true) {
+			t.Errorf("isZaiURL(%q) = true, want false: the bare word zai is not a host, and z.ai is the gap filed as #580", url)
+		}
+	}
+
+	if isZaiURL("https://api.zukijourney.com", false) {
+		t.Error("no base url is not a zai host")
+	}
+}
+
 func TestAQwenHostIsDashscopeAliyuncsDotComOrASubdomainOfIt(t *testing.T) {
 	hosts := []string{
 		"https://dashscope.aliyuncs.com",

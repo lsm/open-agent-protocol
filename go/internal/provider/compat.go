@@ -127,7 +127,7 @@ func isCerebrasURL(baseURL string, hasBaseURL bool) bool {
 }
 
 func isZaiURL(baseURL string, hasBaseURL bool) bool {
-	return holdsURL(baseURL, hasBaseURL, "api.zukijourney.com") || holdsURL(baseURL, hasBaseURL, "zai")
+	return isHostOrSubdomain(baseURL, hasBaseURL, "zukijourney.com")
 }
 
 func isOpenRouterURL(baseURL string, hasBaseURL bool) bool {
