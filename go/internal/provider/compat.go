@@ -101,17 +101,47 @@ func isGitHubCopilotURL(baseURL string, hasBaseURL bool) bool {
 	return isHostOrSubdomain(baseURL, hasBaseURL, "githubcopilot.com")
 }
 
-func isHostOrSubdomain(baseURL string, hasBaseURL bool, domain string) bool {
+func hostOf(baseURL string, hasBaseURL bool) string {
 	if !hasBaseURL {
-		return false
+		return ""
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Hostname())
+}
+
+func hostIsOrSubdomainOf(host, domain string) bool {
+	return host == domain || (len(host) > len(domain) && strings.HasSuffix(host, domain) && host[len(host)-len(domain)-1] == '.')
+}
+
+func isHostOrSubdomain(baseURL string, hasBaseURL bool, domain string) bool {
+	host := hostOf(baseURL, hasBaseURL)
+	return hostIsOrSubdomainOf(host, strings.ToLower(domain))
+}
+
+var bedrockFirstLabels = []string{"bedrock", "bedrock-runtime", "bedrock-fips", "bedrock-runtime-fips"}
+var awsParents = []string{"amazonaws.com", "amazonaws.com.cn"}
+
+func isBedrockURL(baseURL string, hasBaseURL bool) bool {
+	host := hostOf(baseURL, hasBaseURL)
+	dot := strings.IndexByte(host, '.')
+	if dot < 0 {
 		return false
 	}
-	host := strings.ToLower(parsed.Hostname())
-	d := strings.ToLower(domain)
-	return host == d || (len(host) > len(d) && strings.HasSuffix(host, d) && host[len(host)-len(d)-1] == '.')
+	label := host[:dot]
+	for _, candidate := range bedrockFirstLabels {
+		if label != candidate {
+			continue
+		}
+		for _, parent := range awsParents {
+			if hostIsOrSubdomainOf(host, parent) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isMistralURL(baseURL string, hasBaseURL bool) bool {
@@ -213,7 +243,7 @@ func DetectProviderType(baseURL string, hasBaseURL bool) ProviderType {
 		return ProviderOpenAICompat
 	case isGoogleURL(baseURL, hasBaseURL):
 		return ProviderGoogle
-	case holdsURL(baseURL, hasBaseURL, "bedrock-runtime."), holdsURL(baseURL, hasBaseURL, "bedrock."):
+	case isBedrockURL(baseURL, hasBaseURL):
 		return ProviderBedrock
 	case isAzureOpenAIURL(baseURL, hasBaseURL), holdsURL(baseURL, hasBaseURL, "cognitiveservices.azure.com"):
 		return ProviderAzure
