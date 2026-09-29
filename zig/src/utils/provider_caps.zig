@@ -353,7 +353,7 @@ test "a bedrock host still detects as bedrock" {
     try std.testing.expectEqual(ProviderType.bedrock, detectProviderType(url));
 }
 
-test "an azure host is one of two labels and never azure.com" {
+test "an azure host matches a label under azure.com and never azure.com itself" {
     const hosts = [_][]const u8{
         "https://contoso.openai.azure.com",
         "https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",

@@ -110,7 +110,7 @@ func TestABedrockHostStillDetectsAsBedrock(t *testing.T) {
 	}
 }
 
-func TestAnAzureHostIsOneOfTwoLabelsAndNeverAzureCom(t *testing.T) {
+func TestAnAzureHostMatchesALabelUnderAzureComAndNeverAzureComItself(t *testing.T) {
 	hosts := []string{
 		"https://contoso.openai.azure.com",
 		"https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
@@ -142,7 +142,7 @@ func TestAnAzureHostIsOneOfTwoLabelsAndNeverAzureCom(t *testing.T) {
 	}
 	for _, url := range notHosts {
 		if isAzureURL(url, true) {
-			t.Errorf("isAzureURL(%q) = true, want false: the three labels are anchored separately and azure.com is never the match", url)
+			t.Errorf("isAzureURL(%q) = true, want false: each azure label is anchored on its own and azure.com is never the match", url)
 		}
 	}
 
