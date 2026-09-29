@@ -62,8 +62,7 @@ fn streamViaProtocol(
 
     const out_stream = try allocator.create(event_stream.AssistantMessageEventStream);
     out_stream.* = event_stream.AssistantMessageEventStream.init(allocator);
-    out_stream.owns_events = true;
-    out_stream.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+    out_stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
     out_stream.wait_for_thread_on_deinit = true;
 
     const thread_ctx = try allocator.create(StreamThreadContext);
@@ -300,8 +299,7 @@ test "InProcessProviderProtocolBridge smoke test" {
             s.* = event_stream.AssistantMessageEventStream.init(a);
             if (options) |o| {
                 if (o.requires_owned_stream_events) {
-                    s.owns_events = true;
-                    s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+                    s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
                 }
             }
 
@@ -473,8 +471,7 @@ test "InProcessProviderProtocolBridge preserves streamed tool call terminal resu
             const s = try a.create(event_stream.AssistantMessageEventStream);
             s.* = event_stream.AssistantMessageEventStream.init(a);
             if (o.requires_owned_stream_events) {
-                s.owns_events = true;
-                s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+                s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
             }
             const p = partial(model);
 
@@ -659,8 +656,7 @@ const PacedProvider = struct {
         const s = try a.create(event_stream.AssistantMessageEventStream);
         errdefer a.destroy(s);
         s.* = event_stream.AssistantMessageEventStream.init(a);
-        s.owns_events = true;
-        s.clone_event_fn = ai_types.cloneAssistantMessageEvent;
+        s.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
 
         const job = try std.heap.page_allocator.create(Job);
         errdefer std.heap.page_allocator.destroy(job);

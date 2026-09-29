@@ -115,8 +115,21 @@ dependency, and each is useful on its own:
 | --- | --- | --- |
 | 1 | the turn's outcome | `TurnOutcome` and the cut-off rule, over `provider.AssistantContent` and nothing else. No I/O, so it is the rule under test before anything streams |
 | 2 | a turn, as a channel | a `Streamer` the loop depends on, `provider.EventSink.Drain` becoming readable outside its own package, and `provider.StopReason`'s six names so a reply's stop reason is typed rather than a string any caller can spell either way. This is the seam every later piece is written against |
-| 3 | the loop | `Run`, one terminal per run, `max_iterations`, cancellation, and a turn that ends the run |
+| 3 | the loop | `Run`, one terminal per run, `max_iterations`, cancellation, and a turn that ends the run. A reply carrying a tool call fails the run here, because this loop has nowhere to send one; PR 4 is what makes that answerable |
 | 4 | client-executed tool calls | the caller's round trip: ask, wait, answer, and the answer becomes a message |
+
+The caller's round trip is three things, and each of them is a place a loop
+can go quietly wrong. The loop **asks** by emitting `tool_call_requested` and
+then waiting — so a caller has to be able to see the ask, and a consumer that
+never drains cannot be answered. The loop **waits** for one specific call, and
+`ResolveTool` refuses an id nothing is waiting on, by name, so a stale or
+mistyped answer is an error rather than a result attributed to the wrong call.
+The loop then **answers itself** for the calls no caller should be asked
+about: a call whose arguments the output limit cut off, and a call the run was
+cancelled while waiting for. Both are error results, and both say so in the
+text, because a tool that silently did not run is the one failure a model
+cannot recover from. The answer's `tool_call_id` is the loop's, not the
+caller's — a caller's own id would not correlate with the call the model made.
 
 Deliberately not in the first slice: permissions as a *policy engine*, steering
 and follow-up queues, compaction, and token accounting. Each is a few lines in
@@ -124,6 +137,32 @@ the Zig loop and a real amount of policy in Go, and each is reachable only
 after the first slice's traces match. `max_iterations` is the one that lands
 with the loop rather than after it: it is one counter and one condition, and a
 loop without it spins on a model that keeps calling tools.
+
+### Two contracts a consumer of a turn has to hold
+
+**The channel closes; it does not report.** A `Turn` ends when its `Events`
+channel closes, and a cancelled turn closes with no terminal event at all —
+that is what a cancelled turn looks like from outside. So a consumer that
+wants to know *why* the channel closed has to ask the run, not the turn: a
+close the run itself caused is a cancellation, and a close nobody caused is a
+provider that dropped its terminal and is a failed run. A loop that read every
+close as cancelled would let a provider bug settle as a clean cancellation, and
+the difference is invisible in the trace because both end the same way.
+
+**Drain the channel, or cancel.** The channel is buffered, and a turn whose
+consumer stops reading blocks on the next event until its context is
+cancelled. There is no abandoned-turn case to recover from, so a consumer that
+might stop reading early has to cancel the context rather than walk away.
+
+A run's terminal is the exception, and it is the exception by construction
+rather than by luck: the event buffer's last slot is reserved for it, so a
+non-terminal send never takes it and a cancelled run's terminal lands even
+when the buffer is full and nobody is reading. A `select` over a send and a
+cancelled context cannot do that — both cases are ready, and Go picks at
+random, so a run that raced would settle as cancelled and deliver no terminal,
+which is the one trace a consumer cannot interpret. After a cancel, a
+non-terminal is dropped rather than waited for, so a cancelled run's events
+after the cancellation are whatever arrived before it.
 
 ## What the loop must be, whatever the slice
 
@@ -134,10 +173,11 @@ each is easy to violate while writing Go.
 run's state, set when `agent_end` goes out and tested by the thread's `defer`.
 Go's structure differs — a `Run` is a goroutine writing into a channel, and a
 `select` on `ctx.Done()` gives the cancellation path somewhere to happen — so
-the natural spelling is a `sync.Once` on the run, but the requirement is the
-flag's: the terminal comes from one place every exit path reaches, and a run
-that ends twice is a defect rather than a duplicate. Those paths are normal
-finish, provider failure, cancellation, and a run that never started.
+the natural spelling is a `settled` flag on the run under its mutex, but the
+requirement is the flag's: the terminal comes from one place every exit path
+reaches, and a run that ends twice is a defect rather than a duplicate. Those
+paths are normal finish, provider failure, cancellation, a run that never
+started, and a turn whose channel closed with no terminal.
 `go/serve/serveendpoint` already knows the difference between "the run ended"
 and "the stream stopped reaching the host" (`reportLostStream`,
 `dispatch.go:354`); the loop's terminal is the former, and `run.failed` is a

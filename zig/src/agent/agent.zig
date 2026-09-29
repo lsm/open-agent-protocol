@@ -494,7 +494,7 @@ pub const Agent = struct {
                 },
                 else => {},
             }
-            if (stream.owns_events) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
+            if (stream.ownership.isOwned()) ai_types.deinitAssistantMessageEvent(allocator, &owned_event);
         }
 
         if (self._pending_cancel.load(.acquire)) return .cancelled;

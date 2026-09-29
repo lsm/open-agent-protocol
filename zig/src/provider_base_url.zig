@@ -16,29 +16,28 @@ pub fn defaultBaseUrlForRefWithRegion(
 ) ![]const u8 {
     const global = try envOwnedOrNull(allocator, provider_catalog.global_base_url_env);
     defer if (global) |g| allocator.free(g);
-    const anthropic = try envOwnedOrNull(allocator, anthropic_base_url_env);
-    defer if (anthropic) |v| allocator.free(v);
-    const openai = try envOwnedOrNull(allocator, openai_base_url_env);
-    defer if (openai) |v| allocator.free(v);
-    const deepseek = try envOwnedOrNull(allocator, deepseek_base_url_env);
-    defer if (deepseek) |v| allocator.free(v);
+
+    const row_env = try rowBaseUrlEnvOwned(allocator, provider_id);
+    defer if (row_env) |value| allocator.free(value);
 
     const kimi_region = resolveKimiRegion(allocator, stored_kimi_region);
 
     return baseUrlWithOverrides(allocator, provider_id, api, .{
         .global = global orelse "",
-        .anthropic = anthropic orelse "",
-        .openai = openai orelse "",
-        .deepseek = deepseek orelse "",
         .kimi_region = kimi_region,
+        .row = row_env orelse "",
     });
+}
+
+fn rowBaseUrlEnvOwned(allocator: std.mem.Allocator, provider_id: []const u8) !?[]const u8 {
+    const names = provider_catalog.baseUrlEnv(provider_id);
+    if (names.len == 0) return null;
+    return try envOwnedOrNull(allocator, names[0]);
 }
 
 pub const BaseUrlOverrides = struct {
     global: []const u8 = "",
-    anthropic: []const u8 = "",
-    openai: []const u8 = "",
-    deepseek: []const u8 = "",
+    row: []const u8 = "",
     kimi_region: []const u8 = "china",
 };
 
@@ -89,12 +88,17 @@ pub fn baseUrlWithOverrides(allocator: std.mem.Allocator, provider_id: []const u
         return try allocator.dupe(u8, global);
     }
 
+    if (ov.row.len > 0) {
+        const row = if (usesVersionedRoute(provider_id, api)) normalizeVersionedBaseUrl(ov.row) else std.mem.trimEnd(u8, ov.row, "/");
+        return try allocator.dupe(u8, row);
+    }
+
     const by_provider: ?[]const u8 = if (std.mem.eql(u8, provider_id, "anthropic") and std.mem.eql(u8, api, "anthropic-messages"))
-        if (ov.anthropic.len > 0) normalizeVersionedBaseUrl(ov.anthropic) else anthropic_messages_base_url
+        anthropic_messages_base_url
     else if (std.mem.eql(u8, provider_id, "openai") and (std.mem.eql(u8, api, "openai-completions") or std.mem.eql(u8, api, "openai-responses")))
-        if (ov.openai.len > 0) normalizeVersionedBaseUrl(ov.openai) else if (std.mem.eql(u8, api, "openai-responses")) openai_responses_base_url else openai_completions_base_url
+        if (std.mem.eql(u8, api, "openai-responses")) openai_responses_base_url else openai_completions_base_url
     else if (std.mem.eql(u8, provider_id, "deepseek") and std.mem.eql(u8, api, "openai-completions"))
-        if (ov.deepseek.len > 0) normalizeVersionedBaseUrl(ov.deepseek) else deepseek_completions_base_url
+        deepseek_completions_base_url
     else if (std.mem.eql(u8, provider_id, "openai-codex") and std.mem.eql(u8, api, "openai-codex-responses"))
         codex_responses_base_url
     else if (std.mem.eql(u8, provider_id, "kimi") and std.mem.eql(u8, api, "openai-completions"))
@@ -120,6 +124,13 @@ pub const OAuthOriginSources = struct {
     provider: []const u8 = "",
     credential: []const u8 = "",
     credential_is_api_key: bool = false,
+    configured: []const u8 = "",
+    override_forwards_credential: bool = false,
+};
+
+pub const ConfiguredEndpoint = struct {
+    base_url: []const u8 = "",
+    forwards_stored_credential: bool = false,
 };
 
 const Origin = struct {
@@ -197,6 +208,10 @@ pub fn oauthOriginAllowedWithSources(
     if (sources.global.len > 0 and originsMatch(requested, sources.global)) return true;
     if (sources.provider.len > 0 and originsMatch(requested, sources.provider)) return true;
 
+    if (sources.configured.len > 0 and originsMatch(requested, sources.configured)) {
+        return sources.override_forwards_credential;
+    }
+
     const policy = policy_for_provider orelse return false;
     if (policy.credential_declares_origin and
         sources.credential.len > 0 and
@@ -238,6 +253,7 @@ pub fn oauthOriginAllowed(
     base_url: []const u8,
     refresh: []const u8,
     provider_data: ?[]const u8,
+    configured_endpoint: ConfiguredEndpoint,
 ) bool {
     const trimmed = std.mem.trim(u8, base_url, " \t\r\n");
     if (trimmed.len == 0) return true;
@@ -263,6 +279,8 @@ pub fn oauthOriginAllowed(
         .provider = provider_override orelse "",
         .credential = credential orelse "",
         .credential_is_api_key = storedCredentialIsApiKeyShaped(refresh),
+        .configured = configured_endpoint.base_url,
+        .override_forwards_credential = configured_endpoint.forwards_stored_credential,
     });
 }
 
@@ -389,23 +407,81 @@ test "baseUrlWithOverrides resolves canonical provider defaults" {
     try std.testing.expectEqualStrings("https://api.deepseek.com", deepseek);
 }
 
+test "every row that declares a base_url_env is routed by it, not only three of them" {
+    const allocator = std.testing.allocator;
+
+    const cases = [_]struct { id: []const u8, api: []const u8, env: []const u8 }{
+        .{ .id = "anthropic", .api = "anthropic-messages", .env = "ANTHROPIC_BASE_URL" },
+        .{ .id = "openai", .api = "openai-completions", .env = "OPENAI_BASE_URL" },
+        .{ .id = "openai", .api = "openai-responses", .env = "OPENAI_BASE_URL" },
+        .{ .id = "deepseek", .api = "openai-completions", .env = "DEEPSEEK_BASE_URL" },
+        .{ .id = "ollama", .api = "ollama", .env = "OLLAMA_BASE_URL" },
+        .{ .id = "azure", .api = "openai-responses", .env = "AZURE_OPENAI_BASE_URL" },
+        .{ .id = "google", .api = "google-generative-ai", .env = "GOOGLE_BASE_URL" },
+    };
+
+    for (cases) |case| {
+        const catalogued = provider_catalog.baseUrlEnv(case.id);
+        try std.testing.expectEqualStrings(case.env, catalogued[0]);
+
+        const routed = try baseUrlWithOverrides(allocator, case.id, case.api, .{
+            .row = "https://proxy.example/mirror",
+        });
+        defer allocator.free(routed);
+        try std.testing.expectEqualStrings("https://proxy.example/mirror", routed);
+    }
+}
+
+test "a row's base_url_env outranks the catalog and loses to the global one" {
+    const allocator = std.testing.allocator;
+
+    const catalogued = try baseUrlWithOverrides(allocator, "deepseek", "openai-completions", .{
+        .row = "https://proxy.example/deepseek",
+    });
+    defer allocator.free(catalogued);
+    try std.testing.expectEqualStrings("https://proxy.example/deepseek", catalogued);
+
+    const global = try baseUrlWithOverrides(allocator, "deepseek", "openai-completions", .{
+        .global = "https://everywhere.example",
+        .row = "https://proxy.example/deepseek",
+    });
+    defer allocator.free(global);
+    try std.testing.expectEqualStrings("https://everywhere.example", global);
+}
+
+test "a row's base_url_env keeps the version rule its own wire has" {
+    const allocator = std.testing.allocator;
+
+    const versioned = try baseUrlWithOverrides(allocator, "ollama", "ollama", .{
+        .row = "http://127.0.0.1:11434/",
+    });
+    defer allocator.free(versioned);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434", versioned);
+
+    const messages = try baseUrlWithOverrides(allocator, "anthropic", "anthropic-messages", .{
+        .row = "https://proxy.example/anthropic/v1",
+    });
+    defer allocator.free(messages);
+    try std.testing.expectEqualStrings("https://proxy.example/anthropic", messages);
+}
+
 test "baseUrlWithOverrides prefers env overrides and global override" {
     const allocator = std.testing.allocator;
 
     const proxied = try baseUrlWithOverrides(allocator, "anthropic", "anthropic-messages", .{
-        .anthropic = "https://proxy.example.com",
+        .row = "https://proxy.example.com",
     });
     defer allocator.free(proxied);
     try std.testing.expectEqualStrings("https://proxy.example.com", proxied);
 
     const versioned_anthropic = try baseUrlWithOverrides(allocator, "anthropic", "anthropic-messages", .{
-        .anthropic = "https://proxy.example.com/anthropic/v1/",
+        .row = "https://proxy.example.com/anthropic/v1/",
     });
     defer allocator.free(versioned_anthropic);
     try std.testing.expectEqualStrings("https://proxy.example.com/anthropic", versioned_anthropic);
 
     const versioned_openai = try baseUrlWithOverrides(allocator, "openai", "openai-completions", .{
-        .openai = "https://proxy.example.com/openai/v1/",
+        .row = "https://proxy.example.com/openai/v1/",
     });
     defer allocator.free(versioned_openai);
     try std.testing.expectEqualStrings("https://proxy.example.com/openai", versioned_openai);
@@ -429,7 +505,7 @@ test "baseUrlWithOverrides prefers env overrides and global override" {
     try std.testing.expectEqualStrings("https://proxy.example.com/v1", copilot_global);
 
     const versioned_deepseek = try baseUrlWithOverrides(allocator, "deepseek", "openai-completions", .{
-        .deepseek = "https://proxy.example.com/v1/",
+        .row = "https://proxy.example.com/v1/",
     });
     defer allocator.free(versioned_deepseek);
     try std.testing.expectEqualStrings("https://proxy.example.com", versioned_deepseek);
@@ -535,6 +611,39 @@ test "oauthOriginAllowedWithSources binds vendor tokens to vendor origins" {
     try std.testing.expect(!oauthOriginAllowedWithSources("openai-codex", "https://chatgpt.attacker.test/backend-api/codex", .{}));
 }
 
+test "an endpoint a configuration file names is not a destination for a vendor token" {
+    try std.testing.expect(!oauthOriginAllowedWithSources("anthropic", "https://gw.internal/anthropic", .{
+        .configured = "https://gw.internal/anthropic",
+    }));
+    try std.testing.expect(!oauthOriginAllowedWithSources("openai-codex", "https://gw.internal/codex", .{
+        .configured = "https://gw.internal/codex",
+    }));
+}
+
+test "a configuration file's endpoint takes the token only when the same file says so" {
+    try std.testing.expect(oauthOriginAllowedWithSources("anthropic", "https://gw.internal/anthropic", .{
+        .configured = "https://gw.internal/anthropic",
+        .override_forwards_credential = true,
+    }));
+
+    try std.testing.expect(!oauthOriginAllowedWithSources("anthropic", "https://elsewhere.test", .{
+        .configured = "https://gw.internal/anthropic",
+        .override_forwards_credential = true,
+    }));
+}
+
+test "the environment is still a destination without a second signal" {
+    try std.testing.expect(oauthOriginAllowedWithSources("anthropic", "https://proxy.example", .{
+        .global = "https://proxy.example",
+    }));
+    try std.testing.expect(oauthOriginAllowedWithSources("anthropic", "https://proxy.example", .{
+        .provider = "https://proxy.example",
+    }));
+    try std.testing.expect(!oauthOriginAllowedWithSources("anthropic", "https://proxy.example", .{
+        .configured = "https://proxy.example",
+    }));
+}
+
 test "oauthOriginAllowedWithSources allows an absent base_url" {
     try std.testing.expect(oauthOriginAllowedWithSources("anthropic", "", .{}));
     try std.testing.expect(oauthOriginAllowedWithSources("anthropic", "   ", .{}));
@@ -637,6 +746,7 @@ test "oauthOriginAllowed reads the credential-declared endpoint" {
         "https://copilot.acme.test",
         "gho-refresh",
         "{\"baseUrl\":\"https://copilot.acme.test\"}",
+        .{},
     ));
     try std.testing.expect(!oauthOriginAllowed(
         allocator,
@@ -644,15 +754,16 @@ test "oauthOriginAllowed reads the credential-declared endpoint" {
         "https://attacker.test",
         "gho-refresh",
         "{\"baseUrl\":\"https://copilot.acme.test\"}",
+        .{},
     ));
-    try std.testing.expect(oauthOriginAllowed(allocator, "anthropic", "", "refresh", null));
+    try std.testing.expect(oauthOriginAllowed(allocator, "anthropic", "", "refresh", null, .{}));
 }
 
 test "oauthOriginAllowed lets a kimi login keep streaming" {
     const allocator = std.testing.allocator;
-    try std.testing.expect(oauthOriginAllowed(allocator, "kimi", "https://api.kimi.com/coding", "", "region:china"));
-    try std.testing.expect(oauthOriginAllowed(allocator, "kimi", "https://api.moonshot.ai", "", "region:global"));
-    try std.testing.expect(!oauthOriginAllowed(allocator, "anthropic", "https://attacker.test", "", null));
+    try std.testing.expect(oauthOriginAllowed(allocator, "kimi", "https://api.kimi.com/coding", "", "region:china", .{}));
+    try std.testing.expect(oauthOriginAllowed(allocator, "kimi", "https://api.moonshot.ai", "", "region:global", .{}));
+    try std.testing.expect(!oauthOriginAllowed(allocator, "anthropic", "https://attacker.test", "", null, .{}));
 }
 
 test "defaultMaxTokensForRef reads the row's own figure, and only for a wire the row declares" {

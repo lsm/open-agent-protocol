@@ -95,11 +95,12 @@ in `.gitignore`, so nothing else would notice one. A workspace's own `.oapx`
 Three workflows run on `pull_request`: `ci.yml`, `ci-zig.yml` and
 `benchmark-report.yml`. Each takes one concurrency group per pull request, so a
 newer push to that pull request cancels the run the previous push started, and
-that is all the group ever cancels. A push takes no group it shares: `ci.yml`
-runs on every push, `ci-zig.yml` on pushes to `main`, and each push's run
-survives on its own — the key includes the event name and a run id, because
-GitHub drops the *pending* run of a shared group by default, so a group keyed on
-`github.ref` would have cancelled main's queued runs rather than none of them.
+that is all the group ever cancels. Both CI files push on `main` only, so a branch
+push produces one run rather than a `push` twin of the `pull_request` one, and a
+push takes no group it shares: each push's run survives on its own — the key
+includes the event name and a run id, because GitHub drops the *pending* run of a
+shared group by default, so a group keyed on `github.ref` would have cancelled
+main's queued runs rather than none of them.
 
 ## Zero comments
 
@@ -229,11 +230,17 @@ Rules the source will not tell you:
   `compileError` or a `[0]` index fires; the same call inside a function body is
   not a build gate, which is why an env name is read as `baseUrlEnv(id)[0]` and
   not through a helper that errors.
-- `EventStream.owns_events` is an **ownership** flag, not a cloning switch:
-  `push` deep-copies only when `clone_event_fn` is also set, and setting
-  `owns_events` without cloning before push is a use-after-free. A stream ends
-  via `complete`/`completeWithError`, never a `.done` event. Full contract:
-  `docs/zig-stream-memory-ownership.md`.
+- **`EventStream.ownership` is one setting, and its two values are the whole
+  contract.** `.borrowed` (the default) stores what `push` is given and never
+  frees it, so the producer must keep the backing storage alive until the
+  consumer has drained the queue. `.{ .owned = clone_fn }` deep-copies on
+  `push` and frees what it copied, so the stream can never free the producer's
+  memory — the clone function travels *inside* the value, so there is no
+  "owns but does not clone" setting to express. A producer that used to clone
+  by hand before pushing (`pushOwnedEvent`) pushes directly now, and **frees
+  its own event once the push returns**, because the stream holds a copy. A
+  stream ends via `complete`/`completeWithError`, never a `.done` event. Full
+  contract: `docs/zig-stream-memory-ownership.md`.
 - **`ProtocolClient` is a separate contract, and the stream rules do not cover
   it.** Its terminal query hands back a deep copy the caller owns:
   `waitResult`/`waitResultFor` return an `ai_types.OwnedMessage`, so the result
@@ -398,5 +405,5 @@ and the wrong side is fixed or the divergence recorded in its own section.
   say what changed in the PR description, because the release notes are written
   from it. A pull request does not edit `CHANGELOG.md`: the release process
   writes it, in the Keep a Changelog shape, from the PRs merged since the last
-  tag. So do not add an entry under `Unreleased`, and do not read a missing one
-  as an unfinished PR.
+  tag — [`docs/releasing.md`](docs/releasing.md) has the steps. So do not add an
+  entry under `Unreleased`, and do not read a missing one as an unfinished PR.
