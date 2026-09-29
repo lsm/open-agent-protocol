@@ -1144,7 +1144,7 @@ carry it** — so the member could not arrive rather than arriving and being dro
 one surface that did accept a metadata-carrying open and discard it is the endpoint, in
 **both** trees, and that is D9.
 
-**D10 is fixed**: a subscribing open is gated on the revision the host asked for, so
+**D10 is fixed** ([#524](https://github.com/lsm/open-agent-protocol/pull/524)): a subscribing open is gated on the revision the host asked for, so
 `stale_capabilities` is reachable and the answer's `capability_revision` reports a
 revision that was checked rather than one that was merely sent.
 
