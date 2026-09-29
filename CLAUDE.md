@@ -411,6 +411,8 @@ and the wrong side is fixed or the divergence recorded in its own section.
   request's own description**, under a `## Breaking changes` heading naming each
   package in backticks, because `apidiffcheck` reads that section and not the
   changelog. The heading is case sensitive; the release lifts the section into
-  the notes under its own `## Breaking changes` heading. A package named only in
+  the notes under a `### Breaking changes` heading, level three because a `##`
+  inside the version's own section would end it early. A package named only in
   prose does not count, and removing a public package counts as the most
-  incompatible change there is.
+  incompatible change there is — a `main` package does not, since nothing
+  imports it.

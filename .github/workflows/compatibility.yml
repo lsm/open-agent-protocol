@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   compatibility:
-    name: An incompatible Go change must be recorded in this pull request
+    name: compatibility
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
