@@ -129,7 +129,7 @@ fn readUntil(stream: *compat.net.Stream, buffer: []u8, deadline_ms: u64, cycle_m
     }
 }
 
-pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing, body_allowed: *bool) Failure!Request {
+pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing, body_allowed: *bool, declared: *usize) Failure!Request {
     var head = std.ArrayList(u8).empty;
     defer head.deinit(allocator);
     var byte: [1]u8 = undefined;
@@ -180,6 +180,7 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
             if (seen_length) return error.Malformed;
             seen_length = true;
             request.content_length = std.fmt.parseInt(usize, value, 10) catch return error.Malformed;
+            declared.* = request.content_length;
         } else if (std.ascii.eqlIgnoreCase(name, "transfer-encoding")) {
             return error.UnsupportedTransferEncoding;
         }
@@ -187,6 +188,23 @@ pub fn readHead(allocator: std.mem.Allocator, stream: *compat.net.Stream, header
 
     if (request.content_length > max_body_bytes) return error.BodyTooLarge;
     return request;
+}
+
+pub const drain_cap_bytes = 64 * 1024;
+pub const drain_cycle_ms: i32 = 50;
+
+pub fn drain(stream: *compat.net.Stream, remaining: usize, keep_going: KeepGoing) void {
+    if (remaining == 0) return;
+    var scratch: [1024]u8 = undefined;
+    var owed: usize = @min(remaining, drain_cap_bytes);
+    const deadline = (elapsedMs() catch 0) + drain_cycle_ms;
+    while (owed > 0) {
+        if (!keep_going.yes()) return;
+        const chunk = @min(owed, scratch.len);
+        const n = readUntil(stream, scratch[0..chunk], deadline, drain_cycle_ms, keep_going) catch return;
+        if (n == 0) return;
+        owed -= n;
+    }
 }
 
 pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, request: *Request, idle_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing) Failure!void {
@@ -201,7 +219,8 @@ pub fn readBody(allocator: std.mem.Allocator, stream: *compat.net.Stream, reques
 }
 
 pub fn readRequest(allocator: std.mem.Allocator, stream: *compat.net.Stream, header_wait_ms: i32, idle_wait_ms: i32, cycle_ms: i32, keep_going: KeepGoing, body_allowed: *bool) Failure!Request {
-    var request = try readHead(allocator, stream, header_wait_ms, cycle_ms, keep_going, body_allowed);
+    var declared: usize = 0;
+    var request = try readHead(allocator, stream, header_wait_ms, cycle_ms, keep_going, body_allowed, &declared);
     errdefer request.deinit(allocator);
     try readBody(allocator, stream, &request, idle_wait_ms, cycle_ms, keep_going);
     return request;
@@ -391,6 +410,7 @@ pub fn defaultBind() []const u8 {
 
 const testing = std.testing;
 const test_cycle_ms: i32 = 20;
+var discarded: usize = 0;
 
 var spare = true;
 
@@ -886,7 +906,7 @@ test "a body that arrives in part is taken as it comes, and never waited on for 
     defer pipe.close();
     try pipe.client.writeAll("POST /adapters/memory/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 64\r\n\r\n{\"a\":");
     var body_allowed = true;
-    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed);
+    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &discarded);
     defer head.deinit(testing.allocator);
     flipped.stop.store(false, .release);
     const thread = try std.Thread.spawn(.{}, flipped.waitThenFlip, .{});
@@ -930,12 +950,42 @@ fn bodyOf(allocator: std.mem.Allocator, length: usize) Failure!Request {
     return request;
 }
 
+test "a body the daemon refused to read is drained before the socket closes, or the close resets the answer away" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: evil.test\r\nContent-Type: application/json\r\nContent-Length: 12\r\n\r\n{\"a\":1,\"b\"");
+    var body_allowed = true;
+    var declared: usize = 0;
+    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &declared);
+    defer head.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 12), declared);
+    var scratch_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch_state.deinit();
+    try writeAnswer(&pipe.accepted, scratch_state.allocator(), 3, answer(loopbackHosts("127.0.0.1:0").?, head), body_allowed);
+    drain(&pipe.accepted, head.content_length, always_going);
+    pipe.closeAccepted();
+    var spoken: [4096]u8 = undefined;
+    const said = try readToEnd(&pipe.client, &spoken);
+    try testing.expect(std.mem.startsWith(u8, said, "HTTP/1.1 403 Forbidden"));
+    try testing.expect(std.mem.indexOf(u8, said, "unrecognized_host") != null);
+}
+
+test "a drain gives up rather than waiting on a peer that sends nothing more" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var pipe = try Pipe.open();
+    defer pipe.close();
+    const started = compat.time.nowMillis();
+    drain(&pipe.accepted, 4096, always_going);
+    try testing.expect(compat.time.nowMillis() - started < 2000);
+}
+
 test "the trust model is decided on the head, so a refused request never waits on a body it will not read" {
     var pipe = try Pipe.open();
     defer pipe.close();
     try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: evil.test\r\nOrigin: http://evil.test\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n");
     var body_allowed = true;
-    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed);
+    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &discarded);
     defer head.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 4096), head.content_length);
     try testing.expectEqual(@as(usize, 0), head.body.len);
@@ -954,7 +1004,7 @@ test "a body is read only when a route wants it, and the read is the same one a 
     defer pipe.close();
     try pipe.client.writeAll("POST /adapters/a/sessions HTTP/1.1\r\nHost: a\r\nContent-Length: 4\r\n\r\nbody");
     var body_allowed = true;
-    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed);
+    var head = try readHead(testing.allocator, &pipe.accepted, header_read_ms, test_cycle_ms, always_going, &body_allowed, &discarded);
     defer head.deinit(testing.allocator);
     try testing.expectEqual(@as(usize, 0), head.body.len);
     try readBody(testing.allocator, &pipe.accepted, &head, idle_read_ms, test_cycle_ms, always_going);

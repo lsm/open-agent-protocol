@@ -2537,15 +2537,18 @@ fn runHubHttp(
         defer scratch_state.deinit();
         const scratch = scratch_state.allocator();
         var body_allowed = true;
-        var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed) catch |failure| {
+        var declared: usize = 0;
+        var request = hub_http.readHead(scratch, &connection.stream, hub_http.header_read_ms, hub_io_cycle_ms, keepGoing, &body_allowed, &declared) catch |failure| {
             if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
+            hub_http.drain(&connection.stream, declared, keepGoing);
             continue;
         };
         defer request.deinit(scratch);
         const answered = hub_http.answer(allow orelse &.{}, request);
         if (answered != .not_found) {
             hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};
+            hub_http.drain(&connection.stream, request.content_length, keepGoing);
             continue;
         }
         try compat.stdio.writeAll(stderr, "\n");
@@ -2553,6 +2556,7 @@ fn runHubHttp(
             try compat.stdio.writeAll(stderr, "\n");
             if (failure == error.Stopped) break;
             hub_http.writeTransportFailure(&connection.stream, scratch, next_id, failure, body_allowed) catch {};
+            hub_http.drain(&connection.stream, request.content_length -| request.filled, keepGoing);
             continue;
         };
         hub_http.writeAnswer(&connection.stream, scratch, next_id, answered, body_allowed) catch {};

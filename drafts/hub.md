@@ -548,6 +548,18 @@ daemon's own 404 while no route is written; Go pins the same thing by
 `TestTheRouteTableIsComplete`, which fails when a path is added to neither the
 mux nor a list of the routes still to come.
 
+**A body the daemon refused to read is drained before the socket closes.** A
+`403` or a `413` is answered without reading the body the head declared, and a
+close on a socket whose receive queue still holds those bytes is answered with a
+reset, which on Linux can discard the refusal the client has not read yet — the
+client sees a connection error rather than the reason. So every path that
+answers without consuming a body drains what the head declared, bounded at 64 KiB
+and one poll cycle, and gives up rather than waiting on a peer that sends nothing
+more. Zig: `a body the daemon refused to read is drained before the socket closes,
+or the close resets the answer away` and `a drain gives up rather than waiting on a
+peer that sends nothing more`; measured, forty consecutive refused POSTs with
+their bodies sent in full all arrive as `403`.
+
 **A read in flight is bounded, and a signal is noticed inside the bound.** The
 daemon polls a connection for at most 50 ms at a time and re-checks whether it
 should stop between polls, so an interrupt during a slow or stalled request ends
