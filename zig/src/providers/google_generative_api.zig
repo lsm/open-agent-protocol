@@ -1026,11 +1026,14 @@ fn runThread(ctx: *ThreadCtx) void {
                                             .thinking = thinking_copy,
                                             .thinking_signature = sig_copy,
                                         } }) catch {};
+                                        const think_at = content_blocks.items.len - 1;
+                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at);
                                         _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = content_blocks.items.len - 1,
+                                            .content_index = think_at,
                                             .content = current_thinking.items,
-                                            .partial = partial,
+                                            .partial = carried.partial,
                                         } });
+                                        carried.release(allocator, null);
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1116,11 +1119,14 @@ fn runThread(ctx: *ThreadCtx) void {
                                             .thinking = thinking_copy,
                                             .thinking_signature = sig_copy,
                                         } }) catch {};
+                                        const think_at = content_blocks.items.len - 1;
+                                        const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at);
                                         _ = stream.pushBlocking(.{ .thinking_end = .{
-                                            .content_index = content_blocks.items.len - 1,
+                                            .content_index = think_at,
                                             .content = current_thinking.items,
-                                            .partial = partial,
+                                            .partial = carried.partial,
                                         } });
+                                        carried.release(allocator, null);
                                         current_thinking.clearRetainingCapacity();
                                         current_thinking_signature.clearRetainingCapacity();
                                     },
@@ -1233,11 +1239,14 @@ fn runThread(ctx: *ThreadCtx) void {
                     .thinking = thinking_copy,
                     .thinking_signature = sig_copy,
                 } }) catch {};
+                const think_at = content_blocks.items.len - 1;
+                const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, think_at);
                 _ = stream.pushBlocking(.{ .thinking_end = .{
-                    .content_index = content_blocks.items.len - 1,
+                    .content_index = think_at,
                     .content = current_thinking.items,
-                    .partial = partial,
+                    .partial = carried.partial,
                 } });
+                carried.release(allocator, null);
             },
             .none => {},
         }

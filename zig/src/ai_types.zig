@@ -707,6 +707,34 @@ pub fn cloneAssistantMessage(allocator: std.mem.Allocator, msg: AssistantMessage
     };
 }
 
+pub const CarriedPartial = struct {
+    partial: AssistantMessage,
+    owned: ?[]AssistantContent,
+
+    pub fn release(self: CarriedPartial, allocator: std.mem.Allocator, pending: ?*std.ArrayList([]AssistantContent)) void {
+        const owned = self.owned orelse return;
+        if (pending) |list| {
+            list.append(allocator, owned) catch allocator.free(owned);
+            return;
+        }
+        allocator.free(owned);
+    }
+};
+
+pub fn partialWithContent(
+    allocator: std.mem.Allocator,
+    base: AssistantMessage,
+    content: []const AssistantContent,
+    index: usize,
+) CarriedPartial {
+    if (index >= content.len) return .{ .partial = base, .owned = null };
+    const slice = allocator.alloc(AssistantContent, index + 1) catch return .{ .partial = base, .owned = null };
+    @memcpy(slice, content[0 .. index + 1]);
+    var out = base;
+    out.content = slice;
+    return .{ .partial = out, .owned = slice };
+}
+
 pub fn deinitAssistantMessageOwned(allocator: std.mem.Allocator, msg: *AssistantMessage) void {
     msg.deinit(allocator);
 }
@@ -1555,4 +1583,43 @@ test "OwnedMessage cloneOf frees its copy when a later allocation fails" {
     };
 
     try std.testing.checkAllAllocationFailures(allocator, Case.run, .{source});
+}
+
+test "partialWithContent puts the block at the index it is asked for" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{
+        .{ .text = .{ .text = "before" } },
+        .{ .thinking = .{ .thinking = "pondering", .thinking_signature = "sig-9" } },
+    };
+    const carried = partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 1);
+    defer carried.release(allocator, null);
+    try std.testing.expectEqual(@as(usize, 2), carried.partial.content.len);
+    switch (carried.partial.content[1]) {
+        .thinking => |t| try std.testing.expectEqualStrings("sig-9", t.thinking_signature.?),
+        else => return error.NotCarried,
+    }
+}
+
+test "partialWithContent leaves the partial alone when the index is not there" {
+    const allocator = std.testing.allocator;
+    const content = [_]AssistantContent{.{ .text = .{ .text = "only" } }};
+    const carried = partialWithContent(allocator, .{
+        .content = &.{},
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .model = "claude",
+        .usage = .{},
+        .stop_reason = .stop,
+        .timestamp = 0,
+    }, &content, 4);
+    try std.testing.expectEqual(@as(?[]AssistantContent, null), carried.owned);
+    try std.testing.expectEqual(@as(usize, 0), carried.partial.content.len);
 }

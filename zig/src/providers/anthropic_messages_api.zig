@@ -1084,6 +1084,38 @@ fn buildAnthropicHeaders(allocator: std.mem.Allocator, api_key: []const u8, mode
     return out;
 }
 
+const ThinkingEnd = enum { ended, oom };
+
+fn endThinkingBlock(
+    allocator: std.mem.Allocator,
+    stream: *event_stream.AssistantMessageEventStream,
+    partial: ai_types.AssistantMessage,
+    content_blocks: *std.ArrayList(ai_types.AssistantContent),
+    content: []const u8,
+    signature: []const u8,
+    content_index: usize,
+    pending: ?*std.ArrayList([]ai_types.AssistantContent),
+) ThinkingEnd {
+    const thinking_copy = allocator.dupe(u8, content) catch return .oom;
+    errdefer allocator.free(thinking_copy);
+    const sig_copy = if (signature.len > 0) allocator.dupe(u8, signature) catch null else null;
+    errdefer if (sig_copy) |s| allocator.free(s);
+
+    content_blocks.append(allocator, .{ .thinking = .{
+        .thinking = thinking_copy,
+        .thinking_signature = sig_copy,
+    } }) catch return .oom;
+
+    const carried = ai_types.partialWithContent(allocator, partial, content_blocks.items, content_index);
+    _ = stream.pushBlocking(.{ .thinking_end = .{
+        .content_index = content_index,
+        .content = content,
+        .partial = carried.partial,
+    } });
+    carried.release(allocator, pending);
+    return .ended;
+}
+
 fn retireDeltaSlice(
     allocator: std.mem.Allocator,
     pending: *std.ArrayList([]const u8),
@@ -1341,6 +1373,11 @@ fn runThread(ctx: *ThreadCtx) void {
         for (pending_delta_frees.items) |s| allocator.free(s);
         pending_delta_frees.deinit(allocator);
     }
+    var pending_partial_frees = std.ArrayList([]ai_types.AssistantContent).empty;
+    defer {
+        for (pending_partial_frees.items) |s| allocator.free(s);
+        pending_partial_frees.deinit(allocator);
+    }
     const stream_clones_events = stream.ownership.isOwned();
 
     var raw_body = std.ArrayList(u8).empty;
@@ -1509,28 +1546,20 @@ fn runThread(ctx: *ThreadCtx) void {
                                 _ = stream.pushBlocking(.{ .text_end = .{ .content_index = block_info.content_index, .content = current_text.items, .partial = partial } });
                             },
                             .thinking => {
-                                const thinking_copy = allocator.dupe(u8, current_thinking.items) catch {
+                                if (endThinkingBlock(
+                                    allocator,
+                                    stream,
+                                    partial,
+                                    &content_blocks,
+                                    current_thinking.items,
+                                    current_thinking_signature.items,
+                                    block_info.content_index,
+                                    if (stream_clones_events) null else &pending_partial_frees,
+                                ) == .oom) {
                                     ctx.deinit();
                                     stream.completeWithError("oom thinking");
                                     return;
-                                };
-                                const sig_copy = if (current_thinking_signature.items.len > 0)
-                                    allocator.dupe(u8, current_thinking_signature.items) catch null
-                                else
-                                    null;
-
-                                content_blocks.append(allocator, .{ .thinking = .{
-                                    .thinking = thinking_copy,
-                                    .thinking_signature = sig_copy,
-                                } }) catch {
-                                    allocator.free(thinking_copy);
-                                    if (sig_copy) |sig| allocator.free(sig);
-                                    ctx.deinit();
-                                    stream.completeWithError("oom thinking");
-                                    return;
-                                };
-
-                                _ = stream.pushBlocking(.{ .thinking_end = .{ .content_index = block_info.content_index, .content = current_thinking.items, .partial = partial } });
+                                }
                             },
                             .tool_use => {
                                 if (tc_tracker.completeCall(cbs.index, allocator)) |tool_call| {
@@ -2769,4 +2798,135 @@ test "every row this wire serves finds its key from the row, not a list of vendo
         try std.testing.expectEqualStrings(row.credential_env[0], recorded.asked.items[0]);
     }
     try std.testing.expect(served >= 2);
+}
+
+fn signedThinkingTestModel() !ai_types.Model {
+    return .{
+        .id = "claude",
+        .name = "claude",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = provider_catalog.baseUrl("anthropic", "anthropic-messages", null) orelse
+            return error.NoAnthropicBaseUrl,
+        .reasoning = false,
+        .input = &.{},
+        .cost = .{ .input = 3.0, .output = 15.0, .cache_read = 0.3, .cache_write = 3.75 },
+        .context_window = 200000,
+        .max_tokens = 16,
+    };
+}
+
+fn freeThinkingBlocks(allocator: std.mem.Allocator, blocks: *std.ArrayList(ai_types.AssistantContent)) void {
+    for (blocks.items) |*block| {
+        switch (block.*) {
+            .text => |t| allocator.free(t.text),
+            .thinking => |t| {
+                allocator.free(t.thinking);
+                if (t.thinking_signature) |sig| allocator.free(sig);
+            },
+            else => {},
+        }
+    }
+    blocks.deinit(allocator);
+}
+
+fn newCloningStream(allocator: std.mem.Allocator) !*event_stream.AssistantMessageEventStream {
+    const stream = try allocator.create(event_stream.AssistantMessageEventStream);
+    stream.* = event_stream.AssistantMessageEventStream.init(allocator);
+    stream.ownership = .{ .owned = ai_types.cloneAssistantMessageEvent };
+    return stream;
+}
+
+test "a signed thinking block's thinking_end carries the signature it saw" {
+    const allocator = std.testing.allocator;
+    const stream = try newCloningStream(allocator);
+    defer _ = stream.deinitAndDestroy();
+
+    var content_blocks: std.ArrayList(ai_types.AssistantContent) = .empty;
+    defer freeThinkingBlocks(allocator, &content_blocks);
+
+    try std.testing.expectEqual(
+        ThinkingEnd.ended,
+        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 0, null),
+    );
+
+    const polled = stream.poll() orelse return error.NoEvent;
+    defer stream.releaseEvent(polled);
+    switch (polled) {
+        .thinking_end => |t| {
+            try std.testing.expectEqual(@as(usize, 0), t.content_index);
+            try std.testing.expectEqualStrings("pondering", t.content);
+            if (t.content_index >= t.partial.content.len) return error.PartNotCarried;
+            switch (t.partial.content[t.content_index]) {
+                .thinking => |thinking| {
+                    try std.testing.expectEqualStrings("pondering", thinking.thinking);
+                    try std.testing.expectEqualStrings("sig-9", thinking.thinking_signature orelse return error.SignatureNotCarried);
+                },
+                else => return error.PartNotCarried,
+            }
+        },
+        else => return error.NotThinkingEnd,
+    }
+}
+
+test "a thinking block that saw no signature carries the part without one" {
+    const allocator = std.testing.allocator;
+    const stream = try newCloningStream(allocator);
+    defer _ = stream.deinitAndDestroy();
+
+    var content_blocks: std.ArrayList(ai_types.AssistantContent) = .empty;
+    defer freeThinkingBlocks(allocator, &content_blocks);
+
+    try std.testing.expectEqual(
+        ThinkingEnd.ended,
+        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "", 0, null),
+    );
+
+    const polled = stream.poll() orelse return error.NoEvent;
+    defer stream.releaseEvent(polled);
+    switch (polled) {
+        .thinking_end => |t| {
+            if (t.content_index >= t.partial.content.len) return error.PartNotCarried;
+            switch (t.partial.content[t.content_index]) {
+                .thinking => |thinking| {
+                    try std.testing.expectEqualStrings("pondering", thinking.thinking);
+                    if (thinking.thinking_signature != null) return error.SignatureInvented;
+                },
+                else => return error.PartNotCarried,
+            }
+        },
+        else => return error.NotThinkingEnd,
+    }
+}
+
+test "the carried thinking part sits at the index the ended part holds" {
+    const allocator = std.testing.allocator;
+    const stream = try newCloningStream(allocator);
+    defer _ = stream.deinitAndDestroy();
+
+    var content_blocks: std.ArrayList(ai_types.AssistantContent) = .empty;
+    defer freeThinkingBlocks(allocator, &content_blocks);
+    try content_blocks.append(allocator, .{ .text = .{ .text = try allocator.dupe(u8, "before") } });
+
+    try std.testing.expectEqual(
+        ThinkingEnd.ended,
+        endThinkingBlock(allocator, stream, createPartialMessage(try signedThinkingTestModel()), &content_blocks, "pondering", "sig-9", 1, null),
+    );
+
+    const polled = stream.poll() orelse return error.NoEvent;
+    defer stream.releaseEvent(polled);
+    switch (polled) {
+        .thinking_end => |t| {
+            try std.testing.expectEqual(@as(usize, 2), t.partial.content.len);
+            switch (t.partial.content[0]) {
+                .text => |text| try std.testing.expectEqualStrings("before", text.text),
+                else => return error.PartNotCarried,
+            }
+            switch (t.partial.content[1]) {
+                .thinking => |thinking| try std.testing.expectEqualStrings("sig-9", thinking.thinking_signature orelse return error.SignatureNotCarried),
+                else => return error.PartNotCarried,
+            }
+        },
+        else => return error.NotThinkingEnd,
+    }
 }

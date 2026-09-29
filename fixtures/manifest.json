@@ -9492,6 +9492,24 @@
       "scope": "frame"
     },
     {
+      "id": "provider-signed-thinking-anthropic",
+      "path": "provider/valid/signed-thinking-anthropic.json",
+      "kind": "positive",
+      "valid": true,
+      "phase": "",
+      "codes": [],
+      "units": [
+        "provider-core",
+        "carry"
+      ],
+      "provenance": [
+        "drafts/model-provider-core.md",
+        "zig/src/providers/anthropic_messages_api.zig"
+      ],
+      "profile": "model-provider-core",
+      "scope": "frame"
+    },
+    {
       "id": "provider-text-inference",
       "path": "provider/valid/text-inference.json",
       "kind": "positive",
