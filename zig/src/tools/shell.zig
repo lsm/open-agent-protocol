@@ -19,8 +19,10 @@ const end_directory_script =
 ;
 
 const EndDirectory = struct {
-    stdout: []const u8,
+    before: []const u8,
+    found: bool,
     directory: ?[]const u8,
+    after: []const u8,
 };
 
 fn splitEndDirectory(stdout: []const u8, nonce: [16]u8) EndDirectory {
@@ -29,11 +31,17 @@ fn splitEndDirectory(stdout: []const u8, nonce: [16]u8) EndDirectory {
     @memcpy(needle_buffer[1..], &nonce);
     const needle = needle_buffer[0..];
     const index = std.mem.lastIndexOf(u8, stdout, needle) orelse
-        return .{ .stdout = stdout, .directory = null };
+        return .{ .before = stdout, .found = false, .directory = null, .after = &.{} };
     const after = stdout[index + needle.len ..];
-    const line_end = std.mem.indexOfScalar(u8, after, '\n') orelse after.len;
-    if (line_end == 0) return .{ .stdout = stdout[0..index], .directory = null };
-    return .{ .stdout = stdout[0..index], .directory = after[0..line_end] };
+    const newline = std.mem.indexOfScalar(u8, after, '\n');
+    const line_end = newline orelse after.len;
+    if (line_end == 0) return .{ .before = stdout[0..index], .found = true, .directory = null, .after = &.{} };
+    const tail = if (newline) |at| after[at + 1 ..] else after[after.len..];
+    return .{ .before = stdout[0..index], .found = true, .directory = after[0..line_end], .after = tail };
+}
+
+fn restoredNewline(split: EndDirectory) []const u8 {
+    return if (split.found) "\n" else "";
 }
 
 fn reportDirectory(term: std.process.Child.Term, parsed: ?[]const u8, start: []const u8) []const u8 {
@@ -74,6 +82,8 @@ pub fn execute(
     defer dir.close(common.defaultIo());
 
     const nonce = common.hash16(tool_call_id);
+    const start_directory = try std.Io.Dir.path.resolve(allocator, &.{workspace_root});
+    defer allocator.free(start_directory);
     const argv = if (@import("builtin").os.tag == .windows)
         [_][]const u8{ "cmd.exe", "/C", command }
     else
@@ -88,17 +98,20 @@ pub fn execute(
             .stdout_bytes = 0,
             .stderr_bytes = 0,
             .raw_bytes = 0,
+            .working_directory = start_directory,
         });
         errdefer allocator.free(details);
         const text = try std.fmt.allocPrint(allocator, "shell command failed: {s}", .{@errorName(err)});
-        return common.makeTextResultOwned(allocator, text, details);
+        errdefer allocator.free(text);
+        var failed = try common.makeTextResultOwned(allocator, text, details);
+        errdefer failed.deinit(allocator);
+        failed.working_directory = ai_types.OwnedSlice(u8).initOwned(try allocator.dupe(u8, start_directory));
+        return failed;
     };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
     const captured = splitEndDirectory(result.stdout, nonce);
-    const start_directory = try std.Io.Dir.path.resolve(allocator, &.{workspace_root});
-    defer allocator.free(start_directory);
     const end_directory = reportDirectory(result.term, captured.directory, start_directory);
 
     const exit_code: ?u8 = switch (result.term) {
@@ -110,13 +123,15 @@ pub fn execute(
         else => null,
     };
     const duration_ms = common.durationMs(start_ms);
-    const raw_bytes = captured.stdout.len + result.stderr.len;
+    const restored = restoredNewline(captured);
+    const stdout_bytes = captured.before.len + restored.len + captured.after.len;
+    const raw_bytes = stdout_bytes + result.stderr.len;
     const details = try common.jsonString(allocator, .{
         .ok = exit_code == 0,
         .exit_code = exit_code,
         .signal = signal,
         .duration_ms = duration_ms,
-        .stdout_bytes = captured.stdout.len,
+        .stdout_bytes = stdout_bytes,
         .stderr_bytes = result.stderr.len,
         .raw_bytes = raw_bytes,
         .working_directory = end_directory,
@@ -125,16 +140,16 @@ pub fn execute(
 
     const text = try std.fmt.allocPrint(allocator,
         \\stdout:
-        \\{s}
+        \\{s}{s}{s}
         \\stderr:
         \\{s}
-    , .{ captured.stdout, result.stderr });
+    , .{ captured.before, restored, captured.after, result.stderr });
     defer allocator.free(text);
-    const made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details });
+    var made = try common.makeTextResultWithArtifact(allocator, .{ .tool_name = "shell_execute", .call_id = tool_call_id, .text = text, .details_json = details });
     defer if (made.artifact_path) |path| allocator.free(path);
-    var with_directory = made.result;
-    with_directory.working_directory = ai_types.OwnedSlice(u8).initOwned(try allocator.dupe(u8, end_directory));
-    return with_directory;
+    errdefer made.result.deinit(allocator);
+    made.result.working_directory = ai_types.OwnedSlice(u8).initOwned(try allocator.dupe(u8, end_directory));
+    return made.result;
 }
 
 test "shell execute reports the directory the command ended in" {
@@ -182,34 +197,91 @@ test "shell execute reports the start directory when the command replaces the sh
     try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, expected) != null);
 }
 
+fn reassembled(split: EndDirectory) ![]u8 {
+    return std.fmt.allocPrint(std.testing.allocator, "{s}{s}{s}", .{ split.before, restoredNewline(split), split.after });
+}
+
 test "a command that prints the nonce does not decide the reported directory" {
     const nonce = [_]u8{ 'a' } ** 16;
-    const expected_stdout = try std.fmt.allocPrint(std.testing.allocator, "noise\n{s}/elsewhere\ntail", .{&nonce});
-    defer std.testing.allocator.free(expected_stdout);
     const stdout = try std.fmt.allocPrint(std.testing.allocator, "noise\n{s}/elsewhere\ntail\n{s}/real\n", .{ &nonce, &nonce });
     defer std.testing.allocator.free(stdout);
     const split = splitEndDirectory(stdout, nonce);
-    try std.testing.expectEqualStrings(expected_stdout, split.stdout);
     try std.testing.expectEqualStrings("/real", split.directory.?);
+    const joined = try reassembled(split);
+    defer std.testing.allocator.free(joined);
+    const expected = try std.fmt.allocPrint(std.testing.allocator, "noise\n{s}/elsewhere\ntail\n", .{&nonce});
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, joined);
 }
 
-test "the reported directory stops at the first newline after the marker" {
+test "output written after the marker line is kept, not dropped" {
     const nonce = [_]u8{ 'b' } ** 16;
     const stdout = try std.fmt.allocPrint(std.testing.allocator, "out\n{s}/dir\nwritten by a background process\n", .{&nonce});
     defer std.testing.allocator.free(stdout);
     const split = splitEndDirectory(stdout, nonce);
-    try std.testing.expectEqualStrings("out", split.stdout);
     try std.testing.expectEqualStrings("/dir", split.directory.?);
+    try std.testing.expectEqualStrings("written by a background process\n", split.after);
+    const joined = try reassembled(split);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expectEqualStrings("out\nwritten by a background process\n", joined);
+}
+
+test "an exit trap's output survives, because it runs after the marker" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"trap 'echo from-the-trap' EXIT\"}}", .{cwd});
+    defer std.testing.allocator.free(args);
+    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{cwd});
+    defer std.testing.allocator.free(expected);
+    var result = try execute("call-trap", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "from-the-trap") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "oap-cwd-") == null);
+}
+
+test "a command whose output hits the cap reports the start directory and the failure" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const cwd = try std.process.currentPathAlloc(common.defaultIo(), std.testing.allocator);
+    defer std.testing.allocator.free(cwd);
+    const expected = try std.Io.Dir.path.resolve(std.testing.allocator, &.{cwd});
+    defer std.testing.allocator.free(expected);
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"workspace_root\":\"{s}\",\"command\":\"head -c 20000000 /dev/zero | tr '\\\\0' x\",\"timeout_ms\":60000}}", .{cwd});
+    defer std.testing.allocator.free(args);
+    var result = try execute("call-cap", args, null, null, null, std.testing.allocator);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings(expected, result.workingDirectory().?);
+    try std.testing.expect(std.mem.indexOf(u8, result.getDetailsJson().?, "StreamTooLong") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "shell command failed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.content.slice()[0].text.text, "oap-cwd-") == null);
+}
+
+test "the reported directory stops at the first newline after the marker" {
+    const nonce = [_]u8{ 'd' } ** 16;
+    const stdout = try std.fmt.allocPrint(std.testing.allocator, "out\n{s}/dir\n", .{&nonce});
+    defer std.testing.allocator.free(stdout);
+    const split = splitEndDirectory(stdout, nonce);
+    try std.testing.expectEqualStrings("/dir", split.directory.?);
+    const joined = try reassembled(split);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expectEqualStrings("out\n", joined);
 }
 
 test "a missing or empty marker reports no directory" {
     const nonce = [_]u8{ 'c' } ** 16;
-    try std.testing.expect(splitEndDirectory("just output\n", nonce).directory == null);
+    const missing = splitEndDirectory("just output\n", nonce);
+    try std.testing.expect(missing.directory == null);
+    const missing_joined = try reassembled(missing);
+    defer std.testing.allocator.free(missing_joined);
+    try std.testing.expectEqualStrings("just output\n", missing_joined);
     const empty = try std.fmt.allocPrint(std.testing.allocator, "out\n{s}\n", .{&nonce});
     defer std.testing.allocator.free(empty);
     const split = splitEndDirectory(empty, nonce);
     try std.testing.expect(split.directory == null);
-    try std.testing.expectEqualStrings("out", split.stdout);
+    const joined = try reassembled(split);
+    defer std.testing.allocator.free(joined);
+    try std.testing.expectEqualStrings("out\n", joined);
 }
 
 test "the command sees no positional parameters, as it did before the wrapper" {
