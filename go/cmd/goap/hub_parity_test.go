@@ -69,6 +69,19 @@ var hubParityScenarios = map[string][]string{
 	},
 }
 
+func TestHubStdioComparesWhatTheScenariosSend(t *testing.T) {
+	for name, lines := range hubParityScenarios {
+		stopAt := len(lines) - 1
+		if at, stops := hubWireStops[name]; stops {
+			stopAt = at
+		}
+		ids := expectedHubIDs(lines, stopAt)
+		if len(ids) == 0 {
+			t.Errorf("scenario %q would compare nothing", name)
+		}
+	}
+}
+
 func TestHubStdioAnswersGoapAndOapxTheSame(t *testing.T) {
 	oapx := os.Getenv("OAP_OAPX_BIN")
 	if oapx == "" {
@@ -246,7 +259,7 @@ func assertSameHubAnswers(t *testing.T, name string, lines []string, goAnswers, 
 	if len(goAnswers) != len(zigAnswers) {
 		t.Errorf("goap answered %d requests and oapx answered %d", len(goAnswers), len(zigAnswers))
 	}
-	stopAt := -1
+	stopAt := len(lines) - 1
 	if at, stops := hubWireStops[name]; stops {
 		stopAt = at
 	}
