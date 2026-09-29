@@ -407,3 +407,12 @@ and the wrong side is fixed or the divergence recorded in its own section.
   writes it, in the Keep a Changelog shape, from the PRs merged since the last
   tag — [`docs/releasing.md`](docs/releasing.md) has the steps. So do not add an
   entry under `Unreleased`, and do not read a missing one as an unfinished PR.
+- **An incompatible change to a public Go package is recorded in the pull
+  request's own description**, under a `## Breaking changes` heading naming each
+  package in backticks, because `apidiffcheck` reads that section and not the
+  changelog. The heading is case sensitive; the release lifts the section into
+  the notes under a `### Breaking changes` heading, level three because a `##`
+  inside the version's own section would end it early. A package named only in
+  prose does not count, and removing a public package counts as the most
+  incompatible change there is — a `main` package does not, since nothing
+  imports it.

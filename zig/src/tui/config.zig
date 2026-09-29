@@ -23,6 +23,7 @@ pub const ToolPermission = struct {
 
 pub const ModeSettings = struct {
     compact_output: bool = true,
+    context_window: ?u32 = null,
     auto_worktree: bool = false,
 };
 
@@ -158,6 +159,7 @@ fn parseConfig(allocator: std.mem.Allocator, data: []const u8) !Config {
     if (obj.get("mode")) |value| switch (value) {
         .object => |mode_obj| {
             cfg.mode.compact_output = boolField(mode_obj, "compact_output", cfg.mode.compact_output);
+            cfg.mode.context_window = positiveIntField(mode_obj, "context_window");
             cfg.mode.auto_worktree = boolField(mode_obj, "auto_worktree", cfg.mode.auto_worktree);
         },
         else => {},
@@ -187,6 +189,9 @@ fn serializeConfig(allocator: std.mem.Allocator, cfg: Config) ![]u8 {
     try w.writeKey("mode");
     try w.beginObject();
     try w.writeBoolField("compact_output", cfg.mode.compact_output);
+    if (cfg.mode.context_window) |window| {
+        try w.writeIntField("context_window", window);
+    }
     try w.writeBoolField("auto_worktree", cfg.mode.auto_worktree);
     try w.endObject();
     try w.endObject();
@@ -202,6 +207,14 @@ fn stringField(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     const value = obj.get(key) orelse return null;
     return switch (value) {
         .string => |s| s,
+        else => null,
+    };
+}
+
+fn positiveIntField(obj: std.json.ObjectMap, key: []const u8) ?u32 {
+    const value = obj.get(key) orelse return null;
+    return switch (value) {
+        .integer => |n| if (n > 0) std.math.cast(u32, n) else null,
         else => null,
     };
 }
@@ -251,6 +264,62 @@ test "save config reload preserves model provider and api" {
     try std.testing.expectEqual(ToolPermission.Mode.deny, loaded.permissions.items[0].mode);
     try std.testing.expectEqual(false, loaded.mode.compact_output);
     try std.testing.expectEqual(true, loaded.mode.auto_worktree);
+}
+
+test "a context window survives a save and an absent one stays absent" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+
+    var cfg = try Config.defaults(std.testing.allocator);
+    defer cfg.deinit(std.testing.allocator);
+    try store.save(cfg);
+
+    var unset = try store.load();
+    defer unset.deinit(std.testing.allocator);
+    try std.testing.expect(unset.mode.context_window == null);
+
+    cfg.mode.context_window = 1_000_000;
+    try store.save(cfg);
+
+    var set = try store.load();
+    defer set.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(?u32, 1_000_000), set.mode.context_window);
+
+    cfg.mode.context_window = null;
+    try store.save(cfg);
+
+    var cleared = try store.load();
+    defer cleared.deinit(std.testing.allocator);
+    try std.testing.expect(cleared.mode.context_window == null);
+}
+
+test "a context window that is not a positive whole number is not read as one" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const base = try tmpBase(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(base);
+    var store = try Store.init(std.testing.allocator, base);
+    defer store.deinit();
+
+    const malformed = [_][]const u8{
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"context_window\":0}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"context_window\":-5}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"context_window\":\"1m\"}}",
+        "{\"model\":\"m\",\"provider\":\"p\",\"api\":\"a\",\"workspace\":\".\",\"mode\":{\"context_window\":1.5}}",
+    };
+    for (malformed) |text| {
+        const path = try std.fs.path.join(std.testing.allocator, &.{ base, "config.json" });
+        defer std.testing.allocator.free(path);
+        try compat.fs.writeFile(compat.fs.getCwd(), path, text);
+        var loaded = try store.load();
+        defer loaded.deinit(std.testing.allocator);
+        try std.testing.expect(loaded.mode.context_window == null);
+    }
 }
 
 test "missing config creates defaults" {

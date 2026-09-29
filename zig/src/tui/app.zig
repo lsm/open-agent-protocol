@@ -642,6 +642,7 @@ pub const ProductionRuntime = struct {
     permission_engine: permission.PermissionEngine,
     models: []ai_types.Model,
     initial_model: ?SavedModelRef = null,
+    context_window: ?u32 = null,
     mode_settings: tui_config.ModeSettings = .{},
 
     pub const InitOptions = struct {
@@ -682,7 +683,9 @@ pub const ProductionRuntime = struct {
 
         var mode_settings: tui_config.ModeSettings = .{};
         var initial_model: ?SavedModelRef = null;
+        var saved_context_window: ?u32 = null;
         if (saved_config) |cfg| {
+            saved_context_window = cfg.mode.context_window;
             mode_settings = cfg.mode;
             if (cfg.model.len > 0) {
                 initial_model = SavedModelRef{
@@ -701,6 +704,7 @@ pub const ProductionRuntime = struct {
             .permission_engine = permission_engine,
             .models = models,
             .initial_model = initial_model,
+            .context_window = saved_context_window,
             .mode_settings = mode_settings,
         };
         initial_model = null;
@@ -724,6 +728,7 @@ pub const ProductionRuntime = struct {
             } else null,
             .permission_engine = &self.permission_engine,
             .workspace_root = self.permission_engine.workspace_root,
+            .context_window = self.context_window,
             .run_async = true,
             .compact_output = self.mode_settings.compact_output,
             .auto_worktree = self.mode_settings.auto_worktree,
@@ -2643,6 +2648,7 @@ pub const App = struct {
             .context, .model, .provider => self.applyContextWindow(),
             else => {},
         }
+        if (command.kind == .context and !result.is_error and command.arg != null) self.persistContextWindow();
         if (result.output.len > 0) {
             try self.state.appendTranscript(if (result.is_error) .@"error" else .system, result.output);
             if (result.is_error) try self.state.status.setError(self.allocator, result.output);
@@ -2686,7 +2692,9 @@ pub const App = struct {
         defer store.deinit();
         var cfg = try store.load();
         defer cfg.deinit(self.allocator);
-        cfg.mode = self.mode_settings;
+        var mode = self.mode_settings;
+        mode.context_window = cfg.mode.context_window;
+        cfg.mode = mode;
         try store.save(cfg);
     }
 
@@ -2706,6 +2714,25 @@ pub const App = struct {
         try replaceOwnedString(self.allocator, &cfg.provider, model.provider);
         try replaceOwnedString(self.allocator, &cfg.api, model.api);
         try store.save(cfg);
+    }
+
+    fn persistContextWindow(self: *App) void {
+        const runtime = self.runtime orelse return;
+        var store = tui_config.Store.initDefault(self.allocator) catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer store.deinit();
+        var cfg = store.load() catch |err| {
+            self.recordError(@errorName(err)) catch {};
+            return;
+        };
+        defer cfg.deinit(self.allocator);
+        const window = runtime.contextWindowOverride();
+        self.mode_settings.context_window = window;
+        if (cfg.mode.context_window == window) return;
+        cfg.mode.context_window = window;
+        store.save(cfg) catch |err| self.recordError(@errorName(err)) catch {};
     }
 
     fn replaceOwnedString(allocator: std.mem.Allocator, field: *[]u8, value: []const u8) !void {
@@ -4135,6 +4162,10 @@ fn defaultModel() ai_types.Model {
     };
 }
 
+fn preferredContextWindow(stored: ?u32, flag: ?u32) ?u32 {
+    return flag orelse stored;
+}
+
 pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void {
     var environ_map = try compat.createEnvMap(allocator);
     defer environ_map.deinit();
@@ -4151,7 +4182,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, context_window: ?u32) !void
     production.initBridge();
 
     var options = production.options();
-    options.context_window = context_window;
+    options.context_window = preferredContextWindow(options.context_window, context_window);
     if (fixture) |runtime| {
         options.protocol = runtime.provider.protocolClient();
         options.generate_titles = false;
@@ -5725,6 +5756,166 @@ const kimi_model = ai_types.Model{
     .context_window = 262_144,
     .max_tokens = 16_384,
 };
+
+fn oapxConfigDir(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+    return std.fs.path.join(allocator, &.{ home, ".oapx" });
+}
+
+fn expectConfiguredContextWindow(allocator: std.mem.Allocator, home: []const u8, expected: ?u32) !void {
+    const base = try oapxConfigDir(allocator, home);
+    defer allocator.free(base);
+    var store = try tui_config.Store.init(allocator, base);
+    defer store.deinit();
+    var cfg = try store.load();
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqual(expected, cfg.mode.context_window);
+}
+
+fn configFileBytes(allocator: std.mem.Allocator, home: []const u8) ![]u8 {
+    const base = try oapxConfigDir(allocator, home);
+    defer allocator.free(base);
+    const path = try std.fs.path.join(allocator, &.{ base, "config.json" });
+    defer allocator.free(path);
+    return compat.fs.readFileAlloc(allocator, compat.fs.getCwd(), path, 1 << 20);
+}
+
+test "a context window the user chose is persisted, and the catalog's own is not written back" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try std.testing.expectEqual(@as(u64, 200_000), app.runtime.?.contextWindow());
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.submit("/context default");
+    try std.testing.expectEqual(@as(u64, 128_000), app.runtime.?.contextWindow());
+    try expectConfiguredContextWindow(std.testing.allocator, home, null);
+}
+
+test "a persisted window the model in effect cannot take is dropped without rewriting the file" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    const base = try oapxConfigDir(std.testing.allocator, home);
+    defer std.testing.allocator.free(base);
+    var store = try tui_config.Store.init(std.testing.allocator, base);
+    defer store.deinit();
+    var cfg = try tui_config.Config.defaults(std.testing.allocator);
+    defer cfg.deinit(std.testing.allocator);
+    cfg.mode.context_window = 4_000_000_000;
+    try store.save(cfg);
+
+    const before = try configFileBytes(std.testing.allocator, home);
+    defer std.testing.allocator.free(before);
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(?u32, 4_000_000_000), production.options().context_window);
+
+    var app = try App.init(std.testing.allocator, production.options());
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+    try app.drainEvents();
+
+    try std.testing.expect(app.runtime.?.contextWindowOverride() == null);
+    try std.testing.expect(app.runtime.?.contextWindow() != 4_000_000_000);
+    var said_it = false;
+    for (app.state.transcript.items) |entry| {
+        if (std.mem.indexOf(u8, entry.text.items, "4000000000 context tokens is above the") != null) said_it = true;
+    }
+    try std.testing.expect(said_it);
+
+    const after = try configFileBytes(std.testing.allocator, home);
+    defer std.testing.allocator.free(after);
+    try std.testing.expectEqualStrings(before, after);
+}
+
+test "a flagless launch keeps the stored window, and the flag overrides it" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    const base = try oapxConfigDir(std.testing.allocator, home);
+    defer std.testing.allocator.free(base);
+    {
+        var store = try tui_config.Store.init(std.testing.allocator, base);
+        defer store.deinit();
+        var cfg = try tui_config.Config.defaults(std.testing.allocator);
+        defer cfg.deinit(std.testing.allocator);
+        cfg.mode.context_window = 200_000;
+        try store.save(cfg);
+    }
+
+    var production = try ProductionRuntime.init(std.testing.allocator, .{});
+    defer production.deinit();
+    production.initBridge();
+    try std.testing.expectEqual(@as(?u32, 200_000), production.options().context_window);
+
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, null));
+    try std.testing.expectEqual(@as(?u32, 300_000), preferredContextWindow(200_000, 300_000));
+    try std.testing.expectEqual(@as(?u32, 200_000), preferredContextWindow(200_000, 200_000));
+    try std.testing.expectEqual(@as(?u32, null), preferredContextWindow(null, null));
+}
+
+test "a bare /context reports the window and leaves the persisted member alone" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.submit("/context");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+}
+
+test "a settings toggle does not erase the persisted window" {
+    defer compat.clearTestEnv();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const home = try sessionStoreBaseForAppTest(std.testing.allocator, &tmp);
+    defer std.testing.allocator.free(home);
+    try compat.setTestEnv(std.testing.allocator, "HOME", home);
+
+    var app = try App.init(std.testing.allocator, .{ .models = &[_]ai_types.Model{gpt_model, kimi_model} });
+    defer app.deinit();
+    if (app.store) |*owned| owned.deinit();
+    app.store = null;
+
+    try app.submit("/context 200000");
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+
+    try app.toggleSetting(0);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+    try app.toggleSetting(1);
+    try expectConfiguredContextWindow(std.testing.allocator, home, 200_000);
+}
 
 test "App says so when a window the model in effect cannot take is dropped" {
     const models = [_]ai_types.Model{ gpt_model, kimi_model };

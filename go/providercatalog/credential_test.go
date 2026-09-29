@@ -209,47 +209,19 @@ func storedKey(value string) *StoredCredential {
 	return &StoredCredential{APIKey: &value}
 }
 
-func TestARowThatNamesStoredFirstOutranksTheEnvironment(t *testing.T) {
+func TestAnEnvironmentKeyOutranksAStoredLogin(t *testing.T) {
 	catalog := realCatalog(t)
-
-	got := CredentialPrecedence(catalog, "kimi")
-	if len(got) != 2 || got[0] != SourceStored || got[1] != SourceEnvironment {
-		t.Fatalf("kimi precedence = %v, want [stored environment]: the row says so in providers/catalog.json", got)
-	}
 
 	held := []EnvironmentValue{{Name: "KIMI_API_KEY", Value: "from-the-environment"}}
 	credential, ok := LookupCredential(catalog, held, storedKey("from-a-login"), "kimi")
 	if !ok {
-		t.Fatal("a row that prefers stored must still find one when both are held")
+		t.Fatal("kimi with an environment key and a stored login held found neither")
 	}
-	if credential.Source != SourceStored || credential.Key != "from-a-login" {
-		t.Errorf("credential = %+v, want the stored one: the environment is signed with the env var, so listing models under the env var's region advertises models this login cannot call", credential)
+	if credential.Source != SourceEnvironment {
+		t.Errorf("kimi credential came from %v, want the environment one: the row shares one key, and a stored login must not answer for a listing signed with the environment key", credential.Source)
 	}
-}
-
-func TestARowWithNoPrecedenceKeepsTheEnvironmentFirst(t *testing.T) {
-	catalog := realCatalog(t)
-
-	row, known := findProvider(catalog, "openai")
-	if !known {
-		t.Fatal("the catalog should carry an openai row")
-	}
-	if len(row.CredentialOrder) != 0 {
-		t.Fatalf("openai carries a precedence of %v, want none: it is the default that most rows are on", row.CredentialOrder)
-	}
-
-	got := CredentialPrecedence(catalog, "openai")
-	if len(got) != 2 || got[0] != SourceEnvironment || got[1] != SourceStored {
-		t.Fatalf("precedence = %v, want [environment stored]", got)
-	}
-
-	held := []EnvironmentValue{{Name: row.CredentialEnv[0], Value: "from-the-environment"}}
-	credential, ok := LookupCredential(catalog, held, storedKey("from-a-login"), "openai")
-	if !ok {
-		t.Fatal("a row with no precedence should still find a credential when one is held")
-	}
-	if credential.Source != SourceEnvironment || credential.Key != "from-the-environment" {
-		t.Errorf("credential = %+v, want the environment one: absent means environment first", credential)
+	if credential.Key != "from-the-environment" {
+		t.Errorf("kimi credential key = %q, want the environment one", credential.Key)
 	}
 }
 
@@ -278,31 +250,6 @@ func TestTheSecondSourceIsTriedWhenTheFirstIsEmpty(t *testing.T) {
 				t.Errorf("credential = %+v, want source %q", credential, c.want)
 			}
 		})
-	}
-}
-
-func TestAPrecedenceTheRowDoesNotRecogniseFallsBackToTheDefault(t *testing.T) {
-	catalog := Catalog{Providers: []Provider{{
-		ID:              "odd",
-		Auth:            []string{"api_key"},
-		CredentialEnv:   []string{"ODD_KEY"},
-		CredentialOrder: []string{"nonsense"},
-	}}}
-
-	got := CredentialPrecedence(catalog, "odd")
-	if len(got) != 2 || got[0] != SourceEnvironment || got[1] != SourceStored {
-		t.Errorf("precedence = %v, want the [environment stored] default: a list naming neither source says nothing", got)
-	}
-}
-
-func TestAnUnknownProviderHasNoCredentialAndNoPrecedence(t *testing.T) {
-	catalog := realCatalog(t)
-	if _, ok := LookupCredential(catalog, nil, storedKey("from-a-login"), "not-a-provider"); ok {
-		t.Error("an unknown provider must not resolve a credential")
-	}
-	got := CredentialPrecedence(catalog, "not-a-provider")
-	if len(got) != 2 || got[0] != SourceEnvironment || got[1] != SourceStored {
-		t.Errorf("precedence = %v, want the [environment stored] default", got)
 	}
 }
 

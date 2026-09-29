@@ -60,7 +60,7 @@ pub const JsonWriter = struct {
         self.needs_comma = true;
     }
 
-    pub fn writeFloat(self: *JsonWriter, value: f32) !void {
+    pub fn writeFloat(self: *JsonWriter, value: anytype) !void {
         try self.writeCommaIfNeeded();
         try self.buffer.print(self.allocator, "{d}", .{value});
         self.needs_comma = true;
@@ -92,6 +92,11 @@ pub const JsonWriter = struct {
     pub fn writeIntField(self: *JsonWriter, key: []const u8, value: anytype) !void {
         try self.writeKey(key);
         try self.writeInt(value);
+    }
+
+    pub fn writeFloatField(self: *JsonWriter, key: []const u8, value: anytype) !void {
+        try self.writeKey(key);
+        try self.writeFloat(value);
     }
 
     pub fn writeBoolField(self: *JsonWriter, key: []const u8, value: bool) !void {

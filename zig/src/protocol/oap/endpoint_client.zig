@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compat = @import("compat");
 
 pub const max_line_bytes: usize = 1 << 20;
@@ -8,6 +9,8 @@ pub const Error = error{
     EndpointClosed,
     NotRunning,
     EmbeddedNewline,
+    ExitGraceElapsed,
+    UnclassifiedFrame,
 };
 
 pub const Spawn = struct {
@@ -43,7 +46,10 @@ pub const Client = struct {
         try argv.append(allocator, request.command);
         try argv.appendSlice(allocator, request.args);
 
-        var environment = std.process.Environ.Map.init(allocator);
+        var environment = if (request.environment.len == 0)
+            try compat.runtimeEnviron().createMap(allocator)
+        else
+            std.process.Environ.Map.init(allocator);
         defer environment.deinit();
         for (request.environment) |name| {
             const value = compat.getEnvVarOwned(allocator, name) catch continue;
@@ -72,15 +78,39 @@ pub const Client = struct {
     }
 
     pub fn close(self: *Client) void {
+        self.closeStdin();
+        if (self.child) |*child| {
+            _ = child.wait(self.io()) catch {};
+            self.child = null;
+        }
+        self.closed = true;
+    }
+
+    pub fn closeStdin(self: *Client) void {
         if (self.child) |*child| {
             if (child.stdin) |stdin| {
                 stdin.close(self.io());
                 child.stdin = null;
             }
-            _ = child.wait(self.io()) catch {};
+        }
+    }
+
+    pub fn waitExit(self: *Client, grace_ms: i64) !u8 {
+        const child = &(self.child orelse return Error.NotRunning);
+        var waited: i64 = 0;
+        while (waited < grace_ms) {
+            if (tryExitPosix(child, self.io())) |term| {
+                self.child = null;
+                return exitCodeOf(term);
+            }
+            std.Io.sleep(self.io(), .fromMilliseconds(exit_poll_ms), .boot) catch {};
+            waited += exit_poll_ms;
+        }
+        if (self.child) |*pending| {
+            pending.kill(self.io());
             self.child = null;
         }
-        self.closed = true;
+        return Error.ExitGraceElapsed;
     }
 
     pub fn write(self: *Client, line: []const u8) !void {
@@ -97,7 +127,7 @@ pub const Client = struct {
             if (try self.takeLine()) |line| {
                 const trimmed = std.mem.trim(u8, line, " \t\r");
                 if (trimmed.len == 0) continue;
-                return classify(trimmed);
+                return try classify(trimmed);
             }
             const filled = try self.fill(timeout);
             if (!filled) return null;
@@ -131,14 +161,81 @@ pub const Client = struct {
             error.EndOfStream => return Error.EndpointClosed,
             else => |e| return e,
         };
+        if (reader.buffered().len == 0) return false;
         try self.pending.appendSlice(self.allocator, reader.buffered());
         return true;
     }
 };
 
-fn classify(line: []const u8) Frame {
+const exit_poll_ms: i64 = 25;
+
+fn tryExitPosix(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
+    if (builtin.os.tag == .windows) return tryExitWindows(child, io);
+    const id = child.id orelse return null;
+    var status: if (builtin.link_libc) c_int else u32 = undefined;
+    while (true) {
+        const result = std.posix.system.waitpid(id, &status, std.posix.W.NOHANG);
+        switch (std.posix.errno(result)) {
+            .SUCCESS => {
+                if (result == 0) return null;
+                child.id = null;
+                closePipes(child, io);
+                return termOf(status);
+            },
+            .INTR => continue,
+            else => return null,
+        }
+    }
+}
+
+fn tryExitWindows(child: *std.process.Child, io: std.Io) ?std.process.Child.Term {
+    const windows = std.os.windows;
+    const handle = child.id orelse return null;
+    const poll: windows.LARGE_INTEGER = -(exit_poll_ms * std.time.ns_per_ms / 100);
+    switch (windows.ntdll.NtWaitForSingleObject(handle, windows.BOOLEAN.FALSE, &poll)) {
+        .WAIT_0 => {},
+        .USER_APC, .ALERTED, .TIMEOUT => return null,
+        else => |status| {
+            std.debug.assert(status == .TIMEOUT);
+            return null;
+        },
+    }
+    return child.wait(io) catch null;
+}
+
+fn closePipes(child: *std.process.Child, io: std.Io) void {
+    if (child.stdin) |stdin| {
+        stdin.close(io);
+        child.stdin = null;
+    }
+    if (child.stdout) |stdout| {
+        stdout.close(io);
+        child.stdout = null;
+    }
+}
+
+fn termOf(status: anytype) std.process.Child.Term {
+    const raw: u32 = @bitCast(status);
+    return if (std.posix.W.IFEXITED(raw))
+        .{ .exited = std.posix.W.EXITSTATUS(raw) }
+    else if (std.posix.W.IFSIGNALED(raw))
+        .{ .signal = std.posix.W.TERMSIG(raw) }
+    else
+        .{ .unknown = raw };
+}
+
+fn exitCodeOf(term: std.process.Child.Term) !u8 {
+    return switch (term) {
+        .exited => |code| code,
+        .signal => |number| 128 +% @as(u8, @intCast(@intFromEnum(number))),
+        else => Error.NotRunning,
+    };
+}
+
+fn classify(line: []const u8) Error!Frame {
     if (hasTopLevelMember(line, "protocol")) return .{ .envelope = line };
-    return .{ .control = line };
+    if (hasTopLevelMember(line, "control")) return .{ .control = line };
+    return Error.UnclassifiedFrame;
 }
 
 fn hasTopLevelMember(line: []const u8, name: []const u8) bool {
@@ -193,24 +290,24 @@ fn followedByColon(line: []const u8, from: usize) bool {
 }
 
 test "a line carrying protocol is an envelope and one carrying control is not" {
-    const envelope = classify("{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}");
+    const envelope = try classify("{\"protocol\":\"open-agent-protocol\",\"id\":\"q1\"}");
     try std.testing.expect(envelope == .envelope);
-    const control = classify("{\"control\":\"replay\",\"cursor\":\"7\"}");
+    const control = try classify("{\"control\":\"replay\",\"cursor\":\"7\"}");
     try std.testing.expect(control == .control);
 }
 
 test "a nested protocol member does not make a control frame an envelope" {
-    const control = classify("{\"control\":\"replay\",\"detail\":{\"protocol\":\"x\"}}");
+    const control = try classify("{\"control\":\"replay\",\"detail\":{\"protocol\":\"x\"}}");
     try std.testing.expect(control == .control);
 }
 
 test "a protocol string that is a value rather than a key is not a member" {
-    const control = classify("{\"control\":\"protocol\"}");
+    const control = try classify("{\"control\":\"protocol\"}");
     try std.testing.expect(control == .control);
 }
 
 test "an escaped quote inside a key does not end the key early" {
-    const control = classify("{\"a\\\"protocol\":1}");
+    const control = try classify("{\"control\":\"replay\",\"a\\\"protocol\":1}");
     try std.testing.expect(control == .control);
 }
 
@@ -251,11 +348,15 @@ test "a frame over the bound fails closed rather than truncating" {
     try std.testing.expectError(Error.FrameTooLong, client.takeLine());
 }
 
-fn probeHome(allowlist: []const []const u8) ![]const u8 {
+fn probeHome(allowlist: []const []const u8, inherit: bool) ![]const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    defer names.deinit(std.testing.allocator);
+    for (allowlist) |name| try names.append(std.testing.allocator, name);
+    if (!inherit) try names.append(std.testing.allocator, "__oapx_unset__");
     var client = try Client.spawn(std.testing.allocator, .{
         .command = "/bin/sh",
         .args = &.{ "-c", "printf '{\"protocol\":\"p\",\"home\":\"%s\"}\\n' \"$HOME\"" },
-        .environment = allowlist,
+        .environment = names.items,
     });
     defer client.deinit();
     const deadline: std.Io.Timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .boot } };
@@ -276,11 +377,11 @@ test "a child sees only the names the operator allowlisted, never the ambient en
     defer std.testing.allocator.free(ambient);
     if (ambient.len == 0) return error.SkipZigTest;
 
-    const withheld = probeHome(&.{}) catch return error.SkipZigTest;
+    const withheld = probeHome(&.{}, false) catch return error.SkipZigTest;
     defer std.testing.allocator.free(withheld);
     try std.testing.expectEqualStrings("", withheld);
 
-    const granted = try probeHome(&.{"HOME"});
+    const granted = try probeHome(&.{"HOME"}, false);
     defer std.testing.allocator.free(granted);
     try std.testing.expectEqualStrings(ambient, granted);
 }
@@ -309,4 +410,16 @@ test "the client drives a real endpoint binary when the operator names one" {
         return;
     }
     return error.EndpointAnsweredNothing;
+}
+
+
+test "a child inherits this process's environment unless the allowlist says otherwise" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    const ambient = compat.getEnvVarOwned(std.testing.allocator, "HOME") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(ambient);
+    if (ambient.len == 0) return error.SkipZigTest;
+
+    const inherited = try probeHome(&.{}, true);
+    defer std.testing.allocator.free(inherited);
+    try std.testing.expectEqualStrings(ambient, inherited);
 }

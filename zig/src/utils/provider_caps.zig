@@ -59,21 +59,44 @@ pub fn isCerebras(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "cerebras.ai");
 }
 
-pub fn isHostEndingIn(base_url: ?[]const u8, suffix: []const u8) bool {
+fn unbracket(host: []const u8) []const u8 {
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        return host[1 .. host.len - 1];
+    }
+    return host;
+}
+
+pub fn isOllama(base_url: ?[]const u8) bool {
     const url = base_url orelse return false;
     const uri = std.Uri.parse(url) catch return false;
+    if (uri.port != 11434) return false;
     const host = uri.host orelse return false;
-    const value = host.percent_encoded;
-    if (std.ascii.eqlIgnoreCase(value, suffix)) return true;
-    if (value.len <= suffix.len) return false;
-    if (!std.ascii.eqlIgnoreCase(value[value.len - suffix.len ..], suffix)) return false;
-    const before = value[value.len - suffix.len - 1];
-    return before == '.' or before == '-';
+    const value = unbracket(host.percent_encoded);
+    const loopback = [_][]const u8{ "localhost", "127.0.0.1", "::1" };
+    for (loopback) |candidate| {
+        if (std.ascii.eqlIgnoreCase(value, candidate)) return true;
+    }
+    return false;
+}
+
+const azure_labels = [_][]const u8{ "openai.azure.com", "cognitiveservices.azure.com" };
+
+pub fn isAzure(base_url: ?[]const u8) bool {
+    for (azure_labels) |label| {
+        if (isHostOrSubdomainOf(base_url, label)) return true;
+    }
+    return false;
 }
 
 pub fn isGoogle(base_url: ?[]const u8) bool {
-    return isHostOrSubdomainOf(base_url, "generativelanguage.googleapis.com") or
-        isHostEndingIn(base_url, "aiplatform.googleapis.com");
+    const host = hostOf(base_url) orelse return false;
+    if (std.ascii.eqlIgnoreCase(host, "generativelanguage.googleapis.com")) return true;
+    if (std.ascii.eqlIgnoreCase(host, "aiplatform.googleapis.com")) return true;
+    const suffix = "-aiplatform.googleapis.com";
+    if (host.len > suffix.len and std.ascii.eqlIgnoreCase(host[host.len - suffix.len ..], suffix)) {
+        if (std.mem.indexOfScalar(u8, host[0 .. host.len - suffix.len], '.') == null) return true;
+    }
+    return false;
 }
 
 pub fn isZai(base_url: ?[]const u8) bool {
@@ -97,13 +120,37 @@ pub fn isDeepSeek(base_url: ?[]const u8) bool {
     return isHostOrSubdomainOf(base_url, "deepseek.com");
 }
 
+fn hostIsOrSubdomainOf(host: []const u8, domain: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(host, domain) or
+        (host.len > domain.len and std.ascii.eqlIgnoreCase(host[host.len - domain.len ..], domain) and host[host.len - domain.len - 1] == '.');
+}
+
+pub fn hostOf(base_url: ?[]const u8) ?[]const u8 {
+    const url = base_url orelse return null;
+    const uri = std.Uri.parse(url) catch return null;
+    const host = uri.host orelse return null;
+    return host.percent_encoded;
+}
+
 pub fn isHostOrSubdomainOf(base_url: ?[]const u8, domain: []const u8) bool {
-    const url = base_url orelse return false;
-    const uri = std.Uri.parse(url) catch return false;
-    const host = uri.host orelse return false;
-    const value = host.percent_encoded;
-    return std.ascii.eqlIgnoreCase(value, domain) or
-        (value.len > domain.len and std.ascii.eqlIgnoreCase(value[value.len - domain.len ..], domain) and value[value.len - domain.len - 1] == '.');
+    const host = hostOf(base_url) orelse return false;
+    return hostIsOrSubdomainOf(host, domain);
+}
+
+const bedrock_first_labels = [_][]const u8{ "bedrock", "bedrock-runtime", "bedrock-fips", "bedrock-runtime-fips" };
+const aws_parents = [_][]const u8{ "amazonaws.com", "amazonaws.com.cn" };
+
+pub fn isBedrock(base_url: ?[]const u8) bool {
+    const host = hostOf(base_url) orelse return false;
+    const dot = std.mem.indexOfScalar(u8, host, '.') orelse return false;
+    const label = host[0..dot];
+    for (bedrock_first_labels) |candidate| {
+        if (!std.ascii.eqlIgnoreCase(label, candidate)) continue;
+        for (aws_parents) |parent| {
+            if (hostIsOrSubdomainOf(host, parent)) return true;
+        }
+    }
+    return false;
 }
 
 pub fn isOpenAIHost(base_url: []const u8) bool {
@@ -126,9 +173,9 @@ pub fn detectProviderType(base_url: ?[]const u8) ProviderType {
     if (isZai(url)) return .openai_compatible;
     if (isOpenRouter(url)) return .openai_compatible;
     if (isGoogle(url)) return .google;
-    if (std.mem.find(u8, url, "bedrock-runtime.") != null or std.mem.find(u8, url, "bedrock.") != null) return .bedrock;
-    if (std.mem.find(u8, url, ".openai.azure.com") != null or std.mem.find(u8, url, "cognitiveservices.azure.com") != null) return .azure;
-    if (std.mem.find(u8, url, "localhost:11434") != null or std.mem.find(u8, url, "127.0.0.1:11434") != null or std.mem.find(u8, url, "ollama") != null) return .ollama;
+    if (isBedrock(url)) return .bedrock;
+    if (isAzure(url)) return .azure;
+    if (isOllama(url)) return .ollama;
 
     if (url.len > 0) return .openai_compatible;
 
@@ -223,7 +270,145 @@ test "isGitHubCopilot detection" {
     try std.testing.expect(!isGitHubCopilot(null));
 }
 
-test "a google host is the gemini api host or an aiplatform host, regional or not" {
+test "an ollama host is loopback on 11434 and nothing else" {
+    const hosts = [_][]const u8{
+        "http://127.0.0.1:11434",
+        "http://127.0.0.1:11434/",
+        "http://127.0.0.1:11434/api/chat",
+        "http://localhost:11434",
+        "http://localhost:11434/api/chat",
+        "http://[::1]:11434",
+        "http://LOCALHOST:11434",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isOllama(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "http://127.0.0.1:11435",
+        "http://localhost:11435",
+        "http://localhost",
+        "http://127.0.0.1",
+        "https://ollama.internal:11434",
+        "https://my-ollama.example.com",
+        "http://ollama.internal:11434",
+        "https://ollama.example.com/v1",
+        "http://example.com:11434/ollama",
+        "http://notlocalhost:11434",
+        "http://127.0.0.2:11434",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isOllama(url));
+    }
+
+    try std.testing.expect(!isOllama(null));
+}
+
+test "the catalogued ollama local default still detects as ollama" {
+    const url = "http://127.0.0.1:11434";
+    try std.testing.expect(isOllama(url));
+    try std.testing.expectEqual(ProviderType.ollama, detectProviderType(url));
+}
+
+test "a bedrock host has bedrock or bedrock-runtime as its first label under amazonaws" {
+    const hosts = [_][]const u8{
+        "https://bedrock.us-east-1.amazonaws.com",
+        "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/invoke",
+        "https://bedrock-fips.us-east-1.amazonaws.com",
+        "https://bedrock-runtime-fips.us-east-1.amazonaws.com",
+        "https://bedrock-runtime.cn-north-1.amazonaws.com.cn",
+        "https://BEDROCK-RUNTIME.US-EAST-1.AMAZONAWS.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isBedrock(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://amazonaws.com",
+        "https://us-east-1.amazonaws.com",
+        "https://s3.us-east-1.amazonaws.com",
+        "https://mybedrock.us-east-1.amazonaws.com",
+        "https://us-east-1.bedrock.amazonaws.com",
+        "https://bedrock-runtime.amazonaws.com.evil.example",
+        "https://bedrock.us-east-1.amazonaws.co",
+        "https://evil.example/?next=bedrock-runtime.us-east-1.amazonaws.com",
+        "https://evil.example/v1/bedrock.us-east-1.amazonaws.com",
+        "https://gateway.example/proxy/bedrock-runtime.us-east-1.amazonaws.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isBedrock(url));
+    }
+
+    try std.testing.expect(!isBedrock(null));
+}
+
+test "a bedrock host still detects as bedrock" {
+    const url = "https://bedrock-runtime.us-east-1.amazonaws.com";
+    try std.testing.expect(isBedrock(url));
+    try std.testing.expectEqual(ProviderType.bedrock, detectProviderType(url));
+}
+
+test "an azure host matches a label under azure.com and never azure.com itself" {
+    const hosts = [_][]const u8{
+        "https://contoso.openai.azure.com",
+        "https://contoso.openai.azure.com/openai/deployments/gpt/chat/completions",
+        "https://contoso.cognitiveservices.azure.com",
+        "https://openai.azure.com",
+        "https://CONTOSO.COGNITIVESERVICES.AZURE.COM",
+    };
+    for (hosts) |url| {
+        try std.testing.expect(isAzure(url));
+    }
+
+    const not_hosts = [_][]const u8{
+        "https://azure.com",
+        "https://contoso.azure.com",
+        "https://notopenai.azure.com",
+        "https://notcognitiveservices.azure.com",
+        "https://notservices.ai.azure.com",
+        "https://contoso.services.ai.azure.com",
+        "https://cognitiveservices.azure.com.evil.example",
+        "https://services.ai.azure.com.evil.example",
+        "https://openai.azure.com.evil.example",
+        "https://evilcontoso.openai.azure.co",
+        "https://evil.example/?next=contoso.cognitiveservices.azure.com",
+        "https://evil.example/v1/contoso.services.ai.azure.com",
+        "https://gateway.example/proxy/contoso.openai.azure.com",
+        "not a url at all",
+        "",
+    };
+    for (not_hosts) |url| {
+        try std.testing.expect(!isAzure(url));
+    }
+
+    try std.testing.expect(!isAzure(null));
+}
+
+test "each azure label is anchored on its own" {
+    const others = [_][]const u8{
+        "https://contoso.cognitiveservices.azure.com",
+        "https://contoso.openai.azure.com",
+    };
+    for (others) |url| {
+        var matched: usize = 0;
+        if (isHostOrSubdomainOf(url, "openai.azure.com")) matched += 1;
+        if (isHostOrSubdomainOf(url, "cognitiveservices.azure.com")) matched += 1;
+        try std.testing.expectEqual(@as(usize, 1), matched);
+    }
+}
+
+test "an azure openai host still detects as azure" {
+    const url = "https://contoso.openai.azure.com";
+    try std.testing.expect(isAzure(url));
+    try std.testing.expectEqual(ProviderType.azure, detectProviderType(url));
+}
+
+test "a google host is the two api hosts or one regional aiplatform label" {
     const hosts = [_][]const u8{
         "https://generativelanguage.googleapis.com",
         "https://generativelanguage.googleapis.com/v1beta",
@@ -240,9 +425,13 @@ test "a google host is the gemini api host or an aiplatform host, regional or no
         "https://googleapis.com",
         "https://storage.googleapis.com",
         "https://notgenerativelanguage.googleapis.com",
-        "https://evilgenerativelanguage.googleapis.com.attacker.test",
+        "https://foo.generativelanguage.googleapis.com.evil.com",
+        "https://aiplatform.googleapis.com.evil.com",
+        "https://foo.generativelanguage.googleapis.com",
+        "https://x.aiplatform.googleapis.com",
+        "https://foo.us-central1-aiplatform.googleapis.com",
+        "https://notgenerativelanguage.googleapis.com.attacker.test",
         "https://evil-aiplatform.googleapis.com.attacker.test",
-        "https://generativelanguage.googleapis.com.evil.example",
         "https://evil.example/?next=aiplatform.googleapis.com",
         "https://evil.example/v1/generativelanguage.googleapis.com",
         "https://gateway.example/proxy/aiplatform.googleapis.com",

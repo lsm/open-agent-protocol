@@ -104,7 +104,7 @@ test "the Zig schema phase agrees with the manifest on every fixture it can judg
             else => continue,
         };
 
-        var loaded = packs_mod.load(allocator, &registry, pack_dirs.items) catch {
+        var loaded = packs_mod.load(std.testing.io, allocator, &registry, pack_dirs.items) catch {
             skipped_packs += 1;
             continue;
         };

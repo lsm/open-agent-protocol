@@ -35,6 +35,11 @@ pub const Stream = struct {
         return reader.interface.readSliceShort(buffer);
     }
 
+    pub fn readSome(self: *Stream, buffer: []u8) !usize {
+        var chunks = [1][]u8{buffer};
+        return defaultIo().vtable.netRead(defaultIo().userdata, self.inner.socket.handle, &chunks);
+    }
+
     pub fn write(self: *Stream, data: []const u8) !usize {
         return defaultIo().vtable.netWrite(defaultIo().userdata, self.inner.socket.handle, &.{}, &.{data}, 1);
     }
