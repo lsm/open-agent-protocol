@@ -185,7 +185,11 @@ pub fn ownedModelEntriesForRow(
         if (wire) |wanted| {
             if (mapping.wire != wanted) continue;
         }
-        try entries.append(allocator, try ownedModelEntry(allocator, provider_id, model, mapping, source));
+        var entry = try ownedModelEntry(allocator, provider_id, model, mapping, source);
+        var entry_owned = true;
+        defer if (entry_owned) entry.deinit(allocator);
+        try entries.append(allocator, entry);
+        entry_owned = false;
     }
     return entries.toOwnedSlice(allocator);
 }
@@ -210,7 +214,7 @@ fn ownedModelEntry(
     errdefer if (display_name) |value| allocator.free(value);
     const owned_provider = try allocator.dupe(u8, provider_id);
     errdefer allocator.free(owned_provider);
-    const capabilities = try ownedCapabilities(allocator, model.reasoning);
+    const capabilities = try ownedCapabilities(allocator, model);
     errdefer allocator.free(capabilities);
     const input_modalities = try ownedModalities(allocator, model.input);
     errdefer allocator.free(input_modalities);
@@ -229,13 +233,20 @@ fn ownedModelEntry(
     };
 }
 
-fn ownedCapabilities(allocator: std.mem.Allocator, reasoning: bool) ![]const types.ModelCapability {
-    const list = try allocator.alloc(types.ModelCapability, if (reasoning) 4 else 3);
-    list[0] = .chat;
-    list[1] = .streaming;
-    list[2] = .tools;
-    if (reasoning) list[3] = .reasoning;
-    return list;
+fn ownedCapabilities(allocator: std.mem.Allocator, model: ai_types.Model) ![]const types.ModelCapability {
+    var list = std.ArrayList(types.ModelCapability).empty;
+    errdefer list.deinit(allocator);
+    for (model.input) |name| {
+        const capability: ?types.ModelCapability = if (std.mem.eql(u8, name, "image"))
+            .vision
+        else if (std.mem.eql(u8, name, "audio"))
+            .audio_input
+        else
+            null;
+        if (capability) |value| try list.append(allocator, value);
+    }
+    if (model.reasoning) try list.append(allocator, .reasoning);
+    return list.toOwnedSlice(allocator);
 }
 
 fn ownedModalities(allocator: std.mem.Allocator, input: []const []const u8) ![]const types.Modality {
@@ -321,11 +332,13 @@ test "a row serves every model the snapshot names for it" {
     try std.testing.expectEqualStrings("anthropic", entries[0].provider_id);
     try std.testing.expectEqualStrings("anthropic/anthropic-messages@claude-sonnet-4-5", entries[0].model_ref);
     try std.testing.expectEqual(@as(u32, 200_000), entries[0].context_window.?);
-    try std.testing.expectEqual(@as(usize, 4), entries[0].capabilities.len);
     try std.testing.expectEqual(@as(usize, 2), entries[0].input_modalities.len);
     try std.testing.expectEqual(types.Modality.text, entries[0].input_modalities[0]);
     try std.testing.expectEqual(types.ModelSource.discovered, entries[0].source);
-    try std.testing.expectEqual(@as(usize, 3), entries[1].capabilities.len);
+    try std.testing.expectEqual(@as(usize, 2), entries[0].capabilities.len);
+    try std.testing.expectEqual(types.ModelCapability.vision, entries[0].capabilities[0]);
+    try std.testing.expectEqual(types.ModelCapability.reasoning, entries[0].capabilities[1]);
+    try std.testing.expectEqual(@as(usize, 0), entries[1].capabilities.len);
 }
 
 test "a row the snapshot names no model for serves nothing" {
@@ -384,6 +397,27 @@ test "a row is served only the models its own wire can carry" {
     try std.testing.expectEqual(@as(usize, 1), entries.len);
     try std.testing.expectEqualStrings("gpt-4o", entries[0].model_id);
     try std.testing.expectEqual(types.Wire.@"openai-responses", entries[0].wire);
+}
+
+fn ownedEntriesProbe(allocator: std.mem.Allocator) !void {
+    const models = [_]ai_types.Model{.{
+        .id = "claude-sonnet-4-5",
+        .name = "Claude Sonnet 4.5",
+        .api = "anthropic-messages",
+        .provider = "anthropic",
+        .base_url = "",
+        .reasoning = true,
+        .input = &.{"text", "image"},
+        .cost = .{ .input = 0, .output = 0, .cache_read = 0, .cache_write = 0 },
+        .context_window = 200_000,
+        .max_tokens = 8_192,
+    }};
+    const entries = try ownedModelEntriesForRow(allocator, &models, "anthropic", types.Wire.@"anthropic-messages", .discovered);
+    freeModelEntries(allocator, entries);
+}
+
+test "the owned entries free everything when one allocation fails midway" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, ownedEntriesProbe, .{});
 }
 
 test "an unnamed wire carries an opaque discriminator in the reference" {
