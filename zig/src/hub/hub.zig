@@ -436,6 +436,8 @@ pub const Hub = struct {
     pub fn open(self: *Hub, arena: std.mem.Allocator, adapter_name: []const u8, request: OpenRequest) Failure!Opened {
         const registered = self.find(adapter_name) orelse return error.UnknownAdapter;
         if (registered.revision.len == 0) return error.AdapterDescriptorUnbound;
+        var refusal = contract.Refusal{};
+        const descriptor = try registered.adapter.probe(&refusal);
         if (request.subscribe or contract.carriesEntries(request.tool_sources_json)) {
             if (request.capability_revision) |wanted| {
                 if (wanted.len > 0 and !std.mem.eql(u8, wanted, registered.revision)) {
@@ -444,8 +446,6 @@ pub const Hub = struct {
             }
         }
         if (request.session_id.len > 0 and self.findSession(request.session_id) != null) return error.SessionExists;
-        var refusal = contract.Refusal{};
-        const descriptor = try registered.adapter.probe(&refusal);
         try contract.refuseUnadvertisedOpenElections(descriptor, &request.payload(), &refusal);
         var session = try registered.adapter.open(arena, request.contractRequest(), &refusal);
         var adopted = false;
@@ -2407,6 +2407,12 @@ test "the revision gate fires for a subscribing or attaching open, and for no ot
         });
         try testing.expectEqualStrings(name, empty.session_id);
     }
+
+    try testing.expectError(error.UnsupportedFeature, hub.open(arena, "memory", .{
+        .session_id = "provided",
+        .tools_json = "[{\"name\":\"echo\",\"description\":\"d\"}]",
+        .capability_revision = "reference-memory-v10",
+    }));
 
     for ([_][]const u8{ "[{}]", "[null]", "[0]", "true", "[\"\"]" }) |spelling| {
         var name_buffer: [16]u8 = undefined;

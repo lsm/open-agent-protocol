@@ -305,8 +305,8 @@ pub fn carriesEntries(raw: ?[]const u8) bool {
 
 pub fn refuseUnadvertisedOpenElections(descriptor: Descriptor, request: *const oap_types.SessionOpenRequest, refusal: *Refusal) Failure!void {
     const elections = [_]struct { key: []const u8, present: bool }{
-        .{ .key = feature_open_subscribe, .present = request.subscribe },
         .{ .key = feature_tool_sources_attach, .present = carriesEntries(request.tool_sources_json) },
+        .{ .key = feature_open_subscribe, .present = request.subscribe },
         .{ .key = feature_tools_provide, .present = carriesEntries(request.tools_json) },
     };
     for (elections) |election| {
