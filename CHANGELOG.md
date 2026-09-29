@@ -288,12 +288,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     up; an aborted or errored assistant is dropped; and a thinking block from a
     **different** model becomes text while one from the same model keeps its
     signature. Without this an unanswered call goes out dangling and a long id goes
-    out unnormalized. It also carries a defect of its own, **#514**: the pending
-    calls are keyed by the normalized id and the answered ones by the original, so
-    on a Mistral host — where every id is re-hashed — an answered call grows a
-    second, spurious error result. Transcribed rather than corrected, and pinned,
-    so the port held the defect in place while the Zig side decided it: #514 is
-    fixed in `pre_transform`, and this transcription follows under #358.
+    out unnormalized. It carried a defect of its own, **#514**: the pending
+    calls were keyed by the normalized id and the answered ones by the original, so
+    on a Mistral host — where every id is re-hashed — an answered call grew a
+    second, spurious error result. It was transcribed rather than corrected, and
+    pinned that way, so the port held the defect in place while the Zig side
+    decided it. Both are now fixed: #514 landed in `pre_transform` and the
+    transcription here keys its answered set the same way.
   - **The event stream's thirteen kinds are the union, and this client emits nine
     of them** — `start`, `text_delta`, `thinking_delta`, `toolcall_start`,
     `toolcall_delta`, `toolcall_end`, `done`, `error` and `keepalive`, each
@@ -1120,6 +1121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A URL naming `api.openai.com` only in its path or a query moves **nothing observable**: it already landed on `store: false`, no strict mode, a zero tool-id limit and the compatible defaults, and it still does. What changed there is the mechanism rather than the wire — detection and use can no longer disagree, because there is one answer between them instead of two that were consulted at different depths.
 
   `provider_caps` also has **no `addTest` in `build.zig`**, so its nine existing tests had never run; it is wired into `test` and `test-unit-utils` now, and the sixteen-URL table that decided this is a test over the one function. The file's other ten substring predicates are filed as #533. #511
+
+  **The Go port now carries the same one predicate**, as #534 does in Zig: `IsOpenAINativeURL`, which read the substring `api.openai.com` out of the whole URL, is gone, and `DetectProviderType` calls the host-parsing `IsOpenAIHost` that the request builders already used. It is the same change with the same one observable difference — an `openai.com` host such as `proxy.openai.com` or `eu.openai.com` is detected native and merges to the native developer role, `reasoning_effort` and `max_completion_tokens` — and the two tests that pinned the old split, one asserting the gate discarded what detection found, are rewritten because there is no longer a gate and a split to discard across. #511
 - **A `reasoning_details` blob no longer splices the provider's own bytes into the request JSON.** The `openai-completions` read path rebuilt each `reasoning.encrypted` detail by formatting the id and the data straight into a JSON string with `{s}`, so a `"` in either one closed the string early and a `\` began an escape the parser then read as part of the surrounding document. The detail is now written through `zig/src/json/writer.zig`, which is the writer the rest of the tree's escaping already comes from, so the blob is valid JSON whatever the provider put in it — and it matches Go's `encoding/json` down to the HTML-safe escapes, which the writer was brought to parity for. The consequence was confined to the wire: a request whose detail carried a quote or a backslash was not parseable, so it could not be sent as a well-formed body. A detail with nothing to escape is byte-for-byte what it was. This is the only place the tree built a JSON object by hand; the Anthropic wire writes its signature as an ordinary string field. #515
 
 ### Changed
@@ -1446,8 +1449,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewritten id, so it still names the call it stands in for. The wire is unchanged
   for every id normalization leaves alone, which is every id on a non-OpenAI,
   non-Mistral host and every clean short id elsewhere. The Go transcription in
-  `go/internal/provider` still keys its answered set by the arrival id, and its
-  change is routed to #358. #514
+  `go/internal/provider` keyed its answered set by the arrival id and now does
+  the same as here. #514
 
 
 ## [0.2.0] - 2026-09-11

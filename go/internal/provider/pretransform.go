@@ -184,14 +184,16 @@ func PreTransform(messages []Message, config TransformConfig) []Message {
 			rebuilt.Parts = parts
 			out = append(out, Message{Assistant: &rebuilt})
 		case msg.ToolResult != nil:
-			answered[msg.ToolResult.ToolCallID] = true
-			if mapped, ok := toolIDMap[msg.ToolResult.ToolCallID]; ok {
-				remapped := *msg.ToolResult
-				remapped.ToolCallID = mapped
-				out = append(out, Message{ToolResult: &remapped})
-			} else {
+			mapped, ok := toolIDMap[msg.ToolResult.ToolCallID]
+			if !ok {
+				answered[msg.ToolResult.ToolCallID] = true
 				out = append(out, msg)
+				break
 			}
+			answered[mapped] = true
+			remapped := *msg.ToolResult
+			remapped.ToolCallID = mapped
+			out = append(out, Message{ToolResult: &remapped})
 		default:
 			flush(&out)
 			out = append(out, msg)
