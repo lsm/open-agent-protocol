@@ -64,7 +64,7 @@ without going through the ops table.
 | `compact` | none | **gap** — G6 |
 | `resume_session` | `session.state.request`, then submit | **gap** — G1 |
 | `replaceMessages` (direct) | `transcript.load` | **gap** — G1 |
-| `waitForIdle` (direct, 31 call sites) | a terminal run event | **gap** — G7 |
+| `waitForIdle` (direct, 6 production call sites) | a terminal run event | **gap** — G7 |
 | `setTools`, MCP bridge (direct) | `action.tools.provide`, `action.tool_sources.attach` | **gap** — G8, unadvertised |
 | `models` / login (direct) | `models.list`; auth stays local | covered / G5 |
 
@@ -172,13 +172,27 @@ proposing an optional compaction unit covering the verb, its correlated
 response and its events, plus the continue-after-compaction case. #375's
 compaction step waits on that decision.
 
-### G7 — the blocking idle wait is the largest structural obstacle
+### G7 — the blocking idle wait
 
-`waitForIdle` is called 31 times in `zig/src/tui/runtime.zig` and is a
-synchronous join on the agent's run thread. It is not a protocol call and no
-issue names it. On an endpoint, "has the run finished" is the terminal run
-event, so every one of those call sites has to become an await instead. This is
-behaviour-visible and needs its own PR, before any run flow moves.
+`waitForIdle` is a synchronous join on the agent's run thread: `agent.zig:734`
+locks the mutex, checks `is_streaming` or a live thread, and blocks until the
+run ends. It appears 31 times in `zig/src/tui/runtime.zig`, but only **six of
+those are production code** — `stop`, `submitTurn`, `replaceMessages`,
+`history`, `compact` and `resumeSession`. The other 25 are test call sites,
+which is a correction to the number this gap was first filed with: the work is
+six joins, not thirty-one.
+
+It is not a protocol call and no issue names it. On an endpoint, "has the run
+finished" is the terminal run event, so each of the six has to become an await
+instead. This is behaviour-visible and needs its own PR, before any run flow
+moves.
+
+The six fall into two groups. `history`, `stop` and `replaceMessages` are the
+TUI asking whether it may act or read; `submitTurn`, `compact` and
+`resumeSession` are "I am about to start work, wait for the current run", which
+is what `resumeQueuedMessagesIfIdle` already expresses with `isIdle`. The TUI's
+tick runs at 50 ms, so a poll against a terminal-event flag is enough and needs
+no second event mechanism. At six call sites this is a comfortably small PR.
 
 ### G8 — client tools and attached tool sources
 
